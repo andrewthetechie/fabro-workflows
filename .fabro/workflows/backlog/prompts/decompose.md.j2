@@ -34,7 +34,11 @@ Operate read-only.
 - Merge overlapping work when one implementation change resolves it together.
 - Split independent work into separate child tasks when they should drain through
   separate implementation loops.
-- If no meaningful implementation work remains, emit `no_work`.
+- If no actionable implementation work remains -- the change is already present in
+  the current HEAD/checkout, or the issue is a duplicate -- emit `no_work`.
+- A single cohesive change is still one implementation task: return it under `issues`
+  with a single entry. Do NOT emit `no_work` merely because the issue fits in one
+  change, needs no splitting, or already has a complete spec in its body.
 - If requirements conflict or remain too ambiguous for safe task drafting, emit
   `needs_human_review`.
 - Tasks run sequentially in array order. Order the array so prerequisites come
@@ -99,12 +103,21 @@ costs a full retry round:
 - Markdown inside a `body` string is allowed; the JSON file itself must be raw
   JSON — do not wrap the file contents in a ` ```json ` fence.
 
-Minimal valid example:
+Minimal valid example (a single cohesive change is ONE task, status `issues`):
 
 {
-  "status": "no_work",
-  "summary": "The parent issue already describes one implementation-ready unit of work and does not need decomposition.",
-  "issues": []
+  "status": "issues",
+  "summary": "The parent issue is a single cohesive change; it is returned as one task.",
+  "issues": [
+    {
+      "id": "extract-reusable-helper",
+      "title": "Extract the shared formatting into a reusable helper",
+      "body": "## User Story\nAs a user, I want ...\n\n## Context\nA single cohesive change that implements the parent issue.\n\n## Acceptance Criteria\n- Behavior is unchanged apart from the extraction.\n- Existing tests pass.",
+      "files": ["src/example.ts"],
+      "priority": "medium"
+    }
+  ]
 }
+
 
 After writing `/tmp/fabro/decomposition.json`, stop. Do not print the JSON in chat.
