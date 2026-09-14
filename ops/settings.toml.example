@@ -1,0 +1,100 @@
+# Server settings overlay — deploy to /storage/.home/settings.toml in the container.
+# Replace <PLACEHOLDER> values (host addresses, provider base_url). No API keys live
+# here; providers authenticate via the fabro vault / server env.
+
+_version = 1
+
+[cli.target]
+type = "http"
+url = "http://<HOST>:<FABRO_PORT>"
+
+[run.environment]
+id = "default"
+
+[server.api]
+url = "http://<HOST>:<FABRO_PORT>/api/v1"
+
+[server.artifacts]
+prefix = "artifacts"
+provider = "local"
+
+[server.artifacts.local]
+root = "/storage/objects"
+
+[server.auth]
+methods = ["dev-token"]
+
+[server.integrations.github]
+strategy = "token"
+
+[server.listen]
+address = "0.0.0.0:<FABRO_PORT>"
+type = "tcp"
+
+[server.sandbox.providers.daytona]
+enabled = false
+
+[server.sandbox.providers.docker]
+enabled = true
+
+[server.sandbox.providers.local]
+enabled = false
+
+[server.scheduler]
+max_concurrent_runs = 3
+
+[server.slatedb]
+prefix = "slatedb"
+provider = "local"
+
+[server.slatedb.local]
+root = "/storage/objects"
+
+[server.web]
+enabled = true
+url = "http://<HOST>:<FABRO_PORT>"
+
+# --- LLM catalog overlay (litellm proxy) ---
+# Provider credentials live in the fabro vault, not here.
+[llm.providers.litellm]
+base_url = "https://<LITELLM_PROXY>/v1"
+enabled = true
+default_model = "coders"
+
+[llm.providers.litellm.models."coders"]
+display_name = "Local coders (strix x2)"
+api_model = "coders"
+limits = { context_tokens = 262144, max_output_tokens = 38400 }
+capabilities = { text = true, tools = true, reasoning = true }
+
+[llm.providers.litellm.models."long-context"]
+display_name = "Local long-context (spark)"
+api_model = "long-context"
+limits = { context_tokens = 1048576, max_output_tokens = 65536 }
+capabilities = { text = true, tools = true, reasoning = true, response_format = { json_object = true, json_schema = true } }
+# Preferred for small utility calls such as generated run titles.
+small_default = true
+
+[llm.providers.litellm.models."kimi-k3"]
+display_name = "Kimi K3 (coding plan)"
+api_model = "kimi-k3"
+limits = { context_tokens = 262144, max_output_tokens = 16384 }
+capabilities = { text = true, tools = true, reasoning = true }
+
+[llm.providers.litellm.models."glm-5.3"]
+display_name = "GLM 5.3 (z.ai coding plan)"
+api_model = "glm-5.3"
+limits = { context_tokens = 202752, max_output_tokens = 16384 }
+capabilities = { text = true, tools = true, reasoning = true }
+
+[llm.providers.litellm.models."glm-4.7"]
+display_name = "GLM 4.7 (z.ai coding plan)"
+api_model = "glm-4.7"
+limits = { context_tokens = 202752, max_output_tokens = 16384 }
+capabilities = { text = true, tools = true, reasoning = true }
+
+[llm.providers.litellm.models."kimi-for-coding"]
+display_name = "Kimi for Coding (K2.8, coding plan)"
+api_model = "kimi-for-coding"
+limits = { context_tokens = 1048576, max_output_tokens = 16384 }
+capabilities = { text = true, tools = true, reasoning = true }
