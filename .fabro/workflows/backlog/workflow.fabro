@@ -22,7 +22,7 @@ digraph Backlog {
     acquire [label="Acquire issue", shape=parallelogram,
         script="mkdir -p /tmp/fabro && gh issue list --label agent --state open --json number,title,labels --limit 10 > /tmp/fabro/candidates.json && jq '[.[] | select(([.labels[].name] | contains([\"agent-in-progress\"]) | not))] | sort_by(.number) | .[0:1]' /tmp/fabro/candidates.json > /tmp/fabro/acquire.json && test \"$(jq length /tmp/fabro/acquire.json)\" != \"0\""]
 
-    claim [label="Claim issue and fetch it", shape=parallelogram,
+    claim [label="Claim issue and fetch it", shape=parallelogram, output_schema="routing",
         script="set -e
 N=$(jq -r '.[0].number' /tmp/fabro/acquire.json)
 gh label create agent-in-progress --color FBCA04 2>/dev/null || true
@@ -42,7 +42,7 @@ echo 0 > /tmp/fabro/extra_round
     // ---- Decomposition (agent writes file; gate validates) ----
     decompose [label="Decompose issue", class="decomp", prompt="@prompts/decompose.md.j2"]
 
-    decompose_gate [label="Validate decomposition", shape=parallelogram,
+    decompose_gate [label="Validate decomposition", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/decomposition.json
 A=$(cat /tmp/fabro/decompose_attempts 2>/dev/null || echo 0)
 S=$(jq -r .status $F 2>/dev/null || echo invalid)
@@ -67,7 +67,7 @@ CNT=$(jq '.issues | length' $F 2>/dev/null || echo 0)
 echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT'}}'"]
 
     // ---- Sequential task loop ----
-    next_task [label="Next task + mainline refresh", shape=parallelogram,
+    next_task [label="Next task + mainline refresh", shape=parallelogram, output_schema="routing",
         script="IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 0)
 COUNT=$(jq length /tmp/fabro/tasks.json)
 if [ $IDX -ge $COUNT ]; then echo '{\"context_updates\":{\"tasks_done\":true}}'; exit 0; fi
@@ -89,7 +89,7 @@ fi"]
 
     improve [label="Improve task spec", class="improve", prompt="@prompts/improve.md.j2"]
 
-    improve_gate [label="Validate improved task", shape=parallelogram,
+    improve_gate [label="Validate improved task", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/improve_result.json
 A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
 D=$(jq -r .disposition $F 2>/dev/null || echo invalid)
@@ -108,7 +108,7 @@ echo '{\"context_updates\":{\"task_disposition\":\"'$D'\"}}'"]
 
     coder [label="Implement task (tier 1)", class="coder", prompt="@prompts/coder.md.j2"]
 
-    prep_review [label="Prepare review inputs", shape=parallelogram,
+    prep_review [label="Prepare review inputs", shape=parallelogram, output_schema="routing",
         script="set -e
 BASE=$(cat /tmp/fabro/task_base_sha)
 git diff $BASE..HEAD > /tmp/fabro/review/diff.patch
@@ -136,7 +136,7 @@ fi"]
 
     review [label="Review task", class="review", prompt="@prompts/reviewer.md.j2"]
 
-    review_gate [label="Validate verdict", shape=parallelogram,
+    review_gate [label="Validate verdict", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/verdict.json
 A=$(cat /tmp/fabro/review_attempts 2>/dev/null || echo 0)
 D=$(jq -r .decision $F 2>/dev/null || echo invalid)
@@ -165,7 +165,7 @@ S=$(jq -r '.summary // empty' /tmp/fabro/review/verdict.json 2>/dev/null || true
 { echo '### Task: '$T; echo '- Review: '$S; echo; } >> /tmp/fabro/completed.md
 echo integrated"]
 
-    rework_router [label="Escalate rework round", shape=parallelogram,
+    rework_router [label="Escalate rework round", shape=parallelogram, output_schema="routing",
         script="R=$(cat /tmp/fabro/round 2>/dev/null || echo 0)
 R=$((R+1))
 echo $R > /tmp/fabro/round
@@ -177,7 +177,7 @@ echo '{\"context_updates\":{\"round\":'$R'}}'"]
     rework_t4 [label="Rework (tier 4: glm-5.3)", class="coder-t4", prompt="@prompts/rework.md.j2"]
 
     // ---- Extra review rounds (whole branch) ----
-    extra_prep [label="Prepare extra review", shape=parallelogram,
+    extra_prep [label="Prepare extra review", shape=parallelogram, output_schema="routing",
         script="ER=$(cat /tmp/fabro/extra_round 2>/dev/null || echo 0)
 if [ $ER -ge 2 ]; then echo '{\"context_updates\":{\"extra_done\":true}}'; exit 0; fi
 echo $((ER+1)) > /tmp/fabro/extra_round
@@ -188,7 +188,7 @@ git diff --name-only origin/main...HEAD > /tmp/fabro/extra/changed_files.txt
 echo '{\"context_updates\":{\"extra_done\":false,\"standards_status\":\"none\",\"spec_status\":\"none\",\"quality_status\":\"none\",\"new_tasks\":0,\"followup_status\":\"none\"}}'"]
 
     standards [label="Standards review", class="review", prompt="@prompts/standards.md.j2"]
-    standards_gate [label="Validate standards output", shape=parallelogram,
+    standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/standards.json
 A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)
 D=$(jq -r .decision $F 2>/dev/null || echo invalid)
@@ -202,7 +202,7 @@ echo 0 > /tmp/fabro/standards_attempts
 echo '{\"context_updates\":{\"standards_status\":\"'$D'\"}}'"]
 
     spec [label="Spec review", class="review-frontier", prompt="@prompts/spec.md.j2"]
-    spec_gate [label="Validate spec output", shape=parallelogram,
+    spec_gate [label="Validate spec output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/spec.json
 A=$(cat /tmp/fabro/spec_attempts 2>/dev/null || echo 0)
 D=$(jq -r .decision $F 2>/dev/null || echo invalid)
@@ -216,7 +216,7 @@ echo 0 > /tmp/fabro/spec_attempts
 echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
     quality [label="Code quality review", class="review", prompt="@prompts/quality.md.j2"]
-    quality_gate [label="Validate quality output", shape=parallelogram,
+    quality_gate [label="Validate quality output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/quality.json
 A=$(cat /tmp/fabro/quality_attempts 2>/dev/null || echo 0)
 D=$(jq -r .decision $F 2>/dev/null || echo invalid)
@@ -230,7 +230,7 @@ echo 0 > /tmp/fabro/quality_attempts
 echo '{\"context_updates\":{\"quality_status\":\"'$D'\"}}'"]
 
     extra_decompose [label="Follow-up decomposer", class="review-frontier", prompt="@prompts/extra_decompose.md.j2"]
-    extra_gate [label="Merge follow-up tasks", shape=parallelogram,
+    extra_gate [label="Merge follow-up tasks", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/followups.json
 A=$(cat /tmp/fabro/extra_decompose_attempts 2>/dev/null || echo 0)
 S=$(jq -r .status $F 2>/dev/null || echo invalid)
@@ -271,7 +271,7 @@ fi
 N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(jq -r .title /tmp/fabro/issue.json)
 echo 'agent: '$T' (#'$N')' > /tmp/fabro/pr_title.txt
-{ echo '## Summary'; echo; echo 'Resolves #'$N': '$T; echo; cat /tmp/fabro/completed.md 2>/dev/null; echo '## Validation'; echo; echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after final merge with origin/main'; } > /tmp/fabro/pr_body.md"]
+{ echo '## Summary'; echo; echo 'Resolves #'$N': '$T; echo; cat /tmp/fabro/completed.md 2>/dev/null || true; echo '## Validation'; echo; echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after final merge with origin/main'; } > /tmp/fabro/pr_body.md"]
 
     open_pr [label="Push and open PR", shape=parallelogram,
         script="set -e
