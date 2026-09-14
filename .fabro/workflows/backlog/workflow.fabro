@@ -3,7 +3,7 @@ digraph Backlog {
         goal="Backlog: decompose the next agent-labeled issue, implement each task with review, and open a PR",
         model_stylesheet="
             *                { model: coders; }
-            .decomp          { model: long-context; }
+            .decomp          { model: glm-5.3; }
             .improve         { model: glm-5.3; }
             .coder           { model: coders; }
             .coder-t2        { model: glm-4.7; }
