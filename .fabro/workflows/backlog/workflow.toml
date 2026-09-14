@@ -56,7 +56,10 @@ script = "/storage/scripts/discord-notify.sh rescue"
 [[run.hooks]]
 id = "discord-complete"
 event = "stage_start"
-matcher = "open_pr"
+# Anchor the matcher: fabro_hooks compiles `matcher` as an unanchored regex
+# and tests it against node_id, so `open_pr` would ALSO match `open_pr_prep`
+# and notify twice. `^open_pr$` matches only the PR-opening stage.
+matcher = "^open_pr$"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh complete"
