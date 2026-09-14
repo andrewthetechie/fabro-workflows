@@ -1,0 +1,137 @@
+# Rework
+
+Your previous attempt was rejected. **The findings are your entire scope.** Apply the
+smallest fix for each finding, leave the changes in the working tree, and stop. Do
+not write narration or commentary before your first tool call. Begin with a `read`
+or `edit`.
+
+## Inputs — read in this priority order
+
+1. **Human guidance, if present.** If the run context contains human guidance from
+   a rescue gate (`human.gate.text`), it **overrides everything else**. A human has
+   looked at this run and told you what to do; do that, and treat the findings file
+   as secondary context.
+2. `/tmp/fabro/feedback/rework.md` — **the findings. This is your entire scope.**
+   Markdown, written by whichever stage rejected the previous attempt. It has four
+   possible shapes:
+   - `## Review findings to fix` — a reviewer's summary plus a bulleted finding
+     list. Fix every finding with the smallest change.
+   - `## Validation failed (exit N): ./.fabro/setup.sh && ./.fabro/ci.sh` — the
+     tail of the build/test log. Fix the failure; do not disable, skip, or delete
+     the failing test.
+   - `## Diff too large` — the change exceeded 2 MB. Shrink or split it.
+   - `## Mainline merge conflict` — `origin/main` did not merge cleanly. Resolve
+     the conflict minimally: keep the accumulated task changes, take mainline
+     updates where they do not overlap.
+3. `/tmp/fabro/current_task.json` — the task being reworked. **If this file is
+   missing or unreadable, do not stop.** Work directly from
+   `/tmp/fabro/issue.json` instead.
+4. `/tmp/fabro/issue.json` — the parent issue, supplemental.
+
+The repository checkout in the current working directory is your workspace.
+`/tmp/fabro/` is read-only input you may read; do not write anywhere outside the
+repository checkout.
+
+## Scope
+
+In-scope files = the set the findings cite.
+
+For each finding:
+
+- Open the cited file, read about 10 lines of context, and apply the smallest
+  change that satisfies it.
+- If a finding's remediation is unclear, implement only what its problem
+  description directly requires.
+
+Do not:
+
+- Inspect or edit files outside the in-scope set, except for the
+  missing-dependency rule below.
+- Refactor, rename, restructure, or reorganize code beyond what a finding requires.
+- Fix related issues you notice while addressing a finding.
+- Rewrite the feature instead of applying the requested fix.
+- Add tests unless a finding asks for them.
+- Delegate to sub-agents or start hidden helpers.
+- Change dependency manifests except for the missing-dependency rule below.
+- Delete or rewrite an existing `import`, `use`, or `require` just to silence an
+  unresolved-module error.
+
+**Expanding scope to satisfy a finding is worse than leaving it unfixed.**
+
+## Validation is external
+
+Do **not** run the project's full test suite. A separate `validate` stage runs
+`./.fabro/setup.sh && ./.fabro/ci.sh` after you finish. Run only the narrowest
+useful check for the surface you changed, and only when a cheap obvious command
+exists.
+
+Do not call GitHub. No `gh`, no API calls. Deterministic stages own all issue and
+PR work.
+
+## Process
+
+1. Build the in-scope file set from the files the findings cite.
+2. Work each finding: open the cited file, read ~10 lines of context, apply the
+   smallest change that satisfies it.
+3. Run `git status -s` and `git diff --stat`. If any edited file is outside scope,
+   revert that file.
+4. Leave the changes in the working tree.
+
+## About commits — do not make any
+
+Leave your changes in the working tree. Do not run `git add`, `git commit`,
+`git push`, `git checkout -b`, `git merge`, or `git rebase`. The checkpoint layer
+commits the whole working tree to the run branch after you finish. The completion
+check is: `git status -s` shows exactly the files you intended to change, and
+nothing else.
+
+## Completion
+
+When the findings are addressed and `git status -s` shows exactly the in-scope
+files and nothing else, emit `<promise>COMPLETE</promise>` on its own line and
+stop.
+
+If one finding cannot be addressed in scope, leave it, apply the in-scope fixes,
+and emit `<promise>COMPLETE</promise>`. The reviewer sees it again next round.
+
+If every finding requires out-of-scope edits, or the findings contradict each
+other and you cannot make safe progress:
+
+1. Change nothing (or keep partial in-scope fixes).
+2. Emit `<blocked>one or two sentences explaining why progress is impossible in scope</blocked>`.
+3. Emit `<promise>COMPLETE</promise>`.
+
+Expanding scope to satisfy a finding is worse than leaving that finding unfixed.
+
+If the cited findings are already satisfied on the current checkout and no code
+changes are needed:
+
+1. Change nothing.
+2. Emit `<already_satisfied>one or two sentences citing the existing files or behavior</already_satisfied>`.
+3. Emit `<promise>COMPLETE</promise>`.
+
+## Missing dependency — install it, don't work around it
+
+If the findings or your narrow check shows an unresolved import / `use` /
+`require` / module reference, add the missing package to the project's dependency
+manifest. **Install it; do not delete or rewrite the import.** This is the only
+legitimate dependency-manifest edit during rework.
+
+1. Detect the package manager from the manifest files (`package.json`,
+   `pyproject.toml`, `Cargo.toml`, `go.mod`, `Gemfile`, etc.) and use its native
+   add command so the lockfile updates correctly.
+2. Use the exact package name from the error.
+3. Put it in the dev/test dependency section if the importer is test code (path or
+   filename contains `test`/`spec`/`__tests__`, or it is the project's test setup
+   file). Otherwise put it in the runtime dependencies. Skip this split if the
+   ecosystem doesn't have one (e.g., Go modules).
+4. Do not pin a version.
+5. Install one package at a time, only for missing-import errors the findings (or
+   your narrow check) actually surface.
+6. Re-run the failing narrow check yourself to confirm it's resolved before
+   finishing.
+
+If the missing-module pattern keeps recurring after install — for example you fixed
+one but more keep appearing in tightly-related code, or the import path looks like
+a typo — that's a code problem. Fix the import or blocker-exit. Do not install
+random packages.

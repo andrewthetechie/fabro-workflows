@@ -1,0 +1,69 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+# Model escalation fallbacks. A model that errors or is rate-limited falls
+# through to the next one. Order follows the operator's quota policy:
+# z.ai before kimi. long-context and kimi-k3 never fall back into a coder
+# role, and kimi-k3 is never a primary coder.
+#
+# Keys containing a dot MUST be quoted or the TOML parse fails with a 422 at
+# automation fire time.
+[run.model.fallbacks]
+coders = ["litellm:glm-4.7"]
+"glm-4.7" = ["litellm:kimi-for-coding"]
+kimi-for-coding = ["litellm:glm-5.3"]
+"glm-5.3" = ["litellm:kimi-k3"]
+kimi-k3 = ["litellm:glm-5.3"]
+long-context = ["litellm:kimi-k3"]
+
+# Do not push the run metadata branch. Fabro pushes fabro/meta/<run_id> to the
+# target repository on every run and never deletes it; nothing reads the pushed
+# copy (run metadata is served from the fabro API and the run store). Leaving
+# this on accumulates one dead branch per run forever. See task 12.
+# run_branch.push stays at its default (true) so in-progress work survives a
+# server crash; task 12's sweeper reaps the run branches instead.
+[run.meta_branch]
+push = false
+
+# The run needs a GitHub token for the gh CLI in acquire/claim/validate/open_pr
+# command stages and for agent use of gh. Fabro injects GITHUB_TOKEN into the
+# sandbox; these permissions declare what a token-mode run may do.
+[run.integrations.github.permissions]
+contents = "write"
+issues = "write"
+pull_requests = "write"
+
+# Discord notifications. Hooks run with sandbox = false, which means they run
+# inside the fabro server container (Alpine: /bin/sh, wget, no bash, no jq, no
+# curl). The webhook URL is read from /storage/secrets/discord_webhook_url
+# inside that container, so no secret enters this repo or this TOML. The script
+# is referenced by absolute container path because hook `script` is a shell
+# command, not an `@` file import.
+[[run.hooks]]
+id = "discord-rescue"
+event = "stage_start"
+matcher = "human_rescue"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh rescue"
+
+# Fires when the run reaches the PR-opening stage — i.e. the run actually
+# produced something. This used to be event = "run_complete", which has no
+# matcher support and therefore fired on every run, including the ~384/day
+# that quiet-exit at `acquire` with no work to do.
+[[run.hooks]]
+id = "discord-complete"
+event = "stage_start"
+matcher = "open_pr"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh complete"
+
+[[run.hooks]]
+id = "discord-failed"
+event = "run_failed"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh failed"
