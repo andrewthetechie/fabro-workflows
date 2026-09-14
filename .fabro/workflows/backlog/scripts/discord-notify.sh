@@ -46,12 +46,19 @@ token_file="/storage/server.dev-token"
 # buffered into a variable.
 repo_url=""
 issue=""
+pr_url=""
 if [ -r "$token_file" ]; then
   auth="Authorization: Bearer $(cat "$token_file")"
   repo_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id" 2>/dev/null \
     | grep -o '"origin_url":"[^"]*"' | head -1 | cut -d'"' -f4)
+  # One pass over the (large) state stream for each field we want. Each grep is
+  # cut short by head -1, so neither reads the whole body.
   issue=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"issue_number":[0-9]*' | head -1 | cut -d: -f2)
+  # open_pr publishes pr_url into the run context once the PR exists; absent for
+  # every run that did not get that far.
+  pr_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"pr_url":"[^"]*"' | head -1 | cut -d'"' -f4)
 fi
 
 # repo "owner/name" for display, derived from the origin URL
@@ -68,13 +75,15 @@ subject=""
 
 case "$kind" in
   rescue)   msg="🟡 fabro needs a human decision${subject} (rescue gate)" ;;
-  complete) msg="✅ fabro finished its work${subject} — opening a PR" ;;
+  complete) msg="✅ fabro opened a PR${subject}" ;;
   failed)   msg="🔴 fabro run failed${subject}" ;;
   *)        msg="ℹ️ fabro run ${run_id} notification ($kind)" ;;
 esac
 
 # Links, each added only when we have the pieces for it.
 links=""
+# The PR is the most useful link when there is one, so it leads.
+[ -n "$pr_url" ] && links="${links}\\n${pr_url}"
 [ -n "$base_url" ] && links="${links}\\n${base_url}/runs/${run_id}"
 if [ -n "$repo_url" ] && [ -n "$issue" ]; then
   links="${links}\\n${repo_url}/issues/${issue}"

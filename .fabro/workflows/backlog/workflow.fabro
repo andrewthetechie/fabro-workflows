@@ -273,15 +273,16 @@ T=$(jq -r .title /tmp/fabro/issue.json)
 echo 'agent: '$T' (#'$N')' > /tmp/fabro/pr_title.txt
 { echo '## Summary'; echo; echo 'Resolves #'$N': '$T; echo; cat /tmp/fabro/completed.md 2>/dev/null || true; echo '## Validation'; echo; echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after final merge with origin/main'; } > /tmp/fabro/pr_body.md"]
 
-    open_pr [label="Push and open PR", shape=parallelogram,
+    open_pr [label="Push and open PR", shape=parallelogram, output_schema="routing",
         script="set -e
 git push -u origin HEAD
 N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(cat /tmp/fabro/pr_title.txt)
-gh pr create --title \"$T\" --body-file /tmp/fabro/pr_body.md --label agent-authored || gh pr view --json url
+gh pr create --title \"$T\" --body-file /tmp/fabro/pr_body.md --label agent-authored || gh pr view --json url > /dev/null
 PR_URL=$(gh pr view --json url --jq .url)
 gh issue edit $N --remove-label agent-in-progress --add-label Review || true
-gh issue comment $N --body 'Agent run complete. PR: '$PR_URL || true"]
+gh issue comment $N --body 'Agent run complete. PR: '$PR_URL || true
+echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\"}}'"]
 
     close_noop [label="Close (no actionable work)", shape=parallelogram,
         script="N=$(jq -r .number /tmp/fabro/issue.json)
