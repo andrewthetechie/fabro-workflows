@@ -19,7 +19,8 @@ locations instead.
 | `docker-compose.yaml` | Runs the `fabro` server container (the only container that is `Up`). |
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
-| `profile-images/` | Reference for the Docker sandbox profile images. **Gap:** the exact Dockerfiles are not persisted on the host; see that README. |
+| `profile-images/` | The four sandbox profile-image Dockerfiles, reconstructed from image layer history and **verified by rebuild** against the live images. |
+| `provision-server-state.sh` | Recreates the **environments** and **automations** — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. |
 | `README.md` | This file — bring-up, install, and replication steps. |
 
 ## Secrets — where they live, never in this repo
@@ -46,9 +47,47 @@ locations instead.
    `.fabro/workflows/backlog/scripts/`) to `/storage/scripts/discord-notify.sh` and
    write the webhook URL to `/storage/secrets/discord_webhook_url`.
 4. **Sweeper** — `cp fabro-branch-sweep.sh ~/bin/ && chmod +x ~/bin/fabro-branch-sweep.sh`, then install the cron (below).
-5. **Profile images** — see `profile-images/README.md`.
-6. **Contract scripts** (`.fabro/setup.sh`, `.fabro/ci.sh`) live in each target repo,
-   not this repo.
+5. **Profile images** — build all four; see `profile-images/README.md`.
+6. **Server state** — `FABRO_API=http://<HOST>:32276 FABRO_TOKEN=<dev token> \
+   ./provision-server-state.sh`. This creates the 5 environments and 4 automations.
+   **Do this after step 5**, because each environment references a profile image tag.
+7. **Vault secrets** — `fabro secret set GITHUB_TOKEN <...>` and
+   `fabro secret set LITELLM_API_KEY <...>` on the host. `settings.toml` references
+   these by name; the values are never in config.
+8. **Contract scripts** (`.fabro/setup.sh`, `.fabro/ci.sh`) live in each target repo,
+   not this repo. Every target repo must have both or every run fails at `prep`.
+
+## Server-side state (not in `settings.toml`)
+
+`settings.toml` holds the server's *configuration*. Two things a working host needs are
+**state in fabro's own store** and are invisible to a settings backup:
+
+**Environments** — what a sandbox actually is. `[run.environment] id = "default"` in
+settings.toml only *selects* one; it does not define any.
+
+| id | image | cpu | memory | `repo` label |
+|---|---|---|---|---|
+| `default` | `buildpack-deps:noble` | 2 | 4GB | — |
+| `python` | `fabro-python:local` | 2 | 4GB | jelly-swipe |
+| `python-node` | `fabro-python-node:local` | 2 | 4GB | lawncare-saas |
+| `ts` | `fabro-ts:local` | 2 | 4GB | womens-fantasy-sports |
+| `rust-node` | `fabro-rust-node:local` | 4 | 8GB | writers-app |
+
+**Automations** — one per target repo, all running the `backlog` workflow from
+`andrewthetechie/fabro-workflows@main`:
+
+| id | target | environment |
+|---|---|---|
+| `backlog-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` |
+| `backlog-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` |
+| `backlog-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` |
+| `backlog-writers-app` | `andrewthetechie/writers-app` | `rust-node` |
+
+All four carry an `every-15m` `*/15 * * * *` schedule trigger that is **disabled** —
+an operator decision (2026-09-14) while development and testing continue.
+`backlog-jelly-swipe` also has an enabled `api`/`manual` trigger used for test fires.
+
+`provision-server-state.sh` recreates all of the above.
 
 ## Cron — branch sweeper
 

@@ -1,0 +1,23 @@
+# fabro-rust-node:local — sandbox profile image for the `rust-node` environment
+# (used by the backlog-writers-app automation).
+#
+# Rust base plus Node and the GTK/WebKit development headers a Tauri desktop
+# build needs. This is the largest profile image (~3.6 GB) and the reason the
+# rust-node environment was raised to 4 CPU / 8 GB — a cold cargo build has to
+# finish inside the validate stage's 20-minute ./.fabro/ci.sh timeout.
+#
+# Reconstructed 2026-09-14 from `docker history --no-trunc fabro-rust-node:local`.
+#
+#   docker build -f Dockerfile.rust-node -t fabro-rust-node:local .
+
+FROM rust:1.98.1-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends git jq curl \
+    nodejs npm wget file build-essential pkg-config \
+    libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+    librsvg2-dev libssl-dev libxdo-dev libsoup-3.0-dev \
+  && rm -rf /var/lib/apt/lists/* \
+  && rustup component add rustfmt clippy \
+  && curl -fsSL -o /tmp/gh.tgz https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_amd64.tar.gz \
+  && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
+  && gh --version && cargo -V

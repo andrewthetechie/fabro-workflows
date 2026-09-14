@@ -1,0 +1,23 @@
+# fabro-python:local — sandbox profile image for the `python` environment
+# (used by the backlog-jelly-swipe automation).
+#
+# Reconstructed 2026-09-14 from the built image's layer history
+# (`docker history --no-trunc fabro-python:local`), which preserved the single
+# custom RUN layer verbatim. Verified by rebuild: see README.md.
+#
+#   docker build -f Dockerfile.python -t fabro-python:local .
+
+FROM python:3.13.15-trixie
+
+# git   — the clone stage
+# jq    — the workflow's command gates
+# gh    — GitHub CLI, used by acquire/claim/validate/open_pr
+# uv    — Python package/venv manager used by the target repos' .fabro/setup.sh
+#
+# bash is already present in the Debian base; command stages run as POSIX sh.
+RUN apt-get update && apt-get install -y --no-install-recommends git jq curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL -o /tmp/gh.tgz https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_amd64.tar.gz \
+  && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
+  && pip install --no-cache-dir uv \
+  && gh --version
