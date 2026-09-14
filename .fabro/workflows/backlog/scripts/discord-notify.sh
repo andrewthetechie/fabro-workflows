@@ -3,11 +3,14 @@
 #
 # Usage: discord-notify.sh <rescue|complete|failed>
 #
-# Host-side hook script (runs with sandbox = false). The event context JSON is
-# piped to stdin. The webhook URL is read from a host file
-# (/storage/secrets/discord_webhook_url, populated by the operator) so it never
-# lands in git or workflow TOML. Notify is best-effort: if the URL file is
-# missing or the POST fails, exit 0 silently.
+# Host-side hook script (runs with sandbox = false, i.e. inside the fabro server
+# container). The event context JSON is piped to stdin. The webhook URL is read
+# from /storage/secrets/discord_webhook_url, populated by the operator, so it
+# never lands in git or workflow TOML. The run-link base URL comes from the
+# server's own FABRO_WEB_URL (set in ~/fabro/.env, mirrored by [server.web] url);
+# hooks inherit the server process environment, so no host address is hard-coded
+# here. Notify is best-effort: if the URL file is missing or the POST fails,
+# exit 0 silently.
 set -u
 
 kind="${1:-info}"
@@ -27,7 +30,7 @@ case "$kind" in
 esac
 
 run_id="${FABRO_RUN_ID:-?}"
-run_url="http://10.10.0.32:32276/runs/${run_id}"
+base_url="${FABRO_WEB_URL:-}"
 
 case "$kind" in
   rescue)   msg="🟡 fabro run ${run_id} needs a human decision (rescue gate)" ;;
@@ -36,7 +39,13 @@ case "$kind" in
   *)        msg="ℹ️ fabro run ${run_id} notification ($kind)" ;;
 esac
 
-payload="{\"content\": \"${msg}  ·  ${run_url}\"}"
+# Link to the run when the server told us its public URL; otherwise send the
+# message alone rather than a wrong link.
+if [ -n "$base_url" ]; then
+  payload="{\"content\": \"${msg}  ·  ${base_url}/runs/${run_id}\"}"
+else
+  payload="{\"content\": \"${msg}\"}"
+fi
 if command -v curl >/dev/null 2>&1; then
   curl -fsS -X POST "$url" -H 'Content-Type: application/json' -d "$payload" > /dev/null 2>&1 || true
 elif command -v wget >/dev/null 2>&1; then
