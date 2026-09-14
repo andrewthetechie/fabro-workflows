@@ -49,15 +49,20 @@ blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh rescue"
 
-# Fires when the PR-opening stage COMPLETES — i.e. the run actually produced a
-# pull request, and `open_pr` has already put its URL into the run context so the
-# notification can link it. This used to be event = "run_complete", which has no
-# matcher support and therefore fired on every run, including the ~384/day that
-# quiet-exit at `acquire` with no work to do; it then ran at `stage_start`, which
-# fires before the PR exists.
+# Fires when open_pr's CHECKPOINT is saved — i.e. the run actually produced a
+# pull request AND the checkpoint carrying `pr_url` has been persisted, so the
+# notification can link it with no race. The composite lifecycle runs
+# git -> event -> hook on checkpoint (fabro-workflow lifecycle/mod.rs), so the
+# event lifecycle has already written the checkpoint envelope by the time this
+# hook runs.
+#
+# History: this was `run_complete`, which has no matcher support and so fired on
+# every run including the ~384/day that quiet-exit at `acquire`; then
+# `stage_start`, which fires before the PR exists; then `stage_complete`, which
+# races the checkpoint write that publishes `pr_url`.
 [[run.hooks]]
 id = "discord-complete"
-event = "stage_complete"
+event = "checkpoint_saved"
 # Anchor the matcher: fabro_hooks compiles `matcher` as an unanchored regex
 # and tests it against node_id, so `open_pr` would ALSO match `open_pr_prep`
 # and notify twice. `^open_pr$` matches only the PR-opening stage.
