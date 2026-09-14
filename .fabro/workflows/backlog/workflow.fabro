@@ -1,6 +1,6 @@
 digraph Backlog {
     graph [
-        goal="Claim the oldest open 'agent'-labeled issue, decompose it into implementation tasks, implement each task sequentially with validation and fresh-eyes review on an escalating model ladder, run whole-branch extra reviews and work their follow-ups, then open a pull request",
+        goal="Backlog: decompose the next agent-labeled issue, implement each task with review, and open a PR",
         model_stylesheet="
             *                { model: coders; }
             .decomp          { model: long-context; }
