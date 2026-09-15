@@ -31,12 +31,90 @@ echo \"$PR\" > /tmp/fabro/pr_number
 echo 0 > /tmp/fabro/rebase_attempts
 echo 0 > /tmp/fabro/fix_attempts
 echo 0 > /tmp/fabro/recheck_done
+cat > /tmp/fabro/render.jq <<'RENDER_JQ'
+def NL: [10] | implode;
+def nz($a): ($a // []);
+def sev: (.severity // \"info\");
+def loc:
+  (nz(.files) | if length > 0 then .[0] else null end) as $f
+  | if $f == null then \"\" else \"**\" + $f + (if .line then \":\" + (.line|tostring) else \"\" end) + \"** - \" end;
+def one($axis):
+  \"- \" + (if .id then \"**\" + .id + \" | \" + $axis + \"** - \" else \"\" end) + loc
+  + \"[\" + sev + \"] \" + (.message // .description // \"(no description)\")
+  + (if (.suggestion // \"\") != \"\" then NL + \"  - _Suggested:_ \" + .suggestion else \"\" end);
+
+($std[0] // {}) as $S | ($spc[0] // {}) as $P | ($fix[0] // {}) as $F | nz($cm[0]) as $C
+| ( (nz($S.findings) | map(. + {_a:\"standards\"}))
+  + (nz($P.findings) | map(. + {_a:\"spec\"}))
+  + (nz($F.own_findings) | map(. + {_a:\"correctness\"})) ) as $all
+| [
+  ( if $kind == \"complete\"
+    then \"## AI PR review complete\"
+       + (if ($F.risk // null) != null then \" - risk \" + ($F.risk|tostring) + \"/5\" else \"\" end)
+    else \"## AI PR review stopped - human needed\" end ),
+  \"\",
+  \"Reviewed HEAD: `\" + $head + \"`\",
+  \"\",
+  ( if $kind == \"complete\" then ($F.summary // \"_No summary was produced._\")
+    else \"**Reason:** \" + $reason end ),
+  \"\",
+  \"| Axis | Verdict |\",
+  \"| --- | --- |\",
+  \"| Standards | \" + ($S.decision // \"_did not run_\") + \" |\",
+  \"| Spec | \" + ($P.decision // \"_did not run_\") + \" |\",
+  \"| Review and fix | \" + ($F.outcome // \"_did not run_\") + \" |\",
+  \"\",
+  \"### Findings\", \"\",
+  ( $all | if length == 0 then \"_None recorded._\" else [ .[] | one(._a) ] | join(NL) end ),
+  \"\",
+  \"### Fixes applied\", \"\",
+  ( nz($F.fixes_applied)
+    | if length == 0 then \"_None recorded._\"
+      else [ .[] | (. + {id: (.finding_id // .id)}) | one(.axis // \"fix\") ] | join(NL) end ),
+  \"\",
+  \"### Not fixed and why\", \"\",
+  ( nz($F.not_fixed)
+    | if length == 0 then \"_None recorded._\"
+      else [ .[] | \"- **\" + (if .finding_id then .finding_id + \": \" else \"\" end)
+                 + .original_finding + \"** - \" + .reason ] | join(NL) end ),
+  \"\",
+  \"### Commits with changes\", \"\",
+  ( $C | if length == 0 then \"_This review made no file changes._\"
+         else [ .[] | \"- [`\" + .short + \"`](\" + $prurl + \"/commits/\" + .sha + \") - `\"
+                    + .stage + \"` - \" + .stat ] | join(NL) end )
+]
++ (if ($F.notes // \"\") != \"\" then [\"\", \"### Notes\", \"\", $F.notes] else [] end)
+| join(NL)
+RENDER_JQ
+cat > /tmp/fabro/render_comment.sh <<'RENDER_SH'
+K=\"${1:-complete}\"
+R=/tmp/fabro/review
+T=/tmp/fabro/_render
+rm -rf $T && mkdir -p $T
+for f in standards spec fix_result; do
+  if [ -s \"$R/$f.json\" ] && jq empty \"$R/$f.json\" 2>/dev/null; then cp \"$R/$f.json\" \"$T/$f.json\"; else echo '{}' > \"$T/$f.json\"; fi
+done
+PR_URL=$(cat /tmp/fabro/pr_url 2>/dev/null || echo '')
+BASE=$(cat /tmp/fabro/run_base_sha 2>/dev/null || echo '')
+: > $T/cm.ndjson
+if [ -n \"$BASE\" ]; then
+  for c in $(git rev-list --reverse \"$BASE\"..HEAD 2>/dev/null); do
+    git diff-tree --no-commit-id --name-only -r \"$c\" 2>/dev/null | grep -q . || continue
+    SHORT=$(git rev-parse --short=8 \"$c\")
+    STAT=$(git show --stat --format= \"$c\" | tail -1 | sed 's/^ *//')
+    STAGE=$(git log -1 --format=%s \"$c\" | sed 's/^.*): //; s/ ([a-z]*)$//')
+    jq -n --arg short \"$SHORT\" --arg sha \"$c\" --arg stage \"$STAGE\" --arg stat \"$STAT\" '{short:$short,sha:$sha,stage:$stage,stat:$stat}' >> $T/cm.ndjson
+  done
+fi
+jq -s . $T/cm.ndjson > $T/cm.json
+jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg prurl \"$PR_URL\"
+RENDER_SH
 echo '{\"context_updates\":{\"pr_number\":'$PR'}}'"]
 
     claim [label="Fetch and check out the PR", shape=parallelogram, output_schema="routing",
         script="set -e
 PR=$(cat /tmp/fabro/pr_number)
-if ! gh pr view $PR --json number,title,body,state,isCrossRepository,headRefName,baseRefName,headRefOid,labels,closingIssuesReferences > /tmp/fabro/pr.json; then
+if ! gh pr view $PR --json number,title,body,url,state,isCrossRepository,headRefName,baseRefName,headRefOid,labels,closingIssuesReferences > /tmp/fabro/pr.json; then
   echo 'Could not read PR '$PR' from GitHub.' > /tmp/fabro/needs_human_reason
   exit 1
 fi
@@ -57,6 +135,7 @@ if [ \"$(git rev-parse --is-shallow-repository)\" = true ]; then
     exit 1
   fi
 fi
+jq -r .url /tmp/fabro/pr.json > /tmp/fabro/pr_url
 jq -r .baseRefName /tmp/fabro/pr.json > /tmp/fabro/base_ref
 jq -r .headRefName /tmp/fabro/pr.json > /tmp/fabro/head_ref
 jq '[.closingIssuesReferences[]?]' /tmp/fabro/pr.json > /tmp/fabro/linked_issues.json
@@ -65,6 +144,7 @@ if ! gh pr checkout $PR; then
   echo 'Could not check out PR '$PR'.' > /tmp/fabro/needs_human_reason
   exit 1
 fi
+git rev-parse HEAD > /tmp/fabro/run_base_sha
 B=$(cat /tmp/fabro/base_ref)
 echo '{\"context_updates\":{\"base_ref\":\"'$B'\"}}'"]
 
@@ -181,6 +261,13 @@ echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 A=$(cat /tmp/fabro/fix_result_attempts 2>/dev/null || echo 0)
 O=$(jq -r .outcome $F 2>/dev/null || echo invalid)
 if [ \"$O\" != fixed ] && [ \"$O\" != no_changes_needed ] && [ \"$O\" != needs_human ]; then O=invalid; fi
+if [ \"$O\" = fixed ]; then
+  N=$(jq '[.fixes_applied[]?] | length' $F 2>/dev/null || echo 0)
+  if [ \"$N\" -lt 1 ]; then
+    echo 'fix_result.json says fixed but fixes_applied is empty; every fix must name the finding it resolves' >&2
+    O=invalid
+  fi
+fi
 if [ \"$O\" = invalid ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/fix_result_attempts
@@ -229,9 +316,12 @@ fi"]
         script="PR=$(cat /tmp/fabro/pr_number)
 H=$(cat /tmp/fabro/head_ref)
 B=$(cat /tmp/fabro/base_ref)
+if ! sh /tmp/fabro/render_comment.sh complete > /tmp/fabro/pr_comment.md; then
+  echo 'WARNING: could not render the review comment; falling back to a minimal one.' >&2
+  { echo 'Automated review complete, but the detailed report could not be rendered.'; echo; echo 'Rebased onto the tip of '$B'; CI green.'; } > /tmp/fabro/pr_comment.md
+fi
 if git push --force-with-lease origin HEAD:\"$H\"; then
   gh pr edit $PR --add-label ai-review-complete || echo 'WARNING: could not add the ai-review-complete label. Check that the run token has issues:write.' >&2
-  { echo 'Automated review complete.'; echo; echo '- Rebased onto the tip of '$B; echo '- Reviewed for correctness, documented standards and spec conformance'; echo '- Fixes applied; ./.fabro/setup.sh and ./.fabro/ci.sh green'; } > /tmp/fabro/pr_comment.md
   gh pr comment $PR --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the completion comment.' >&2
   echo '{\"context_updates\":{\"delivered\":true}}'
 else
@@ -240,10 +330,16 @@ else
 fi"]
 
     mark_needs_human [label="Label needs-human", shape=parallelogram,
-        script="PR=$(cat /tmp/fabro/pr_number)
-R=$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo 'unspecified')
+        script="PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+if [ -z \"$PR\" ]; then
+  echo 'No PR number was recorded, so there is nothing to label or comment on.' >&2
+  exit 0
+fi
+if ! sh /tmp/fabro/render_comment.sh needs-human > /tmp/fabro/pr_comment.md; then
+  R=$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)
+  { echo 'Automated review could not finish.'; echo; echo 'Reason: '$R; } > /tmp/fabro/pr_comment.md
+fi
 gh pr edit $PR --add-label ai-review-needs-human || echo 'WARNING: could not add the ai-review-needs-human label. Check that the run token has issues:write.' >&2
-{ echo 'Automated review could not finish.'; echo; echo 'Reason: '$R; } > /tmp/fabro/pr_comment.md
 gh pr comment $PR --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the needs-human comment.' >&2
 echo done"]
 

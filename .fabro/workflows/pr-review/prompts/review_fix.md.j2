@@ -125,17 +125,36 @@ this shape and nothing else — no markdown fence, no commentary, no extra keys:
 ```json
 {
   "outcome": "fixed" | "no_changes_needed" | "needs_human",
-  "summary": "one or two sentences on what was found and what changed",
+  "risk": 2,
+  "summary": "a paragraph, written for the pull request's reviewer",
   "own_findings": [
     {
+      "id": "OWN-001",
+      "severity": "info" | "warning" | "error",
       "message": "the correctness problem and what must change",
       "files": ["path/to/file.ts"],
+      "line": 42,
       "suggestion": "the concrete remediation"
     }
   ],
-  "changes": [
-    { "file": "path/to/file.ts", "why": "which finding this addresses" }
-  ]
+  "fixes_applied": [
+    {
+      "finding_id": "STD-001",
+      "axis": "standards" | "spec" | "correctness",
+      "severity": "info" | "warning" | "error",
+      "files": ["path/to/file.ts"],
+      "line": 42,
+      "message": "what you verified, what you changed, and how you validated it"
+    }
+  ],
+  "not_fixed": [
+    {
+      "finding_id": "STD-003",
+      "original_finding": "the finding, restated well enough to stand alone",
+      "reason": "why it was not fixed and what the maintainer must decide or do"
+    }
+  ],
+  "notes": "optional: environment limits, deliberate omissions, anything a human should know"
 }
 ```
 
@@ -144,8 +163,11 @@ a full retry round:
 
 - `outcome` is exactly one of the three values above. These are **not** the reviewers'
   `approve` / `findings` / `needs_human_review`.
-- `fixed` — you edited files. `changes` must be non-empty, one entry per file you
-  changed, and each entry's `why` names the finding it addresses.
+- `fixed` — you edited files. `fixes_applied` must be non-empty. A validation gate
+  rejects `fixed` with an empty `fixes_applied`.
+- `summary` is the opening paragraph of the PR comment a human reads. Say what the PR
+  does, what each reviewer concluded, which findings you applied and how, and what you
+  deliberately left. Several sentences to a paragraph — one line is not enough.
 - `no_changes_needed` — the PR is already sound and both reviewers approved, or every
   finding was a false positive. `changes` is `[]` and `summary` must say why the
   findings did not warrant a change. This is a legitimate outcome; do not fabricate
@@ -156,10 +178,17 @@ a full retry round:
   write it for that audience and name the decision they must make. It is terminal, not
   a request for help you then continue past.
 - `own_findings` is an array, possibly empty, always present. It holds the correctness
-  problems you found, whether or not you fixed them.
-- `own_findings[].files` and `changes[].file` are repository-relative paths.
-- Use only the keys above. No `risk`, no `dispositions`, no `finding_id`, no
-  `severity`, no `kind`, no `axis`.
+  problems you found yourself, whether or not you fixed them, with ids `OWN-001` up.
+- **Every finding from both reviewers must appear exactly once across `fixes_applied`
+  and `not_fixed`, cited by its `id`.** A finding that is neither fixed nor explained
+  disappears from the report, which is the failure this contract exists to prevent. A
+  false positive belongs in `not_fixed` with the evidence that disproves it.
+- `fixes_applied[].message` says what you verified, what you changed and how you
+  validated it — not merely which file you touched. It is published verbatim.
+- `risk` is 0-5: how much residual risk a human merging this PR is taking after your
+  fixes. 0 is nothing to worry about, 5 is do not merge without reading carefully.
+- `line` may be `null`. All paths are repository-relative.
+- Use only the keys above. No `changes`, no `dispositions`, no `confidence`.
 - The file holds raw JSON — no markdown fence, nothing before or after it.
 
 After writing `/tmp/fabro/review/fix_result.json`, stop. Do not print the JSON in chat.

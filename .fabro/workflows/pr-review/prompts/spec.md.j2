@@ -103,7 +103,11 @@ Categories — state the applicable one in the finding's `message`:
 - `wrong`: the implementation contradicts the required behavior or cannot produce it.
 - `scope_creep`: changed behavior is materially outside explicit scope or violates a stated non-goal.
 
-**Every finding is handed to a fixer that edits the code.** A weak finding does not
+**Every finding is published verbatim in a comment on the pull request, and handed to
+a fixer that edits the code.** Write `message` for a maintainer who has not seen the
+diff: state the problem, the concrete impact, and the required outcome, citing the
+governing rule and the code you read. A one-line finding is not enough to act on; the
+findings on a real review run to a paragraph each. A weak finding does not
 produce a comment, it produces a diff. If the evidence is weak, omit it; prefer
 `approve` over speculative cleanup.
 
@@ -118,8 +122,11 @@ exactly this shape and nothing else — no markdown fence, no commentary, no ext
   "summary": "one or two sentences stating the verdict and why",
   "findings": [
     {
+      "id": "SPEC-001",
+      "severity": "info" | "warning" | "error",
       "message": "the requirement at stake, how the change misses or contradicts it, and what must change",
       "files": ["path/to/file.ts"],
+      "line": 42,
       "suggestion": "the concrete remediation, noting any unresolved architecture decision"
     }
   ]
@@ -140,7 +147,13 @@ a full retry round:
   present. `file` locations may be empty for genuinely missing behavior with no
   natural location.
 - `suggestion` is the concrete remediation, not a restatement of the problem.
-- Use only the keys above. No `severity`, no `kind`, no `axis`, no `risk`.
+- `id` is a consecutive `SPEC-###`, starting at `SPEC-001`. The fixer cites these ids when
+  it reports what it fixed and what it left, so they must be stable within this file.
+- `severity` is `error` (likely correctness, security or operability failure), `warning`
+  (concrete degradation worth resolving in this PR) or `info` (small but objective).
+- `line` is the most relevant line in `files[0]`, or `null` when the finding is about
+  something genuinely absent with no natural location.
+- Use only the keys above. No `kind`, no `axis`, no `risk`, no `confidence`.
 - The file holds raw JSON — no markdown fence, nothing before or after it.
 
 Do not edit the repository yourself; the fixer applies the findings. After writing
