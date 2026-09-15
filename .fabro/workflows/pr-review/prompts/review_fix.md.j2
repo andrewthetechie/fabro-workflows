@@ -169,7 +169,7 @@ a full retry round:
   does, what each reviewer concluded, which findings you applied and how, and what you
   deliberately left. Several sentences to a paragraph — one line is not enough.
 - `no_changes_needed` — the PR is already sound and both reviewers approved, or every
-  finding was a false positive. `changes` is `[]` and `summary` must say why the
+  finding was a false positive. `fixes_applied` is `[]` and `summary` must say why the
   findings did not warrant a change. This is a legitimate outcome; do not fabricate
   edits to avoid it. Never use it when `/tmp/fabro/feedback/fix.md` exists.
 - `needs_human` — the findings contradict each other, a fix needs a product or

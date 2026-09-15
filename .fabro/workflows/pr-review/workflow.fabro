@@ -92,7 +92,7 @@ R=/tmp/fabro/review
 T=/tmp/fabro/_render
 rm -rf $T && mkdir -p $T
 for f in standards spec fix_result; do
-  if [ -s \"$R/$f.json\" ] && jq empty \"$R/$f.json\" 2>/dev/null; then cp \"$R/$f.json\" \"$T/$f.json\"; else echo '{}' > \"$T/$f.json\"; fi
+  if [ -s \"$R/$f.json\" ] && jq -e 'type == \"object\"' \"$R/$f.json\" >/dev/null 2>&1; then cp \"$R/$f.json\" \"$T/$f.json\"; else echo '{}' > \"$T/$f.json\"; fi
 done
 PR_URL=$(cat /tmp/fabro/pr_url 2>/dev/null || echo '')
 BASE=$(cat /tmp/fabro/run_base_sha 2>/dev/null || echo '')
@@ -180,6 +180,11 @@ fi"]
     // the next checkpoint would `git add -A`. Scanning the whole worktree
     // instead would walk build output and would fire on any repository that
     // legitimately commits a conflict-marker fixture.
+    // Recovery is `git reset --hard` plus `git clean -fd`: reset alone leaves
+    // untracked files behind, so a marker-bearing file the agent created would
+    // survive into the next tier and fail it for the previous tier's mistake.
+    // `-fd` and never `-fdx`: ignored paths are the build caches
+    // (`target/`, `node_modules/`, `.venv/`) that a later `validate` needs.
     rebase_gate [label="Verify the rebase", shape=parallelogram, output_schema="routing",
         script="B=$(cat /tmp/fabro/base_ref)
 A=$(cat /tmp/fabro/rebase_attempts 2>/dev/null || echo 0)
@@ -196,6 +201,7 @@ if ! git merge-base --is-ancestor origin/\"$B\" HEAD; then BAD=1; fi
 if [ $BAD -ne 0 ]; then
   git rebase --abort 2>/dev/null || true
   git reset --hard $(cat /tmp/fabro/pre_rebase_sha) || true
+  git clean -fd || true
   A=$((A+1))
   echo $A > /tmp/fabro/rebase_attempts
   echo 'The rebase agent left conflict markers, an in-progress rebase, or a branch still not based on the target.' > /tmp/fabro/needs_human_reason
@@ -281,7 +287,8 @@ echo '{\"context_updates\":{\"fix_outcome\":\"'$O'\"}}'"]
 
     // ---- CI ----
     validate [label="Validate (setup + ci)", shape=parallelogram, timeout="20m", output_schema="routing",
-        script="./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1
+        script="echo 'The validate stage did not finish: ./.fabro/setup.sh and ./.fabro/ci.sh were still running when it was stopped, most likely on the stage timeout. CI never reported, so nothing was delivered.' > /tmp/fabro/needs_human_reason
+./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1
 RC=$?
 tail -c 8000 /tmp/fabro/validate_output.log
 A=$(cat /tmp/fabro/fix_attempts 2>/dev/null || echo 0)
@@ -292,9 +299,14 @@ if [ $RC -ne 0 ]; then
   echo '## CI failed after fixes' > /tmp/fabro/feedback/fix.md
   echo >> /tmp/fabro/feedback/fix.md
   tail -c 6000 /tmp/fabro/validate_output.log >> /tmp/fabro/feedback/fix.md
-  echo 'CI is still red after the maximum number of fix attempts.' > /tmp/fabro/needs_human_reason
+  if [ $A -ge 2 ]; then
+    echo 'CI is still red after the maximum number of fix attempts.' > /tmp/fabro/needs_human_reason
+  else
+    echo 'CI failed and a fix retry was in progress when the run stopped.' > /tmp/fabro/needs_human_reason
+  fi
   echo '{\"context_updates\":{\"ci_ok\":false,\"fix_attempts\":'$A'}}'
 else
+  echo 'CI passed, but the run stopped after validate and before the review was delivered.' > /tmp/fabro/needs_human_reason
   echo '{\"context_updates\":{\"ci_ok\":true,\"fix_attempts\":'$A'}}'
 fi"]
 
@@ -389,7 +401,7 @@ echo done"]
     fix_gate -> mark_needs_human       [condition="context.fix_outcome=needs_human || context.fix_outcome=invalid"]
     fix_gate -> validate
 
-    validate -> mark_needs_human       [condition="context.ci_ok=false && context.fix_attempts>=2", weight=10]
+    validate -> mark_needs_human       [condition="context.ci_ok=false && context.fix_attempts>=2 || outcome=failed", weight=10]
     validate -> review_fix             [condition="context.ci_ok=false"]
     validate -> rebase_recheck
 
