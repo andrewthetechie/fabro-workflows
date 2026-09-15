@@ -14,6 +14,10 @@ digraph PrReview {
     exit  [shape=Msquare, label="Exit"]
 
     // ---- Input + claim ----
+    // The sandbox clone is single-branch (`remote.origin.fetch` pins the target
+    // branch), which makes `gh pr checkout` fail to set up tracking for the PR
+    // head branch with "starting point 'origin/<head>' is not a branch". Claim
+    // widens the refspec before checking out so the PR head resolves.
     // The input is interpolated exactly once, here, inside single quotes so a
     // non-numeric value reaches the `case` guard as data instead of being parsed
     // as shell syntax. Every later stage reads the validated number from
@@ -56,6 +60,7 @@ fi
 jq -r .baseRefName /tmp/fabro/pr.json > /tmp/fabro/base_ref
 jq -r .headRefName /tmp/fabro/pr.json > /tmp/fabro/head_ref
 jq '[.closingIssuesReferences[]?]' /tmp/fabro/pr.json > /tmp/fabro/linked_issues.json
+git config remote.origin.fetch \"+refs/heads/*:refs/remotes/origin/*\"
 if ! gh pr checkout $PR; then
   echo 'Could not check out PR '$PR'.' > /tmp/fabro/needs_human_reason
   exit 1
