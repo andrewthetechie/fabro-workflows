@@ -18,7 +18,7 @@ digraph PrReview {
     // non-numeric value reaches the `case` guard as data instead of being parsed
     // as shell syntax. Every later stage reads the validated number from
     // /tmp/fabro/pr_number.
-    validate_input [label="Validate input", shape=parallelogram, output_schema="routing",
+    validate_input [label="Validate input", shape=parallelogram, output_schema="routing", language="shell",
         script="PR='{{ inputs.pr_number }}'
 case \"$PR\" in '' | *[!0-9]*) echo 'pr_number must be a positive integer' >&2; exit 1;; esac
 if [ \"$PR\" -lt 1 ]; then echo 'pr_number must be a positive integer' >&2; exit 1; fi
