@@ -76,15 +76,56 @@ echo $((IDX+1)) > /tmp/fabro/task_index
 echo 0 > /tmp/fabro/round
 echo 0 > /tmp/fabro/review_attempts
 echo 0 > /tmp/fabro/improve_attempts
+echo 0 > /tmp/fabro/merge_attempts
+git rev-parse HEAD > /tmp/fabro/pre_merge_sha
 if git fetch origin main && git merge --no-edit origin/main; then
   git rev-parse HEAD > /tmp/fabro/task_base_sha
   echo '{\"context_updates\":{\"tasks_done\":false,\"rebase_failed\":false,\"review_decision\":\"none\",\"task_disposition\":\"none\",\"diff_too_large\":false}}'
 else
   git merge --abort || true
   git rev-parse HEAD > /tmp/fabro/task_base_sha
-  echo '## Mainline merge conflict' > /tmp/fabro/feedback/rework.md
-  echo 'origin/main does not merge cleanly into the run branch. Resolve the conflict minimally (keep the accumulated task changes, take mainline updates where they do not overlap), then continue the current task in /tmp/fabro/current_task.json.' >> /tmp/fabro/feedback/rework.md
+  echo 'The mainline merge was attempted and aborted: leaving it in the tree would let the next checkpoint commit conflict markers. A dedicated resolve_merge stage redoes the merge and resolves it, so no rework agent should touch git.' > /tmp/fabro/feedback/rework.md
   echo '{\"context_updates\":{\"tasks_done\":false,\"rebase_failed\":true,\"review_decision\":\"none\",\"task_disposition\":\"none\",\"diff_too_large\":false}}'
+fi"]
+
+    // ---- Mainline conflict resolution ----
+    // next_task aborted the failed merge and left a clean tree. A conflicted merge
+    // cannot cross a stage boundary: fabro's checkpoint would `git add -A` the
+    // conflict-marked files, which git treats as resolved, and commit markers onto
+    // the run branch. So the agent performs the merge itself, in one stage, and
+    // resolve_merge_gate verifies the result from git rather than trusting a claim.
+    resolve_merge [label="Resolve the mainline merge", class="coder-t4", prompt="@prompts/resolve_merge.md.j2"]
+
+    // The conflict-marker scan covers what this merge can have touched — the files
+    // changed since the pre-merge SHA, dirty tracked files, and untracked files the
+    // next checkpoint would `git add -A` — rather than the whole worktree, which
+    // would walk build output and would fire on any repository that legitimately
+    // commits a conflict-marker fixture.
+    resolve_merge_gate [label="Verify the mainline merge", shape=parallelogram, output_schema="routing",
+        script="PRE=$(cat /tmp/fabro/pre_merge_sha 2>/dev/null || echo '')
+A=$(cat /tmp/fabro/merge_attempts 2>/dev/null || echo 0)
+BAD=0
+if [ -e .git/MERGE_HEAD ]; then BAD=1; fi
+if git diff --name-only --diff-filter=U | grep -q . ; then BAD=1; fi
+: > /tmp/fabro/merge_scan.txt
+if [ -n \"$PRE\" ]; then git diff --name-only \"$PRE\" HEAD >> /tmp/fabro/merge_scan.txt 2>/dev/null || true; fi
+git diff --name-only HEAD >> /tmp/fabro/merge_scan.txt 2>/dev/null || true
+git ls-files --others --exclude-standard >> /tmp/fabro/merge_scan.txt 2>/dev/null || true
+while IFS= read -r f; do
+  [ -f \"$f\" ] || continue
+  if grep -qI '<<<<<<< ' \"$f\"; then BAD=1; fi
+done < /tmp/fabro/merge_scan.txt
+if ! git merge-base --is-ancestor origin/main HEAD; then BAD=1; fi
+if [ $BAD -ne 0 ]; then
+  git merge --abort 2>/dev/null || true
+  if [ -n \"$PRE\" ]; then git reset --hard \"$PRE\" || true; fi
+  A=$((A+1))
+  echo $A > /tmp/fabro/merge_attempts
+  echo 'The merge agent left conflict markers, an in-progress merge, or a branch that still does not contain origin/main.' > /tmp/fabro/needs_human_reason
+  echo '{\"context_updates\":{\"merge_ok\":false,\"merge_attempts\":'$A'}}'
+else
+  git rev-parse HEAD > /tmp/fabro/task_base_sha
+  echo '{\"context_updates\":{\"merge_ok\":true,\"merge_attempts\":'$A'}}'
 fi"]
 
     improve [label="Improve task spec", class="improve", prompt="@prompts/improve.md.j2"]
@@ -317,8 +358,18 @@ echo done"]
     decompose_gate -> human_rescue
 
     next_task -> extra_prep         [condition="context.tasks_done=true"]
-    next_task -> rework_router      [condition="context.rebase_failed=true"]
+    next_task -> resolve_merge      [condition="context.rebase_failed=true"]
     next_task -> improve
+
+    // A failed node still routes: resolve_merge's unconditional edge leads to its
+    // gate, which detects the bad state and either retries once or asks for a
+    // human. `weight` keeps the success edge winning over the merge_attempts=1
+    // retry edge after a successful second attempt.
+    resolve_merge -> resolve_merge_gate [condition="outcome=succeeded"]
+    resolve_merge -> resolve_merge_gate
+    resolve_merge_gate -> improve       [condition="context.merge_ok=true", weight=10]
+    resolve_merge_gate -> resolve_merge [condition="context.merge_attempts=1"]
+    resolve_merge_gate -> human_rescue
 
     improve -> improve_gate         [condition="outcome=succeeded"]
     improve -> human_rescue

@@ -1,0 +1,93 @@
+# Merge mainline into the run branch
+
+You are the merge agent for this run. Before starting the next task, `next_task`
+fetched `origin/main` and tried a plain `git merge --no-edit origin/main` so the run
+branch accumulates mainline while tasks land. That merge hit conflicts, so it was
+aborted before you started. The working tree is clean and no merge is in progress.
+
+You must perform the whole merge yourself, from scratch, in this one stage.
+
+## Why the conflict is not already in the tree
+
+fabro checkpoints after every stage with `git add -A && git commit`, and `git add`
+marks a conflicted file resolved. If a conflicted merge were left in the tree across a
+stage boundary, that checkpoint would commit conflict markers onto the run branch. So
+the previous stage aborted deliberately and handed you a clean tree. A clean tree here
+does not mean there is nothing to do: the conflict has to be recreated by running the
+merge.
+
+## Git is allowed here, and only for this merge
+
+Every other agent in this deployment is forbidden from touching git. You are the
+exception, and the exception is narrow. You may run git **only** to complete this
+merge:
+
+- Allowed: `git merge`, `git add`, `git merge --continue`, `git merge --abort`, and
+  read-only inspection (`git status`, `git diff`, `git log`, `git rev-parse`,
+  `git show`).
+- Never `git push`. Delivery is a later stage's job.
+- Never `git commit` directly. `git merge --continue` is the only commit you make.
+- Never `git rebase`, `git checkout -b`, or `git fetch`, and never move the branch any
+  other way. `origin/main` is already fetched and up to date.
+- Never call GitHub (`gh`, the API), change labels, or comment.
+- Do not ask questions. If the merge cannot be completed safely, the escape hatch
+  below is to abort and stop.
+
+Prefix every git command that can open an editor with `GIT_EDITOR=true`, on the same
+command line — `GIT_EDITOR=true git merge --continue`. There is no terminal here, so a
+`git merge --continue` that opens an editor hangs until this stage times out. Do not
+rely on `export`: each command may run in a fresh shell, so the variable has to be on
+the command that needs it.
+
+## Inputs
+
+| Path | What it is |
+|---|---|
+| `/tmp/fabro/pre_merge_sha` | the commit the run branch was on before the failed merge. If you abort, HEAD must be back at this commit |
+| `/tmp/fabro/current_task.json` | the task that starts once the merge lands, for intent when both sides touch the same code |
+| `/tmp/fabro/issue.json` | the parent issue the accumulated work belongs to, supplemental |
+
+The repository checkout in the current working directory is your workspace;
+`/tmp/fabro/` is input you may read.
+
+## Procedure
+
+1. Run `git merge --no-edit origin/main`.
+2. For each conflict, open the file and understand **both** intents: what the
+   accumulated task work on this branch is doing, and what landed on mainline.
+   Resolve so both survive. Keep the branch's accumulated changes; take mainline's
+   updates where the two do not overlap. Remove code that becomes duplicated when the
+   sides are combined. Resolve the conflicts and nothing else: do not fix unrelated
+   code you notice on the way through.
+3. `git add <file>`, then `GIT_EDITOR=true git merge --continue`. Repeat until the
+   merge completes.
+4. Run the narrowest validation that exercises what you touched (a single test file, a
+   typecheck of one package, a lint of the changed files) and only when a cheap,
+   obvious command exists. Do **not** run the full test suite — a later stage runs
+   `./.fabro/ci.sh`.
+5. Leave a clean tree: no conflict markers, no merge in progress.
+
+## The escape hatch
+
+If a resolution cannot be justified from the code — genuinely ambiguous intent, or
+overlapping rewrites of the same logic — stop instead of guessing:
+
+1. `git merge --abort`.
+2. Confirm HEAD is back where it started: `git rev-parse HEAD` must equal
+   `cat /tmp/fabro/pre_merge_sha`. If it does not, run
+   `git reset --hard $(cat /tmp/fabro/pre_merge_sha)`.
+3. Stop there.
+
+Aborting is a correct, expected outcome, and it is always better than a guess. This is
+an accumulating branch that every remaining task builds on, so a wrong conflict
+resolution corrupts all of them.
+
+## Your claims are not the evidence
+
+A separate `resolve_merge_gate` stage runs after you. It independently checks that no
+merge is still in progress, that no unmerged paths remain, that no conflict markers
+were left in the files this merge touched, and that `origin/main` is now an ancestor
+of HEAD. It does **not** read anything you write, and it will undo your work if git
+does not agree with you.
+
+Do not describe the merge as resolved when git does not.

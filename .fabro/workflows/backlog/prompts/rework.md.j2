@@ -12,7 +12,7 @@ or `edit`.
    looked at this run and told you what to do; do that, and treat the findings file
    as secondary context.
 2. `/tmp/fabro/feedback/rework.md` — **the findings. This is your entire scope.**
-   Markdown, written by whichever stage rejected the previous attempt. It has four
+   Markdown, written by whichever stage rejected the previous attempt. It has three
    possible shapes:
    - `## Review findings to fix` — a reviewer's summary plus a bulleted finding
      list. Fix every finding with the smallest change.
@@ -20,9 +20,6 @@ or `edit`.
      tail of the build/test log. Fix the failure; do not disable, skip, or delete
      the failing test.
    - `## Diff too large` — the change exceeded 2 MB. Shrink or split it.
-   - `## Mainline merge conflict` — `origin/main` did not merge cleanly. Resolve
-     the conflict minimally: keep the accumulated task changes, take mainline
-     updates where they do not overlap.
 3. `/tmp/fabro/current_task.json` — the task being reworked. **If this file is
    missing or unreadable, do not stop.** Work directly from
    `/tmp/fabro/issue.json` instead.
