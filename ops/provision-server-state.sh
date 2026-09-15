@@ -46,6 +46,20 @@ AUTH_HEADER="Authorization: Bearer $TOKEN"
 
 # Set by provision_automation when an existing row does not match this script.
 DRIFT_FOUND=0
+# Incremented when a row could not be created. Rows are provisioned with
+# `|| FAILED=...` so one bad row does not abort the rest and skip the summary.
+FAILED=0
+
+# Read the automation list once, up front. Fetch first, then filter: piping
+# curl straight into jq takes jq's exit status, so an API outage would come
+# back as empty output and be indistinguishable from "nothing exists yet" —
+# the script would then POST every row and report misleading 409s. Nothing
+# below re-reads it: each id is provisioned at most once, so a row this script
+# creates is never looked up again.
+if ! curl -fsS -m 15 -H "$AUTH_HEADER" "$API_URL/automations" > /tmp/provision_list.json; then
+  echo "FAILED to list automations from $API_URL; cannot tell what already exists." >&2
+  exit 1
+fi
 
 # provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty>
 #   - workflow is "backlog" or "pr-review"; both live in
@@ -59,15 +73,6 @@ provision_automation() {
   repo="$3"
   workflow="$4"
   schedule_id="$5"
-
-  # Fetch first, then filter. Piping curl straight into jq takes jq's exit
-  # status, so an API outage would come back as empty output and be
-  # indistinguishable from "this automation does not exist yet" — the script
-  # would then POST and report a misleading 409.
-  if ! curl -fsS -m 15 -H "$AUTH_HEADER" "$API_URL/automations" > /tmp/provision_list.json; then
-    echo "FAILED to list automations; cannot tell whether $id exists." >&2
-    return 1
-  fi
 
   existing_env=$(jq -r --arg id "$id" \
     '.data[]? | select(.id == $id) | .environment_id // ""' /tmp/provision_list.json)
@@ -102,16 +107,21 @@ provision_automation() {
 }
 
 echo "Provisioning pr-review automations..."
-provision_automation pr-review-jelly-swipe python andrewthetechie/jelly-swipe pr-review ""
-provision_automation pr-review-lawncare-saas python-node andrewthetechie/lawncare-saas pr-review ""
-provision_automation pr-review-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports pr-review ""
-provision_automation pr-review-writers-app rust-node andrewthetechie/writers-app pr-review ""
+provision_automation pr-review-jelly-swipe python andrewthetechie/jelly-swipe pr-review "" || FAILED=$((FAILED+1))
+provision_automation pr-review-lawncare-saas python-node andrewthetechie/lawncare-saas pr-review "" || FAILED=$((FAILED+1))
+provision_automation pr-review-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports pr-review "" || FAILED=$((FAILED+1))
+provision_automation pr-review-writers-app rust-node andrewthetechie/writers-app pr-review "" || FAILED=$((FAILED+1))
 
 echo "Provisioning backlog automations..."
-provision_automation backlog-jelly-swipe python andrewthetechie/jelly-swipe backlog every-15m
-provision_automation backlog-lawncare-saas python-node andrewthetechie/lawncare-saas backlog every-15m
-provision_automation backlog-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports backlog every-15m
-provision_automation backlog-writers-app rust-node andrewthetechie/writers-app backlog every-15m
+provision_automation backlog-jelly-swipe python andrewthetechie/jelly-swipe backlog every-15m || FAILED=$((FAILED+1))
+provision_automation backlog-lawncare-saas python-node andrewthetechie/lawncare-saas backlog every-15m || FAILED=$((FAILED+1))
+provision_automation backlog-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports backlog every-15m || FAILED=$((FAILED+1))
+provision_automation backlog-writers-app rust-node andrewthetechie/writers-app backlog every-15m || FAILED=$((FAILED+1))
+
+if [ "$FAILED" -ne 0 ]; then
+  echo "$FAILED automation(s) could not be created; see the errors above." >&2
+  exit 1
+fi
 
 if [ "$DRIFT_FOUND" -ne 0 ]; then
   echo "Done, with drift reported above. Reconcile those automations by hand." >&2
