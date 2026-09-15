@@ -85,6 +85,51 @@ These pass `fabro validate` and fail at runtime. Both workflows depend on all of
 | A conflicted merge or rebase never crosses a stage boundary | The checkpoint is `git add -A && git commit`, and `git add` marks a conflicted file resolved — so the checkpoint commits conflict markers. The command node aborts to restore a clean tree; a dedicated agent then redoes and resolves the whole thing inside one stage. |
 | Anchor hook matchers | They are unanchored regexes tested against `node_id`, `handler_type`, `edge_to`, `edge_from` and `tool_name`. Write `^open_pr$`, not `open_pr`, for any id that prefixes another. |
 
+## Deploying to the server after a merge to `main`
+
+Manual today; automating it is the plan.
+
+**Workflow changes need no deploy.** Every automation resolves
+`.fabro/workflows/**` from `main` at fire time, so a merged graph or prompt is live
+on the next run with nothing to copy.
+
+**`ops/` changes do.** Nothing syncs that tree; the host keeps its own copies. After
+a merge that touches `ops/` or `backlog/scripts/`, deploy what changed:
+
+```sh
+cd ~/Documents/code/fabro-workflows && git pull --ff-only
+
+# the notify script the backlog hooks call, by absolute path, from the container
+scp .fabro/workflows/backlog/scripts/discord-notify.sh andrew@10.10.0.32:/tmp/
+ssh andrew@10.10.0.32 'docker cp /tmp/discord-notify.sh \
+  fabro-fabro-1:/storage/scripts/discord-notify.sh && rm /tmp/discord-notify.sh'
+
+scp ops/docker-compose.yaml andrew@10.10.0.32:~/fabro/docker-compose.yaml
+scp ops/fabro-branch-sweep.sh andrew@10.10.0.32:~/bin/fabro-branch-sweep.sh
+
+# automations, when the provisioning script changed or a row is missing
+FABRO_API_URL=http://10.10.0.32:32276/api/v1 FABRO_DEV_TOKEN=<dev token> \
+  ./ops/provision-server-state.sh
+```
+
+Then confirm the host still matches the repo. Every one of these should print
+nothing:
+
+```sh
+ssh andrew@10.10.0.32 'cat ~/bin/fabro-branch-sweep.sh' | diff - ops/fabro-branch-sweep.sh
+ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'  | diff - ops/docker-compose.yaml
+ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/scripts/discord-notify.sh' \
+  | diff - .fabro/workflows/backlog/scripts/discord-notify.sh
+```
+
+A compose change needs `cd ~/fabro && docker compose up -d` to take effect.
+
+**Upgrading the fabro binary is a separate, deliberate act** — never part of a
+routine deploy. The image tag is pinned by `FABRO_VERSION` in `~/fabro/.env`
+because an upgrade applies SQLite migrations that the previous binary then refuses
+to start against, which makes rollback a database restore rather than a tag change.
+`ops/README.md` has the runbook and the current known-bad version.
+
 ## The server
 
 `ssh andrew@10.10.0.32` — a trusted single-tenant box. The compose project is in
