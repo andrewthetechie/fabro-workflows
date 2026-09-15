@@ -1,0 +1,302 @@
+digraph PrReview {
+    graph [
+        goal="Rebase a pull request onto the tip of its base branch, review it on three axes, apply one round of fixes, verify CI, and leave it ready for a human to merge",
+        model_stylesheet="
+            *           { model: glm-5.3; }
+            .review     { model: glm-5.3; }
+            .rebase     { model: coders; }
+            .rebase-t2  { model: glm-5.3; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // ---- Input + claim ----
+    // The input is interpolated exactly once, here, inside single quotes so a
+    // non-numeric value reaches the `case` guard as data instead of being parsed
+    // as shell syntax. Every later stage reads the validated number from
+    // /tmp/fabro/pr_number.
+    validate_input [label="Validate input", shape=parallelogram, output_schema="routing",
+        script="PR='{{ inputs.pr_number }}'
+case \"$PR\" in '' | *[!0-9]*) echo 'pr_number must be a positive integer' >&2; exit 1;; esac
+if [ \"$PR\" -lt 1 ]; then echo 'pr_number must be a positive integer' >&2; exit 1; fi
+mkdir -p /tmp/fabro/review /tmp/fabro/feedback
+echo \"$PR\" > /tmp/fabro/pr_number
+echo 0 > /tmp/fabro/rebase_attempts
+echo 0 > /tmp/fabro/fix_attempts
+echo 0 > /tmp/fabro/recheck_done
+echo '{\"context_updates\":{\"pr_number\":'$PR'}}'"]
+
+    claim [label="Fetch and check out the PR", shape=parallelogram, output_schema="routing",
+        script="set -e
+PR=$(cat /tmp/fabro/pr_number)
+if ! gh pr view $PR --json number,title,body,state,isCrossRepository,headRefName,baseRefName,headRefOid,labels,closingIssuesReferences > /tmp/fabro/pr.json; then
+  echo 'Could not read PR '$PR' from GitHub.' > /tmp/fabro/needs_human_reason
+  exit 1
+fi
+gh label create ai-review-complete --color 0E8A16 2>/dev/null || true
+gh label create ai-review-needs-human --color D93F0B 2>/dev/null || true
+S=$(jq -r .state /tmp/fabro/pr.json)
+if [ \"$S\" != OPEN ]; then
+  echo 'PR '$PR' is '$S', not OPEN. There is nothing to review.' > /tmp/fabro/needs_human_reason
+  exit 1
+fi
+if [ \"$(jq -r .isCrossRepository /tmp/fabro/pr.json)\" = true ]; then
+  echo 'PR '$PR' is from a fork. Delivery pushes to origin, which would create a branch in the base repository instead of updating this PR, so cross-repository PRs are refused.' > /tmp/fabro/needs_human_reason
+  exit 1
+fi
+if [ \"$(git rev-parse --is-shallow-repository)\" = true ]; then
+  if ! git fetch --unshallow origin; then
+    echo 'Could not deepen the shallow clone. Rebasing and the three-dot review diff both need the true merge base, so this run cannot continue safely.' > /tmp/fabro/needs_human_reason
+    exit 1
+  fi
+fi
+jq -r .baseRefName /tmp/fabro/pr.json > /tmp/fabro/base_ref
+jq -r .headRefName /tmp/fabro/pr.json > /tmp/fabro/head_ref
+jq '[.closingIssuesReferences[]?]' /tmp/fabro/pr.json > /tmp/fabro/linked_issues.json
+if ! gh pr checkout $PR; then
+  echo 'Could not check out PR '$PR'.' > /tmp/fabro/needs_human_reason
+  exit 1
+fi
+B=$(cat /tmp/fabro/base_ref)
+echo '{\"context_updates\":{\"base_ref\":\"'$B'\"}}'"]
+
+    // ---- Rebase ladder ----
+    rebase_check [label="Rebase onto base tip", shape=parallelogram, timeout="10m", output_schema="routing",
+        script="B=$(cat /tmp/fabro/base_ref)
+rm -f /tmp/fabro/rebase_result.json
+git fetch origin \"$B\"
+git rev-parse HEAD > /tmp/fabro/pre_rebase_sha
+git rev-parse origin/\"$B\" > /tmp/fabro/target_sha
+if git merge-base --is-ancestor origin/\"$B\" HEAD; then
+  echo '{\"context_updates\":{\"rebase_state\":\"not_needed\"}}'
+  exit 0
+fi
+if git rebase origin/\"$B\"; then
+  echo '{\"context_updates\":{\"rebase_state\":\"clean\"}}'
+  exit 0
+fi
+if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+  git rebase --abort || true
+  echo '{\"context_updates\":{\"rebase_state\":\"conflict\"}}'
+else
+  git rebase --abort 2>/dev/null || true
+  echo 'Plain git rebase failed for a non-conflict reason; a model cannot fix this.' > /tmp/fabro/needs_human_reason
+  echo '{\"context_updates\":{\"rebase_state\":\"broken\"}}'
+fi"]
+
+    rebase_agent_t1 [label="Resolve rebase (tier 1: coders)", class="rebase", prompt="@prompts/rebase.md.j2"]
+    rebase_agent_t2 [label="Resolve rebase (tier 2: glm-5.3)", class="rebase-t2", prompt="@prompts/rebase.md.j2"]
+
+    // The conflict-marker scan covers exactly the files the rebase can have
+    // touched — the three-dot changed set plus anything left untracked, which
+    // the next checkpoint would `git add -A`. Scanning the whole worktree
+    // instead would walk build output and would fire on any repository that
+    // legitimately commits a conflict-marker fixture.
+    rebase_gate [label="Verify the rebase", shape=parallelogram, output_schema="routing",
+        script="B=$(cat /tmp/fabro/base_ref)
+A=$(cat /tmp/fabro/rebase_attempts 2>/dev/null || echo 0)
+BAD=0
+if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then BAD=1; fi
+if git diff --name-only --diff-filter=U | grep -q . ; then BAD=1; fi
+git diff --name-only origin/\"$B\"...HEAD > /tmp/fabro/rebase_scan.txt 2>/dev/null || true
+git ls-files --others --exclude-standard >> /tmp/fabro/rebase_scan.txt 2>/dev/null || true
+while IFS= read -r f; do
+  [ -f \"$f\" ] || continue
+  if grep -qI '<<<<<<< ' \"$f\"; then BAD=1; fi
+done < /tmp/fabro/rebase_scan.txt
+if ! git merge-base --is-ancestor origin/\"$B\" HEAD; then BAD=1; fi
+if [ $BAD -ne 0 ]; then
+  git rebase --abort 2>/dev/null || true
+  git reset --hard $(cat /tmp/fabro/pre_rebase_sha) || true
+  A=$((A+1))
+  echo $A > /tmp/fabro/rebase_attempts
+  echo 'The rebase agent left conflict markers, an in-progress rebase, or a branch still not based on the target.' > /tmp/fabro/needs_human_reason
+  echo '{\"context_updates\":{\"rebase_ok\":false,\"rebase_attempts\":'$A'}}'
+else
+  echo '{\"context_updates\":{\"rebase_ok\":true,\"rebase_attempts\":'$A'}}'
+fi"]
+
+    // ---- Review inputs ----
+    // Clearing the three review contracts here is what stops a stale file from a
+    // previous pass being read as a fresh result when an agent exits succeeded
+    // without writing one.
+    prep_review [label="Prepare review inputs", shape=parallelogram, output_schema="routing",
+        script="set -e
+B=$(cat /tmp/fabro/base_ref)
+rm -f /tmp/fabro/review/standards.json /tmp/fabro/review/spec.json /tmp/fabro/review/fix_result.json
+git fetch origin \"$B\"
+git diff origin/\"$B\"...HEAD > /tmp/fabro/review/diff.patch
+git diff --stat origin/\"$B\"...HEAD > /tmp/fabro/review/diffstat.txt
+git diff --name-only origin/\"$B\"...HEAD > /tmp/fabro/review/changed_files.txt
+git log origin/\"$B\"..HEAD --format='%h %s' > /tmp/fabro/review/commits.txt
+BYTES=$(wc -c < /tmp/fabro/review/diff.patch | tr -d ' ')
+if [ $BYTES -gt 2000000 ]; then
+  echo 'The PR diff exceeds 2000000 bytes and is not safely reviewable.' > /tmp/fabro/needs_human_reason
+  echo '{\"context_updates\":{\"diff_too_large\":true}}'
+else
+  echo '{\"context_updates\":{\"diff_too_large\":false}}'
+fi"]
+
+    // ---- Reviewers ----
+    standards [label="Standards review", class="review", prompt="@prompts/standards.md.j2"]
+    standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
+        script="F=/tmp/fabro/review/standards.json
+A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)
+D=$(jq -r .decision $F 2>/dev/null || echo invalid)
+if [ \"$D\" != approve ] && [ \"$D\" != findings ] && [ \"$D\" != needs_human_review ]; then D=invalid; fi
+if [ \"$D\" = invalid ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/standards_attempts
+  if [ $A -lt 2 ]; then echo 'standards.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+fi
+echo 0 > /tmp/fabro/standards_attempts
+echo '{\"context_updates\":{\"standards_status\":\"'$D'\"}}'"]
+
+    spec [label="Spec review", class="review", prompt="@prompts/spec.md.j2"]
+    spec_gate [label="Validate spec output", shape=parallelogram, output_schema="routing",
+        script="F=/tmp/fabro/review/spec.json
+A=$(cat /tmp/fabro/spec_attempts 2>/dev/null || echo 0)
+D=$(jq -r .decision $F 2>/dev/null || echo invalid)
+if [ \"$D\" != approve ] && [ \"$D\" != findings ] && [ \"$D\" != needs_human_review ]; then D=invalid; fi
+if [ \"$D\" = invalid ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/spec_attempts
+  if [ $A -lt 2 ]; then echo 'spec.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+fi
+echo 0 > /tmp/fabro/spec_attempts
+echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
+
+    // ---- Review and fix (one agent, as Sandcastle does) ----
+    review_fix [label="Review and fix", class="review", prompt="@prompts/review_fix.md.j2"]
+    fix_gate [label="Validate fix result", shape=parallelogram, output_schema="routing",
+        script="F=/tmp/fabro/review/fix_result.json
+A=$(cat /tmp/fabro/fix_result_attempts 2>/dev/null || echo 0)
+O=$(jq -r .outcome $F 2>/dev/null || echo invalid)
+if [ \"$O\" != fixed ] && [ \"$O\" != no_changes_needed ] && [ \"$O\" != needs_human ]; then O=invalid; fi
+if [ \"$O\" = invalid ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/fix_result_attempts
+  if [ $A -lt 2 ]; then echo 'fix_result.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+fi
+echo 0 > /tmp/fabro/fix_result_attempts
+if [ \"$O\" = needs_human ]; then
+  jq -r '.summary // \"the review-and-fix agent asked for a human\"' $F > /tmp/fabro/needs_human_reason
+fi
+echo '{\"context_updates\":{\"fix_outcome\":\"'$O'\"}}'"]
+
+    // ---- CI ----
+    validate [label="Validate (setup + ci)", shape=parallelogram, timeout="20m", output_schema="routing",
+        script="./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1
+RC=$?
+tail -c 8000 /tmp/fabro/validate_output.log
+A=$(cat /tmp/fabro/fix_attempts 2>/dev/null || echo 0)
+if [ $RC -ne 0 ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/fix_attempts
+  rm -f /tmp/fabro/review/fix_result.json
+  echo '## CI failed after fixes' > /tmp/fabro/feedback/fix.md
+  echo >> /tmp/fabro/feedback/fix.md
+  tail -c 6000 /tmp/fabro/validate_output.log >> /tmp/fabro/feedback/fix.md
+  echo 'CI is still red after the maximum number of fix attempts.' > /tmp/fabro/needs_human_reason
+  echo '{\"context_updates\":{\"ci_ok\":false,\"fix_attempts\":'$A'}}'
+else
+  echo '{\"context_updates\":{\"ci_ok\":true,\"fix_attempts\":'$A'}}'
+fi"]
+
+    // ---- Delivery ----
+    rebase_recheck [label="Re-check base tip", shape=parallelogram, output_schema="routing",
+        script="B=$(cat /tmp/fabro/base_ref)
+D=$(cat /tmp/fabro/recheck_done 2>/dev/null || echo 0)
+git fetch origin \"$B\"
+if git merge-base --is-ancestor origin/\"$B\" HEAD; then
+  echo '{\"context_updates\":{\"base_moved\":false}}'
+elif [ $D -ge 1 ]; then
+  echo '{\"context_updates\":{\"base_moved\":false}}'
+else
+  echo 1 > /tmp/fabro/recheck_done
+  echo '{\"context_updates\":{\"base_moved\":true}}'
+fi"]
+
+    deliver [label="Push, label and comment", shape=parallelogram, output_schema="routing",
+        script="PR=$(cat /tmp/fabro/pr_number)
+H=$(cat /tmp/fabro/head_ref)
+B=$(cat /tmp/fabro/base_ref)
+if git push --force-with-lease origin HEAD:\"$H\"; then
+  gh pr edit $PR --add-label ai-review-complete || echo 'WARNING: could not add the ai-review-complete label. Check that the run token has issues:write.' >&2
+  { echo 'Automated review complete.'; echo; echo '- Rebased onto the tip of '$B; echo '- Reviewed for correctness, documented standards and spec conformance'; echo '- Fixes applied; ./.fabro/setup.sh and ./.fabro/ci.sh green'; } > /tmp/fabro/pr_comment.md
+  gh pr comment $PR --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the completion comment.' >&2
+  echo '{\"context_updates\":{\"delivered\":true}}'
+else
+  echo 'git push --force-with-lease was rejected: the PR branch moved while this run was working. Not overwriting.' > /tmp/fabro/needs_human_reason
+  echo '{\"context_updates\":{\"delivered\":false}}'
+fi"]
+
+    mark_needs_human [label="Label needs-human", shape=parallelogram,
+        script="PR=$(cat /tmp/fabro/pr_number)
+R=$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo 'unspecified')
+gh pr edit $PR --add-label ai-review-needs-human || echo 'WARNING: could not add the ai-review-needs-human label. Check that the run token has issues:write.' >&2
+{ echo 'Automated review could not finish.'; echo; echo 'Reason: '$R; } > /tmp/fabro/pr_comment.md
+gh pr comment $PR --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the needs-human comment.' >&2
+echo done"]
+
+    // ---- Edges ----
+    // `weight` breaks ties explicitly wherever two conditions can both match.
+    // Fabro picks the highest-weight matching edge and falls back to the lowest
+    // target node id, so without a weight these routes would depend on the
+    // alphabet rather than on intent.
+    start -> validate_input
+    validate_input -> claim            [condition="outcome=succeeded"]
+    validate_input -> exit
+
+    claim -> rebase_check              [condition="outcome=succeeded"]
+    claim -> mark_needs_human
+
+    rebase_check -> prep_review        [condition="context.rebase_state=not_needed || context.rebase_state=clean"]
+    rebase_check -> rebase_agent_t1    [condition="context.rebase_state=conflict"]
+    rebase_check -> mark_needs_human
+
+    rebase_agent_t1 -> rebase_gate     [condition="outcome=succeeded"]
+    rebase_agent_t1 -> rebase_gate
+    rebase_agent_t2 -> rebase_gate     [condition="outcome=succeeded"]
+    rebase_agent_t2 -> rebase_gate
+
+    rebase_gate -> prep_review         [condition="context.rebase_ok=true", weight=10]
+    rebase_gate -> rebase_agent_t2     [condition="context.rebase_ok=false && context.rebase_attempts=1"]
+    rebase_gate -> mark_needs_human
+
+    prep_review -> mark_needs_human    [condition="context.diff_too_large=true || outcome=failed"]
+    prep_review -> standards
+
+    standards -> standards_gate        [condition="outcome=succeeded"]
+    standards -> mark_needs_human
+    standards_gate -> standards        [condition="outcome=failed", weight=10]
+    standards_gate -> mark_needs_human [condition="context.standards_status=needs_human_review || context.standards_status=invalid"]
+    standards_gate -> spec
+
+    spec -> spec_gate                  [condition="outcome=succeeded"]
+    spec -> mark_needs_human
+    spec_gate -> spec                  [condition="outcome=failed", weight=10]
+    spec_gate -> mark_needs_human      [condition="context.spec_status=needs_human_review || context.spec_status=invalid"]
+    spec_gate -> review_fix
+
+    review_fix -> fix_gate             [condition="outcome=succeeded"]
+    review_fix -> mark_needs_human
+    fix_gate -> review_fix             [condition="outcome=failed", weight=10]
+    fix_gate -> mark_needs_human       [condition="context.fix_outcome=needs_human || context.fix_outcome=invalid"]
+    fix_gate -> validate
+
+    validate -> mark_needs_human       [condition="context.ci_ok=false && context.fix_attempts>=2", weight=10]
+    validate -> review_fix             [condition="context.ci_ok=false"]
+    validate -> rebase_recheck
+
+    rebase_recheck -> rebase_check     [condition="context.base_moved=true"]
+    rebase_recheck -> deliver
+
+    deliver -> exit                    [condition="context.delivered=true"]
+    deliver -> mark_needs_human
+
+    mark_needs_human -> exit
+}

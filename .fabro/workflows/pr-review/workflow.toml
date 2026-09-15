@@ -1,0 +1,48 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+# One model for review and fixes; coders only for the first rebase attempt.
+# Quoted keys are mandatory where the name contains a dot, or TOML builds a
+# nested table and the automation fire returns 422.
+[run.model.fallbacks]
+"glm-5.3" = ["litellm:kimi-k3"]
+coders = ["litellm:glm-5.3"]
+kimi-k3 = ["litellm:glm-5.3"]
+
+# The run works on the PR head branch, not on fabro/run/<id>.
+#   enabled = true  -> checkpoints still commit between stages, onto the PR branch
+#   push    = false -> fabro never pushes the stale fabro/run/<id>; `deliver` pushes
+# Legal only because there is no pull-request block in this workflow. Do not add one.
+[run.run_branch]
+enabled = true
+push = false
+
+# Nothing reads a pushed metadata branch; leaving it on leaks one branch per run.
+[run.meta_branch]
+push = false
+
+# Full history. `depth` defaults to 100 (RunCloneSettings::DEFAULT_DEPTH) and `depth = 0`
+# means unlimited. A shallow clone breaks every git operation this workflow is built
+# on: `git diff origin/<base>...HEAD` dies with `fatal: no merge base` when the branch
+# point is behind the graft, `git log origin/<base>..HEAD` lists commits that are
+# already on the base branch, `merge-base --is-ancestor` answers no when the answer is
+# yes, and `git rebase` silently drops commits as "patch contents already upstream".
+# `claim` also runs `git fetch --unshallow` as a belt-and-braces guard; keep both.
+[run.clone]
+depth = 0
+
+# `issues` must be "write", not "read". `claim` runs `gh label create` for the two
+# terminal labels, and repository labels are the Issues permission in GitHub's model
+# (`POST /repos/{owner}/{repo}/labels`); `gh pr edit --add-label` goes through the
+# issue-labels endpoint too. These labels never pre-exist — backlog uses
+# agent-authored / agent-in-progress / Review — so `claim` is the only thing that
+# creates them. With "read" every label call fails, and because they are all
+# `|| true` the run still reports success: the terminal state quietly degrades from
+# "label + comment" to comment-only. `closingIssuesReferences` only needs read, but
+# the label writes decide the level.
+[run.integrations.github.permissions]
+contents = "write"
+issues = "write"
+pull_requests = "write"
