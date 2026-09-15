@@ -20,7 +20,7 @@ locations instead.
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
 | `profile-images/` | The four sandbox profile-image Dockerfiles, reconstructed from image layer history and **verified by rebuild** against the live images. |
-| `provision-server-state.sh` | Recreates the **environments** and **automations** — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. |
+| `provision-server-state.sh` | Recreates the eight **automations** — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
 | `README.md` | This file — bring-up, install, and replication steps. |
 
 ## Secrets — where they live, never in this repo
@@ -48,13 +48,21 @@ locations instead.
    write the webhook URL to `/storage/secrets/discord_webhook_url`.
 4. **Sweeper** — `cp fabro-branch-sweep.sh ~/bin/ && chmod +x ~/bin/fabro-branch-sweep.sh`, then install the cron (below).
 5. **Profile images** — build all four; see `profile-images/README.md`.
-6. **Server state** — `FABRO_API=http://<HOST>:32276 FABRO_TOKEN=<dev token> \
-   ./provision-server-state.sh`. This creates the 5 environments and 4 automations.
-   **Do this after step 5**, because each environment references a profile image tag.
-7. **Vault secrets** — `fabro secret set GITHUB_TOKEN <...>` and
+6. **Environments** — create the five (`default`, `python`, `python-node`, `ts`,
+   `rust-node`) with `POST /api/v1/environments`, matching the table below. Nothing
+   in this repo provisions them: `provision-server-state.sh` only reads
+   `environment_id` to detect drift, and an automation pointing at an environment
+   that does not exist fails at run admission. **Do this after step 5**, because
+   each environment names a profile image tag. Verify with
+   `GET /api/v1/environments`.
+7. **Automations** — `FABRO_API_URL=http://<HOST>:32276/api/v1 \
+   FABRO_DEV_TOKEN=<dev token> ./provision-server-state.sh`. This creates the eight
+   automations, four per workflow. `FABRO_API_URL` includes the `/api/v1` prefix;
+   the script appends `/automations` to it.
+8. **Vault secrets** — `fabro secret set GITHUB_TOKEN <...>` and
    `fabro secret set LITELLM_API_KEY <...>` on the host. `settings.toml` references
    these by name; the values are never in config.
-8. **Contract scripts** (`.fabro/setup.sh`, `.fabro/ci.sh`) live in each target repo,
+9. **Contract scripts** (`.fabro/setup.sh`, `.fabro/ci.sh`) live in each target repo,
    not this repo. Every target repo must have both or every run fails at `prep`.
 
 ## Server-side state (not in `settings.toml`)
@@ -73,21 +81,87 @@ settings.toml only *selects* one; it does not define any.
 | `ts` | `fabro-ts:local` | 2 | 4GB | womens-fantasy-sports |
 | `rust-node` | `fabro-rust-node:local` | 4 | 8GB | writers-app |
 
-**Automations** — one per target repo, all running the `backlog` workflow from
-`andrewthetechie/fabro-workflows@main`:
+**Automations** — two per target repo, one for each workflow, all resolving
+`workflow_source` to `andrewthetechie/fabro-workflows@main` at fire time. Read back
+from the live server 2026-09-15:
 
-| id | target | environment |
-|---|---|---|
-| `backlog-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` |
-| `backlog-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` |
-| `backlog-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` |
-| `backlog-writers-app` | `andrewthetechie/writers-app` | `rust-node` |
+| id | target | environment | triggers |
+|---|---|---|---|
+| `backlog-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled, `schedule:every-15m` disabled |
+| `backlog-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled, `schedule:every-15m` disabled |
+| `backlog-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled, `schedule:every-15m` disabled |
+| `backlog-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `schedule:every-15m` disabled |
+| `pr-review-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled |
+| `pr-review-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled |
+| `pr-review-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled |
+| `pr-review-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `api:manual` enabled |
 
-All four carry an `every-15m` `*/15 * * * *` schedule trigger that is **disabled** —
-an operator decision (2026-09-14) while development and testing continue.
-`backlog-jelly-swipe` also has an enabled `api`/`manual` trigger used for test fires.
+Every `backlog` schedule is **disabled** — an operator decision (2026-09-14) while
+development and testing continue. The `pr-review` automations carry no schedule at
+all by design: they are fired against a named PR, so there is nothing to poll.
+Nothing in this deployment currently fires on a cron.
 
-`provision-server-state.sh` recreates all of the above.
+Two drifts from what `provision-server-state.sh` would create, both left as-is:
+`backlog-writers-app` has no `api:manual` trigger, and the script reports
+`environment_id` drift only, not trigger drift.
+
+`provision-server-state.sh` recreates the automations. The environments above are
+created by hand (step 6).
+
+## Upgrading the server
+
+`FABRO_VERSION` in `~/fabro/.env` pins the image tag. Keep it pinned: `nightly` is a
+moving tag, so an unpinned host upgrades itself on the next pull with no decision
+behind it.
+
+A fabro upgrade applies SQLite migrations to `/storage/db/fabro.sqlite3`, and the
+previous binary **refuses to start** against a migrated database
+(`migration <id> was previously applied but is missing in the resolved migrations`).
+So rolling back is a database restore, not a tag change. Upgrade deliberately:
+
+```sh
+ssh andrew@<HOST>
+cd ~/fabro
+docker compose exec -T fabro fabro --version          # record the rollback point
+docker compose ps                                     # confirm healthy before starting
+sed -i 's/^FABRO_VERSION=.*/FABRO_VERSION=<new tag>/' .env
+docker compose pull && docker compose up -d
+sleep 10 && docker compose ps                         # must read "healthy", not "restarting"
+docker compose logs --tail 40 fabro
+```
+
+Then re-validate both workflows against the new binary before trusting it — a version
+bump can change parsing or validation:
+
+```sh
+docker compose exec -T fabro fabro validate /tmp/check/workflows/backlog/workflow.toml
+docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml
+```
+
+**Rollback**, when the new version crash-loops:
+
+```sh
+cd ~/fabro && docker compose stop
+docker run --rm -v fabro_fabro-storage:/s alpine sh -c '
+  cd /s/db
+  cp -p fabro.sqlite3 fabro.sqlite3.migrated-<migration id>.bak   # keep the migrated db
+  cp -p fabro.sqlite3.pre-migration.bak fabro.sqlite3
+  chown 1000:1000 fabro.sqlite3 && chmod 600 fabro.sqlite3
+  rm -f fabro.sqlite3-shm fabro.sqlite3-wal'
+sed -i 's/^FABRO_VERSION=.*/FABRO_VERSION=<old tag>/' .env
+docker compose up -d
+```
+
+fabro writes `fabro.sqlite3.pre-migration.bak` itself, immediately before migrating.
+Removing the stale `-shm`/`-wal` files matters: they belong to the newer schema and
+leave the restored database inconsistent. Pin to a **versioned** tag on the way back,
+never a locally retagged `nightly` — a retag is invisible and the next pull silently
+undoes it.
+
+Known bad: nightly **0.357.x** applies migration `2026091101`, then crash-loops on
+run-history activation with `stored run summary <id> has inconsistent field
+summary_json`. Attempted and rolled back 2026-09-15; the host is pinned to
+`0.354.0-nightly.0`.
 
 ## Cron — branch sweeper
 
