@@ -44,6 +44,7 @@ set -eu
 
 API_URL="${FABRO_API_URL:-}"
 TOKEN="${FABRO_DEV_TOKEN:-}"
+DRY_RUN="${DRY_RUN:-0}"
 
 if [ -z "$API_URL" ] || [ -z "$TOKEN" ]; then
   echo "Both FABRO_API_URL and FABRO_DEV_TOKEN must be set." >&2
@@ -187,6 +188,11 @@ provision_variable() {
     return 0
   fi
 
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "would create: variable $v_name = $v_default"
+    return 0
+  fi
+
   v_code=$(curl -sS -m 15 -o /tmp/provision_var.json -w '%{http_code}' -X POST \
     -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
     -d "$(jq -nc --arg n "$v_name" --arg v "$v_default" '{name:$n, value:$v}')" \
@@ -271,6 +277,11 @@ provision_automation() {
 
   payload="{\"id\":\"$id\",\"name\":\"$id\",$description_field\"environment_id\":\"$env_id\",\"target\":{\"kind\":\"git\",\"repo\":\"$repo\",\"branch\":\"main\"},\"workflow\":\"$workflow\",\"workflow_source\":{\"repo\":\"andrewthetechie/fabro-workflows\",\"branch\":\"main\"},\"triggers\":[{\"type\":\"api\",\"id\":\"manual\",\"enabled\":true}$schedule_json]}"
 
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "would create: $id (env=$env_id)"
+    return 0
+  fi
+
   http_code=$(curl -sS -m 15 -o /tmp/provision_out.json -w '%{http_code}' \
     -X POST -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
     -d "$payload" "$API_URL/automations")
@@ -286,9 +297,12 @@ provision_automation() {
 # The host-wide half of the auto-merge kill switch. Provisioned to decision 10's
 # default (on); flip it with `ops/fabro-auto-merge-switch.sh host off`, which takes
 # effect on the next run with no restart. Created before the automations because a
-# pr-review run cannot compile without it.
+# pr-review run cannot compile without it. FABRO_API_URL is the base URL the triage
+# workflow uses to communicate with fabro itself; triage runs read it from a server
+# variable at startup, and it fails closed if unset.
 echo "Provisioning server variables..."
 provision_variable FABRO_AUTO_MERGE 1 || FAILED=$((FAILED+1))
+provision_variable FABRO_API_URL "http://10.10.0.32:32276/api/v1" || FAILED=$((FAILED+1))
 
 echo "Provisioning pr-review automations..."
 # The trailing `true` is the per-repo auto-merge switch, named explicitly: it is the
@@ -305,6 +319,12 @@ provision_automation backlog-lawncare-saas python-node andrewthetechie/lawncare-
 provision_automation backlog-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports backlog every-15m "8-59/15 * * * *" || FAILED=$((FAILED+1))
 provision_automation backlog-writers-app rust-node andrewthetechie/writers-app backlog every-15m "11-59/15 * * * *" || FAILED=$((FAILED+1))
 
+echo "Provisioning issue-triage automations..."
+provision_automation issue-triage-jelly-swipe python andrewthetechie/jelly-swipe issue-triage hourly "30 * * * *" || FAILED=$((FAILED+1))
+provision_automation issue-triage-lawncare-saas python-node andrewthetechie/lawncare-saas issue-triage hourly "35 * * * *" || FAILED=$((FAILED+1))
+provision_automation issue-triage-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports issue-triage hourly "40 * * * *" || FAILED=$((FAILED+1))
+provision_automation issue-triage-writers-app rust-node andrewthetechie/writers-app issue-triage hourly "45 * * * *" || FAILED=$((FAILED+1))
+
 if [ "$FAILED" -ne 0 ]; then
   echo "$FAILED automation(s) could not be created; see the errors above." >&2
   exit 1
@@ -315,4 +335,4 @@ if [ "$DRIFT_FOUND" -ne 0 ]; then
   exit 2
 fi
 
-echo "Done. Backlog schedules are created disabled; enable them if this was a rebuild."
+echo "Done. Backlog and issue-triage schedules are created disabled; enable them if this was a rebuild."
