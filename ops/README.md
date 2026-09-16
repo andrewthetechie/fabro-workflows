@@ -16,6 +16,7 @@ locations instead.
 | File | Purpose |
 |---|---|
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). Deterministic; see its header comments. |
+| `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
 | `docker-compose.yaml` | Runs the `fabro` server container (the only container that is `Up`). |
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
@@ -65,7 +66,7 @@ deployment and drift check are in the main `AGENTS.md`.
 3. **Notify script** — deploy `discord-notify.sh` (tracked under
    `.fabro/workflows/backlog/scripts/`) to `/storage/scripts/discord-notify.sh` and
    write the webhook URL to `/storage/secrets/discord_webhook_url`.
-4. **Sweeper** — `cp fabro-branch-sweep.sh ~/bin/ && chmod +x ~/bin/fabro-branch-sweep.sh`, then install the cron (below).
+4. **Sweepers** — `cp fabro-branch-sweep.sh fabro-sandbox-sweep.sh ~/bin/ && chmod +x ~/bin/fabro-branch-sweep.sh ~/bin/fabro-sandbox-sweep.sh`, then install both crons (below).
 5. **Profile images** — build all four; see `profile-images/README.md`.
 6. **Environments** — create the five (`default`, `python`, `python-node`, `ts`,
    `rust-node`) with `POST /api/v1/environments`, matching the table below. Nothing
@@ -207,7 +208,7 @@ run-history activation with `stored run summary <id> has inconsistent field
 summary_json`. Attempted and rolled back 2026-09-15; the host is pinned to
 `0.354.0-nightly.0`.
 
-## Cron — branch sweeper
+## Cron — sweepers
 
 ```sh
 ( crontab -l 2>/dev/null; \
@@ -218,6 +219,49 @@ crontab -l
 
 04:17 daily. `DRY_RUN=0` (the script defaults to dry-run). Log rotates by hand when it
 grows: `: > ~/.local/state/fabro-branch-sweep.log`.
+
+```sh
+( crontab -l 2>/dev/null; \
+  echo '43 4 * * * DRY_RUN=0 /home/andrew/bin/fabro-sandbox-sweep.sh >> /home/andrew/.local/state/fabro-sandbox-sweep.log 2>&1' \
+) | crontab -
+```
+
+04:43 daily, after the branch sweeper rather than alongside it — both are chatty and
+neither is urgent.
+
+## Sandbox containers — fabro stops them, nothing removes them
+
+Fabro creates one `fabro-run-<run_id>` container per run and stops it on terminal. It
+never removes it. Measured 2026-09-16: **165 containers, 16.8 GB** of writable layers,
+oldest three days old, one per run forever.
+
+`stop_on_terminal` is **not** broken, which was the earlier reading of this. 164 of the
+165 were `Exited (137)` with `FinishedAt` matching their run's `completed_at` to the
+millisecond. The one still `Up` had stopped correctly at 15:19:11 on 2026-09-15 and was
+started again **by hand** at 16:51:35 the same day, during the debugging session on the
+run that exposed the pr-review reporting bug — `RestartPolicy=no`, `RestartCount=0`, so
+Docker did not do it. There was no leak in fabro; there was a janitor missing from this
+tree.
+
+`fabro-sandbox-sweep.sh` is that janitor. It never touches a running container, by
+design: it is either an in-flight run or a sandbox someone deliberately restarted to
+look inside, and killing the second one silently is worse than leaving it. It reports
+and moves on.
+
+`/storage/scratch` inside the server container accumulates the same way — 178
+directories, 9.6 MB. Left alone: at that rate it is not worth a script.
+
+```sh
+DRY_RUN=1 ~/bin/fabro-sandbox-sweep.sh                 # default: dry run, 48h grace
+DRY_RUN=0 ~/bin/fabro-sandbox-sweep.sh                 # remove
+DRY_RUN=0 GRACE_HOURS=168 ~/bin/fabro-sandbox-sweep.sh # keep a week of post-mortems
+```
+
+Skip rules (mechanical, no judgment): the name must be exactly
+`fabro-run-<26-char ULID>`, which is what keeps `fabro-fabro-1` and this host's
+unrelated `sandcastle-*` containers out of reach — a substring filter would not;
+running containers are never touched; anything stopped within `GRACE_HOURS` is kept,
+because the sandbox of the run that just failed is the one you want to open.
 
 ## Sweeper usage
 

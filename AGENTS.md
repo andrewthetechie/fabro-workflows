@@ -115,6 +115,7 @@ ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-fire-pr-review.sh'
 
 scp ops/docker-compose.yaml andrew@10.10.0.32:~/fabro/docker-compose.yaml
 scp ops/fabro-branch-sweep.sh andrew@10.10.0.32:~/bin/fabro-branch-sweep.sh
+scp ops/fabro-sandbox-sweep.sh andrew@10.10.0.32:~/bin/fabro-sandbox-sweep.sh
 
 # automations, when the provisioning script changed or a row is missing
 FABRO_API_URL=http://10.10.0.32:32276/api/v1 FABRO_DEV_TOKEN=<dev token> \
@@ -126,6 +127,7 @@ nothing:
 
 ```sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-branch-sweep.sh' | diff - ops/fabro-branch-sweep.sh
+ssh andrew@10.10.0.32 'cat ~/bin/fabro-sandbox-sweep.sh' | diff - ops/fabro-sandbox-sweep.sh
 ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'  | diff - ops/docker-compose.yaml
 ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/scripts/discord-notify.sh' \
   | diff - .fabro/workflows/backlog/scripts/discord-notify.sh
