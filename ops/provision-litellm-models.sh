@@ -5,32 +5,48 @@
 # after a partial failure is safe. It is NOT a reconciler — a model whose
 # configuration has drifted is reported, not corrected, because silently
 # rewriting live model state from a bootstrap script is worse than telling
-# the operator. No secrets live in this file; the API URL and master key come
-# from the environment.
+# the operator. No secrets live in this file; the API URL, master key and
+# upstream credential come from the environment.
 #
 # This script manages high-reasoning only. The other six models (deepseek,
 # StrixQwen27B, StrixQwen35B, long-context, kimi-k3, coders) predate this
 # workflow and are not provisioned here.
 #
-# Fallbacks are set on the model row via the API, not in values.yaml,
-# because config-level router_settings.fallbacks do not apply to models
-# stored in Postgres (verified 2026-09-16).
+# Fallbacks are set via LiteLLM's Fallback Management API (POST/GET
+# /fallback), not in values.yaml: config-level router_settings.fallbacks in
+# the Helm chart's values.yaml do not reach the router LiteLLM actually runs
+# once STORE_MODEL_IN_DB=True — /fallback is the git-invisible, Postgres-
+# backed equivalent, and it is what the acceptance check in
+# docs/issue-triage/01-litellm-high-reasoning.md proves against (verified
+# 2026-09-16 with a deliberately-broken primary credential: the response came
+# back from kimi-k3 with x-litellm-attempted-fallbacks: 1).
+#
+# GET /model/info never returns litellm_params.api_key (LiteLLM stores it in
+# a separate per-model credential row and omits it from every read view, even
+# to the master key), so this script cannot detect credential drift — only
+# whether the row exists at all. The credential is therefore set once, at
+# creation, and never touched again on a re-run; an operator who rotates it
+# later does so directly against LiteLLM, not through this script.
 #
 # Usage:
 #   LITELLM_URL=https://litellm.herrington.services \
 #   LITELLM_MASTER_KEY=<key> \
+#   LITELLM_HIGH_REASONING_API_KEY=<the z.ai key glm-5.3 already uses> \
 #   ./ops/provision-litellm-models.sh
 #
 # Environment:
 #   DRY_RUN: if 1 (the default), print the payload and exit without creating.
 #   LITELLM_URL: base URL of the LiteLLM proxy admin API (required)
 #   LITELLM_MASTER_KEY: master key for authentication (required, never echoed)
+#   LITELLM_HIGH_REASONING_API_KEY: upstream z.ai key for the model (required
+#     to create; not required, and ignored, when the model already exists)
 
 set -eu
 
 DRY_RUN="${DRY_RUN:-1}"
 API_URL="${LITELLM_URL:-}"
 MASTER_KEY="${LITELLM_MASTER_KEY:-}"
+UPSTREAM_KEY="${LITELLM_HIGH_REASONING_API_KEY:-}"
 
 if [ -z "$API_URL" ] || [ -z "$MASTER_KEY" ]; then
   echo "Both LITELLM_URL and LITELLM_MASTER_KEY must be set." >&2
@@ -79,16 +95,25 @@ provision_model() {
     fi
   fi
 
-  # Model does not exist; create it
+  # Model does not exist; create it. The upstream credential is required here
+  # — it can never be added later by re-running this script (see header) —
+  # but is irrelevant, and not required to be set, once the model exists.
+  if [ -z "$UPSTREAM_KEY" ]; then
+    echo "FAILED to create $m_name: LITELLM_HIGH_REASONING_API_KEY is not set." >&2
+    FAILED=$((FAILED+1))
+    return 1
+  fi
+
   m_payload=$(jq -nc \
     --arg name "$m_name" \
     --argjson params "$m_params" \
     --argjson info "$m_info" \
-    '{model_name: $name, litellm_params: $params, model_info: $info}')
+    --arg key "$UPSTREAM_KEY" \
+    '{model_name: $name, litellm_params: ($params + {api_key: $key}), model_info: $info}')
 
   if [ "$DRY_RUN" = "1" ]; then
-    echo "DRY_RUN: would create model $m_name with payload:"
-    printf '%s\n' "$m_payload" | jq .
+    echo "DRY_RUN: would create model $m_name with payload (api_key redacted):"
+    printf '%s\n' "$m_payload" | jq '.litellm_params.api_key = "<redacted>"'
     return 0
   fi
 
@@ -108,33 +133,77 @@ provision_model() {
   esac
 }
 
-# provision_model_fallback <model_name> <fallback_models_json>
+# provision_fallback <model_name> <fallback_models_json_array> <fallback_type>
 #
-# Set fallback models for an existing model. This is done separately from
-# creation because LiteLLM's /model/new API may not support fallback in the
-# initial payload, and config-level router_settings.fallbacks do not apply
-# to Postgres models.
-provision_model_fallback() {
-  m_name="$1"
-  m_fallbacks="$2"
+# Create-if-absent against LiteLLM's Fallback Management API. GET returns 404
+# when nothing is configured yet; anything else that does not already match
+# is reported as drift and left alone — POST /fallback is documented as
+# create-or-update, so calling it over an operator's existing, different
+# configuration would silently overwrite it.
+provision_fallback() {
+  f_name="$1"
+  f_models="$2"
+  f_type="$3"
 
-  # For now, fallbacks are set via litellm_params in the model creation.
-  # If the API requires a separate update step in future, that logic goes here.
-  # This function is a placeholder for clarity about where fallback config lives.
-  :
+  f_http=$(curl -sS -m 15 -o /tmp/provision_fallback_get.json -w '%{http_code}' \
+    -H "$AUTH_HEADER" "$API_URL/fallback/$f_name?fallback_type=$f_type" 2>/dev/null) || f_http=000
+
+  if [ "$f_http" = 200 ]; then
+    f_existing=$(jq -c '.fallback_models // []' /tmp/provision_fallback_get.json 2>/dev/null || echo '[]')
+    f_expected=$(printf '%s' "$f_models" | jq -c '.')
+    if [ "$f_existing" = "$f_expected" ]; then
+      echo "exists: fallback $f_name -> $f_expected ($f_type)"
+      return 0
+    fi
+    echo "DRIFT: fallback $f_name has $f_existing, expected $f_expected ($f_type). Not corrected." >&2
+    DRIFT_FOUND=1
+    return 0
+  fi
+  if [ "$f_http" != 404 ]; then
+    echo "FAILED to read fallback for $f_name: HTTP $f_http" >&2
+    FAILED=$((FAILED+1))
+    return 1
+  fi
+
+  f_payload=$(jq -nc --arg m "$f_name" --argjson fm "$f_models" --arg t "$f_type" \
+    '{model: $m, fallback_models: $fm, fallback_type: $t}')
+
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "DRY_RUN: would create fallback with payload:"
+    printf '%s\n' "$f_payload" | jq .
+    return 0
+  fi
+
+  f_create_http=$(curl -sS -m 15 -o /tmp/provision_fallback_out.json -w '%{http_code}' \
+    -X POST -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
+    -d "$f_payload" "$API_URL/fallback" 2>/dev/null) || f_create_http=000
+
+  case "$f_create_http" in
+    200 | 201)
+      echo "created: fallback $f_name -> $(printf '%s' "$f_models" | jq -c '.') ($f_type)"
+      ;;
+    *)
+      echo "FAILED to create fallback for $f_name: HTTP $f_create_http $(cat /tmp/provision_fallback_out.json 2>/dev/null || true)" >&2
+      FAILED=$((FAILED+1))
+      return 1
+      ;;
+  esac
 }
 
 echo "Provisioning LiteLLM models..."
 
 # high-reasoning: strong reasoner for judgment stages. Falls back to kimi-k3 on overflow.
-# litellm_params copied from glm-5.3 to ensure api_base, model, and timeout are current.
-# Fallback is configured on the model row via the admin API after creation
-# (LiteLLM's /model/new API does not support fallbacks in the initial payload).
+# litellm_params copied from glm-5.3 (model, api_base, timeout) plus the upstream
+# credential, which glm-5.3's own row shares and which /model/info never exposes.
 provision_model \
   "high-reasoning" \
   '{"api_base":"https://api.z.ai/api/coding/paas/v4","timeout":3600,"use_in_pass_through":false,"use_litellm_proxy":false,"use_xai_oauth":false,"merge_reasoning_content_in_choices":false,"model":"openai/glm-5.3"}' \
   '{"description":"Role alias: strong reasoner for judgment stages. glm-5.3, kimi-k3 on overflow."}' \
   || FAILED=$((FAILED+1))
+
+# Do not add a reverse fallback. kimi-k3 -> high-reasoning recreates the
+# circular chain ADR 0001 flagged in the other two workflows.
+provision_fallback "high-reasoning" '["kimi-k3"]' "general" || true
 
 if [ "$FAILED" -ne 0 ]; then
   echo "$FAILED model(s) could not be created; see the errors above." >&2

@@ -62,12 +62,32 @@ than trusting the docs. If it does not, set `fallbacks` on the model row instead
 so in this file, because that moves the last git-visible piece of the routing into
 Postgres.
 
-**Verification Result (2026-09-16):** Config-level fallbacks in `router_settings` do NOT
-apply to models stored in Postgres. Attempting a completion against `high-reasoning`
-returns `AuthenticationError: litellm.exceptions.AuthenticationError ... Available Model
-Group Fallbacks=None`. The fallback must be set on the model row instead via the API,
-making the routing configuration non-git-visible. The provision script handles this in
-Part 3.
+**Verification Result (2026-09-16):** Config-level `router_settings.fallbacks` in
+`values.yaml` does not reach the router LiteLLM actually runs once
+`STORE_MODEL_IN_DB=True` — it was added, the pod picked up the new
+`checksum/config` and restarted, and a completion still reported
+`x-litellm-attempted-fallbacks: 0` under a forced failure. Reverted from `values.yaml`
+(home-k8s commit `a1d4bc5`); nothing is lost, because this LiteLLM version (1.95.0)
+ships a dedicated, Postgres-backed **Fallback Management API** —
+`GET/POST /fallback` and `GET/DELETE /fallback/{model}` — that is exactly the
+"non-git-visible, model-row" mechanism this task asks for, just not literally a
+`litellm_params` field. `ops/provision-litellm-models.sh` calls `POST /fallback` with
+`{"model":"high-reasoning","fallback_models":["kimi-k3"],"fallback_type":"general"}`.
+
+Proven with a real forced failure, not `mock_testing_fallbacks` (which turned out not
+to force anything when the primary call would otherwise succeed): the model was
+updated with a deliberately invalid `api_key`, a completion against `high-reasoning`
+came back **HTTP 200** with `x-litellm-model-group: kimi-k3` and
+`x-litellm-attempted-fallbacks: 1`, and the correct key was restored immediately after.
+
+Separately, and unrelated to fallback routing: the model this task's Part 1 originally
+created was missing its `api_key` entirely. `GET /model/info` never returns
+`litellm_params.api_key` for *any* model — including the working `glm-5.3` row used as
+the copy source — so a payload built by reading that endpoint silently drops the
+credential. The actual key has to come from the same place `glm-5.3`'s does
+(`ZAI_API_KEY` in `~/.fabro-deploy/env` on the Mac), not from the API. Fixed via
+`POST /model/update`; `ops/provision-litellm-models.sh` now requires
+`LITELLM_HIGH_REASONING_API_KEY` to create the model for exactly this reason.
 
 Do **not** add a reverse fallback. `kimi-k3 → high-reasoning` recreates the circular
 chain ADR 0001 flagged in the other two workflows.
