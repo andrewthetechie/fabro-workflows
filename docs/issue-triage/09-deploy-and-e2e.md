@@ -21,6 +21,34 @@ fire with nothing to copy. `ops/` and `discord-notify.sh` are not; deploy those 
 6. **One manual fire**, below.
 7. **Enable all four schedules** only after step 6 passes.
 
+## Steps 1-6 already happened, out of order, during task 08
+
+Task 08's doc says "Nothing here touches a target repository." That stopped being true:
+three bugs were reachable only by firing a real run, so steps 1-6 were performed on
+2026-09-16 to find them. Recorded here, not in task 08's evidence note, because this is
+where it belongs and because task 11's deployment log reads this file.
+
+- Three runs on `issue-triage-womens-fantasy-sports`. The first died at `check_capacity`
+  (`/api/v1/system`, not `/api/v1/system/info`); the second at `improve` (the fabro
+  LiteLLM key's model allowlist had no `high-reasoning`); the third,
+  `01M2NMS3YPRZDXYP665AD0CQS6`, walked
+  `start → check_capacity → acquire → claim → improve → improve_gate → triage →
+  triage_gate → apply_ready` in ~23 minutes, both agent stages on `high-reasoning`.
+- Issue #1195 is the proof: retitled to
+  `fix(scoring): finalize Player GameweekScore rows when reconciliation locks a
+  gameweek`, `agent` added, `needs-triage` and `triage-in-progress` removed, both marker
+  comments present. Verified against GitHub, not against run context.
+- The first two runs also proved the failure routing: a failed node does fall to its
+  unconditional `-> release` edge, and the `^release$` hook fired exactly once on each
+  (`hooks_matched=1` in the server log) and never on the run that succeeded.
+
+**What that leaves.** `triage.json.labels` was empty on the one successful run, so the
+terminal `gh issue edit` has never been exercised with an agent-authored label. And the
+whole `needs_info` branch — `ask_human`, `stdin_source="human.gate.text"`,
+`human.default_choice`, the 30-minute timeout, `record_answer`, the re-triage, the
+`triage-question` Discord message — has never executed. The steps below are still owed,
+and that branch is what they are for.
+
 ## The first fire
 
 `womens-fantasy-sports` is the only repository with a queue — 11 open `needs-triage`

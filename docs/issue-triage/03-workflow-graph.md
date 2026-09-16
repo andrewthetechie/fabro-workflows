@@ -80,12 +80,15 @@ fi"]
     // Failing when nothing matches is the quiet-exit, exactly as backlog's acquire does.
     acquire [label="Acquire issue", shape=parallelogram,
         script="mkdir -p /tmp/fabro
-gh issue list --label needs-triage --state open --json number,title --limit 50 > /tmp/fabro/cand_triage.json
-gh issue list --label needs-info --state open --json number,title,comments --limit 50 > /tmp/fabro/cand_info.json
+gh issue list --label needs-triage --state open --json number,title --limit 50 > /tmp/fabro/cand_triage.json || true
+gh issue list --label needs-info --state open --json number,title,comments --limit 50 > /tmp/fabro/cand_info.json || true
+for f in cand_triage cand_info; do
+  test -s /tmp/fabro/$f.json && jq -e . /tmp/fabro/$f.json > /dev/null 2>&1 || echo '[]' > /tmp/fabro/$f.json
+done
 jq '[.[] | {number, title, reason: \"needs-triage\"}]' /tmp/fabro/cand_triage.json > /tmp/fabro/elig_triage.json
 jq '[.[] | select((.comments | length) > 0) | select((.comments[-1].body | test(\"fabro:triage-\")) | not) | {number, title, reason: \"answered\"}]' /tmp/fabro/cand_info.json > /tmp/fabro/elig_info.json
 jq -s 'add | sort_by(.number) | .[0:1]' /tmp/fabro/elig_triage.json /tmp/fabro/elig_info.json > /tmp/fabro/acquire.json
-test \"$(jq length /tmp/fabro/acquire.json)\" != \"0\""]
+test \"$(jq length /tmp/fabro/acquire.json 2>/dev/null || echo 0)\" != \"0\""]
 
     // Claims, fetches, archives the reporter's original body once, and resets every
     // per-run file. The contract files are deleted here because an agent that exits
@@ -119,6 +122,11 @@ jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_ur
     // Applies the body only. The title is written once, by the terminal nodes, from
     // triage.json — two title writes per run is churn in every watcher's inbox and a
     // second chance to write a non-conforming one.
+    // A second invalid improve.json exits ZERO on purpose: it publishes
+    // improve_status=invalid and takes the succeeded edge to `triage`. Improving the
+    // body is best effort; the triage verdict is the run's value, and throwing it away
+    // because the improve agent misformatted its JSON is the worse trade. No edge reads
+    // improve_status — it exists so the run log says which of the two happened.
     improve_gate [label="Validate and apply the improved body", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/improve.json
 A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
@@ -159,20 +167,22 @@ R=$(jq -r '.readiness // \"invalid\"' $F 2>/dev/null || echo invalid)
 case \"$R\" in ready|needs_info|not_actionable) ;; *) R=invalid ;; esac
 T=$(jq -r '.title // \"\"' $F 2>/dev/null || echo '')
 if ! echo \"$T\" | grep -Eq '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ./_-]+[)])?: .+'; then R=invalid; fi
-case \"$T\" in *'!'*) R=invalid ;; esac
-if grep -q 'BREAKING CHANGE' $F 2>/dev/null; then R=invalid; fi
+if echo \"$T\" | grep -Eq '^[a-z]+([(][^)]*[)])?!'; then R=invalid; fi
+if echo \"$T\" | grep -q 'BREAKING CHANGE'; then R=invalid; fi
 if [ ! -s /tmp/fabro/triage.md ]; then R=invalid; fi
 BAD=$(jq '[.labels[]? | select(test(\"^[a-z0-9:._-]+$\") | not)] | length' $F 2>/dev/null || echo 99)
 if [ \"$BAD\" != 0 ]; then R=invalid; fi
 Q=$(jq '.questions | length' $F 2>/dev/null || echo 0)
 if [ \"$R\" = needs_info ] && [ \"$Q\" = 0 ]; then R=invalid; fi
+if [ \"$R\" = ready ] && [ \"$Q\" != 0 ]; then R=invalid; fi
+if [ \"$R\" = not_actionable ] && [ \"$Q\" != 0 ]; then R=invalid; fi
 if [ \"$R\" = invalid ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/triage_attempts
   if [ $A -lt 2 ]; then echo 'triage.json or triage.md is missing or invalid; rewrite both exactly per the contract' >&2; exit 1; fi
 fi
 echo 0 > /tmp/fabro/triage_attempts
-QT=$(jq -r '[.questions[]? | \"- \" + (.question // \"\")] | join(\"  \")' $F 2>/dev/null | cut -c1-1200)
+QT=$(jq -r '[.questions[]? | \"- \" + (.question // \"\") + (if (.recommended // \"\") == \"\" then \"\" else \"  (suggested: \" + .recommended + \")\" end)] | join(\"  \")' $F 2>/dev/null | tr -d '\"' | cut -c1-1200)
 jq -nc --arg r \"$R\" --arg q \"$Q\" --arg qt \"$QT\" --arg a \"$ANS\" '{context_updates:{triage_readiness:$r,question_count:$q,triage_questions:$qt,answered:$a}}'"]
 
     // ---- The gate ----
@@ -197,9 +207,18 @@ rm -f /tmp/fabro/triage.json /tmp/fabro/triage.md
 jq -nc '{context_updates:{answered:\"true\"}}'"]
 
     // ---- Terminal applications ----
+    // set -e, and every agent-authored label created first. `gh issue edit` resolves
+    // label names before it sends anything, so ONE label the repository does not have
+    // makes the whole call fail and applies nothing — not the title, not the other
+    // labels, not the removals. Without set -e that failure was swallowed, because the
+    // node's last command is the jq that prints context_updates and always exits 0.
     post_questions [label="Post the questions and stand down", shape=parallelogram, output_schema="routing",
-        script="N=$(jq -r .number /tmp/fabro/issue.json)
+        script="set -e
+N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(jq -r .title /tmp/fabro/triage.json)
+for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
+  gh label create \"$x\" --color EDEDED --description 'Created by fabro issue triage' 2>/dev/null || true
+done
 L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
 R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
 { echo '<!-- fabro:triage-questions -->'
@@ -210,9 +229,15 @@ gh issue comment $N --body-file /tmp/fabro/questions.md
 gh issue edit $N --title \"$T\" --add-label needs-info $L $R
 jq -nc '{context_updates:{triage_outcome:\"needs_info\"}}'"]
 
+    // Unquoted word-splitting of $L is safe: triage_gate refuses any label outside
+    // ^[a-z0-9:._-]+$, so none can contain a space. See post_questions for set -e.
     apply_ready [label="Promote to the backlog queue", shape=parallelogram, output_schema="routing",
-        script="N=$(jq -r .number /tmp/fabro/issue.json)
+        script="set -e
+N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(jq -r .title /tmp/fabro/triage.json)
+for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
+  gh label create \"$x\" --color EDEDED --description 'Created by fabro issue triage' 2>/dev/null || true
+done
 L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
 R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
 { echo '<!-- fabro:triage-report -->' ; cat /tmp/fabro/triage.md ; } > /tmp/fabro/report.md
@@ -222,8 +247,12 @@ jq -nc '{context_updates:{triage_outcome:\"ready\"}}'"]
 
     // Labels and comments. Never closes: decision 5.
     apply_not_actionable [label="Record not actionable", shape=parallelogram, output_schema="routing",
-        script="N=$(jq -r .number /tmp/fabro/issue.json)
+        script="set -e
+N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(jq -r .title /tmp/fabro/triage.json)
+for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
+  gh label create \"$x\" --color EDEDED --description 'Created by fabro issue triage' 2>/dev/null || true
+done
 L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
 R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
 { echo '<!-- fabro:triage-report -->' ; cat /tmp/fabro/triage.md ; } > /tmp/fabro/report.md
@@ -298,12 +327,12 @@ echo done"]
 
 | Rule | How |
 |---|---|
-| `output_schema="routing"` on every `context_updates` emitter | on all seven. Without it Fabro never scans stdout, routing goes inert, and no error appears anywhere |
+| `output_schema="routing"` on every `context_updates` emitter | on all eight: `check_capacity`, `claim`, `improve_gate`, `triage_gate`, `record_answer`, `post_questions`, `apply_ready`, `apply_not_actionable`. Without it Fabro never scans stdout, routing goes inert, and no error appears anywhere |
 | Write every key on both branches | `host_busy`, `improve_status`, `answered` and `triage_readiness` are emitted on every path through their node |
 | `\"` is the only backslash | no `\n`, no `sed` escapes, no `tr '\n'`. Newlines come from real newlines and from `jq ... join`; literal parens in the title regex are `[(]` and `[)]` |
 | POSIX `sh` | `case`, `$((...))`, `[ ]`. No `[[ ]]`, no arrays, no `pipefail` |
 | `#` only inside quoted strings | the HTML markers live inside `echo '...'`, which is a quoted attribute value |
-| Every command node's unconditional edge lands on the terminal-failure node | all seven end at `release` |
+| Every node that can fail mid-run has an unconditional edge to the terminal-failure node | eleven land on `release` — the nine command nodes other than `release` itself, plus both agent nodes |
 | Delete a contract file before its writer runs | `claim` and `record_answer` both `rm -f` the JSON the next agent must write |
 | Reset per-iteration keys | `claim` writes `answered=false` to a file and to context; `record_answer` flips both |
 | Agents do not run `git` — and here, not `gh` either | both agent nodes write files only; every mutation is a command node |

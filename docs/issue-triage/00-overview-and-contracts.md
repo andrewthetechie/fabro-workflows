@@ -233,9 +233,9 @@ visit must never satisfy a condition meant for this one.
 | Node | Keys |
 |---|---|
 | `check_capacity` | `host_busy` |
-| `acquire` | `issue_number` (empty when nothing matched) |
-| `claim` | `issue_number`, `issue_url` |
-| `improve_gate` | `improve_status` |
+| `acquire` | none — it publishes nothing and routes on `outcome` alone |
+| `claim` | `issue_number`, `issue_url`, `answered` |
+| `improve_gate` | `improve_status` (published for the log; no edge reads it) |
 | `triage_gate` | `triage_readiness`, `question_count`, `triage_questions`, `answered` |
 | `record_answer` | `answered` (always `true`) |
 | `apply_ready` / `apply_not_actionable` / `post_questions` | `triage_outcome` |
@@ -245,6 +245,12 @@ questions and their recommended defaults in the notification instead of a bare r
 link. It is built with `jq -nc --arg` so that agent-authored text containing quotes
 cannot break the JSON, and truncated to 1200 characters for Discord's 2000-character
 limit.
+
+`triage_gate` also strips `"` from the value before publishing it. The hook does not
+parse the run state, it greps it — `'"triage_questions":"[^"]*"'` — and a `\"` inside
+the serialized string ends the match early, silently dropping the rest of that question
+and every question after it. Sanitising at the producer is the only place one fix
+covers every consumer.
 
 ## Rules specific to this workflow
 

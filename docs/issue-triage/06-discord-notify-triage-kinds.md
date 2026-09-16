@@ -22,6 +22,20 @@ concatenation, so an agent-authored question containing a quote or a backslash w
 otherwise produce invalid JSON and a silently dropped notification. `triage_gate`
 already truncates to 1200; truncate again here rather than trusting the producer.
 
+**Correction (2026-09-16, harness-proved).** Sanitising here is too late for a quote.
+`grep -o '"triage_questions":"[^"]*"'` runs against the *serialized* run state, so it
+stops at the first `\"` — a fixture question containing `the \"gold\" one` delivered
+`- Which fixture set is canonical, the ` and dropped every question after it. The
+payload stayed valid JSON, so the acceptance check below passes on its first half and
+fails on its second. Fixed at the producer: `triage_gate` strips `"` from the value
+before publishing it, so no escape ever reaches this grep. The `sed` stays for
+backslashes.
+
+**`issue_url` is not added.** Task 06 originally asked for it alongside
+`triage_questions`, but nothing consumes it — the links block already builds the issue
+URL from `repo_url` and `issue` — and each of these greps re-streams the whole run
+state, which can be megabytes. Dropped.
+
 ## Part 2 — the two kinds
 
 ```sh

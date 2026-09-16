@@ -46,7 +46,6 @@ token_file="/storage/server.dev-token"
 # buffered into a variable.
 repo_url=""
 issue=""
-issue_url=""
 pr_url=""
 review_run_id=""
 review_err=""
@@ -59,8 +58,6 @@ if [ -r "$token_file" ]; then
   # cut short by head -1, so neither reads the whole body.
   issue=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"issue_number":[0-9]*' | head -1 | cut -d: -f2)
-  issue_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
-    | grep -o '"issue_url":"[^"]*"' | head -1 | cut -d'"' -f4)
   # open_pr publishes pr_url into the run context once the PR exists; absent for
   # every run that did not get that far.
   pr_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
@@ -80,9 +77,11 @@ if [ -r "$token_file" ]; then
   review_err=$(printf '%s' "$review_err" | sed 's/[\\"]//g')
   triage_questions=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"triage_questions":"[^"]*"' | head -1 | cut -d'"' -f4)
-  # Agent-authored questions can carry quotes and backslashes; sanitize the same way
-  # as review_err, then truncate to leave room for the rest of the Discord message
-  # (2000 character limit total). Truncate to 800 characters via cut.
+  # `[^"]*` stops at the first `\"` in the serialized state, which silently dropped
+  # the rest of the batch. triage_gate now strips `"` from the value before publishing
+  # it, so no escape can appear here. This sed stays as defence in depth for a
+  # backslash, and the cut leaves room for the rest of the Discord message (2000
+  # characters total).
   triage_questions=$(printf '%s' "$triage_questions" | sed 's/[\\"]//g' | cut -c1-800)
 fi
 
@@ -139,7 +138,9 @@ esac
 links=""
 # The PR is the most useful link when there is one, so it leads.
 [ -n "$pr_url" ] && links="${links}\\n${pr_url}"
-[ -n "$base_url" ] && links="${links}\\n${base_url}/runs/${run_id}"
+if [ -n "$base_url" ] && [ "$kind" != "triage-question" ]; then
+  links="${links}\\n${base_url}/runs/${run_id}"
+fi
 # The review this run spawned, on the notification that is about that review. The
 # key is only populated once trigger_review has checkpointed, which is after every
 # other kind has already fired, so gate on the kind rather than rely on that order

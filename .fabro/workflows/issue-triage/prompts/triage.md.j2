@@ -86,7 +86,11 @@ Write **two** files:
 Rules — `triage_gate` enforces these:
 
 - `labels` match `^[a-z0-9:._-]+$` — they expand unquoted into a `gh issue edit`
-  command line, so a space breaks the call.
+  command line, so a space breaks the call. **Use labels that already exist in this
+  repository, or that the workflow creates** (`needs-info`, `triage-in-progress`,
+  `agent`); `bug` and `enhancement` exist in all four. Read the labels already on this
+  issue and its siblings before inventing one. An empty `labels` array is fine and is
+  the right answer when nothing fits.
 - `questions` is non-empty **if and only if** `readiness` is `needs_info`.
 - For `ready`, write `None — this issue is workable as written` under the questions
   heading and state that implementation can begin.
