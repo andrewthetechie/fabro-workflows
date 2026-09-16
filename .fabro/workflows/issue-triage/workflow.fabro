@@ -113,7 +113,7 @@ echo 0 > /tmp/fabro/improve_attempts
 if [ \"$S\" = improved ]; then
   jq -r .body $F > /tmp/fabro/improved_body.md
   gh issue edit $N --body-file /tmp/fabro/improved_body.md
-  gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.json
+  gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.next.json && mv /tmp/fabro/issue.next.json /tmp/fabro/issue.json
 fi
 jq -nc --arg s \"$S\" '{context_updates:{improve_status:$s}}'"]
 
@@ -159,15 +159,23 @@ jq -nc --arg r \"$R\" --arg q \"$Q\" --arg qt \"$QT\" --arg a \"$ANS\" '{context
     // The only channel from the gate's answer into a file (finding 2). The comment it
     // posts carries NO marker, deliberately: if this run then dies, the issue must
     // still look answered to the next acquire.
+    // The refresh goes to a temporary file and is moved into place, because `>` truncates
+    // before gh runs: a failed refresh used to leave an empty issue.json and hand it to
+    // `triage`, which would then triage nothing and fail its gate twice. Under set -e the
+    // node now fails instead, and `release` still finds the previous good copy and can
+    // remove the claim. Posting the answer keeps its `|| true`: the text is already on
+    // disk and this run can finish without the mirror comment.
     record_answer [label="Record the human answer", shape=parallelogram, output_schema="routing",
         stdin_source="human.gate.text",
-        script="cat > /tmp/fabro/human_answer.md
+        script="set -e
+cat > /tmp/fabro/human_answer.md
 N=$(jq -r .number /tmp/fabro/issue.json)
 if [ -s /tmp/fabro/human_answer.md ]; then
   gh issue comment $N --body-file /tmp/fabro/human_answer.md || true
 fi
 echo true > /tmp/fabro/answered
-gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.json
+gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.next.json
+mv /tmp/fabro/issue.next.json /tmp/fabro/issue.json
 rm -f /tmp/fabro/triage.json /tmp/fabro/triage.md
 jq -nc '{context_updates:{answered:\"true\"}}'"]
 
