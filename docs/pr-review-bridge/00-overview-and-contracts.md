@@ -58,9 +58,15 @@ deliberate "`pr_number` unbound" validation warning exists to catch. **Keep that
 warning.** Binding `[run.inputs] pr_number` would silence it and turn a
 no-input fire into a review of PR #1.
 
-Corroborating evidence: of the 20 runs in this deployment's history, all 16 `Backlog`
-runs carry an `automation` object and **all four `PrReview` runs have
-`automation: null`** — they were created directly through `POST /api/v1/runs`.
+Corroborating evidence, recounted over the **whole** run population on 2026-09-16 —
+177 runs including archived, via `page[limit]`/`page[offset]`, because the runs list
+returns 20 by default and reports the real count in `meta.total`, not `pagination`:
+all **170** `Backlog` runs carry an `automation` object and **all 6 `PrReview` runs
+have `automation: null`** — they were created directly through `POST /api/v1/runs`.
+The two runs in the entire deployment carrying a `parent_id` are the two this bridge
+created. Earlier versions of this paragraph said "20 runs / 16 Backlog / four
+PrReview"; those were one page of results, and the conclusion they support is
+unchanged but was never measured over the population it claimed.
 
 ### 2. `house` / `stack.child_workflow` is not a child run
 
@@ -251,7 +257,7 @@ Only the **name** appears in this repo. The repo is public.
 | The token is visible to agents | `[run.environment.env]` reaches "command **and** agent execution". Every agent in a backlog sandbox can read `FABRO_API_TOKEN`. Accepted: that sandbox already holds a `GITHUB_TOKEN` with `contents: write` on four repositories, on a trusted single-tenant box. |
 | `parent_id` couples to branch naming | It is derived from `fabro/run/<run_id>`. If `[run.run_branch] enabled` ever goes `false` in backlog, lineage breaks. The trigger validates the ULID shape and omits `parent_id` rather than sending garbage. |
 | The `pr-review-*` automations are now config-only | They are read for `environment_id` and `target`, and **never fired**. They look dead. Do not delete them — the bridge resolves its per-repo config from them. |
-| Backpressure is unproven | `server.scheduler.max_concurrent_runs = 3`. `lifecycle.queue_position` exists in the schema but is `null` across all 20 runs, so queuing has never been exercised here. The trigger logs the response code and `queue_position` on every fire so the evidence accumulates before it matters. |
+| Backpressure is unproven | `server.scheduler.max_concurrent_runs = 3`. `lifecycle.queue_position` exists in the schema but is `null` across **all 177 runs** (recounted 2026-09-16 over the full paginated population, not the default first page of 20), so queuing has never been exercised here. The trigger logs the response code and `queue_position` on every fire so the evidence accumulates before it matters. |
 | A lost `start` response can leak a second review | The marker is written only after a successful fire. If `POST /runs/{id}/start` succeeds server-side but its response is lost, the trigger exits non-zero, writes no marker, and a `human_rescue → [P] Accept partial → open_pr` revisit fires a second review on the same PR — the double-`--force-with-lease` hazard the marker exists to prevent. Narrow, and reachable only on the rescue path. Accepted; the alternative is writing the marker before the fire, which converts every transient failure into a silently skipped review. |
 | Auto-merge is out of scope, not foreclosed | The terminal signal a future auto-merge stage would key on — the `ai-review-complete` label plus green CI — already exists and is unchanged by this stage. |
 

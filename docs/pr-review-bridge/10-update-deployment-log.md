@@ -44,7 +44,8 @@ specifically:
 - `lifecycle.queue_position` at creation, whatever it was
 
 That last one is the only backpressure evidence this deployment has. `queue_position`
-exists in the schema but was `null` across all 20 runs before this stage, so nothing
+exists in the schema but was `null` across every run before this stage — 20 was the
+default page size, not the population; recounted 2026-09-16 it is null on all 177 — so nothing
 here has ever exercised `max_concurrent_runs = 3`. Start the record now, while it is
 cheap, rather than when four 15-minute schedules are enabled and each PR also spawns
 a review.

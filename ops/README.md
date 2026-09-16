@@ -232,8 +232,11 @@ neither is urgent.
 ## Sandbox containers — fabro stops them, nothing removes them
 
 Fabro creates one `fabro-run-<run_id>` container per run and stops it on terminal. It
-never removes it. Measured 2026-09-16: **165 containers, 16.8 GB** of writable layers,
-oldest three days old, one per run forever.
+never removes it. Measured 2026-09-16: **165 containers**, `docker system df` reporting
+**16.17 GB reclaimable (94% of container storage)**, oldest three days old, one per run
+forever. First sweep removed 148 and freed **8 GB** of disk — less than the 16.8 GB that
+`docker ps --size` reports for writable layers, because that figure counts shared layers
+once per container.
 
 `stop_on_terminal` is **not** broken, which was the earlier reading of this. 164 of the
 165 were `Exited (137)` with `FinishedAt` matching their run's `completed_at` to the
