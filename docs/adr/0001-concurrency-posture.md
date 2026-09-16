@@ -24,10 +24,15 @@ the accepted cost of keeping throughput. What happens when both local coders are
 (queue at the inference server vs. error into cloud fallback) is an accepted unknown —
 not worth the GPU time to test; either outcome is tolerable.
 
-The four backlog schedules stay **disabled** (operator decision of 2026-09-14 stands);
-when re-enabled they will be **staggered** (e.g. `2-59/15`, `7-59/15`, `12-59/15`,
-`17-59/15`) rather than all on `*/15`, so the four automations never fire in the same
-minute and never spike glm-5.3 with four simultaneous decompose stages. Two active runs
+The four backlog schedules stay **disabled** (operator decision of 2026-09-14 stands)
+and are now **staggered** three minutes apart — `2-59/15`, `5-59/15`, `8-59/15`,
+`11-59/15 * * * *` for jelly-swipe, lawncare-saas, womens-fantasy-sports, writers-app
+respectively — so the four automations never fire in the same minute and never spike
+glm-5.3 with four simultaneous decompose stages. (Range-step form, not
+`2-59/15, 7-59/15, 12-59/15, 17-59/15` as first sketched: `2-59/15` fires at
+2,17,32,47, which collides with `17-59/15`. Four distinct residues mod 15 are required.)
+The offsets live in the automation rows themselves and in `ops/provision-server-state.sh`,
+which drift-checks the expressions. Two active runs
 in the same repo on different issues is accepted: the `agent-in-progress` label prevents
 same-issue collisions, and the mainline-merge discipline in `next_task`/`open_pr_prep`
 handles the branch collision.

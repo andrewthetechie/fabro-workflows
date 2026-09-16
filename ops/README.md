@@ -113,10 +113,10 @@ from the live server 2026-09-16:
 
 | id | target | environment | triggers |
 |---|---|---|---|
-| `backlog-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled, `schedule:every-15m` disabled |
-| `backlog-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled, `schedule:every-15m` disabled |
-| `backlog-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled, `schedule:every-15m` disabled |
-| `backlog-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `api:manual` enabled, `schedule:every-15m` disabled |
+| `backlog-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled, `schedule:every-15m` disabled (`2-59/15 * * * *`) |
+| `backlog-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled, `schedule:every-15m` disabled (`5-59/15 * * * *`) |
+| `backlog-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled, `schedule:every-15m` disabled (`8-59/15 * * * *`) |
+| `backlog-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `api:manual` enabled, `schedule:every-15m` disabled (`11-59/15 * * * *`) |
 | `pr-review-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled — **configuration only, never fired** |
 | `pr-review-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled — **configuration only, never fired** |
 | `pr-review-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled — **configuration only, never fired** |
@@ -142,13 +142,15 @@ excluded — it is the operator's to set — while `api:manual` being disabled i
 since a disabled trigger is exactly as dead as a missing one.
 
 Every `backlog` schedule is **disabled** — an operator decision (2026-09-14) while
-development and testing continue. The `pr-review` automations carry no schedule at
+development and testing continue. The four schedules are **staggered** three minutes
+apart (ADR 0001, implemented 2026-09-16) so a re-enabled fleet never fires four runs
+in the same minute. The `pr-review` automations carry no schedule at
 all by design: they are fired against a named PR, so there is nothing to poll.
 Nothing in this deployment currently fires on a cron.
 
-Two drifts from what `provision-server-state.sh` would create, both left as-is:
-`backlog-writers-app` has no `api:manual` trigger, and the script reports
-`environment_id` drift only, not trigger drift.
+~~Two drifts~~ The drift previously recorded here (`backlog-writers-app` missing its
+`api:manual` trigger) was corrected by hand on 2026-09-16; the script now compares the
+full trigger set and the schedule expressions, and reports zero drift.
 
 `provision-server-state.sh` recreates the automations. The environments above are
 created by hand (step 6).

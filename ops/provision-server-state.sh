@@ -61,7 +61,7 @@ if ! curl -fsS -m 15 -H "$AUTH_HEADER" "$API_URL/automations" > /tmp/provision_l
   exit 1
 fi
 
-# check_triggers <id> <schedule_id_or_empty>
+# check_triggers <id> <schedule_id_or_empty> [schedule_expr]
 #
 # An existing row's triggers are compared as well as its environment_id. This is
 # not a theoretical case: backlog-writers-app sat in production carrying only its
@@ -73,10 +73,12 @@ fi
 # The schedule's `enabled` flag is deliberately NOT compared. Schedules are
 # created disabled and turned on by the operator, so comparing it would report
 # drift on every correctly-running host. The api trigger's `enabled` IS compared:
-# a disabled one is exactly as dead as a missing one.
+# a disabled one is exactly as dead as a missing one. The schedule's `expression`
+# IS compared: the staggering offsets are this script's state to guard.
 check_triggers() {
   t_id="$1"
   t_schedule="$2"
+  t_expr="${3:-}"
 
   t_want="api:manual"
   if [ -n "$t_schedule" ]; then
@@ -110,20 +112,33 @@ check_triggers() {
     echo "DRIFT: $t_id has api:manual disabled, so it cannot be fired through the API. Not corrected." >&2
     DRIFT_FOUND=1
   fi
+
+  if [ -n "$t_schedule" ] && [ -n "$t_expr" ]; then
+    t_got_expr=$(jq -r --arg id "$t_id" --arg sid "$t_schedule" \
+      '.data[]? | select(.id == $id) | .triggers[]?
+       | select(.type == "schedule" and .id == $sid) | .expression // ""' /tmp/provision_list.json)
+    if [ -n "$t_got_expr" ] && [ "$t_got_expr" != "$t_expr" ]; then
+      echo "DRIFT: $t_id schedule $t_schedule has expression '$t_got_expr', expected '$t_expr'. Not corrected." >&2
+      DRIFT_FOUND=1
+    fi
+  fi
 }
 
-# provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty>
+# provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty> [schedule_expr]
 #   - workflow is "backlog" or "pr-review"; both live in
 #     andrewthetechie/fabro-workflows@main.
-#   - schedule_id, when non-empty, adds a DISABLED every-15m schedule row for
-#     operator convenience. pr-review gets none: it is fired manually against a
-#     named PR, so there is nothing for a cron to poll.
+#   - schedule_id, when non-empty, adds a DISABLED schedule row for operator
+#     convenience, using schedule_expr. The four backlog schedules are staggered
+#     three minutes apart (ADR 0001) so all four never fire in the same minute.
+#     pr-review gets none: it is fired manually against a named PR, so there is
+#     nothing for a cron to poll.
 provision_automation() {
   id="$1"
   env_id="$2"
   repo="$3"
   workflow="$4"
   schedule_id="$5"
+  schedule_expr="${6:-}"
 
   existing_env=$(jq -r --arg id "$id" \
     '.data[]? | select(.id == $id) | .environment_id // ""' /tmp/provision_list.json)
@@ -134,12 +149,15 @@ provision_automation() {
       echo "DRIFT: $id has environment_id=$existing_env, expected $env_id. Not corrected." >&2
       DRIFT_FOUND=1
     fi
-    check_triggers "$id" "$schedule_id"
+    check_triggers "$id" "$schedule_id" "$schedule_expr"
     return 0
   fi
 
   if [ -n "$schedule_id" ]; then
-    schedule_json=",{\"type\":\"schedule\",\"id\":\"$schedule_id\",\"enabled\":false,\"expression\":\"*/15 * * * *\"}"
+    # jq builds this: the cron expression is data, not something to splice into
+    # a JSON string.
+    schedule_json=$(jq -nc --arg sid "$schedule_id" --arg expr "$schedule_expr" \
+      ',{"type":"schedule","id":$sid,"enabled":false,"expression":$expr}')
   else
     schedule_json=""
   fi
@@ -165,10 +183,10 @@ provision_automation pr-review-womens-fantasy-sports ts andrewthetechie/womens-f
 provision_automation pr-review-writers-app rust-node andrewthetechie/writers-app pr-review "" || FAILED=$((FAILED+1))
 
 echo "Provisioning backlog automations..."
-provision_automation backlog-jelly-swipe python andrewthetechie/jelly-swipe backlog every-15m || FAILED=$((FAILED+1))
-provision_automation backlog-lawncare-saas python-node andrewthetechie/lawncare-saas backlog every-15m || FAILED=$((FAILED+1))
-provision_automation backlog-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports backlog every-15m || FAILED=$((FAILED+1))
-provision_automation backlog-writers-app rust-node andrewthetechie/writers-app backlog every-15m || FAILED=$((FAILED+1))
+provision_automation backlog-jelly-swipe python andrewthetechie/jelly-swipe backlog every-15m "2-59/15 * * * *" || FAILED=$((FAILED+1))
+provision_automation backlog-lawncare-saas python-node andrewthetechie/lawncare-saas backlog every-15m "5-59/15 * * * *" || FAILED=$((FAILED+1))
+provision_automation backlog-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports backlog every-15m "8-59/15 * * * *" || FAILED=$((FAILED+1))
+provision_automation backlog-writers-app rust-node andrewthetechie/writers-app backlog every-15m "11-59/15 * * * *" || FAILED=$((FAILED+1))
 
 if [ "$FAILED" -ne 0 ]; then
   echo "$FAILED automation(s) could not be created; see the errors above." >&2
