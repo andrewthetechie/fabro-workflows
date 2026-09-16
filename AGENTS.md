@@ -26,6 +26,7 @@ actually lives.
 | `.fabro/workflows/<name>/` | **The only tree the automations read.** Two packages: `backlog`, `pr-review`. `backlog/scripts/` is executed by a live stage as well as by hooks, so changing it is a deploy. |
 | `ops/` | Host replication: compose, profile images, provisioning, branch sweeper. Start at `ops/README.md`. No automation reads this tree. |
 | `docs/pr-review-bridge/` | The task series for the third stage: `backlog` triggers a `pr-review` run on the PR it just opened. `00-overview-and-contracts.md` first. |
+| `docs/auto-merge/` | A cross-cutting series for the fourth stage (the squash-merge), spanning both workflows: kill switches, Conventional-Commits titles, the merge graph, `ci_fix`. `00-overview-and-contracts.md` first. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
 | `.scratch/` | Untracked working notes. |
 
@@ -53,11 +54,13 @@ ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp 
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
 ```
 
-Baselines as of 2026-09-15: `Backlog (37 nodes, 85 edges)` clean, and
-`PrReview (19 nodes, 40 edges)` with exactly one warning — `pr_number` unbound in
-`validate_input`. That warning is deliberate. Binding `[run.inputs] pr_number` would
-silence it and let a run fired with no input review PR #1 instead of failing at
-admission.
+Baselines as of 2026-09-16 (auto-merge deployed): `Backlog (38 nodes, 86 edges)`
+clean, and `PrReview (28 nodes, 64 edges)` with exactly one warning — `pr_number`
+unbound in `validate_input`. That warning is deliberate. Binding
+`[run.inputs] pr_number` would silence it and let a run fired with no input review PR
+#1 instead of failing at admission. (`auto_merge` is another `{{ inputs.* }}`, but it
+is always supplied by `fire-pr-review.sh` at fire time, so `fabro validate` reports
+only the `pr_number` warning — one per node attribute, not two.)
 
 `fabro validate` does not parse `workflow.toml` strictly. A dotted model key that loses
 its quotes becomes a nested table and the automation fire returns 422, with nothing
@@ -87,6 +90,15 @@ These pass `fabro validate` and fail at runtime. Both workflows depend on all of
 | Anchor hook matchers | They are unanchored regexes tested against `node_id`, `handler_type`, `edge_to`, `edge_from` and `tool_name`. Write `^open_pr$`, not `open_pr`, for any id that prefixes another. |
 | `[run.environment.env]` in backlog's `workflow.toml` must never gain an `id` key | It pins all four backlog automations to one environment, and two of the four repos fail CI on the wrong image. It also breaks `fabro validate`, which resolves a non-default id against the CLI's own local catalog and errors. |
 | `trigger_review` keeps `on_failure="succeed"` | Its single unconditional edge points at `exit`. A failed node still routes and takes its *unconditional* edge, so without the attribute a trigger failure routes to `exit` instead of to `human_rescue`. |
+| Both auto-merge switches fail closed — absent, empty or unparseable means **off** | A `gh` call that returns nothing, or a broken injection read as "not disabled", merges an unreviewed PR into `main`. On `lawncare-saas` that is also a deploy. |
+| `[run.environment.env]` interpolates `{{ vars.X }}` only — never `${X}`, never `{{ env.X }}` | `${X}` reaches the sandbox as literal text. A kill switch spelled that way is pinned off forever, and the shakedown cannot tell it from a correctly disarmed one. |
+| The `FABRO_AUTO_MERGE` server variable must exist | An unset `{{ vars.X }}` fails the RunIntent at compile time, so no `pr-review` run is created at all. `provision-server-state.sh` creates it; `off` writes `0` and never deletes. |
+| `POST /variables` upserts, so `provision_variable` is create-if-absent | A re-provision that POSTs unconditionally silently re-arms a switch an operator killed mid-incident. It reports drift instead. |
+| `risk` is gate-enforced in `fix_gate`, not merely documented | Without the check the field is optional in practice, PRs quietly stop auto-merging, and the report still says "complete". |
+| The merge node re-reads PR `state` from GitHub immediately before merging | The bridge's double-fire marker is per-run and does not stop a second review fired by hand. Two runs reach `merge`; the loser must report "already handled", not fail. |
+| Every merge-phase command node's unconditional edge lands on `mark_needs_human`; expected blocks are the *conditional* edges | A broken merge — a token without `contents: write`, an API 5xx — otherwise lands in the same quiet "not auto-merged" bucket as a risk-4 PR and stays invisible. |
+| Commit-body markers are `:start` / `:end`, never `<!-- /fabro:commit-body -->` | A closing marker with a slash forces `\/` into the extraction pattern, and `\"` is the only backslash a `.fabro` file may contain. |
+| The subject is the live PR title; the body comes from the marker block | `release-please` turns an agent's `feat:`/`fix:` subject into a release on `jelly-swipe`/`lawncare-saas`, and the derivation never emits `!` or `BREAKING CHANGE:`. |
 
 ## Deploying to the server after a merge to `main`
 
@@ -107,9 +119,9 @@ scp .fabro/workflows/backlog/scripts/discord-notify.sh andrew@10.10.0.32:/tmp/
 ssh andrew@10.10.0.32 'docker cp /tmp/discord-notify.sh \
   fabro-fabro-1:/storage/scripts/discord-notify.sh && rm /tmp/discord-notify.sh'
 
-# the operator's manual-fire tool. The trigger node reads its own copy from a fresh
-# clone of `main`, so only this host copy needs deploying.
-scp .fabro/workflows/backlog/scripts/fire-pr-review.sh \
+# the operator's manual-fire tool is a read-only wrapper; there is exactly one copy
+# of fire-pr-review.sh, on main. Install the wrapper once; it is not re-deployed.
+scp docs/auto-merge/fabro-fire-pr-review-wrapper.sh \
   andrew@10.10.0.32:~/bin/fabro-fire-pr-review.sh
 ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-fire-pr-review.sh'
 
@@ -132,10 +144,24 @@ ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'  | diff - ops/docker-com
 ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/scripts/discord-notify.sh' \
   | diff - .fabro/workflows/backlog/scripts/discord-notify.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-fire-pr-review.sh' \
-  | diff - .fabro/workflows/backlog/scripts/fire-pr-review.sh
+  | diff - docs/auto-merge/fabro-fire-pr-review-wrapper.sh
 ```
 
-A compose change needs `cd ~/fabro && docker compose up -d` to take effect.
+A compose change needs `cd ~/fabro && docker compose up -d` to take effect. The host
+auto-merge switch is a server variable, so flipping it needs no deploy and no
+restart; it takes effect on the next run:
+
+```sh
+# one repo
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 \
+  ./ops/fabro-auto-merge-switch.sh andrewthetechie/<repo> off
+# all four
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 \
+  ./ops/fabro-auto-merge-switch.sh host off
+ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro variable get FABRO_AUTO_MERGE'
+```
+
+Neither undoes a merge that already happened.
 
 **Upgrading the fabro binary is a separate, deliberate act** — never part of a
 routine deploy. The image tag is pinned by `FABRO_VERSION` in `~/fabro/.env`

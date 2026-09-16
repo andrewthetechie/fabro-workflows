@@ -65,7 +65,10 @@ deployment and drift check are in the main `AGENTS.md`.
    provider.
 3. **Notify script** — deploy `discord-notify.sh` (tracked under
    `.fabro/workflows/backlog/scripts/`) to `/storage/scripts/discord-notify.sh` and
-   write the webhook URL to `/storage/secrets/discord_webhook_url`.
+   write the webhook URL to `/storage/secrets/discord_webhook_url`. It lives under
+   `backlog/scripts/` but is called by hooks in **both** workflows by absolute path
+   inside the container — do not tidy it into `pr-review/scripts/`; hooks reference
+   the `/storage/scripts/` path.
 4. **Sweepers** — `cp fabro-branch-sweep.sh fabro-sandbox-sweep.sh ~/bin/ && chmod +x ~/bin/fabro-branch-sweep.sh ~/bin/fabro-sandbox-sweep.sh`, then install both crons (below).
 5. **Profile images** — build all four; see `profile-images/README.md`.
 6. **Environments** — create the five (`default`, `python`, `python-node`, `ts`,
@@ -111,21 +114,51 @@ settings.toml only *selects* one; it does not define any.
 `workflow_source` to `andrewthetechie/fabro-workflows@main` at fire time. Read back
 from the live server 2026-09-16:
 
-| id | target | environment | triggers |
-|---|---|---|---|
-| `backlog-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled, `schedule:every-15m` disabled (`2-59/15 * * * *`) |
-| `backlog-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled, `schedule:every-15m` disabled (`5-59/15 * * * *`) |
-| `backlog-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled, `schedule:every-15m` disabled (`8-59/15 * * * *`) |
-| `backlog-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `api:manual` enabled, `schedule:every-15m` disabled (`11-59/15 * * * *`) |
-| `pr-review-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled — **configuration only, never fired** |
-| `pr-review-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled — **configuration only, never fired** |
-| `pr-review-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled — **configuration only, never fired** |
-| `pr-review-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `api:manual` enabled — **configuration only, never fired** |
+| id | target | environment | auto_merge | triggers |
+|---|---|---|---|---|
+| `backlog-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | — | `api:manual` enabled, `schedule:every-15m` disabled (`2-59/15 * * * *`) |
+| `backlog-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | — | `api:manual` enabled, `schedule:every-15m` disabled (`5-59/15 * * * *`) |
+| `backlog-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | — | `api:manual` enabled, `schedule:every-15m` disabled (`8-59/15 * * * *`) |
+| `backlog-writers-app` | `andrewthetechie/writers-app` | `rust-node` | — | `api:manual` enabled, `schedule:every-15m` disabled (`11-59/15 * * * *`) |
+| `pr-review-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `true` | `api:manual` enabled — **configuration only, never fired** |
+| `pr-review-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `true` | `api:manual` enabled — **configuration only, never fired** |
+| `pr-review-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `true` | `api:manual` enabled — **configuration only, never fired** |
+| `pr-review-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `true` | `api:manual` enabled — **configuration only, never fired** |
 
-The four `pr-review-*` rows are **not dead**. The bridge resolves each repo's
+The `pr-review-*` rows are **not dead**. The bridge resolves each repo's
 `environment_id` and `target` from its own `pr-review-<repo>` automation rather than
 hardcoding a map, so a fifth repository needs no change to any graph, and deleting a row
-silently breaks the bridge for that repo. They are read, never fired.
+silently breaks the bridge for that repo. They are read, never fired — and now they are
+read for one more thing: the per-repo auto-merge kill switch. The `auto_merge` token
+lives in the row's `description`, read by `fire-pr-review.sh`; "an absent token is on"
+(decision 10). These rows are genuinely fireable through the same `api:manual` trigger
+now that `watch_checks`→`merge` exists, but they are still never fired by anything on a
+cron.
+
+### Auto-merge kill switches
+
+Both must read enabled for any merge. Both fail closed — absent, empty, or anything
+other than the explicit enabled value means **off**.
+
+```sh
+# one repo (flip `auto_merge` in the pr-review-<repo> row's description)
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ./ops/fabro-auto-merge-switch.sh andrewthetechie/<repo> off
+
+# all four (the FABRO_AUTO_MERGE server variable)
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ./ops/fabro-auto-merge-switch.sh host off
+ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro variable get FABRO_AUTO_MERGE'
+```
+
+Neither needs a deploy or a restart; both take effect on the next run. Neither undoes
+a merge that already happened. Do **not** hand-build `PATCH /api/v1/automations/{id}`
+(405) or add a `labels` object on `POST` (422) — the switch lives where fabro permits
+it. Do not verify the host switch with `docker exec … echo $FABRO_AUTO_MERGE` — that
+reads the server container, not the run sandbox; the hop that matters is
+`/tmp/fabro/auto_merge` on a real run.
+
+`provision-server-state.sh` reports drift rather than rewriting a row, so a hand-flipped
+`auto_merge=false` survives a re-provision — the property an operator relies on
+mid-incident.
 
 `backlog-writers-app` carried **no `api:manual` trigger** until 2026-09-16, so it could
 not be fired through the API at all — only its disabled schedule would have started it,
@@ -147,6 +180,12 @@ apart (ADR 0001, implemented 2026-09-16) so a re-enabled fleet never fires four 
 in the same minute. The `pr-review` automations carry no schedule at
 all by design: they are fired against a named PR, so there is nothing to poll.
 Nothing in this deployment currently fires on a cron.
+
+A `pr-review` run that reaches the merge phase holds a scheduler slot until CI settles,
+bounded by the 60-minute merge budget. Because fabro queues rather than rejects
+(ADR 0001), a `trigger_review` fire behind three merging runs is delayed, not dropped.
+**Re-enabling the staggered backlog schedules should be accompanied by revisiting the
+cap.** See `docs/adr/0001-concurrency-posture.md`.
 
 ~~Two drifts~~ The drift previously recorded here (`backlog-writers-app` missing its
 `api:manual` trigger) was corrected by hand on 2026-09-16; the script now compares the

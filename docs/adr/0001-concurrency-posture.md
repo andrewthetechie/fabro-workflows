@@ -44,3 +44,8 @@ handles the branch collision.
 - `trigger_review`'s `on_failure="succeed"` design is validated by the queuing finding:
   a bridge fire at cap waits rather than failing, so the silent-empty-review-queue
   scenario requires an actual API error, which the Discord hook reports.
+- The auto-merge stage adds a new long-held-slot source: a `pr-review` run that reaches
+  the merge phase holds a slot until CI settles, bounded by the 60-minute merge budget
+  (up to an hour on a slow check). Queuing at the cap therefore includes a merging run
+  in front of a `trigger_review` fire — acceptable while schedules are disabled, to be
+  revisited with the cap when they are re-enabled.
