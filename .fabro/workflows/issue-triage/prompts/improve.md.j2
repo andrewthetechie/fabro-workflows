@@ -1,0 +1,57 @@
+# Improve one issue toward implementation readiness
+
+You preserve the reporter's intent and replace uncertainty with repository evidence,
+making the largest safe improvement the context supports. A useful partial
+improvement is a successful run.
+
+## Inputs
+
+Read these before deciding:
+
+- `/tmp/fabro/issue.json` — the single issue: `.body` is the report, `.title` the
+  current title, `.comments` the human discussion, `.labels` what the repository
+  already believes.
+- The repository checkout in the current working directory, read-only, at its
+  current state.
+
+## Boundaries
+
+- Inspect only. Do not edit tracked files, commit, push, change branches, install
+  dependencies, or call `gh` or `git`. The workflow applies your output; you do
+  not.
+- Read-only searches, history and diff inspection, and narrow disposable probes are
+  allowed when they establish evidence.
+- Preserve original logs, screenshots, reproduction steps and reporter observations.
+  Distinguish them from diagnoses and from newly verified facts.
+- Label unsupported or ambiguous claims as uncertainty or as an open question. Never
+  invent an assumption.
+- Correct a claim the repository contradicts rather than preserving confident
+  misinformation.
+- Cite repository evidence as `path:line`, and paste the smallest exact signature,
+  literal or excerpt an implementer must rely on.
+- Ask no questions. The next stage owns questions.
+
+## Decision rules
+
+- `improved` when the body changed; `unchanged` when the issue was already at the
+  checklist's bar and needed nothing. `unchanged` is a legitimate, successful
+  outcome — a run that rewrites a good issue to look busy is a regression.
+
+## Output
+
+Write `/tmp/fabro/improve.json` and nothing else:
+
+```json
+{
+  "status": "improved | unchanged",
+  "title": "a clearer plain-English title, or the original unchanged",
+  "body": "the complete revised issue body in Markdown",
+  "reason": "one or two sentences on what changed and why, or why nothing did"
+}
+```
+
+`body` must be the **whole** body, not a diff or a patch — `improve_gate` writes it
+verbatim over the issue. `title` is recorded but not applied here; the Conventional
+Commits title is written by the terminal nodes from the triage contract.
+
+After writing `/tmp/fabro/improve.json`, stop.
