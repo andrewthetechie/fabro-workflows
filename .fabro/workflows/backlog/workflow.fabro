@@ -314,6 +314,19 @@ T=$(jq -r .title /tmp/fabro/issue.json)
 echo 'agent: '$T' (#'$N')' > /tmp/fabro/pr_title.txt
 { echo '## Summary'; echo; echo 'Resolves #'$N': '$T; echo; cat /tmp/fabro/completed.md 2>/dev/null || true; echo '## Validation'; echo; echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after final merge with origin/main'; } > /tmp/fabro/pr_body.md"]
 
+    // `open_pr` is the only node that opens a PR, including on the
+    // human_rescue -> [P] Accept partial -> open_pr_prep -> open_pr path, so it is the
+    // single place that has to publish the PR number for the trigger that follows.
+    //
+    // The trigger cannot read `pr_url` back out of the context: command `script`
+    // substitution supports {{ goal }}, {{ inputs.* }} and {{ vars.* }} only, there is
+    // no {{ context.* }}, and `stdin_source` pipes exactly one key. So this uses the
+    // file-backed contract both workflows are already built on. `pr-review` states the
+    // same rule for itself: every later stage reads the number from a file rather than
+    // re-interpolating it.
+    //
+    // `sed 's|.*/||'` uses | delimiters because a backslash is illegal in a .fabro
+    // file. https://github.com/o/r/pull/123 yields 123.
     open_pr [label="Push and open PR", shape=parallelogram, output_schema="routing",
         script="set -e
 git push -u origin HEAD
@@ -321,9 +334,74 @@ N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(cat /tmp/fabro/pr_title.txt)
 gh pr create --title \"$T\" --body-file /tmp/fabro/pr_body.md --label agent-authored || gh pr view --json url > /dev/null
 PR_URL=$(gh pr view --json url --jq .url)
+echo $PR_URL | sed 's|.*/||' > /tmp/fabro/pr_number
 gh issue edit $N --remove-label agent-in-progress --add-label Review || true
 gh issue comment $N --body 'Agent run complete. PR: '$PR_URL || true
 echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\"}}'"]
+
+    // ---- Trigger the PR review (the bridge) ----
+    // Fires a separate, durable `pr-review` run on the PR this run just opened. This is
+    // a positive in-graph action, not a poll and not a human typing a curl.
+    //
+    // `on_failure="succeed"` is deliberate: the PR already exists by the time this
+    // node runs, and a backlog run that produced a correct PR must not be reported as
+    // failed because a downstream trigger could not reach the API. The cost is that
+    // the usual rule — every command node's unconditional edge lands on the
+    // terminal-failure node — does not apply here, because this node cannot reach a
+    // failed outcome. Its single unconditional edge to `exit` is safe only for as long
+    // as that attribute is present. Remove it and the edge must be re-pointed at
+    // `human_rescue` in the same change.
+    //
+    // It also means `run_failed` never fires for a trigger failure, which is why the
+    // script's own failures are captured below and turned into `review_trigger_error`
+    // instead of a non-zero node exit — so the normal path emits context even when the
+    // trigger fails, and task 06's hook has something to report.
+    //
+    // Both context keys are written on every branch. A stale key from an earlier visit
+    // must never satisfy a condition meant for this one.
+    //
+    // `/tmp/fabro/review_triggered` is the double-fire guard. `open_pr` can be visited
+    // twice, via human_rescue -> [P] Accept partial -> open_pr_prep -> open_pr, and two
+    // concurrent reviews on one PR would both `git push --force-with-lease` to the same
+    // head ref: one wins, the other is rejected and lands an `ai-review-needs-human`
+    // label on a PR that reviewed fine. A marker file was chosen over `max_visits=1`
+    // because file-backed contracts are this deployment's architecture, the skip is
+    // visible in the stage log, and `max_visits` has murky semantics on a failed visit
+    // — which is exactly the state `on_failure="succeed"` puts this node in.
+    //
+    // The node is POSIX sh: `case`, `${#VAR}`, `$?`; no `[[ ]]`, no arrays, no pipefail.
+    // The token is never echoed and never reaches a log. Do not add `set -x`.
+    trigger_review [label="Trigger PR review", shape=parallelogram,
+        output_schema="routing", on_failure="succeed", timeout="10m",
+        script="if [ -f /tmp/fabro/review_triggered ]; then
+  echo 'a review was already triggered for this run' >&2
+  echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"\"}}'
+  exit 0
+fi
+PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+case \"$PR\" in '' | *[!0-9]*)
+  echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"no usable pr_number was recorded by open_pr\"}}'
+  exit 0 ;;
+esac
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo '')
+RID=$(basename $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ''))
+if [ ${#RID} -ne 26 ]; then RID=''; fi
+case \"$RID\" in *[!0-9A-Z]*) RID='' ;; esac
+rm -rf /tmp/fabro/wfrepo
+if ! git clone --depth 1 https://github.com/andrewthetechie/fabro-workflows /tmp/fabro/wfrepo > /dev/null 2>&1; then
+  echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"could not clone fabro-workflows to build the pr-review package\"}}'
+  exit 0
+fi
+S=/tmp/fabro/wfrepo/.fabro/workflows/backlog/scripts/fire-pr-review.sh
+PARENT_RUN_ID=$RID DRY_RUN=0 sh $S $REPO $PR > /tmp/fabro/trigger_out 2> /tmp/fabro/trigger_err
+if [ $? -eq 0 ]; then
+  touch /tmp/fabro/review_triggered
+  R=$(cat /tmp/fabro/trigger_out | tr -d '\r' | tail -1)
+  echo '{\"context_updates\":{\"review_run_id\":\"'$R'\",\"review_trigger_error\":\"\"}}'
+else
+  E=$(tail -1 /tmp/fabro/trigger_err | tr -d '\r' | cut -c1-200)
+  echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"'$E'\"}}'
+fi"]
 
     close_noop [label="Close (no actionable work)", shape=parallelogram,
         script="N=$(jq -r .number /tmp/fabro/issue.json)
@@ -441,8 +519,12 @@ echo done"]
 
     open_pr_prep -> open_pr         [condition="outcome=succeeded"]
     open_pr_prep -> human_rescue
-    open_pr -> exit                 [condition="outcome=succeeded"]
+    open_pr -> trigger_review       [condition="outcome=succeeded"]
     open_pr -> human_rescue
+    // Unconditional, and safe only while on_failure="succeed" is on trigger_review.
+    // A failed node still routes, and it takes its unconditional edge — so if that
+    // attribute ever comes off, this edge must go to human_rescue in the same change.
+    trigger_review -> exit
 
     close_noop -> exit
 
