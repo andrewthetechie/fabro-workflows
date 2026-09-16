@@ -17,6 +17,7 @@ locations instead.
 |---|---|
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). Deterministic; see its header comments. |
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
+| `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
 | `docker-compose.yaml` | Runs the `fabro` server container (the only container that is `Up`). |
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
@@ -290,6 +291,37 @@ grows: `: > ~/.local/state/fabro-branch-sweep.log`.
 
 04:43 daily, after the branch sweeper rather than alongside it — both are chatty and
 neither is urgent.
+
+## Cron — the health monitor
+
+```sh
+( crontab -l 2>/dev/null; \
+  echo '7-59/15 * * * * DRY_RUN=0 /home/andrew/bin/fabro-monitor.sh >> /home/andrew/.local/state/fabro-monitor.log 2>&1' \
+) | crontab -
+```
+
+Every 15 minutes at offset 7 — it never shares a minute with a backlog fire
+(`2/5/8/11-59/15`) and lands between the triage fires (`:30/:35/:40/:45`).
+`fabro-monitor.sh` is the third member of the sweeper pattern and the only
+thing on the host that watches the *gaps between runs*: a dead container, a
+dead API, a dead scheduler, a run wedged non-terminal, an empty `agent` queue
+across the four repos, a full disk. It never alerts on a failed run — that
+stays with the hooks (`discord-notify.sh`), which see the run context it
+cannot (ADR 0004, `../docs/adr/0004-monitoring-is-out-of-band.md`).
+
+- **Log:** `~/.local/state/fabro-monitor.log` — one `ok`/`skip` line per
+  condition per run; a silent log means a dead monitor, not a healthy host.
+  Rotate by hand when it grows.
+- **State:** `~/.local/state/fabro-monitor.state` — one `C<n>=<epoch>` line
+  per firing condition (dedup: re-alert 4h, starvation 7d, disk 24h). Absent
+  or empty when nothing is firing; a clean tick writes no file at all.
+- **Knobs** (force a condition without breaking anything real):
+  `DISK_PCT=1` fires C6, `FABRO_PORT=1` fires C2, `IDLE_HOURS=0` fires C3
+  once a schedule is enabled. `DRY_RUN=1` (the default) prints the alerts it
+  would send and writes nothing.
+- The condition table, thresholds, and message contract:
+  `../docs/turn-it-on/00-overview-and-contracts.md`. A dead-man's heartbeat
+  (`FABRO_HEARTBEAT_URL` in `~/fabro/.env`) is wired in task 03.
 
 ## Sandbox containers — fabro stops them, nothing removes them
 
