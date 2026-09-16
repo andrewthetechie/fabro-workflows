@@ -149,6 +149,18 @@ FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ./ops/fabro-auto-merge-switch.sh host off
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro variable get FABRO_AUTO_MERGE'
 ```
 
+The same script is deployed to the host at `~/bin/fabro-auto-merge-switch.sh`, so an
+incident that starts in an ssh session does not also need a checkout:
+
+```sh
+ssh andrew@10.10.0.32
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ~/bin/fabro-auto-merge-switch.sh host off
+```
+
+`DRY_RUN` defaults to 1 and prints the current value first, including `<absent>` —
+which for the host switch means every `pr-review` run will fail to compile, not that
+auto-merge is off.
+
 Neither needs a deploy or a restart; both take effect on the next run. Neither undoes
 a merge that already happened. Do **not** hand-build `PATCH /api/v1/automations/{id}`
 (405) or add a `labels` object on `POST` (422) — the switch lives where fabro permits

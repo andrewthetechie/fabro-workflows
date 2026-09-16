@@ -48,6 +48,37 @@ edge, no new context key.
 Note `(.risk | floor) == .risk` — the contract says 0-5, and `2.5` is not a rating.
 `jq` has no integer type, so the floor comparison is the check.
 
+## The `own_findings` accounting, for the same reason
+
+`merge_gate` check 10 blocks a merge when an error-severity `own_findings` entry is not
+cited in `fixes_applied`. The prompt never asked for that: `own_findings` is documented
+as holding problems "whether or not you fixed them", and the citation requirement is
+scoped to "every finding **from both reviewers**".
+
+So an agent following the contract exactly — finding a real bug itself, fixing it,
+citing the reviewer finding it was working on — got the merge refused under the message
+"An error-severity finding was not fixed", which was false. Observed live on
+`jelly-swipe#379`, run `01M2NC5XBC16B2TD4YTN41JB77`, on the first attempt to exercise
+that path. Fails closed, so nothing unsafe happened; but it suppresses auto-merge on
+exactly the PRs where the fixer did the most work, and it sends a human to redo it.
+
+Fix it in the same two places `risk` is fixed, for the same reason. The prompt gains the
+requirement; `fix_gate` gains the check:
+
+```sh
+M=$(jq '[.own_findings[]? | select(.severity == \"error\") | .id] - ([.fixes_applied[]?.finding_id] + [.not_fixed[]?.finding_id]) | length' $F 2>/dev/null || echo 99)
+```
+
+`not_fixed` counts as accounting for it here even though check 9 blocks the merge on a
+non-empty `not_fixed` — the two gates ask different questions. `fix_gate` asks whether
+the report is *complete*; `merge_gate` asks whether it is *clean*. A finding the agent
+consciously declined is a complete report and an unmergeable PR.
+
+Enforcing at `fix_gate` is what gives the agent a repair turn. `merge_gate` has none: it
+is the last node before the merge, so a bookkeeping slip there is a silent refusal at
+the end of a run. `merge_gate` keeps the check as a fail-closed backstop, with wording
+that says what it tests rather than asserting the fix never happened.
+
 ## Prompt reinforcement
 
 In `.fabro/workflows/pr-review/prompts/review_fix.md.j2`, the `risk` bullet moves from

@@ -46,7 +46,7 @@ Evaluates, in this order, cheapest and most-likely-to-fail first:
 | 7 | `fix_outcome` is `fixed` or `no_changes_needed` | `fix_result.json` |
 | 8 | `risk` is an integer 0-5 **and ≤ 3** | `fix_result.json` |
 | 9 | `not_fixed` is empty | `fix_result.json` |
-| 10 | Every `own_findings` entry with `severity="error"` appears in `fixes_applied` by id | `fix_result.json` |
+| 10 | Every `own_findings` entry with `severity="error"` appears in `fixes_applied` by id — a backstop; `fix_gate` enforces the same accounting with a repair turn (task 01) | `fix_result.json` |
 | 11 | The live PR title matches the Conventional Commits regex | `gh pr view --json title` |
 | 12 | The marker block extracts to a non-empty body containing `Resolves #` | the live PR description |
 

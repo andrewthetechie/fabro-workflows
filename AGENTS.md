@@ -58,9 +58,12 @@ Baselines as of 2026-09-16 (auto-merge deployed): `Backlog (38 nodes, 86 edges)`
 clean, and `PrReview (28 nodes, 64 edges)` with exactly one warning — `pr_number`
 unbound in `validate_input`. That warning is deliberate. Binding
 `[run.inputs] pr_number` would silence it and let a run fired with no input review PR
-#1 instead of failing at admission. (`auto_merge` is another `{{ inputs.* }}`, but it
-is always supplied by `fire-pr-review.sh` at fire time, so `fabro validate` reports
-only the `pr_number` warning — one per node attribute, not two.)
+#1 instead of failing at admission. (`auto_merge` is another unbound `{{ inputs.* }}` in the
+same node, and it is *not* silenced by being supplied at fire time — `pr_number` is
+supplied that way too and still warns. fabro emits one undefined-input diagnostic per
+node **attribute**, and both references live in `validate_input`'s `script`, so the
+second is folded into the first. Prove it exists by validating a scratch copy with
+`pr_number` literalised: it then warns about `auto_merge`.)
 
 `fabro validate` does not parse `workflow.toml` strictly. A dotted model key that loses
 its quotes becomes a nested table and the automation fire returns 422, with nothing
@@ -129,6 +132,12 @@ scp ops/docker-compose.yaml andrew@10.10.0.32:~/fabro/docker-compose.yaml
 scp ops/fabro-branch-sweep.sh andrew@10.10.0.32:~/bin/fabro-branch-sweep.sh
 scp ops/fabro-sandbox-sweep.sh andrew@10.10.0.32:~/bin/fabro-sandbox-sweep.sh
 
+# the auto-merge kill switch. It talks to the API over the network and runs fine from
+# this checkout, but an incident that starts with an ssh session should not also need
+# a git clone, so it is deployed alongside the sweepers.
+scp ops/fabro-auto-merge-switch.sh andrew@10.10.0.32:~/bin/fabro-auto-merge-switch.sh
+ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-auto-merge-switch.sh'
+
 # automations, when the provisioning script changed or a row is missing
 FABRO_API_URL=http://10.10.0.32:32276/api/v1 FABRO_DEV_TOKEN=<dev token> \
   ./ops/provision-server-state.sh
@@ -140,6 +149,7 @@ nothing:
 ```sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-branch-sweep.sh' | diff - ops/fabro-branch-sweep.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-sandbox-sweep.sh' | diff - ops/fabro-sandbox-sweep.sh
+ssh andrew@10.10.0.32 'cat ~/bin/fabro-auto-merge-switch.sh' | diff - ops/fabro-auto-merge-switch.sh
 ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'  | diff - ops/docker-compose.yaml
 ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/scripts/discord-notify.sh' \
   | diff - .fabro/workflows/backlog/scripts/discord-notify.sh

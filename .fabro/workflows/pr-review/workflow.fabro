@@ -345,6 +345,20 @@ if [ \"$O\" = fixed ]; then
     O=invalid
   fi
 fi
+# Every error-severity own finding must be accounted for, by its own id, in
+# fixes_applied or not_fixed. The prompt says the same thing, and merge_gate check 10
+# blocks a merge when it is not true -- but merge_gate has no repair turn, so without
+# this the agent first learns it got the bookkeeping wrong by having a correct fix
+# refused at the end of the run, under a message that says the finding was not fixed.
+# Observed live on jelly-swipe#379 (run 01M2NC5XBC16B2TD4YTN41JB77): OWN-001 was found,
+# fixed and shipped, and the merge blocked saying it had not been.
+if [ \"$O\" != invalid ] && [ \"$O\" != needs_human ]; then
+  M=$(jq '[.own_findings[]? | select(.severity == \"error\") | .id] - ([.fixes_applied[]?.finding_id] + [.not_fixed[]?.finding_id]) | length' $F 2>/dev/null || echo 99)
+  if [ \"$M\" != 0 ]; then
+    echo 'fix_result.json has an error-severity own_findings entry that is cited in neither fixes_applied nor not_fixed; account for every one of them by its OWN- id' >&2
+    O=invalid
+  fi
+fi
 if [ \"$O\" != invalid ] && [ \"$O\" != needs_human ]; then
   R=$(jq -r 'if (.risk | type) == \"number\" and (.risk >= 0) and (.risk <= 5) and ((.risk | floor) == .risk) then .risk else \"bad\" end' $F 2>/dev/null || echo bad)
   if [ \"$R\" = bad ]; then
@@ -467,10 +481,16 @@ if [ \"$E\" = true ]; then
   NF=$(jq '[.not_fixed[]?] | length' \"$F\" 2>/dev/null || echo 99)
   if [ \"$NF\" != 0 ]; then fail 'There are unfixed findings; a human must merge this PR.'; fi
 fi
-# 10. every own error finding appears in fixes_applied by id
+# 10. every own error finding is accounted for, by its own id, in fixes_applied.
+# An entry in not_fixed is already caught by check 9, so reaching here means the
+# finding is cited nowhere. fix_gate enforces the same rule with a repair turn, so by
+# the time a run gets here this should be unreachable -- it stays as the fail-closed
+# backstop, and its wording says what it tests rather than asserting the fix never
+# happened. Saying it was not fixed, of a finding the agent fixed but failed to record,
+# sent a human to re-do work that was already done (jelly-swipe#379).
 if [ \"$E\" = true ]; then
   M=$(jq '[.own_findings[]? | select(.severity == \"error\") | .id] - [.fixes_applied[]?.finding_id] | length' \"$F\" 2>/dev/null || echo 99)
-  if [ \"$M\" != 0 ]; then fail 'An error-severity finding was not fixed; a human must merge this PR.'; fi
+  if [ \"$M\" != 0 ]; then fail 'The review reported an error-severity finding of its own that its record does not account for, so whether it was fixed cannot be told from the report; a human must merge this PR.'; fi
 fi
 # 11. live title is a Conventional Commit
 if [ \"$E\" = true ]; then

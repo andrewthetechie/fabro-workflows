@@ -179,6 +179,13 @@ a full retry round:
   a request for help you then continue past.
 - `own_findings` is an array, possibly empty, always present. It holds the correctness
   problems you found yourself, whether or not you fixed them, with ids `OWN-001` up.
+- **Every `own_findings` entry with `severity: "error"` must also appear in
+  `fixes_applied` or `not_fixed`, cited by its own `OWN-` id** — the same accounting the
+  reviewers' findings get, and a gate rejects the file without it. Fixing one and citing
+  only the reviewer finding you were working on is the common way to get this wrong: the
+  report then shows an error you raised and no record of what happened to it, and the
+  merge gate cannot tell a fixed problem from an abandoned one. It fails closed, so an
+  unaccounted error costs a human a review of work you already did.
 - **Every finding from both reviewers must appear exactly once across `fixes_applied`
   and `not_fixed`, cited by its `id`.** A finding that is neither fixed nor explained
   disappears from the report, which is the failure this contract exists to prevent. A

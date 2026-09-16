@@ -26,7 +26,7 @@ bridge.
 |---|---|
 | 1 | The merge stages live in **`pr-review`, after `deliver`**. Not in `backlog`, not in a fifth workflow. `backlog` gets auto-merge through the bridge for free. |
 | 2 | **"Passes CI" means both**: the sandbox `./.fabro/ci.sh` that already gates `deliver`, *and* the GitHub Actions checks on the pushed head. |
-| 3 | A PR is mergeable when `not_fixed` is empty, every `own_findings` entry with `severity="error"` appears in `fixes_applied`, `fix_outcome` is `fixed` or `no_changes_needed`, and `risk` is present and **≤ 3**. A reviewer `decision=findings` is **not** disqualifying on its own — the contract already forces every finding into `fixes_applied` or `not_fixed`. |
+| 3 | A PR is mergeable when `not_fixed` is empty, every `own_findings` entry with `severity="error"` is accounted for in `fixes_applied` (the prompt and `fix_gate` require that accounting, so `merge_gate` is a backstop), `fix_outcome` is `fixed` or `no_changes_needed`, and `risk` is present and **≤ 3**. A reviewer `decision=findings` is **not** disqualifying on its own — the contract already forces every finding into `fixes_applied` or `not_fixed`. |
 | 4 | PR titles are **Conventional Commits**; the `pr-review` report comment stays Conventional-Comments-shaped. These are different specs and were being conflated. |
 | 5 | Eligible PRs carry the **`agent-authored`** label. Human-opened PRs are reviewed as before and never auto-merged. |
 | 6 | Green is **self-evaluated** from `gh pr checks`: every reported check must be `bucket` `pass` or `skipping`. Not `mergeStateStatus`, not `--required`, not `gh pr merge --auto`. See finding 1. |
