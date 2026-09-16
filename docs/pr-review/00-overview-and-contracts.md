@@ -12,8 +12,14 @@ round of fixes, re-reviews, runs CI, and leaves a PR a human can merge.
 Ported from `/Users/andrew/Documents/code/Sandcastle-loop/run-pr-review-v1.mts`, with
 deliberate differences (§"Differences from Sandcastle").
 
-Eventually the `backlog` workflow will feed its PRs straight into this one. For now it
-is fired by hand.
+The `backlog` workflow now feeds its PRs straight into this one: it fires a `pr-review`
+run as soon as it opens a pull request. See
+`docs/pr-review-bridge/00-overview-and-contracts.md`.
+
+Making that happen did **not** modify this workflow. Its input contract, graph and
+`workflow.toml` are unchanged, and it stays independently runnable by hand — the bridge
+registers this package as a workflow version and fires it through the API, exactly as a
+manual fire does.
 
 ## Operator decisions (settled — do not re-litigate)
 

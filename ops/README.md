@@ -23,10 +23,29 @@ locations instead.
 | `provision-server-state.sh` | Recreates the eight **automations** — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
 | `README.md` | This file — bring-up, install, and replication steps. |
 
+**Not here, deliberately:** `fire-pr-review.sh` is tracked at
+`.fabro/workflows/backlog/scripts/fire-pr-review.sh` and *deployed* to
+`~/bin/fabro-fire-pr-review.sh` on the host. `backlog`'s `trigger_review` stage executes
+it from a fresh clone of `main`, so it is code a live automation runs — and `ops/` is
+the tree no automation reads, which is what makes editing `ops/` safe. Moving it here
+for tidiness would turn every `ops/` edit into a live deploy. Its absolute-path
+deployment and drift check are in the main `AGENTS.md`.
+
 ## Secrets — where they live, never in this repo
 
 - `FABRO_DEV_TOKEN`, `SESSION_SECRET`, `FABRO_LITELLM_KEY`, `GITHUB_TOKEN` →
   `~/.fabro-deploy/env` on the Mac (chmod 600) and the fabro vault.
+- `FABRO_API_TOKEN` → the fabro vault, and **only** the vault. `backlog`'s
+  `workflow.toml` injects it into the sandbox with
+  `[run.environment.env]` so `trigger_review` can create a `pr-review` run through the
+  API. The vault entry fails **closed**: if it is missing, every `backlog` run aborts at
+  startup before its sandbox exists, on all four repos at once. That is also the fastest
+  kill switch for the bridge, and the bluntest — it stops `backlog` entirely.
+- The bridge reuses the server's own dev token because fabro supports exactly **one**
+  (`dev_token: Option<String>`, compared against a single expected value). It therefore
+  **cannot be rotated independently**: revoking the bridge's access means rotating the
+  server token, which also breaks the CLI and `discord-notify.sh`. Accepted, not
+  overlooked.
 - Server env: `/storage/server.env` and `/storage/.home/server.json` in the container.
 - Discord webhook URL: `/storage/secrets/discord_webhook_url` in the container volume.
 - Compose env: `~/fabro/.env` on the host (ready from `.env.example`).
@@ -62,7 +81,13 @@ locations instead.
 8. **Vault secrets** — `fabro secret set GITHUB_TOKEN <...>` and
    `fabro secret set LITELLM_API_KEY <...>` on the host. `settings.toml` references
    these by name; the values are never in config.
-9. **Contract scripts** (`.fabro/setup.sh`, `.fabro/ci.sh`) live in each target repo,
+9. **Bridge token** — `fabro secret set FABRO_API_TOKEN "$(cat
+   /storage/server.dev-token)"`, read from the volume rather than retyped, so the
+   bridge reuses the server's single dev token exactly. Confirm **by name only** with
+   `fabro secret list | grep FABRO_API_TOKEN`. This is a hard startup dependency of
+   every `backlog` run — see the Secrets section — so do it before step 10, and before
+   any `backlog` automation fires.
+10. **Contract scripts** (`.fabro/setup.sh`, `.fabro/ci.sh`) live in each target repo,
    not this repo. Every target repo must have both or every run fails at `prep`.
 
 ## Server-side state (not in `settings.toml`)
@@ -91,10 +116,19 @@ from the live server 2026-09-15:
 | `backlog-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled, `schedule:every-15m` disabled |
 | `backlog-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled, `schedule:every-15m` disabled |
 | `backlog-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `schedule:every-15m` disabled |
-| `pr-review-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled |
-| `pr-review-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled |
-| `pr-review-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled |
-| `pr-review-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `api:manual` enabled |
+| `pr-review-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled — **configuration only, never fired** |
+| `pr-review-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled — **configuration only, never fired** |
+| `pr-review-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled — **configuration only, never fired** |
+| `pr-review-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `api:manual` enabled — **configuration only, never fired** |
+
+The four `pr-review-*` rows are **not dead**. The bridge resolves each repo's
+`environment_id` and `target` from its own `pr-review-<repo>` automation rather than
+hardcoding a map, so a fifth repository needs no change to any graph, and deleting a row
+silently breaks the bridge for that repo. They are read, never fired.
+
+`backlog-writers-app` has **no `api:manual` trigger**, unlike the other three, so it
+cannot be fired through the API at all — only its (disabled) schedule would start it.
+Firing it by hand fails; that is existing state, not a bridge fault.
 
 Every `backlog` schedule is **disabled** — an operator decision (2026-09-14) while
 development and testing continue. The `pr-review` automations carry no schedule at

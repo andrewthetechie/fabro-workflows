@@ -127,10 +127,15 @@ rebuilt from this script comes back with backlog not running.
 ## Firing a run
 
 ```sh
-curl -fsS -X POST -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
-  -d '{"trigger":"manual","inputs":{"pr_number":376}}' \
-  http://<HOST>:32276/api/v1/automations/pr-review-jelly-swipe/runs
+~/bin/fabro-fire-pr-review.sh andrewthetechie/jelly-swipe <N>
 ```
+
+The command originally shown here was a `POST` to
+`/api/v1/automations/pr-review-jelly-swipe/runs` carrying an `inputs.pr_number` body.
+That endpoint takes **no request body** and drops it, so the fire returned
+`422 run_compile_invalid` and created no run. The helper registers the `pr-review`
+package as a workflow version, creates the run, and starts it — three calls, because
+`POST /runs` alone leaves the run `submitted` and inert.
 
 ## Done when
 

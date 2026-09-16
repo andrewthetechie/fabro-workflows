@@ -91,10 +91,13 @@ Exactly one issue should be labelled `agent` and **not** `agent-in-progress`, or
 
 ```sh
 TOK=<dev token>
-curl -fsS -X POST -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
-  -d '{"trigger":"manual"}' \
+curl -fsS -X POST -H "Authorization: Bearer $TOK" \
   http://10.10.0.32:32276/api/v1/automations/backlog-jelly-swipe/runs
 ```
+
+No request body: `POST /automations/{id}/runs` declares none and ignores one, and
+`backlog` takes no inputs anyway. This endpoint does start the run — unlike a raw
+`POST /runs`, which leaves it `submitted`.
 
 Capture the run id from the response. Then poll:
 

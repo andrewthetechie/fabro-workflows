@@ -23,8 +23,9 @@ actually lives.
 
 | Path | What it is |
 |---|---|
-| `.fabro/workflows/<name>/` | **The only tree the automations read.** Two packages: `backlog`, `pr-review`. |
+| `.fabro/workflows/<name>/` | **The only tree the automations read.** Two packages: `backlog`, `pr-review`. `backlog/scripts/` is executed by a live stage as well as by hooks, so changing it is a deploy. |
 | `ops/` | Host replication: compose, profile images, provisioning, branch sweeper. Start at `ops/README.md`. No automation reads this tree. |
+| `docs/pr-review-bridge/` | The task series for the third stage: `backlog` triggers a `pr-review` run on the PR it just opened. `00-overview-and-contracts.md` first. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
 | `.scratch/` | Untracked working notes. |
 
@@ -84,6 +85,8 @@ These pass `fabro validate` and fail at runtime. Both workflows depend on all of
 | Agents do not run `git` | Two deliberate exceptions: `pr-review`'s rebase agent and `backlog`'s `resolve_merge` agent, which need `git add` and `--continue`. |
 | A conflicted merge or rebase never crosses a stage boundary | The checkpoint is `git add -A && git commit`, and `git add` marks a conflicted file resolved — so the checkpoint commits conflict markers. The command node aborts to restore a clean tree; a dedicated agent then redoes and resolves the whole thing inside one stage. |
 | Anchor hook matchers | They are unanchored regexes tested against `node_id`, `handler_type`, `edge_to`, `edge_from` and `tool_name`. Write `^open_pr$`, not `open_pr`, for any id that prefixes another. |
+| `[run.environment.env]` in backlog's `workflow.toml` must never gain an `id` key | It pins all four backlog automations to one environment, and two of the four repos fail CI on the wrong image. It also breaks `fabro validate`, which resolves a non-default id against the CLI's own local catalog and errors. |
+| `trigger_review` keeps `on_failure="succeed"` | Its single unconditional edge points at `exit`. A failed node still routes and takes its *unconditional* edge, so without the attribute a trigger failure routes to `exit` instead of to `human_rescue`. |
 
 ## Deploying to the server after a merge to `main`
 
@@ -104,6 +107,12 @@ scp .fabro/workflows/backlog/scripts/discord-notify.sh andrew@10.10.0.32:/tmp/
 ssh andrew@10.10.0.32 'docker cp /tmp/discord-notify.sh \
   fabro-fabro-1:/storage/scripts/discord-notify.sh && rm /tmp/discord-notify.sh'
 
+# the operator's manual-fire tool. The trigger node reads its own copy from a fresh
+# clone of `main`, so only this host copy needs deploying.
+scp .fabro/workflows/backlog/scripts/fire-pr-review.sh \
+  andrew@10.10.0.32:~/bin/fabro-fire-pr-review.sh
+ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-fire-pr-review.sh'
+
 scp ops/docker-compose.yaml andrew@10.10.0.32:~/fabro/docker-compose.yaml
 scp ops/fabro-branch-sweep.sh andrew@10.10.0.32:~/bin/fabro-branch-sweep.sh
 
@@ -120,6 +129,8 @@ ssh andrew@10.10.0.32 'cat ~/bin/fabro-branch-sweep.sh' | diff - ops/fabro-branc
 ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'  | diff - ops/docker-compose.yaml
 ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/scripts/discord-notify.sh' \
   | diff - .fabro/workflows/backlog/scripts/discord-notify.sh
+ssh andrew@10.10.0.32 'cat ~/bin/fabro-fire-pr-review.sh' \
+  | diff - .fabro/workflows/backlog/scripts/fire-pr-review.sh
 ```
 
 A compose change needs `cd ~/fabro && docker compose up -d` to take effect.
@@ -143,9 +154,29 @@ ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro events <
 bug surfaces. Fire a `pr-review` run against a named PR:
 
 ```sh
-curl -fsS -X POST -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
-  -d '{"trigger":"manual","inputs":{"pr_number":N}}' \
-  http://10.10.0.32:32276/api/v1/automations/pr-review-<repo>/runs
+~/bin/fabro-fire-pr-review.sh andrewthetechie/jelly-swipe 123
+```
+
+That helper registers the `pr-review` package, creates the run and **starts** it —
+three calls, because `POST /runs` creates a `submitted` run that never executes and
+never reports anything.
+
+The obvious-looking curl does **not** work and must not be reconstructed from the API
+surface: it was `POST /automations/pr-review-<repo>/runs` with a JSON body carrying
+`inputs.pr_number`. That endpoint declares **no request body** — it fires the
+automation's enabled API trigger and drops whatever is sent. The `inputs` never
+arrive, so compilation then fails on `{{ inputs.pr_number }}` in `validate_input`
+and the call returns `422 run_compile_invalid` having created nothing. That is exactly
+what the node's deliberate "`pr_number` unbound" validation warning exists to catch.
+Binding `[run.inputs] pr_number` would silence the warning and turn a no-input fire
+into a review of PR #1. Send no body to that endpoint, or use the helper above.
+
+Firing `backlog` this way *is* correct, because `backlog` takes no inputs, and it does
+start the run:
+
+```sh
+curl -fsS -X POST -H "Authorization: Bearer $TOK" \
+  http://10.10.0.32:32276/api/v1/automations/backlog-<repo>/runs
 ```
 
 `ops/README.md` has the environments and automations tables, which schedules are

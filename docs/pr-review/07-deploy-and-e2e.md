@@ -50,10 +50,15 @@ gh pr view <N> -R andrewthetechie/jelly-swipe --json headRefName,headRefOid
 ## Step 4 — fire and watch
 
 ```sh
-curl -fsS -X POST -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
-  -d '{"trigger":"manual","inputs":{"pr_number":<N>}}' \
-  http://<HOST>:32276/api/v1/automations/pr-review-jelly-swipe/runs
+~/bin/fabro-fire-pr-review.sh andrewthetechie/jelly-swipe <N>
 ```
+
+The helper is the deployed `fire-pr-review.sh`; see `docs/pr-review-bridge/`. The recipe
+originally shown here was a `POST` to `/api/v1/automations/pr-review-jelly-swipe/runs`
+carrying an `inputs.pr_number` body. That endpoint takes **no request body**, so the
+inputs were dropped, compilation failed on the unbound `{{ inputs.pr_number }}`, and the
+call returned `422 run_compile_invalid` having created nothing. Use the helper, which
+registers the package, creates the run and starts it.
 
 Poll `/api/v1/runs/{id}/stages` every 60–120s.
 
