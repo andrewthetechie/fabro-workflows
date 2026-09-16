@@ -93,6 +93,15 @@ api_model = "glm-4.7"
 limits = { context_tokens = 202752, max_output_tokens = 16384 }
 capabilities = { text = true, tools = true, reasoning = true }
 
+# Role alias, not a model. Resolves to glm-5.3 in LiteLLM with kimi-k3 as overflow;
+# see docs/adr/0003-high-reasoning-alias.md. Workflows ask for the role so the model
+# behind it can change without a graph edit and a deploy.
+[llm.providers.litellm.models."high-reasoning"]
+display_name = "High reasoning (glm-5.3, kimi-k3 overflow)"
+api_model = "high-reasoning"
+limits = { context_tokens = 202752, max_output_tokens = 16384 }
+capabilities = { text = true, tools = true, reasoning = true }
+
 [llm.providers.litellm.models."kimi-for-coding"]
 display_name = "Kimi for Coding (K2.8, coding plan)"
 api_model = "kimi-for-coding"
