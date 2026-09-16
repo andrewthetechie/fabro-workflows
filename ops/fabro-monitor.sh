@@ -1,0 +1,483 @@
+#!/bin/sh
+# fabro-monitor.sh — out-of-band health monitor for the fabro host.
+#
+# This runs ON THE HOST (cron), unlike the in-band hook notifications
+# (discord-notify.sh): those fire from inside a run, so anything that prevents
+# a run from starting or finishing never reaches them. This script watches
+# exactly that gap — dead container, dead API, dead scheduler, stuck run,
+# empty work queue, full disk. It never alerts on a run FAILURE: that stays
+# hook-owned, because double pings train the operator to ignore the channel
+# (ADR 0004). See docs/turn-it-on/00-overview-and-contracts.md.
+#
+# Conditions (thresholds are env knobs so a shakedown can force each one):
+#   C1 container-down   container not running, or healthcheck not healthy   🔴 4h
+#   C2 api-unreachable  system/info fails, times out (10s), or 401s         🔴 4h
+#   C3 dead-scheduler   any schedule enabled AND newest run > IDLE_HOURS old 🔴 4h
+#   C4 stuck-run        non-terminal run older than STUCK_HOURS             🔴 4h
+#   C5 starvation       zero open agent-labeled issues across the repos     🟡 7d
+#   C6 disk-pressure    df / use >= DISK_PCT                                🟠 24h
+#
+# C1 suppresses C2's connection failures (report the cause, not the symptom)
+# but never its 401 — a rejected token is its own problem. When the container
+# is down, C3/C4 are unevaluable (no API, no token): their stamps are left
+# untouched so a resolved message is not fabricated. C3 self-activates: it
+# gates on "any automation has an enabled schedule", read live, so the alarm
+# exists the moment task 06 turns schedules on, with no config change here.
+#
+# Probed against the live server 2026-09-16 (fabro 0.354.0-nightly.0); the
+# parser depends only on what the probes proved:
+#   GET /api/v1/runs      -> {data: [...], meta: {has_more, total}}. The page
+#                            is FIXED at 20 rows — `?limit=` is ignored — and
+#                            meta.total counts only the visible filter, not
+#                            the store (probe: system/info said total=7 while
+#                            meta.total said 190). Rows are newest-first by
+#                            timestamps.created_at (verified across a full
+#                            page); the monitor takes the max anyway. Only the
+#                            newest page is read, so a stuck run that falls
+#                            off page 1 (>20 newer runs) is invisible — the
+#                            factory does ~24 runs/day at peak, 3h is ~3 runs
+#                            of headroom, and the gap is accepted here.
+#   run rows              -> carry timestamps.created_at (RFC3339, fractional
+#                            seconds) and lifecycle.status.kind. Statuses
+#                            observed: succeeded, failed. Terminal set is
+#                            assumed {succeeded, failed, cancelled, errored};
+#                            anything else — including a missing kind, which
+#                            is what a never-executing `submitted` run looks
+#                            like — counts as non-terminal for C4.
+#   timestamp source      -> timestamps.created_at via `date -d` (GNU date on
+#                            the Ubuntu host). Fallback: the run id is a ULID
+#                            whose first 10 Crockford-base32 chars ARE the
+#                            epoch milliseconds (verified: decode matched
+#                            date -d to the second on three live rows):
+#                              v=0; for ch in id[:10]: v = v*32 + index(ch);
+#                              epoch = v // 1000
+#   GET /api/v1/system/info -> BARE json (no data envelope), .runs.total.
+#                            A garbage token returns 401 with body
+#                            {"errors":[{"code":"access_token_invalid",...}]}
+#                            — distinguishable from a connection refusal by
+#                            both the status and the body.
+#   GET /api/v1/automations -> {data: [{triggers: [{type,id,enabled,...}]}]}.
+#                            An enabled schedule is a trigger with
+#                            type=="schedule" and enabled==true.
+#   docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' fabro-fabro-1
+#                            -> "running healthy". A container with no
+#                            healthcheck prints "<no value>" for health; that
+#                            is not a C1 trigger on its own (status-only).
+#
+# Secret material is READ, never stored: the dev token and the Discord webhook
+# are pulled out of the container with docker exec, exactly the sources
+# discord-notify.sh uses from inside. Nothing is written to disk.
+#
+# Failure discipline: a failed Discord POST is logged (cron appends stderr to
+# the log) and never fatal — alerting must not wedge cron. The script exits 0
+# when every evaluable condition was evaluated, non-zero only when evaluation
+# itself broke (docker/gh missing, token unreadable while the container is up,
+# API body unparseable). That non-zero exit is what keys the heartbeat /fail.
+#
+# Env:
+#   DRY_RUN=1                     print what would send, send nothing, write
+#                                 no state (default, like the sweepers)
+#   IDLE_HOURS=2                  C3: newest run older than this with a
+#                                 schedule enabled  -> dead scheduler
+#   STUCK_HOURS=3                 C4: non-terminal run older than this
+#   DISK_PCT=85                   C6: df / use at or above this
+#   FABRO_HOST=10.10.0.32
+#   FABRO_PORT=32276
+#   FABRO_CONTAINER=fabro-fabro-1
+#   FABRO_MONITOR_REPOS="a/b c/d"  space-separated; an EMPTY value falls back
+#                                 to the four factory repos (`:-`), so pass a
+#                                 real value to narrow a run
+#   FABRO_HEARTBEAT_URL=          dead-man's ping, GETed at the end of every
+#                                 run; evaluation failure GETs <url>/fail
+#                                 instead (task 03). Unset: no ping, no error.
+#   FABRO_MONITOR_STATE=          state file override (tests); default
+#                                 ~/.local/state/fabro-monitor.state
+set -u
+
+DRY_RUN="${DRY_RUN:-1}"
+IDLE_HOURS="${IDLE_HOURS:-2}"
+STUCK_HOURS="${STUCK_HOURS:-3}"
+DISK_PCT="${DISK_PCT:-85}"
+FABRO_HOST="${FABRO_HOST:-10.10.0.32}"
+FABRO_PORT="${FABRO_PORT:-32276}"
+CONTAINER="${FABRO_CONTAINER:-fabro-fabro-1}"
+REPOS="${FABRO_MONITOR_REPOS:-andrewthetechie/jelly-swipe andrewthetechie/womens-fantasy-sports andrewthetechie/lawncare-saas andrewthetechie/writers-app}"
+STATE_FILE="${FABRO_MONITOR_STATE:-$HOME/.local/state/fabro-monitor.state}"
+API="http://$FABRO_HOST:$FABRO_PORT/api/v1"
+
+# Re-alert intervals (seconds) per the condition table.
+ALERT_SECONDS="${FABRO_MONITOR_RE_ALERT_SECONDS:-14400}"            # 4h — C1..C4
+STARVE_SECONDS="${FABRO_MONITOR_STARVE_RE_ALERT_SECONDS:-604800}"   # 7d — C5
+DISK_RE_SECONDS="${FABRO_MONITOR_DISK_RE_ALERT_SECONDS:-86400}"     # 24h — C6
+
+# Lifecycle.status.kind values that mean "this run is done". Anything else —
+# running, submitted, queued, a missing kind — is non-terminal for C4.
+TERMINAL=" succeeded failed cancelled errored "
+
+now=$(date +%s)
+
+have() { command -v "$1" >/dev/null 2>&1; }
+warn() { printf 'WARN  %s\n' "$1" >&2; }
+
+tmp="$(mktemp -d)" || { printf '%s\n' "could not create a temporary directory" >&2; exit 1; }
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+
+: > "$tmp/firing"     # lines: <cond>\t<re-alert secs>\t<emoji>\t<detail>
+: > "$tmp/evaluated"  # condition ids that produced a definitive answer this run
+eval_failed=0
+
+# ------------------------------------------------------------------ plumbing ----
+
+cond_name() {
+  case "$1" in
+    C1) printf '%s' "container-down" ;;
+    C2) printf '%s' "api-unreachable" ;;
+    C3) printf '%s' "dead-scheduler" ;;
+    C4) printf '%s' "stuck-run" ;;
+    C5) printf '%s' "starvation" ;;
+    C6) printf '%s' "disk-pressure" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+fire() { # $1=cond $2=re-alert secs $3=emoji $4=detail
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$tmp/firing"
+}
+
+mark_evaluated() {
+  printf '%s\n' "$1" >> "$tmp/evaluated"
+}
+
+stamp_of() { # $1=cond -> epoch or empty
+  [ -f "$STATE_FILE" ] || return 0
+  grep -E "^$1=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2
+}
+
+ulid_epoch() { # decode a ULID run id to epoch seconds (see header for the math)
+  python3 - "$1" <<'PY'
+import sys
+alpha = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+try:
+    v = 0
+    for ch in sys.argv[1].strip().upper()[:10]:
+        v = v * 32 + alpha.index(ch)
+    print(v // 1000)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+run_epoch() { # $1=created_at $2=run id -> epoch, or empty when neither parses
+  if [ -n "$1" ]; then
+    e="$(date -d "$1" +%s 2>/dev/null)" && [ -n "$e" ] && { printf '%s' "$e"; return 0; }
+  fi
+  ulid_epoch "$2" 2>/dev/null || printf ''
+}
+
+# Discord. The webhook is read lazily and cached for the run; a read or POST
+# failure is logged and never fatal — alerting must not wedge cron.
+WEBHOOK=""
+webhook_tried=0
+load_webhook() {
+  [ "$webhook_tried" = 1 ] && return 0
+  webhook_tried=1
+  WEBHOOK="$(docker exec "$CONTAINER" cat /storage/secrets/discord_webhook_url 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$WEBHOOK" ]
+}
+
+send() { # $1 = full message text
+  if [ "$DRY_RUN" = "1" ]; then
+    printf 'DRY   would send: %s\n' "$1"
+    return 0
+  fi
+  load_webhook || { warn "cannot read the Discord webhook from $CONTAINER; alert dropped: $1"; return 1; }
+  jq -n --arg content "$1" '{content: $content}' \
+    | curl -fsS -m 10 -X POST -H 'Content-Type: application/json' -d @- "$WEBHOOK" \
+      >/dev/null 2>&1 \
+    || { warn "Discord POST failed; alert dropped: $1"; return 1; }
+  return 0
+}
+
+# ------------------------------------------------------------ C1 container ----
+
+mark_evaluated C1
+container_status=""
+container_health=""
+if have docker; then
+  info="$(docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' "$CONTAINER" 2>/dev/null)" || info=""
+  if [ -n "$info" ]; then
+    container_status="${info%% *}"
+    container_health="${info##* }"
+  fi
+else
+  warn "docker is not on PATH — C1 unevaluable (this script runs on the host)"
+  eval_failed=1
+fi
+
+container_down=0
+if have docker && [ "$eval_failed" = 0 ]; then
+  if [ -z "$container_status" ]; then
+    if docker info >/dev/null 2>&1; then
+      # daemon answers and the container is simply gone
+      container_down=1
+      fire C1 "$ALERT_SECONDS" "🔴" "container-down — $CONTAINER does not exist"
+    else
+      warn "the docker daemon is unreachable — C1 unevaluable"
+      eval_failed=1
+    fi
+  elif [ "$container_status" != "running" ]; then
+    container_down=1
+    fire C1 "$ALERT_SECONDS" "🔴" \
+      "container-down — $CONTAINER status is '$container_status' (health: $container_health); expected running/healthy"
+  elif [ "$container_health" != "healthy" ] && [ "$container_health" != "<no value>" ]; then
+    container_down=1
+    fire C1 "$ALERT_SECONDS" "🔴" \
+      "container-down — $CONTAINER is running but health is '$container_health'; expected healthy"
+  fi
+fi
+
+# ------------------------------------------- C2/C3/C4 (need the API + token) ----
+# C1 firing means the API is unreachable BY CONSTRUCTION, so C2's connection
+# failure would be the symptom of C1's cause: skip all three and leave their
+# stamps untouched. A 401, when it does happen with the container up, is C2
+# firing on its own — the token rotated and the monitor's read of it is stale.
+
+token=""
+api_ok=0
+if [ "$container_down" = 0 ] && [ "$eval_failed" = 0 ]; then
+  token="$(docker exec "$CONTAINER" cat /storage/server.dev-token 2>/dev/null | tr -d '[:space:]')"
+  if [ -z "$token" ]; then
+    # Container is up but the token read failed: the monitor itself is broken.
+    # This is evaluation failure (see header), not an alert condition.
+    warn "could not read the dev token from $CONTAINER — C2/C3/C4 unevaluable"
+    eval_failed=1
+  else
+    api_ok=1
+  fi
+fi
+
+if [ "$api_ok" = 1 ]; then
+  # ---- C2: api-unreachable ------------------------------------------------
+  mark_evaluated C2
+  http="$(curl -sS -o "$tmp/info.json" -w '%{http_code}' -m 10 \
+    -H "Authorization: Bearer $token" "$API/system/info" 2>"$tmp/curl.err")" || http=000
+  case "$http" in
+    200)
+      if jq -e '.runs' "$tmp/info.json" >/dev/null 2>&1; then
+        :
+      else
+        warn "system/info returned an unparseable body — C2/C3/C4 unevaluable"
+        eval_failed=1
+        api_ok=0
+      fi
+      ;;
+    401)
+      code="$(jq -r '.errors[0].code // "?"' "$tmp/info.json" 2>/dev/null)"
+      fire C2 "$ALERT_SECONDS" "🔴" \
+        "api-unauthorized — the dev token was rejected (HTTP 401, $code); the server token rotated, update what the monitor reads"
+      api_ok=0
+      ;;
+    *)
+      err="$(tr '\n' ' ' < "$tmp/curl.err" | cut -c1-120)"
+      if [ -n "$err" ]; then
+        fire C2 "$ALERT_SECONDS" "🔴" \
+          "api-unreachable — GET $API/system/info failed (HTTP $http, $err)"
+      else
+        fire C2 "$ALERT_SECONDS" "🔴" \
+          "api-unreachable — GET $API/system/info failed (HTTP $http)"
+      fi
+      api_ok=0
+      ;;
+  esac
+fi
+
+enabled_schedules=""
+if [ "$api_ok" = 1 ]; then
+  # ---- C3 gate: does ANY automation have an enabled schedule? -------------
+  http="$(curl -sS -o "$tmp/autos.json" -w '%{http_code}' -m 10 \
+    -H "Authorization: Bearer $token" "$API/automations" 2>/dev/null)" || http=000
+  if [ "$http" != 200 ]; then
+    warn "GET automations returned HTTP $http — C3 unevaluable"
+    eval_failed=1
+  else
+    enabled_schedules="$(jq '[.data[].triggers[]? | select(.type == "schedule" and .enabled == true)] | length' "$tmp/autos.json" 2>/dev/null)"
+    if ! printf '%s' "$enabled_schedules" | grep -Eq '^[0-9]+$'; then
+      warn "automations response unparseable — C3 unevaluable"
+      eval_failed=1
+      enabled_schedules=""
+    fi
+  fi
+fi
+
+if [ "$api_ok" = 1 ]; then
+  # ---- C3 + C4 share the runs page ----------------------------------------
+  http="$(curl -sS -o "$tmp/runs.json" -w '%{http_code}' -m 10 \
+    -H "Authorization: Bearer $token" "$API/runs" 2>/dev/null)" || http=000
+  if [ "$http" != 200 ] || ! jq -e '.data | type == "array"' "$tmp/runs.json" >/dev/null 2>&1; then
+    warn "GET runs failed or was unparseable (HTTP $http) — C3/C4 unevaluable"
+    eval_failed=1
+  else
+    jq -r '.data[] | [(.id // ""), (.timestamps.created_at // ""), (.lifecycle.status.kind // "")] | @tsv' \
+      "$tmp/runs.json" > "$tmp/runs.tsv" 2>/dev/null || {
+      warn "could not extract run rows — C3/C4 unevaluable"; eval_failed=1; }
+
+    if [ -f "$tmp/runs.tsv" ]; then
+      # C4's answer comes from the runs page alone; it is definitive even
+      # when the C3 gate could not be read.
+      mark_evaluated C4
+
+      # C3: newest run across the page vs IDLE_HOURS, only when the gate is
+      # known (a missing gate means "unevaluable", never "resolved").
+      if [ -n "$enabled_schedules" ]; then
+        mark_evaluated C3
+        newest=0
+        newest_id=""
+        while IFS="$(printf '\t')" read -r rid created kind; do
+          [ -n "$rid" ] || continue
+          e="$(run_epoch "$created" "$rid")"
+          [ -n "$e" ] || { warn "run $rid has no usable timestamp; row skipped"; continue; }
+          if [ "$e" -gt "$newest" ]; then newest="$e"; newest_id="$rid"; fi
+        done < "$tmp/runs.tsv"
+
+        if [ "$enabled_schedules" -gt 0 ] && [ "$newest" -gt 0 ] \
+          && [ $(( now - newest )) -gt $(( IDLE_HOURS * 3600 )) ]; then
+          fire C3 "$ALERT_SECONDS" "🔴" \
+            "dead-scheduler — $enabled_schedules schedule(s) enabled but no run for $(( (now - newest) / 3600 ))h (newest run $newest_id, limit ${IDLE_HOURS}h)"
+        fi
+      fi
+
+      # C4: any non-terminal run older than STUCK_HOURS.
+      while IFS="$(printf '\t')" read -r rid created kind; do
+        [ -n "$rid" ] || continue
+        case "$TERMINAL" in
+          *" $kind "*) continue ;;
+        esac
+        e="$(run_epoch "$created" "$rid")"
+        [ -n "$e" ] || continue
+        age=$(( now - e ))
+        if [ "$age" -gt $(( STUCK_HOURS * 3600 )) ]; then
+          fire C4 "$ALERT_SECONDS" "🔴" \
+            "stuck-run — run $rid status='${kind:-unknown}' age $(( age / 3600 ))h (limit ${STUCK_HOURS}h)"
+        fi
+      done < "$tmp/runs.tsv"
+    fi
+  fi
+fi
+
+# ------------------------------------------------------------- C5 starvation ----
+
+mark_evaluated C5
+if ! have gh; then
+  warn "gh is not on PATH — C5 unevaluable"
+  eval_failed=1
+else
+  open_agent_issues=0
+  c5_ok=1
+  for repo in $REPOS; do
+    n="$(gh issue list -R "$repo" --label agent --state open --limit 200 \
+      --json number --jq 'length' 2>/dev/null)"
+    if ! printf '%s' "$n" | grep -Eq '^[0-9]+$'; then
+      warn "gh issue list failed for $repo — C5 unevaluable"
+      eval_failed=1
+      c5_ok=0
+      break
+    fi
+    open_agent_issues=$(( open_agent_issues + n ))
+  done
+  if [ "$c5_ok" = 1 ] && [ "$open_agent_issues" -eq 0 ]; then
+    fire C5 "$STARVE_SECONDS" "🟡" \
+      "starvation — zero open agent-labeled issues across all four repos; file issues labeled needs-triage (or agent) on any of the four repos"
+  fi
+fi
+
+# ---------------------------------------------------------- C6 disk pressure ----
+
+mark_evaluated C6
+use_pct="$(df -P / 2>/dev/null | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
+if ! printf '%s' "$use_pct" | grep -Eq '^[0-9]+$'; then
+  warn "df -P / gave no usable percentage — C6 unevaluable"
+  eval_failed=1
+elif [ "$use_pct" -ge "$DISK_PCT" ]; then
+  fire C6 "$DISK_RE_SECONDS" "🟠" \
+    "disk-pressure — / is at ${use_pct}% (threshold ${DISK_PCT}%)"
+fi
+
+# ------------------------------------------------------------- dispatch ----
+# A firing condition with no stamp alerts; with a stamp older than its re-alert
+# interval it re-alerts; otherwise it stays quiet and keeps its stamp. A stamp
+# whose condition was evaluated and is NOT firing sends exactly one resolved
+# message and loses the stamp. Stamps of conditions that were not evaluated
+# this run (suppressed by C1, or evaluation broke) are carried over untouched.
+# DRY_RUN prints the would-send lines and writes nothing.
+
+TAB="$(printf '\t')"
+firing_ids=" "
+while IFS="$TAB" read -r cond _rest; do
+  [ -n "$cond" ] || continue
+  firing_ids="$firing_ids$cond "
+done < "$tmp/firing"
+
+remove=""
+restamp=""
+while IFS="$TAB" read -r cond interval emoji detail; do
+  [ -n "$cond" ] || continue
+  s="$(stamp_of "$cond")"
+  if [ -z "$s" ]; then
+    send "$emoji fabro monitor: $detail"
+    restamp="$restamp $cond=$now"
+  elif [ $(( now - s )) -ge "$interval" ]; then
+    send "$emoji fabro monitor: $detail (still firing)"
+    restamp="$restamp $cond=$now"
+  else
+    restamp="$restamp $cond=$s"
+  fi
+done < "$tmp/firing"
+
+if [ -f "$STATE_FILE" ]; then
+  for cond in C1 C2 C3 C4 C5 C6; do
+    s="$(stamp_of "$cond")"
+    [ -n "$s" ] || continue
+    case "$firing_ids" in *" $cond "*) continue ;; esac
+    grep -qx "$cond" "$tmp/evaluated" || continue
+    send "✅ fabro monitor: $(cond_name "$cond") resolved"
+    remove="$remove $cond "
+  done
+fi
+
+if [ "$DRY_RUN" != "1" ]; then
+  : > "$tmp/state.new"
+  if [ -f "$STATE_FILE" ]; then
+    while IFS='=' read -r cond val; do
+      [ -n "$cond" ] || continue
+      case "$remove" in *" $cond "*) continue ;; esac
+      case "$restamp" in *" $cond="*) continue ;; esac
+      printf '%s=%s\n' "$cond" "$val" >> "$tmp/state.new"
+    done < "$STATE_FILE"
+  fi
+  # shellcheck disable=SC2086
+  for kv in $restamp; do printf '%s\n' "$kv" >> "$tmp/state.new"; done
+  mkdir -p "$(dirname "$STATE_FILE")" || exit 1
+  mv "$tmp/state.new" "$STATE_FILE" || exit 1
+fi
+
+# ------------------------------------------------------------- heartbeat ----
+# A dead host is silent by construction, so an external dead-man's ping is the
+# only way to notice host death. Pinged at the end of EVERY run; evaluation
+# failure pings <url>/fail instead. A failed ping is logged, never fatal.
+hb_url="${FABRO_HEARTBEAT_URL:-}"
+hb_url="${hb_url%/}"
+if [ -n "$hb_url" ]; then
+  if [ "$eval_failed" = 1 ]; then
+    curl -fsS -m 10 -o /dev/null "$hb_url/fail" 2>/dev/null \
+      || warn "heartbeat /fail ping to $hb_url failed"
+  else
+    curl -fsS -m 10 -o /dev/null "$hb_url" 2>/dev/null \
+      || warn "heartbeat ping to $hb_url failed"
+  fi
+fi
+
+if [ "$eval_failed" = 1 ]; then
+  printf '%s\n' "fabro-monitor: evaluation failed (see warnings above)" >&2
+  exit 1
+fi
+exit 0
