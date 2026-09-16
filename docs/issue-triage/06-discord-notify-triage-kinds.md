@@ -1,0 +1,72 @@
+# Task 06 — `discord-notify.sh`: the `triage-question` and `triage-failed` kinds
+
+**Depends on:** 03. **Blocks:** 08. **LLM level:** ordinary — but the script runs in
+Alpine with no bash, no jq and no curl, so nothing here may assume otherwise.
+
+Two new kinds in `.fabro/workflows/backlog/scripts/discord-notify.sh`. It lives under
+`backlog/scripts/` and is called by hooks in **all three** workflows by absolute
+container path; do not tidy it into `issue-triage/scripts/`.
+
+## Part 1 — carry the questions in the message
+
+The existing enrichment block greps the run-state stream for `issue_number` and
+`pr_url`. Add `triage_questions` and `issue_url` the same way:
+
+```sh
+questions=$(… state stream … | grep -o '"triage_questions":"[^"]*"' | head -1 | cut -d'"' -f4)
+```
+
+Sanitise exactly as `review_err` already does — `sed 's/[\\"]//g'` — then truncate hard.
+Discord rejects a payload over 2000 characters and the message is built by string
+concatenation, so an agent-authored question containing a quote or a backslash would
+otherwise produce invalid JSON and a silently dropped notification. `triage_gate`
+already truncates to 1200; truncate again here rather than trusting the producer.
+
+## Part 2 — the two kinds
+
+```sh
+  triage-question)
+    msg="❓ fabro issue triage needs answers${subject}
+${questions}
+Answer within 30 minutes at ${base_url}/runs/${run_id}, or it will post them on the issue."
+    ;;
+  triage-failed)
+    msg="🟠 fabro issue triage released a claim without finishing${subject}"
+    ;;
+```
+
+The 30-minute figure and the run link are the whole point of this kind: Discord
+**cannot answer a gate** — Fabro's chat integration for that is Slack — so the message
+has to say where to go and how long there is. Keep the two facts together; a ping that
+says only "needs answers" costs a browser trip to discover the deadline.
+
+`subject` already resolves to the repository and issue number through the existing
+enrichment, so no new lookup is needed for it.
+
+## Part 3 — deploy it
+
+This is the one file in the change with two copies; the host's is authoritative at run
+time:
+
+```sh
+scp .fabro/workflows/backlog/scripts/discord-notify.sh andrew@10.10.0.32:/tmp/
+ssh andrew@10.10.0.32 'docker cp /tmp/discord-notify.sh \
+  fabro-fabro-1:/storage/scripts/discord-notify.sh && rm /tmp/discord-notify.sh'
+ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/scripts/discord-notify.sh' \
+  | diff - .fabro/workflows/backlog/scripts/discord-notify.sh
+```
+
+A host copy that predates this task is not a failure: the `*)` fallback sends
+`ℹ️ fabro run <id> notification (triage-question)`. That is the safety net, not the
+plan — an operator who cannot see the questions will not answer inside 30 minutes.
+
+## Acceptance
+
+- `sh -n` passes, and it still runs under `/bin/sh` on Alpine: no `[[ ]]`, no arrays,
+  no `curl`, no `jq`.
+- Exercised directly in the container against a finished triage run:
+  `docker exec fabro-fabro-1 sh -c 'FABRO_RUN_ID=<id> /storage/scripts/discord-notify.sh triage-question < /dev/null'`
+  posts a message carrying the questions.
+- A question string containing `"` and `\` still produces a valid payload and a
+  delivered message.
+- Every failure path still exits 0. A notification must never fail a run.
