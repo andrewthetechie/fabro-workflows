@@ -46,3 +46,51 @@ depth = 0
 contents = "write"
 issues = "write"
 pull_requests = "write"
+
+# Host-wide kill switch for the merge phase. Task 06's other switch is per repo and
+# lives on the `pr-review-<repo>` automation row; `validate_input` resolves both into
+# /tmp/fabro/auto_merge, and `merge_gate` blocks unless it reads exactly 1.
+#
+# The value is injected from the container's environment, which compose loads from
+# `~/fabro/.env` (ops/docker-compose.yaml), so flipping it costs one edit plus
+# `docker compose up -d`, and it is armed by injecting it here. `:-1` in
+# `validate_input` means an unset variable reads as enabled — operator decision 10,
+# auto-merge is on by default — which is why task 10 sets FABRO_AUTO_MERGE=0 in
+# `~/fabro/.env` *before* the commit that makes this live reaches `main`.
+#
+# [run.environment.*] is a SPARSE OVERRIDE on the environment the automation already
+# selected: pr-review picks `python`, `python-node`, `ts` or `rust-node` per repo.
+# Do NOT add `[run.environment] id = "..."` — that would pin all four pr-review
+# automations to one image, break the per-repo mapping, and fail `fabro validate`,
+# which resolves a non-default id against the CLI's own local catalog.
+[run.environment.env]
+FABRO_AUTO_MERGE = "${FABRO_AUTO_MERGE}"
+
+# Discord notification on a merge — pr-review's first hook. Operator decision 13: a
+# blocked merge is an ordinary outcome reported on the PR, but a squash into `main`
+# that deploys `lawncare-saas` without a human is the one event in this chain worth
+# interrupting someone for.
+#
+# The enrichment needs no change to the script: report_merged publishes `pr_url` and
+# `issue_number` as context_updates, which is exactly what discord-notify.sh already
+# greps the run state for. Before this stage those two existed only in files, so the
+# merge notification would have carried a run link and nothing else.
+[[run.hooks]]
+id = "discord-merged"
+# checkpoint_saved, not stage_complete: the composite lifecycle runs git -> event ->
+# hook on checkpoint, so the envelope carrying pr_url and issue_number has already
+# been written when the hook fires. stage_complete races that write — the same race
+# `discord-complete` in backlog was moved here to avoid.
+event = "checkpoint_saved"
+# Anchored. Matchers are unanchored regexes tested against node_id, handler_type,
+# edge_to, edge_from and tool_name; `report_merged` does not prefix one today, but
+# `report_blocked` shares seven characters with it.
+matcher = "^report_merged$"
+# A Discord outage must not stall a run, and by the time this fires the merge has
+# already happened, so blocking would achieve nothing.
+blocking = false
+# sandbox = false runs it inside the fabro server container, where the webhook URL
+# and dev token live. That is also why it can never read a tracked copy: no git, no
+# checkout. See task 07.
+sandbox = false
+script = "/storage/scripts/discord-notify.sh merged"

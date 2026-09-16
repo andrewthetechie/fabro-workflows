@@ -22,11 +22,56 @@ digraph PrReview {
     // non-numeric value reaches the `case` guard as data instead of being parsed
     // as shell syntax. Every later stage reads the validated number from
     // /tmp/fabro/pr_number.
+    //
+    // This node also builds the two renderer artefacts: `render.jq`, the report
+    // program, and `render_comment.sh`, its wrapper. render.jq carries no comments
+    // of its own -- a `//` inside it is a jq syntax error and a `#` would have to be
+    // proved safe against the DOT parser -- so the notes live here.
+    //
+    // Kinds: `complete` and `needs-human` are the original two. `merged` and
+    // `blocked` are the merge outcomes; `blocked` deliberately reuses the `complete`
+    // heading, because an expected block is a successful review whose merge
+    // correctly did not happen and a scarier heading would train the reader to
+    // ignore it. `complete` stays because the fallback paths still render with it. A fifth
+    // slurp, `ci_fix_result.json`, renders in every kind: the PR's code changed
+    // after the reviewers looked at it, so the reader has to see that. It slurps to
+    // `{}` when absent, which renders as nothing at all.
     validate_input [label="Validate input", shape=parallelogram, output_schema="routing", language="shell",
         script="PR='{{ inputs.pr_number }}'
+# mkdir first: this node is the first to run, and /tmp/fabro is not guaranteed to
+# exist yet. Writing the switch files below before the directory exists aborts the
+# node on a redirection error, with nothing reported.
+mkdir -p /tmp/fabro /tmp/fabro/review /tmp/fabro/feedback
 case \"$PR\" in '' | *[!0-9]*) echo 'pr_number must be a positive integer' >&2; exit 1;; esac
 if [ \"$PR\" -lt 1 ]; then echo 'pr_number must be a positive integer' >&2; exit 1; fi
-mkdir -p /tmp/fabro/review /tmp/fabro/feedback
+AM='{{ inputs.auto_merge }}'
+case \"$AM\" in 1) ;; *) AM=0 ;; esac
+H=\"${FABRO_AUTO_MERGE-1}\"
+case \"$H\" in 1) ;; *) H=0 ;; esac
+# Two independent switches, resolved once, here, into one file the rest of the graph
+# reads: the per-repo one arrives as an input resolved from the automation row, the
+# host-wide one as an injected environment variable. Both must be the explicit
+# enabled value. AM takes precedence in the reason because the per-repo switch is the
+# one an operator flips for one repository, and that is the answer task 10 section 4
+# expects when both are off.
+#
+# `-1` on the host switch, not `:-1`, is operator decision 10 read carefully: an
+# *unset* variable means enabled, because a host that has never heard of this feature
+# keeps the per-repo switch in charge rather than silently disabling everything — and
+# auto-merge is the default, with these switches existing to turn it off. A variable
+# that is *set and empty* is disabled instead, because emptying one is how an operator
+# tries to disarm something, and a misread there would merge code. The deploy runbook
+# arms the host switch explicitly, before this graph goes live.
+if [ \"$AM\" = 1 ] && [ \"$H\" = 1 ]; then
+  echo 1 > /tmp/fabro/auto_merge
+  : > /tmp/fabro/auto_merge_off_reason
+elif [ \"$AM\" != 1 ]; then
+  echo 0 > /tmp/fabro/auto_merge
+  echo 'Auto-merge is switched off for this repository: its pr-review automation row does not read auto_merge=true. Flip it with ops/fabro-auto-merge-switch.sh.' > /tmp/fabro/auto_merge_off_reason
+else
+  echo 0 > /tmp/fabro/auto_merge
+  echo 'Auto-merge is switched off host-wide: FABRO_AUTO_MERGE is not 1. Re-arm it in ~/fabro/.env and restart the server.' > /tmp/fabro/auto_merge_off_reason
+fi
 echo \"$PR\" > /tmp/fabro/pr_number
 echo 0 > /tmp/fabro/rebase_attempts
 echo 0 > /tmp/fabro/fix_attempts
@@ -43,20 +88,23 @@ def one($axis):
   + \"[\" + sev + \"] \" + (.message // .description // \"(no description)\")
   + (if (.suggestion // \"\") != \"\" then NL + \"  - _Suggested:_ \" + .suggestion else \"\" end);
 
-($std[0] // {}) as $S | ($spc[0] // {}) as $P | ($fix[0] // {}) as $F | nz($cm[0]) as $C
+($std[0] // {}) as $S | ($spc[0] // {}) as $P | ($fix[0] // {}) as $F | nz($cm[0]) as $C | ($cfix[0] // {}) as $X
 | ( (nz($S.findings) | map(. + {_a:\"standards\"}))
   + (nz($P.findings) | map(. + {_a:\"spec\"}))
   + (nz($F.own_findings) | map(. + {_a:\"correctness\"})) ) as $all
 | [
-  ( if $kind == \"complete\"
-    then \"## AI PR review complete\"
+  ( if $kind == \"merged\"
+    then \"## Merged automatically\"
        + (if ($F.risk // null) != null then \" - risk \" + ($F.risk|tostring) + \"/5\" else \"\" end)
-    else \"## AI PR review stopped - human needed\" end ),
+    elif $kind == \"needs-human\"
+    then \"## AI PR review stopped - human needed\"
+    else \"## AI PR review complete\"
+       + (if ($F.risk // null) != null then \" - risk \" + ($F.risk|tostring) + \"/5\" else \"\" end) end ),
   \"\",
   \"Reviewed HEAD: `\" + $head + \"`\",
   \"\",
-  ( if $kind == \"complete\" then ($F.summary // \"_No summary was produced._\")
-    else \"**Reason:** \" + $reason end ),
+  ( if $kind == \"needs-human\" then \"**Reason:** \" + $reason
+    else ($F.summary // \"_No summary was produced._\") end ),
   \"\",
   \"| Axis | Verdict |\",
   \"| --- | --- |\",
@@ -81,7 +129,30 @@ def one($axis):
   \"### Commits with changes\", \"\",
   ( $C | if length == 0 then \"_This review made no file changes._\"
          else [ .[] | \"- [`\" + .short + \"`](\" + $prurl + \"/commits/\" + .sha + \") - `\"
-                    + .stage + \"` - \" + .stat ] | join(NL) end )
+                    + .stage + \"` - \" + .stat ] | join(NL) end ),
+  ( if ($X | length) > 0
+    then [ \"\", \"### CI fixes\", \"\",
+           ( (nz($X.checks) | if length == 0 then \"GitHub checks\" else join(\", \") end) as $lbl
+             | \"- **\" + $lbl + \"** - \"
+               + ( if $X.outcome == \"cannot_fix\"
+                   then \"_Could not fix:_ \" + ($X.reason // \"(no reason given)\")
+                   else ($X.summary // \"(no summary given)\") end ) ) ]
+             | join(NL)
+    else empty end ),
+  ( if $kind == \"merged\"
+    then [ \"\", \"### Merged\", \"\",
+           \"Squash-merged as `\" + $subject + \"`.\",
+           \"Head branch deleted.\"
+             + (if $issue == \"\" then \"\" else \" Resolves #\" + $issue + \".\" end) ]
+            | join(NL)
+    else empty end ),
+  ( if $kind == \"blocked\"
+    then [ \"\", \"### Not auto-merged\", \"\",
+           \"**Reason:** \" + (if $block == \"\" then \"The merge was blocked, but no reason was recorded.\" else $block end),
+           \"\",
+           \"Everything else about this review stands. Merge it by hand when you are happy with it.\" ]
+            | join(NL)
+    else empty end )
 ]
 + (if ($F.notes // \"\") != \"\" then [\"\", \"### Notes\", \"\", $F.notes] else [] end)
 | join(NL)
@@ -91,7 +162,7 @@ K=\"${1:-complete}\"
 R=/tmp/fabro/review
 T=/tmp/fabro/_render
 rm -rf $T && mkdir -p $T
-for f in standards spec fix_result; do
+for f in standards spec fix_result ci_fix_result; do
   if [ -s \"$R/$f.json\" ] && jq -e 'type == \"object\"' \"$R/$f.json\" >/dev/null 2>&1; then cp \"$R/$f.json\" \"$T/$f.json\"; else echo '{}' > \"$T/$f.json\"; fi
 done
 PR_URL=$(cat /tmp/fabro/pr_url 2>/dev/null || echo '')
@@ -107,7 +178,7 @@ if [ -n \"$BASE\" ]; then
   done
 fi
 jq -s . $T/cm.ndjson > $T/cm.json
-jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg prurl \"$PR_URL\"
+jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\"
 RENDER_SH
 echo '{\"context_updates\":{\"pr_number\":'$PR'}}'"]
 
@@ -350,7 +421,7 @@ F=/tmp/fabro/review/fix_result.json
 E=true
 fail() { E=false; printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; }
 # 1. kill switch file
-if [ \"$(cat /tmp/fabro/auto_merge 2>/dev/null || echo 0)\" != 1 ]; then fail 'Auto-merge is switched off for this automation.'; fi
+if [ \"$(cat /tmp/fabro/auto_merge 2>/dev/null || echo 0)\" != 1 ]; then fail \"$(cat /tmp/fabro/auto_merge_off_reason 2>/dev/null || echo 'Auto-merge is switched off.')\"; fi
 # 2. agent-authored label
 if [ \"$E\" = true ]; then
   L=$(gh pr view \"$PR\" --json labels --jq '[.labels[].name] | index(\"agent-authored\") != null' 2>/dev/null || echo bad)
@@ -592,12 +663,10 @@ else
   echo '{\"context_updates\":{\"remerge_ok\":false}}'
 fi
 exit 0"]
-    // Both terminal reporting nodes post the review comment that `deliver` used to
-    // post. Moving it out of `deliver` without moving it in here left every
-    // successful run finishing with no comment on the PR at all -- the reviewers ran,
-    // the fixes landed, and nothing said so. Task 05 replaces these two shell-built
-    // sections with `merged` and `blocked` kinds inside render.jq; until then the
-    // existing `complete` render plus an appended section is the honest minimum.
+    // Both terminal reporting nodes post the review comment, rendered by the
+    // `merged` and `blocked` kinds in render.jq. There is nothing appended in shell
+    // any more: the outcome section is part of the one render, so the report cannot
+    // describe the merge differently from the rest of the review.
     //
     // Every gh call is `|| true` and the render has a fallback: by the time these run
     // the merge has already happened, and a reporting failure must not turn a correct
@@ -605,13 +674,13 @@ exit 0"]
     report_merged [label="Report merged", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 N=$(jq -r '.[0].number // 0' /tmp/fabro/linked_issues.json 2>/dev/null || echo 0)
-if ! sh /tmp/fabro/render_comment.sh complete > /tmp/fabro/pr_comment.md; then
+if ! sh /tmp/fabro/render_comment.sh merged > /tmp/fabro/pr_comment.md; then
   echo 'WARNING: could not render the review comment; falling back to a minimal one.' >&2
-  echo 'Automated review complete and the PR was squash-merged, but the detailed report could not be rendered.' > /tmp/fabro/pr_comment.md
+  { echo 'Automated review complete and the PR was squash-merged, but the detailed report could not be rendered.'
+    echo
+    echo 'Squash-merged as `'$(cat /tmp/fabro/commit_subject.txt 2>/dev/null)'`. Head branch deleted.'
+  } > /tmp/fabro/pr_comment.md
 fi
-{ echo; echo '### Merged'; echo;
-  echo 'Squash-merged as `'\"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null)\"'`. Head branch deleted.';
-} >> /tmp/fabro/pr_comment.md
 gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the merge comment.' >&2
 if [ \"$N\" != 0 ]; then
   gh issue edit \"$N\" --remove-label Review || true
@@ -623,15 +692,13 @@ exit 0"]
 R=$(cat /tmp/fabro/merge_block_reason 2>/dev/null || echo 'The merge was blocked for an unspecified reason.')
 echo 'Merge blocked for PR '$PR': '$R
 if [ -z \"$PR\" ]; then echo done; exit 0; fi
-if ! sh /tmp/fabro/render_comment.sh complete > /tmp/fabro/pr_comment.md; then
+if ! sh /tmp/fabro/render_comment.sh blocked > /tmp/fabro/pr_comment.md; then
   echo 'WARNING: could not render the review comment; falling back to a minimal one.' >&2
-  echo 'Automated review complete, but the detailed report could not be rendered.' > /tmp/fabro/pr_comment.md
+  { echo 'Automated review complete, but the detailed report could not be rendered.'
+    echo
+    echo '**Reason:** '\"$R\"
+  } > /tmp/fabro/pr_comment.md
 fi
-{ echo; echo '### Not auto-merged'; echo;
-  echo '**Reason:** '\"$R\";
-  echo;
-  echo 'Everything else about this review stands. Merge it by hand when you are happy with it.';
-} >> /tmp/fabro/pr_comment.md
 gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the blocked comment.' >&2
 echo done
 exit 0"]

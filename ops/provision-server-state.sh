@@ -17,6 +17,14 @@
 # back from a live server. Their schedule is created DISABLED. Before trusting
 # this script to rebuild a host, diff it against production:
 #
+# The pr-review-* rows also carry the per-repo auto-merge kill switch: an
+# `auto_merge=true|false` token in the row's `description`. That is not a stylistic
+# choice — fabro 0.354.0-nightly.0 has no `labels` field on an automation (POST with
+# one returns 422 `unknown field 'labels'`) and no `PATCH /automations/{id}` (405),
+# and `description` is the only free-form writable field on the row. Flip it with
+# `ops/fabro-auto-merge-switch.sh <repo> on|off`; flip it by hand and this script
+# reports the row as drift rather than putting it back.
+#
 #   curl -sS -H "Authorization: Bearer $FABRO_DEV_TOKEN" "$FABRO_API_URL/automations" \
 #     | jq -r '.data[] | "\(.id)\t\(.environment_id)\t\([.triggers[]|"\(.type):\(.id):\(.enabled)"]|join(","))"'
 #
@@ -124,7 +132,33 @@ check_triggers() {
   fi
 }
 
-# provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty> [schedule_expr]
+# description_auto_merge <description>
+#
+# The one parser for the per-repo switch, and the behaviour it defines. Three outcomes,
+# not two: no mention of the token at all is `true` (operator decision 10 — auto-merge
+# is the default and the switches turn it off); an explicit `auto_merge=true` is `true`;
+# and anything else that mentions it — malformed, empty, `0`, `TRUE` — is `false`. A
+# token that does not parse is a switch nobody can trust, so it fails closed rather
+# than falling back to the default. fire-pr-review.sh parses the same token the same
+# way; keep the two in step, because a re-provision that disagrees with the fire path is
+# the one way this switch can be wrong at the worst moment.
+#
+description_auto_merge() {
+  d_desc="${1:-}"
+  d_am=true
+  case "$d_desc" in
+    *auto_merge*)
+      d_token=$(printf '%s' "$d_desc" | grep -o 'auto_merge=[A-Za-z0-9_-]*' | tail -1 | cut -d= -f2)
+      case "$d_token" in
+        true) d_am=true ;;
+        *) d_am=false ;;
+      esac
+      ;;
+  esac
+  printf '%s\n' "$d_am"
+}
+
+# provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty> [schedule_expr] [auto_merge]
 #   - workflow is "backlog" or "pr-review"; both live in
 #     andrewthetechie/fabro-workflows@main.
 #   - schedule_id, when non-empty, adds a DISABLED schedule row for operator
@@ -132,6 +166,10 @@ check_triggers() {
 #     three minutes apart (ADR 0001) so all four never fire in the same minute.
 #     pr-review gets none: it is fired manually against a named PR, so there is
 #     nothing for a cron to poll.
+#   - auto_merge defaults to true and is written into a pr-review row's description
+#     only. It is the provisioned value of decision 10, which is why the default is
+#     `true` here and why an existing row that disagrees is reported, never rewritten:
+#     a switch flipped off by hand during an incident must survive a re-provision.
 provision_automation() {
   id="$1"
   env_id="$2"
@@ -139,6 +177,12 @@ provision_automation() {
   workflow="$4"
   schedule_id="$5"
   schedule_expr="${6:-}"
+  auto_merge="${7:-true}"
+
+  case "$auto_merge" in
+    true | false) ;;
+    *) echo "FAILED: $id auto_merge must be true or false, got '$auto_merge'" >&2; return 1 ;;
+  esac
 
   existing_env=$(jq -r --arg id "$id" \
     '.data[]? | select(.id == $id) | .environment_id // ""' /tmp/provision_list.json)
@@ -150,19 +194,43 @@ provision_automation() {
       DRIFT_FOUND=1
     fi
     check_triggers "$id" "$schedule_id" "$schedule_expr"
+    if [ "$workflow" = "pr-review" ]; then
+      existing_desc=$(jq -r --arg id "$id" \
+        '.data[]? | select(.id == $id) | .description // ""' /tmp/provision_list.json)
+      # Passed as an argument, not piped: description_auto_merge reads "$1", and a
+      # pipe would hand it nothing and silently answer `true` for every row.
+      existing_am=$(description_auto_merge "$existing_desc")
+      if [ "$existing_am" != "$auto_merge" ]; then
+        echo "DRIFT: $id has auto_merge=$existing_am, expected $auto_merge. Not corrected: a switch flipped by hand must survive a re-provision." >&2
+        DRIFT_FOUND=1
+      fi
+    fi
     return 0
   fi
 
   if [ -n "$schedule_id" ]; then
-    # jq builds this: the cron expression is data, not something to splice into
-    # a JSON string.
-    schedule_json=$(jq -nc --arg sid "$schedule_id" --arg expr "$schedule_expr" \
-      ',{"type":"schedule","id":$sid,"enabled":false,"expression":$expr}')
+    # jq builds the object; the separator is added here, in the shell. The jq program
+    # used to begin with a literal `,` so it could be spliced into the payload below,
+    # which is a jq syntax error: `jq -nc ',{...}'` prints nothing and exits 3. Under
+    # `set -e` that aborted the whole script, so creating a *new* backlog automation
+    # had been impossible since the schedules were staggered — invisible on the live
+    # host, where those rows already exist and take the drift path.
+    schedule_json=",$(jq -nc --arg sid "$schedule_id" --arg expr "$schedule_expr" \
+      '{type:"schedule",id:$sid,enabled:false,expression:$expr}')"
   else
     schedule_json=""
   fi
 
-  payload="{\"id\":\"$id\",\"name\":\"$id\",\"environment_id\":\"$env_id\",\"target\":{\"kind\":\"git\",\"repo\":\"$repo\",\"branch\":\"main\"},\"workflow\":\"$workflow\",\"workflow_source\":{\"repo\":\"andrewthetechie/fabro-workflows\",\"branch\":\"main\"},\"triggers\":[{\"type\":\"api\",\"id\":\"manual\",\"enabled\":true}$schedule_json]}"
+  # The per-repo auto-merge switch. pr-review rows only; a backlog row has nothing
+  # that reads it. `$auto_merge` is narrowed to true|false above, so it cannot carry
+  # JSON syntax into this string.
+  if [ "$workflow" = "pr-review" ]; then
+    description_field="\"description\":\"pr-review config-only row for $repo (never fired). auto_merge=$auto_merge\","
+  else
+    description_field=""
+  fi
+
+  payload="{\"id\":\"$id\",\"name\":\"$id\",$description_field\"environment_id\":\"$env_id\",\"target\":{\"kind\":\"git\",\"repo\":\"$repo\",\"branch\":\"main\"},\"workflow\":\"$workflow\",\"workflow_source\":{\"repo\":\"andrewthetechie/fabro-workflows\",\"branch\":\"main\"},\"triggers\":[{\"type\":\"api\",\"id\":\"manual\",\"enabled\":true}$schedule_json]}"
 
   http_code=$(curl -sS -m 15 -o /tmp/provision_out.json -w '%{http_code}' \
     -X POST -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
@@ -177,10 +245,13 @@ provision_automation() {
 }
 
 echo "Provisioning pr-review automations..."
-provision_automation pr-review-jelly-swipe python andrewthetechie/jelly-swipe pr-review "" || FAILED=$((FAILED+1))
-provision_automation pr-review-lawncare-saas python-node andrewthetechie/lawncare-saas pr-review "" || FAILED=$((FAILED+1))
-provision_automation pr-review-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports pr-review "" || FAILED=$((FAILED+1))
-provision_automation pr-review-writers-app rust-node andrewthetechie/writers-app pr-review "" || FAILED=$((FAILED+1))
+# The trailing `true` is the per-repo auto-merge switch, named explicitly: it is the
+# value decision 10 says is the default, and a row that is created carrying it is a
+# row an operator can flip without a deploy.
+provision_automation pr-review-jelly-swipe python andrewthetechie/jelly-swipe pr-review "" "" true || FAILED=$((FAILED+1))
+provision_automation pr-review-lawncare-saas python-node andrewthetechie/lawncare-saas pr-review "" "" true || FAILED=$((FAILED+1))
+provision_automation pr-review-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports pr-review "" "" true || FAILED=$((FAILED+1))
+provision_automation pr-review-writers-app rust-node andrewthetechie/writers-app pr-review "" "" true || FAILED=$((FAILED+1))
 
 echo "Provisioning backlog automations..."
 provision_automation backlog-jelly-swipe python andrewthetechie/jelly-swipe backlog every-15m "2-59/15 * * * *" || FAILED=$((FAILED+1))

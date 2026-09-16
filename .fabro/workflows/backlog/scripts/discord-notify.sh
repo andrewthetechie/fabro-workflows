@@ -1,7 +1,7 @@
 #!/bin/sh
 # discord-notify.sh — best-effort Discord notification for fabro runs.
 #
-# Usage: discord-notify.sh <rescue|complete|failed|review-triggered>
+# Usage: discord-notify.sh <rescue|complete|failed|review-triggered|merged>
 #
 # Runs as a hook with sandbox = false, i.e. inside the fabro server container
 # (Alpine: /bin/sh + wget, no bash, no curl, no jq). The event context JSON is
@@ -92,6 +92,12 @@ case "$kind" in
   rescue)   msg="🟡 fabro needs a human decision${subject} (rescue gate)" ;;
   complete) msg="✅ fabro opened a PR${subject}" ;;
   failed)   msg="🔴 fabro run failed${subject}" ;;
+  # The merge outcome, and the only kind pr-review fires. A rocket, not a checkmark:
+  # `complete` already uses ✅ for "opened a PR", and those two events can be one
+  # notification apart in a normal chain. report_merged publishes `pr_url` and
+  # `issue_number` as context_updates precisely so the enrichment above (unchanged)
+  # fills in `$subject` and the PR link on this line.
+  merged)   msg="🚀 fabro squash-merged a PR${subject}" ;;
   review-triggered)
     # A trigger failure cannot fail the run (trigger_review carries
     # on_failure="succeed"), so `run_failed` never fires for it and this hook is the

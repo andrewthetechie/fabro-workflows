@@ -24,6 +24,17 @@
 #   * the LAST line on stderr is a one-line reason on every failure path.
 # The node does `tail -1` on each and turns the stderr line into a Discord alert.
 #
+# The per-repo auto-merge kill switch is read out of the `pr-review-<repo>`
+# automation's `description`, and sent as `auto_merge` in `args.inputs`. It is stored
+# there because fabro 0.354.0-nightly.0 has no `labels` field on an automation
+# (`POST` with one returns 422 `unknown field 'labels'`) and no `PATCH
+# /automations/{id}` (405); `description` is the only free-form writable field on the
+# row. `ops/fabro-auto-merge-switch.sh <repo> on|off` performs the GET+PUT.
+#
+# Reading it: an absent token means ON, which is operator decision 10 (auto-merge is
+# the default and the switches turn it off); a token that is present and not exactly
+# `true` means OFF. Nothing here guesses: unparseable fails closed.
+#
 # Env:
 #   FABRO_API_URL    http://10.10.0.32:32276/api/v1   includes the /api/v1 prefix
 #   FABRO_API_TOKEN  —                                required; never echoed
@@ -179,6 +190,27 @@ case "$target" in
   "" | "null") die "the $auto_id automation has no target" ;;
 esac
 
+# The per-repo kill switch. Three outcomes, not two:
+#   * no mention of `auto_merge` anywhere -> ON   (operator decision 10: an absent
+#     token means nobody has touched this switch, and auto-merge is the default)
+#   * `auto_merge=true`                   -> ON
+#   * anything else that mentions it      -> OFF  (malformed, empty, `0`, `TRUE`: a
+#     token that does not parse is a switch nobody can trust, so it fails closed)
+# `tail -1` takes the last token so a human editing the description cannot resurrect an
+# earlier value; `cut -d= -f2` on an empty grep output is empty.
+desc="$(jq -r '.[0].description // ""' "$tmp/automatch.json")"
+am=1
+switch_tok=""
+case "$desc" in
+  *auto_merge*)
+    switch_tok="$(printf '%s' "$desc" | grep -o 'auto_merge=[A-Za-z0-9_-]*' | tail -1 | cut -d= -f2)"
+    case "$switch_tok" in
+      true) am=1 ;;
+      *) am=0 ;;
+    esac
+    ;;
+esac
+
 # ---------------------------------------------------- 2. pre-flight: PR exists ----
 
 # A PR number that does not exist otherwise produces a run that fails minutes later
@@ -280,12 +312,14 @@ fi
 
 # ------------------------------------------------------------ 5. create the run ----
 
-# args.inputs.pr_number is a JSON number, not a string: pr-review's validate_input
-# runs `case "$PR" in *[!0-9]*)`. args.labels values must be strings.
+# args.inputs values that reach a POSIX `case` guard are JSON numbers, not strings:
+# pr-review's validate_input runs `case "$PR" in *[!0-9]*)` and `case "$AM" in 1)`.
+# A number is the shape that cannot carry shell syntax. args.labels values are strings.
 jq -n \
   --arg vvid "$version_id" \
   --argjson target "$target" \
   --argjson pr "$PR_NUM" \
+  --argjson am "$am" \
   --arg prs "$PR_NUM" \
   --arg env_id "$env_id" \
   --arg issue "$ISSUE_NUMBER" \
@@ -294,7 +328,7 @@ jq -n \
     workflow_version_id: $vvid,
     target: $target,
     args: {
-      inputs: { pr_number: $pr },
+      inputs: { pr_number: $pr, auto_merge: $am },
       labels: ({ source: "backlog", pr: $prs }
                + (if $issue == "" then {} else { issue: $issue } end))
     },
@@ -356,6 +390,11 @@ if [ "$DRY_RUN" = "1" ]; then
   printf 'package  %s @ %s\n' "$WORKFLOWS_REPO" "$WORKFLOWS_REF"
   printf 'target   %s#%s  (%s)\n' "$REPO" "$PR_NUM" "$repo_branch"
   printf 'env      %s   (from automation %s)\n' "$env_id" "$auto_id"
+  # A kill switch you cannot observe without firing is not a kill switch: print the
+  # per-repo switch this fire resolved. The host switch is read at run launch, so it
+  # is shown as unresolved rather than guessed at here.
+  printf 'auto_merge  %s   (per-repo switch; %s description token is %s)\n' \
+    "$am" "$auto_id" "${switch_tok:-<absent, default on>}"
   printf 'parent   %s\n' "${VALID_PARENT:-<omitted>}"
   # entrypoint and the files keys are the part most likely to need a round trip, so
   # they are listed up front. The full payloads follow, but this package is ~58 KB of
