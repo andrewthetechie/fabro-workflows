@@ -57,6 +57,17 @@ says only "needs answers" costs a browser trip to discover the deadline.
 `subject` already resolves to the repository and issue number through the existing
 enrichment, so no new lookup is needed for it.
 
+**Correction (2026-09-16, found while verifying the deployed copy in-container).** It
+did not. The enrichment greps `'"issue_number":[0-9]*'`, which assumes the value is a
+JSON *number* — true for `backlog`, whose state carries `"issue_number":2599`, but not
+for `issue-triage`, whose `claim` builds the key with `jq --arg` so it arrives as
+`"issue_number":"1195"`. The pattern matched zero digits, `issue` came back empty, and
+every triage notification lost both its `#1195` and its issue deep link, degrading to a
+bare repository URL — on the one message whose entire job is to send a human to a
+specific issue inside 30 minutes. The grep now accepts an optional opening quote and
+pulls the digits with `tr -dc`, which covers both workflows. Verified against a real
+triage run *and* a real backlog run from inside `fabro-fabro-1`.
+
 ## Part 3 — deploy it
 
 This is the one file in the change with two copies; the host's is authoritative at run

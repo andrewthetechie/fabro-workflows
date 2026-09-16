@@ -56,8 +56,14 @@ if [ -r "$token_file" ]; then
     | grep -o '"origin_url":"[^"]*"' | head -1 | cut -d'"' -f4)
   # One pass over the (large) state stream for each field we want. Each grep is
   # cut short by head -1, so neither reads the whole body.
+  # Both spellings, deliberately. `backlog` publishes issue_number as a NUMBER
+  # (2599); `issue-triage`'s claim builds it with `jq --arg`, so it arrives as a
+  # STRING ("1195") and the old `:[0-9]*` pattern matched zero digits — every triage
+  # notification silently lost its "#1195" and its issue link, which are the two
+  # things that make the 30-minute question ping actionable. BRE with \{0,1\} and
+  # \{1,\} rather than \? and +, because this runs under busybox grep.
   issue=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
-    | grep -o '"issue_number":[0-9]*' | head -1 | cut -d: -f2)
+    | grep -o '"issue_number":"\{0,1\}[0-9]\{1,\}' | head -1 | tr -dc '0-9')
   # open_pr publishes pr_url into the run context once the PR exists; absent for
   # every run that did not get that far.
   pr_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
