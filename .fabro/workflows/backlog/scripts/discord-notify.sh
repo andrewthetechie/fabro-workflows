@@ -68,6 +68,12 @@ if [ -r "$token_file" ]; then
     | grep -o '"review_run_id":"[^"]*"' | head -1 | cut -d'"' -f4)
   review_err=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"review_trigger_error":"[^"]*"' | head -1 | cut -d'"' -f4)
+  # The reason is server `detail` text, so it can carry a quote, which trigger_review
+  # now encodes as \" rather than emitting a broken object. The grep above stops at
+  # that quote and hands back the trailing backslash, which would then break the
+  # Discord payload the same way. Drop both characters: the message is already
+  # truncated at that point and only has to be readable.
+  review_err=$(printf '%s' "$review_err" | sed 's/[\\"]//g')
 fi
 
 # repo "owner/name" for display, derived from the origin URL
@@ -107,8 +113,13 @@ links=""
 # The PR is the most useful link when there is one, so it leads.
 [ -n "$pr_url" ] && links="${links}\\n${pr_url}"
 [ -n "$base_url" ] && links="${links}\\n${base_url}/runs/${run_id}"
-# The review this run spawned, when the bridge fired one.
-[ -n "$review_run_id" ] && [ -n "$base_url" ] && links="${links}\\n${base_url}/runs/${review_run_id}"
+# The review this run spawned, on the notification that is about that review. The
+# key is only populated once trigger_review has checkpointed, which is after every
+# other kind has already fired, so gate on the kind rather than rely on that order
+# holding as the graph changes.
+if [ "$kind" = "review-triggered" ] && [ -n "$review_run_id" ] && [ -n "$base_url" ]; then
+  links="${links}\\n${base_url}/runs/${review_run_id}"
+fi
 if [ -n "$repo_url" ] && [ -n "$issue" ]; then
   links="${links}\\n${repo_url}/issues/${issue}"
 elif [ -n "$repo_url" ]; then

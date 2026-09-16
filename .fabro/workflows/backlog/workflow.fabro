@@ -369,6 +369,16 @@ echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\"}}'"]
     // visible in the stage log, and `max_visits` has murky semantics on a failed visit
     // — which is exactly the state `on_failure="succeed"` puts this node in.
     //
+    // The two payloads that interpolate a variable are built with `jq -nc --arg`, not
+    // by quoting a string together. The error one carries the fire script's stderr,
+    // which is server `detail` text: one `"` in it makes the object invalid, routing
+    // output is validated only after exit 0 with no repair turn, and the node then
+    // fails into on_failure="succeed" having written neither key — so the Discord hook
+    // reads an empty pair, takes its skip branch, and a trigger failure goes unreported.
+    // That is the exact silence this node exists to prevent. The constant payloads above
+    // stay literal echoes: they have no interpolation to get wrong. `jq` is guaranteed
+    // present here because `open_pr` runs `jq` under `set -e` on the only edge in.
+    //
     // The node is POSIX sh: `case`, `${#VAR}`, `$?`; no `[[ ]]`, no arrays, no pipefail.
     // The token is never echoed and never reaches a log. Do not add `set -x`.
     trigger_review [label="Trigger PR review", shape=parallelogram,
@@ -384,6 +394,10 @@ case \"$PR\" in '' | *[!0-9]*)
   exit 0 ;;
 esac
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo '')
+if [ -z \"$REPO\" ]; then
+  echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"could not determine the repository from gh\"}}'
+  exit 0
+fi
 RID=$(basename $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ''))
 if [ ${#RID} -ne 26 ]; then RID=''; fi
 case \"$RID\" in *[!0-9A-Z]*) RID='' ;; esac
@@ -393,14 +407,14 @@ if ! git clone --depth 1 https://github.com/andrewthetechie/fabro-workflows /tmp
   exit 0
 fi
 S=/tmp/fabro/wfrepo/.fabro/workflows/backlog/scripts/fire-pr-review.sh
-PARENT_RUN_ID=$RID DRY_RUN=0 sh $S $REPO $PR > /tmp/fabro/trigger_out 2> /tmp/fabro/trigger_err
+PARENT_RUN_ID=$RID DRY_RUN=0 sh $S \"$REPO\" \"$PR\" > /tmp/fabro/trigger_out 2> /tmp/fabro/trigger_err
 if [ $? -eq 0 ]; then
   touch /tmp/fabro/review_triggered
   R=$(tail -1 /tmp/fabro/trigger_out | sed 's/[[:cntrl:]]//g')
-  echo '{\"context_updates\":{\"review_run_id\":\"'$R'\",\"review_trigger_error\":\"\"}}'
+  jq -nc --arg r \"$R\" '{context_updates:{review_run_id:$r,review_trigger_error:\"\"}}'
 else
   E=$(tail -1 /tmp/fabro/trigger_err | sed 's/[[:cntrl:]]//g' | cut -c1-200)
-  echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"'$E'\"}}'
+  jq -nc --arg e \"$E\" '{context_updates:{review_run_id:\"\",review_trigger_error:$e}}'
 fi"]
 
     close_noop [label="Close (no actionable work)", shape=parallelogram,
