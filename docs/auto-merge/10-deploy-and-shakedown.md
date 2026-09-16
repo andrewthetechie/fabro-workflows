@@ -10,15 +10,19 @@ unremoved dry-run flag is its own footgun, and the switch has to work anyway.
 Not after. A commit on `main` is live on the next fire.
 
 ```sh
-ssh andrew@10.10.0.32 "grep -q '^FABRO_AUTO_MERGE=' ~/fabro/.env \
-  || echo 'FABRO_AUTO_MERGE=0' >> ~/fabro/.env"
-ssh andrew@10.10.0.32 'grep FABRO_AUTO_MERGE ~/fabro/.env'
-ssh andrew@10.10.0.32 'cd ~/fabro && docker compose up -d'
-ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 sh -c "echo \$FABRO_AUTO_MERGE"'
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ./ops/fabro-auto-merge-switch.sh host off
+ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro variable get FABRO_AUTO_MERGE'
 ```
 
-The last line must print `0`. A variable in `.env` that never reached the container is
-a kill switch that does nothing, and everything after this point assumes it is armed.
+Must print `0`. No `docker compose up -d` and no restart: it is a server variable, read
+at run-intent compile time, so it takes effect on the next run.
+
+**Do not verify this with `docker exec … echo $FABRO_AUTO_MERGE`.** That reads the
+*server* container's environment, which is not where `validate_input` runs — the run
+sandbox is a different container, fed by `[run.environment.env]`. A check on the wrong
+hop is how the original `${FABRO_AUTO_MERGE}` spelling would have passed review: it
+reaches the server container fine and never reaches the sandbox at all. The hop that
+matters is proved in §3, by reading `/tmp/fabro/auto_merge` back off a real run.
 
 ## 2 — Deploy what does not come from `main`
 
@@ -60,6 +64,10 @@ Fire `pr-review` against three PRs that reach `merge_gate` and differ in outcome
 Each run must:
 
 - reach `merge_gate`, block on `auto_merge=0`, and say so in the PR comment;
+- **write `0` to `/tmp/fabro/auto_merge` with the host-switch reason** — check the
+  `validate_input` stage log, not just the outcome. A permanently-broken injection and a
+  correctly disarmed switch produce the identical blocked run, and this file is the only
+  place they differ from each other;
 - render the `blocked` report with the `complete` heading and a `### Not auto-merged`
   section naming the host switch;
 - keep `ai-review-complete`, not `ai-review-needs-human`;
@@ -91,9 +99,11 @@ demonstrably load-bearing before either is trusted.
 Arm the repo, disarm the host:
 
 ```sh
-ssh andrew@10.10.0.32 "sed -i 's/^FABRO_AUTO_MERGE=0/FABRO_AUTO_MERGE=1/' ~/fabro/.env"
-ssh andrew@10.10.0.32 'cd ~/fabro && docker compose up -d'
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ./ops/fabro-auto-merge-switch.sh host on
 ```
+
+Before firing, confirm §3 proved the injection works. Arming a switch that never
+reaches the sandbox produces a run that blocks for a reason that reads correct.
 
 **Subject: `jelly-swipe#378`.** It is the right first test for three reasons: it is
 open and `agent-authored`; it is the PR whose `lint` check fails on exactly the title

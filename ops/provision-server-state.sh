@@ -158,6 +158,45 @@ description_auto_merge() {
   printf '%s\n' "$d_am"
 }
 
+# provision_variable <name> <default_value>
+#
+# Server variables, which pr-review's [run.environment.env] reads as
+# `{{ vars.FABRO_AUTO_MERGE }}`. This is not optional plumbing: an unset variable fails
+# the RunIntent at compile time ("Run config variable interpolation failed"), so a host
+# missing FABRO_AUTO_MERGE creates no pr-review run at all.
+#
+# Create-if-absent, never overwrite. `POST /variables` upserts -- it returns 200 and
+# replaces an existing value -- so a naive POST here would silently re-arm a switch an
+# operator flipped off during an incident. That is the same rule the automation rows
+# follow, and it is the one property this script has to keep: a re-provision must never
+# undo a deliberate kill.
+provision_variable() {
+  v_name="$1"
+  v_default="$2"
+
+  v_cur=$(curl -fsS -m 15 -H "$AUTH_HEADER" "$API_URL/variables" 2>/dev/null \
+    | jq -r --arg n "$v_name" '.data[]? | select(.name == $n) | .value' 2>/dev/null)
+
+  if [ -n "$v_cur" ]; then
+    if [ "$v_cur" = "$v_default" ]; then
+      echo "OK: variable $v_name is $v_cur"
+    else
+      echo "DRIFT: variable $v_name is '$v_cur', not the provisioned '$v_default'. Not corrected." >&2
+      DRIFT_FOUND=1
+    fi
+    return 0
+  fi
+
+  v_code=$(curl -sS -m 15 -o /tmp/provision_var.json -w '%{http_code}' -X POST \
+    -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg n "$v_name" --arg v "$v_default" '{name:$n, value:$v}')" \
+    "$API_URL/variables" 2>/dev/null) || v_code=000
+  case "$v_code" in
+    200 | 201) echo "CREATED: variable $v_name = $v_default" ;;
+    *) echo "FAILED: could not create variable $v_name (HTTP $v_code)" >&2; return 1 ;;
+  esac
+}
+
 # provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty> [schedule_expr] [auto_merge]
 #   - workflow is "backlog" or "pr-review"; both live in
 #     andrewthetechie/fabro-workflows@main.
@@ -243,6 +282,13 @@ provision_automation() {
     return 1
   fi
 }
+
+# The host-wide half of the auto-merge kill switch. Provisioned to decision 10's
+# default (on); flip it with `ops/fabro-auto-merge-switch.sh host off`, which takes
+# effect on the next run with no restart. Created before the automations because a
+# pr-review run cannot compile without it.
+echo "Provisioning server variables..."
+provision_variable FABRO_AUTO_MERGE 1 || FAILED=$((FAILED+1))
 
 echo "Provisioning pr-review automations..."
 # The trailing `true` is the per-repo auto-merge switch, named explicitly: it is the

@@ -127,7 +127,37 @@ on #378: `{"bucket":"fail","name":"lint","state":"FAILURE"}` alongside nine
 `{"bucket":"pass",…}`. Gate on `bucket`, not on the raw `state` enum, which has a
 dozen values and gains more.
 
-### 7. `discord-notify.sh` degrades safely on an unknown kind
+### 7. An automation row has no `labels`, and cannot be PATCHed
+
+`POST /automations` with a `labels` object returns **422 `unknown field 'labels'`**, and
+`PATCH /automations/{id}` returns **405**. `description` is the only free-form writable
+field on the row, and `PUT` is a full replacement requiring `If-Match`. So the per-repo
+switch is an `auto_merge=true|false` token inside `description`, parsed identically by
+`fire-pr-review.sh` and `ops/provision-server-state.sh`, and flipped by
+`ops/fabro-auto-merge-switch.sh`, which performs the GET+PUT.
+
+### 8. `${VAR}` is not interpolated in `[run.environment.env]`
+
+Probed on 2026-09-16 with a throwaway workflow setting `PROBE = "${HOME}"`. The stage
+printed `PROBE_SET_IS=[${HOME}]` — the literal text reaches the sandbox.
+
+This matters more than it looks. A host switch spelled `"${FABRO_AUTO_MERGE}"` arrives
+**set, non-empty, and not `1`**, so it pins auto-merge to off on every repo forever with
+no operator action able to arm it — and the task 10 shakedown cannot detect it, because
+a permanently-broken switch and a correctly disarmed one produce the identical blocked
+run.
+
+fabro names the fix in its own error for `{{ env.X }}`: *"the process environment is not
+a configuration source. Use `{{ vars.X }}` for a non-sensitive value (`fabro variable
+set`) or `{{ secrets.X }}` for a credential."* `{{ vars.FABRO_AUTO_MERGE }}` is verified
+to arrive as its value.
+
+**An unset variable fails the RunIntent at compile time** — `Run config variable
+interpolation failed` — so no run is created. The variable is therefore provisioned,
+never deleted, and `off` writes `0`. The trade buys a switch that takes effect on the
+next run with no `.env` edit and no `docker compose up -d`.
+
+### 9. `discord-notify.sh` degrades safely on an unknown kind
 
 Its `case` ends `*) msg="ℹ️ fabro run ${run_id} notification ($kind)"`. A host copy
 that predates task 08 sends a plain message rather than failing — which matters
@@ -259,8 +289,11 @@ Two, independent, both fail closed. Auto-merge happens only when **both** say ye
 
 | Switch | Where | Scope | How fast |
 |---|---|---|---|
-| `auto_merge` automation label | the `pr-review-<repo>` automation row | one repo | one `PATCH /automations/<id>`, no deploy |
-| `FABRO_AUTO_MERGE` | `~/fabro/.env` on the host | all four | one edit plus `docker compose up -d` |
+| `auto_merge=true\|false` token | the `pr-review-<repo>` automation row's `description` | one repo | `ops/fabro-auto-merge-switch.sh <repo> off`, no deploy |
+| `FABRO_AUTO_MERGE` server variable | fabro's variable store, read as `{{ vars.FABRO_AUTO_MERGE }}` | all four | `ops/fabro-auto-merge-switch.sh host off`, no restart |
+
+Neither is where the first draft of this document put them, and both corrections are
+findings rather than preferences — see 8 and 9 below.
 
 Absent, empty, or anything other than the explicit enabled value means **disabled**.
 Default-on is a decision about the *provisioned* label, not about the parser.

@@ -16,8 +16,15 @@ stop **all of it at once** without four separate calls.
 
 | Switch | Lives in | Scope | Cost to flip |
 |---|---|---|---|
-| `auto_merge` label | the `pr-review-<repo>` automation row | one repo | one `PATCH /automations/<id>` |
-| `FABRO_AUTO_MERGE` | `~/fabro/.env` | all four | edit + `docker compose up -d` |
+| `auto_merge` token in `description` | the `pr-review-<repo>` automation row | one repo | `fabro-auto-merge-switch.sh <repo> off` |
+| `FABRO_AUTO_MERGE` server variable | fabro's variable store | all four | `fabro-auto-merge-switch.sh host off` |
+
+**Neither switch is where this task first specified it.** The row has no `labels` field
+(`POST` returns 422 `unknown field 'labels'`) and no `PATCH` (405), so the per-repo
+switch is a token in `description`. And `[run.environment.env]` does not interpolate
+`${X}` — it passes the literal through — so the host switch is a server variable read as
+`{{ vars.FABRO_AUTO_MERGE }}`. Both are recorded as findings 7 and 8 in
+`00-overview-and-contracts.md`.
 
 Both must say yes. Either says no, or says nothing at all, and the merge does not
 happen.
@@ -32,12 +39,24 @@ row, which is the point: one place to look for per-repo configuration.
 (section 1 of the script), and sends it as an input:
 
 ```sh
-auto_merge="$(jq -r '.[0].labels.auto_merge // \"true\"' \"$tmp/automatch.json\")"
-case "$auto_merge" in true) am=1 ;; *) am=0 ;; esac
+desc="$(jq -r '.[0].description // \"\"' \"$tmp/automatch.json\")"
+am=1
+case "$desc" in
+  *auto_merge*)
+    tok="$(printf '%s' \"$desc\" | grep -o 'auto_merge=[A-Za-z0-9_-]*' | tail -1 | cut -d= -f2)"
+    case "$tok" in true) am=1 ;; *) am=0 ;; esac ;;
+esac
 ```
 
-`// "true"` is the default-on decision, expressed in exactly one place. Everything
-downstream treats anything but the explicit enabled value as disabled.
+Three outcomes, not two: **no mention of the token at all is on** — decision 10, nobody
+has touched this switch — `auto_merge=true` is on, and anything else that mentions it
+(`false`, `0`, empty, `TRUE`, a bare `auto_merge`) is off. A token that does not parse is
+a switch nobody can trust, so it fails closed instead of falling back to the default.
+`tail -1` takes the last token so a hand edit cannot resurrect an earlier value.
+
+`ops/provision-server-state.sh` carries the same parser. Keep the two in step: a
+re-provision that disagrees with the fire path is the one way this switch is wrong at the
+worst moment.
 
 Then in the `RunIntent`, alongside `pr_number`:
 
@@ -54,14 +73,23 @@ kill switch you cannot observe without firing is not a kill switch.
 
 ## The host switch
 
-`FABRO_AUTO_MERGE` in `~/fabro/.env`, passed into the fabro container by
-`ops/docker-compose.yaml`, and injected into the run sandbox by `pr-review`'s
-`workflow.toml`:
+A **server variable**, injected into the run sandbox by `pr-review`'s `workflow.toml`:
 
 ```toml
 [run.environment.env]
-FABRO_AUTO_MERGE = "${FABRO_AUTO_MERGE}"
+FABRO_AUTO_MERGE = "{{ vars.FABRO_AUTO_MERGE }}"
 ```
+
+Not `~/fabro/.env`, and not `${FABRO_AUTO_MERGE}`: that spelling is passed through
+literally and would pin the switch to off forever (finding 8). Not `{{ env.X }}` either
+— fabro rejects it outright and points at `vars`.
+
+`ops/provision-server-state.sh` creates the variable at `1`, **create-if-absent and
+never overwrite**, because `POST /variables` upserts and a re-provision must not re-arm a
+switch an operator killed. A differing value is reported as drift.
+
+The variable must exist: an unset one fails the RunIntent at compile time, so no
+pr-review run is created. `off` writes `0`; it never deletes.
 
 **Do not add `[run.environment] id = "..."`.** AGENTS.md records this as the footgun
 that pins every automation to one environment and breaks `fabro validate`, which
@@ -77,7 +105,7 @@ One place, early, fail closed, writing a single file the rest of the graph reads
 ```sh
 AM='{{ inputs.auto_merge }}'
 case \"$AM\" in 1) ;; *) AM=0 ;; esac
-H=\"${FABRO_AUTO_MERGE:-1}\"
+H=\"${FABRO_AUTO_MERGE:-0}\"
 case \"$H\" in 1) ;; *) H=0 ;; esac
 if [ \"$AM\" = 1 ] && [ \"$H\" = 1 ]; then echo 1 > /tmp/fabro/auto_merge; else echo 0 > /tmp/fabro/auto_merge; fi
 ```
@@ -119,13 +147,17 @@ was written for, and this is the first field where getting it wrong merges code.
 
 - `fire-pr-review.sh` with `DRY_RUN=1` prints the resolved `auto_merge` and includes
   it in the `RunIntent` as a number.
-- An automation row with no `auto_merge` label resolves to enabled.
-- `auto_merge: "false"`, `auto_merge: "0"`, `auto_merge: ""` and a malformed row all
-  resolve to disabled.
-- With `FABRO_AUTO_MERGE=0` in the environment, `/tmp/fabro/auto_merge` is `0`
-  regardless of the input.
-- With the variable unset, the host switch is enabled — a host that has never heard of
-  this feature does not silently disable it, and the per-repo switch still governs.
+- An automation row whose `description` never mentions `auto_merge` resolves to enabled.
+- `auto_merge=false`, `auto_merge=0`, `auto_merge=` and a bare `auto_merge` all resolve
+  to disabled.
+- With the `FABRO_AUTO_MERGE` variable at `0`, `/tmp/fabro/auto_merge` is `0` regardless
+  of the input.
+- A run whose sandbox receives the literal `${FABRO_AUTO_MERGE}` resolves to **disabled**
+  — `:-0` means a broken injection never merges code.
+- `provision_variable` on a host where the variable is `0` reports drift and changes
+  nothing.
+- `fabro-auto-merge-switch.sh host off` then `host on` round-trips, with `DRY_RUN=1`
+  printing the current value first.
 - `python3.11 -c 'import tomllib; …'` parses `pr-review/workflow.toml`, and
   `[run.environment]` has **no** `id` key.
 - `fabro validate` reports exactly two warnings on `PrReview`, both unbound inputs.

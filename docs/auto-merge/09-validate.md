@@ -24,15 +24,19 @@ ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate
 | Workflow | Before this stage | After |
 |---|---|---|
 | `Backlog` | 38 nodes, 86 edges, clean | **38 nodes, 86 edges, clean — unchanged** |
-| `PrReview` | 19 nodes, 40 edges, one warning | **28 nodes, 64 edges, two warnings** |
+| `PrReview` | 19 nodes, 40 edges, one warning | **28 nodes, 64 edges, one warning** |
 
 `Backlog` must be structurally identical. Task 02 rewrites scripts inside two existing
 nodes and adds nothing. **If its node or edge count moved, something was edited that
 should not have been.**
 
-`PrReview`'s warnings are now `pr_number` **and** `auto_merge`, both unbound in
-`validate_input`, both deliberate. Neither may be silenced with a `[run.inputs]`
-binding — see task 06. Exactly two: a third warning means something else regressed.
+`PrReview` still reports **one** warning, not two. Both `pr_number` and `auto_merge` are
+unbound and both are deliberate, but fabro emits one undefined-input diagnostic per node
+*attribute*, and both references live in `validate_input`'s `script`. Confirm the second
+one exists by validating a scratch copy with `pr_number` literalised — it then warns
+about `auto_merge`. Neither may be silenced with a `[run.inputs]` binding; see task 06.
+
+Exactly one: a second warning on the real tree means something else regressed.
 
 **Note:** AGENTS.md currently records a 37/85 baseline for `Backlog` and 19/40 for
 `PrReview`. The 37/85 is stale — it predates the pr-review bridge, which added
@@ -59,7 +63,8 @@ import tomllib
 d = tomllib.load(open('.fabro/workflows/pr-review/workflow.toml','rb'))
 env = d['run']['environment']
 assert 'id' not in env, "[run.environment] must not gain an id key"
-assert env['env']['FABRO_AUTO_MERGE'] == '${FABRO_AUTO_MERGE}'
+assert env['env']['FABRO_AUTO_MERGE'] == '{{ vars.FABRO_AUTO_MERGE }}', \
+    "shell-style ${X} is not interpolated here; it would pin the switch off forever"
 assert 'inputs' not in d['run'], "pr_number and auto_merge stay unbound"
 hooks = d['run']['hooks']
 assert [h for h in hooks if h['id'] == 'discord-merged' and h['matcher'] == '^report_merged$']
@@ -171,7 +176,25 @@ Extract both to standalone scripts and drive them with fixtures:
 
 Every ambiguous input must land on **blocked**. Prove that by fixture, not by reading.
 
-## 8 — A dry fire
+## 8 — The host switch actually reaches the sandbox
+
+The one hop that cannot be checked by reading. `[run.environment.env]` does not
+interpolate `${X}`, and the failure is invisible: the merge blocks with a true-sounding
+"switched off host-wide" either way.
+
+```sh
+ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro variable list'
+```
+
+`FABRO_AUTO_MERGE` must be present. If it is absent, every pr-review run fails to
+compile rather than merging anything — loud, but it means no reviews either.
+
+Then prove the value lands **in the run sandbox**, not merely in the server container:
+fire a review, and read `/tmp/fabro/auto_merge` and `/tmp/fabro/auto_merge_off_reason`
+back off the stage log. `0` with the host reason while the variable reads `1` means the
+injection is broken.
+
+## 9 — A dry fire
 
 ```sh
 DRY_RUN=1 ~/bin/fabro-fire-pr-review.sh andrewthetechie/jelly-swipe 378
@@ -182,5 +205,5 @@ must show which way the switch is set for that repo.
 
 ## Acceptance
 
-All eight sections pass, with the exact node and edge counts above and exactly two
-`PrReview` warnings. Then, and only then, task 10.
+All nine sections pass, with the exact node and edge counts above and exactly one
+`PrReview` warning. Then, and only then, task 10.

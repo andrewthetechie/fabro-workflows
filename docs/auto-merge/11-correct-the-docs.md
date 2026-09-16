@@ -32,7 +32,10 @@ These pass `fabro validate` and fail at runtime.
 
 | Rule | What happens otherwise |
 |---|---|
-| Both auto-merge switches fail closed — absent, empty or unparseable means **off** | A `gh` call that returns nothing, or an unset host variable read as "not disabled", merges an unreviewed PR into `main`. On `lawncare-saas` that is also a deploy. |
+| Both auto-merge switches fail closed — absent, empty or unparseable means **off** | A `gh` call that returns nothing, or a broken injection read as "not disabled", merges an unreviewed PR into `main`. On `lawncare-saas` that is also a deploy. |
+| `[run.environment.env]` interpolates `{{ vars.X }}` only — never `${X}`, never `{{ env.X }}` | `${X}` reaches the sandbox as literal text. A kill switch spelled that way is pinned off forever, and the shakedown cannot tell it from a correctly disarmed one. |
+| The `FABRO_AUTO_MERGE` server variable must exist | An unset `{{ vars.X }}` fails the RunIntent at compile time, so no `pr-review` run is created at all. `provision-server-state.sh` creates it; `off` writes `0` and never deletes. |
+| `POST /variables` upserts | A re-provision that POSTs unconditionally silently re-arms a switch an operator killed mid-incident. Create-if-absent, report drift otherwise. |
 | `risk` is gate-enforced in `fix_gate`, not merely documented | Without the check the field is optional in practice, PRs quietly stop auto-merging, and the report still says "complete". |
 | The merge node re-reads PR `state` from GitHub immediately before merging | The bridge's double-fire marker is per-run and does not stop a second review fired by hand. Two runs reach `merge`; the loser must report "already handled", not fail. |
 | Every merge-phase command node's unconditional edge lands on `mark_needs_human`; expected blocks are the *conditional* edges | A broken merge — a token without `contents: write`, an API 5xx — otherwise lands in the same quiet "not auto-merged" bucket as a risk-4 PR and stays invisible. |
@@ -70,16 +73,19 @@ Under a new heading, with the exact commands. During an incident nobody reads a 
 series in `docs/`.
 
 ```sh
-# one repo, no deploy, takes effect on the next fire
-curl -fsS -X PATCH -H "Authorization: Bearer $TOK" \
-  -H 'Content-Type: application/json' -d '{"labels":{"auto_merge":"false"}}' \
-  http://10.10.0.32:32276/api/v1/automations/pr-review-<repo>
+# one repo
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ./ops/fabro-auto-merge-switch.sh andrewthetechie/<repo> off
 
 # all four
-ssh andrew@10.10.0.32 "sed -i 's/^FABRO_AUTO_MERGE=1/FABRO_AUTO_MERGE=0/' ~/fabro/.env"
-ssh andrew@10.10.0.32 'cd ~/fabro && docker compose up -d'
-ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 sh -c "echo \$FABRO_AUTO_MERGE"'   # must print 0
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ./ops/fabro-auto-merge-switch.sh host off
+ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro variable get FABRO_AUTO_MERGE'
 ```
+
+Neither needs a deploy or a restart; both take effect on the next run. Do **not**
+document a `PATCH /automations/{id}` recipe — it returns 405, and the row has no
+`labels` field either (422). Do not document reading the switch back with
+`docker exec … echo $FABRO_AUTO_MERGE`: that is the server container, not the run
+sandbox.
 
 State plainly that neither undoes a merge that already happened.
 

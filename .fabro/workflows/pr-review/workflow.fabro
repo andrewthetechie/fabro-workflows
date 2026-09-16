@@ -46,7 +46,7 @@ case \"$PR\" in '' | *[!0-9]*) echo 'pr_number must be a positive integer' >&2; 
 if [ \"$PR\" -lt 1 ]; then echo 'pr_number must be a positive integer' >&2; exit 1; fi
 AM='{{ inputs.auto_merge }}'
 case \"$AM\" in 1) ;; *) AM=0 ;; esac
-H=\"${FABRO_AUTO_MERGE-1}\"
+H=\"${FABRO_AUTO_MERGE:-0}\"
 case \"$H\" in 1) ;; *) H=0 ;; esac
 # Two independent switches, resolved once, here, into one file the rest of the graph
 # reads: the per-repo one arrives as an input resolved from the automation row, the
@@ -55,13 +55,13 @@ case \"$H\" in 1) ;; *) H=0 ;; esac
 # one an operator flips for one repository, and that is the answer task 10 section 4
 # expects when both are off.
 #
-# `-1` on the host switch, not `:-1`, is operator decision 10 read carefully: an
-# *unset* variable means enabled, because a host that has never heard of this feature
-# keeps the per-repo switch in charge rather than silently disabling everything — and
-# auto-merge is the default, with these switches existing to turn it off. A variable
-# that is *set and empty* is disabled instead, because emptying one is how an operator
-# tries to disarm something, and a misread there would merge code. The deploy runbook
-# arms the host switch explicitly, before this graph goes live.
+# `:-0` on the host switch: absent or empty is DISABLED. There is no unset-means-
+# enabled case to preserve any more, because the variable cannot be unset -- it is
+# `{{ vars.FABRO_AUTO_MERGE }}`, and an unset server variable fails the RunIntent at
+# compile time, so the run never exists to read it. Decision 10's default-on now lives
+# where it belongs: in what ops/provision-server-state.sh creates the variable as.
+# Anything reaching here that is not exactly 1 is a broken injection, and a broken
+# injection must not merge code.
 if [ \"$AM\" = 1 ] && [ \"$H\" = 1 ]; then
   echo 1 > /tmp/fabro/auto_merge
   : > /tmp/fabro/auto_merge_off_reason
@@ -70,7 +70,7 @@ elif [ \"$AM\" != 1 ]; then
   echo 'Auto-merge is switched off for this repository: its pr-review automation row does not read auto_merge=true. Flip it with ops/fabro-auto-merge-switch.sh.' > /tmp/fabro/auto_merge_off_reason
 else
   echo 0 > /tmp/fabro/auto_merge
-  echo 'Auto-merge is switched off host-wide: FABRO_AUTO_MERGE is not 1. Re-arm it in ~/fabro/.env and restart the server.' > /tmp/fabro/auto_merge_off_reason
+  echo 'Auto-merge is switched off host-wide: the FABRO_AUTO_MERGE server variable is not 1. Re-arm it with ops/fabro-auto-merge-switch.sh host on.' > /tmp/fabro/auto_merge_off_reason
 fi
 echo \"$PR\" > /tmp/fabro/pr_number
 echo 0 > /tmp/fabro/rebase_attempts

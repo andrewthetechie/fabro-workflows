@@ -1,7 +1,11 @@
 #!/bin/sh
-# fabro-auto-merge-switch.sh — flip one repository's auto-merge kill switch.
+# fabro-auto-merge-switch.sh — flip an auto-merge kill switch.
 #
-# Usage: fabro-auto-merge-switch.sh <owner/repo | automation-id> <on|off>
+# Usage: fabro-auto-merge-switch.sh <owner/repo | automation-id | host> <on|off>
+#
+# `host` flips the host-wide switch; anything else flips that one repository's.
+# Auto-merge happens only when both read enabled, and neither undoes a merge that has
+# already happened.
 #
 # The per-repo switch is an `auto_merge=true|false` token in the `pr-review-<repo>`
 # automation row's `description`, read by fire-pr-review.sh and sent to the run as
@@ -11,9 +15,15 @@
 # field on the row, and PUT is a full replacement that requires `If-Match`. This script
 # is that GET+PUT, so the incident command is one line and the body is not hand-built.
 #
-# It is *not* the host-wide switch. FABRO_AUTO_MERGE in ~/fabro/.env is the other one,
-# and it needs `docker compose up -d` to take effect. Auto-merge happens only when both
-# read enabled, and neither undoes a merge that already happened.
+# The host-wide switch is the `FABRO_AUTO_MERGE` *server variable*, injected into the
+# run sandbox by pr-review's `[run.environment.env]` as `{{ vars.FABRO_AUTO_MERGE }}`.
+# It is a variable and not an entry in ~/fabro/.env because shell-style `${X}` is not
+# interpolated in that table — probed 2026-09-16, it arrives as the literal text — and
+# fabro's own error for `{{ env.X }}` says to use `{{ vars.X }}` for a non-sensitive
+# value. It takes effect on the next run: no .env edit, no restart.
+#
+# It must EXIST. An unset server variable fails the RunIntent at compile time, so no
+# pr-review run is created at all. `off` therefore writes `0`; it never deletes.
 #
 # Reading the switch (fire-pr-review.sh and ops/provision-server-state.sh use the same
 # rule): an absent token is `true` — operator decision 10, auto-merge is the default
@@ -35,7 +45,7 @@ DRY_RUN="${DRY_RUN:-1}"
 
 die() { printf '%s\n' "$1" >&2; exit 1; }
 
-[ "$#" -eq 2 ] || die "usage: fabro-auto-merge-switch.sh <owner/repo|automation-id> <on|off>"
+[ "$#" -eq 2 ] || die "usage: fabro-auto-merge-switch.sh <owner/repo|automation-id|host> <on|off>"
 TARGET_ARG="$1"
 WANT_ARG="$2"
 
@@ -52,6 +62,36 @@ done
 
 tmp="$(mktemp -d)" || die "could not create a temporary directory"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+
+# ------------------------------------------------------- 0. the host-wide switch ----
+#
+# POST /variables upserts: it returns 200 and overwrites an existing value rather than
+# conflicting. That is exactly what this script wants and exactly what a re-provision
+# must not do, which is why ops/provision-server-state.sh creates the variable only
+# when it is absent and reports a differing one as drift.
+if [ "$TARGET_ARG" = host ]; then
+  case "$want" in true) hv=1 ;; *) hv=0 ;; esac
+  if [ "$DRY_RUN" = 1 ]; then
+    printf 'DRY_RUN=1: nothing will be sent. Re-run with DRY_RUN=0 to flip.\n'
+    printf 'would POST %s/variables  {"name":"FABRO_AUTO_MERGE","value":"%s"}\n' "$API_URL" "$hv"
+    cur="$(curl -sS -H "Authorization: Bearer $TOKEN" "$API_URL/variables" 2>/dev/null \
+      | jq -r '.data[]? | select(.name == "FABRO_AUTO_MERGE") | .value' 2>/dev/null)"
+    printf 'current: %s\n' "${cur:-<absent -- every pr-review run will fail to compile>}"
+    exit 0
+  fi
+  code="$(curl -sS -o "$tmp/var.json" -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"FABRO_AUTO_MERGE\",\"value\":\"$hv\"}" \
+    "$API_URL/variables" 2>/dev/null)" || code=000
+  case "$code" in
+    200 | 201) ;;
+    000) die "could not reach $API_URL to set the host switch" ;;
+    401) die "the API rejected the token (HTTP 401)" ;;
+    *) die "could not set the host switch (HTTP $code): $(head -c 300 "$tmp/var.json" 2>/dev/null | tr '\n' ' ')" ;;
+  esac
+  printf 'host switch FABRO_AUTO_MERGE=%s (takes effect on the next run; no restart)\n' "$hv"
+  exit 0
+fi
 
 # ------------------------------------------------------------ 1. find the row ----
 # The list response carries each row's `revision`, which is required in `If-Match` on

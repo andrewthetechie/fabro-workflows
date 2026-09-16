@@ -51,20 +51,34 @@ pull_requests = "write"
 # lives on the `pr-review-<repo>` automation row; `validate_input` resolves both into
 # /tmp/fabro/auto_merge, and `merge_gate` blocks unless it reads exactly 1.
 #
-# The value is injected from the container's environment, which compose loads from
-# `~/fabro/.env` (ops/docker-compose.yaml), so flipping it costs one edit plus
-# `docker compose up -d`, and it is armed by injecting it here. `:-1` in
-# `validate_input` means an unset variable reads as enabled — operator decision 10,
-# auto-merge is on by default — which is why task 10 sets FABRO_AUTO_MERGE=0 in
-# `~/fabro/.env` *before* the commit that makes this live reaches `main`.
+# `{{ vars.X }}`, not `${X}`. Shell-style `${X}` is NOT interpolated here: it reaches
+# the sandbox as the literal seven-plus characters. Probed on 2026-09-16 against
+# 0.354.0-nightly.0 with `PROBE = "${HOME}"`, whose stage printed `[${HOME}]`. Because
+# the literal is set and is not `1`, that spelling pinned the host switch to OFF on
+# every repo forever, and no operator action could arm it -- a failure the task 10
+# shakedown could not have caught, because a permanently-off switch and a correctly
+# disarmed one produce the same blocked run.
+#
+# fabro names the right mechanism in the error for `{{ env.X }}`: "the process
+# environment is not a configuration source. Use {{ vars.X }} for a non-sensitive
+# value (`fabro variable set`) or {{ secrets.X }} for a credential". A server variable
+# is right here -- `0` or `1` is not a credential.
+#
+# Consequence, and it is deliberate: **the variable must exist**. An unset one fails
+# the RunIntent at compile time ("Run config variable interpolation failed"), so no run
+# is created at all. `ops/provision-server-state.sh` creates it, and task 09 asserts it
+# is present. In exchange the kill switch costs one call and takes effect on the next
+# run -- no `.env` edit, no `docker compose up -d`, no restart:
+#
+#     ops/fabro-auto-merge-switch.sh host off
 #
 # [run.environment.*] is a SPARSE OVERRIDE on the environment the automation already
 # selected: pr-review picks `python`, `python-node`, `ts` or `rust-node` per repo.
-# Do NOT add `[run.environment] id = "..."` — that would pin all four pr-review
+# Do NOT add `[run.environment] id = "..."` -- that would pin all four pr-review
 # automations to one image, break the per-repo mapping, and fail `fabro validate`,
 # which resolves a non-default id against the CLI's own local catalog.
 [run.environment.env]
-FABRO_AUTO_MERGE = "${FABRO_AUTO_MERGE}"
+FABRO_AUTO_MERGE = "{{ vars.FABRO_AUTO_MERGE }}"
 
 # Discord notification on a merge — pr-review's first hook. Operator decision 13: a
 # blocked merge is an ordinary outcome reported on the PR, but a squash into `main`
