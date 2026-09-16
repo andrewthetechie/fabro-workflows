@@ -1,0 +1,71 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+# No [run.model.fallbacks]. `high-reasoning` resolves in LiteLLM, which owns the
+# overflow to kimi-k3; a second chain here would race it and make the effective route
+# unknowable from either side. See docs/adr/0003-high-reasoning-alias.md.
+
+# Triage reads code and writes issues. It never writes code, so `contents` is "read".
+# `issues` must be "write": the run creates labels (needs-info, triage-in-progress,
+# agent), edits titles and bodies, and comments. Repository labels are the Issues
+# permission in GitHub's model.
+[run.integrations.github.permissions]
+contents = "read"
+issues = "write"
+
+# Nothing is committed and nothing is pushed. Leaving either push on leaks one dead
+# branch per run into the target repository, and a push would fail anyway under a
+# contents: read token.
+[run.run_branch]
+push = false
+
+[run.meta_branch]
+push = false
+
+# The capacity check calls the fabro API. Server variable, not ${X}: shell-style
+# interpolation is NOT performed here and arrives as literal text — the failure that
+# pinned the auto-merge switch off forever. An unset variable fails the RunIntent at
+# compile time, so both must be provisioned before the first fire (task 07).
+[run.environment.env]
+FABRO_API_URL   = "{{ vars.FABRO_API_URL }}"
+FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
+
+# Discord. Hooks run with sandbox = false, inside the fabro server container (Alpine:
+# /bin/sh, wget, no bash, no jq, no curl), and read the webhook URL from
+# /storage/secrets/discord_webhook_url. The script is referenced by absolute container
+# path because hook `script` is a shell command, not an `@` file import.
+#
+# stage_start on the gate fires just BEFORE it blocks, which is what makes the ping
+# useful: it lands as the question opens. There is no hook event for run.blocked —
+# HookEvent has sixteen variants and none of them is blocked, unblocked or interview.
+#
+# Anchored matchers: they are unanchored regexes tested against node_id, handler_type,
+# edge_to, edge_from and tool_name. `^human$` would match every gate by handler_type.
+[[run.hooks]]
+id = "discord-triage-question"
+event = "stage_start"
+matcher = "^ask_human$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh triage-question"
+
+# The terminal-failure path. Not run_failed: `release` exits zero and routes to exit,
+# mirroring backlog's mark_stuck, so the run ends succeeded and run_failed never fires.
+[[run.hooks]]
+id = "discord-triage-failed"
+event = "stage_start"
+matcher = "^release$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh triage-failed"
+
+# Belt and braces for a failure that never reaches `release` at all — a sandbox that
+# fails to start, a compile error, a token rejected at admission.
+[[run.hooks]]
+id = "discord-failed"
+event = "run_failed"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh failed"
