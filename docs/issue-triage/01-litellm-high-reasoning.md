@@ -92,6 +92,18 @@ credential. The actual key has to come from the same place `glm-5.3`'s does
 Do **not** add a reverse fallback. `kimi-k3 → high-reasoning` recreates the circular
 chain ADR 0001 flagged in the other two workflows.
 
+**Third finding (2026-09-16, from the Task 07 live fire):** a model existing is not the
+same as fabro being able to call it. LiteLLM virtual keys carry their own model
+allowlist (`GET /key/info?key=...` → `.info.models`), independent of the model list
+itself. The `improve` stage of the first real `issue-triage-womens-fantasy-sports` run
+failed with `LLM error: provider litellm key not allowed to access model. This key can
+only access models=[...]. Tried to access high-reasoning` — the vault's
+`LITELLM_API_KEY` (`key_alias: fabro`, value tracked as `FABRO_LITELLM_KEY` in
+`~/.fabro-deploy/env`) had an explicit allowlist that predates this task and was never
+updated. Fixed via `POST /key/update` with the existing list plus `high-reasoning`.
+`ops/provision-litellm-models.sh` now also grants this via `LITELLM_FABRO_KEY`, so a
+fresh provisioning run doesn't silently recreate the same failure.
+
 ## Part 3 — `ops/provision-litellm-models.sh`
 
 Same contract as `ops/provision-server-state.sh`, which is the model to copy:
