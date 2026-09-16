@@ -396,10 +396,10 @@ S=/tmp/fabro/wfrepo/.fabro/workflows/backlog/scripts/fire-pr-review.sh
 PARENT_RUN_ID=$RID DRY_RUN=0 sh $S $REPO $PR > /tmp/fabro/trigger_out 2> /tmp/fabro/trigger_err
 if [ $? -eq 0 ]; then
   touch /tmp/fabro/review_triggered
-  R=$(cat /tmp/fabro/trigger_out | tr -d '\r' | tail -1)
+  R=$(tail -1 /tmp/fabro/trigger_out | sed 's/[[:cntrl:]]//g')
   echo '{\"context_updates\":{\"review_run_id\":\"'$R'\",\"review_trigger_error\":\"\"}}'
 else
-  E=$(tail -1 /tmp/fabro/trigger_err | tr -d '\r' | cut -c1-200)
+  E=$(tail -1 /tmp/fabro/trigger_err | sed 's/[[:cntrl:]]//g' | cut -c1-200)
   echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"'$E'\"}}'
 fi"]
 
