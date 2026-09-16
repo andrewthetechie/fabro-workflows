@@ -42,3 +42,36 @@ unknown.
 **Double-fire guard**:
 The `/tmp/fabro/review_triggered` marker file that prevents a second bridge fire when
 `open_pr` is revisited via the human_rescue path.
+
+**User guide**:
+`docs/USER-GUIDE.md`, the public, secrets-free operating manual: adding work, watching
+runs, expected timings, attention signals. Never carries an IP, path, or token.
+_Avoid_: manual, README
+
+**Operator runbook**:
+`~/.fabro-deploy/docs/OPERATOR-RUNBOOK.md`, the private companion to the user guide,
+holding host addresses, paths, and credential-retrieval commands. Lives outside git.
+_Avoid_: playbook, cheatsheet
+
+**Monitor**:
+`ops/fabro-monitor.sh`, deployed to `~/bin` on the host: the out-of-band health layer,
+cron every 15 minutes. It never alerts on a failed run — failure alerting is hook-owned.
+_Avoid_: watchdog, alerting (the hooks alert; the monitor watches)
+
+**Starvation**:
+Zero open `agent`-labeled issues across all four target repos — the factory is out of
+work. A monitor condition, not a run state.
+_Avoid_: idle, empty queue
+
+**Heartbeat**:
+The external dead-man's ping the monitor sends every run; its absence means the host
+itself is silent, which no in-band or on-host signal can report.
+_Avoid_: healthcheck (the compose container already has one, and it is a different thing)
+
+**Canary**:
+The first repo whose `backlog` schedule is enabled at turn-on — `jelly-swipe`, because
+it has branch protection and no deploy-on-merge.
+
+**Observation window**:
+The five-day, human-verified period between canary turn-on and full-fleet expansion,
+with a daily checklist and explicit exit and stop conditions.
