@@ -58,7 +58,7 @@ if [ -z \"$FABRO_API_URL\" ] || [ -z \"$FABRO_API_TOKEN\" ]; then
   echo 'FABRO_API_URL or FABRO_API_TOKEN is unset; cannot tell whether the host is busy' >&2
   exit 1
 fi
-if ! curl -fsS -H \"Authorization: Bearer $FABRO_API_TOKEN\" $FABRO_API_URL/system > /tmp/fabro/system.json 2>/dev/null; then
+if ! curl -fsS -H \"Authorization: Bearer $FABRO_API_TOKEN\" $FABRO_API_URL/system/info > /tmp/fabro/system.json 2>/dev/null; then
   echo 'the fabro API did not answer; cannot tell whether the host is busy' >&2
   exit 1
 fi

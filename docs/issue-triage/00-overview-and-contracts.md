@@ -27,7 +27,7 @@ invokes.
 |---|---|
 | 1 | A **separate package**, `.fabro/workflows/issue-triage/`, with its own four automations. Not a branch of `backlog`'s quiet-exit, which would require reversing ADR 0001's disabled schedules, and not a phase inside `backlog`, which would weld a human-blocking path into the graph that opens PRs. |
 | 2 | **One issue per run.** The run acquires exactly one and exits. |
-| 3 | **"The coders are not busy" means the host has no other run**, read from `GET /api/v1/system` → `runs.scheduler_slots_used`, quiet-exit when it exceeds 1. Not the local GPU pool: the agent stages run on `high-reasoning`, so the contention is slots and quota, not CUDA. |
+| 3 | **"The coders are not busy" means the host has no other run**, read from `GET /api/v1/system/info` → `runs.scheduler_slots_used`, quiet-exit when it exceeds 1. Not the local GPU pool: the agent stages run on `high-reasoning`, so the contention is slots and quota, not CUDA. |
 | 4 | **Triage promotes.** A `ready` issue loses `needs-triage`, gains `agent`, and is `backlog`'s problem on its next fire. Promotion is the value; a workflow that only labels is a worse version of a human reading the issue. |
 | 5 | **Triage never closes an issue.** `not-actionable` gets a label and a comment and stays open for a human to close. It is the only irreversible-looking act available and it buys nothing. |
 | 6 | **The reporter's original body is archived as a comment** before the first improve write. `decompose` is told to weigh reporter intent, and GitHub's edit history is not readable by an agent. |
@@ -104,7 +104,15 @@ candidates *and* evaluate their newest comment, with no per-issue round trip.
 
 ### 7. `runs.scheduler_slots_used` is the server's own admission counter
 
-`GET /api/v1/system` returns `runs: { total, active, scheduler_slots_used }`
+**Correction (2026-09-16, live-fire on `womens-fantasy-sports`):** the route is
+`GET /api/v1/system/info`, not `GET /api/v1/system` — the bare path 404s (confirmed
+against the live server, from the Mac, from inside `fabro-fabro-1`, and from a
+container on `fabro_default`, all with a valid dev token). `check_capacity` in Task 03
+originally curled the wrong path and failed every single fire with "the fabro API did
+not answer", a false negative for finding 14's "cannot tell" case — the API answered
+fine, just not at that path. Fixed in `workflow.fabro` and in Task 03's doc.
+
+`GET /api/v1/system/info` returns `runs: { total, active, scheduler_slots_used }`
 (`handler/system.rs:60-103`). `scheduler_slots_used` is computed with the identical
 predicate the scheduler admits against, while `active` counts `Pending` and `Runnable`
 as well. **Gate on `scheduler_slots_used`, not on `active`** — a queued run that will
