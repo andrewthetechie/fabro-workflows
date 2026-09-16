@@ -310,9 +310,65 @@ else
   exit 1
 fi
 N=$(jq -r .number /tmp/fabro/issue.json)
-T=$(jq -r .title /tmp/fabro/issue.json)
-echo 'agent: '$T' (#'$N')' > /tmp/fabro/pr_title.txt
-{ echo '## Summary'; echo; echo 'Resolves #'$N': '$T; echo; cat /tmp/fabro/completed.md 2>/dev/null || true; echo '## Validation'; echo; echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after final merge with origin/main'; } > /tmp/fabro/pr_body.md"]
+T=$(jq -r .title /tmp/fabro/issue.json | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+CC='^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .'
+S=$T
+# Step 1: the issue title already carries a Conventional Commits prefix; use it as-is
+if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
+  # Step 2: a [Bracket] prefix names a type
+  case \"$S\" in
+    '['*)
+      W=${S#?}
+      W=${W%%]*}
+      W=$(printf '%s' \"$W\" | tr 'A-Z' 'a-z')
+      case \"$W\" in
+        feat|fix|docs|chore|refactor|test|ci|build|perf|revert)
+          REST=${S#?}
+          REST=${REST#*]}
+          REST=$(printf '%s' \"$REST\" | sed 's/^[[:space:]]*//')
+          S=\"$W: $REST\"
+          ;;
+      esac
+      ;;
+  esac
+  if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
+    # Step 3: an issue label maps to a type; fabro bookkeeping labels never map
+    TYPE=
+    L=$(jq -r '[.labels[].name] | join(\",\")' /tmp/fabro/issue.json 2>/dev/null | tr 'A-Z' 'a-z' || true)
+    case \",$L,\" in
+      *,bug,*) TYPE=fix ;;
+      *,enhancement,*|*,feature,*) TYPE=feat ;;
+      *,documentation,*|*,docs,*) TYPE=docs ;;
+      *,performance,*) TYPE=perf ;;
+    esac
+    if [ -n \"$TYPE\" ]; then S=\"$TYPE: $S\"; fi
+    if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
+      S='chore: '$S
+    fi
+  fi
+fi
+# Truncate so subject plus the appended issue reference fits 72 characters, cutting
+# at a word boundary where one exists within the last 12 characters. The reference
+# is appended after the cut and is never truncated away.
+SUBJ=$(printf '%s' \"$S\" | awk -v maxd=$((72 - ${#N} - 3)) '{ if (length($0) <= maxd) { print $0; exit } t = substr($0, 1, maxd); st = maxd - 11; if (st < 1) st = 1; for (i = maxd; i >= st; i--) { if (substr(t, i, 1) == \" \") { print substr(t, 1, i - 1); exit } } print t }')
+SUBJ=$(printf '%s' \"$SUBJ\" | sed 's/[[:space:]]*$//')
+printf '%s (#%s)' \"$SUBJ\" \"$N\" > /tmp/fabro/commit_subject.txt
+echo >> /tmp/fabro/commit_subject.txt
+cp /tmp/fabro/commit_subject.txt /tmp/fabro/pr_title.txt
+# Commit body: the first prose paragraph of the issue body, else Resolves #N: <title>
+B=$(jq -r .body /tmp/fabro/issue.json 2>/dev/null || true)
+FIRST=$(printf '%s' \"$B\" | awk 'BEGIN { RS = \"\" } $0 ~ /^[[:space:]]*#/ { next } { para = \"\"; for (i = 1; i <= NF; i++) { line = $i; sub(/^[[:space:]]*[-*+][[:space:]]+/, \"\", line); sub(/^[[:space:]]*[0-9]+[.)][[:space:]]+/, \"\", line); sub(/^[[:space:]]*#+[[:space:]]+/, \"\", line); if (para == \"\") para = line; else para = para \" \" line } if (para != \"\" && length(para) <= 500) { print para; exit } }')
+if [ -n \"$FIRST\" ]; then
+  { printf '%s' \"$FIRST\"; echo; echo; echo 'Resolves #'$N; } > /tmp/fabro/commit_body.md
+else
+  echo 'Resolves #'$N': '$T > /tmp/fabro/commit_body.md
+fi
+{ echo '## Summary'; echo; echo '<!-- fabro:commit-body:start -->'; cat /tmp/fabro/commit_body.md; echo '<!-- fabro:commit-body:end -->'; echo; cat /tmp/fabro/completed.md 2>/dev/null || true; echo '## Validation'; echo; echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after final merge with origin/main'; } > /tmp/fabro/pr_body.md
+# Assertions: a derivation bug must fail the run into human_rescue, not open an
+# unmergeable PR. These can only fire on a bug; the derivation always terminates.
+grep -qE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .' /tmp/fabro/commit_subject.txt
+grep -q '^Resolves #' /tmp/fabro/commit_body.md
+grep -q 'fabro:commit-body:start' /tmp/fabro/pr_body.md"]
 
     // `open_pr` is the only node that opens a PR, including on the
     // human_rescue -> [P] Accept partial -> open_pr_prep -> open_pr path, so it is the

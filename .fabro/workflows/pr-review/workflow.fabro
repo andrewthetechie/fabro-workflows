@@ -1,6 +1,6 @@
 digraph PrReview {
     graph [
-        goal="Rebase a pull request onto the tip of its base branch, review it on three axes, apply one round of fixes, verify CI, and leave it ready for a human to merge",
+        goal="Rebase a pull request onto the tip of its base branch, review it on three axes, apply one round of fixes, verify CI, and squash-merge it when the review, the risk rating and CI all allow",
         model_stylesheet="
             *           { model: glm-5.3; }
             .review     { model: glm-5.3; }
@@ -274,6 +274,13 @@ if [ \"$O\" = fixed ]; then
     O=invalid
   fi
 fi
+if [ \"$O\" != invalid ] && [ \"$O\" != needs_human ]; then
+  R=$(jq -r 'if (.risk | type) == \"number\" and (.risk >= 0) and (.risk <= 5) and ((.risk | floor) == .risk) then .risk else \"bad\" end' $F 2>/dev/null || echo bad)
+  if [ \"$R\" = bad ]; then
+    echo 'fix_result.json has no integer risk in 0-5; every report must rate residual merge risk' >&2
+    O=invalid
+  fi
+fi
 if [ \"$O\" = invalid ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/fix_result_attempts
@@ -324,23 +331,249 @@ else
   echo '{\"context_updates\":{\"base_moved\":true}}'
 fi"]
 
-    deliver [label="Push, label and comment", shape=parallelogram, output_schema="routing",
+    deliver [label="Push and label", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 H=$(cat /tmp/fabro/head_ref)
 B=$(cat /tmp/fabro/base_ref)
-if ! sh /tmp/fabro/render_comment.sh complete > /tmp/fabro/pr_comment.md; then
-  echo 'WARNING: could not render the review comment; falling back to a minimal one.' >&2
-  { echo 'Automated review complete, but the detailed report could not be rendered.'; echo; echo 'Rebased onto the tip of '$B'; CI green.'; } > /tmp/fabro/pr_comment.md
-fi
 if git push --force-with-lease origin HEAD:\"$H\"; then
   gh pr edit $PR --add-label ai-review-complete || echo 'WARNING: could not add the ai-review-complete label. Check that the run token has issues:write.' >&2
-  gh pr comment $PR --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the completion comment.' >&2
   echo '{\"context_updates\":{\"delivered\":true}}'
 else
   echo 'git push --force-with-lease was rejected: the PR branch moved while this run was working. Not overwriting.' > /tmp/fabro/needs_human_reason
   echo '{\"context_updates\":{\"delivered\":false}}'
 fi"]
 
+    // ---- Auto-merge: decide, watch CI, fix CI, merge ----
+    merge_gate [label="Evaluate merge eligibility", shape=parallelogram, output_schema="routing",
+        script="PR=$(cat /tmp/fabro/pr_number)
+F=/tmp/fabro/review/fix_result.json
+E=true
+fail() { E=false; printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; }
+# 1. kill switch file
+if [ \"$(cat /tmp/fabro/auto_merge 2>/dev/null || echo 0)\" != 1 ]; then fail 'Auto-merge is switched off for this automation.'; fi
+# 2. agent-authored label
+if [ \"$E\" = true ]; then
+  L=$(gh pr view \"$PR\" --json labels --jq '[.labels[].name] | index(\"agent-authored\") != null' 2>/dev/null || echo bad)
+  if [ \"$L\" != true ]; then fail 'The PR does not carry the agent-authored label, so it is not eligible for automatic merge.'; fi
+fi
+# 3. open and not draft
+if [ \"$E\" = true ]; then
+  S=$(gh pr view \"$PR\" --json state,isDraft 2>/dev/null || echo '{\"state\":\"bad\"}')
+  ST=$(printf '%s' \"$S\" | jq -r .state)
+  DR=$(printf '%s' \"$S\" | jq -r '.isDraft // false')
+  if [ \"$ST\" != OPEN ] || [ \"$DR\" = true ]; then fail 'The PR is not open or is still a draft, so it cannot be auto-merged.'; fi
+fi
+# 4. no requested changes
+if [ \"$E\" = true ]; then
+  RD=$(gh pr view \"$PR\" --json reviewDecision --jq .reviewDecision 2>/dev/null || echo bad)
+  if [ \"$RD\" = CHANGES_REQUESTED ]; then fail 'Reviewers have requested changes on this PR.'; fi
+fi
+# 5. no unresolved review threads (GraphQL; gh pr view has no reviewThreads field)
+if [ \"$E\" = true ]; then
+  U=$(jq -r .url /tmp/fabro/pr.json 2>/dev/null || echo '')
+  O=$(printf '%s' \"$U\" | awk -F/ '{print $4}')
+  R=$(printf '%s' \"$U\" | awk -F/ '{print $5}')
+  T=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved}}}}}' -F o=\"$O\" -F r=\"$R\" -F n=\"$PR\" --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo bad)
+  if [ \"$T\" != 0 ]; then fail 'There are unresolved review conversations on this PR.'; fi
+fi
+# 6. no human commits (identify by author email, not login)
+if [ \"$E\" = true ]; then
+  C=$(gh pr view \"$PR\" --json commits --jq '[.commits[] | select([.authors[].email] | index(\"noreply@fabro.sh\") | not)] | length' 2>/dev/null || echo bad)
+  if [ \"$C\" != 0 ]; then fail 'A commit on this PR was not authored by the automation; a human must merge it.'; fi
+fi
+# 7. fix_outcome mergeable
+if [ \"$E\" = true ]; then
+  O=$(jq -r .outcome \"$F\" 2>/dev/null || echo missing)
+  if [ \"$O\" != fixed ] && [ \"$O\" != no_changes_needed ]; then fail 'The review did not end in a mergeable state.'; fi
+fi
+# 8. risk present and <= 3
+if [ \"$E\" = true ]; then
+  R=$(jq -r 'if (.risk | type) == \"number\" and (.risk >= 0) and (.risk <= 3) and ((.risk | floor) == .risk) then .risk else \"bad\" end' \"$F\" 2>/dev/null || echo bad)
+  if [ \"$R\" = bad ]; then fail 'The risk rating is missing or above 3; a human must merge this PR.'; fi
+fi
+# 9. not_fixed empty
+if [ \"$E\" = true ]; then
+  NF=$(jq '[.not_fixed[]?] | length' \"$F\" 2>/dev/null || echo 99)
+  if [ \"$NF\" != 0 ]; then fail 'There are unfixed findings; a human must merge this PR.'; fi
+fi
+# 10. every own error finding appears in fixes_applied by id
+if [ \"$E\" = true ]; then
+  M=$(jq '[.own_findings[]? | select(.severity == \"error\") | .id] - [.fixes_applied[].finding_id] | length' \"$F\" 2>/dev/null || echo 99)
+  if [ \"$M\" != 0 ]; then fail 'An error-severity finding was not fixed; a human must merge this PR.'; fi
+fi
+# 11. live title is a Conventional Commit
+if [ \"$E\" = true ]; then
+  T=$(gh pr view \"$PR\" --json title --jq .title 2>/dev/null || echo '')
+  if ! printf '%s' \"$T\" | grep -qE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .'; then fail 'The PR title is not a Conventional Commit, so it cannot be auto-merged.'; fi
+fi
+# 12. the commit-body block extracts to a non-empty body containing Resolves #
+if [ \"$E\" = true ]; then
+  gh pr view \"$PR\" --json body --jq .body > /tmp/fabro/pr_body_live.md 2>/dev/null || echo > /tmp/fabro/pr_body_live.md
+  awk '/fabro:commit-body:start/{f=1;next} /fabro:commit-body:end/{f=0} f' /tmp/fabro/pr_body_live.md > /tmp/fabro/commit_body.md
+  if [ ! -s /tmp/fabro/commit_body.md ] || ! grep -q '^Resolves #' /tmp/fabro/commit_body.md; then fail 'The PR description has no valid fabro commit-body block; a human must merge this PR.'; fi
+fi
+if [ \"$E\" = true ]; then
+  gh pr view \"$PR\" --json title --jq .title > /tmp/fabro/commit_subject.txt
+  echo 0 > /tmp/fabro/gh_fix_attempts
+  echo 0 > /tmp/fabro/strict_retry
+  echo $(( $(date +%s) + 3600 )) > /tmp/fabro/merge_deadline
+  echo '{\"context_updates\":{\"merge_eligible\":\"true\"}}'
+else
+  echo '{\"context_updates\":{\"merge_eligible\":\"false\"}}'
+fi"]
+    watch_checks [label="Watch GitHub checks", shape=parallelogram, timeout="35m", output_schema="routing",
+        script="PR=$(cat /tmp/fabro/pr_number)
+A=$(cat /tmp/fabro/gh_fix_attempts 2>/dev/null || echo 0)
+NOW=$(date +%s)
+DL=$(cat /tmp/fabro/merge_deadline 2>/dev/null || echo 0)
+if [ \"$NOW\" -ge \"$DL\" ]; then
+  echo 'The 60-minute merge budget is exhausted; the merge phase is aborted.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"checks_ok\":\"false\",\"checks_blocked\":\"true\",\"gh_fix_attempts\":'$A'}}'
+  exit 0
+fi
+if [ \"$A\" = 0 ]; then W=1800; else W=900; fi
+sleep $W
+gh pr checks \"$PR\" --json name,state,bucket > /tmp/fabro/checks.json 2>/dev/null || true
+TOTAL=$(jq length /tmp/fabro/checks.json 2>/dev/null || echo 0)
+BAD=$(jq '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
+if [ \"$TOTAL\" = 0 ]; then
+  echo 'No CI checks were reported on the PR head; a merge with no evidence is refused.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"checks_ok\":\"false\",\"checks_blocked\":\"true\",\"gh_fix_attempts\":'$A'}}'
+  exit 0
+fi
+if [ \"$BAD\" = 0 ]; then
+  echo '{\"context_updates\":{\"checks_ok\":\"true\",\"checks_blocked\":\"false\",\"gh_fix_attempts\":'$A'}}'
+  exit 0
+fi
+if [ \"$A\" -ge 2 ]; then
+  NAMES=$(jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .name] | join(\", \")' /tmp/fabro/checks.json 2>/dev/null || echo unknown)
+  echo 'CI is still failing after two fix attempts ('\"$NAMES\"'); a human must merge this PR.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"checks_ok\":\"false\",\"checks_blocked\":\"true\",\"gh_fix_attempts\":'$A'}}'
+  exit 0
+fi
+A=$((A+1))
+echo $A > /tmp/fabro/gh_fix_attempts
+{
+  echo '## Failing GitHub checks'
+  echo
+  jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .name] | join(\", \")' /tmp/fabro/checks.json 2>/dev/null || true
+  echo
+  gh run view --log-failed 2>/dev/null || true
+} > /tmp/fabro/feedback/ci_fix.md
+echo '{\"context_updates\":{\"checks_ok\":\"false\",\"checks_blocked\":\"false\",\"gh_fix_attempts\":'$A'}}'
+exit 0"]
+    ci_fix_t1 [label="Fix failing CI (tier 1: coders)", class="rebase", prompt="@prompts/ci_fix.md.j2"]
+    ci_fix_t2 [label="Fix failing CI (tier 2: glm-5.3)", class="rebase-t2", prompt="@prompts/ci_fix.md.j2"]
+    ci_fix_gate [label="Verify CI fix", shape=parallelogram, output_schema="routing",
+        script="PR=$(cat /tmp/fabro/pr_number)
+B=$(cat /tmp/fabro/base_ref)
+H=$(cat /tmp/fabro/head_ref)
+F=/tmp/fabro/review/ci_fix_result.json
+O=$(jq -r .outcome \"$F\" 2>/dev/null || echo invalid)
+SC=$(jq -r .scope \"$F\" 2>/dev/null || echo invalid)
+if [ \"$O\" != fixed ] && [ \"$O\" != cannot_fix ]; then O=invalid; fi
+if [ \"$SC\" != ci_only ]; then SC=invalid; fi
+if [ \"$O\" = invalid ] || [ \"$SC\" = invalid ]; then
+  echo 'The CI-fix report is missing or invalid; the merge is refused rather than trusting it.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"ci_fix_ok\":\"false\"}}'
+  exit 0
+fi
+if [ \"$O\" = cannot_fix ]; then
+  { echo 'The CI-fix agent could not make the failing check pass.'; echo; jq -r '.reason // \"(no reason given)\"' \"$F\" 2>/dev/null || true; } > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"ci_fix_ok\":\"false\"}}'
+  exit 0
+fi
+# scope check from git, not from the agent's claim
+NEW=$(git diff --name-only origin/\"$B\"...HEAD 2>/dev/null | while IFS= read -r f; do grep -qxF \"$f\" /tmp/fabro/review/changed_files.txt || echo \"$f\"; done)
+if [ -n \"$NEW\" ]; then
+  echo 'The CI fix touched files outside the reviewed change set; the merge is refused.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"ci_fix_ok\":\"false\"}}'
+  exit 0
+fi
+# no conflict markers, no in-progress merge or rebase
+BAD=0
+if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then BAD=1; fi
+git diff --name-only origin/\"$B\"...HEAD > /tmp/fabro/ci_fix_scan.txt 2>/dev/null || true
+git ls-files --others --exclude-standard >> /tmp/fabro/ci_fix_scan.txt 2>/dev/null || true
+while IFS= read -r f; do
+  [ -f \"$f\" ] || continue
+  if grep -qI '<<<<<<< ' \"$f\"; then BAD=1; break; fi
+done < /tmp/fabro/ci_fix_scan.txt
+if [ $BAD -ne 0 ]; then
+  echo 'The CI fix left conflict markers or an in-progress merge; the merge is refused.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"ci_fix_ok\":\"false\"}}'
+  exit 0
+fi
+if git push --force-with-lease origin HEAD:\"$H\"; then
+  echo '{\"context_updates\":{\"ci_fix_ok\":\"true\"}}'
+else
+  echo 'The CI-fix push was rejected because the branch moved; a human must merge this PR.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"ci_fix_ok\":\"false\"}}'
+fi
+exit 0"]
+    merge [label="Squash merge", shape=parallelogram, output_schema="routing",
+        script="PR=$(cat /tmp/fabro/pr_number)
+S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
+if [ \"$S\" != OPEN ]; then
+  echo 'PR '$PR' was no longer open at merge time; assuming it was handled elsewhere. No failure to report.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"merge_state\":\"closed\"}}'
+  exit 0
+fi
+if gh pr merge \"$PR\" --squash --delete-branch --subject \"$(cat /tmp/fabro/commit_subject.txt)\" --body-file /tmp/fabro/commit_body.md; then
+  echo '{\"context_updates\":{\"merge_state\":\"merged\"}}'
+  exit 0
+fi
+B=$(cat /tmp/fabro/base_ref)
+SR=$(cat /tmp/fabro/strict_retry 2>/dev/null || echo 0)
+git fetch origin \"$B\" 2>/dev/null || true
+# Behind the base is the only expected rejection: it is fixable by a re-merge on the
+# one strict repo, or by a human read if the branch is still behind after that. Any
+# other rejection -- token without contents: write, a conflict that appeared since
+# the review, an API 5xx -- is an unexpected failure and must be loud.
+if git merge-base --is-ancestor origin/\"$B\" HEAD 2>/dev/null; then
+  echo 'The squash merge failed for an unexpected reason (permissions, conflict since review, or API error); a human must merge this PR.' > /tmp/fabro/merge_block_reason
+  exit 1
+fi
+if [ \"$SR\" = 0 ]; then
+  echo '{\"context_updates\":{\"merge_state\":\"stale\"}}'
+  exit 0
+fi
+echo 'The branch is still behind the base after a re-merge attempt; a human must merge this PR.' > /tmp/fabro/merge_block_reason
+echo '{\"context_updates\":{\"merge_state\":\"blocked\"}}'
+exit 0"]
+    remerge_base [label="Re-merge base tip", shape=parallelogram, output_schema="routing",
+        script="B=$(cat /tmp/fabro/base_ref)
+H=$(cat /tmp/fabro/head_ref)
+echo 1 > /tmp/fabro/strict_retry
+git fetch origin \"$B\"
+if git rebase origin/\"$B\"; then
+  if git push --force-with-lease origin HEAD:\"$H\"; then
+    echo '{\"context_updates\":{\"remerge_ok\":\"true\"}}'
+  else
+    git rebase --abort 2>/dev/null || true
+    echo 'The re-merge push was rejected because the branch moved; a human must merge this PR.' > /tmp/fabro/merge_block_reason
+    echo '{\"context_updates\":{\"remerge_ok\":\"false\"}}'
+  fi
+else
+  git rebase --abort 2>/dev/null || true
+  echo 'A conflict appeared after the review; the base moved substantially, and a human must resolve it.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"remerge_ok\":\"false\"}}'
+fi
+exit 0"]
+    report_merged [label="Report merged", shape=parallelogram, output_schema="routing",
+        script="PR=$(cat /tmp/fabro/pr_number)
+N=$(jq -r '.[0].number // 0' /tmp/fabro/linked_issues.json 2>/dev/null || echo 0)
+if [ \"$N\" != 0 ]; then
+  gh issue edit \"$N\" --remove-label Review || true
+fi
+echo '{\"context_updates\":{\"pr_url\":\"'$(cat /tmp/fabro/pr_url 2>/dev/null)'\",\"issue_number\":'$N'}}'
+exit 0"]
+    report_blocked [label="Report blocked", shape=parallelogram,
+        script="PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+R=$(cat /tmp/fabro/merge_block_reason 2>/dev/null || echo 'The merge was blocked for an unspecified reason.')
+echo 'Merge blocked for PR '$PR': '$R
+echo done
+exit 0"]
     mark_needs_human [label="Label needs-human", shape=parallelogram,
         script="PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
 if [ -z \"$PR\" ]; then
@@ -408,8 +641,37 @@ echo done"]
     rebase_recheck -> rebase_check     [condition="context.base_moved=true"]
     rebase_recheck -> deliver
 
-    deliver -> exit                    [condition="context.delivered=true"]
+    deliver -> merge_gate              [condition="context.delivered=true"]
     deliver -> mark_needs_human
 
+    merge_gate    -> watch_checks      [condition="context.merge_eligible=true", weight=10]
+    merge_gate    -> report_blocked    [condition="context.merge_eligible=false"]
+    merge_gate    -> mark_needs_human
+
+    watch_checks  -> merge             [condition="context.checks_ok=true", weight=10]
+    watch_checks  -> ci_fix_t1         [condition="context.checks_ok=false && context.gh_fix_attempts=1"]
+    watch_checks  -> ci_fix_t2         [condition="context.checks_ok=false && context.gh_fix_attempts=2"]
+    watch_checks  -> report_blocked    [condition="context.checks_blocked=true"]
+    watch_checks  -> mark_needs_human
+
+    ci_fix_t1     -> ci_fix_gate       [condition="outcome=succeeded"]
+    ci_fix_t1     -> ci_fix_gate
+    ci_fix_t2     -> ci_fix_gate       [condition="outcome=succeeded"]
+    ci_fix_t2     -> ci_fix_gate
+    ci_fix_gate   -> watch_checks      [condition="context.ci_fix_ok=true", weight=10]
+    ci_fix_gate   -> report_blocked    [condition="context.ci_fix_ok=false"]
+    ci_fix_gate   -> mark_needs_human
+
+    merge         -> report_merged     [condition="context.merge_state=merged", weight=10]
+    merge         -> remerge_base      [condition="context.merge_state=stale"]
+    merge         -> report_blocked    [condition="context.merge_state=closed || context.merge_state=blocked"]
+    merge         -> mark_needs_human
+
+    remerge_base  -> watch_checks      [condition="context.remerge_ok=true", weight=10]
+    remerge_base  -> report_blocked    [condition="context.remerge_ok=false"]
+    remerge_base  -> mark_needs_human
+
+    report_merged  -> exit
+    report_blocked -> exit
     mark_needs_human -> exit
 }

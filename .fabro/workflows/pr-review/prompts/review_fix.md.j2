@@ -185,8 +185,12 @@ a full retry round:
   false positive belongs in `not_fixed` with the evidence that disproves it.
 - `fixes_applied[].message` says what you verified, what you changed and how you
   validated it — not merely which file you touched. It is published verbatim.
-- `risk` is 0-5: how much residual risk a human merging this PR is taking after your
-  fixes. 0 is nothing to worry about, 5 is do not merge without reading carefully.
+- `risk` is a whole number 0-5: how much residual risk a human merging this PR is
+  taking after your fixes. 0 is nothing to worry about, 5 is do not merge without
+  reading carefully. **A gate rejects the file without it.** A PR rated 3 or below
+  that has no outstanding findings is merged automatically, so this number decides
+  whether a human ever reads the change. Rate the residual risk honestly; do not
+  inflate it to force review, and do not deflate it to force a merge.
 - `line` may be `null`. All paths are repository-relative.
 - Use only the keys above. No `changes`, no `dispositions`, no `confidence`.
 - The file holds raw JSON — no markdown fence, nothing before or after it.
