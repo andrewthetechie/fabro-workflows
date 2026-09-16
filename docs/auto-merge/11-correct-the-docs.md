@@ -32,7 +32,14 @@ These pass `fabro validate` and fail at runtime.
 
 | Rule | What happens otherwise |
 |---|---|
-| Both auto-merge switches fail closed — absent, empty or unparseable means **off** | A `gh` call that returns nothing, or a broken injection read as "not disabled", merges an unreviewed PR into `main`. On `lawncare-saas` that is also a deploy. |
+| Both auto-merge switches fail closed on a value that is **present and not exactly the enabled one** — empty, `false`, `0`, `TRUE`, malformed. **Absence is not that case**: an absent per-repo `auto_merge` token means **on** (decision 10), and an absent `FABRO_AUTO_MERGE` variable means no run is created at all | A `gh` call that returns nothing, or a broken injection read as "not disabled", merges an unreviewed PR into `main`. On `lawncare-saas` that is also a deploy. The inverse error is just as costly: reading "fails closed" as "an untouched row is disarmed" is wrong — an untouched `pr-review-<repo>` row is **armed**, and three of the four are untouched. |
+
+> **Correction, 2026-09-16.** The row above originally read "absent, empty or
+> unparseable means **off**", and was copied verbatim into AGENTS.md and
+> `ops/README.md`. It was wrong about the absent case on both switches and contradicted
+> task 06, `fire-pr-review.sh`, `provision-server-state.sh` and the overview's own
+> decision 10. Corrected in all four places; the overview's "Kill switches" section now
+> carries the full three-case parser.
 | `[run.environment.env]` interpolates `{{ vars.X }}` only — never `${X}`, never `{{ env.X }}` | `${X}` reaches the sandbox as literal text. A kill switch spelled that way is pinned off forever, and the shakedown cannot tell it from a correctly disarmed one. |
 | The `FABRO_AUTO_MERGE` server variable must exist | An unset `{{ vars.X }}` fails the RunIntent at compile time, so no `pr-review` run is created at all. `provision-server-state.sh` creates it; `off` writes `0` and never deletes. |
 | `POST /variables` upserts | A re-provision that POSTs unconditionally silently re-arms a switch an operator killed mid-incident. Create-if-absent, report drift otherwise. |

@@ -137,8 +137,17 @@ cron.
 
 ### Auto-merge kill switches
 
-Both must read enabled for any merge. Both fail closed — absent, empty, or anything
-other than the explicit enabled value means **off**.
+Both must read enabled for any merge. Both fail closed on a value that is **present and
+not exactly the enabled one** — empty, `false`, `0`, `TRUE`, malformed.
+
+**Absence is not that case.** An absent per-repo `auto_merge` token means **on**
+(decision 10 — the default is on and these switches turn it off), so an untouched
+`pr-review-<repo>` row is **armed**, not disarmed. An absent `FABRO_AUTO_MERGE` variable
+means no `pr-review` run is created at all — no merge, but no review either — which is
+why `off` writes `0` rather than deleting it.
+
+Mid-incident this is the distinction that matters: to disarm a repo you must write
+`auto_merge=false`; finding no token there does not mean somebody already disarmed it.
 
 ```sh
 # one repo (flip `auto_merge` in the pr-review-<repo> row's description)

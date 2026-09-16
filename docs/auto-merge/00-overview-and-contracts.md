@@ -285,7 +285,8 @@ keys, and `pr-review` has so far kept both in files only.
 
 ## Kill switches
 
-Two, independent, both fail closed. Auto-merge happens only when **both** say yes.
+Two, independent. Auto-merge happens only when **both** say yes. Both fail closed on a
+bad *value* — but read the absence rules below before concluding a repo is disarmed.
 
 | Switch | Where | Scope | How fast |
 |---|---|---|---|
@@ -293,10 +294,28 @@ Two, independent, both fail closed. Auto-merge happens only when **both** say ye
 | `FABRO_AUTO_MERGE` server variable | fabro's variable store, read as `{{ vars.FABRO_AUTO_MERGE }}` | all four | `ops/fabro-auto-merge-switch.sh host off`, no restart |
 
 Neither is where the first draft of this document put them, and both corrections are
-findings rather than preferences — see 8 and 9 below.
+findings rather than preferences — see findings 7 and 8 above.
 
-Absent, empty, or anything other than the explicit enabled value means **disabled**.
-Default-on is a decision about the *provisioned* label, not about the parser.
+A switch that is **present but not exactly its enabled value** — empty, `false`, `0`,
+`TRUE`, malformed — means **disabled**. That is the fail-closed half, and it is the only
+half a parser decides.
+
+Absence is not that case, and differs per switch:
+
+- **An absent per-repo token means on.** No mention of `auto_merge` anywhere in the row's
+  `description` is decision 10: nobody has touched this switch, and auto-merge is the
+  default. Both parsers implement this — `fire-pr-review.sh`'s `case "$desc" in
+  *auto_merge*)` and `provision-server-state.sh`'s `description_auto_merge()` — and only
+  a description that *mentions* the token is ever parsed.
+- **An absent host variable means no run at all.** An unset `{{ vars.FABRO_AUTO_MERGE }}`
+  fails the RunIntent at compile time, so no `pr-review` run is created — no merge, but
+  no review either. This is why the variable is provisioned and never deleted, and why
+  `off` writes `0`.
+
+Default-on is therefore a decision about **both** the provisioned value and the parser,
+and an untouched `pr-review-<repo>` row is **armed**. Three of the four are untouched
+today. Do not read "fails closed" as "an untouched repo is safe" — it is not what the
+code does, and stating otherwise sends an operator to the wrong conclusion mid-incident.
 
 ## Rules specific to this stage
 
@@ -326,7 +345,7 @@ Four more matter here:
 | The merge phase holds a concurrency slot for up to an hour | `server.scheduler.max_concurrent_runs = 3`. Every `backlog` schedule is disabled today (`ops/README.md`, operator decision 2026-09-14), so this is latent. Re-enabling `every-15m` on four repos **must** be accompanied by revisiting that number; task 11 writes that into `ops/README.md`. |
 | `ci_fix` can make a PR green without making it correct | Two attempts at a failing check, constrained to files already in the diff, with no re-review. The scope check is structural, not semantic: it proves the agent touched nothing new, not that the fix is right. Accepted — the alternative is a full re-review loop that can never terminate. |
 | A human editing the PR description can change the commit body | By design (decision 14). The same mechanism means a careless edit that breaks the markers blocks the merge rather than corrupting the commit — the failure is loud. |
-| `discord-notify.sh` still has two copies | The one file here that cannot use task 07's wrapper: it runs `sandbox = false` in the server container, which has no git and no checkout. Finding 7 is the mitigation — a stale copy degrades to a plain message. |
+| `discord-notify.sh` still has two copies | The one file here that cannot use task 07's wrapper: it runs `sandbox = false` in the server container, which has no git and no checkout. Finding 9 is the mitigation — a stale copy degrades to a plain message. |
 | Auto-merge cannot be undone by another commit | AGENTS.md's usual escape — "no rollback other than another commit" — does not apply to a merge that already deployed. This is why the rollout in task 10 is kill-switch-first and why both switches fail closed. |
 
 ## Task index
