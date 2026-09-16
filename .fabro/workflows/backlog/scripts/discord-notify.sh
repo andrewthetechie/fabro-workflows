@@ -122,9 +122,12 @@ case "$kind" in
     fi
     ;;
   triage-question)
-    msg="❓ fabro issue triage needs answers${subject}
-${triage_questions}
-Answer within 30 minutes at ${base_url}/runs/${run_id}, or it will post them on the issue."
+    # A literal newline here (rather than the \\n every other multi-part message in
+    # this file uses) would land as a raw, unescaped control character inside the
+    # JSON string payload="{\"content\": \"${msg}...\"}" builds below — invalid
+    # JSON that Discord silently rejects while the script still exits 0 via the
+    # `|| true` on the wget/curl call.
+    msg="❓ fabro issue triage needs answers${subject}\\n${triage_questions}\\nAnswer within 30 minutes at ${base_url}/runs/${run_id}, or it will post them on the issue."
     ;;
   triage-failed)
     msg="🟠 fabro issue triage released a claim without finishing${subject}"
