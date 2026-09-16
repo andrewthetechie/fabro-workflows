@@ -108,14 +108,14 @@ settings.toml only *selects* one; it does not define any.
 
 **Automations** — two per target repo, one for each workflow, all resolving
 `workflow_source` to `andrewthetechie/fabro-workflows@main` at fire time. Read back
-from the live server 2026-09-15:
+from the live server 2026-09-16:
 
 | id | target | environment | triggers |
 |---|---|---|---|
 | `backlog-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled, `schedule:every-15m` disabled |
 | `backlog-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled, `schedule:every-15m` disabled |
 | `backlog-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled, `schedule:every-15m` disabled |
-| `backlog-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `schedule:every-15m` disabled |
+| `backlog-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `api:manual` enabled, `schedule:every-15m` disabled |
 | `pr-review-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `api:manual` enabled — **configuration only, never fired** |
 | `pr-review-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `api:manual` enabled — **configuration only, never fired** |
 | `pr-review-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `api:manual` enabled — **configuration only, never fired** |
@@ -126,9 +126,19 @@ The four `pr-review-*` rows are **not dead**. The bridge resolves each repo's
 hardcoding a map, so a fifth repository needs no change to any graph, and deleting a row
 silently breaks the bridge for that repo. They are read, never fired.
 
-`backlog-writers-app` has **no `api:manual` trigger**, unlike the other three, so it
-cannot be fired through the API at all — only its (disabled) schedule would start it.
-Firing it by hand fails; that is existing state, not a bridge fault.
+`backlog-writers-app` carried **no `api:manual` trigger** until 2026-09-16, so it could
+not be fired through the API at all — only its disabled schedule would have started it,
+and the bridge was therefore live on three repos rather than four. Corrected in place
+with `PUT /api/v1/automations/backlog-writers-app` (`If-Match` the row's ETag; the PUT
+is a full replace, so the existing row is read, the trigger added to it, and the whole
+thing sent back). All four rows now match.
+
+Nothing reported that for however long it was true, because
+`provision-server-state.sh` compared only `environment_id` on a row that already
+existed. It now compares the trigger set as well, on the same report-do-not-correct
+discipline as the rest of the script. A schedule's `enabled` flag is deliberately
+excluded — it is the operator's to set — while `api:manual` being disabled is reported,
+since a disabled trigger is exactly as dead as a missing one.
 
 Every `backlog` schedule is **disabled** — an operator decision (2026-09-14) while
 development and testing continue. The `pr-review` automations carry no schedule at

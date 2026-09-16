@@ -8,9 +8,9 @@
 #
 # Idempotent: an automation that already exists is never recreated, so re-running
 # after a partial failure is safe. It is NOT a reconciler — a row whose
-# environment_id has drifted is reported, not corrected, because silently
-# rewriting live automation state from a bootstrap script is worse than telling
-# the operator. No secrets live in this file; the API token and base URL come
+# environment_id or trigger set has drifted is reported, not corrected, because
+# silently rewriting live automation state from a bootstrap script is worse than
+# telling the operator. No secrets live in this file; the API token and base URL come
 # from the environment.
 #
 # The backlog-* rows were reconstructed to match the pr-review pattern, not read
@@ -61,6 +61,57 @@ if ! curl -fsS -m 15 -H "$AUTH_HEADER" "$API_URL/automations" > /tmp/provision_l
   exit 1
 fi
 
+# check_triggers <id> <schedule_id_or_empty>
+#
+# An existing row's triggers are compared as well as its environment_id. This is
+# not a theoretical case: backlog-writers-app sat in production carrying only its
+# disabled schedule and no api:manual row, so it could not be fired through the
+# API at all, and nothing reported it — environment_id matched, and that was the
+# only thing this script looked at. Corrected by hand on 2026-09-16; this check
+# is what would have caught it.
+#
+# The schedule's `enabled` flag is deliberately NOT compared. Schedules are
+# created disabled and turned on by the operator, so comparing it would report
+# drift on every correctly-running host. The api trigger's `enabled` IS compared:
+# a disabled one is exactly as dead as a missing one.
+check_triggers() {
+  t_id="$1"
+  t_schedule="$2"
+
+  t_want="api:manual"
+  if [ -n "$t_schedule" ]; then
+    t_want="$t_want schedule:$t_schedule"
+  fi
+
+  t_got=$(jq -r --arg id "$t_id" \
+    '.data[]? | select(.id == $id) | .triggers[]? | "\(.type):\(.id)"' /tmp/provision_list.json)
+
+  for t_w in $t_want; do
+    if ! printf '%s\n' "$t_got" | grep -qx "$t_w"; then
+      echo "DRIFT: $t_id is missing the $t_w trigger. Not corrected." >&2
+      DRIFT_FOUND=1
+    fi
+  done
+
+  for t_g in $t_got; do
+    case " $t_want " in
+      *" $t_g "*) ;;
+      *)
+        echo "DRIFT: $t_id has an unexpected $t_g trigger. Not corrected." >&2
+        DRIFT_FOUND=1
+        ;;
+    esac
+  done
+
+  t_api_enabled=$(jq -r --arg id "$t_id" \
+    '.data[]? | select(.id == $id) | .triggers[]?
+     | select(.type == "api" and .id == "manual") | .enabled' /tmp/provision_list.json)
+  if [ -n "$t_api_enabled" ] && [ "$t_api_enabled" != "true" ]; then
+    echo "DRIFT: $t_id has api:manual disabled, so it cannot be fired through the API. Not corrected." >&2
+    DRIFT_FOUND=1
+  fi
+}
+
 # provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty>
 #   - workflow is "backlog" or "pr-review"; both live in
 #     andrewthetechie/fabro-workflows@main.
@@ -83,6 +134,7 @@ provision_automation() {
       echo "DRIFT: $id has environment_id=$existing_env, expected $env_id. Not corrected." >&2
       DRIFT_FOUND=1
     fi
+    check_triggers "$id" "$schedule_id"
     return 0
   fi
 
