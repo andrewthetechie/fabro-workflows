@@ -62,6 +62,13 @@ than trusting the docs. If it does not, set `fallbacks` on the model row instead
 so in this file, because that moves the last git-visible piece of the routing into
 Postgres.
 
+**Verification Result (2026-09-16):** Config-level fallbacks in `router_settings` do NOT
+apply to models stored in Postgres. Attempting a completion against `high-reasoning`
+returns `AuthenticationError: litellm.exceptions.AuthenticationError ... Available Model
+Group Fallbacks=None`. The fallback must be set on the model row instead via the API,
+making the routing configuration non-git-visible. The provision script handles this in
+Part 3.
+
 Do **not** add a reverse fallback. `kimi-k3 → high-reasoning` recreates the circular
 chain ADR 0001 flagged in the other two workflows.
 
