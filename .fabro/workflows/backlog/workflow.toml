@@ -35,6 +35,18 @@ contents = "write"
 issues = "write"
 pull_requests = "write"
 
+# The trigger_review stage calls the fabro API to create a pr-review run for the PR
+# this run just opened. The token is a vault entry resolved at launch; only its name
+# appears here, because this repository is public.
+#
+# [run.environment.*] is a SPARSE OVERRIDE on the environment the automation already
+# selected. Do NOT add `[run.environment] id = "..."` — that would pin all four
+# backlog automations to one environment and break the per-repo image mapping
+# (jelly-swipe needs python, writers-app needs rust-node, and buildpack-deps:noble
+# fails CI on two of the four).
+[run.environment.env]
+FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
+
 # Discord notifications. Hooks run with sandbox = false, which means they run
 # inside the fabro server container (Alpine: /bin/sh, wget, no bash, no jq, no
 # curl). The webhook URL is read from /storage/secrets/discord_webhook_url
@@ -77,3 +89,26 @@ event = "run_failed"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh failed"
+
+# trigger_review emits review_run_id / review_trigger_error and cannot fail the run
+# (on_failure="succeed"), so `run_failed` will never fire for a trigger problem.
+# Without this hook a bridge that has quietly stopped firing is invisible until
+# someone notices an empty review queue.
+#
+# Anchor the matcher: fabro_hooks compiles `matcher` as an unanchored regex and tests
+# it against node_id, handler_type, edge_to, edge_from and tool_name.
+#
+# `checkpoint_saved`, not `stage_complete`: the composite lifecycle runs
+# git -> event -> hook on checkpoint, so the checkpoint envelope carrying
+# review_run_id has already been written by the time the hook runs — the same race
+# the `discord-complete` hook was moved here to avoid.
+#
+# blocking = false so a Discord outage cannot stall a run; sandbox = false so it runs
+# in the server container, where the webhook URL and dev token already live.
+[[run.hooks]]
+id = "discord-review-triggered"
+event = "checkpoint_saved"
+matcher = "^trigger_review$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh review-triggered"

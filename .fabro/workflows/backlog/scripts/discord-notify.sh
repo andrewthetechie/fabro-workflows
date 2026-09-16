@@ -1,7 +1,7 @@
 #!/bin/sh
 # discord-notify.sh — best-effort Discord notification for fabro runs.
 #
-# Usage: discord-notify.sh <rescue|complete|failed>
+# Usage: discord-notify.sh <rescue|complete|failed|review-triggered>
 #
 # Runs as a hook with sandbox = false, i.e. inside the fabro server container
 # (Alpine: /bin/sh + wget, no bash, no curl, no jq). The event context JSON is
@@ -47,6 +47,8 @@ token_file="/storage/server.dev-token"
 repo_url=""
 issue=""
 pr_url=""
+review_run_id=""
+review_err=""
 if [ -r "$token_file" ]; then
   auth="Authorization: Bearer $(cat "$token_file")"
   repo_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id" 2>/dev/null \
@@ -59,6 +61,13 @@ if [ -r "$token_file" ]; then
   # every run that did not get that far.
   pr_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"pr_url":"[^"]*"' | head -1 | cut -d'"' -f4)
+  # trigger_review's two context keys. Both are always written by that node, so an
+  # empty pair means the node skipped (the double-fire guard tripped, or open_pr
+  # recorded no usable pr_number) — not that the notification failed.
+  review_run_id=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"review_run_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+  review_err=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"review_trigger_error":"[^"]*"' | head -1 | cut -d'"' -f4)
 fi
 
 # repo "owner/name" for display, derived from the origin URL
@@ -77,6 +86,19 @@ case "$kind" in
   rescue)   msg="🟡 fabro needs a human decision${subject} (rescue gate)" ;;
   complete) msg="✅ fabro opened a PR${subject}" ;;
   failed)   msg="🔴 fabro run failed${subject}" ;;
+  review-triggered)
+    # A trigger failure cannot fail the run (trigger_review carries
+    # on_failure="succeed"), so `run_failed` never fires for it and this hook is the
+    # only place it surfaces. The failure line carries the reason the node captured;
+    # a success stays short because `discord-complete` already fired for this PR.
+    if [ -n "$review_err" ]; then
+      msg="🔴 fabro could not trigger a PR review${subject}: ${review_err}"
+    elif [ -n "$review_run_id" ]; then
+      msg="🔎 fabro triggered a PR review${subject}"
+    else
+      exit 0
+    fi
+    ;;
   *)        msg="ℹ️ fabro run ${run_id} notification ($kind)" ;;
 esac
 
@@ -85,6 +107,8 @@ links=""
 # The PR is the most useful link when there is one, so it leads.
 [ -n "$pr_url" ] && links="${links}\\n${pr_url}"
 [ -n "$base_url" ] && links="${links}\\n${base_url}/runs/${run_id}"
+# The review this run spawned, when the bridge fired one.
+[ -n "$review_run_id" ] && [ -n "$base_url" ] && links="${links}\\n${base_url}/runs/${review_run_id}"
 if [ -n "$repo_url" ] && [ -n "$issue" ]; then
   links="${links}\\n${repo_url}/issues/${issue}"
 elif [ -n "$repo_url" ]; then
