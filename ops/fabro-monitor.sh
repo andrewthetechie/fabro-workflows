@@ -504,8 +504,12 @@ if [ "$DRY_RUN" != "1" ]; then
   fi
   # shellcheck disable=SC2086
   for kv in $restamp; do printf '%s\n' "$kv" >> "$tmp/state.new"; done
-  mkdir -p "$(dirname "$STATE_FILE")" || exit 1
-  mv "$tmp/state.new" "$STATE_FILE" || exit 1
+  # Nothing firing and no prior stamps: write no file at all, so a clean tick
+  # leaves no state behind (acceptance: no state file when nothing fires).
+  if [ -s "$tmp/state.new" ] || [ -f "$STATE_FILE" ]; then
+    mkdir -p "$(dirname "$STATE_FILE")" || exit 1
+    mv "$tmp/state.new" "$STATE_FILE" || exit 1
+  fi
 fi
 
 # ------------------------------------------------------------- heartbeat ----
