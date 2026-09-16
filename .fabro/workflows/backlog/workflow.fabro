@@ -40,7 +40,7 @@ echo 0 > /tmp/fabro/extra_round
 ./.fabro/setup.sh"]
 
     // ---- Decomposition (agent writes file; gate validates) ----
-    decompose [label="Decompose issue", class="decomp", prompt="@prompts/decompose.md.j2"]
+    decompose [label="Decompose issue", class="decomp", timeout="20m", prompt="@prompts/decompose.md.j2"]
 
     decompose_gate [label="Validate decomposition", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/decomposition.json
@@ -94,7 +94,7 @@ fi"]
     // conflict-marked files, which git treats as resolved, and commit markers onto
     // the run branch. So the agent performs the merge itself, in one stage, and
     // resolve_merge_gate verifies the result from git rather than trusting a claim.
-    resolve_merge [label="Resolve the mainline merge", class="coder-t4", prompt="@prompts/resolve_merge.md.j2"]
+    resolve_merge [label="Resolve the mainline merge", class="coder-t4", timeout="15m", prompt="@prompts/resolve_merge.md.j2"]
 
     // The conflict-marker scan covers what this merge can have touched — the files
     // changed since the pre-merge SHA, dirty tracked files, and untracked files the
@@ -128,7 +128,7 @@ else
   echo '{\"context_updates\":{\"merge_ok\":true,\"merge_attempts\":'$A'}}'
 fi"]
 
-    improve [label="Improve task spec", class="improve", prompt="@prompts/improve.md.j2"]
+    improve [label="Improve task spec", class="improve", timeout="20m", prompt="@prompts/improve.md.j2"]
 
     improve_gate [label="Validate improved task", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/improve_result.json
@@ -147,7 +147,7 @@ echo 0 > /tmp/fabro/improve_attempts
 if [ \"$D\" = ready ]; then jq .task $F > /tmp/fabro/current_task.json; fi
 echo '{\"context_updates\":{\"task_disposition\":\"'$D'\"}}'"]
 
-    coder [label="Implement task (tier 1)", class="coder", prompt="@prompts/coder.md.j2"]
+    coder [label="Implement task (tier 1)", class="coder", timeout="45m", prompt="@prompts/coder.md.j2"]
 
     prep_review [label="Prepare review inputs", shape=parallelogram, output_schema="routing",
         script="set -e
@@ -175,7 +175,7 @@ if [ $RC -ne 0 ]; then
   exit 1
 fi"]
 
-    review [label="Review task", class="review", prompt="@prompts/reviewer.md.j2"]
+    review [label="Review task", class="review", timeout="20m", prompt="@prompts/reviewer.md.j2"]
 
     review_gate [label="Validate verdict", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/verdict.json
@@ -212,10 +212,10 @@ R=$((R+1))
 echo $R > /tmp/fabro/round
 echo '{\"context_updates\":{\"round\":'$R'}}'"]
 
-    rework_t1 [label="Rework (tier 1: coders)", class="coder", prompt="@prompts/rework.md.j2"]
-    rework_t2 [label="Rework (tier 2: glm-4.7)", class="coder-t2", prompt="@prompts/rework.md.j2"]
-    rework_t3 [label="Rework (tier 3: kimi-for-coding)", class="coder-t3", prompt="@prompts/rework.md.j2"]
-    rework_t4 [label="Rework (tier 4: glm-5.3)", class="coder-t4", prompt="@prompts/rework.md.j2"]
+    rework_t1 [label="Rework (tier 1: coders)", class="coder", timeout="30m", prompt="@prompts/rework.md.j2"]
+    rework_t2 [label="Rework (tier 2: glm-4.7)", class="coder-t2", timeout="30m", prompt="@prompts/rework.md.j2"]
+    rework_t3 [label="Rework (tier 3: kimi-for-coding)", class="coder-t3", timeout="30m", prompt="@prompts/rework.md.j2"]
+    rework_t4 [label="Rework (tier 4: glm-5.3)", class="coder-t4", timeout="30m", prompt="@prompts/rework.md.j2"]
 
     // ---- Extra review rounds (whole branch) ----
     extra_prep [label="Prepare extra review", shape=parallelogram, output_schema="routing",
@@ -228,7 +228,7 @@ git diff --stat origin/main...HEAD > /tmp/fabro/extra/diffstat.txt
 git diff --name-only origin/main...HEAD > /tmp/fabro/extra/changed_files.txt
 echo '{\"context_updates\":{\"extra_done\":false,\"standards_status\":\"none\",\"spec_status\":\"none\",\"quality_status\":\"none\",\"new_tasks\":0,\"followup_status\":\"none\"}}'"]
 
-    standards [label="Standards review", class="review", prompt="@prompts/standards.md.j2"]
+    standards [label="Standards review", class="review", timeout="20m", prompt="@prompts/standards.md.j2"]
     standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/standards.json
 A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)
@@ -242,7 +242,7 @@ fi
 echo 0 > /tmp/fabro/standards_attempts
 echo '{\"context_updates\":{\"standards_status\":\"'$D'\"}}'"]
 
-    spec [label="Spec review", class="review-frontier", prompt="@prompts/spec.md.j2"]
+    spec [label="Spec review", class="review-frontier", timeout="20m", prompt="@prompts/spec.md.j2"]
     spec_gate [label="Validate spec output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/spec.json
 A=$(cat /tmp/fabro/spec_attempts 2>/dev/null || echo 0)
@@ -256,7 +256,7 @@ fi
 echo 0 > /tmp/fabro/spec_attempts
 echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
-    quality [label="Code quality review", class="review", prompt="@prompts/quality.md.j2"]
+    quality [label="Code quality review", class="review", timeout="20m", prompt="@prompts/quality.md.j2"]
     quality_gate [label="Validate quality output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/quality.json
 A=$(cat /tmp/fabro/quality_attempts 2>/dev/null || echo 0)
@@ -270,7 +270,7 @@ fi
 echo 0 > /tmp/fabro/quality_attempts
 echo '{\"context_updates\":{\"quality_status\":\"'$D'\"}}'"]
 
-    extra_decompose [label="Follow-up decomposer", class="review-frontier", prompt="@prompts/extra_decompose.md.j2"]
+    extra_decompose [label="Follow-up decomposer", class="review-frontier", timeout="20m", prompt="@prompts/extra_decompose.md.j2"]
     extra_gate [label="Merge follow-up tasks", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/followups.json
 A=$(cat /tmp/fabro/extra_decompose_attempts 2>/dev/null || echo 0)
