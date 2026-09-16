@@ -46,9 +46,11 @@ token_file="/storage/server.dev-token"
 # buffered into a variable.
 repo_url=""
 issue=""
+issue_url=""
 pr_url=""
 review_run_id=""
 review_err=""
+triage_questions=""
 if [ -r "$token_file" ]; then
   auth="Authorization: Bearer $(cat "$token_file")"
   repo_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id" 2>/dev/null \
@@ -57,6 +59,8 @@ if [ -r "$token_file" ]; then
   # cut short by head -1, so neither reads the whole body.
   issue=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"issue_number":[0-9]*' | head -1 | cut -d: -f2)
+  issue_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"issue_url":"[^"]*"' | head -1 | cut -d'"' -f4)
   # open_pr publishes pr_url into the run context once the PR exists; absent for
   # every run that did not get that far.
   pr_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
@@ -74,6 +78,12 @@ if [ -r "$token_file" ]; then
   # Discord payload the same way. Drop both characters: the message is already
   # truncated at that point and only has to be readable.
   review_err=$(printf '%s' "$review_err" | sed 's/[\\"]//g')
+  triage_questions=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"triage_questions":"[^"]*"' | head -1 | cut -d'"' -f4)
+  # Agent-authored questions can carry quotes and backslashes; sanitize the same way
+  # as review_err, then truncate to leave room for the rest of the Discord message
+  # (2000 character limit total). Truncate to 800 characters via cut.
+  triage_questions=$(printf '%s' "$triage_questions" | sed 's/[\\"]//g' | cut -c1-800)
 fi
 
 # repo "owner/name" for display, derived from the origin URL
@@ -110,6 +120,14 @@ case "$kind" in
     else
       exit 0
     fi
+    ;;
+  triage-question)
+    msg="❓ fabro issue triage needs answers${subject}
+${triage_questions}
+Answer within 30 minutes at ${base_url}/runs/${run_id}, or it will post them on the issue."
+    ;;
+  triage-failed)
+    msg="🟠 fabro issue triage released a claim without finishing${subject}"
     ;;
   *)        msg="ℹ️ fabro run ${run_id} notification ($kind)" ;;
 esac
