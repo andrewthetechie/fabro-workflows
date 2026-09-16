@@ -73,6 +73,9 @@
 # when every evaluable condition was evaluated, non-zero only when evaluation
 # itself broke (docker/gh missing, token unreadable while the container is up,
 # API body unparseable). That non-zero exit is what keys the heartbeat /fail.
+# Every run also prints one `ok`/`skip` line per condition to stdout — the cron
+# log shows a healthy evaluation at a glance, and a silent log means a dead
+# monitor, not a healthy host.
 #
 # Env:
 #   DRY_RUN=1                     print what would send, send nothing, write
@@ -214,37 +217,43 @@ else
   eval_failed=1
 fi
 
-container_down=0
+container_suppresses=0
 if have docker && [ "$eval_failed" = 0 ]; then
   if [ -z "$container_status" ]; then
     if docker info >/dev/null 2>&1; then
       # daemon answers and the container is simply gone
-      container_down=1
+      container_suppresses=1
       fire C1 "$ALERT_SECONDS" "🔴" "container-down — $CONTAINER does not exist"
     else
       warn "the docker daemon is unreachable — C1 unevaluable"
       eval_failed=1
     fi
   elif [ "$container_status" != "running" ]; then
-    container_down=1
+    container_suppresses=1
     fire C1 "$ALERT_SECONDS" "🔴" \
       "container-down — $CONTAINER status is '$container_status' (health: $container_health); expected running/healthy"
   elif [ "$container_health" != "healthy" ] && [ "$container_health" != "<no value>" ]; then
-    container_down=1
+    # Unhealthy while still running: C1 fires, but the API may well answer —
+    # the suppression rationale ("the API is down by construction") holds only
+    # for a container that is not running, so C2-C4 are still evaluated below.
     fire C1 "$ALERT_SECONDS" "🔴" \
       "container-down — $CONTAINER is running but health is '$container_health'; expected healthy"
+  else
+    printf 'ok    C1 container: %s/%s\n' "$container_status" "$container_health"
   fi
 fi
 
 # ------------------------------------------- C2/C3/C4 (need the API + token) ----
-# C1 firing means the API is unreachable BY CONSTRUCTION, so C2's connection
-# failure would be the symptom of C1's cause: skip all three and leave their
-# stamps untouched. A 401, when it does happen with the container up, is C2
-# firing on its own — the token rotated and the monitor's read of it is stale.
+# A container that is NOT RUNNING makes the API unreachable BY CONSTRUCTION,
+# so C2's connection failure would be the symptom of C1's cause: skip all
+# three and leave their stamps untouched. (Unhealthy-but-running does NOT
+# suppress — the API may well answer; see C1 above.) A 401, when it does
+# happen with the container up, is C2 firing on its own — the token rotated
+# and the monitor's read of it is stale.
 
 token=""
 api_ok=0
-if [ "$container_down" = 0 ] && [ "$eval_failed" = 0 ]; then
+if [ "$container_suppresses" = 0 ] && [ "$eval_failed" = 0 ]; then
   token="$(docker exec "$CONTAINER" cat /storage/server.dev-token 2>/dev/null | tr -d '[:space:]')"
   if [ -z "$token" ]; then
     # Container is up but the token read failed: the monitor itself is broken.
@@ -254,6 +263,8 @@ if [ "$container_down" = 0 ] && [ "$eval_failed" = 0 ]; then
   else
     api_ok=1
   fi
+elif [ "$container_suppresses" = 1 ]; then
+  printf 'skip  C2-C4: C1 container-down is firing (API unreachable by construction)\n'
 fi
 
 if [ "$api_ok" = 1 ]; then
@@ -264,7 +275,7 @@ if [ "$api_ok" = 1 ]; then
   case "$http" in
     200)
       if jq -e '.runs' "$tmp/info.json" >/dev/null 2>&1; then
-        :
+        printf 'ok    C2 api: system/info 200\n'
       else
         warn "system/info returned an unparseable body — C2/C3/C4 unevaluable"
         eval_failed=1
@@ -343,10 +354,24 @@ if [ "$api_ok" = 1 ]; then
           && [ $(( now - newest )) -gt $(( IDLE_HOURS * 3600 )) ]; then
           fire C3 "$ALERT_SECONDS" "🔴" \
             "dead-scheduler — $enabled_schedules schedule(s) enabled but no run for $(( (now - newest) / 3600 ))h (newest run $newest_id, limit ${IDLE_HOURS}h)"
+        elif [ "$enabled_schedules" -eq 0 ]; then
+          printf 'ok    C3 dead-scheduler: inert, no enabled schedules\n'
+        else
+          printf 'ok    C3 dead-scheduler: newest run %smin ago within %sh limit (%s enabled)\n' \
+            $(( (now - newest) / 60 )) "$IDLE_HOURS" "$enabled_schedules"
         fi
+      else
+        printf 'skip  C3 dead-scheduler: schedule gate unreadable\n'
       fi
 
-      # C4: any non-terminal run older than STUCK_HOURS.
+      # C4: any non-terminal run older than STUCK_HOURS. Multiple stuck runs
+      # coalesce into ONE fire (the oldest is named) so the per-condition
+      # dedup stamp cannot multiply messages.
+      stuck_n=0
+      stuck_oldest_e=0
+      stuck_rid=""
+      stuck_kind=""
+      stuck_age=0
       while IFS="$(printf '\t')" read -r rid created kind; do
         [ -n "$rid" ] || continue
         case "$TERMINAL" in
@@ -356,10 +381,23 @@ if [ "$api_ok" = 1 ]; then
         [ -n "$e" ] || continue
         age=$(( now - e ))
         if [ "$age" -gt $(( STUCK_HOURS * 3600 )) ]; then
-          fire C4 "$ALERT_SECONDS" "🔴" \
-            "stuck-run — run $rid status='${kind:-unknown}' age $(( age / 3600 ))h (limit ${STUCK_HOURS}h)"
+          stuck_n=$(( stuck_n + 1 ))
+          if [ "$stuck_oldest_e" = 0 ] || [ "$e" -lt "$stuck_oldest_e" ]; then
+            stuck_oldest_e="$e"; stuck_rid="$rid"; stuck_kind="$kind"; stuck_age="$age"
+          fi
         fi
       done < "$tmp/runs.tsv"
+      if [ "$stuck_n" -gt 0 ]; then
+        if [ "$stuck_n" -eq 1 ]; then
+          fire C4 "$ALERT_SECONDS" "🔴" \
+            "stuck-run — run $stuck_rid status='${stuck_kind:-unknown}' age $(( stuck_age / 3600 ))h (limit ${STUCK_HOURS}h)"
+        else
+          fire C4 "$ALERT_SECONDS" "🔴" \
+            "stuck-run — $stuck_n runs older than ${STUCK_HOURS}h, oldest $stuck_rid status='${stuck_kind:-unknown}' age $(( stuck_age / 3600 ))h"
+        fi
+      else
+        printf 'ok    C4 stuck-run: no non-terminal runs on the page\n'
+      fi
     fi
   fi
 fi
@@ -369,11 +407,14 @@ fi
 mark_evaluated C5
 if ! have gh; then
   warn "gh is not on PATH — C5 unevaluable"
+  printf 'skip  C5 starvation: gh not on PATH\n'
   eval_failed=1
 else
   open_agent_issues=0
+  nrepos=0
   c5_ok=1
   for repo in $REPOS; do
+    nrepos=$(( nrepos + 1 ))
     n="$(gh issue list -R "$repo" --label agent --state open --limit 200 \
       --json number --jq 'length' 2>/dev/null)"
     if ! printf '%s' "$n" | grep -Eq '^[0-9]+$'; then
@@ -384,9 +425,13 @@ else
     fi
     open_agent_issues=$(( open_agent_issues + n ))
   done
-  if [ "$c5_ok" = 1 ] && [ "$open_agent_issues" -eq 0 ]; then
-    fire C5 "$STARVE_SECONDS" "🟡" \
-      "starvation — zero open agent-labeled issues across all four repos; file issues labeled needs-triage (or agent) on any of the four repos"
+  if [ "$c5_ok" = 1 ]; then
+    if [ "$open_agent_issues" -eq 0 ]; then
+      fire C5 "$STARVE_SECONDS" "🟡" \
+        "starvation — zero open agent-labeled issues across all four repos; file issues labeled needs-triage (or agent) on any of the four repos"
+    else
+      printf 'ok    C5 starvation: %s open agent issues across %s repos\n' "$open_agent_issues" "$nrepos"
+    fi
   fi
 fi
 
@@ -396,10 +441,13 @@ mark_evaluated C6
 use_pct="$(df -P / 2>/dev/null | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
 if ! printf '%s' "$use_pct" | grep -Eq '^[0-9]+$'; then
   warn "df -P / gave no usable percentage — C6 unevaluable"
+  printf 'skip  C6 disk-pressure: df gave no percentage\n'
   eval_failed=1
 elif [ "$use_pct" -ge "$DISK_PCT" ]; then
   fire C6 "$DISK_RE_SECONDS" "🟠" \
     "disk-pressure — / is at ${use_pct}% (threshold ${DISK_PCT}%)"
+else
+  printf 'ok    C6 disk-pressure: / at %s%% (threshold %s%%)\n' "$use_pct" "$DISK_PCT"
 fi
 
 # ------------------------------------------------------------- dispatch ----
