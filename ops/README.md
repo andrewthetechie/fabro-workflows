@@ -320,8 +320,11 @@ cannot (ADR 0004, `../docs/adr/0004-monitoring-is-out-of-band.md`).
   once a schedule is enabled. `DRY_RUN=1` (the default) prints the alerts it
   would send and writes nothing.
 - The condition table, thresholds, and message contract:
-  `../docs/turn-it-on/00-overview-and-contracts.md`. A dead-man's heartbeat
-  (`FABRO_HEARTBEAT_URL` in `~/fabro/.env`) is wired in task 03.
+  `../docs/turn-it-on/00-overview-and-contracts.md`. An optional dead-man's
+  heartbeat (`FABRO_HEARTBEAT_URL`) is supported by the script but **not
+  configured — declined by the operator** (turn-it-on task 03 skipped): host
+  death therefore looks like silence, and the runbook carries the manual
+  two-minute disambiguation.
 
 ## Sandbox containers — fabro stops them, nothing removes them
 

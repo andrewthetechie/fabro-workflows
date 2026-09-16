@@ -34,7 +34,7 @@ the two sweepers.
 | 5 | The monitor is **out-of-band health only**. It never alerts on a failed run — failure alerting stays hook-owned (`discord-notify.sh`'s `failed`, `triage-failed`, `rescue` kinds). Double pings train the operator to ignore the channel; removing the hooks would lose their enrichment. See ADR 0004. |
 | 6 | "Nothing is happening" is **two different alerts**: dead scheduler (breakage — go fix the server) and starvation (zero `agent`-labeled issues anywhere — go write issues). Different thresholds, different text, different data sources, different responses. |
 | 7 | One Discord channel, the existing webhook. Per-condition dedup in a state file: re-alert every 4h while a condition persists (7d for starvation, 24h for disk), one ✅ resolved message when it clears. `DRY_RUN=1` default, matching the sweepers. |
-| 8 | A dead host is silent by construction, so the monitor gets a **heartbeat**: an external dead-man's ping (healthchecks.io free tier) on every run; absence of the ping is the host-death alert. The ping URL is a capability secret in `~/fabro/.env`, never in this repo. Optional but recommended; sequenced after the monitor works without it. |
+| 8 | A dead host is silent by construction, so the monitor gets a heartbeat: an external dead-man's ping (healthchecks.io free tier) on every run; absence of the ping is the host-death alert. The ping URL is a capability secret in `~/fabro/.env`, never in this repo. **Declined by the operator at task 03** — skipped deliberately; the runbook carries the manual host-death disambiguation instead. |
 | 9 | Turn-on canary: all four `issue-triage` schedules **plus `backlog-jelly-swipe`**. jelly-swipe has real work (11 `agent` issues seeded 2026-09-16), branch protection, and no deploy-on-merge. The other three `backlog` schedules stay off until the observation window passes. |
 | 10 | The observation window is a **human task**: five days, a daily checklist, a one-line deployment-log entry per day, explicit exit criteria gating expansion, explicit stop conditions disarming the canary. It is the one task in this series no agent executes. |
 | 11 | Fleet expansion is **queue-driven**: a repo's `backlog` schedule turns on when it has work, `lawncare-saas` last because its merges deploy. `max_concurrent_runs` stays 3 — ADR 0001 revisited and kept: queueing is acceptable, `issue-triage` is designed to yield. |
@@ -149,10 +149,17 @@ Rules:
 
 ### The heartbeat
 
-`FABRO_HEARTBEAT_URL` in `~/fabro/.env` (host-local, never in this repo). The monitor
-pings it at the end of every run, `/fail` on an evaluation error. healthchecks.io, or
-any URL-ping dead-man's service — the script does not care which; the contract is "GET
-this URL every ~15 minutes, alert if it stops." The human creates the check (task 03);
+**Declined by the operator — task 03 skipped.** Nothing pings anywhere; the script
+still honours `FABRO_HEARTBEAT_URL` if one is ever set, but `~/fabro/.env` carries
+no such key and none is planned. The consequence is recorded in the risks table
+and the runbook carries the manual host-death disambiguation.
+
+What follows is the original contract, kept so the decision can be revisited
+without re-deriving it: `FABRO_HEARTBEAT_URL` in `~/fabro/.env` (host-local,
+never in this repo). The monitor pings it at the end of every run, `/fail` on an
+evaluation error. healthchecks.io, or any URL-ping dead-man's service — the
+script does not care which; the contract is "GET this URL every ~15 minutes,
+alert if it stops." The human creates the check (task 03);
 the script already supports it from task 01.
 
 ### The documents
@@ -194,7 +201,7 @@ series touches none. What bites instead:
 
 | Risk | Detail |
 |---|---|
-| The monitor and the thing it monitors share a host | Mitigated by the heartbeat (task 03); without it, host death is silence. Accepted as optional-but-recommended, and task 06 soft-gates turn-on on it. |
+| The monitor and the thing it monitors share a host | Host death is silence — the heartbeat that would close this was declined at task 03. The runbook carries a two-minute manual disambiguation (ssh + cron log + compose ps). Accepted deliberately by the operator, recorded so nobody assumes a ping exists. |
 | The monitor reads the API with the single dev token | Same blast radius as `discord-notify.sh` and the bridge; rotating the token breaks the monitor loudly (C2's distinct 401 message), never silently. |
 | Starvation re-alerts weekly forever on an empty factory | Intended — the alert *is* the reminder to write issues. The operator can mute by disabling the cron; that is a deliberate act, not drift. |
 | The canary merges real PRs with auto-merge armed | Decision 12. jelly-swipe has branch protection and no deploy-on-merge; the stop conditions in task 07 disarm at the first anomaly. |
@@ -208,7 +215,7 @@ series touches none. What bites instead:
 | 00 | This document | — |
 | 01 | `ops/fabro-monitor.sh` + ADR 0004 | no |
 | 02 | Deploy the monitor, cron it, shake down all six conditions | no |
-| 03 | The heartbeat (human creates the check; script already supports it) | no |
+| 03 | ~~The heartbeat~~ — **skipped**: operator declined healthchecks.io; no external dead-man's ping exists | no |
 | 04 | `docs/USER-GUIDE.md` | **yes** |
 | 05 | `~/.fabro-deploy/docs/OPERATOR-RUNBOOK.md` | **yes** |
 | 06 | Turn on: preflight, enable 4 triage + `backlog-jelly-swipe` | no |
@@ -217,7 +224,8 @@ series touches none. What bites instead:
 | 09 | Correct AGENTS.md and `ops/README.md` | no |
 | 10 | Update the deployment log | no |
 
-Do them in order. 02 needs 01. 03 needs 02. 04 and 05 need 01 (the guide documents the
-monitor's alert vocabulary) but not 02-03. 06 needs 02, and should follow 03 unless the
-operator consciously accepts a silent-host risk during the window. 07 needs 06. 08 needs
-07. 09 and 10 need 08.
+Do them in order. 02 needs 01. 03 was declined by the operator (no heartbeat; the
+runbook carries the manual host-death check). 04 and 05 need 01 (the guide documents the
+monitor's alert vocabulary) but not 02-03. 06 needs 02; the silent-host risk the
+heartbeat would have covered is consciously accepted. 07 needs 06. 08 needs 07. 09 and
+10 need 08.
