@@ -398,7 +398,7 @@ if [ \"$E\" = true ]; then
 fi
 # 10. every own error finding appears in fixes_applied by id
 if [ \"$E\" = true ]; then
-  M=$(jq '[.own_findings[]? | select(.severity == \"error\") | .id] - [.fixes_applied[].finding_id] | length' \"$F\" 2>/dev/null || echo 99)
+  M=$(jq '[.own_findings[]? | select(.severity == \"error\") | .id] - [.fixes_applied[]?.finding_id] | length' \"$F\" 2>/dev/null || echo 99)
   if [ \"$M\" != 0 ]; then fail 'An error-severity finding was not fixed; a human must merge this PR.'; fi
 fi
 # 11. live title is a Conventional Commit
@@ -414,53 +414,85 @@ if [ \"$E\" = true ]; then
 fi
 if [ \"$E\" = true ]; then
   gh pr view \"$PR\" --json title --jq .title > /tmp/fabro/commit_subject.txt
+  # The scope ceiling for ci_fix, snapshotted HERE rather than reused from
+  # prep_review's changed_files.txt. That file predates review_fix, so a file
+  # review_fix legitimately added would read as out-of-scope later and block the
+  # merge over a file ci_fix never touched. This is the set the merge decision was
+  # actually made against.
+  git diff --name-only origin/\"$(cat /tmp/fabro/base_ref)\"...HEAD > /tmp/fabro/review/merge_base_files.txt 2>/dev/null || : > /tmp/fabro/review/merge_base_files.txt
   echo 0 > /tmp/fabro/gh_fix_attempts
   echo 0 > /tmp/fabro/strict_retry
   echo $(( $(date +%s) + 3600 )) > /tmp/fabro/merge_deadline
-  echo '{\"context_updates\":{\"merge_eligible\":\"true\"}}'
+  echo '{\"context_updates\":{\"merge_eligible\":true}}'
 else
-  echo '{\"context_updates\":{\"merge_eligible\":\"false\"}}'
+  echo '{\"context_updates\":{\"merge_eligible\":false}}'
 fi"]
     watch_checks [label="Watch GitHub checks", shape=parallelogram, timeout="35m", output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 A=$(cat /tmp/fabro/gh_fix_attempts 2>/dev/null || echo 0)
-NOW=$(date +%s)
 DL=$(cat /tmp/fabro/merge_deadline 2>/dev/null || echo 0)
-if [ \"$NOW\" -ge \"$DL\" ]; then
-  echo 'The 60-minute merge budget is exhausted; the merge phase is aborted.' > /tmp/fabro/merge_block_reason
-  echo '{\"context_updates\":{\"checks_ok\":\"false\",\"checks_blocked\":\"true\",\"gh_fix_attempts\":'$A'}}'
+blocked() {
+  printf '%s' \"$1\" > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":true,\"gh_fix_attempts\":'$A'}}'
   exit 0
-fi
-if [ \"$A\" = 0 ]; then W=1800; else W=900; fi
-sleep $W
-gh pr checks \"$PR\" --json name,state,bucket > /tmp/fabro/checks.json 2>/dev/null || true
-TOTAL=$(jq length /tmp/fabro/checks.json 2>/dev/null || echo 0)
+}
+# Poll, never a flat sleep. A blind `sleep 1800` held one of three concurrency slots
+# doing nothing in the common case where the checks have already settled, and it spent
+# the 60-minute budget before the second fix tier's result could ever be read: 1800 +
+# agent + 900 + agent exceeds 3600, so ci_fix_t2 was structurally dead.
+#
+# `gh pr checks --json` exits 0 even when a check is failing or pending -- unlike the
+# plain form, which exits 1 and 8 -- so `|| echo '[]'` fires only on a real error and
+# never discards a good result.
+GRACE=$(( $(date +%s) + 300 ))
+while : ; do
+  NOW=$(date +%s)
+  if [ \"$NOW\" -ge \"$DL\" ]; then blocked 'The 60-minute merge budget is exhausted; the merge phase was abandoned before CI settled.'; fi
+  gh pr checks \"$PR\" --json name,state,bucket,link > /tmp/fabro/checks.json 2>/dev/null || echo '[]' > /tmp/fabro/checks.json
+  TOTAL=$(jq length /tmp/fabro/checks.json 2>/dev/null || echo 0)
+  PEND=$(jq '[.[] | select(.bucket == \"pending\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
+  if [ \"$TOTAL\" = 0 ]; then
+    # GitHub takes a moment to register checks after a push, so give the first one a
+    # five-minute grace rather than spinning out the whole budget and then reporting
+    # the wrong reason.
+    if [ \"$NOW\" -ge \"$GRACE\" ]; then blocked 'No CI checks were reported on the PR head within five minutes; a merge with no evidence is refused.'; fi
+  elif [ \"$PEND\" = 0 ]; then
+    break
+  fi
+  sleep 30
+done
 BAD=$(jq '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
-if [ \"$TOTAL\" = 0 ]; then
-  echo 'No CI checks were reported on the PR head; a merge with no evidence is refused.' > /tmp/fabro/merge_block_reason
-  echo '{\"context_updates\":{\"checks_ok\":\"false\",\"checks_blocked\":\"true\",\"gh_fix_attempts\":'$A'}}'
-  exit 0
-fi
 if [ \"$BAD\" = 0 ]; then
-  echo '{\"context_updates\":{\"checks_ok\":\"true\",\"checks_blocked\":\"false\",\"gh_fix_attempts\":'$A'}}'
+  echo '{\"context_updates\":{\"checks_ok\":true,\"checks_blocked\":false,\"gh_fix_attempts\":'$A'}}'
   exit 0
 fi
+NAMES=$(jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .name] | join(\", \")' /tmp/fabro/checks.json 2>/dev/null || echo unknown)
 if [ \"$A\" -ge 2 ]; then
-  NAMES=$(jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .name] | join(\", \")' /tmp/fabro/checks.json 2>/dev/null || echo unknown)
-  echo 'CI is still failing after two fix attempts ('\"$NAMES\"'); a human must merge this PR.' > /tmp/fabro/merge_block_reason
-  echo '{\"context_updates\":{\"checks_ok\":\"false\",\"checks_blocked\":\"true\",\"gh_fix_attempts\":'$A'}}'
-  exit 0
+  blocked 'CI is still failing after two fix attempts ('\"$NAMES\"'); a human must merge this PR.'
 fi
 A=$((A+1))
 echo $A > /tmp/fabro/gh_fix_attempts
+# `gh run view --log-failed` with no argument fails outright -- \"run or job ID required
+# when not running interactively\" -- which left ci_fix.md holding check names and no
+# logs at all, while the ci_fix prompt promised the agent that output. Derive the run
+# ids from each failing check's `link`. A non-Actions check (CodeQL posts
+# /runs/<id>, not /actions/runs/<id>) survives the first substitution unchanged and is
+# dropped by the numeric guard.
 {
   echo '## Failing GitHub checks'
   echo
-  jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .name] | join(\", \")' /tmp/fabro/checks.json 2>/dev/null || true
+  echo \"$NAMES\"
   echo
-  gh run view --log-failed 2>/dev/null || true
+  jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link] | .[]' /tmp/fabro/checks.json 2>/dev/null \
+    | sed 's|.*/actions/runs/||; s|/.*||' | sort -u | while IFS= read -r RID; do
+      case \"$RID\" in '' | *[!0-9]*) continue ;; esac
+      echo '### Failing log for run '$RID
+      echo
+      gh run view \"$RID\" --log-failed 2>/dev/null | tail -c 20000 || echo '(logs unavailable)'
+      echo
+    done
 } > /tmp/fabro/feedback/ci_fix.md
-echo '{\"context_updates\":{\"checks_ok\":\"false\",\"checks_blocked\":\"false\",\"gh_fix_attempts\":'$A'}}'
+echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"gh_fix_attempts\":'$A'}}'
 exit 0"]
     ci_fix_t1 [label="Fix failing CI (tier 1: coders)", class="rebase", prompt="@prompts/ci_fix.md.j2"]
     ci_fix_t2 [label="Fix failing CI (tier 2: glm-5.3)", class="rebase-t2", prompt="@prompts/ci_fix.md.j2"]
@@ -475,19 +507,19 @@ if [ \"$O\" != fixed ] && [ \"$O\" != cannot_fix ]; then O=invalid; fi
 if [ \"$SC\" != ci_only ]; then SC=invalid; fi
 if [ \"$O\" = invalid ] || [ \"$SC\" = invalid ]; then
   echo 'The CI-fix report is missing or invalid; the merge is refused rather than trusting it.' > /tmp/fabro/merge_block_reason
-  echo '{\"context_updates\":{\"ci_fix_ok\":\"false\"}}'
+  echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
 if [ \"$O\" = cannot_fix ]; then
   { echo 'The CI-fix agent could not make the failing check pass.'; echo; jq -r '.reason // \"(no reason given)\"' \"$F\" 2>/dev/null || true; } > /tmp/fabro/merge_block_reason
-  echo '{\"context_updates\":{\"ci_fix_ok\":\"false\"}}'
+  echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
 # scope check from git, not from the agent's claim
-NEW=$(git diff --name-only origin/\"$B\"...HEAD 2>/dev/null | while IFS= read -r f; do grep -qxF \"$f\" /tmp/fabro/review/changed_files.txt || echo \"$f\"; done)
+NEW=$(git diff --name-only origin/\"$B\"...HEAD 2>/dev/null | while IFS= read -r f; do grep -qxF \"$f\" /tmp/fabro/review/merge_base_files.txt || echo \"$f\"; done)
 if [ -n \"$NEW\" ]; then
   echo 'The CI fix touched files outside the reviewed change set; the merge is refused.' > /tmp/fabro/merge_block_reason
-  echo '{\"context_updates\":{\"ci_fix_ok\":\"false\"}}'
+  echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
 # no conflict markers, no in-progress merge or rebase
@@ -501,14 +533,14 @@ while IFS= read -r f; do
 done < /tmp/fabro/ci_fix_scan.txt
 if [ $BAD -ne 0 ]; then
   echo 'The CI fix left conflict markers or an in-progress merge; the merge is refused.' > /tmp/fabro/merge_block_reason
-  echo '{\"context_updates\":{\"ci_fix_ok\":\"false\"}}'
+  echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
 if git push --force-with-lease origin HEAD:\"$H\"; then
-  echo '{\"context_updates\":{\"ci_fix_ok\":\"true\"}}'
+  echo '{\"context_updates\":{\"ci_fix_ok\":true}}'
 else
   echo 'The CI-fix push was rejected because the branch moved; a human must merge this PR.' > /tmp/fabro/merge_block_reason
-  echo '{\"context_updates\":{\"ci_fix_ok\":\"false\"}}'
+  echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
 fi
 exit 0"]
     merge [label="Squash merge", shape=parallelogram, output_schema="routing",
@@ -548,21 +580,39 @@ echo 1 > /tmp/fabro/strict_retry
 git fetch origin \"$B\"
 if git rebase origin/\"$B\"; then
   if git push --force-with-lease origin HEAD:\"$H\"; then
-    echo '{\"context_updates\":{\"remerge_ok\":\"true\"}}'
+    echo '{\"context_updates\":{\"remerge_ok\":true}}'
   else
     git rebase --abort 2>/dev/null || true
     echo 'The re-merge push was rejected because the branch moved; a human must merge this PR.' > /tmp/fabro/merge_block_reason
-    echo '{\"context_updates\":{\"remerge_ok\":\"false\"}}'
+    echo '{\"context_updates\":{\"remerge_ok\":false}}'
   fi
 else
   git rebase --abort 2>/dev/null || true
   echo 'A conflict appeared after the review; the base moved substantially, and a human must resolve it.' > /tmp/fabro/merge_block_reason
-  echo '{\"context_updates\":{\"remerge_ok\":\"false\"}}'
+  echo '{\"context_updates\":{\"remerge_ok\":false}}'
 fi
 exit 0"]
+    // Both terminal reporting nodes post the review comment that `deliver` used to
+    // post. Moving it out of `deliver` without moving it in here left every
+    // successful run finishing with no comment on the PR at all -- the reviewers ran,
+    // the fixes landed, and nothing said so. Task 05 replaces these two shell-built
+    // sections with `merged` and `blocked` kinds inside render.jq; until then the
+    // existing `complete` render plus an appended section is the honest minimum.
+    //
+    // Every gh call is `|| true` and the render has a fallback: by the time these run
+    // the merge has already happened, and a reporting failure must not turn a correct
+    // merge into a failed run.
     report_merged [label="Report merged", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 N=$(jq -r '.[0].number // 0' /tmp/fabro/linked_issues.json 2>/dev/null || echo 0)
+if ! sh /tmp/fabro/render_comment.sh complete > /tmp/fabro/pr_comment.md; then
+  echo 'WARNING: could not render the review comment; falling back to a minimal one.' >&2
+  echo 'Automated review complete and the PR was squash-merged, but the detailed report could not be rendered.' > /tmp/fabro/pr_comment.md
+fi
+{ echo; echo '### Merged'; echo;
+  echo 'Squash-merged as `'\"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null)\"'`. Head branch deleted.';
+} >> /tmp/fabro/pr_comment.md
+gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the merge comment.' >&2
 if [ \"$N\" != 0 ]; then
   gh issue edit \"$N\" --remove-label Review || true
 fi
@@ -572,6 +622,17 @@ exit 0"]
         script="PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
 R=$(cat /tmp/fabro/merge_block_reason 2>/dev/null || echo 'The merge was blocked for an unspecified reason.')
 echo 'Merge blocked for PR '$PR': '$R
+if [ -z \"$PR\" ]; then echo done; exit 0; fi
+if ! sh /tmp/fabro/render_comment.sh complete > /tmp/fabro/pr_comment.md; then
+  echo 'WARNING: could not render the review comment; falling back to a minimal one.' >&2
+  echo 'Automated review complete, but the detailed report could not be rendered.' > /tmp/fabro/pr_comment.md
+fi
+{ echo; echo '### Not auto-merged'; echo;
+  echo '**Reason:** '\"$R\";
+  echo;
+  echo 'Everything else about this review stands. Merge it by hand when you are happy with it.';
+} >> /tmp/fabro/pr_comment.md
+gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the blocked comment.' >&2
 echo done
 exit 0"]
     mark_needs_human [label="Label needs-human", shape=parallelogram,

@@ -321,6 +321,18 @@ if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
       W=${S#?}
       W=${W%%]*}
       W=$(printf '%s' \"$W\" | tr 'A-Z' 'a-z')
+      # A bracket word is as often a label name as a Conventional Commits type --
+      # [BUG] and [Feature] are the two commonest title shapes in these repos -- so
+      # map both vocabularies and strip the bracket either way. Leaving it produced
+      # subjects like `fix: [BUG] ...`, which lint accepts and release-please
+      # publishes.
+      case \"$W\" in
+        bug) W=fix ;;
+        feature|enhancement) W=feat ;;
+        documentation) W=docs ;;
+        performance) W=perf ;;
+        chore|task) W=chore ;;
+      esac
       case \"$W\" in
         feat|fix|docs|chore|refactor|test|ci|build|perf|revert)
           REST=${S#?}
@@ -350,7 +362,7 @@ fi
 # Truncate so subject plus the appended issue reference fits 72 characters, cutting
 # at a word boundary where one exists within the last 12 characters. The reference
 # is appended after the cut and is never truncated away.
-SUBJ=$(printf '%s' \"$S\" | awk -v maxd=$((72 - ${#N} - 3)) '{ if (length($0) <= maxd) { print $0; exit } t = substr($0, 1, maxd); st = maxd - 11; if (st < 1) st = 1; for (i = maxd; i >= st; i--) { if (substr(t, i, 1) == \" \") { print substr(t, 1, i - 1); exit } } print t }')
+SUBJ=$(printf '%s' \"$S\" | awk -v maxd=$((72 - ${#N} - 4)) '{ if (length($0) <= maxd) { print $0; exit } t = substr($0, 1, maxd); st = maxd - 11; if (st < 1) st = 1; for (i = maxd; i >= st; i--) { if (substr(t, i, 1) == \" \") { print substr(t, 1, i - 1); exit } } print t }')
 SUBJ=$(printf '%s' \"$SUBJ\" | sed 's/[[:space:]]*$//')
 printf '%s (#%s)' \"$SUBJ\" \"$N\" > /tmp/fabro/commit_subject.txt
 echo >> /tmp/fabro/commit_subject.txt

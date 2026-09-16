@@ -1,0 +1,318 @@
+# Fabro Auto-Merge — Overview & Canonical Contracts
+
+**Read this first.** Every task in this folder assumes the architecture, the
+contracts, and the findings recorded here. This document is the single source of
+truth.
+
+## What this is
+
+The fourth stage of the fabro integration. After `pr-review` has rebased a pull
+request, reviewed it on three axes, applied fixes and delivered its report, it now
+**decides whether to squash-merge the PR and does so**.
+
+`docs/pr-review-bridge/00-overview-and-contracts.md` decision 5 said the chain "ends
+at review posted. No auto-merge. Nothing here may foreclose adding it later." This is
+the stage it did not foreclose, and it keys on exactly the terminal signal that
+document predicted: the `ai-review-complete` state plus green CI.
+
+The merge lives in **`pr-review`**, not `backlog`. `backlog` fires a review and exits;
+it never sees the `risk` score the gate turns on. `backlog` changes only to produce a
+title and commit body that are mergeable, and inherits auto-merge through the existing
+bridge.
+
+## Operator decisions (settled — do not re-litigate)
+
+| # | Decision |
+|---|---|
+| 1 | The merge stages live in **`pr-review`, after `deliver`**. Not in `backlog`, not in a fifth workflow. `backlog` gets auto-merge through the bridge for free. |
+| 2 | **"Passes CI" means both**: the sandbox `./.fabro/ci.sh` that already gates `deliver`, *and* the GitHub Actions checks on the pushed head. |
+| 3 | A PR is mergeable when `not_fixed` is empty, every `own_findings` entry with `severity="error"` appears in `fixes_applied`, `fix_outcome` is `fixed` or `no_changes_needed`, and `risk` is present and **≤ 3**. A reviewer `decision=findings` is **not** disqualifying on its own — the contract already forces every finding into `fixes_applied` or `not_fixed`. |
+| 4 | PR titles are **Conventional Commits**; the `pr-review` report comment stays Conventional-Comments-shaped. These are different specs and were being conflated. |
+| 5 | Eligible PRs carry the **`agent-authored`** label. Human-opened PRs are reviewed as before and never auto-merged. |
+| 6 | Green is **self-evaluated** from `gh pr checks`: every reported check must be `bucket` `pass` or `skipping`. Not `mergeStateStatus`, not `--required`, not `gh pr merge --auto`. See finding 1. |
+| 7 | Wait 30m on the first check pass and 15m on retries, under a **single 60m wall-clock budget** for the whole merge phase. Timeout, budget exhaustion and **zero checks reported** all mean *do not merge*. |
+| 8 | Failing GitHub CI gets **two coder attempts**, laddered `coders` → `glm-5.3`, mirroring the existing rebase pair. A dedicated `ci_fix` agent, not `review_fix`. |
+| 9 | **No re-review after a CI fix.** Instead `ci_fix` is constrained to files already in the PR's changed set, verified from git rather than trusted. |
+| 10 | Auto-merge is **on by default, on all four repos**. Two independent kill switches exist instead of an opt-in. |
+| 11 | An **expected** block keeps `ai-review-complete` and explains itself in the report comment. An **unexpected** failure routes to `mark_needs_human`. |
+| 12 | Merged PRs get `--delete-branch`; the linked issue closes via `Resolves #N` and loses its `Review` label. |
+| 13 | Discord notifies on **merges only** — `pr-review`'s first hook. |
+| 14 | The squash **subject is read live from the PR title**, never round-tripped. The **body** rides in a delimited block in the PR description. |
+| 15 | `risk` becomes **gate-enforced** in `fix_gate`, not merely documented in the prompt. |
+| 16 | The commit body is the Summary paragraph plus `Resolves #N` — **not** the task list and **not** the `## Validation` section. |
+| 17 | The merge node **re-reads PR state from GitHub immediately before merging**. A PR that is no longer `OPEN` is "already handled": no merge, no failure. |
+| 18 | Rollout is the kill switch, not a dry-run mode. Merge to `main` with `FABRO_AUTO_MERGE=0` already set on the host. |
+
+## Findings established against the live deployment
+
+These were measured on 2026-09-15 against the four target repositories and the
+installed `gh`. Several of them invalidate the obvious design.
+
+### 1. Three of four repos cannot have branch protection, so GitHub cannot be the gate
+
+`GET /repos/{owner}/{repo}/branches/main/protection`:
+
+| Repo | Result |
+|---|---|
+| `jelly-swipe` | public — protected. Required contexts `["test"]` only, `strict: true`, `required_approving_review_count: 0` |
+| `lawncare-saas` | `"Upgrade to GitHub Pro or make this repository public to enable this feature."` |
+| `womens-fantasy-sports` | same |
+| `writers-app` | same |
+
+Three consequences, all load-bearing:
+
+- **`gh pr merge --auto` is unavailable on three of four repos.** GitHub's auto-merge
+  requires branch protection or a ruleset. The obvious design — hand the merge to
+  GitHub and exit — cannot ship here.
+- **`mergeStateStatus` is worthless as a CI gate.** With nothing required it reports
+  `CLEAN` regardless of check results. Gating on it would merge red PRs on three repos.
+- **Gating on *required* checks is gating on nothing** on those three. Hence decision
+  6: evaluate every reported check.
+
+On `jelly-swipe`, `strict: true` means the branch must be current with `main` at merge
+time, so a merge can be rejected as stale even after `rebase_recheck` passed. That is
+the `remerge_base` path, not a failure.
+
+### 2. The `agent: ` PR title prefix fails CI today
+
+`jelly-swipe` runs `amannn/action-semantic-pull-request@v6` (`pr-lint.yml`,
+`requireScope: false`), types: `feat fix docs chore refactor test ci build perf revert`.
+`lawncare-saas` runs one too.
+
+`backlog`'s `open_pr_prep` writes `'agent: '$T' (#'$N')'`
+(`.fabro/workflows/backlog/workflow.fabro:314`). `agent` is not in that list.
+
+Measured: PR #378 (`agent: [Chore] Remove the unreferenced 1 MB frontend/public/favicon.png (#377)`)
+has `lint` **fail**. PR #376 (`fix(frontend): …`) has `lint` **pass**.
+
+So this is not cosmetic. **Until task 02 lands, the check gate can never go green on
+`jelly-swipe`**, and auto-merge would be permanently blocked there for the right
+reason but the wrong cause.
+
+### 3. `release-please` turns the squash subject into a version bump
+
+`release-please.yml` runs on `jelly-swipe` and `lawncare-saas`. The subject an agent
+picks moves semver: `feat:` cuts a minor release, `fix:` a patch. `lawncare-saas` also
+deploys on merge to `main` (`deploy-main.yml`, `deploy-homelab.yml`, `docker-main.yml`).
+
+This is why task 02's derivation is **deterministic and never emits `!` or a
+`BREAKING CHANGE:` footer**. A model guessing `feat` versus `fix` is a model cutting
+releases, and a model writing `BREAKING CHANGE:` is a model cutting a major.
+
+### 4. `gh pr view --json` has no `reviewThreads` field
+
+Verified against the installed `gh`: the field list ends at `url` and `reviewThreads`
+is rejected with `Unknown JSON field`. Unresolved-conversation detection needs GraphQL:
+
+```sh
+gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved}}}}}' -F o=OWNER -F r=REPO -F n=NUM
+```
+
+Confirmed working — returns `{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":0,"nodes":[]}}}}}`
+for `jelly-swipe#378`.
+
+### 5. Human commits are identifiable by author email, not by login
+
+Every fabro checkpoint commit is authored `Fabro <noreply@fabro.sh>` with headline
+`fabro(<run_id>): <stage>`. Measured on #378: every commit, without exception.
+
+`commits[].authors[].login` comes back **empty** on these commits, so a login-based
+check finds nothing. The veto is therefore: **any commit on the head branch whose
+author email is not `noreply@fabro.sh` is a human commit**, and blocks the merge.
+
+### 6. `gh pr checks --json` exposes `bucket`, which is the right field
+
+`bucket` normalises `state` to `pass | fail | pending | skipping | cancel`. Verified
+on #378: `{"bucket":"fail","name":"lint","state":"FAILURE"}` alongside nine
+`{"bucket":"pass",…}`. Gate on `bucket`, not on the raw `state` enum, which has a
+dozen values and gains more.
+
+### 7. `discord-notify.sh` degrades safely on an unknown kind
+
+Its `case` ends `*) msg="ℹ️ fabro run ${run_id} notification ($kind)"`. A host copy
+that predates task 08 sends a plain message rather than failing — which matters
+because that script is the one file in this change that still has two copies.
+
+## Architecture
+
+### `pr-review` graph delta
+
+`deliver` keeps its push and its `ai-review-complete` label. **Its comment moves out**,
+so the report is rendered once, against final HEAD, carrying the merge outcome.
+
+```
+deliver ─→ merge_gate ─┬─ ineligible ───────────────→ report_blocked
+                       └─ eligible ─→ watch_checks ─┬─ green ────────→ merge
+                                                    ├─ red, <2 tries ─→ ci_fix_t1/t2 ─→ ci_fix_gate ─┐
+                                                    └─ blocked ──────→ report_blocked               │
+                                       ▲────────────────────────────────────────────────────────────┘
+merge ─┬─ merged ────────→ report_merged ─→ exit
+       ├─ stale ─────────→ remerge_base ─→ watch_checks        (once)
+       ├─ closed/blocked ─→ report_blocked
+       └─ (unconditional) → mark_needs_human
+```
+
+Nine new nodes: `merge_gate`, `watch_checks`, `ci_fix_t1`, `ci_fix_t2`, `ci_fix_gate`,
+`merge`, `remerge_base`, `report_merged`, `report_blocked`.
+
+`backlog`'s graph is **unchanged**. Task 02 rewrites two scripts inside existing nodes
+and adds no node and no edge.
+
+### Why the merge is in-graph and not a hook
+
+The same reasoning as the bridge: a hook runs in the server container, which has no
+`gh`, no `git` checkout of the target repo, and no sandbox. Every input to the merge
+decision — the fix contracts, the changed-file set, the commit body — lives in the
+sandbox. A hook could only re-derive them over the API.
+
+## Canonical state files
+
+Existing files this stage reads:
+
+| File | Written by | Used for |
+|---|---|---|
+| `/tmp/fabro/review/fix_result.json` | `review_fix` | `risk`, `fix_outcome`, `not_fixed`, `own_findings`, `fixes_applied` |
+| `/tmp/fabro/review/changed_files.txt` | `prep_review` | the scope ceiling for `ci_fix` |
+| `/tmp/fabro/pr_number`, `/tmp/fabro/pr_url` | `validate_input`, `claim` | identity |
+| `/tmp/fabro/linked_issues.json` | `claim` | the issue to unlabel after merge |
+| `/tmp/fabro/base_ref`, `/tmp/fabro/head_ref` | `claim` | `remerge_base` |
+| `/tmp/fabro/needs_human_reason` | many | `mark_needs_human`'s comment |
+
+New files this stage introduces:
+
+| File | Written by | Contract |
+|---|---|---|
+| `/tmp/fabro/auto_merge` | `validate_input` | exactly `1` or `0`. Anything else is `0`. |
+| `/tmp/fabro/commit_subject.txt` | `merge_gate` | the live PR title, after regex validation |
+| `/tmp/fabro/commit_body.md` | `merge_gate` | extracted from the PR description's marker block; must contain a `Resolves #` line |
+| `/tmp/fabro/merge_deadline` | `merge_gate` | epoch seconds; `now + 3600` |
+| `/tmp/fabro/gh_fix_attempts` | `watch_checks` | 0, 1 or 2 |
+| `/tmp/fabro/strict_retry` | `merge` | 0 or 1; independent of `gh_fix_attempts` |
+| `/tmp/fabro/merge_block_reason` | every blocking node | one line, published in the report comment |
+| `/tmp/fabro/review/ci_fix_result.json` | `ci_fix_t1` / `ci_fix_t2` | task 04 |
+
+And in `backlog`:
+
+| File | Written by | Contract |
+|---|---|---|
+| `/tmp/fabro/commit_subject.txt` | `open_pr_prep` | the derived Conventional Commits title; also becomes the PR title |
+| `/tmp/fabro/commit_body.md` | `open_pr_prep` | the Summary paragraph plus `Resolves #N`; embedded into `pr_body.md` between markers |
+
+### The commit-body marker block
+
+`backlog` embeds this in the PR description. HTML comments render invisibly, so the
+PR still reads normally:
+
+```
+<!-- fabro:commit-body:start -->
+Adds a healthcheck to the backend container and enables pool_pre_ping so a
+recycled connection is detected before a request uses it.
+
+Resolves #2251
+<!-- fabro:commit-body:end -->
+```
+
+`merge_gate` extracts it from the **live** PR description, not from a cached copy:
+
+```sh
+gh pr view "$PR" --json body --jq .body > /tmp/fabro/pr_body_live.md
+awk '/fabro:commit-body:start/{f=1;next} /fabro:commit-body:end/{f=0} f' \
+  /tmp/fabro/pr_body_live.md > /tmp/fabro/commit_body.md
+```
+
+**Editing inside the markers is the supported way for a human to correct a commit
+message before the merge fires.** That is the point of reading it live.
+
+Three rules:
+
+- **`:start` / `:end`, never `<!-- /fabro:commit-body -->`.** A closing marker with a
+  slash forces `\/` into the extraction regex, and `\"` is the only backslash a
+  `.fabro` file may contain. The `awk` above has no backslash at all.
+- **Absent, empty, or no `Resolves #` line ⇒ block.** No fallback. A silent
+  degradation to a bodyless commit is how an issue gets orphaned with a `Review`
+  label and nothing reported.
+- **The subject is never in this block.** It is the live PR title. A human fixing a
+  bad title must not have to fix it twice.
+
+## Context keys
+
+Every key is written on **every** branch of its node. A stale key from an earlier loop
+iteration must never satisfy a condition meant for this one.
+
+| Node | Keys |
+|---|---|
+| `merge_gate` | `merge_eligible` (`true`/`false`) |
+| `watch_checks` | `checks_ok`, `checks_blocked`, `gh_fix_attempts` |
+| `ci_fix_gate` | `ci_fix_ok` |
+| `merge` | `merge_state` — `merged` \| `stale` \| `closed` \| `blocked` |
+| `remerge_base` | `remerge_ok` |
+| `report_merged` | `pr_url`, `issue_number` |
+
+`report_merged` publishing `pr_url` and `issue_number` is not decoration. It is what
+lets `discord-notify.sh` enrich the merge notification with **no change to its
+enrichment logic** — the script already greps the run state for exactly those two
+keys, and `pr-review` has so far kept both in files only.
+
+## Kill switches
+
+Two, independent, both fail closed. Auto-merge happens only when **both** say yes.
+
+| Switch | Where | Scope | How fast |
+|---|---|---|---|
+| `auto_merge` automation label | the `pr-review-<repo>` automation row | one repo | one `PATCH /automations/<id>`, no deploy |
+| `FABRO_AUTO_MERGE` | `~/fabro/.env` on the host | all four | one edit plus `docker compose up -d` |
+
+Absent, empty, or anything other than the explicit enabled value means **disabled**.
+Default-on is a decision about the *provisioned* label, not about the parser.
+
+## Rules specific to this stage
+
+The inherited golden rules all still apply — `output_schema="routing"` on every
+command node that prints `context_updates`, a failed node still routes down its
+*unconditional* edge, `//` is the comment, POSIX `sh` only, anchored hook matchers.
+Four more matter here:
+
+1. **`\"` is the only backslash.** This bites harder than usual in this stage, which
+   is full of regex and path manipulation. Use bracket expressions for literal
+   parens — `[(]` not `\(` — and `awk` field logic instead of `sed` ranges with `\/`.
+2. **Every merge-phase command node's unconditional edge lands on `mark_needs_human`.**
+   Expected blocks are *conditional* edges to `report_blocked`. Folding a broken merge
+   into the same quiet bucket as a risk-4 PR is how a permissions regression stays
+   invisible for a week.
+3. **Re-read PR state from GitHub inside `merge`**, immediately before merging. The
+   marker-file guard that protects the bridge is per-run and does not help against a
+   second run fired by hand.
+4. **Never emit `!` or `BREAKING CHANGE:`.** Finding 3.
+
+## Known risks, recorded deliberately
+
+| Risk | Detail |
+|---|---|
+| Three repos have no enforceable gate but ours | With branch protection unavailable, the check evaluation in `watch_checks` is the only thing standing between a red PR and `main` on `lawncare-saas`, `womens-fantasy-sports` and `writers-app`. A bug there is a bad merge, and on `lawncare-saas` a bad **deploy**. This is the single highest-consequence code in the stage and task 09 validates it in isolation. |
+| Default-on means a new repo auto-merges the day it is provisioned | Decision 10. `provision-server-state.sh` writes the label enabled unless told otherwise, so a fifth repo inherits auto-merge without anyone choosing it. Recorded rather than mitigated; the operator asked for default-on explicitly. |
+| The merge phase holds a concurrency slot for up to an hour | `server.scheduler.max_concurrent_runs = 3`. Every `backlog` schedule is disabled today (`ops/README.md`, operator decision 2026-09-14), so this is latent. Re-enabling `every-15m` on four repos **must** be accompanied by revisiting that number; task 11 writes that into `ops/README.md`. |
+| `ci_fix` can make a PR green without making it correct | Two attempts at a failing check, constrained to files already in the diff, with no re-review. The scope check is structural, not semantic: it proves the agent touched nothing new, not that the fix is right. Accepted — the alternative is a full re-review loop that can never terminate. |
+| A human editing the PR description can change the commit body | By design (decision 14). The same mechanism means a careless edit that breaks the markers blocks the merge rather than corrupting the commit — the failure is loud. |
+| `discord-notify.sh` still has two copies | The one file here that cannot use task 07's wrapper: it runs `sandbox = false` in the server container, which has no git and no checkout. Finding 7 is the mitigation — a stale copy degrades to a plain message. |
+| Auto-merge cannot be undone by another commit | AGENTS.md's usual escape — "no rollback other than another commit" — does not apply to a merge that already deployed. This is why the rollout in task 10 is kill-switch-first and why both switches fail closed. |
+
+## Task index
+
+| # | Task | Needs smarter LLM? |
+|---|---|---|
+| 00 | This document | — |
+| 01 | Enforce `risk` in `fix_gate` | no |
+| 02 | `backlog`: Conventional Commits title + commit-body block | **yes** |
+| 03 | `pr-review` graph: the nine merge nodes | **yes** |
+| 04 | The `ci_fix` prompt and its contract | **yes** |
+| 05 | Report rendering: `merged` / `blocked` kinds | **yes** |
+| 06 | Opt-in plumbing and both kill switches | no |
+| 07 | Replace the host `fire-pr-review.sh` copy with a wrapper | no |
+| 08 | `discord-notify.sh`: the `merged` kind | no |
+| 09 | Validate | no |
+| 10 | Deploy, shakedown with the switch off, then first live merge | **yes** |
+| 11 | Correct AGENTS.md and `ops/README.md` | no |
+| 12 | Update the deployment log | no |
+
+Do them in order. 03 needs 01, 02 and 04. 05 needs 03. 07 needs 06. 09 needs 01-08. 10 needs 09.
+11 and 12 need 10.
