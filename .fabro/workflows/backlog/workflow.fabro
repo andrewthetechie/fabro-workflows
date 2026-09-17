@@ -170,6 +170,16 @@ echo '{\"context_updates\":{\"task_disposition\":\"'$D'\"}}'"]
     //
     // One retry gets a fresh session, and therefore a fresh routing decision inside
     // LiteLLM, which is the thing most likely to land on a healthy deployment.
+    //
+    // It also RESUMES rather than restarts, which is the larger benefit and was not
+    // the reason this was added. A node retry re-runs the handler in the SAME
+    // sandbox, and a failed stage writes no checkpoint -- so the previous attempt's
+    // edits are still in the working tree, uncommitted. Measured on jelly-swipe#347
+    // (run 01M2PS2A4QAX3ENBT929QNKZWV): attempt 1 timed out at 3600s having made 114
+    // `edit_file` calls; attempt 2 read the modified tree, finished the remainder and
+    // completed in 1134s. 79 minutes total for work that would otherwise have been
+    // thrown away at 45m and sent to human_rescue.
+    //
     // Worst case is two 60m attempts on a genuinely dead provider; the run then
     // reaches human_rescue as it does today, having actually tried.
     //
