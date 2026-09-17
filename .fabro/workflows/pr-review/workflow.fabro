@@ -254,8 +254,8 @@ fi"]
     // only backstop, and it classifies `transient_infra` with `default_max_retries` at 0.
     // Every one of these nodes routes to `mark_needs_human` on failure, so without a
     // retry a single stall ends the review and labels the PR for a human.
-    rebase_agent_t1 [label="Resolve rebase (tier 1: coders)", class="rebase", timeout="15m", max_retries=1, prompt="@prompts/rebase.md.j2"]
-    rebase_agent_t2 [label="Resolve rebase (tier 2: glm-5.3)", class="rebase-t2", timeout="15m", max_retries=1, prompt="@prompts/rebase.md.j2"]
+    rebase_agent_t1 [label="Resolve rebase (tier 1: coders)", class="rebase", timeout="30m", max_retries=1, prompt="@prompts/rebase.md.j2"]
+    rebase_agent_t2 [label="Resolve rebase (tier 2: glm-5.3)", class="rebase-t2", timeout="30m", max_retries=1, prompt="@prompts/rebase.md.j2"]
 
     // The conflict-marker scan covers exactly the files the rebase can have
     // touched — the three-dot changed set plus anything left untracked, which
@@ -314,7 +314,7 @@ else
 fi"]
 
     // ---- Reviewers ----
-    standards [label="Standards review", class="review", timeout="20m", max_retries=1, prompt="@prompts/standards.md.j2"]
+    standards [label="Standards review", class="review", timeout="30m", max_retries=1, prompt="@prompts/standards.md.j2"]
     standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/standards.json
 A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)
@@ -328,7 +328,7 @@ fi
 echo 0 > /tmp/fabro/standards_attempts
 echo '{\"context_updates\":{\"standards_status\":\"'$D'\"}}'"]
 
-    spec [label="Spec review", class="review", timeout="20m", max_retries=1, prompt="@prompts/spec.md.j2"]
+    spec [label="Spec review", class="review", timeout="30m", max_retries=1, prompt="@prompts/spec.md.j2"]
     spec_gate [label="Validate spec output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/spec.json
 A=$(cat /tmp/fabro/spec_attempts 2>/dev/null || echo 0)
@@ -343,7 +343,7 @@ echo 0 > /tmp/fabro/spec_attempts
 echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
     // ---- Review and fix (one agent, as Sandcastle does) ----
-    review_fix [label="Review and fix", class="review", timeout="20m", max_retries=1, prompt="@prompts/review_fix.md.j2"]
+    review_fix [label="Review and fix", class="review", timeout="30m", max_retries=1, prompt="@prompts/review_fix.md.j2"]
     fix_gate [label="Validate fix result", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/fix_result.json
 A=$(cat /tmp/fabro/fix_result_attempts 2>/dev/null || echo 0)
@@ -596,8 +596,8 @@ echo $A > /tmp/fabro/gh_fix_attempts
 } > /tmp/fabro/feedback/ci_fix.md
 echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"gh_fix_attempts\":'$A'}}'
 exit 0"]
-    ci_fix_t1 [label="Fix failing CI (tier 1: coders)", class="rebase", timeout="10m", max_retries=1, prompt="@prompts/ci_fix.md.j2"]
-    ci_fix_t2 [label="Fix failing CI (tier 2: glm-5.3)", class="rebase-t2", timeout="10m", max_retries=1, prompt="@prompts/ci_fix.md.j2"]
+    ci_fix_t1 [label="Fix failing CI (tier 1: coders)", class="rebase", timeout="20m", max_retries=1, prompt="@prompts/ci_fix.md.j2"]
+    ci_fix_t2 [label="Fix failing CI (tier 2: glm-5.3)", class="rebase-t2", timeout="20m", max_retries=1, prompt="@prompts/ci_fix.md.j2"]
     ci_fix_gate [label="Verify CI fix", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 B=$(cat /tmp/fabro/base_ref)
