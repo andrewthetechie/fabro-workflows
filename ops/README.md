@@ -22,7 +22,8 @@ locations instead.
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
 | `profile-images/` | The four sandbox profile-image Dockerfiles, reconstructed from image layer history and **verified by rebuild** against the live images. |
-| `provision-server-state.sh` | Recreates the eight **automations** — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
+| `provision-server-state.sh` | Recreates the twelve **automations** (three per repo: `backlog`, `pr-review`, `issue-triage`) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
+| `provision-litellm-models.sh` | Creates the `high-reasoning` model group and its `kimi-k3` fallback in LiteLLM. Scoped to that one group; the other model rows predate this workflow and are reported, never corrected. The `coders` pool's concurrency tuning is recorded under *Server-side state*, not managed here. |
 | `README.md` | This file — bring-up, install, and replication steps. |
 
 **Not here, deliberately:** `fire-pr-review.sh` is tracked at
@@ -135,6 +136,67 @@ lives in the row's `description`, read by `fire-pr-review.sh`; "an absent token 
 (decision 10). These rows are genuinely fireable through the same `api:manual` trigger
 now that `watch_checks`→`merge` exists, but they are still never fired by anything on a
 cron.
+
+### LiteLLM coder pool — concurrency and retry tuning
+
+Lives in LiteLLM's Postgres (`STORE_MODEL_IN_DB=True`), not in the Helm `values.yaml`
+and not in this repo. `ops/provision-litellm-models.sh` deliberately does **not** manage
+these — it owns `high-reasoning` only, and it reports drift rather than correcting it.
+Recorded here so a rebuild can restore them by hand.
+
+Set 2026-09-17 after a `backlog` run lost 45 minutes to a silent inference stall
+(run `01M2PKP5YJ4YSZKR5YBTQT8SE6`). Root cause: **LiteLLM was configured to send four
+concurrent requests to each coder box, and each box is llama.cpp with `total_slots: 1`**.
+llama.cpp does not reject the excess — it queues the task internally, with no error and
+no data, so the client sees a stream that emits a few tokens and then goes silent. The
+router's 600s timeout and two retries then queued *more* work onto the same saturated
+slot. Sandcastle never hit this because opencode talks to one box directly; LiteLLM is
+the only fan-in point in the chain.
+
+Per-deployment, on both `coders` rows (`POST /model/update`):
+
+| field | was | now | why |
+|---|---|---|---|
+| `max_parallel_requests` | 4 | **1** | matches `total_slots: 1`, read live from each box's `/props`. With 1, the router knows a box is busy and routes to the other instead of stacking. |
+| `timeout` | 600.0 | **120.0** | ten minutes of silence from a single-slot box means queued, and waiting does not help. |
+
+`/model/update` **replaces** `litellm_params` rather than merging it — setting `timeout`
+alone silently dropped `max_parallel_requests`. Always send `model`, `api_base`,
+`timeout` and `max_parallel_requests` together, then read `/v1/model/info` back.
+
+Router-wide (`POST /config/update`, and these affect **every** model group):
+
+| field | was | now | why |
+|---|---|---|---|
+| `routing_strategy` | `simple-shuffle` | **`least-busy`** | shuffle picks randomly, so a retry can land back on the stuck box. `least-busy` is the awareness a 2×1-slot topology needs. In-memory tracking is sufficient at `replicas: 1`; a second replica would need Redis. |
+| `cooldown_time` | 5 | **60** | five seconds is too short for a wedged box to leave rotation. |
+| `model_group_retry_policy` | `{}` | **`{"coders": {all 0}}`** | retrying a queued streaming request adds load to the saturated thing, and once LiteLLM has committed HTTP 200 downstream a retry cannot reach the client anyway. Scoped to `coders`; global `num_retries` stays 2. |
+
+`model_group_retry_policy` resolves per model group and falls back to `DefaultRetries`
+(`litellm/router_utils/get_retry_from_policy.py`), so `DefaultRetries: 0` alone would
+suffice; the specific error types are set to 0 as well for legibility.
+
+Preserved through both writes, and worth checking after any future change:
+`fallbacks: [{"high-reasoning": ["kimi-k3"]}]` (ADR 0003's overflow), `num_retries: 2`,
+`allowed_fails: 3`, router `timeout: 6000`.
+
+Verified after the change: all six model groups (`coders`, `glm-5.3`, `glm-4.7`,
+`kimi-k3`, `high-reasoning`, `long-context`, `kimi-for-coding`) return `ok` from
+`fabro model test -p litellm -m <name>`, and the settings read back from
+`LiteLLM_Config.router_settings` in Postgres, so they survive a pod restart.
+
+Read the live state back with:
+
+```sh
+kubectl -n litellm exec deploy/litellm -- python3 -c '
+import os,json,urllib.request
+k=os.environ["PROXY_MASTER_KEY"]
+r=urllib.request.Request("http://127.0.0.1:4000/v1/model/info", headers={"Authorization":"Bearer "+k})
+for m in json.load(urllib.request.urlopen(r)).get("data",[]):
+    if m.get("model_name")=="coders":
+        li=m["litellm_params"]
+        print(li.get("api_base"), "timeout=",li.get("timeout"), "mpr=",li.get("max_parallel_requests"))'
+```
 
 ### Auto-merge kill switches
 
