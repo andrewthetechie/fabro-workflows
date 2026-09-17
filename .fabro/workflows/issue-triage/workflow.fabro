@@ -82,7 +82,11 @@ U=$(jq -r .url /tmp/fabro/issue.json)
 jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_url:$u,answered:\"false\"}}'"]
 
     // ---- Improve ----
-    improve [label="Improve the issue body", class="improve", prompt="@prompts/improve.md.j2", timeout="20m"]
+    // `max_retries=1`: a stalled provider stream is invisible to the LLM retry and the
+    // fallback chain, so the node timeout is the only backstop and it needs a retry
+    // budget to be worth anything. Both nodes here route to `release`, which drops the
+    // claim and ends the run, so a single stall costs the whole triage.
+    improve [label="Improve the issue body", class="improve", prompt="@prompts/improve.md.j2", timeout="20m", max_retries=1]
 
     // Applies the body only. The title is written once, by the terminal nodes, from
     // triage.json — two title writes per run is churn in every watcher's inbox and a
@@ -118,7 +122,7 @@ fi
 jq -nc --arg s \"$S\" '{context_updates:{improve_status:$s}}'"]
 
     // ---- Triage ----
-    triage [label="Triage the issue", class="triage", prompt="@prompts/triage.md.j2", timeout="20m"]
+    triage [label="Triage the issue", class="triage", prompt="@prompts/triage.md.j2", timeout="20m", max_retries=1]
 
     // Validates readiness, the Conventional Commits title, the label shapes and the
     // artifact, then publishes the questions as context so the Discord hook can carry

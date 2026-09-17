@@ -67,9 +67,8 @@ node **attribute**, and both references live in `validate_input`'s `script`, so 
 second is folded into the first. Prove it exists by validating a scratch copy with
 `pr_number` literalised: it then warns about `auto_merge`.)
 
-`IssueTriage` has **no recorded baseline**. It takes no inputs, so it should validate
-clean; record its node and edge counts here after the first container run that
-confirms them.
+`IssueTriage` validates clean at `IssueTriage (15 nodes, 35 edges)` (confirmed in the
+container 2026-09-17). It takes no inputs, so it emits no unbound-input warning.
 
 `fabro validate` does not parse `workflow.toml` strictly. A dotted model key that loses
 its quotes becomes a nested table and the automation fire returns 422, with nothing
