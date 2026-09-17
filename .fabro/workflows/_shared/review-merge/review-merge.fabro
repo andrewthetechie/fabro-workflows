@@ -446,6 +446,12 @@ echo $A > /tmp/fabro/gh_fix_attempts
 # ids from each failing check's `link`. A non-Actions check (CodeQL posts
 # /runs/<id>, not /actions/runs/<id>) survives the first substitution unchanged and is
 # dropped by the numeric guard.
+# Clear the contract before the tier that writes it runs. Without this, a ci_fix
+# agent that times out writes nothing and ci_fix_gate reads the PREVIOUS tier's
+# result -- it reported ci_fix_ok=true twice for a tier that never produced one,
+# which is what fed the loop above. Same rule prep_review applies to the review
+# contracts, and the invariant AGENTS.md states.
+rm -f /tmp/fabro/review/ci_fix_result.json
 {
   echo '## Failing GitHub checks'
   echo
@@ -666,10 +672,17 @@ echo '{\"context_updates\":{\"review_merge_outcome\":\"'$O'\"}}'"]
     merge_gate    -> report_blocked    [condition="context.merge_eligible=false"]
     merge_gate    -> mark_needs_human
 
+    // `report_blocked` outranks the fix tiers. When watch_checks gives up it publishes
+    // checks_blocked=true AND leaves gh_fix_attempts at 2, so the ci_fix_t2 edge
+    // matches too. Neither carried a weight, so the tie fell to the lexical order of
+    // the target ids -- ci_fix_t2 sorts before report_blocked -- and the run looped
+    // watch_checks -> ci_fix_t2 -> ci_fix_gate -> watch_checks forever, about 41
+    // minutes a lap, holding a scheduler slot. Observed on run
+    // 01M2RB5QBNBPS6C0F9904V25AX against jelly-swipe#384.
+    watch_checks  -> report_blocked    [condition="context.checks_blocked=true", weight=20]
     watch_checks  -> merge             [condition="context.checks_ok=true", weight=10]
     watch_checks  -> ci_fix_t1         [condition="context.checks_ok=false && context.gh_fix_attempts=1"]
     watch_checks  -> ci_fix_t2         [condition="context.checks_ok=false && context.gh_fix_attempts=2"]
-    watch_checks  -> report_blocked    [condition="context.checks_blocked=true"]
     watch_checks  -> mark_needs_human
 
     ci_fix_t1     -> ci_fix_gate       [condition="outcome=succeeded"]
