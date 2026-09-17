@@ -1,6 +1,11 @@
 digraph PrReview {
     graph [
         goal="Rebase a pull request onto the tip of its base branch, review it on three axes, apply one round of fixes, verify CI, and squash-merge it when the review, the risk rating and CI all allow",
+        // Bound the preamble: `compact` (the default) prepends every completed stage,
+        // with up to 25 lines of command output each, to every agent prompt. Every
+        // prompt here names its inputs by path, so the preamble carries no signal this
+        // graph relies on. See backlog's graph block for the full reasoning.
+        default_fidelity="summary:low",
         model_stylesheet="
             *           { model: glm-5.3; }
             .review     { model: glm-5.3; }

@@ -1,6 +1,11 @@
 digraph IssueTriage {
     graph [
         goal="Issue triage: improve, triage and retitle one needs-triage issue, and ask the human only what the repository cannot answer",
+        // Bound the preamble: `compact` (the default) prepends every completed stage,
+        // with up to 25 lines of command output each, to every agent prompt. Every
+        // prompt here names its inputs by path, so the preamble carries no signal this
+        // graph relies on. See backlog's graph block for the full reasoning.
+        default_fidelity="summary:low",
         model_stylesheet="
             *         { model: high-reasoning; }
             .improve  { model: high-reasoning; }

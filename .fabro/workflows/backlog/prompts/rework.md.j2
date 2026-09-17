@@ -7,8 +7,9 @@ or `edit`.
 
 ## Inputs — read in this priority order
 
-1. **Human guidance, if present.** If the run context contains human guidance from
-   a rescue gate (`human.gate.text`), it **overrides everything else**. A human has
+1. **Human guidance, if present.** If `/tmp/fabro/feedback/rescue.md` exists and is
+   non-empty, it carries human guidance from a rescue gate and it **overrides
+   everything else**. A human has
    looked at this run and told you what to do; do that, and treat the findings file
    as secondary context.
 2. `/tmp/fabro/feedback/rework.md` — **the findings. This is your entire scope.**

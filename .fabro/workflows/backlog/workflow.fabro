@@ -1,6 +1,16 @@
 digraph Backlog {
     graph [
         goal="Backlog: decompose the next agent-labeled issue, implement each task with review, and open a PR",
+        // Bound the preamble. `compact` (the default) prepends EVERY completed stage to
+        // every agent prompt, with up to 25 lines of command output each
+        // (handler/llm/preamble.rs:391, COMPACT_OUTPUT_MAX_LINES=25), plus the whole
+        // context table. By task 7 of a long run that is tens of thousands of tokens of
+        // jq gate chatter in front of an 8 KB prompt -- and on local llama.cpp, prefill
+        // is a real share of per-turn latency. `summary:low` keeps the last two stages
+        // and an omission count. Every prompt here names its inputs by path, so nothing
+        // in the preamble is load bearing; the one exception was `human.gate.text`,
+        // which `record_guidance` now writes to a file instead.
+        default_fidelity="summary:low",
         model_stylesheet="
             *                { model: coders; }
             .decomp          { model: glm-5.3; }
@@ -546,7 +556,8 @@ gh issue edit $N --remove-label agent-in-progress || true
 gh issue comment $N --body 'Agent run found no actionable decomposition for this issue; leaving it for human triage.' || true
 echo done"]
 
-    human_rescue [shape=hexagon, label="Agent stuck — human decision needed"]
+    human_rescue [shape=hexagon,
+        label="Agent stuck. Type guidance to retry, or choose an option."]
 
     mark_stuck [label="Mark stuck", shape=parallelogram,
         script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || echo 0)
@@ -665,7 +676,20 @@ echo done"]
 
     close_noop -> exit
 
-    human_rescue -> rework_t4       [label="[R] Retry with guidance", freeform=true]
+    // The only channel from the rescue gate's free text into a file. Mirrors
+    // issue-triage's `record_answer`: a command node cannot read context, and
+    // `stdin_source` pipes exactly one key. This exists so `rework.md.j2` can read the
+    // guidance from a path like every other input, which in turn lets the graph run at
+    // `summary:low` fidelity -- that level drops the context table, and the guidance
+    // used to reach the rework agent only through it.
+    record_guidance [label="Record the human guidance", shape=parallelogram,
+        stdin_source="human.gate.text",
+        script="mkdir -p /tmp/fabro/feedback
+cat > /tmp/fabro/feedback/rescue.md
+echo recorded"]
+
+    human_rescue -> record_guidance [freeform=true]
+    record_guidance -> rework_t4
     human_rescue -> open_pr_prep    [label="[P] Accept partial"]
     human_rescue -> mark_stuck      [label="[X] Abandon"]
 
