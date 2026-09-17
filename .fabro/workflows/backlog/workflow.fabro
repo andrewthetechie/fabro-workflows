@@ -560,7 +560,12 @@ gh pr view $PR --json number,title,body,url,state,isCrossRepository,headRefName,
 jq -r .baseRefName /tmp/fabro/pr.json > /tmp/fabro/base_ref
 jq -r .headRefName /tmp/fabro/pr.json > /tmp/fabro/head_ref
 jq '[.closingIssuesReferences[]?]' /tmp/fabro/pr.json > /tmp/fabro/linked_issues.json
-cp /tmp/fabro/task_base_sha /tmp/fabro/run_base_sha 2>/dev/null || git rev-parse HEAD > /tmp/fabro/run_base_sha
+# The branch point, not the last task's base. `task_base_sha` is rewritten by
+# `next_task` on every task, so using it would make the report's \"Commits with
+# changes\" section cover only the final task instead of everything this run did.
+B=$(cat /tmp/fabro/base_ref)
+git fetch origin \"$B\" 2>/dev/null || true
+git merge-base origin/\"$B\" HEAD > /tmp/fabro/run_base_sha 2>/dev/null || git rev-parse HEAD > /tmp/fabro/run_base_sha
 # The per-repo auto-merge switch lives in the pr-review-<repo> automation's
 # description, because an automation row has no inputs or labels field. The bridge
 # used to read it; this does now, so the switch keeps working unchanged. An absent
