@@ -57,7 +57,7 @@ ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate
 ```
 
 Baselines as of 2026-09-17 (review+merge shared and imported):
-`Backlog (60 nodes, 138 edges)` clean, `PrReview (30 nodes, 65 edges)` with exactly
+`Backlog (60 nodes, 139 edges)` clean, `PrReview (30 nodes, 65 edges)` with exactly
 one warning — `pr_number` unbound in `validate_input` — and
 `IssueTriage (15 nodes, 35 edges)` clean. Backlog and PrReview both include the ~21
 nodes of `_shared/review-merge/`, which `fabro validate` splices in; `fabro parse`
@@ -96,6 +96,7 @@ them, except where a rule names one by id.
 | Delete a contract file before the agent that writes it runs | An agent that exits succeeded without writing hands the gate its predecessor's result. |
 | Agents do not run `git` | Two deliberate exceptions: `pr-review`'s rebase agent and `backlog`'s `resolve_merge` agent, which need `git add` and `--continue`. |
 | A conflicted merge or rebase never crosses a stage boundary | The checkpoint is `git add -A && git commit`, and `git add` marks a conflicted file resolved — so the checkpoint commits conflict markers. The command node aborts to restore a clean tree; a dedicated agent then redoes and resolves the whole thing inside one stage. |
+| `acquire` and `claim` are not atomic; `claim` arbitrates with a run-id marker and the lowest ULID wins | Two backlog runs whose `acquire` stages both finish before either `claim` lands will both claim the same issue — `gh issue edit` is idempotent, so the second succeeds silently and two runs implement it on separate branches. Observed on jelly-swipe#356. The 20s settle in `claim` must stay above the widest observed gap between two claims (4s), or both runs can conclude they won. |
 | Anchor hook matchers | They are unanchored regexes tested against `node_id`, `handler_type`, `edge_to`, `edge_from` and `tool_name`. Write `^open_pr$`, not `open_pr`, for any id that prefixes another. |
 | `[run.environment.env]` in backlog's `workflow.toml` must never gain an `id` key | It pins all four backlog automations to one environment, and two of the four repos fail CI on the wrong image. It also breaks `fabro validate`, which resolves a non-default id against the CLI's own local catalog and errors. |
 | `trigger_review` keeps `on_failure="succeed"` | Its single unconditional edge points at `exit`. A failed node still routes and takes its *unconditional* edge, so without the attribute a trigger failure routes to `exit` instead of to `human_rescue`. |
