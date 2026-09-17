@@ -46,6 +46,10 @@ pull_requests = "write"
 # fails CI on two of the four).
 [run.environment.env]
 FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
+# Read by pr_handoff for the per-repo auto-merge switch, and by the imported
+# review-merge phase for the host-wide one.
+FABRO_API_URL    = "{{ vars.FABRO_API_URL }}"
+FABRO_AUTO_MERGE = "{{ vars.FABRO_AUTO_MERGE }}"
 
 # Discord notifications. Hooks run with sandbox = false, which means they run
 # inside the fabro server container (Alpine: /bin/sh, wget, no bash, no jq, no

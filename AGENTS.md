@@ -23,7 +23,7 @@ actually lives.
 
 | Path | What it is |
 |---|---|
-| `.fabro/workflows/<name>/` | **The only tree the automations read.** Three packages: `backlog`, `pr-review`, `issue-triage`. `backlog/scripts/` is executed by a live stage as well as by hooks, so changing it is a deploy. |
+| `.fabro/workflows/<name>/` | **The only tree the automations read.** Three runnable packages — `backlog`, `pr-review`, `issue-triage` — plus `_shared/review-merge/`, an importable graph with no `workflow.toml` that both `backlog` and `pr-review` splice in with `import=`. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
 | `ops/` | Host replication: compose, profile images, provisioning, branch sweeper. Start at `ops/README.md`. No automation reads this tree. |
 | `docs/pr-review-bridge/` | The task series for the third stage: `backlog` triggers a `pr-review` run on the PR it just opened. `00-overview-and-contracts.md` first. |
 | `docs/auto-merge/` | A cross-cutting series for the fourth stage (the squash-merge), spanning `backlog` and `pr-review`: kill switches, Conventional-Commits titles, the merge graph, `ci_fix`. `00-overview-and-contracts.md` first. |
@@ -56,9 +56,12 @@ ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp 
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
 ```
 
-Baselines as of 2026-09-16 (auto-merge deployed): `Backlog (38 nodes, 86 edges)`
-clean, and `PrReview (28 nodes, 64 edges)` with exactly one warning — `pr_number`
-unbound in `validate_input`. That warning is deliberate. Binding
+Baselines as of 2026-09-17 (review+merge shared and imported):
+`Backlog (60 nodes, 138 edges)` clean, `PrReview (30 nodes, 65 edges)` with exactly
+one warning — `pr_number` unbound in `validate_input` — and
+`IssueTriage (15 nodes, 35 edges)` clean. Backlog and PrReview both include the ~21
+nodes of `_shared/review-merge/`, which `fabro validate` splices in; `fabro parse`
+shows the unexpanded placeholder instead, so node counts only match after validate. That warning is deliberate. Binding
 `[run.inputs] pr_number` would silence it and let a run fired with no input review PR
 #1 instead of failing at admission. (`auto_merge` is another unbound `{{ inputs.* }}` in the
 same node, and it is *not* silenced by being supplied at fire time — `pr_number` is
@@ -66,9 +69,6 @@ supplied that way too and still warns. fabro emits one undefined-input diagnosti
 node **attribute**, and both references live in `validate_input`'s `script`, so the
 second is folded into the first. Prove it exists by validating a scratch copy with
 `pr_number` literalised: it then warns about `auto_merge`.)
-
-`IssueTriage` validates clean at `IssueTriage (15 nodes, 35 edges)` (confirmed in the
-container 2026-09-17). It takes no inputs, so it emits no unbound-input warning.
 
 `fabro validate` does not parse `workflow.toml` strictly. A dotted model key that loses
 its quotes becomes a nested table and the automation fire returns 422, with nothing

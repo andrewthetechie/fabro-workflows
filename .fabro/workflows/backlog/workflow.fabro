@@ -480,83 +480,50 @@ gh issue edit $N --remove-label agent-in-progress --add-label Review || true
 gh issue comment $N --body 'Agent run complete. PR: '$PR_URL || true
 echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\"}}'"]
 
-    // ---- Trigger the PR review (the bridge) ----
-    // Fires a separate, durable `pr-review` run on the PR this run just opened. This is
-    // a positive in-graph action, not a poll and not a human typing a curl.
+    // ---- Review and merge, in this run ----
+    // The bridge is gone. It fired a separate durable `pr-review` run, which then
+    // queued behind every other run on a two-slot scheduler: an 11-minute review
+    // waiting hours behind eight-hour implementations, which is why PRs piled up
+    // unreviewed. The review and merge phase is now spliced in here at parse time:
+    // no child run, no second sandbox, no scheduler queue.
     //
-    // `on_failure="succeed"` is deliberate: the PR already exists by the time this
-    // node runs, and a backlog run that produced a correct PR must not be reported as
-    // failed because a downstream trigger could not reach the API. The cost is that
-    // the usual rule — every command node's unconditional edge lands on the
-    // terminal-failure node — does not apply here, because this node cannot reach a
-    // failed outcome. Its single unconditional edge to `exit` is safe only for as long
-    // as that attribute is present. Remove it and the edge must be re-pointed at
-    // `human_rescue` in the same change.
+    // `review_merge` is an import placeholder -- NOT to be confused with this
+    // graph's own per-task `review` node. Its ids arrive prefixed
+    // (`review_merge.merge_gate`), and `pr-review` imports the same file, so there is one
+    // copy of this logic rather than two that drift. Entry and exit contracts are
+    // documented at the top of .fabro/workflows/_shared/review-merge/review-merge.fabro.
     //
-    // It also means `run_failed` never fires for a trigger failure, which is why the
-    // script's own failures are captured below and turned into `review_trigger_error`
-    // instead of a non-zero node exit — so the normal path emits context even when the
-    // trigger fails, and task 06's hook has something to report.
-    //
-    // Both context keys are written on every branch. A stale key from an earlier visit
-    // must never satisfy a condition meant for this one.
-    //
-    // `/tmp/fabro/review_triggered` is the double-fire guard. `open_pr` can be visited
-    // twice, via human_rescue -> [P] Accept partial -> open_pr_prep -> open_pr, and two
-    // concurrent reviews on one PR would both `git push --force-with-lease` to the same
-    // head ref: one wins, the other is rejected and lands an `ai-review-needs-human`
-    // label on a PR that reviewed fine. A marker file was chosen over `max_visits=1`
-    // because file-backed contracts are this deployment's architecture, the skip is
-    // visible in the stage log, and `max_visits` has murky semantics on a failed visit
-    // — which is exactly the state `on_failure="succeed"` puts this node in.
-    //
-    // The two payloads that interpolate a variable are built with `jq -nc --arg`, not
-    // by quoting a string together. The error one carries the fire script's stderr,
-    // which is server `detail` text: one `"` in it makes the object invalid, routing
-    // output is validated only after exit 0 with no repair turn, and the node then
-    // fails into on_failure="succeed" having written neither key — so the Discord hook
-    // reads an empty pair, takes its skip branch, and a trigger failure goes unreported.
-    // That is the exact silence this node exists to prevent. The constant payloads above
-    // stay literal echoes: they have no interpolation to get wrong. `jq` is guaranteed
-    // present here because `open_pr` runs `jq` under `set -e` on the only edge in.
-    //
-    // The node is POSIX sh: `case`, `${#VAR}`, `$?`; no `[[ ]]`, no arrays, no pipefail.
-    // The token is never echoed and never reaches a log. Do not add `set -x`.
-    trigger_review [label="Trigger PR review", shape=parallelogram,
-        output_schema="routing", on_failure="succeed", timeout="10m",
-        script="if [ -f /tmp/fabro/review_triggered ]; then
-  echo 'a review was already triggered for this run' >&2
-  echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"\"}}'
-  exit 0
-fi
-PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
-case \"$PR\" in '' | *[!0-9]*)
-  echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"no usable pr_number was recorded by open_pr\"}}'
-  exit 0 ;;
-esac
+    // The reviewers inside it are fresh sessions on a fresh diff, which is the point:
+    // they run after every task AND every extra-review follow-up has landed, so they
+    // judge the branch that is actually going to merge.
+    pr_handoff [label="Hand off to review and merge", shape=parallelogram, output_schema="routing",
+        script="set -e
+PR=$(cat /tmp/fabro/pr_number)
+gh pr view $PR --json number,title,body,url,state,isCrossRepository,headRefName,baseRefName,headRefOid,labels,closingIssuesReferences > /tmp/fabro/pr.json
+jq -r .baseRefName /tmp/fabro/pr.json > /tmp/fabro/base_ref
+jq -r .headRefName /tmp/fabro/pr.json > /tmp/fabro/head_ref
+jq '[.closingIssuesReferences[]?]' /tmp/fabro/pr.json > /tmp/fabro/linked_issues.json
+cp /tmp/fabro/task_base_sha /tmp/fabro/run_base_sha 2>/dev/null || git rev-parse HEAD > /tmp/fabro/run_base_sha
+# The per-repo auto-merge switch lives in the pr-review-<repo> automation's
+# description, because an automation row has no inputs or labels field. The bridge
+# used to read it; this does now, so the switch keeps working unchanged. An absent
+# token means ON (decision 10); anything present that is not `true` means OFF, and an
+# unreachable API means OFF, because a switch that cannot be read is not armed.
+echo 0 > /tmp/fabro/auto_merge_repo
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo '')
-if [ -z \"$REPO\" ]; then
-  echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"could not determine the repository from gh\"}}'
-  exit 0
+if [ -n \"$REPO\" ] && [ -n \"${FABRO_API_URL:-}\" ] && [ -n \"${FABRO_API_TOKEN:-}\" ]; then
+  if curl -fsS -H \"Authorization: Bearer $FABRO_API_TOKEN\" $FABRO_API_URL/automations > /tmp/fabro/autorows.json 2>/dev/null; then
+    D=$(jq -r --arg r \"$REPO\" '[.data[] | select(.workflow == \"pr-review\" and .target.repo == $r)] | .[0].description // \"\"' /tmp/fabro/autorows.json)
+    case \"$D\" in
+      *auto_merge*) T=$(printf '%s' \"$D\" | grep -o 'auto_merge=[A-Za-z0-9_-]*' | tail -1 | cut -d= -f2)
+                    case \"$T\" in true) echo 1 > /tmp/fabro/auto_merge_repo ;; esac ;;
+      *) echo 1 > /tmp/fabro/auto_merge_repo ;;
+    esac
+  fi
 fi
-RID=$(basename $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ''))
-if [ ${#RID} -ne 26 ]; then RID=''; fi
-case \"$RID\" in *[!0-9A-Z]*) RID='' ;; esac
-rm -rf /tmp/fabro/wfrepo
-if ! git clone --depth 1 https://github.com/andrewthetechie/fabro-workflows /tmp/fabro/wfrepo > /dev/null 2>&1; then
-  echo '{\"context_updates\":{\"review_run_id\":\"\",\"review_trigger_error\":\"could not clone fabro-workflows to build the pr-review package\"}}'
-  exit 0
-fi
-S=/tmp/fabro/wfrepo/.fabro/workflows/backlog/scripts/fire-pr-review.sh
-PARENT_RUN_ID=$RID DRY_RUN=0 sh $S \"$REPO\" \"$PR\" > /tmp/fabro/trigger_out 2> /tmp/fabro/trigger_err
-if [ $? -eq 0 ]; then
-  touch /tmp/fabro/review_triggered
-  R=$(tail -1 /tmp/fabro/trigger_out | sed 's/[[:cntrl:]]//g')
-  jq -nc --arg r \"$R\" '{context_updates:{review_run_id:$r,review_trigger_error:\"\"}}'
-else
-  E=$(tail -1 /tmp/fabro/trigger_err | sed 's/[[:cntrl:]]//g' | cut -c1-200)
-  jq -nc --arg e \"$E\" '{context_updates:{review_run_id:\"\",review_trigger_error:$e}}'
-fi"]
+echo handoff ready"]
+
+    review_merge [import="../_shared/review-merge/review-merge.fabro"]
 
     close_noop [label="Close (no actionable work)", shape=parallelogram,
         script="N=$(jq -r .number /tmp/fabro/issue.json)
@@ -675,12 +642,15 @@ echo done"]
 
     open_pr_prep -> open_pr         [condition="outcome=succeeded"]
     open_pr_prep -> human_rescue
-    open_pr -> trigger_review       [condition="outcome=succeeded"]
+    open_pr -> pr_handoff           [condition="outcome=succeeded"]
     open_pr -> human_rescue
-    // Unconditional, and safe only while on_failure="succeed" is on trigger_review.
-    // A failed node still routes, and it takes its unconditional edge — so if that
-    // attribute ever comes off, this edge must go to human_rescue in the same change.
-    trigger_review -> exit
+    pr_handoff -> review_merge      [condition="outcome=succeeded"]
+    pr_handoff -> human_rescue
+    // The import reports both outcomes on the PR itself before it exits, so a
+    // merged PR and a deliberately-unmerged one are both finished runs. Only a
+    // failure of the placeholder needs a human.
+    review_merge -> human_rescue    [condition="outcome=failed"]
+    review_merge -> exit
 
     close_noop -> exit
 
