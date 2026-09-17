@@ -147,7 +147,36 @@ echo 0 > /tmp/fabro/improve_attempts
 if [ \"$D\" = ready ]; then jq .task $F > /tmp/fabro/current_task.json; fi
 echo '{\"context_updates\":{\"task_disposition\":\"'$D'\"}}'"]
 
-    coder [label="Implement task (tier 1)", class="coder", timeout="45m", prompt="@prompts/coder.md.j2"]
+    // `timeout` and `max_retries` are both sized from measured data, not guessed.
+    //
+    // 17 successful `coder` stages across the runs still on the server span
+    // 192s..2619s, p50 758s. The longest legitimate implementation was 2619s = 43.6
+    // minutes against the old 45m timeout -- 3% headroom, so a slightly larger task
+    // failed on a clock rather than on its merits. 60m restores real headroom.
+    //
+    // `max_retries=1` exists for a different failure. On 2026-09-17 the `coders`
+    // upstream accepted a request, streamed reasoning for 9 seconds, and then went
+    // silent: fabro logged `agent.llm.first_output` at 03:01:19 and then emitted no
+    // event at all for 1915 seconds, until this node's timeout killed the stage.
+    // LiteLLM was retrying the hung upstream on its own 600s budget (03:01:26,
+    // 03:11:26, 03:21:26) and the 200 finally landed 20 minutes late. Nothing in
+    // fabro recovers from that on its own: a stream that stalls without erroring is
+    // not a provider error, so neither the LLM retry (3x, transient errors only) nor
+    // the model fallback chain (`coders` -> `glm-4.7`) can fire. The node timeout is
+    // the only backstop, and it classifies as `transient_infra` -- which IS
+    // retry-eligible, but `default_max_retries` is 0, so the stage reported
+    // `will_retry: false` and the run walked its unconditional edge to human_rescue
+    // with the issue still labelled agent-in-progress.
+    //
+    // One retry gets a fresh session, and therefore a fresh routing decision inside
+    // LiteLLM, which is the thing most likely to land on a healthy deployment.
+    // Worst case is two 60m attempts on a genuinely dead provider; the run then
+    // reaches human_rescue as it does today, having actually tried.
+    //
+    // Do NOT promote this to a graph-level `default_max_retries`. That would also
+    // apply to the command gates, whose `exit 1` is a deliberate routing signal and
+    // whose attempt counters would be double-incremented by an engine retry.
+    coder [label="Implement task (tier 1)", class="coder", timeout="60m", max_retries=1, prompt="@prompts/coder.md.j2"]
 
     prep_review [label="Prepare review inputs", shape=parallelogram, output_schema="routing",
         script="set -e
@@ -212,10 +241,10 @@ R=$((R+1))
 echo $R > /tmp/fabro/round
 echo '{\"context_updates\":{\"round\":'$R'}}'"]
 
-    rework_t1 [label="Rework (tier 1: coders)", class="coder", timeout="30m", prompt="@prompts/rework.md.j2"]
-    rework_t2 [label="Rework (tier 2: glm-4.7)", class="coder-t2", timeout="30m", prompt="@prompts/rework.md.j2"]
-    rework_t3 [label="Rework (tier 3: kimi-for-coding)", class="coder-t3", timeout="30m", prompt="@prompts/rework.md.j2"]
-    rework_t4 [label="Rework (tier 4: glm-5.3)", class="coder-t4", timeout="30m", prompt="@prompts/rework.md.j2"]
+    rework_t1 [label="Rework (tier 1: coders)", class="coder", timeout="30m", max_retries=1, prompt="@prompts/rework.md.j2"]
+    rework_t2 [label="Rework (tier 2: glm-4.7)", class="coder-t2", timeout="30m", max_retries=1, prompt="@prompts/rework.md.j2"]
+    rework_t3 [label="Rework (tier 3: kimi-for-coding)", class="coder-t3", timeout="30m", max_retries=1, prompt="@prompts/rework.md.j2"]
+    rework_t4 [label="Rework (tier 4: glm-5.3)", class="coder-t4", timeout="30m", max_retries=1, prompt="@prompts/rework.md.j2"]
 
     // ---- Extra review rounds (whole branch) ----
     extra_prep [label="Prepare extra review", shape=parallelogram, output_schema="routing",
