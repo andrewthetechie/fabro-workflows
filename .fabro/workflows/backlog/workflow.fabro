@@ -546,7 +546,14 @@ echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\"}}'"]
     // The reviewers inside it are fresh sessions on a fresh diff, which is the point:
     // they run after every task AND every extra-review follow-up has landed, so they
     // judge the branch that is actually going to merge.
-    pr_handoff [label="Hand off to review and merge", shape=parallelogram, output_schema="routing",
+    // No `output_schema="routing"`. This node publishes no context key -- the edge
+    // out of it routes on `outcome=succeeded` alone -- and a command node that
+    // declares the routing schema must print a routing object as the last JSON on
+    // stdout. `echo handoff ready` is not one, so fabro failed the stage on schema
+    // validation, which for a command node is deterministic and non-retryable: no
+    // repair turn, no retry, straight to human_rescue with the PR already open.
+    // Cost one run (01M2R057XAWN8ZG0A7ZV7YPJXK) on 2026-09-17.
+    pr_handoff [label="Hand off to review and merge", shape=parallelogram,
         script="set -e
 PR=$(cat /tmp/fabro/pr_number)
 gh pr view $PR --json number,title,body,url,state,isCrossRepository,headRefName,baseRefName,headRefOid,labels,closingIssuesReferences > /tmp/fabro/pr.json

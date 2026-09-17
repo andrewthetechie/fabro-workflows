@@ -29,6 +29,7 @@ actually lives.
 | `docs/auto-merge/` | A cross-cutting series for the fourth stage (the squash-merge), spanning `backlog` and `pr-review`: kill switches, Conventional-Commits titles, the merge graph, `ci_fix`. `00-overview-and-contracts.md` first. |
 | `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
+| `ops/check-routing-schemas.py` | Catches command-node routing-schema mismatches that `fabro validate` accepts and fabro only reports at runtime. Reads the parsed AST, not the DOT text. |
 | `docs/research_improvements/` | An audit of all three packages against the Fabro source: what we hand-roll that Fabro already does, four operator-observed gaps traced to Fabro lines, and nine settled dead ends. A plan, not a changelog — nothing in it has been applied. `00-overview.md` first. |
 | `.scratch/` | Untracked working notes. |
 
@@ -69,6 +70,20 @@ supplied that way too and still warns. fabro emits one undefined-input diagnosti
 node **attribute**, and both references live in `validate_input`'s `script`, so the
 second is folded into the first. Prove it exists by validating a scratch copy with
 `pr_number` literalised: it then warns about `auto_merge`.)
+
+`fabro validate` does NOT catch a routing-schema mismatch on a command node, in
+either direction, and both fail only at runtime. Run the checker as well:
+
+```sh
+ssh andrew@10.10.0.32 'cd ~/fabro && python3 /tmp/check-routing-schemas.py \
+  /tmp/check/workflows/*/workflow.fabro /tmp/check/workflows/_shared/*/*.fabro'
+```
+
+`ops/check-routing-schemas.py`, deployed alongside the graphs the same way. It exits
+non-zero on any mismatch, so it drops into a pre-push hook. A node that declares
+`output_schema="routing"` and prints no routing object fails deterministically with no
+retry — that cost run `01M2R057XAWN8ZG0A7ZV7YPJXK` at `pr_handoff`, with the PR
+already open.
 
 `fabro validate` does not parse `workflow.toml` strictly. A dotted model key that loses
 its quotes becomes a nested table and the automation fire returns 422, with nothing
