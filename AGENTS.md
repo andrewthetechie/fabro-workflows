@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Two production Fabro workflows and the ops tooling for the host that runs them.
+Three production Fabro workflows and the ops tooling for the host that runs them.
 
 ## Pushing to `main` deploys
 
@@ -23,11 +23,13 @@ actually lives.
 
 | Path | What it is |
 |---|---|
-| `.fabro/workflows/<name>/` | **The only tree the automations read.** Two packages: `backlog`, `pr-review`. `backlog/scripts/` is executed by a live stage as well as by hooks, so changing it is a deploy. |
+| `.fabro/workflows/<name>/` | **The only tree the automations read.** Three packages: `backlog`, `pr-review`, `issue-triage`. `backlog/scripts/` is executed by a live stage as well as by hooks, so changing it is a deploy. |
 | `ops/` | Host replication: compose, profile images, provisioning, branch sweeper. Start at `ops/README.md`. No automation reads this tree. |
 | `docs/pr-review-bridge/` | The task series for the third stage: `backlog` triggers a `pr-review` run on the PR it just opened. `00-overview-and-contracts.md` first. |
-| `docs/auto-merge/` | A cross-cutting series for the fourth stage (the squash-merge), spanning both workflows: kill switches, Conventional-Commits titles, the merge graph, `ci_fix`. `00-overview-and-contracts.md` first. |
+| `docs/auto-merge/` | A cross-cutting series for the fourth stage (the squash-merge), spanning `backlog` and `pr-review`: kill switches, Conventional-Commits titles, the merge graph, `ci_fix`. `00-overview-and-contracts.md` first. |
+| `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
+| `docs/research_improvements/` | An audit of all three packages against the Fabro source: what we hand-roll that Fabro already does, four operator-observed gaps traced to Fabro lines, and nine settled dead ends. A plan, not a changelog — nothing in it has been applied. `00-overview.md` first. |
 | `.scratch/` | Untracked working notes. |
 
 ## Writing, changing, or diagnosing a workflow
@@ -65,6 +67,10 @@ node **attribute**, and both references live in `validate_input`'s `script`, so 
 second is folded into the first. Prove it exists by validating a scratch copy with
 `pr_number` literalised: it then warns about `auto_merge`.)
 
+`IssueTriage` has **no recorded baseline**. It takes no inputs, so it should validate
+clean; record its node and edge counts here after the first container run that
+confirms them.
+
 `fabro validate` does not parse `workflow.toml` strictly. A dotted model key that loses
 its quotes becomes a nested table and the automation fire returns 422, with nothing
 reported until then. Check it separately, on 3.11+ — macOS ships 3.9, which has no
@@ -76,7 +82,8 @@ python3.11 -c 'import tomllib; print(tomllib.load(open("workflow.toml","rb")))'
 
 ## Deployment invariants
 
-These pass `fabro validate` and fail at runtime. Both workflows depend on all of them.
+These pass `fabro validate` and fail at runtime. All three workflows depend on all of
+them, except where a rule names one by id.
 
 | Rule | What happens otherwise |
 |---|---|

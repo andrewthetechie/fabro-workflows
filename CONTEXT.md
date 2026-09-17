@@ -1,13 +1,14 @@
 # Fabro Workflows
 
-Two production Fabro workflow packages (`backlog`, `pr-review`) and the ops tooling for
-the single-tenant host that runs them against four target repositories.
+Three production Fabro workflow packages (`backlog`, `pr-review`, `issue-triage`) and
+the ops tooling for the single-tenant host that runs them against four target
+repositories.
 
 ## Language
 
 **Run**:
 One execution of a workflow graph on the fabro server. Holds at most one LLM session at
-a time; both workflows are sequential graphs.
+a time; all three workflows are sequential graphs.
 _Avoid_: job, execution, pipeline
 
 **Session**:
@@ -17,8 +18,10 @@ runs.
 _Avoid_: connection, request
 
 **Cap**:
-`server.scheduler.max_concurrent_runs` (currently 3), the only hard concurrency control.
+`server.scheduler.max_concurrent_runs` (currently 2), the only hard concurrency control.
 Runs fired beyond the cap queue; they are not rejected (verified 2026-09-16).
+`issue-triage`'s capacity check reads the same number from the other side: it stands
+down at `scheduler_slots_used > 1`, because the triage run is itself one of the two.
 _Avoid_: limit, throttle
 
 **Quiet-exit**:
@@ -27,7 +30,8 @@ seconds, having spawned a sandbox and cloned the repo but started no LLM session
 
 **Automation**:
 A server-side row binding a workflow package to a target repo and environment, with
-triggers (`api:manual`, `schedule:every-15m`). Two per repo, eight total.
+triggers (`api:manual`, `schedule:every-15m`, `schedule:hourly`). Three per repo,
+twelve total.
 _Avoid_: schedule, cron, job
 
 **Bridge**:
