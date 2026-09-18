@@ -21,7 +21,7 @@ locations instead.
 | `docker-compose.yaml` | Runs the `fabro` server container (the only container that is `Up`). |
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
-| `profile-images/` | The four sandbox profile-image Dockerfiles, reconstructed from image layer history and **verified by rebuild** against the live images. |
+| `profile-images/` | The four sandbox profile-image Dockerfiles, `build-images.sh` (clone, warm from real lockfiles, build, verify), `fabro-pg-ensure.sh` (in-sandbox PostgreSQL, because fabro cannot start a service beside a sandbox) and `warm-build-backend.sh`. Start at its `README.md`. |
 | `provision-server-state.sh` | Recreates the twelve **automations** (three per repo: `backlog`, `pr-review`, `issue-triage`) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
 | `provision-litellm-models.sh` | Creates the `high-reasoning` model group and its `kimi-k3` fallback in LiteLLM. Scoped to that one group; the other model rows predate this workflow and are reported, never corrected. The `coders` pool's concurrency tuning is recorded under *Server-side state*, not managed here. |
 | `README.md` | This file — bring-up, install, and replication steps. |
@@ -72,7 +72,11 @@ deployment and drift check are in the main `AGENTS.md`.
    inside the container — do not tidy it into `pr-review/scripts/`; hooks reference
    the `/storage/scripts/` path.
 4. **Sweepers** — `cp fabro-branch-sweep.sh fabro-sandbox-sweep.sh ~/bin/ && chmod +x ~/bin/fabro-branch-sweep.sh ~/bin/fabro-sandbox-sweep.sh`, then install both crons (below).
-5. **Profile images** — build all four; see `profile-images/README.md`.
+5. **Profile images** — `cd profile-images && ./build-images.sh`. It clones each
+   target repository, warms that repository's caches from its own lockfiles, and
+   gates each image on an offline cache check plus a live run of the repository's
+   `.fabro/setup.sh`. Two of the four carry a PostgreSQL server; see
+   `profile-images/README.md`. Install the nightly rebuild cron at the same time.
 6. **Environments** — create the five (`default`, `python`, `python-node`, `ts`,
    `rust-node`) with `POST /api/v1/environments`, matching the table below. Nothing
    in this repo provisions them: `provision-server-state.sh` only reads
@@ -111,6 +115,14 @@ settings.toml only *selects* one; it does not define any.
 | `python-node` | `fabro-python-node:local` | 2 | 4GB | lawncare-saas |
 | `ts` | `fabro-ts:local` | 2 | 4GB | womens-fantasy-sports |
 | `rust-node` | `fabro-rust-node:local` | 4 | 8GB | writers-app |
+
+The images are rebuilt nightly rather than being static artefacts, because their
+value is a dependency cache warmed from each repository's current lockfiles. Add
+to the host crontab, clear of the schedules:
+
+```
+23 3 * * *  /home/andrew/profile-images-build/build-images.sh >> ~/.local/state/profile-images.log 2>&1
+```
 
 **Automations** — two per target repo, one for each workflow, all resolving
 `workflow_source` to `andrewthetechie/fabro-workflows@main` at fire time. Read back

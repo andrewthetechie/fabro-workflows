@@ -30,6 +30,7 @@ actually lives.
 | `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
 | `ops/check-routing-schemas.py` | Catches command-node routing-schema mismatches that `fabro validate` accepts and fabro only reports at runtime. Reads the parsed AST, not the DOT text. |
+| `docs/perf/` | Why a run takes four hours, measured from the run store rather than guessed. `00-overview-and-measurements.md` first — it is also where the source-verified list of what fabro's docker provider **cannot** do lives (no mounts, no service provisioning). `01` is what was applied, `02` is what needs an operator decision, `03` is the per-repository `.fabro/ci.sh` work. |
 | `docs/research_improvements/` | An audit of all three packages against the Fabro source: what we hand-roll that Fabro already does, four operator-observed gaps traced to Fabro lines, and nine settled dead ends. A plan, not a changelog — nothing in it has been applied. `00-overview.md` first. |
 | `.scratch/` | Untracked working notes. |
 
@@ -119,6 +120,7 @@ them, except where a rule names one by id.
 | `[run.environment.env]` interpolates `{{ vars.X }}` only — never `${X}`, never `{{ env.X }}` | `${X}` reaches the sandbox as literal text. A kill switch spelled that way is pinned off forever, and the shakedown cannot tell it from a correctly disarmed one. |
 | The `FABRO_AUTO_MERGE` server variable must exist | An unset `{{ vars.X }}` fails the RunIntent at compile time, so no `pr-review` run is created at all. `provision-server-state.sh` creates it; `off` writes `0` and never deletes. |
 | `POST /variables` upserts, so `provision_variable` is create-if-absent | A re-provision that POSTs unconditionally silently re-arms a switch an operator killed mid-incident. It reports drift instead. |
+| A profile image must satisfy its repository's `.fabro/ci.sh`, not just its `setup.sh` | jelly-swipe's `ci.sh` gained `cd frontend && npm ci` while `fabro-python:local` had no npm. Under `set -euo pipefail` that is exit 127, `validate` exits 1, and every task walks the four-tier rework ladder at 45 minutes a tier against a failure no code change can fix. `ops/profile-images/build-images.sh` gates on this; a hand-built image does not. |
 | `risk` is gate-enforced in `fix_gate`, not merely documented | Without the check the field is optional in practice, PRs quietly stop auto-merging, and the report still says "complete". |
 | The merge node re-reads PR `state` from GitHub immediately before merging | The bridge's double-fire marker is per-run and does not stop a second review fired by hand. Two runs reach `merge`; the loser must report "already handled", not fail. |
 | Every merge-phase command node's unconditional edge lands on `mark_needs_human`; expected blocks are the *conditional* edges | A broken merge — a token without `contents: write`, an API 5xx — otherwise lands in the same quiet "not auto-merged" bucket as a risk-4 PR and stays invisible. |
@@ -149,6 +151,13 @@ ssh andrew@10.10.0.32 'docker cp /tmp/discord-notify.sh \
 scp docs/auto-merge/fabro-fire-pr-review-wrapper.sh \
   andrew@10.10.0.32:~/bin/fabro-fire-pr-review.sh
 ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-fire-pr-review.sh'
+
+# the sandbox profile images. Not a file copy: build-images.sh clones each target
+# repo on the host, warms that repo's caches from its own lockfiles, and gates the
+# result on an offline cache check plus a live run of the repo's .fabro/setup.sh.
+# A failed build leaves the previous image tagged and in use.
+rsync -a --delete ops/profile-images/ andrew@10.10.0.32:~/profile-images-build/
+ssh andrew@10.10.0.32 'cd ~/profile-images-build && ./build-images.sh'
 
 scp ops/docker-compose.yaml andrew@10.10.0.32:~/fabro/docker-compose.yaml
 scp ops/fabro-branch-sweep.sh andrew@10.10.0.32:~/bin/fabro-branch-sweep.sh
