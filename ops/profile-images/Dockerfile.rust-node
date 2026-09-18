@@ -1,23 +1,70 @@
-# fabro-rust-node:local — sandbox profile image for the `rust-node` environment
-# (used by the backlog-writers-app automation).
+# fabro-rust-node:local -- sandbox profile image for the `rust-node` environment
+# (the three writers-app automations).
 #
-# Rust base plus Node and the GTK/WebKit development headers a Tauri desktop
-# build needs. This is the largest profile image (~3.6 GB) and the reason the
-# rust-node environment was raised to 4 CPU / 8 GB — a cold cargo build has to
-# finish inside the validate stage's 20-minute ./.fabro/ci.sh timeout.
-#
-# Reconstructed 2026-09-14 from `docker history --no-trunc fabro-rust-node:local`.
-#
-#   docker build -f Dockerfile.rust-node -t fabro-rust-node:local .
+#   built by build-images.sh; see Dockerfile.python for why the context matters
+
+# ---------------------------------------------------------------------------
+# Builder stage: warm $CARGO_HOME/registry against the real source
+# ---------------------------------------------------------------------------
+# Separate stage so the tracked source that cargo needs to parse writers-app's
+# manifest never reaches a layer of the shipped image. Only the registry is
+# copied forward.
+FROM rust:1.98.1-trixie AS cargo-warm
+COPY warm/src/ /src/
+RUN cd /src/src-tauri && cargo fetch && du -sh /usr/local/cargo/registry
 
 FROM rust:1.98.1-trixie
 
-RUN apt-get update && apt-get install -y --no-install-recommends git jq curl \
-    nodejs npm wget file build-essential pkg-config \
+ARG GH_VERSION=2.100.0
+# .github/workflows/ci.yml sets up node-version: 22 in every job that touches the
+# frontend, and release.yml does the same.
+ARG NODE_VERSION=22.23.2
+
+# ---------------------------------------------------------------------------
+# Toolchain
+# ---------------------------------------------------------------------------
+# Rust plus the GTK/WebKit development headers a Tauri desktop build needs. This
+# is the largest profile image and the reason the rust-node environment runs at
+# 4 CPU / 8 GB -- a cold cargo build has to finish inside validate's 20-minute
+# ./.fabro/ci.sh timeout.
+#
+# Node comes from the official tarball now, not from Debian's `nodejs` package.
+# trixie ships 20.19.2, and writers-app's CI pins 22 -- so ci.sh's typecheck,
+# lint, test:unit and build have been running on a different major from the CI
+# they are written to mirror. `npm` moves with it: the Debian package carried
+# npm 9.2.0 against node 20, which is not a pairing npm itself ships.
+RUN apt-get update && apt-get install -y --no-install-recommends git jq curl xz-utils \
+    wget file build-essential pkg-config \
     libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
     librsvg2-dev libssl-dev libxdo-dev libsoup-3.0-dev \
   && rm -rf /var/lib/apt/lists/* \
   && rustup component add rustfmt clippy \
-  && curl -fsSL -o /tmp/gh.tgz https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_amd64.tar.gz \
+  && curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
   && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
-  && gh --version && cargo -V
+  && curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+  && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+       --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE' \
+  && rm /tmp/node.tar.xz \
+  && gh --version && cargo -V && node -v && npm -v
+
+# ---------------------------------------------------------------------------
+# Cache layout -- see common.env.md
+# ---------------------------------------------------------------------------
+# CARGO_HOME is NOT relocated. The rust base puts cargo's own binaries and the
+# rustup shims under it, so moving it would move the toolchain. The registry
+# cache inside it is warmed in place instead.
+ENV NPM_CONFIG_CACHE=/opt/cache/npm
+
+# ---------------------------------------------------------------------------
+# Warm the caches from the repository's own lockfiles
+# ---------------------------------------------------------------------------
+# npm is warmed here; cargo's registry is warmed in the builder stage above and
+# copied in, because `cargo fetch` needs the real source to parse a manifest that
+# declares 20-odd targets and the shipped image should not carry that source.
+COPY warm/ /tmp/warm/
+RUN cd /tmp/warm/repo \
+  && npm ci --ignore-scripts \
+  && rm -rf node_modules /tmp/warm
+
+COPY --from=cargo-warm /usr/local/cargo/registry /usr/local/cargo/registry
+RUN du -sh /opt/cache/npm "$CARGO_HOME/registry"

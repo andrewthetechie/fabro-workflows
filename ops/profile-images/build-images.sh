@@ -38,6 +38,15 @@ rust-node:writers-app:fabro-rust-node:local
 # else is copied: no source, no history, no .env, no secrets.
 MANIFESTS='(^|/)(pyproject\.toml|uv\.lock|\.python-version|package\.json|package-lock\.json|bun\.lock|bun\.lockb|Cargo\.toml|Cargo\.lock|rust-toolchain(\.toml)?)$'
 
+# Profiles whose warm step needs the repository's tracked SOURCE as well, copied
+# to warm/src/. Only cargo does: `cargo fetch` parses every target a Cargo.toml
+# declares and refuses the manifest when their default paths are missing --
+# writers-app's produced "can't find `summarize` test at `tests/summarize.rs`"
+# and 19 more like it, and a stubbed tree is a losing game against 20 declared
+# targets. The Dockerfiles that use warm/src/ do so in a BUILDER stage and copy
+# only the warmed registry forward, so no source reaches the shipped image.
+NEEDS_SOURCE='rust-node'
+
 # To stderr, not stdout: sync_repo and assemble_context are read with $(...)
 # and anything they print on stdout becomes part of the sha or the context path.
 log() { printf '%s  %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
@@ -75,6 +84,12 @@ assemble_context() {
     n=$((n + 1))
   done
   [ "$n" -gt 0 ] || die "$repo: no manifest files matched; the cache would be empty"
+  for want_src in $NEEDS_SOURCE; do
+    [ "$want_src" = "$profile" ] || continue
+    mkdir -p "$ctx/warm/src"
+    git -C "$src" archive --format=tar HEAD | tar -x -C "$ctx/warm/src"
+    log "context $profile: + tracked source (cargo needs it to parse the manifest)"
+  done
   cp "$HERE/warm-build-backend.sh" "$ctx/warm/warm-build-backend.sh"
   # Sits at the context root, not under warm/, because the Dockerfiles COPY it to
   # /usr/local/bin rather than running it during the warm step.
