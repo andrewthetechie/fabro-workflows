@@ -13,7 +13,20 @@
 set -eu
 ROOT=${1:?usage: warm-build-backend.sh <context root>}
 
-REQS=$(find "$ROOT" -name pyproject.toml -print0 | xargs -0 -r python3 -c '
+# Not every image has a system python3 -- the node-based profiles get theirs from
+# uv's managed downloads -- so resolve an interpreter rather than assuming one.
+# `uv run --no-project` ignores the pyproject we are standing next to, which would
+# otherwise make uv try to resolve the project before running anything.
+if command -v python3 >/dev/null 2>&1; then
+  PY="python3"
+elif command -v uv >/dev/null 2>&1; then
+  PY="uv run --no-project --quiet python"
+else
+  echo "warm-build-backend: no python interpreter available" >&2
+  exit 1
+fi
+
+REQS=$(find "$ROOT" -name pyproject.toml -print0 | xargs -0 -r $PY -c '
 import sys, tomllib
 seen = []
 for path in sys.argv[1:]:

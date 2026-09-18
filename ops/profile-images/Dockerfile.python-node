@@ -1,25 +1,85 @@
-# fabro-python-node:local — sandbox profile image for the `python-node` environment
-# (used by the backlog-lawncare-saas automation).
+# fabro-python-node:local -- sandbox profile image for the `python-node`
+# environment (the three lawncare-saas automations).
 #
-# Node is the base; Python comes from uv's managed downloads at runtime
-# (UV_PYTHON_DOWNLOADS=true), which is why this image has no system python.
-#
-# Reconstructed 2026-09-14 from `docker history --no-trunc fabro-python-node:local`.
-# Base is the SLIM variant: the live image is 593 MB and has no system python3,
-# which is what distinguishes node:22.23.2-bookworm-slim from the full tag
-# (full is ~1.76 GB and ships python 3.11.2 via buildpack-deps).
-#
-#   docker build -f Dockerfile.python-node -t fabro-python-node:local .
+#   built by build-images.sh; see Dockerfile.python for why the context matters
 
 FROM node:22.23.2-bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends git jq curl ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && curl -LsSf https://astral.sh/uv/install.sh | sh \
-  && curl -fsSL -o /tmp/gh.tgz https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_amd64.tar.gz \
-  && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
-  && gh --version
+ARG GH_VERSION=2.100.0
+# lawncare-saas: requires-python >=3.13, .python-version says 3.13, and
+# .github/workflows/test.yml runs a `postgres:17` service.
+ARG PYTHON_VERSION=3.13
+ARG PG_MAJOR=17
 
-# The astral installer puts uv in /root/.local/bin, which is not on the base PATH.
+# ---------------------------------------------------------------------------
+# Toolchain
+# ---------------------------------------------------------------------------
+# The node base is deliberately the SLIM variant and has no system python. Python
+# comes from uv's managed downloads, which is why UV_PYTHON_DOWNLOADS stays true.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git jq curl ca-certificates gnupg \
+  && curl -LsSf https://astral.sh/uv/install.sh | sh \
+  && curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+  && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
+  && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# PostgreSQL 17 -- server, not just the client
+# ---------------------------------------------------------------------------
+# lawncare-saas's `.fabro/ci.sh` says "pytest needs Postgres -> excluded here".
+# Nothing in fabro can supply one: sandbox "services" only discovers listening
+# ports, the driver's sidecar support is discarded by fabro's hardcoded provider
+# config, and there is no Docker-in-Docker for the repository's own
+# `docker run postgres:17` path. So the server ships in the image and
+# /usr/local/bin/fabro-pg-ensure runs it as an ordinary process.
+#
+# PGDG, not Debian: bookworm ships PostgreSQL 15 and the repository's CI service
+# is `postgres:17`. Testing against a different major is not testing.
+RUN install -d /usr/share/postgresql-common/pgdg \
+  && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+       https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+  && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+       > /etc/apt/sources.list.d/pgdg.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY fabro-pg-ensure.sh /usr/local/bin/fabro-pg-ensure
+RUN chmod +x /usr/local/bin/fabro-pg-ensure
+
+# initdb at build time, not on first call. A cold initdb is several seconds of
+# every run; a baked cluster starts in about one.
+ENV PGDATA=/var/lib/postgresql/fabro
+RUN mkdir -p "$PGDATA" && chown postgres:postgres "$PGDATA" && chmod 0700 "$PGDATA" \
+  && su postgres -s /bin/sh -c "/usr/lib/postgresql/${PG_MAJOR}/bin/initdb -D '$PGDATA' -U postgres --auth=trust --auth-host=trust" >/dev/null \
+  && echo "postgres ${PG_MAJOR} cluster initialised at $PGDATA"
+
+# ---------------------------------------------------------------------------
+# Cache layout -- see common.env.md
+# ---------------------------------------------------------------------------
+# The astral installer puts uv in /root/.local/bin, which is not on the base PATH,
+# and fabro evaluates commands in a NON-LOGIN shell, so nothing else will add it.
 ENV PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin \
-    UV_PYTHON_DOWNLOADS=true
+    UV_PYTHON_DOWNLOADS=true \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python \
+    UV_CACHE_DIR=/opt/cache/uv \
+    UV_LINK_MODE=copy \
+    NPM_CONFIG_CACHE=/opt/cache/npm
+
+# Bake the interpreter itself. Without this, every single run of every
+# lawncare-saas automation downloads and unpacks a CPython before it can install
+# anything, because this base has no system python for uv to find.
+RUN uv python install "${PYTHON_VERSION}" && uv python list --only-installed
+
+# ---------------------------------------------------------------------------
+# Warm the caches from the repository's own lockfiles
+# ---------------------------------------------------------------------------
+COPY warm/ /tmp/warm/
+RUN cd /tmp/warm/repo \
+  && uv sync --frozen --no-install-project \
+  && rm -rf .venv \
+  && sh /tmp/warm/warm-build-backend.sh /tmp/warm/repo \
+  && npm ci --ignore-scripts \
+  && rm -rf node_modules \
+  && rm -rf /tmp/warm /tmp/buildreqs \
+  && du -sh /opt/cache/* /opt/uv-python

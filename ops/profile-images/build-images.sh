@@ -76,6 +76,9 @@ assemble_context() {
   done
   [ "$n" -gt 0 ] || die "$repo: no manifest files matched; the cache would be empty"
   cp "$HERE/warm-build-backend.sh" "$ctx/warm/warm-build-backend.sh"
+  # Sits at the context root, not under warm/, because the Dockerfiles COPY it to
+  # /usr/local/bin rather than running it during the warm step.
+  cp "$HERE/fabro-pg-ensure.sh" "$ctx/fabro-pg-ensure.sh"
   log "context $profile: $n manifest file(s)"
   printf '%s' "$ctx"
 }
