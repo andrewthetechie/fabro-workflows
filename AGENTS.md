@@ -96,6 +96,17 @@ reported until then. Check it separately, on 3.11+ — macOS ships 3.9, which ha
 python3.11 -c 'import tomllib; print(tomllib.load(open("workflow.toml","rb")))'
 ```
 
+`fabro preflight` is **not** an offline check: its `LLM` check makes a real completion —
+its detail line reads `Probe: basic generation` — so it fails with `server request timed
+out after 30s` whenever a coder box is busy, which on this host is most of the time. The
+summary it prints for that check is the model it probed, so preflight *is* the way to see
+which model a stylesheet rule resolved to at real run time. Read a timeout there as
+congestion, not as a graph fault; `fabro validate` and the routing checker are the gates
+that need no box, and they are the ones to run before every push. Two gotchas when
+preflighting `pr-review`: supply `-I pr_number=1` or it stops on the deliberate unbound
+`pr_number`, and `-I auto_merge=0` as well or it then stops on the second unbound input in
+the same `script` attribute.
+
 ## Deployment invariants
 
 These pass `fabro validate` and fail at runtime. All three workflows depend on all of

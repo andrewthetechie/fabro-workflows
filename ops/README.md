@@ -450,7 +450,7 @@ and seconds later `fabro model test -p litellm -m coders-a` answered `ok` where 
 answered `Unknown model: coders-a` before.)
 
 Confirmation that the enforced cap is still 2, and what it looks like when it is
-reached — the day the overlay was edited to 4:
+reached — observed 2026-09-18, the day the overlay was edited to 4:
 
 ```
 GET /api/v1/system/info   ->  {"active": 3, "scheduler_slots_used": 2, "total": 12}
