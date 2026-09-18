@@ -156,8 +156,9 @@ other run is holding and waits out its whole turn. Sandcastle avoided this by
 locking one repo to one instance; the two new groups are the same fix, applied
 per run by the scheduler rather than per repo.
 
-Two things about these rows are invisible to every read API, and both break a
-row silently rather than loudly:
+Two things about these rows are invisible to every read API, and a third gates
+whether a run can reach them at all. All three break a row silently rather than
+loudly:
 
 - **`litellm_params.api_key` is mandatory and `GET /v1/model/info` never shows
   it.** The boxes are plain-http llama.cpp with no auth, so the value is a
@@ -174,6 +175,19 @@ row silently rather than loudly:
   key. Both names are now on the list. `provision-litellm-models.sh` documents
   the same trap for `high-reasoning`, which cost a live `issue-triage` fire on
   2026-09-16.
+- **fabro will not route to a model its own catalog does not list**, and these
+  rows are *not enough on their own* to pin a run. LiteLLM serves `coders-a`, but
+  a run that asks for it fails before any call is made: `fabro model test -p
+  litellm -m coders-a` answers `× Unknown model: coders-a` (verified
+  2026-09-18). Both names need an `[llm.providers.litellm.models."…"]` block in
+  `settings.toml.example` *and* in the live `/storage/.home/settings.toml`,
+  applied with `docker compose restart fabro`. That restart fails every in-flight
+  run (ADR 0002), so it has to wait for an idle host and belongs with the
+  stylesheet change in `docs/scheduler/05-coder-pool-stylesheets.md`, not with
+  this provisioning run. Full recipe: `docs/issue-triage/02-fabro-model-catalog.md`.
+  Note that `fabro validate` passes a stylesheet naming an unlisted model —
+  checked by rewriting `.coder` to a literal `coders-a` in a scratch copy — so
+  validation cannot stand in for the catalog entry.
 
 Changing any of this needs the **master key**, not `FABRO_LITELLM_KEY`: that one is an
 `internal_user` and `POST /model/update` answers 403. The master key is the
