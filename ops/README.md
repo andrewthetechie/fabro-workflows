@@ -24,6 +24,7 @@ locations instead.
 | `profile-images/` | The four sandbox profile-image Dockerfiles, `build-images.sh` (clone, warm from real lockfiles, build, verify), `fabro-pg-ensure.sh` (in-sandbox PostgreSQL, because fabro cannot start a service beside a sandbox) and `warm-build-backend.sh`. Start at its `README.md`. |
 | `provision-server-state.sh` | Recreates the twelve **automations** (three per repo: `backlog`, `pr-review`, `issue-triage`) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
 | `provision-litellm-models.sh` | Creates the `high-reasoning` model group and its `kimi-k3` fallback in LiteLLM. Scoped to that one group; the other model rows predate this workflow and are reported, never corrected. The `coders` pool's concurrency tuning is recorded under *Server-side state*, not managed here. |
+| `provision-coder-groups.sh` | Creates the per-box `coders-a` and `coders-b` model groups that the coder scheduler pins a run to, and adds both names to the fabro key's model allowlist. Leaves the load-balanced `coders` rows alone. Idempotent, `DRY_RUN=1` by default. |
 | `README.md` | This file — bring-up, install, and replication steps. |
 
 **Not here, deliberately:** `fire-pr-review.sh` is tracked at
@@ -124,28 +125,57 @@ to the host crontab, clear of the schedules:
 23 3 * * *  /home/andrew/profile-images-build/build-images.sh >> ~/.local/state/profile-images.log 2>&1
 ```
 
-**LiteLLM `coders` deployments** — two rows, one per llama.cpp box, both
-`openai/deepseek-v4-flash-0731-iq3-xxs`:
+**LiteLLM coder deployments** — four rows, all
+`openai/deepseek-v4-flash-0731-iq3-xxs`: the load-balanced `coders` group, and
+one pinned group per box.
 
-| deployment | api_base | timeout | max_parallel_requests |
-|---|---|---|---|
-| `ee9cf2cb…` | `http://10.10.0.29:8000/v1` | **600.0** | 1 |
-| `c4504835…` | `http://10.10.0.56:8000/v1` | **600.0** | 1 |
+| model_name | deployment | api_base | timeout | max_parallel_requests |
+|---|---|---|---|---|
+| `coders` | `ee9cf2cb…` | `http://10.10.0.29:8000/v1` | **600.0** | 1 |
+| `coders` | `c4504835…` | `http://10.10.0.56:8000/v1` | **600.0** | 1 |
+| `coders-a` | `8be38bd3…` | `http://10.10.0.29:8000/v1` | **600.0** | 1 |
+| `coders-b` | `ba5c2fc4…` | `http://10.10.0.56:8000/v1` | **600.0** | 1 |
 
-`timeout` was `120.0` on both until 2026-09-18. fabro's coder turns averaged
-**95 seconds**, so the gateway was cutting the long ones — that is where the
+`coders-a` and `coders-b` were created 2026-09-18 by
+`./provision-coder-groups.sh`. They exist so the coder scheduler can pin a run to
+one box by name — a run input selects a stylesheet model, and a model is the only
+per-run routing lever fabro has (`docs/scheduler/00-overview-and-contracts.md`,
+finding 3). The two `coders` rows are untouched and remain the fallback for every
+unpinned and hand-fired run.
+
+`timeout` was `120.0` on both `coders` rows until 2026-09-18. fabro's coder turns
+averaged **95 seconds**, so the gateway was cutting the long ones — that is where the
 `502 Bad Gateway` responses on `coders` came from, and the agent then retried the
 whole turn. 600s is generous against the measured turn distribution while still
 releasing llama.cpp's single slot on a genuinely hung upstream.
 
 `max_parallel_requests = 1` mirrors llama.cpp's one slot per box: whoever holds
-it blocks everything else for a full turn. **There is no affinity**, so with two
-concurrent runs a request routinely lands on the slot the other run is holding
-and waits out its whole turn. Sandcastle avoided this by locking one repo to one
-instance. Splitting `coders` into per-box groups and pinning environments is
-designed but not built — see `../docs/perf/02-needs-your-decision.md`.
+it blocks everything else for a full turn. `coders` itself still has no
+affinity, so with two concurrent runs a request routinely lands on the slot the
+other run is holding and waits out its whole turn. Sandcastle avoided this by
+locking one repo to one instance; the two new groups are the same fix, applied
+per run by the scheduler rather than per repo.
 
-Changing these needs the **master key**, not `FABRO_LITELLM_KEY`: that one is an
+Two things about these rows are invisible to every read API, and both break a
+row silently rather than loudly:
+
+- **`litellm_params.api_key` is mandatory and `GET /v1/model/info` never shows
+  it.** The boxes are plain-http llama.cpp with no auth, so the value is a
+  placeholder — but a row built from the `/v1/model/info` view alone has no
+  `api_key` field at all, and then *every* call to it fails with
+  `500 litellm.AuthenticationError: The api_key client option must be set`.
+  That happened on the first pass of `provision-coder-groups.sh`, which copied
+  the nine visible fields and watched both new groups answer 500. `/model/new`
+  with a dummy `api_key` fixes it; confirm with a real completion, not a listing.
+- **A virtual key's `models` allowlist gates model names independently of the
+  rows.** `LITELLM_FABRO_KEY` listed seven models and neither new one, so a run
+  pinned to a box would have failed with `403 key not allowed to access model`
+  — verified 2026-09-18 by calling `deepseek`, a model that exists, with that
+  key. Both names are now on the list. `provision-litellm-models.sh` documents
+  the same trap for `high-reasoning`, which cost a live `issue-triage` fire on
+  2026-09-16.
+
+Changing any of this needs the **master key**, not `FABRO_LITELLM_KEY`: that one is an
 `internal_user` and `POST /model/update` answers 403. The master key is the
 sealed secret `litellm-secrets.masterkey`, readable from the running pod:
 
@@ -154,11 +184,23 @@ kubectl -n litellm exec deploy/litellm -- printenv PROXY_MASTER_KEY
 ```
 
 Send the **full** current `litellm_params` with only the field you mean to
-change. `POST /model/update` replaces the map, so a partial body drops `api_base`
-and `max_parallel_requests`. These two rows have no credential attached
-(`GET /credentials/by_model/{id}` is empty) because they are plain-http LAN
-endpoints — but a z.ai row does, and rebuilding one from `/model/info` output
-silently creates a model with no key.
+change. `POST /model/update` replaces the map, so a partial body drops `api_base`,
+`api_key` and `max_parallel_requests`.
+
+Do not rebuild that map from `/v1/model/info`: it omits `api_key`, and a row
+without one lists fine and 500s on every call. `GET /credentials/by_model/{id}`
+is not a substitute either — it is empty for all four coder rows even though
+their `litellm_params.api_key` is set. The field's *presence* (not its value,
+which is encrypted at rest) is visible only in the database:
+
+```sh
+kubectl -n litellm exec litellm-db-0 -- psql -U litellm -d litellm -A -F'|' -c \
+  "select model_name, k from \"LiteLLM_ProxyModelTable\", jsonb_object_keys(litellm_params) k \
+   where model_name like 'coders%' order by 1, 2;"
+```
+
+A z.ai row additionally has a real credential behind it, and rebuilding it from
+`/model/info` output silently creates a model with no key.
 
 Apply it while the target box's slot is idle (`GET http://<box>:8000/slots`,
 `is_processing == 0`) — that gap between turns is the safe window when a run is
