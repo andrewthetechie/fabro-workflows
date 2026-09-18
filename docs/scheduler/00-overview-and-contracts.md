@@ -212,6 +212,46 @@ On scheduler start: read lease rows; for each, query fabro. A run that is termin
 that fabro has never heard of, releases its lease. Then reconcile GitHub: any issue
 labelled `agent-in-progress` with no live lease is un-labelled and requeued.
 
+## Before you start
+
+Read `AGENTS.md` first — it carries the deployment invariants, the validation
+recipe and the rule that **pushing to `main` deploys**. Then read this file, then
+your own task file. You should not need anything else.
+
+What each frontier task needs, so you find out now rather than halfway through:
+
+| Draft | Access it needs | How to get it |
+|---|---|---|
+| 01 | LiteLLM **master key** (`PROXY_ADMIN`). `FABRO_LITELLM_KEY` is an `internal_user` and `POST /model/update` answers **403**. | `kubectl -n litellm exec deploy/litellm -- printenv PROXY_MASTER_KEY` (context `admin@nauvoo`) |
+| 02 | fabro dev token; `ssh andrew@10.10.0.32` | `ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/server.dev-token'` |
+| 03 | fabro dev token; ssh; container settings overlay at `/storage/.home/settings.toml` | same as 02 |
+| 04 | ssh + docker on the host. No secrets. | — |
+
+Later drafts additionally need a **GitHub token** with `issues: write` on the four
+target repos (drafts 06, 08, 09, 10).
+
+There is no `fabro` binary on this Mac. Every `fabro validate` runs inside the
+container — `AGENTS.md` has the rsync/`docker cp` recipe and the current baselines.
+
+**This repository is public.** No token, key or webhook URL belongs in a tracked
+file, a comment, or a command's output.
+
+### Validating before you push
+
+Whatever your task touches, if it changes anything under `.fabro/`:
+
+```sh
+rsync -a --delete ~/Documents/code/fabro-workflows/.fabro/ andrew@10.10.0.32:/tmp/check/
+ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp /tmp/check fabro-fabro-1:/tmp/check'
+ssh andrew@10.10.0.32 'cd ~/fabro && for w in backlog pr-review issue-triage; do \
+  docker compose exec -T fabro fabro validate /tmp/check/workflows/$w/workflow.toml; done'
+ssh andrew@10.10.0.32 'cd ~/fabro && python3 /tmp/check-routing-schemas.py \
+  /tmp/check/workflows/*/workflow.fabro /tmp/check/workflows/_shared/*/*.fabro'
+```
+
+`fabro validate` does **not** catch a routing-schema mismatch on a command node,
+in either direction; both fail only at runtime. Run the checker too.
+
 ## Task series
 
 Fourteen drafts. The initial frontier is 01, 02, 03 and 04 — fully parallel.
