@@ -116,7 +116,14 @@ FAILED=0
 # tested, so a re-run that creates nothing issues no completion at all.
 CREATED_MODELS=""
 
-MODELS_JSON="/tmp/provision_coder_groups_models.json"
+# One private work directory, removed on every exit path. Fixed /tmp names would
+# be predictable and world-writable: `curl -o` follows a symlink, so a stale or
+# planted file at a known path is both a way to poison what this script reads back
+# and a way to make it write somewhere it should not.
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/provision-coder-groups.XXXXXX")
+trap 'rm -rf "$WORK_DIR"' EXIT HUP INT TERM
+
+MODELS_JSON="$WORK_DIR/models.json"
 
 # Read the model list once, up front. Fetch first, then filter: piping curl
 # straight into jq takes jq's exit status, so a gateway outage would look like
@@ -182,7 +189,7 @@ provision_coder_group() {
     return 0
   fi
 
-  c_http=$(curl -sS -m 15 -o /tmp/provision_coder_group_out.json -w '%{http_code}' \
+  c_http=$(curl -sS -m 15 -o "$WORK_DIR/model-new.json" -w '%{http_code}' \
     -X POST -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
     -d "$c_payload" "$API_URL/model/new" 2>/dev/null) || c_http=000
 
@@ -192,7 +199,7 @@ provision_coder_group() {
       CREATED_MODELS="$CREATED_MODELS $c_name"
       ;;
     *)
-      echo "FAILED to create $c_name: $(describe_failure "$c_http" /tmp/provision_coder_group_out.json)" >&2
+      echo "FAILED to create $c_name: $(describe_failure "$c_http" "$WORK_DIR/model-new.json")" >&2
       return 1
       ;;
   esac
@@ -212,7 +219,7 @@ verify_serves() {
   s_payload=$(jq -nc --arg m "$s_name" \
     '{model:$m, messages:[{role:"user",content:"ok"}], max_tokens:1, temperature:0}')
 
-  s_http=$(curl -sS -m 30 -o /tmp/provision_coder_smoke.json -w '%{http_code}' \
+  s_http=$(curl -sS -m 30 -o "$WORK_DIR/smoke.json" -w '%{http_code}' \
     -X POST -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
     -d "$s_payload" "$API_URL/v1/chat/completions" 2>/dev/null) || s_http=000
 
@@ -224,7 +231,7 @@ verify_serves() {
       echo "INCONCLUSIVE: $s_name did not answer within 30s; its box is probably mid-turn. Call it by hand once the box is idle." >&2
       ;;
     *)
-      echo "FAILED: $s_name answered HTTP $s_http: $(head -c 300 /tmp/provision_coder_smoke.json 2>/dev/null || true)" >&2
+      echo "FAILED: $s_name answered HTTP $s_http: $(head -c 300 "$WORK_DIR/smoke.json" 2>/dev/null || true)" >&2
       return 1
       ;;
   esac
@@ -268,15 +275,15 @@ grant_key_access() {
     return 0
   fi
 
-  k_http=$(curl -sS -m 15 -o /tmp/provision_coder_keyinfo.json -w '%{http_code}' \
+  k_http=$(curl -sS -m 15 -o "$WORK_DIR/key-info.json" -w '%{http_code}' \
     -H "$AUTH_HEADER" "$API_URL/key/info?key=$FABRO_KEY" 2>/dev/null) || k_http=000
 
   if [ "$k_http" != 200 ]; then
-    echo "FAILED to read the fabro key's info: $(describe_failure "$k_http" /tmp/provision_coder_keyinfo.json)" >&2
+    echo "FAILED to read the fabro key's info: $(describe_failure "$k_http" "$WORK_DIR/key-info.json")" >&2
     return 1
   fi
 
-  k_models=$(jq -c '.info.models // []' /tmp/provision_coder_keyinfo.json 2>/dev/null || echo '[]')
+  k_models=$(jq -c '.info.models // []' "$WORK_DIR/key-info.json" 2>/dev/null || echo '[]')
 
   if [ "$k_models" = "[]" ]; then
     echo "already present: the fabro key is unrestricted (models: []), both new names are callable"
@@ -302,7 +309,7 @@ grant_key_access() {
   k_payload=$(jq -nc --arg key "$FABRO_KEY" --argjson models "$k_updated" \
     '{key: $key, models: $models}')
 
-  k_up_http=$(curl -sS -m 15 -o /tmp/provision_coder_keyupdate.json -w '%{http_code}' \
+  k_up_http=$(curl -sS -m 15 -o "$WORK_DIR/key-update.json" -w '%{http_code}' \
     -X POST -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
     -d "$k_payload" "$API_URL/key/update" 2>/dev/null) || k_up_http=000
 
@@ -311,7 +318,7 @@ grant_key_access() {
       echo "granted: the fabro key can now call $k_missing"
       ;;
     *)
-      echo "FAILED to grant the fabro key access to $k_missing: $(describe_failure "$k_up_http" /tmp/provision_coder_keyupdate.json)" >&2
+      echo "FAILED to grant the fabro key access to $k_missing: $(describe_failure "$k_up_http" "$WORK_DIR/key-update.json")" >&2
       return 1
       ;;
   esac
@@ -351,7 +358,14 @@ provision_coder_group \
 verify_coder_row "coders" "http://10.10.0.29:8000/v1"
 verify_coder_row "coders" "http://10.10.0.56:8000/v1"
 
-grant_key_access || true
+# Counted like every other step, NOT `|| true`. The unset-key case returns 0 on its
+# own after saying SKIPPED, so swallowing a non-zero here could only ever hide a real
+# failure -- and the one it would hide is the worst one this script has. A key that
+# cannot see `coders-a` answers `403 key not allowed to access model` on every pinned
+# turn, which is the trap the header opens with and which cost a live issue-triage
+# fire on 2026-09-16. Exiting 0 on it would tell a wrapper, and the deployment log,
+# that the pin is ready when it is not.
+grant_key_access || FAILED=$((FAILED+1))
 
 # Only rows created just now. Nothing was created on a re-run, so a re-run
 # issues no completion and no POST at all.
