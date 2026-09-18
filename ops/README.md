@@ -18,9 +18,10 @@ locations instead.
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). Deterministic; see its header comments. |
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
 | `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
-| `docker-compose.yaml` | Runs the `fabro` server container (the only container that is `Up`). |
+| `docker-compose.yaml` | Runs both containers: the `fabro` server and the `scheduler` (the coder scheduler, built from `./scheduler/`). It is also the only place the scheduler's port and volume are declared. |
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
+| `scheduler/` | The **coder scheduler**: a FastAPI service that owns admission to the two coder instances, so four uncoordinated automations stop fighting over two single-slot boxes. Reads `repos.toml`, serves `/health`; the GitHub client, the fabro client and the queue are drafts 06, 07 and 08. Deploy and verify under *The coder scheduler* below. |
 | `profile-images/` | The four sandbox profile-image Dockerfiles, `build-images.sh` (clone, warm from real lockfiles, build, verify), `fabro-pg-ensure.sh` (in-sandbox PostgreSQL, because fabro cannot start a service beside a sandbox) and `warm-build-backend.sh`. Start at its `README.md`. |
 | `provision-server-state.sh` | Recreates the twelve **automations** (three per repo: `backlog`, `pr-review`, `issue-triage`) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
 | `provision-litellm-models.sh` | Creates the `high-reasoning` model group and its `kimi-k3` fallback in LiteLLM. Scoped to that one group; the other model rows predate this workflow and are reported, never corrected. The `coders` pool's concurrency tuning is recorded under *Server-side state*, not managed here. |
@@ -100,6 +101,12 @@ deployment and drift check are in the main `AGENTS.md`.
    any `backlog` automation fires.
 10. **Contract scripts** (`.fabro/setup.sh`, `.fabro/ci.sh`) live in each target repo,
    not this repo. Every target repo must have both or every run fails at `prep`.
+11. **Coder scheduler** — `rsync -a --delete ops/scheduler/ andrew@<HOST>:~/fabro/scheduler/`
+   then `cd ~/fabro && docker compose up -d --build scheduler`. It builds
+   `fabro-scheduler:local` from `./scheduler`, resolved relative to the compose file, which
+   is why the tree has to sit beside it. Nothing from steps 3 or 9 is needed for `/health`;
+   the GitHub and fabro credentials are drafts 06 and 07's. See *The coder scheduler*
+   below.
 
 ## Server-side state (not in `settings.toml`)
 
@@ -422,6 +429,95 @@ full trigger set and the schedule expressions, and reports zero drift.
 
 `provision-server-state.sh` recreates the automations. The environments above are
 created by hand (step 6).
+
+## The coder scheduler
+
+`ops/scheduler/` — a FastAPI service that owns admission to the two llama.cpp coder
+instances. It inventories `agent`-labelled issues from GitHub, orders them, and creates
+one `backlog` run at a time, so four automations on independent schedules stop fighting
+over two single-slot boxes. Decisions and the contracts each later draft consumes:
+`../docs/scheduler/00-overview-and-contracts.md`.
+
+Today it is the **skeleton** (draft 04): it reads `repos.toml`, serves `/health`, and does
+nothing else. There is no GitHub client, no fabro client and no queue yet. Nothing an
+automation reads changes when this tree changes — it is `ops/`, not `.fabro/`.
+
+It is a second service in the **same compose project**, so `docker compose ps` shows the
+whole factory in one place and a host rebuild brings it back with everything else.
+
+| File | What it is |
+|---|---|
+| `scheduler/repos.toml` | The work list: one `[[repo]]` table per target repository. `priority` is a signed integer and **smallest wins**; `environment_id` names a fabro environment; `enabled = false` keeps the row out of scheduling. |
+| `scheduler/src/fabro_scheduler/config.py` | The parser. Fails loudly: a duplicate repo name, an unknown key, a missing `priority`, a `true` where an integer belongs — each is an error naming the key, never a silently-applied default. |
+| `scheduler/src/fabro_scheduler/app.py` | `/health` and the entrypoint. Validates the config *before* binding the port, so a broken file fails the container healthcheck instead of serving nothing. |
+| `scheduler/tests/` | `uv run pytest` from `ops/scheduler/`. Pure — no network, no container, no host. |
+| `scheduler/Dockerfile` | Two stages. Runs as uid 1000, bakes `repos.toml` in, and creates `/data` for the SQLite file drafts 06+ will use. |
+
+### Deploying it
+
+```sh
+# a local `uv run pytest` leaves a `.venv` holding Mac binaries. It never reaches the
+# image (.dockerignore), but there is no reason to send it to the host on every deploy.
+rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+  ops/scheduler/ andrew@10.10.0.32:~/fabro/scheduler/
+scp ops/docker-compose.yaml   andrew@10.10.0.32:~/fabro/docker-compose.yaml
+ssh andrew@10.10.0.32 'cd ~/fabro && docker compose up -d --build scheduler'
+```
+
+`up -d scheduler` names **one** service, so it never recreates `fabro` — which matters,
+because a fabro restart fails every in-flight run. `--build` is what picks up a code or
+`repos.toml` change; without it compose reuses the `fabro-scheduler:local` image that is
+already there. `rsync --delete` is safe because nothing in `~/fabro/scheduler/` is
+generated on the host.
+
+### Verifying it
+
+```sh
+ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'   | diff - ops/docker-compose.yaml
+ssh andrew@10.10.0.32 'cat ~/fabro/scheduler/repos.toml'  | diff - ops/scheduler/repos.toml
+ssh andrew@10.10.0.32 'cd ~/fabro && docker compose ps scheduler'
+curl -fsS http://10.10.0.32:32280/health | jq -r '.repos[] | "\(.priority)  \(.name)"'
+```
+
+The last one prints the four rows in scheduling order. The port is **32280**, beside
+fabro's 32276; both are LAN-only and unauthenticated (decision 16), consistent with
+fabro's own API. `/health` therefore publishes neither `fabro_api_url` nor anything from
+the container environment.
+
+A duplicate repo name is a hard failure, not last-wins, and it is worth seeing once:
+
+```sh
+ssh andrew@10.10.0.32 'printf "[[repo]]\nname=\"o/a\"\npriority=0\nenvironment_id=\"python\"\n[[repo]]\nname=\"o/a\"\npriority=1\nenvironment_id=\"ts\"\n" > /tmp/bad.toml \
+  && docker run --rm -v /tmp/bad.toml:/tmp/bad.toml:ro fabro-scheduler:local \
+     python -m fabro_scheduler --config /tmp/bad.toml; echo "exit=$?"'
+```
+
+That prints `repo[1].name: duplicate repo 'o/a', already declared at repo[0]` and
+`exit=1`.
+
+### Configuring it
+
+Everything that is not the repo list comes from the environment, because `env_file:` is
+how this project already passes per-host values:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SCHEDULER_PORT` | `32280` | Both the host port compose publishes and the port the container binds. **One** variable on both sides, resolved in `environment:` as well as in `ports:`, so a value set in the shell cannot leave the mapping pointing at a closed port. |
+| `FABRO_API_URL` | `http://10.10.0.32:32276/api/v1` | The base URL the fabro client (draft 07) calls. Same name and shape `fire-pr-review.sh` uses. |
+| `FABRO_API_TOKEN`, `GITHUB_TOKEN` | — | Neither is in `~/fabro/.env` today: `fabro secret list` holds both in the **fabro vault**, and that file carries only `FABRO_PORT`, `FABRO_VERSION`, `FABRO_WEB_URL` and `SESSION_SECRET`. So the `env_file:` block does not actually deliver them, and drafts 06 and 07 have to decide where the scheduler reads them — copy them into `.env`, or have it read the vault through the API. This row is the reminder. Neither belongs in `repos.toml`; this repository is public. |
+
+The `env_file:` block as written hands this container everything in `~/fabro/.env`, which
+today means `SESSION_SECRET` — fabro's session-cookie signing key — for a service that has
+no use for it. Narrowing that is part of the same decision drafts 06 and 07 owe; it is
+called out here rather than left to be discovered.
+
+`coders-a` and `coders-b` — the two per-box LiteLLM groups — are deliberately not
+configurable: they are decision 12's shape for this service, and `/health` reports them so
+there is no doubt which pair a run will be pinned to. The load-balanced `coders` group is
+absent on purpose; dispatching through it would reintroduce the contention the scheduler
+exists to remove.
+
+`fabro-monitor.sh` does not watch this container yet — draft 12 adds the conditions.
 
 ## Upgrading the server
 

@@ -1,0 +1,266 @@
+"""`load_config` is pure, so every case here writes a file to tmp_path.
+
+The environment is always passed explicitly. That is not ceremony: `FABRO_API_URL`
+and `SCHEDULER_PORT` are ordinary variables an operator may well have exported,
+and a test that reads `os.environ` would pass or fail depending on whose shell
+ran it.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from fabro_scheduler.config import (
+    DEFAULT_CODER_POOLS,
+    DEFAULT_FABRO_API_URL,
+    DEFAULT_PORT,
+    ConfigError,
+    load_config,
+)
+
+TRACKED_REPOS = Path(__file__).resolve().parents[1] / "repos.toml"
+
+
+def write(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "repos.toml"
+    path.write_text(body)
+    return path
+
+
+def repo(
+    name: str = "o/a",
+    priority: str = "0",
+    environment_id: str = "python",
+    *,
+    enabled: str | None = None,
+) -> str:
+    body = (
+        f'[[repo]]\nname = "{name}"\npriority = {priority}\n'
+        f'environment_id = "{environment_id}"\n'
+    )
+    if enabled is not None:
+        body += f"enabled = {enabled}\n"
+    return body
+
+
+# --- the two cases the task names verbatim ---------------------------------------
+
+
+def test_priority_accepts_negative_and_orders_smallest_first(tmp_path):
+    p = tmp_path / "repos.toml"
+    p.write_text(
+        '[[repo]]\nname="o/late"\npriority=7\nenvironment_id="python"\n'
+        '[[repo]]\nname="o/first"\npriority=-99\nenvironment_id="ts"\n'
+    )
+    cfg = load_config(p, env={})
+    assert [r.name for r in sorted(cfg.repos, key=lambda r: (r.priority, r.name))] == [
+        "o/first",
+        "o/late",
+    ]
+
+
+def test_duplicate_repo_name_is_an_error(tmp_path):
+    p = tmp_path / "repos.toml"
+    p.write_text(
+        '[[repo]]\nname="o/a"\npriority=0\nenvironment_id="python"\n'
+        '[[repo]]\nname="o/a"\npriority=1\nenvironment_id="ts"\n'
+    )
+    with pytest.raises(ConfigError, match="o/a"):
+        load_config(p, env={})
+
+
+# --- priority --------------------------------------------------------------------
+
+
+def test_missing_priority_is_an_error(tmp_path):
+    p = write(tmp_path, '[[repo]]\nname = "o/a"\nenvironment_id = "python"\n')
+    with pytest.raises(ConfigError, match=r"repo\[0\]\.priority"):
+        load_config(p, env={})
+
+
+def test_priority_rejects_a_non_integer(tmp_path):
+    p = write(tmp_path, repo(priority='"high"'))
+    with pytest.raises(ConfigError, match=r"repo\[0\]\.priority"):
+        load_config(p, env={})
+
+
+def test_priority_rejects_a_boolean(tmp_path):
+    # `bool` is a subclass of `int`, so this would otherwise parse as 1 and sort
+    # the repo ahead of every priority-2 repo.
+    p = write(tmp_path, repo(priority="true"))
+    with pytest.raises(ConfigError, match=r"repo\[0\]\.priority"):
+        load_config(p, env={})
+
+
+def test_zero_and_negative_priorities_are_kept_not_clamped(tmp_path):
+    p = write(tmp_path, repo(name="o/zero", priority="0") + repo(name="o/neg", priority="-3"))
+    cfg = load_config(p, env={})
+    assert {(r.name, r.priority) for r in cfg.repos} == {
+        ("o/zero", 0),
+        ("o/neg", -3),
+    }
+
+
+# --- names ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["jelly-swipe", "owner/", "/repo", "owner/repo/extra", "", "own er/repo"],
+)
+def test_name_must_be_owner_slash_repo(tmp_path, name):
+    p = write(tmp_path, repo(name=name))
+    with pytest.raises(ConfigError, match=r"repo\[0\]\.name"):
+        load_config(p, env={})
+
+
+def test_duplicate_names_differing_only_by_case_are_allowed(tmp_path):
+    # GitHub is case-insensitive in practice, but this parser is not the place to
+    # guess; it fails only on exact duplicates.
+    body = repo(name="o/a") + repo(name="O/A")
+    cfg = load_config(write(tmp_path, body), env={})
+    assert len(cfg.repos) == 2
+
+
+# --- enabled --------------------------------------------------------------------
+
+
+def test_enabled_defaults_to_true(tmp_path):
+    cfg = load_config(write(tmp_path, repo()), env={})
+    assert cfg.repos[0].enabled is True
+
+
+def test_disabled_row_is_kept_not_dropped(tmp_path):
+    cfg = load_config(write(tmp_path, repo(enabled="false")), env={})
+    assert len(cfg.repos) == 1
+    assert cfg.repos[0].enabled is False
+
+
+def test_enabled_rejects_a_non_boolean(tmp_path):
+    p = write(tmp_path, repo(enabled='"no"'))
+    with pytest.raises(ConfigError, match=r"repo\[0\]\.enabled"):
+        load_config(p, env={})
+
+
+# --- the file as a whole --------------------------------------------------------
+
+
+def test_unknown_key_is_an_error(tmp_path):
+    # A typo'd key would otherwise be ignored and the row would silently take the
+    # default, which for `priority` does not exist and for `enabled` is true.
+    p = write(tmp_path, repo() + "priorty = 3\n")
+    with pytest.raises(ConfigError, match="priorty"):
+        load_config(p, env={})
+
+
+def test_no_repo_blocks_is_an_error(tmp_path):
+    with pytest.raises(ConfigError, match="repo"):
+        load_config(write(tmp_path, "# nothing here\n"), env={})
+
+
+def test_invalid_toml_is_a_config_error_not_a_toml_error(tmp_path):
+    p = write(tmp_path, "[[repo]]\nname = \n")
+    with pytest.raises(ConfigError, match="invalid TOML"):
+        load_config(p, env={})
+
+
+def test_missing_file_is_a_config_error(tmp_path):
+    with pytest.raises(ConfigError, match="no such file"):
+        load_config(tmp_path / "absent.toml", env={})
+
+
+def test_environment_id_must_be_a_non_empty_string(tmp_path):
+    p = write(tmp_path, '[[repo]]\nname = "o/a"\npriority = 0\nenvironment_id = "  "\n')
+    with pytest.raises(ConfigError, match="environment_id"):
+        load_config(p, env={})
+
+
+# --- ordering -------------------------------------------------------------------
+
+
+def test_ordered_repos_sorts_by_priority_then_name(tmp_path):
+    body = (
+        repo(name="o/zeta", priority="1")
+        + repo(name="o/alpha", priority="1")
+        + repo(name="o/last", priority=9)
+        + repo(name="o/first", priority="-1")
+    )
+    cfg = load_config(write(tmp_path, body), env={})
+    assert [r.name for r in cfg.ordered_repos()] == [
+        "o/first",
+        "o/alpha",
+        "o/zeta",
+        "o/last",
+    ]
+
+
+def test_ordered_repos_keeps_disabled_rows(tmp_path):
+    body = repo(name="o/on", priority="0") + repo(name="o/off", priority="1", enabled="false")
+    cfg = load_config(write(tmp_path, body), env={})
+    assert [r.name for r in cfg.ordered_repos()] == ["o/on", "o/off"]
+
+
+def test_repos_keep_the_order_they_were_written_in(tmp_path):
+    # ordered_repos() is the scheduling order; `repos` is what the operator wrote,
+    # so reading the config back shows the file rather than a reshuffle of it.
+    body = repo(name="o/zeta", priority="1") + repo(name="o/alpha", priority="0")
+    cfg = load_config(write(tmp_path, body), env={})
+    assert [r.name for r in cfg.repos] == ["o/zeta", "o/alpha"]
+
+
+# --- the deployment-shaped half, from the environment ---------------------------
+
+
+def test_defaults_when_the_environment_is_empty(tmp_path):
+    cfg = load_config(write(tmp_path, repo()), env={})
+    assert cfg.coder_pools == DEFAULT_CODER_POOLS
+    assert cfg.coder_pools == ("coders-a", "coders-b")
+    assert cfg.fabro_api_url == DEFAULT_FABRO_API_URL
+    assert cfg.port == DEFAULT_PORT == 32280
+
+
+def test_fabro_api_url_and_port_come_from_the_environment(tmp_path):
+    cfg = load_config(
+        write(tmp_path, repo()),
+        env={"FABRO_API_URL": "http://fabro.example:1/api/v1", "SCHEDULER_PORT": "9000"},
+    )
+    assert cfg.fabro_api_url == "http://fabro.example:1/api/v1"
+    assert cfg.port == 9000
+
+
+@pytest.mark.parametrize("raw", ["not-a-port", "0", "-1", "65536", "80.5"])
+def test_a_bad_port_names_the_key(tmp_path, raw):
+    with pytest.raises(ConfigError, match="SCHEDULER_PORT"):
+        load_config(write(tmp_path, repo()), env={"SCHEDULER_PORT": raw})
+
+
+def test_a_blank_environment_value_falls_back_to_the_default(tmp_path):
+    cfg = load_config(
+        write(tmp_path, repo()), env={"FABRO_API_URL": "   ", "SCHEDULER_PORT": " "}
+    )
+    assert cfg.fabro_api_url == DEFAULT_FABRO_API_URL
+    assert cfg.port == DEFAULT_PORT
+
+
+# --- the tracked file -----------------------------------------------------------
+
+
+def test_the_tracked_repos_toml_parses(tmp_path):
+    # The file this repository actually ships. A typo in it is a deploy that
+    # crash-loops, so it is asserted here rather than only on the host.
+    cfg = load_config(TRACKED_REPOS, env={})
+    assert [r.name for r in cfg.ordered_repos()] == [
+        "andrewthetechie/jelly-swipe",  # priority 0
+        "andrewthetechie/lawncare-saas",  # priority 1, 'l' < 'w'
+        "andrewthetechie/womens-fantasy-sports",  # priority 1
+        "andrewthetechie/writers-app",  # priority 2
+    ]
+    assert {(r.name, r.environment_id) for r in cfg.repos} == {
+        ("andrewthetechie/jelly-swipe", "python"),
+        ("andrewthetechie/lawncare-saas", "python-node"),
+        ("andrewthetechie/womens-fantasy-sports", "ts"),
+        ("andrewthetechie/writers-app", "rust-node"),
+    }
+    assert all(r.enabled for r in cfg.repos)

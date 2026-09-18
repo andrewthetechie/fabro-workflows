@@ -1,0 +1,6 @@
+# Python artefacts. The lockfile is deliberately *not* here: `uv.lock` is how the
+# image builds reproducibly (`uv sync --frozen`) and belongs in the tree.
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc

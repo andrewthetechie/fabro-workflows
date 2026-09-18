@@ -24,7 +24,7 @@ actually lives.
 | Path | What it is |
 |---|---|
 | `.fabro/workflows/<name>/` | **The only tree the automations read.** Three runnable packages — `backlog`, `pr-review`, `issue-triage` — plus `_shared/review-merge/`, an importable graph with no `workflow.toml` that both `backlog` and `pr-review` splice in with `import=`. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
-| `ops/` | Host replication: compose, profile images, provisioning, branch sweeper. Start at `ops/README.md`. No automation reads this tree. |
+| `ops/` | Host replication: compose, the coder scheduler, profile images, provisioning, branch sweeper. Start at `ops/README.md`. No automation reads this tree. |
 | `docs/pr-review-bridge/` | The task series for the third stage: `backlog` triggers a `pr-review` run on the PR it just opened. `00-overview-and-contracts.md` first. |
 | `docs/auto-merge/` | A cross-cutting series for the fourth stage (the squash-merge), spanning `backlog` and `pr-review`: kill switches, Conventional-Commits titles, the merge graph, `ci_fix`. `00-overview-and-contracts.md` first. |
 | `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
@@ -161,6 +161,14 @@ ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-fire-pr-review.sh'
 rsync -a --delete ops/profile-images/ andrew@10.10.0.32:~/profile-images-build/
 ssh andrew@10.10.0.32 'cd ~/profile-images-build && ./build-images.sh'
 
+# the coder scheduler. Its compose service builds from ./scheduler, resolved
+# relative to the compose file, so the tree has to sit beside it on the host.
+# `up -d scheduler` names one service and never recreates fabro, which matters:
+# a fabro restart fails every in-flight run.
+rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+  ops/scheduler/ andrew@10.10.0.32:~/fabro/scheduler/
+ssh andrew@10.10.0.32 'cd ~/fabro && docker compose up -d --build scheduler'
+
 scp ops/docker-compose.yaml andrew@10.10.0.32:~/fabro/docker-compose.yaml
 scp ops/fabro-branch-sweep.sh andrew@10.10.0.32:~/bin/fabro-branch-sweep.sh
 scp ops/fabro-sandbox-sweep.sh andrew@10.10.0.32:~/bin/fabro-sandbox-sweep.sh
@@ -187,13 +195,16 @@ ssh andrew@10.10.0.32 'cat ~/bin/fabro-sandbox-sweep.sh' | diff - ops/fabro-sand
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-monitor.sh' | diff - ops/fabro-monitor.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-auto-merge-switch.sh' | diff - ops/fabro-auto-merge-switch.sh
 ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'  | diff - ops/docker-compose.yaml
+ssh andrew@10.10.0.32 'cat ~/fabro/scheduler/repos.toml' | diff - ops/scheduler/repos.toml
 ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/scripts/discord-notify.sh' \
   | diff - .fabro/workflows/backlog/scripts/discord-notify.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-fire-pr-review.sh' \
   | diff - docs/auto-merge/fabro-fire-pr-review-wrapper.sh
 ```
 
-A compose change needs `cd ~/fabro && docker compose up -d` to take effect. The host
+A compose change needs `cd ~/fabro && docker compose up -d` to take effect — or
+`docker compose up -d --build scheduler` for a scheduler code or `repos.toml` change,
+which names one service and leaves `fabro` alone. The host
 auto-merge switch is a server variable, so flipping it needs no deploy and no
 restart; it takes effect on the next run:
 

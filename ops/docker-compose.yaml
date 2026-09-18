@@ -19,5 +19,42 @@ services:
       retries: 12
       start_period: 20s
 
+  # The coder scheduler (ops/scheduler/, deployed to ./scheduler beside this
+  # file). It owns admission to the coder instances; fabro keeps owning
+  # everything inside a run. It shares this project so `docker compose ps` shows
+  # the whole factory in one place, and so a host rebuild brings it back with
+  # everything else.
+  scheduler:
+    image: fabro-scheduler:local
+    build:
+      context: ./scheduler
+    container_name: fabro-scheduler
+    restart: unless-stopped
+    ports:
+      # One variable on both sides: compose publishes ${SCHEDULER_PORT} on the
+      # host and the same value reaches the container as the port it binds.
+      # Splitting the two is how you get a mapping that points at a closed port.
+      - "${SCHEDULER_PORT:-32280}:${SCHEDULER_PORT:-32280}"
+    volumes:
+      - scheduler-data:/data  # SQLite, from draft 06 onward; mounted now so compose never changes again
+    environment:
+      # Resolved here rather than only read from env_file, so the container cannot
+      # bind one port while compose publishes another when the value is set in the
+      # shell instead of ~/fabro/.env.
+      SCHEDULER_PORT: "${SCHEDULER_PORT:-32280}"
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      # urllib, not curl: the runtime image is python:slim and deliberately has no
+      # HTTP client installed. urlopen raises on a non-2xx, so a traceback and a
+      # non-zero exit is the failure path.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${SCHEDULER_PORT:-32280}/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
 volumes:
   fabro-storage:
+  scheduler-data:

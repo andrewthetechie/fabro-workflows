@@ -1,0 +1,44 @@
+# The scheduler's work list: one `[[repo]]` table per target repository.
+#
+# `priority` is a **signed integer and the smallest wins**: -99 beats 0 beats 7.
+# It is required — there is no default — and it is the tie-breaker after
+# repo-level ordering by priority, then issue number ascending.
+# See docs/scheduler/00-overview-and-contracts.md, decisions 4 and 5.
+#
+# `environment_id` names a fabro environment (server state, not a file here):
+#   python       fabro-python:local        cpu=2 mem=4GB   repo=jelly-swipe
+#   python-node  fabro-python-node:local   cpu=2 mem=4GB   repo=lawncare-saas
+#   ts           fabro-ts:local            cpu=2 mem=4GB   repo=womens-fantasy-sports
+#   rust-node    fabro-rust-node:local     cpu=4 mem=8GB   repo=writers-app
+# It is not validated against that list here: environments are server state and
+# can change without a commit, so a name this file rejects could be correct on
+# the host. A wrong one fails at run admission, where the error names the row.
+#
+# `enabled = false` keeps the row and takes the repo out of all scheduling.
+#
+# No token, key or webhook URL belongs in this file. This repository is public.
+# Both credentials arrive through the container's environment.
+
+[[repo]]
+name           = "andrewthetechie/jelly-swipe"
+priority       = 0
+environment_id = "python"
+enabled        = true
+
+[[repo]]
+name           = "andrewthetechie/lawncare-saas"
+priority       = 1
+environment_id = "python-node"
+enabled        = true
+
+[[repo]]
+name           = "andrewthetechie/womens-fantasy-sports"
+priority       = 1
+environment_id = "ts"
+enabled        = true
+
+[[repo]]
+name           = "andrewthetechie/writers-app"
+priority       = 2
+environment_id = "rust-node"
+enabled        = true
