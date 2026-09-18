@@ -64,10 +64,12 @@ digraph PrReview {
     // as shell syntax. Every later stage reads the validated number from
     // /tmp/fabro/pr_number.
     //
-    // This node also builds the two renderer artefacts: `render.jq`, the report
-    // program, and `render_comment.sh`, its wrapper. render.jq carries no comments
-    // of its own -- a `//` inside it is a jq syntax error and a `#` would have to be
-    // proved safe against the DOT parser -- so the notes live here.
+    // The imported phase builds the two renderer artefacts: `render.jq`, the report
+    // program, and `render_comment.sh`, its wrapper. They moved into
+    // `_shared/review-merge/` with the import in commit 54c21be and this comment
+    // stayed behind claiming otherwise. The notes belong here all the same, because
+    // render.jq carries no comments of its own -- a `//` inside it is a jq syntax
+    // error and a `#` would have to be proved safe against the DOT parser.
     //
     // Kinds: `complete` and `needs-human` are the original two. `merged` and
     // `blocked` are the merge outcomes; `blocked` deliberately reuses the `complete`
