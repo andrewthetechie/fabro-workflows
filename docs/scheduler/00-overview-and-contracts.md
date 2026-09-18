@@ -214,20 +214,29 @@ labelled `agent-in-progress` with no live lease is un-labelled and requeued.
 
 ## Task series
 
-| # | Task |
-|---|---|
-| 01 | Split `coders` in LiteLLM into `coders-a` / `coders-b`, keep `coders`; extend the fallback table |
-| 02 | Thread `coder_pool` through both root stylesheets with the `default()` filter; validate |
-| 03 | Collapse `acquire`/`claim` to input validation and issue fetch; delete the ULID arbitration |
-| 04 | Delete `issue-triage`'s `check_capacity`; raise `max_concurrent_runs` to 4 |
-| 05 | `repos.toml` schema and loader |
-| 06 | GitHub inventory with ETag caching |
-| 07 | Queue, ranking and the starvation ceiling |
-| 08 | Fabro client: workflow-version registration, run intent, start, poll |
-| 09 | Lease state machine, dispatch, release, requeue, recovery |
-| 10 | Web UI: queue view, reorder, drain, cancel |
-| 11 | Compose service, image, volume, deploy |
-| 12 | `fabro-monitor.sh` scheduler conditions |
-| 13 | Disable the four `backlog` automation schedule triggers |
-| 14 | `fabro-fire-pr-review.sh` enqueues instead of firing |
-| 15 | Shakedown and the deployment-log entry |
+Fourteen drafts. The initial frontier is 01, 02, 03 and 04 — fully parallel.
+
+| # | Task | Blocked by |
+|---|---|---|
+| 01 | Split the `coders` model group into `coders-a` and `coders-b` | — |
+| 02 | Fix `fire-pr-review.sh`: root the workflow version at `.fabro/` | — |
+| 03 | Delete `issue-triage`'s capacity check and raise the run cap to 4 | — |
+| 04 | Scheduler skeleton: container, `repos.toml`, health endpoint | — |
+| 05 | Thread `coder_pool` through both root stylesheets | 01 |
+| 06 | GitHub inventory with ETag caching, and a read-only queue page | 04 |
+| 07 | Fabro client: register a `.fabro`-rooted version, create and start a run | 02, 04 |
+| 08 | Lease state machine and the dispatch loop | 05, 06, 07 |
+| 09 | Release, requeue and recovery | 08 |
+| 10 | Collapse `acquire`/`claim` and add the manual-fire script | 08 |
+| 11 | Reorder, drain and cancel in the web UI | 09 |
+| 12 | Add scheduler conditions to `fabro-monitor.sh` | 11 |
+| 13 | Turn off the four `backlog` automation schedules | 10 |
+| 14 | Shakedown and deployment-log entry | 12, 13 |
+
+Two drafts are unsafe to leave running unattended before their successor lands:
+**08** acquires leases and never releases them until **09**, and **13** makes the
+scheduler the only producer of `backlog` runs, so **10** must already have shipped
+the manual escape hatch.
+
+Each draft is written to be implementable from this file plus its own file plus
+the repository — no other context.
