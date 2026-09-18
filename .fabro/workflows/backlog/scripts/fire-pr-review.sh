@@ -16,8 +16,13 @@
 #
 # Why it lives here and not in ops/: task 04's node executes it out of the clone it
 # already makes, so a live automation reads this file. ops/ is defined as the tree no
-# automation reads, which is what makes editing ops/ safe. Deploy it to the host as
-# ~/bin/fabro-fire-pr-review.sh for manual use — same split as discord-notify.sh.
+# automation reads, which is what makes editing ops/ safe.
+#
+# Do NOT copy this file to ~/bin/fabro-fire-pr-review.sh. That path holds a read-only
+# wrapper (docs/auto-merge/fabro-fire-pr-review-wrapper.sh) which execs this file as it
+# stands on origin/main, so the operator's manual fire and the automation's can never
+# diverge. Overwriting it with a copy creates a second, silently-rotting version of this
+# script — the exact failure the wrapper exists to prevent.
 #
 # Output contract (relied on by the graph node, do not break):
 #   * the LAST line on stdout is the created run id, and nothing else;
@@ -75,11 +80,20 @@ DRY_RUN="${DRY_RUN:-1}"
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 CHECK_PR="${CHECK_PR:-1}"
 
-# The pr-review package's entrypoint, relative to the package root, which is also the
-# key it must appear under in `files`. Verified against the live server: a
-# package-relative key returns 201, while `pr-review/workflow.fabro` and the
-# repo-relative path both return 422 `entrypoint ... is not present in workflow files`.
-ENTRYPOINT="workflow.fabro"
+# The version is rooted at `.fabro/`, not at the pr-review package, and the entrypoint
+# is package-qualified. Both are forced, not stylistic.
+#
+# Rooted at the package, `files` carries no `_shared` entry, so the package's
+# `import="../_shared/review-merge/review-merge.fabro"` cannot resolve — and the shared
+# graph can never be added under that name either, because WorkflowPath forbids parent
+# segments. Registering one level up is the only way it travels with the version.
+# Verified live 2026-09-18: rooted here returns 201; rooted at the package the server
+# answers 422 `invalid import reference in workflow.fabro`.
+#
+# The entrypoint is the graph, not the TOML: naming `workflow.toml` returns 422
+# (`workflow.toml selects graph workflow.fabro, but the version entrypoint is
+# workflow.toml`). It is also the key the graph must appear under in `files`.
+ENTRYPOINT="workflows/pr-review/workflow.fabro"
 
 die() { printf '%s\n' "$1" >&2; exit 1; }
 warn() { printf 'warning: %s\n' "$1" >&2; }
@@ -250,7 +264,7 @@ else
   warn "CHECK_PR=0: not confirming that $REPO#$PR_NUM exists"
 fi
 
-# ------------------------------------------------------- 3. fetch the package ----
+# -------------------------------------------------------- 3. fetch the tree ----
 
 # The repo is public, so no credential is involved — which also means this works
 # inside a sandbox regardless of the run's GITHUB_TOKEN scope.
@@ -258,25 +272,32 @@ git clone --depth 1 --branch "$WORKFLOWS_REF" \
     "https://github.com/$WORKFLOWS_REPO" "$tmp/wf" >/dev/null 2>&1 \
   || die "could not clone $WORKFLOWS_REPO at $WORKFLOWS_REF"
 
-pkg="$tmp/wf/.fabro/workflows/pr-review"
-[ -d "$pkg" ] || die "$WORKFLOWS_REPO at $WORKFLOWS_REF has no .fabro/workflows/pr-review package"
+# The whole `.fabro/` tree, not the pr-review package: that is what makes the `../`
+# import resolvable. The cost is that a version now carries all three packages (26
+# files today) and the entrypoint picks one of them, which is fine — registration is
+# content-addressed and idempotent, and the extra bytes are a few round trips of
+# prompt text once per fire.
+pkg="$tmp/wf/.fabro"
+[ -f "$pkg/$ENTRYPOINT" ] \
+  || die "$WORKFLOWS_REPO at $WORKFLOWS_REF has no $ENTRYPOINT"
 
 # Enumerate from the directory, never a hardcoded list: a prompt added to pr-review
 # later would silently fail to register, and the run would then die at admission on an
-# unresolved @prompts reference.
+# unresolved @prompts reference. Now that the root is `.fabro/`, this is also what picks
+# up `workflows/_shared/review-merge/review-merge.fabro`.
 ( cd "$pkg" && find . -type f | sed 's|^\./||' | sort ) > "$tmp/paths" \
-  || die "could not enumerate the pr-review package"
+  || die "could not enumerate the .fabro tree"
 
-[ -s "$tmp/paths" ] || die "the pr-review package at $WORKFLOWS_REF contains no files"
+[ -s "$tmp/paths" ] || die "the .fabro tree at $WORKFLOWS_REF contains no files"
 grep -qx "$ENTRYPOINT" "$tmp/paths" \
-  || die "the pr-review package at $WORKFLOWS_REF has no $ENTRYPOINT"
+  || die "the .fabro tree at $WORKFLOWS_REF has no $ENTRYPOINT"
 
 # jq -Rs does the JSON string encoding. Hand-rolled escaping would not survive this
-# package: it is full of \" and embedded jq programs.
+# tree: it is full of \" and embedded jq programs.
 : > "$tmp/entries.jsonl"
 while IFS= read -r path; do
   jq -Rs --arg k "$path" '{key:$k, value:.}' "$pkg/$path" >> "$tmp/entries.jsonl" \
-    || die "could not read $path from the pr-review package"
+    || die "could not read $path from the .fabro tree"
 done < "$tmp/paths"
 
 # workflow_dependencies is {}: pr-review declares no child workflow.
