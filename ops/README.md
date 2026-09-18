@@ -376,8 +376,45 @@ Nothing in this deployment currently fires on a cron.
 A `pr-review` run that reaches the merge phase holds a scheduler slot until CI settles,
 bounded by the 60-minute merge budget. Because fabro queues rather than rejects
 (ADR 0001), a `trigger_review` fire behind three merging runs is delayed, not dropped.
-**Re-enabling the staggered backlog schedules should be accompanied by revisiting the
-cap.** See `docs/adr/0001-concurrency-posture.md`.
+
+The cap is **4**, raised from 2 on 2026-09-18 alongside the coder scheduler that now
+owns admission (ADR 0005). It is a backstop, not an allocator: it stops a runaway, it
+does not choose what runs. `issue-triage` no longer consults it at all — its
+`check_capacity` stage was deleted in the same change, because every triage stage
+resolves to `high-reasoning` and never to a coder instance, so the old check stood down
+whenever *any* two runs existed. The value is server state, not a graph change: it lives
+in the settings overlay, so changing it means editing `/storage/.home/settings.toml` in
+the container and `docker compose restart fabro` — and that restart fails every in-flight
+run (`docs/scheduler/00-overview-and-contracts.md`, finding 5), which is why it belongs
+in a quiet window.
+
+**Editing the overlay without restarting is worse than not editing it, because the API
+will say it worked.** fabro polls `settings.toml` every 5 seconds and calls
+`replace_runtime_settings`, which re-reads the file and republishes the *reported*
+settings — so `GET /api/v1/settings` starts answering 4 within seconds of the edit. But
+that function rewrites only five things (`manifest_run_defaults`, `manifest_run_settings`,
+`server_settings`, `effective_web_url`, `catalog`). `max_concurrent_runs` is not one of
+them: it is copied out of the resolved settings **once, at startup**
+(`serve.rs:723` → `build_app_state`), stored as a plain `usize` on `AppState`, and read
+only by the admission loop (`server.rs:4524` at `v0.354.0-nightly.0`). So after an
+in-place edit the reported cap and the enforced cap disagree, and `GET /settings` — the
+obvious way to check — is the one endpoint that cannot tell you.
+
+Two consequences. First, the change that raised this cap was staged on 2026-09-18 and
+the restart is the operator's to take, so **check the start time before assuming 4 is in
+force** — the overlay has said 4 while the server enforced 2 for exactly this reason.
+Second, do not verify the cap from `/settings`. Verify that the process is newer than
+the file it read:
+
+```sh
+ssh andrew@<HOST> 'docker inspect -f "{{.State.StartedAt}}" fabro-fabro-1; \
+  docker exec fabro-fabro-1 stat -c "%y" /storage/.home/settings.toml'
+```
+
+The container's start time must be **later** than the overlay's mtime; if it is earlier,
+the file has been edited and the change is not in force. (Note the reloader *does*
+rebuild the LLM `catalog`, so `[llm.providers.litellm.models.*]` entries — unlike the
+cap — do take effect without a restart.)
 
 ~~Two drifts~~ The drift previously recorded here (`backlog-writers-app` missing its
 `api:manual` trigger) was corrected by hand on 2026-09-16; the script now compares the

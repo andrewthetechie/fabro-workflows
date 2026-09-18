@@ -93,8 +93,8 @@ Cadence and queue:
   open `agent` issue** on that repo.
 - Backlog fires per repo **every 15 minutes** (staggered); issue-triage four
   times an hour.
-- **Three runs run concurrently** host-wide; the rest queue and wait. Queuing
-  is normal, designed for, and not a problem.
+- **Up to four runs are live at once** host-wide (fabro's `max_concurrent_runs`);
+  the rest queue and wait. Queuing is normal, designed for, and not a problem.
 
 ## Getting notified when something needs attention
 

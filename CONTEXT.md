@@ -20,10 +20,10 @@ _Avoid_: connection, request
 **Cap**:
 `server.scheduler.max_concurrent_runs`, fabro's only concurrency control and a single
 global integer — there is no per-pool or per-label variant. Runs fired beyond it queue;
-they are not rejected (verified 2026-09-16). Once the **Scheduler** owns admission the
-cap is raised to 4 and becomes a backstop rather than the thing shaping behaviour: it
-stops a runaway, it does not allocate. Not to be confused with a **Coder lease**, which
-is the control that actually matters.
+they are not rejected (verified 2026-09-16). It is **4** as of 2026-09-18, raised from 2
+when the **Scheduler** took over admission (ADR 0005), and it is now a backstop rather
+than the thing shaping behaviour: it stops a runaway, it does not allocate. Not to be
+confused with a **Coder lease**, which is the control that actually matters.
 _Avoid_: limit, throttle
 
 **Quiet-exit**:

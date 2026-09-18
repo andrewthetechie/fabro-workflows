@@ -297,9 +297,13 @@ provision_automation() {
 # The host-wide half of the auto-merge kill switch. Provisioned to decision 10's
 # default (on); flip it with `ops/fabro-auto-merge-switch.sh host off`, which takes
 # effect on the next run with no restart. Created before the automations because a
-# pr-review run cannot compile without it. FABRO_API_URL is the base URL the triage
-# workflow uses to communicate with fabro itself; triage runs read it from a server
-# variable at startup, and it fails closed if unset.
+# pr-review run cannot compile without it. FABRO_API_URL is the base URL `backlog`
+# hands to `fire-pr-review.sh` through `[run.environment.env]`.
+#
+# `issue-triage` used to read it too, in a capacity gate that called /system/info at
+# startup; that stage was deleted 2026-09-18, so `backlog` is now the only consumer
+# and this variable fails a backlog run closed if it is missing
+# (`docs/scheduler/03-triage-capacity-and-cap.md`).
 echo "Provisioning server variables..."
 provision_variable FABRO_AUTO_MERGE 1 || FAILED=$((FAILED+1))
 provision_variable FABRO_API_URL "http://10.10.0.32:32276/api/v1" || FAILED=$((FAILED+1))

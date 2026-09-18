@@ -59,10 +59,10 @@ ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp 
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
 ```
 
-Baselines as of 2026-09-17 (review+merge shared and imported):
-`Backlog (60 nodes, 139 edges)` clean, `PrReview (30 nodes, 65 edges)` with exactly
+Baselines as of 2026-09-18 (review+merge shared and imported):
+`Backlog (60 nodes, 140 edges)` clean, `PrReview (30 nodes, 65 edges)` with exactly
 one warning — `pr_number` unbound in `validate_input` — and
-`IssueTriage (15 nodes, 35 edges)` clean. Backlog and PrReview both include the ~21
+`IssueTriage (14 nodes, 32 edges)` clean. Backlog and PrReview both include the ~21
 nodes of `_shared/review-merge/`, which `fabro validate` splices in; `fabro parse`
 shows the unexpanded placeholder instead, so node counts only match after validate. That warning is deliberate. Binding
 `[run.inputs] pr_number` would silence it and let a run fired with no input review PR
@@ -127,6 +127,7 @@ them, except where a rule names one by id.
 | Every merge-phase command node's unconditional edge lands on `mark_needs_human`; expected blocks are the *conditional* edges | A broken merge — a token without `contents: write`, an API 5xx — otherwise lands in the same quiet "not auto-merged" bucket as a risk-4 PR and stays invisible. |
 | Commit-body markers are `:start` / `:end`, never `<!-- /fabro:commit-body -->` | A closing marker with a slash forces `\/` into the extraction pattern, and `\"` is the only backslash a `.fabro` file may contain. |
 | The subject is the live PR title; the body comes from the marker block | `release-please` turns an agent's `feat:`/`fix:` subject into a release on `jelly-swipe`/`lawncare-saas`, and the derivation never emits `!` or `BREAKING CHANGE:`. |
+| A `settings.toml` value that is read at startup is verified by the container's start time, never by `GET /settings` | fabro polls the overlay every 5s and republishes the *reported* settings, but `max_concurrent_runs` is copied out once at startup and read only by the admission loop — so after an in-place edit `/settings` answers the new value while the server keeps enforcing the old one, and the endpoint you would check with is the one endpoint that cannot tell you. Check that `docker inspect -f '{{.State.StartedAt}}' fabro-fabro-1` is later than the overlay's mtime; `ops/README.md` carries the command. |
 
 ## Deploying to the server after a merge to `main`
 

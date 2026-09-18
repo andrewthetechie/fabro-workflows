@@ -24,13 +24,12 @@ push = false
 [run.meta_branch]
 push = false
 
-# The capacity check calls the fabro API. Server variable, not ${X}: shell-style
-# interpolation is NOT performed here and arrives as literal text — the failure that
-# pinned the auto-merge switch off forever. An unset variable fails the RunIntent at
-# compile time, so both must be provisioned before the first fire (task 07).
-[run.environment.env]
-FABRO_API_URL   = "{{ vars.FABRO_API_URL }}"
-FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
+# No [run.environment.env]. The only consumer was the deleted capacity gate, which
+# called the fabro API; nothing else in this package reads the environment.
+# Dropping the block drops two hard startup dependencies with it — an unset
+# FABRO_API_TOKEN aborted every triage run at compile time — and it shrinks the
+# trust surface, because [run.environment.env] reaches agent execution as well as
+# command execution. See docs/adr/0005-scheduler-owns-admission.md.
 
 # Discord. Hooks run with sandbox = false, inside the fabro server container (Alpine:
 # /bin/sh, wget, no bash, no jq, no curl), and read the webhook URL from

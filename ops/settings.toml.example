@@ -40,8 +40,15 @@ enabled = true
 [server.sandbox.providers.local]
 enabled = false
 
+# The scheduler owns admission, so this is a backstop, not an allocator: it stops a
+# runaway, it does not decide what runs. Raised from 2 to 4 on 2026-09-18 with the
+# scheduler's takeover (ADR 0005). It is server state, not a workflow change, and it is
+# copied out **once at startup**: edit this overlay at /storage/.home/settings.toml in
+# the container and `docker compose restart fabro` — a restart that fails every
+# in-flight run. Editing the overlay without restarting leaves the reported cap and the
+# enforced cap disagreeing; `README.md` has the check.
 [server.scheduler]
-max_concurrent_runs = 2
+max_concurrent_runs = 4
 
 [server.slatedb]
 prefix = "slatedb"
