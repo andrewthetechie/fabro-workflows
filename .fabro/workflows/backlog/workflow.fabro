@@ -204,7 +204,31 @@ else
   echo '{\"context_updates\":{\"merge_ok\":true,\"merge_attempts\":'$A'}}'
 fi"]
 
-    improve [label="Improve task spec", class="improve", timeout="30m", max_retries=1, prompt="@prompts/improve.md.j2"]
+    // Review-class agent nodes carry timeout="15m", not the 30m they had. The 30m was
+    // never sized; it was the graph `stall_timeout` default written out by hand.
+    //
+    // Measured across runs 01M2RX2SGJJT09WK5FS8GYJCDE, 01M2RB5QBNBPS6C0F9904V25AX and
+    // 01M2SBJG92TX0DBRKY5881VM34 -- 29 executions, every one of them:
+    //
+    //   extra_decompose  max  69s     improve   max 180s     spec      max 157s
+    //   standards        max 216s     review    max 226s     quality   max 332s
+    //   review_merge.standards max 384s   .spec max 262s   .review_fix max 309s
+    //
+    // 15m is 2.3x the slowest execution ever observed (384s) and 13x the median. The
+    // old 30m was 5-26x, which is not headroom -- it is the price of a stall.
+    //
+    // A stalled provider is what this bounds. Run 01M2RX2SGJJT09WK5FS8GYJCDE lost 60
+    // minutes to two of them: `agent.llm.started` on glm-5.3, a 502 from LiteLLM
+    // 15m39s later, an immediate retry onto the SAME model, and nothing else until
+    // the node timeout fired at 30m. Both stages then succeeded on the stage retry.
+    // Halving the timeout halves that loss and changes nothing else -- `max_retries=1`
+    // stays, so a genuinely slow stage still gets its second attempt.
+    //
+    // NOT retimed: `coder` (90m, max observed 2110s), `decompose` (30m, max 1009s),
+    // `rework_t1..t4` (45m, never yet executed) and `resolve_merge` (30m, n=1). Those
+    // have real tails or no evidence, and the same arithmetic does not hold for them.
+    // See docs/perf/00-overview-and-measurements.md.
+    improve [label="Improve task spec", class="improve", timeout="15m", max_retries=1, prompt="@prompts/improve.md.j2"]
 
     improve_gate [label="Validate improved task", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/improve_result.json
@@ -298,7 +322,7 @@ if [ $RC -ne 0 ]; then
   exit 1
 fi"]
 
-    review [label="Review task", class="review", timeout="30m", max_retries=1, prompt="@prompts/reviewer.md.j2"]
+    review [label="Review task", class="review", timeout="15m", max_retries=1, prompt="@prompts/reviewer.md.j2"]
 
     review_gate [label="Validate verdict", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/verdict.json
@@ -351,7 +375,7 @@ git diff --stat origin/main...HEAD > /tmp/fabro/extra/diffstat.txt
 git diff --name-only origin/main...HEAD > /tmp/fabro/extra/changed_files.txt
 echo '{\"context_updates\":{\"extra_done\":false,\"standards_status\":\"none\",\"spec_status\":\"none\",\"quality_status\":\"none\",\"new_tasks\":0,\"followup_status\":\"none\"}}'"]
 
-    standards [label="Standards review", class="review", timeout="30m", max_retries=1, prompt="@prompts/standards.md.j2"]
+    standards [label="Standards review", class="review", timeout="15m", max_retries=1, prompt="@prompts/standards.md.j2"]
     standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/standards.json
 A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)
@@ -365,7 +389,7 @@ fi
 echo 0 > /tmp/fabro/standards_attempts
 echo '{\"context_updates\":{\"standards_status\":\"'$D'\"}}'"]
 
-    spec [label="Spec review", class="review-frontier", timeout="30m", max_retries=1, prompt="@prompts/spec.md.j2"]
+    spec [label="Spec review", class="review-frontier", timeout="15m", max_retries=1, prompt="@prompts/spec.md.j2"]
     spec_gate [label="Validate spec output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/spec.json
 A=$(cat /tmp/fabro/spec_attempts 2>/dev/null || echo 0)
@@ -379,7 +403,7 @@ fi
 echo 0 > /tmp/fabro/spec_attempts
 echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
-    quality [label="Code quality review", class="review", timeout="30m", max_retries=1, prompt="@prompts/quality.md.j2"]
+    quality [label="Code quality review", class="review", timeout="15m", max_retries=1, prompt="@prompts/quality.md.j2"]
     quality_gate [label="Validate quality output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/quality.json
 A=$(cat /tmp/fabro/quality_attempts 2>/dev/null || echo 0)
@@ -393,7 +417,7 @@ fi
 echo 0 > /tmp/fabro/quality_attempts
 echo '{\"context_updates\":{\"quality_status\":\"'$D'\"}}'"]
 
-    extra_decompose [label="Follow-up decomposer", class="review-frontier", timeout="30m", max_retries=1, prompt="@prompts/extra_decompose.md.j2"]
+    extra_decompose [label="Follow-up decomposer", class="review-frontier", timeout="15m", max_retries=1, prompt="@prompts/extra_decompose.md.j2"]
     extra_gate [label="Merge follow-up tasks", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/followups.json
 A=$(cat /tmp/fabro/extra_decompose_attempts 2>/dev/null || echo 0)

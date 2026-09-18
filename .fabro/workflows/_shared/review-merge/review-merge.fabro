@@ -194,7 +194,31 @@ else
 fi"]
 
     // ---- Reviewers ----
-    standards [label="Standards review", class="review", timeout="30m", max_retries=1, prompt="@prompts/standards.md.j2"]
+    // Review-class agent nodes carry timeout="15m", not the 30m they had. The 30m was
+    // never sized; it was the graph `stall_timeout` default written out by hand.
+    //
+    // Measured across runs 01M2RX2SGJJT09WK5FS8GYJCDE, 01M2RB5QBNBPS6C0F9904V25AX and
+    // 01M2SBJG92TX0DBRKY5881VM34 -- 29 executions, every one of them:
+    //
+    //   extra_decompose  max  69s     improve   max 180s     spec      max 157s
+    //   standards        max 216s     review    max 226s     quality   max 332s
+    //   review_merge.standards max 384s   .spec max 262s   .review_fix max 309s
+    //
+    // 15m is 2.3x the slowest execution ever observed (384s) and 13x the median. The
+    // old 30m was 5-26x, which is not headroom -- it is the price of a stall.
+    //
+    // A stalled provider is what this bounds. Run 01M2RX2SGJJT09WK5FS8GYJCDE lost 60
+    // minutes to two of them: `agent.llm.started` on glm-5.3, a 502 from LiteLLM
+    // 15m39s later, an immediate retry onto the SAME model, and nothing else until
+    // the node timeout fired at 30m. Both stages then succeeded on the stage retry.
+    // Halving the timeout halves that loss and changes nothing else -- `max_retries=1`
+    // stays, so a genuinely slow stage still gets its second attempt.
+    //
+    // NOT retimed: `coder` (90m, max observed 2110s), `decompose` (30m, max 1009s),
+    // `rework_t1..t4` (45m, never yet executed) and `resolve_merge` (30m, n=1). Those
+    // have real tails or no evidence, and the same arithmetic does not hold for them.
+    // See docs/perf/00-overview-and-measurements.md.
+    standards [label="Standards review", class="review", timeout="15m", max_retries=1, prompt="@prompts/standards.md.j2"]
     standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/standards.json
 A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)
@@ -208,7 +232,7 @@ fi
 echo 0 > /tmp/fabro/standards_attempts
 echo '{\"context_updates\":{\"standards_status\":\"'$D'\"}}'"]
 
-    spec [label="Spec review", class="review", timeout="30m", max_retries=1, prompt="@prompts/spec.md.j2"]
+    spec [label="Spec review", class="review", timeout="15m", max_retries=1, prompt="@prompts/spec.md.j2"]
     spec_gate [label="Validate spec output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/spec.json
 A=$(cat /tmp/fabro/spec_attempts 2>/dev/null || echo 0)
@@ -223,7 +247,7 @@ echo 0 > /tmp/fabro/spec_attempts
 echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
     // ---- Review and fix (one agent, as Sandcastle does) ----
-    review_fix [label="Review and fix", class="review", timeout="30m", max_retries=1, prompt="@prompts/review_fix.md.j2"]
+    review_fix [label="Review and fix", class="review", timeout="15m", max_retries=1, prompt="@prompts/review_fix.md.j2"]
     fix_gate [label="Validate fix result", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/fix_result.json
 A=$(cat /tmp/fabro/fix_result_attempts 2>/dev/null || echo 0)
@@ -468,8 +492,27 @@ rm -f /tmp/fabro/review/ci_fix_result.json
 } > /tmp/fabro/feedback/ci_fix.md
 echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"gh_fix_attempts\":'$A'}}'
 exit 0"]
-    ci_fix_t1 [label="Fix failing CI (tier 1: coders)", class="rebase", timeout="20m", max_retries=1, prompt="@prompts/ci_fix.md.j2"]
-    ci_fix_t2 [label="Fix failing CI (tier 2: glm-5.3)", class="rebase-t2", timeout="20m", max_retries=1, prompt="@prompts/ci_fix.md.j2"]
+    // No `max_retries` on either tier -- `default_max_retries` is 0, and that is
+    // deliberate here where the other agent nodes carry 1.
+    //
+    // The only way these nodes fail is the 20m timeout: a `cannot_fix` verdict is a
+    // SUCCESS that ci_fix_gate then reads. A retry therefore always re-runs a stage
+    // that just proved it cannot finish in 20 minutes, and it costs a second 20.
+    //
+    // That breaks the 60-minute merge budget the `watch_checks` poll enforces. The
+    // budget assumes ONE agent attempt per tier -- see the arithmetic in that node:
+    // "1800 + agent + 900 + agent exceeds 3600". With a retry, tier 1 alone can take
+    // 40 minutes and tier 2 becomes unreachable.
+    //
+    // Measured on run 01M2RX2SGJJT09WK5FS8GYJCDE: ci_fix_t1 timed out at 20m, retried,
+    // timed out at 20m again, and routed to report_blocked -- the same conclusion the
+    // first attempt had already reached, 20 minutes later. Run
+    // 01M2RB5QBNBPS6C0F9904V25AX spent 20m + 13m the same way on ci_fix_t2.
+    //
+    // Routing is unaffected: a failed tier still takes its UNCONDITIONAL edge to
+    // ci_fix_gate, which finds no result file, reports ci_fix_ok=false, and blocks.
+    ci_fix_t1 [label="Fix failing CI (tier 1: coders)", class="rebase", timeout="20m", prompt="@prompts/ci_fix.md.j2"]
+    ci_fix_t2 [label="Fix failing CI (tier 2: glm-5.3)", class="rebase-t2", timeout="20m", prompt="@prompts/ci_fix.md.j2"]
     ci_fix_gate [label="Verify CI fix", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 B=$(cat /tmp/fabro/base_ref)
