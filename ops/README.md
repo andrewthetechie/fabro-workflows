@@ -449,9 +449,10 @@ only by the admission loop (`server.rs:4524` at `v0.354.0-nightly.0`). So after 
 in-place edit the reported cap and the enforced cap disagree, and `GET /settings` — the
 obvious way to check — is the one endpoint that cannot tell you.
 
-Two consequences. First, the change that raised this cap was staged on 2026-09-18 and
-the restart is the operator's to take, so **check the start time before assuming 4 is in
-force** — the overlay has said 4 while the server enforced 2 for exactly this reason.
+Two consequences. First, the change that raised this cap was staged on 2026-09-18 and the
+restart was taken the same evening (23:13:39Z, in a quiet window after the last in-flight
+run finished), so **4 is in force** — check the start time rather than assuming, because
+before that restart the overlay said 4 while the server enforced 2 for about two hours.
 Second, do not verify the cap from `/settings`. Verify that the process is newer than
 the file it read:
 
