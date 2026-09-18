@@ -26,10 +26,26 @@ digraph PrReview {
             // the default. The measurement above is specific to this local GGUF endpoint
             // and says nothing about z.ai or kimi, and the review classes are where the
             // thinking is the product rather than the overhead.
+            //
+            // coder_pool: the root stylesheet is the ONLY per-run model-routing lever
+            // fabro offers -- node `model` attributes are literal text and `args.model`
+            // loses to any explicit stylesheet assignment, but this template receives
+            // `inputs`. The scheduler fires a run with `args.inputs.coder_pool =
+            // "coders-a"` to lease one llama.cpp box for the whole run. `.rebase` also
+            // covers the imported review-merge graph's `ci_fix_t1`, which carries
+            // class="rebase" and has no stylesheet of its own.
+            //
+            // The `default('coders')` filter is LOAD-BEARING, and single quotes are
+            // mandatory: the stylesheet renders in strict mode, so an unbound input
+            // FAILS the run at compile (`422 run_compile_invalid`) rather than rendering
+            // empty, and an unescaped `"` would terminate this DOT attribute string.
+            // Do NOT bind `coder_pool` in `[run.inputs]` -- a bound default turns "no
+            // input supplied" into one specific box, which silently sends every
+            // hand-fired run there.
         model_stylesheet="
             *           { model: glm-5.3; }
             .review     { model: glm-5.3; }
-            .rebase     { model: coders; reasoning_effort: medium; }
+            .rebase     { model: {{ inputs.coder_pool | default('coders') }}; reasoning_effort: medium; }
             .rebase-t2  { model: glm-5.3; }
         "
     ]

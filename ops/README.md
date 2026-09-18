@@ -185,16 +185,39 @@ loudly:
 - **fabro will not route to a model its own catalog does not list**, and these
   rows are *not enough on their own* to pin a run. LiteLLM serves `coders-a`, but
   a run that asks for it fails before any call is made: `fabro model test -p
-  litellm -m coders-a` answers `× Unknown model: coders-a` (verified
-  2026-09-18). Both names need an `[llm.providers.litellm.models."…"]` block in
-  `settings.toml.example` *and* in the live `/storage/.home/settings.toml`,
-  applied with `docker compose restart fabro`. That restart fails every in-flight
-  run (ADR 0002), so it has to wait for an idle host and belongs with the
-  stylesheet change in `docs/scheduler/05-coder-pool-stylesheets.md`, not with
-  this provisioning run. Full recipe: `docs/issue-triage/02-fabro-model-catalog.md`.
-  Note that `fabro validate` passes a stylesheet naming an unlisted model —
-  checked by rewriting `.coder` to a literal `coders-a` in a scratch copy — so
-  validation cannot stand in for the catalog entry.
+  litellm -m coders-a` answers `× Unknown model: coders-a` while only the LiteLLM
+  rows exist (verified 2026-09-18). Both names need an
+  `[llm.providers.litellm.models."…"]` block in `settings.toml.example` *and* in
+  the live `/storage/.home/settings.toml`; both are there now, with `api_model`
+  equal to the LiteLLM `model_name` and `limits`/`capabilities` copied from
+  `coders`. `fabro validate` does not check the catalog — a stylesheet naming an
+  unlisted model passes it — so validation cannot stand in for these blocks.
+  Full recipe: `docs/issue-triage/02-fabro-model-catalog.md`.
+
+  **These two entries need no restart.** `max_concurrent_runs` is the exception,
+  not the rule: `replace_runtime_settings` (the 5s settings poll) rebuilds the LLM
+  `catalog` along with the other run defaults, and only `max_concurrent_runs` is
+  copied out once at startup. Verified 2026-09-18 by adding both blocks to the live
+  overlay with `docker inspect -f '{{.State.StartedAt}}'` unchanged at
+  `2026-09-17T15:31:24Z`, then watching a run pinned to `coders-b` reach its coder
+  stage and call the box. The restart paragraph above is about the cap.
+
+**How a run asks for a box.** Both root stylesheets carry the same two rules:
+
+```
+.coder  { model: {{ inputs.coder_pool | default('coders') }}; reasoning_effort: medium; }
+.rebase { model: {{ inputs.coder_pool | default('coders') }}; reasoning_effort: medium; }
+```
+
+`backlog` has both, `pr-review` only `.rebase` (its `review`/`fix` classes stay on
+`glm-5.3`). The scheduler will pass `args.inputs.coder_pool = "coders-a"` on the intent;
+a hand-fired run passes nothing and gets the load-balanced `coders` group, which is why
+that group is retained. The `default()` is not cosmetic — the stylesheet renders strict
+at run time, so without it a fire carrying no `coder_pool` fails at `POST /runs` with
+`422 run_compile_invalid`. Verified 2026-09-18 by registering the identical package with
+the filter removed: `201` on the version, then `422 run_compile_invalid`
+("run intent could not be compiled: Validation failed") on a no-input fire, against
+`201` for the real package.
 
 Changing any of this needs the **master key**, not `FABRO_LITELLM_KEY`: that one is an
 `internal_user` and `POST /model/update` answers 403. The master key is the
@@ -421,7 +444,21 @@ ssh andrew@<HOST> 'docker inspect -f "{{.State.StartedAt}}" fabro-fabro-1; \
 The container's start time must be **later** than the overlay's mtime; if it is earlier,
 the file has been edited and the change is not in force. (Note the reloader *does*
 rebuild the LLM `catalog`, so `[llm.providers.litellm.models.*]` entries — unlike the
-cap — do take effect without a restart.)
+cap — do take effect without a restart. Verified 2026-09-18: `coders-a`/`coders-b`
+were added to the live overlay with `StartedAt` unchanged at `2026-09-17T15:31:24Z`,
+and seconds later `fabro model test -p litellm -m coders-a` answered `ok` where it had
+answered `Unknown model: coders-a` before.)
+
+Confirmation that the enforced cap is still 2, and what it looks like when it is
+reached — the day the overlay was edited to 4:
+
+```
+GET /api/v1/system/info   ->  {"active": 3, "scheduler_slots_used": 2, "total": 12}
+```
+
+A third run stays `runnable` with `queue_position: null` while two are `running`, and
+nothing reports an error. `scheduler_slots_used` is the count that is capped; `active`
+also counts the queued ones.
 
 ~~Two drifts~~ The drift previously recorded here (`backlog-writers-app` missing its
 `api:manual` trigger) was corrected by hand on 2026-09-16; the script now compares the

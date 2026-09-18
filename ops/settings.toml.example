@@ -74,6 +74,37 @@ api_model = "coders"
 limits = { context_tokens = 262144, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }
 
+# One pinned group per box: `coders-a` is 10.10.0.29, `coders-b` is 10.10.0.56. A
+# run's `coder_pool` input selects one of them through the root graph's
+# `model_stylesheet`, which is how the scheduler leases a whole llama.cpp box for a
+# run (docs/scheduler/00-overview-and-contracts.md, findings 3 and 4).
+#
+# These entries are not decoration. LiteLLM serving the name is not enough: fabro
+# resolves a node's model against this catalog, and a name it does not list fails
+# before any call is made -- `fabro model test -p litellm -m coders-a` answered
+# `Unknown model: coders-a` while only the LiteLLM rows existed. `fabro validate`
+# does not check the catalog, so validation cannot stand in for these blocks.
+#
+# `limits` and `capabilities` are identical to `coders` above: the same GGUF model is
+# behind all three names, and only the box differs. `api_model` is the name sent to
+# the proxy, so it must equal the LiteLLM `model_name`.
+#
+# `coders-a`/`coders-b` take effect **without a restart** -- unlike
+# `server.scheduler.max_concurrent_runs`, the LLM catalog is rebuilt by
+# `replace_runtime_settings` on the 5s settings poll. See the `[server.scheduler]` note
+# above for the one value that is not.
+[llm.providers.litellm.models."coders-a"]
+display_name = "Local coders A (strix 10.10.0.29)"
+api_model = "coders-a"
+limits = { context_tokens = 262144, max_output_tokens = 38400 }
+capabilities = { text = true, tools = true, reasoning = true }
+
+[llm.providers.litellm.models."coders-b"]
+display_name = "Local coders B (strix 10.10.0.56)"
+api_model = "coders-b"
+limits = { context_tokens = 262144, max_output_tokens = 38400 }
+capabilities = { text = true, tools = true, reasoning = true }
+
 [llm.providers.litellm.models."long-context"]
 display_name = "Local long-context (spark)"
 api_model = "long-context"

@@ -12,6 +12,13 @@ graph = "workflow.fabro"
 # automation fire time.
 [run.model.fallbacks]
 coders = ["litellm:glm-4.7"]
+# The scheduler pins a run to one box by naming `coders-a` or `coders-b` in the
+# run's `coder_pool` input (see the stylesheet). Fallbacks are keyed on the
+# REQUESTED model name, so each pinned group needs its own entry or a pinned run
+# has no fallback at all. Same target as `coders` above, so pinning changes only
+# which box answers, never the escalation ladder.
+"coders-a" = ["litellm:glm-4.7"]
+"coders-b" = ["litellm:glm-4.7"]
 "glm-4.7" = ["litellm:kimi-for-coding"]
 kimi-for-coding = ["litellm:glm-5.3"]
 "glm-5.3" = ["litellm:kimi-k3"]
