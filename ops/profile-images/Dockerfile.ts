@@ -66,14 +66,26 @@ RUN uv python install "${PYTHON_VERSION}" && uv python list --only-installed
 # ---------------------------------------------------------------------------
 # Warm the caches from the repository's own lockfiles
 # ---------------------------------------------------------------------------
-# Three install roots, because this repository has three: a bun workspace at the
-# root, a second bun workspace under site/, and a uv project under backend/.
+# FOUR install roots, because this repository has four: a bun workspace at the
+# root, a second bun workspace under site/, a uv project under backend/, and a
+# root uv project whose dev group carries the lint toolchain (prek, zizmor,
+# ansible-lint). The root one is easy to miss -- its pyproject has no [project]
+# table at all, only [dependency-groups] -- and missing it left a 60 MB manylinux
+# zizmor wheel being downloaded on every run.
+# --no-install-workspace, not --no-install-project: the latter skips only the
+# ROOT project, so in a uv workspace it still tries to build every member -- and
+# a manifest-only context has no source to build them from. womens-fantasy-sports
+# has `backend` as a workspace member and failed exactly that way:
+#   error: Failed to build `app @ file:///tmp/warm/repo/backend`
+#   cause: Call to `hatchling.build.build_editable` failed
+# On a repository that is not a workspace the two flags behave identically.
 COPY warm/ /tmp/warm/
 RUN cd /tmp/warm/repo \
   && bun install --frozen-lockfile --ignore-scripts \
   && rm -rf node_modules \
   && if [ -f site/bun.lock ]; then cd /tmp/warm/repo/site && bun install --frozen-lockfile --ignore-scripts && rm -rf node_modules; fi \
-  && if [ -f /tmp/warm/repo/backend/pyproject.toml ]; then cd /tmp/warm/repo/backend && uv sync --frozen --no-install-project && rm -rf .venv; fi \
+  && if [ -f /tmp/warm/repo/backend/pyproject.toml ]; then cd /tmp/warm/repo/backend && uv sync --frozen --no-install-workspace && rm -rf .venv; fi \
+  && if [ -f /tmp/warm/repo/uv.lock ]; then cd /tmp/warm/repo && uv sync --frozen --no-install-workspace && rm -rf .venv; fi \
   && sh /tmp/warm/warm-build-backend.sh /tmp/warm/repo \
   && rm -rf /tmp/warm /tmp/buildreqs \
   && du -sh /opt/cache/* /opt/uv-python

@@ -61,6 +61,19 @@ fi
 
 REQS="$REQS $DYNAMIC"
 echo "warm-build-backend: $REQS"
+
 # --target keeps the install out of any real environment; the point is the side
-# effect on UV_CACHE_DIR, and the target directory is thrown away by the caller.
+# effect on UV_CACHE_DIR, and the caller throws the target directory away.
+#
+# This warms the WHEELS, not the resolution. `uv sync --frozen` re-resolves
+# build-system.requires on every project build, and resolution reads the package
+# index -- so with no network it still fails, on PyPI's simple page or on a PEP
+# 658 `.whl.metadata` sidecar, even with every wheel already local. A
+# --find-links directory does not change that: uv keeps preferring the configured
+# index, and the only switch that would is UV_NO_INDEX, which would turn a
+# lockfile that has drifted past the cache from "fetch the delta" into "fail".
+#
+# That is why build-images.sh checks the dependency closure offline and the
+# repository's real setup.sh with the network up, rather than demanding both of
+# one run. Sandbox runs have network; what the cache owes them is speed.
 uv pip install --target /tmp/buildreqs $REQS

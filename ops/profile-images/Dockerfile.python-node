@@ -74,9 +74,16 @@ RUN uv python install "${PYTHON_VERSION}" && uv python list --only-installed
 # ---------------------------------------------------------------------------
 # Warm the caches from the repository's own lockfiles
 # ---------------------------------------------------------------------------
+# --no-install-workspace, not --no-install-project: the latter skips only the
+# ROOT project, so in a uv workspace it still tries to build every member -- and
+# a manifest-only context has no source to build them from. womens-fantasy-sports
+# has `backend` as a workspace member and failed exactly that way:
+#   error: Failed to build `app @ file:///tmp/warm/repo/backend`
+#   cause: Call to `hatchling.build.build_editable` failed
+# On a repository that is not a workspace the two flags behave identically.
 COPY warm/ /tmp/warm/
 RUN cd /tmp/warm/repo \
-  && uv sync --frozen --no-install-project \
+  && uv sync --frozen --no-install-workspace \
   && rm -rf .venv \
   && sh /tmp/warm/warm-build-backend.sh /tmp/warm/repo \
   && npm ci --ignore-scripts \

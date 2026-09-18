@@ -98,40 +98,82 @@ assemble_context() {
   printf '%s' "$ctx"
 }
 
-# Does the image's baked cache actually cover this repository's install?
+# Two checks, because they answer two different questions and only one of them
+# can be asked with the network down.
 #
-# Run the repository's own `.fabro/setup.sh` inside the freshly built image with
-# --network=none. If the cache is short of anything, the install fails here at
-# build time instead of on the next run, where it would surface as a failing
-# `validate` and send the task into the rework ladder.
+# CACHE (offline): does the baked cache cover this repository's dependency
+# closure? Run per manifest the repository actually has. This is the check that
+# fails when a lockfile has moved past what was warmed.
 #
-# This is not paranoia. The first warm step passed its build and still could not
-# install offline: `uv sync --frozen --no-install-project` skips the project, so
-# it skips the project's build backend, and hatchling then wanted `hatchling` and
-# `editables` from PyPI. A build-time gate finds that; a green `docker build`
-# does not.
+# It deliberately stops at the dependency closure. `uv sync --frozen` also builds
+# the project, and uv re-resolves build-system.requires every time it does --
+# resolution reads the package index, so it reaches for PyPI's simple page or a
+# PEP 658 `.whl.metadata` sidecar even when every wheel is already local. Nothing
+# short of UV_NO_INDEX changes that, and UV_NO_INDEX would break the delta fetch
+# that makes a stale cache merely slow instead of fatal. Sandbox runs have a
+# network; what the cache owes them is speed, not independence.
 #
-# SKIP_VERIFY=1 to build without the gate. Only useful when a repository's
-# setup.sh genuinely requires the network.
-verify_offline() {
+# CONTRACT (network up): does the repository's own .fabro/setup.sh actually run
+# in this image? This is the check that would have caught jelly-swipe's ci.sh
+# calling `npm ci` in an image with no npm -- the failure that matters, because
+# it turns every task into a rework-ladder loop against something no code change
+# can fix.
+#
+# SKIP_VERIFY=1 disables both.
+verify_image() {
   repo=$1 tag=$2
   [ "${SKIP_VERIFY:-0}" = "1" ] && { log "verify $tag: skipped"; return 0; }
   src="$WORK/src/$repo"
-  [ -x "$src/.fabro/setup.sh" ] || { log "verify $tag: $repo has no .fabro/setup.sh"; return 0; }
-  log "verify $tag: running $repo/.fabro/setup.sh offline"
-  # The source is mounted read-only and copied inside, so the check can never
-  # write to the clone the next build reuses.
+  ok=0
+
+  log "verify $tag: cache check, offline"
+  # Mounted read-only and copied inside, so a check can never write to the clone
+  # the next build reuses.
   if docker run --rm --network=none -v "$src":/src:ro --entrypoint bash "$tag" -c '
-        set -e
+        set -eu
         cp -a /src /verify && cd /verify
-        ./.fabro/setup.sh
-      ' >"$WORK/verify-$repo.log" 2>&1; then
-    log "verify $tag: offline install OK"
-    return 0
+        ran=0
+        for d in . backend site frontend; do
+          [ -d "$d" ] || continue
+          ( cd "$d"
+            if [ -f uv.lock ];          then echo "-- uv  $d";   uv sync --frozen --no-install-workspace >/dev/null; fi
+            # Both files, not just the lockfile: jelly-swipe carries a root
+            # package-lock.json with no package.json beside it, and `npm ci`
+            # there fails ENOENT on a repository that is perfectly healthy.
+            if [ -f package-lock.json ] && [ -f package.json ]; then echo "-- npm $d"; npm ci --ignore-scripts >/dev/null; rm -rf node_modules; fi
+            if [ -f bun.lock ] && [ -f package.json ]; then echo "-- bun $d"; bun install --frozen-lockfile --ignore-scripts >/dev/null; rm -rf node_modules; fi
+            if [ -f Cargo.lock ];       then echo "-- cargo $d"; cargo fetch >/dev/null; fi
+          )
+          ran=1
+        done
+        [ "$ran" = 1 ] || { echo "no install root found"; exit 1; }
+      ' >"$WORK/verify-cache-$repo.log" 2>&1; then
+    log "verify $tag: cache OK ($(grep -c "^-- " "$WORK/verify-cache-$repo.log" || echo 0) install root(s), no network)"
+  else
+    log "verify $tag: CACHE CHECK FAILED -- the baked cache does not cover this repo"
+    tail -20 "$WORK/verify-cache-$repo.log" >&2
+    ok=1
   fi
-  log "verify $tag: OFFLINE INSTALL FAILED -- the cache does not cover this repo"
-  tail -25 "$WORK/verify-$repo.log" >&2
-  return 1
+
+  if [ -x "$src/.fabro/setup.sh" ]; then
+    log "verify $tag: contract check, running $repo/.fabro/setup.sh"
+    t0=$(date +%s)
+    if docker run --rm -v "$src":/src:ro --entrypoint bash "$tag" -c '
+          set -e
+          cp -a /src /verify && cd /verify
+          ./.fabro/setup.sh
+        ' >"$WORK/verify-setup-$repo.log" 2>&1; then
+      log "verify $tag: .fabro/setup.sh OK in $(( $(date +%s) - t0 ))s"
+    else
+      log "verify $tag: .fabro/setup.sh FAILED -- this image cannot run the repo contract"
+      tail -20 "$WORK/verify-setup-$repo.log" >&2
+      ok=1
+    fi
+  else
+    log "verify $tag: $repo has no .fabro/setup.sh to check"
+  fi
+
+  return $ok
 }
 
 want() {
@@ -163,7 +205,7 @@ for entry in $PROFILES; do
       -t "$TAG" \
       --label "fabro.warmed-from=$REPO@$SHA" \
       --label "fabro.warmed-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      "$CTX" && verify_offline "$REPO" "$TAG"; then
+      "$CTX" && verify_image "$REPO" "$TAG"; then
     log "ok $TAG"
   else
     log "FAILED $TAG"
