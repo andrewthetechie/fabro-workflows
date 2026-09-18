@@ -124,6 +124,46 @@ to the host crontab, clear of the schedules:
 23 3 * * *  /home/andrew/profile-images-build/build-images.sh >> ~/.local/state/profile-images.log 2>&1
 ```
 
+**LiteLLM `coders` deployments** — two rows, one per llama.cpp box, both
+`openai/deepseek-v4-flash-0731-iq3-xxs`:
+
+| deployment | api_base | timeout | max_parallel_requests |
+|---|---|---|---|
+| `ee9cf2cb…` | `http://10.10.0.29:8000/v1` | **600.0** | 1 |
+| `c4504835…` | `http://10.10.0.56:8000/v1` | **600.0** | 1 |
+
+`timeout` was `120.0` on both until 2026-09-18. fabro's coder turns averaged
+**95 seconds**, so the gateway was cutting the long ones — that is where the
+`502 Bad Gateway` responses on `coders` came from, and the agent then retried the
+whole turn. 600s is generous against the measured turn distribution while still
+releasing llama.cpp's single slot on a genuinely hung upstream.
+
+`max_parallel_requests = 1` mirrors llama.cpp's one slot per box: whoever holds
+it blocks everything else for a full turn. **There is no affinity**, so with two
+concurrent runs a request routinely lands on the slot the other run is holding
+and waits out its whole turn. Sandcastle avoided this by locking one repo to one
+instance. Splitting `coders` into per-box groups and pinning environments is
+designed but not built — see `../docs/perf/02-needs-your-decision.md`.
+
+Changing these needs the **master key**, not `FABRO_LITELLM_KEY`: that one is an
+`internal_user` and `POST /model/update` answers 403. The master key is the
+sealed secret `litellm-secrets.masterkey`, readable from the running pod:
+
+```sh
+kubectl -n litellm exec deploy/litellm -- printenv PROXY_MASTER_KEY
+```
+
+Send the **full** current `litellm_params` with only the field you mean to
+change. `POST /model/update` replaces the map, so a partial body drops `api_base`
+and `max_parallel_requests`. These two rows have no credential attached
+(`GET /credentials/by_model/{id}` is empty) because they are plain-http LAN
+endpoints — but a z.ai row does, and rebuilding one from `/model/info` output
+silently creates a model with no key.
+
+Apply it while the target box's slot is idle (`GET http://<box>:8000/slots`,
+`is_processing == 0`) — that gap between turns is the safe window when a run is
+live.
+
 **Automations** — two per target repo, one for each workflow, all resolving
 `workflow_source` to `andrewthetechie/fabro-workflows@main` at fire time. Read back
 from the live server 2026-09-16:
