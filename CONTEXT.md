@@ -18,10 +18,12 @@ runs.
 _Avoid_: connection, request
 
 **Cap**:
-`server.scheduler.max_concurrent_runs` (currently 2), the only hard concurrency control.
-Runs fired beyond the cap queue; they are not rejected (verified 2026-09-16).
-`issue-triage`'s capacity check reads the same number from the other side: it stands
-down at `scheduler_slots_used > 1`, because the triage run is itself one of the two.
+`server.scheduler.max_concurrent_runs`, fabro's only concurrency control and a single
+global integer — there is no per-pool or per-label variant. Runs fired beyond it queue;
+they are not rejected (verified 2026-09-16). Once the **Scheduler** owns admission the
+cap is raised to 4 and becomes a backstop rather than the thing shaping behaviour: it
+stops a runaway, it does not allocate. Not to be confused with a **Coder lease**, which
+is the control that actually matters.
 _Avoid_: limit, throttle
 
 **Quiet-exit**:
@@ -34,14 +36,58 @@ triggers (`api:manual`, `schedule:every-15m`, `schedule:hourly`). Three per repo
 twelve total.
 _Avoid_: schedule, cron, job
 
-**Bridge**:
-The `trigger_review` stage of `backlog`, which fires a durable `pr-review` run on the PR
-the backlog run just opened.
+**Bridge** *(retired)*:
+Was the `trigger_review` stage of `backlog`, which fired a separate `pr-review` run on
+the PR it had just opened. Commit `54c21be` moved review-and-merge into the backlog run
+itself through the shared `_shared/review-merge/` import, so the stage no longer exists
+and no second run is created. `backlog` now runs `open_pr -> pr_handoff -> review_merge
+-> exit`. Kept here only so the word is not reused for something else.
+
+**Coder instance**:
+One llama.cpp server holding the `deepseek-v4-flash-0731-iq3-xxs` GGUF — `10.10.0.29`
+and `10.10.0.56` today. Each has exactly **one slot**, so whoever holds it blocks
+everything else for a whole turn. Measured ceiling 17.4 tok/s.
+_Avoid_: coder agent, box, GPU, worker (a fabro worker is a different thing)
 
 **Coder pool**:
-The two local coder models (`coders` in the litellm catalog), each serving one session
-at a time. Saturation behavior (queue vs. error into cloud fallback) is an accepted
-unknown.
+The set of coder instances, and the LiteLLM model group `coders` that fronts all of
+them. After the split there are three groups: `coders-a` and `coders-b` address one
+instance each, `coders` addresses both and is the fallback for anything unpinned.
+Saturation is no longer an accepted unknown: two concurrent runs on two single-slot
+instances with no affinity spend roughly half their turns queued behind each other,
+measured at ~1.7x on 2026-09-18.
+
+**Coder lease**:
+A scheduler-held claim on one **Coder instance** for one **Queue item**, recorded as
+`(box, repo, issue, run_id, dispatched_at)`. Runs from dispatch to the run's terminal
+state and is released by nothing else — not by a human gate, not by a hosted-model
+stage. See ADR 0006.
+_Avoid_: lock, pin, reservation
+
+**Queue item**:
+One open, `agent`-labelled issue that is neither `agent-in-progress` nor `agent-stuck`.
+Becomes exactly one `backlog` run, which may decompose into many tasks and produces one
+PR. The unit the queue orders and the web UI reorders.
+_Avoid_: job, task (a task is what `decompose` produces *inside* a run)
+
+**Scheduler**:
+`ops/scheduler/`, a service in the `~/fabro` compose project that owns admission to the
+coder instances: it inventories work from GitHub, orders it, and creates one fabro run
+at a time. Distinct from fabro's own scheduler, which only promotes `runnable` runs FIFO
+and cannot be steered.
+_Avoid_: dispatcher, orchestrator, queue manager
+
+**Drain**:
+Marking a coder instance ineligible for new dispatch while letting its current run
+finish. Deliberately *not* cancellation — cancelling the run on a box is a separate,
+explicitly-labelled control, because the word "drain" should never destroy work.
+_Avoid_: disable, cordon
+
+**Starvation ceiling**:
+`T`, default 4h. Any queue item waiting longer than `T` jumps the front regardless of
+priority. The whole anti-starvation mechanism — chosen over a continuous aging score
+because "nothing waits more than T" is verifiable by looking at the queue.
+_Avoid_: aging, decay
 
 **Double-fire guard**:
 The `/tmp/fabro/review_triggered` marker file that prevents a second bridge fire when
@@ -64,7 +110,9 @@ _Avoid_: watchdog, alerting (the hooks alert; the monitor watches)
 
 **Starvation**:
 Zero open `agent`-labeled issues across all four target repos — the factory is out of
-work. A monitor condition, not a run state.
+work. A monitor condition, not a run state. Note this is the *opposite* sense to the
+**Starvation ceiling**, which is about a queued item never being picked: here there is
+nothing to pick.
 _Avoid_: idle, empty queue
 
 **Heartbeat**:
