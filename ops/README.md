@@ -38,8 +38,15 @@ deployment and drift check are in the main `AGENTS.md`.
 
 ## Secrets — where they live, never in this repo
 
-- `FABRO_DEV_TOKEN`, `SESSION_SECRET`, `FABRO_LITELLM_KEY`, `GITHUB_TOKEN` →
-  `~/.fabro-deploy/env` on the Mac (chmod 600) and the fabro vault.
+Checked on 2026-09-18, because the list below had drifted from the host:
+
+- `~/.fabro-deploy/env` on the Mac (chmod 600) holds `KIMI_API_KEY`, `ZAI_API_KEY` and
+  `FABRO_LITELLM_KEY` — **not** `GITHUB_TOKEN`, `SESSION_SECRET` or `FABRO_DEV_TOKEN`.
+- The fabro vault holds `FABRO_API_TOKEN`, `GITHUB_TOKEN` and `LITELLM_API_KEY`. It is
+  write-only in practice: `fabro secret` is `list`/`set`/`rm`, so a value that goes in
+  cannot be read back out. Copy from wherever it came from instead.
+- `GITHUB_TOKEN` also lives in `~/fabro/scheduler.env` on the host, for the coder
+  scheduler, captured from `gh auth token` there (see *The coder scheduler* below).
 - `FABRO_API_TOKEN` → the fabro vault, and **only** the vault. `backlog`'s
   `workflow.toml` injects it into the sandbox with
   `[run.environment.env]` so `trigger_review` can create a `pr-review` run through the
