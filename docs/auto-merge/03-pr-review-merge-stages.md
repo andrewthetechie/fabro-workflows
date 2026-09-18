@@ -185,8 +185,16 @@ needing a human is the bug this check exists to avoid.
 Then:
 
 ```sh
-gh pr merge \"$PR\" --squash --delete-branch --subject \"$(cat /tmp/fabro/commit_subject.txt)\" --body-file /tmp/fabro/commit_body.md
+gh pr merge \"$PR\" --squash --delete-branch=false --subject \"$(cat /tmp/fabro/commit_subject.txt)\" --body-file /tmp/fabro/commit_body.md
 ```
+
+`--delete-branch=false` is written out rather than omitted, and it is not a typo:
+`--delete-branch` deletes the **local** head branch as well as the remote one, and the
+merge is not the run's last stage — fabro's checkpoint still has to publish the run branch
+for everything that follows. With deletion on, the publish after the merge finds no local
+ref, fails three times, and reports a run whose PR merged and whose issue closed as
+`failed`/`publish_failed`. Observed on 2026-09-18 (finding 10 in
+`00-overview-and-contracts.md`). `fabro-branch-sweep.sh` reaps the branch instead.
 
 Classify the result:
 

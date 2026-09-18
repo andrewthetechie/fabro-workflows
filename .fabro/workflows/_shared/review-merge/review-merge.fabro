@@ -131,8 +131,7 @@ def one($axis):
     else empty end ),
   ( if $kind == \"merged\"
     then [ \"\", \"### Merged\", \"\",
-           \"Squash-merged as `\" + $subject + \"`.\",
-           \"Head branch deleted.\"
+           \"Squash-merged as `\" + $subject + \"`.\"
              + (if $issue == \"\" then \"\" else \" Resolves #\" + $issue + \".\" end) ]
             | join(NL)
     else empty end ),
@@ -560,6 +559,20 @@ else
   echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
 fi
 exit 0"]
+    // `--delete-branch=false` is deliberate and load-bearing: `gh pr merge
+    // --delete-branch` deletes the LOCAL head branch as well as the remote one, and
+    // this merge is not the run's last stage. Fabro's checkpoint commits and
+    // publishes the run branch after every later stage, so the next publish finds no
+    // local ref, fails with `src refspec refs/heads/fabro/run/... does not match
+    // any`, retries three times, and reports the run as failed/publish_failed -- a
+    // correct merge recorded as a failure. Observed 2026-09-18 on run
+    // 01M2TFEHPYXXTQST6VPXREA854, which merged PR 1206, closed its issue through
+    // `Resolves`, and then spent its last eleven seconds failing to push the branch
+    // it had just deleted.
+    //
+    // Reaping the branch is ops/fabro-branch-sweep.sh's job, at its own grace: 24h
+    // for a fabro/run/* branch whose tree matches the default branch, 168h for one
+    // that still differs from it -- which is what a squash merge leaves behind.
     merge [label="Squash merge", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
@@ -568,7 +581,7 @@ if [ \"$S\" != OPEN ]; then
   echo '{\"context_updates\":{\"merge_state\":\"closed\"}}'
   exit 0
 fi
-if gh pr merge \"$PR\" --squash --delete-branch --subject \"$(cat /tmp/fabro/commit_subject.txt)\" --body-file /tmp/fabro/commit_body.md; then
+if gh pr merge \"$PR\" --squash --delete-branch=false --subject \"$(cat /tmp/fabro/commit_subject.txt)\" --body-file /tmp/fabro/commit_body.md; then
   echo '{\"context_updates\":{\"merge_state\":\"merged\"}}'
   exit 0
 fi
@@ -625,7 +638,7 @@ if ! sh /tmp/fabro/render_comment.sh merged > /tmp/fabro/pr_comment.md; then
   echo 'WARNING: could not render the review comment; falling back to a minimal one.' >&2
   { echo 'Automated review complete and the PR was squash-merged, but the detailed report could not be rendered.'
     echo
-    echo 'Squash-merged as `'$(cat /tmp/fabro/commit_subject.txt 2>/dev/null)'`. Head branch deleted.'
+    echo 'Squash-merged as `'$(cat /tmp/fabro/commit_subject.txt 2>/dev/null)'`.'
   } > /tmp/fabro/pr_comment.md
 fi
 gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the merge comment.' >&2

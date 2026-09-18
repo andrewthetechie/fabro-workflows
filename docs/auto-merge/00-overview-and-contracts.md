@@ -35,7 +35,7 @@ bridge.
 | 9 | **No re-review after a CI fix.** Instead `ci_fix` is constrained to files already in the PR's changed set, verified from git rather than trusted. |
 | 10 | Auto-merge is **on by default, on all four repos**. Two independent kill switches exist instead of an opt-in. |
 | 11 | An **expected** block keeps `ai-review-complete` and explains itself in the report comment. An **unexpected** failure routes to `mark_needs_human`. |
-| 12 | Merged PRs get `--delete-branch`; the linked issue closes via `Resolves #N` and loses its `Review` label. |
+| 12 | Merged PRs are **not** branch-deleted by the merge (`--delete-branch=false`, finding 10); `fabro-branch-sweep.sh` reaps the run branch at its own grace. The linked issue closes via `Resolves #N` and loses its `Review` label. |
 | 13 | Discord notifies on **merges only** — `pr-review`'s first hook. |
 | 14 | The squash **subject is read live from the PR title**, never round-tripped. The **body** rides in a delimited block in the PR description. |
 | 15 | `risk` becomes **gate-enforced** in `fix_gate`, not merely documented in the prompt. |
@@ -162,6 +162,42 @@ next run with no `.env` edit and no `docker compose up -d`.
 Its `case` ends `*) msg="ℹ️ fabro run ${run_id} notification ($kind)"`. A host copy
 that predates task 08 sends a plain message rather than failing — which matters
 because that script is the one file in this change that still has two copies.
+
+### 10. `gh pr merge --delete-branch` deletes the *local* branch, and fails the run it just merged
+
+Found on 2026-09-18, on the first run to merge a PR through this graph after the
+scheduler work landed. The other findings above were measured 2026-09-15.
+
+`gh pr merge` deletes the local head branch as well as the remote one. The merge is not
+the run's last stage — `report_merged` and the terminal label work follow it — and
+fabro's checkpoint commits and publishes the run branch after every later stage. So the
+first publish after the merge finds no local ref and fails:
+
+```
+error: src refspec refs/heads/fabro/run/01M2TFEHPYXXTQST6VPXREA854 does not match any
+error: failed to push some refs to 'https://github.com/andrewthetechie/womens-fantasy-sports'
+```
+
+It retries three times (`run.notice`, code `git_push_failed`, at `23:10:52`, `23:10:55`
+and `23:10:56`) and then reports `failed` with reason `publish_failed` and category
+`deterministic`. On run `01M2TFEHPYXXTQST6VPXREA854` all of that happened *after* PR
+**#1206** squash-merged at `23:10:49` and issue **#1196** closed at `23:10:50`: a fully
+successful run, recorded as a failure.
+
+Exactly one of the 316 runs in the store carries `publish_failed`, and it is that one.
+
+So decision 12 is `--delete-branch=false`, and the flag is written out rather than
+omitted so the choice is visible to the next reader. Reaping the branch is
+`ops/fabro-branch-sweep.sh`'s job, at its own grace: 24h for a `fabro/run/*` branch whose
+tree matches the default branch, 168h for one that still differs from it — which is what
+a squash merge leaves behind. Measured on jelly-swipe's 21 leaked run branches on
+2026-09-18: the oldest was 126h, all within grace, so the sweeper is doing the job.
+
+Two reasons this is worth more than tidiness. `failed` is already the largest bucket (118
+of 316), so a member of it that merged, closed its issue and commented on the PR is a
+status the operator cannot act on. And the near miss: the same push event, had fabro
+classified it `transient_infra` instead of `deterministic`, would have requeued an issue
+that was already closed and merged.
 
 ## Architecture
 
@@ -349,7 +385,6 @@ Four more matter here:
 | Auto-merge cannot be undone by another commit | AGENTS.md's usual escape — "no rollback other than another commit" — does not apply to a merge that already deployed. This is why the rollout in task 10 is kill-switch-first and why both switches fail closed. |
 
 ## Task index
-
 | # | Task | Needs smarter LLM? |
 |---|---|---|
 | 00 | This document | — |

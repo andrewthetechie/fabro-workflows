@@ -44,9 +44,12 @@ For `merged`:
 ```
 ### Merged
 
-Squash-merged as `fix(frontend): button "Open in Jellyfin" opens a blank new tab (#375)`.
-Head branch deleted. Resolves #375.
+Squash-merged as `fix(frontend): button "Open in Jellyfin" opens a blank new tab (#375)`. Resolves #375.
 ```
+
+The `Head branch deleted.` sentence was removed on 2026-09-18: the merge no longer deletes
+the branch (finding 10 in `00-overview-and-contracts.md`), so the comment must not claim it
+did.
 
 For `blocked`:
 
