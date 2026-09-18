@@ -11,14 +11,36 @@ digraph Backlog {
         // in the preamble is load bearing; the one exception was `human.gate.text`,
         // which `record_guidance` now writes to a file instead.
         default_fidelity="summary:low",
+            // reasoning_effort: medium on the classes that run on `coders`, and only
+            // those. Measured against the llama.cpp box itself (10.10.0.29, direct,
+            // no gateway), identical prompt:
+            //
+            //   no parameter          875 completion tokens, 1496 reasoning chars
+            //   reasoning_effort=low  678                    1436
+            //   reasoning_effort=high 1208                   3042
+            //
+            // fabro defaults reasoning_effort to `high` and transmits it. Sandcastle's
+            // config never set it, so opencode sent no parameter -- and llama.cpp does
+            // honour the difference: `high` is 1.38x the tokens of the default. At the
+            // box's measured 17.4 tok/s that is ~69s per turn instead of ~50s, which
+            // over a 60-turn coder stage is the difference between 50 and 95 minutes.
+            // `medium` is the closest fabro can get to "no parameter"; `low` undershoots
+            // the model's own default.
+            //
+            // The hosted tiers (glm-4.7, kimi-for-coding, glm-5.3, kimi-k3) are left at
+            // the default. The measurement above is specific to this local GGUF endpoint
+            // and says nothing about z.ai or kimi, and the review classes are where the
+            // thinking is the product rather than the overhead.
         model_stylesheet="
             *                { model: coders; }
             .decomp          { model: glm-5.3; }
             .improve         { model: glm-5.3; }
-            .coder           { model: coders; }
+            .coder           { model: coders; reasoning_effort: medium; }
             .coder-t2        { model: glm-4.7; }
             .coder-t3        { model: kimi-for-coding; }
             .coder-t4        { model: glm-5.3; }
+            .rebase          { model: coders; reasoning_effort: medium; }
+            .rebase-t2       { model: glm-5.3; }
             .review          { model: glm-5.3; }
             .review-frontier { model: kimi-k3; }
         "
