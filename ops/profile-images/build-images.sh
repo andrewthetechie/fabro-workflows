@@ -38,7 +38,9 @@ rust-node:writers-app:fabro-rust-node:local
 # else is copied: no source, no history, no .env, no secrets.
 MANIFESTS='(^|/)(pyproject\.toml|uv\.lock|\.python-version|package\.json|package-lock\.json|bun\.lock|bun\.lockb|Cargo\.toml|Cargo\.lock|rust-toolchain(\.toml)?)$'
 
-log() { printf '%s  %s\n' "$(date -u +%H:%M:%S)" "$*"; }
+# To stderr, not stdout: sync_repo and assemble_context are read with $(...)
+# and anything they print on stdout becomes part of the sha or the context path.
+log() { printf '%s  %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 sync_repo() {
@@ -73,8 +75,45 @@ assemble_context() {
     n=$((n + 1))
   done
   [ "$n" -gt 0 ] || die "$repo: no manifest files matched; the cache would be empty"
+  cp "$HERE/warm-build-backend.sh" "$ctx/warm/warm-build-backend.sh"
   log "context $profile: $n manifest file(s)"
   printf '%s' "$ctx"
+}
+
+# Does the image's baked cache actually cover this repository's install?
+#
+# Run the repository's own `.fabro/setup.sh` inside the freshly built image with
+# --network=none. If the cache is short of anything, the install fails here at
+# build time instead of on the next run, where it would surface as a failing
+# `validate` and send the task into the rework ladder.
+#
+# This is not paranoia. The first warm step passed its build and still could not
+# install offline: `uv sync --frozen --no-install-project` skips the project, so
+# it skips the project's build backend, and hatchling then wanted `hatchling` and
+# `editables` from PyPI. A build-time gate finds that; a green `docker build`
+# does not.
+#
+# SKIP_VERIFY=1 to build without the gate. Only useful when a repository's
+# setup.sh genuinely requires the network.
+verify_offline() {
+  repo=$1 tag=$2
+  [ "${SKIP_VERIFY:-0}" = "1" ] && { log "verify $tag: skipped"; return 0; }
+  src="$WORK/src/$repo"
+  [ -x "$src/.fabro/setup.sh" ] || { log "verify $tag: $repo has no .fabro/setup.sh"; return 0; }
+  log "verify $tag: running $repo/.fabro/setup.sh offline"
+  # The source is mounted read-only and copied inside, so the check can never
+  # write to the clone the next build reuses.
+  if docker run --rm --network=none -v "$src":/src:ro --entrypoint bash "$tag" -c '
+        set -e
+        cp -a /src /verify && cd /verify
+        ./.fabro/setup.sh
+      ' >"$WORK/verify-$repo.log" 2>&1; then
+    log "verify $tag: offline install OK"
+    return 0
+  fi
+  log "verify $tag: OFFLINE INSTALL FAILED -- the cache does not cover this repo"
+  tail -25 "$WORK/verify-$repo.log" >&2
+  return 1
 }
 
 want() {
@@ -106,7 +145,7 @@ for entry in $PROFILES; do
       -t "$TAG" \
       --label "fabro.warmed-from=$REPO@$SHA" \
       --label "fabro.warmed-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      "$CTX"; then
+      "$CTX" && verify_offline "$REPO" "$TAG"; then
     log "ok $TAG"
   else
     log "FAILED $TAG"

@@ -65,15 +65,29 @@ ENV UV_CACHE_DIR=/opt/cache/uv \
 # itself, so no source tree is needed and no stale copy of the project is baked
 # in. The resolved wheels land in UV_CACHE_DIR; the throwaway venv is deleted.
 #
+# `--no-install-project` is not enough on its own. It skips the project, so it
+# also skips the project's BUILD BACKEND -- and `uv sync --frozen`, which is what
+# .fabro/setup.sh actually runs, does build the project. Proved by running the
+# real setup.sh in this image with --network=none:
+#
+#   Building jellyswipe @ file:///work
+#   error: No solution found when resolving: `hatchling`
+#   cause: Failed to fetch: `https://pypi.org/simple/hatchling/`
+#
+# warm-build-backend.sh reads `build-system.requires` out of every pyproject.toml
+# in the context and pulls those into the same cache, which closes the gap
+# without hard-coding hatchling or guessing at a source layout.
+#
 # `npm ci --ignore-scripts` populates NPM_CONFIG_CACHE without running install
 # hooks from the dependency tree at image build time. node_modules is deleted:
 # the run rebuilds it in the workspace, from this cache, offline.
-COPY warm/repo/ /tmp/warm/
-RUN cd /tmp/warm \
+COPY warm/ /tmp/warm/
+RUN cd /tmp/warm/repo \
   && uv sync --frozen --no-install-project \
   && rm -rf .venv \
-  && cd /tmp/warm/frontend \
+  && sh /tmp/warm/warm-build-backend.sh /tmp/warm/repo \
+  && cd /tmp/warm/repo/frontend \
   && npm ci --ignore-scripts \
   && rm -rf node_modules \
-  && rm -rf /tmp/warm \
+  && rm -rf /tmp/warm /tmp/buildreqs \
   && du -sh /opt/cache/*
