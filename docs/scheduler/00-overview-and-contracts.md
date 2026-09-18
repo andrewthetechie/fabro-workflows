@@ -54,6 +54,12 @@ of four uncoordinated schedules; it will faithfully park a box on a run that sta
 Read out of `context/fabro` (nightly `0.357.0`) on 2026-09-18. Each one closed off an
 approach that looked obvious.
 
+**The host runs `0.354.0-nightly.0`, not `0.357.0`** — `FABRO_VERSION` in `~/fabro/.env`,
+and `fabro version` inside the container agrees (build 2026-09-12). Findings 1–8 were read
+from a *newer* checkout than the deployed binary, so take their line numbers as pointers
+to the idea and re-check behaviour against the container before relying on it. Findings
+9–11 were read out of the deployed tag and the live API.
+
 ### 1. Fabro's queue cannot be steered
 
 Ordering is strict FIFO on run **creation** time (`lib/apps/fabro-server/src/server.rs:4538`,
@@ -167,6 +173,84 @@ request 2 (If-None-Match)  304   x-ratelimit-remaining: 4999   x-ratelimit-used:
 A `304` costs **zero** quota against the 5,000/hr authenticated budget. Four repos on a
 60s cadence is ~240 requests an hour, essentially all 304s.
 
+### 9. The terminal status set is `succeeded | failed | dead`, and a cancel is a `failed`
+
+`RunStatusKind` has eleven variants and `is_terminal()` matches exactly three of them:
+`succeeded`, `failed`, `dead`
+(`lib/foundation/fabro-types/src/status.rs:22-33,80-86` at `v0.354.0-nightly.0`). The live
+`GET /api/v1/openapi.json` agrees — the `RunStatus` discriminator lists the same eleven
+names, and the only terminal ones are those three.
+
+There is no `cancelled` kind and no `errored` kind. Cancelling a run produces
+`{"kind":"failed","reason":"cancelled"}`, verified live on 2026-09-18 by cancelling run
+`01M2V2ZWWWPBZQM4NBY40H0Q24` and reading it straight back out of `GET /runs`. `dead` is a
+reachable escape hatch (`can_transition_to` accepts it from any status,
+`status.rs:132-135`) and is terminal, so a Release rule that lists the kinds by name must
+include it or a dead run holds its lease forever.
+
+### 10. The failure `category` is not in the run projection, and the canonical infra failure is not `transient_infra`
+
+The Requeue rule keys on the failure `category`. Two problems, both verified live on
+2026-09-18 against all 315 runs in the store.
+
+**The category is not in the run projection.** `GET /runs` and `GET /runs/{id}` return
+`lifecycle.status` (kind and reason), `lifecycle.error`, `queue_position` and `archived`,
+and nothing else about the failure — `RunLifecycle` in the live OpenAPI has no category
+field, and on a cancelled run `lifecycle.error` is `null`. The category exists only in the
+`run.failed` event payload, at `properties.failure.detail.category`, so classifying a
+terminal run costs one extra call — and it has to be read from the **tail**:
+
+```
+GET /runs/{id}/events?order=desc&limit=100     the run.failed event is in there
+```
+
+Verified on the 10.4-hour run `01M2PSA224HXTXJSSVBGTVPYF1` (3233 events) and on a 5-event
+run alike. An ascending read cannot work: the failure is the second-to-last event, the
+endpoint caps at 1000 events, and `page[offset]` is ignored on it (finding 11). A
+first-page ascending read of any run with more than 100 events contains **no** `run.failed`
+event at all, which is indistinguishable from "this run has no failure category".
+
+The reason, by contrast, *is* in the projection as `lifecycle.status.reason`
+(`FailureReason`, `status.rs:304-315`) — so a scheduler that can decide on `reason` alone
+never needs the events call.
+
+**The failure decision 10 exists to requeue is classified `deterministic`.** The runs this
+deployment loses to a fabro restart (finding 5) report:
+
+```
+reason:   "terminated"
+message:  "Fabro server restarted before the run reached a terminal state."
+category: "deterministic"
+```
+
+Sixty-six of the 315 runs ended `failed/terminated` — the largest failure class — and every
+one sampled carried exactly that message and that category (`terminated` also covers
+`"Worker exited before emitting a terminal run event"`, same category). Forty-nine ended
+`failed/cancelled`; one ended `failed/bootstrap_failed` with category `deterministic`; none
+carried a `transient_infra` reason; none were `dead`. A requeue predicate of
+`category == "transient_infra"` therefore requeues **nothing** on a fabro bounce — the issue
+keeps `agent-in-progress` and waits for a human, which is the failure the whole design was
+written to avoid. This is a fact about fabro, not a proposal: which reasons are requeued is
+decision 10's business. Draft 09 has to name `terminated`-with-a-restart message alongside
+`transient_infra`.
+
+### 11. The two list endpoints page with different, mostly-undocumented parameter names
+
+`GET /runs` reads `page[limit]` (max 100, default 20) and `page[offset]`. A bare
+`limit=100` is not an error and is not honoured — it is clamped to 20, so the response looks
+like a 20-run store. `meta.total` (315 here) is the only trustworthy count; `meta.has_more`
+says whether the page was truncated.
+
+`GET /runs/{id}/events` reads `limit` (max 1000, default 100), `order` (`asc`/`desc`),
+`since_seq` (ascending only) and `before_seq` (descending only). The bracketed
+`page[limit]`/`page[offset]` that work on `/runs` are **ignored** here, silently falling
+back to the first 100 events.
+
+Nothing in the dispatch loop needs either kind of pagination — it polls its own lease rows
+by id, and `reason` alone classifies the common failure (finding 10). But a
+reconcile-the-world step that enumerates runs, or a classification step that reads an event
+stream from the head, is quietly wrong rather than loudly broken.
+
 ## Contracts
 
 ### Queue item
@@ -198,13 +282,14 @@ If step 2 or 3 fails, the label is rolled back.
 ### Release
 
 A lease releases only on a terminal `lifecycle.status.kind` for its run
-(`succeeded`, `failed`, `cancelled`, `errored`), observed by the 15s poll.
+(`succeeded`, `failed`, `dead` — finding 9), observed by the 15s poll.
 
 ### Requeue
 
 Only when the run's failure `category` is `transient_infra`. The scheduler removes
 `agent-in-progress`, restores `agent`, and the item re-enters the queue keeping its
-original enqueue time so the starvation ceiling is not reset.
+original enqueue time so the starvation ceiling is not reset. Finding 10 covers where
+that category can be read, and why a fabro restart does not carry it.
 
 ### Recovery
 
