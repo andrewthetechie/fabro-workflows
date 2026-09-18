@@ -116,12 +116,38 @@ def test_name_must_be_owner_slash_repo(tmp_path, name):
         load_config(p, env={})
 
 
-def test_duplicate_names_differing_only_by_case_are_allowed(tmp_path):
-    # GitHub is case-insensitive in practice, but this parser is not the place to
-    # guess; it fails only on exact duplicates.
+def test_duplicate_names_differing_only_by_case_are_an_error(tmp_path):
+    # GitHub resolves both spellings to one repository, so these are not two repos
+    # — they are one repo with two queue entries, and each would be allowed its own
+    # in-flight run against the rule that there is at most one per repo.
     body = repo(name="o/a") + repo(name="O/A")
-    cfg = load_config(write(tmp_path, body), env={})
-    assert len(cfg.repos) == 2
+    with pytest.raises(ConfigError, match=r"repo\[1\]\.name"):
+        load_config(write(tmp_path, body), env={})
+
+
+def test_a_case_duplicate_names_both_spellings(tmp_path):
+    # The operator has to find two lines that do not match on sight, so the message
+    # carries the other row's spelling as well as its index.
+    body = repo(name="o/a") + repo(name="O/A")
+    with pytest.raises(ConfigError) as caught:
+        load_config(write(tmp_path, body), env={})
+    assert "'O/A'" in str(caught.value)
+    assert "'o/a'" in str(caught.value)
+    assert "repo[0]" in str(caught.value)
+
+
+def test_an_exact_duplicate_does_not_claim_a_different_spelling(tmp_path):
+    body = repo(name="o/a") + repo(name="o/a")
+    with pytest.raises(ConfigError) as caught:
+        load_config(write(tmp_path, body), env={})
+    assert "spelled" not in str(caught.value)
+
+
+def test_a_repo_name_is_stored_as_the_operator_wrote_it(tmp_path):
+    # Case folding is for the duplicate check only: this name is what the GitHub
+    # API gets called with.
+    cfg = load_config(write(tmp_path, repo(name="AndrewTheTechie/Jelly-Swipe")), env={})
+    assert cfg.repos[0].name == "AndrewTheTechie/Jelly-Swipe"
 
 
 # --- enabled --------------------------------------------------------------------
@@ -200,6 +226,35 @@ def test_ordered_repos_keeps_disabled_rows(tmp_path):
     body = repo(name="o/on", priority="0") + repo(name="o/off", priority="1", enabled="false")
     cfg = load_config(write(tmp_path, body), env={})
     assert [r.name for r in cfg.ordered_repos()] == ["o/on", "o/off"]
+
+
+def test_schedulable_repos_drops_disabled_rows(tmp_path):
+    # The one difference from ordered_repos(), and the reason both exist: whatever
+    # picks the next run reads this, so `enabled = false` actually takes the repo
+    # out of scheduling rather than only out of the report.
+    body = repo(name="o/on", priority="0") + repo(name="o/off", priority="1", enabled="false")
+    cfg = load_config(write(tmp_path, body), env={})
+    assert [r.name for r in cfg.schedulable_repos()] == ["o/on"]
+
+
+def test_schedulable_repos_keeps_the_scheduling_order(tmp_path):
+    body = (
+        repo(name="o/zeta", priority="1")
+        + repo(name="o/nope", priority="-5", enabled="false")
+        + repo(name="o/alpha", priority="1")
+        + repo(name="o/first", priority="-1")
+    )
+    cfg = load_config(write(tmp_path, body), env={})
+    assert [r.name for r in cfg.schedulable_repos()] == ["o/first", "o/alpha", "o/zeta"]
+
+
+def test_schedulable_repos_can_be_empty_without_being_an_error(tmp_path):
+    # Every repo disabled is a deliberate operator state — a paused factory — not a
+    # broken file. It is an empty *work list* that load_config refuses, not this.
+    body = repo(name="o/off", priority="0", enabled="false")
+    cfg = load_config(write(tmp_path, body), env={})
+    assert cfg.schedulable_repos() == []
+    assert len(cfg.repos) == 1
 
 
 def test_repos_keep_the_order_they_were_written_in(tmp_path):

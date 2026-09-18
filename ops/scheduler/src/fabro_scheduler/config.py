@@ -70,14 +70,27 @@ class SchedulerConfig:
     port: int = DEFAULT_PORT
 
     def ordered_repos(self) -> list[RepoConfig]:
-        """Repos in scheduling order: priority ascending, then name ascending.
+        """*Every* loaded repo, ordered: priority ascending, then name ascending.
 
         The file's own order is preserved on `repos` — it is what the operator
         wrote, and useful when reading the config back — so ordering is applied
-        here rather than at parse time. Disabled rows are included; they are part
-        of what was loaded, and `/health` reports the flag.
+        here rather than at parse time.
+
+        **Disabled rows are included**, because this answers "what did I load?"
+        and `/health` reports the flag. It is not the list to schedule from: use
+        `schedulable_repos`. The two are separate methods rather than one with a
+        flag so that reaching for the wrong one is visible at the call site.
         """
         return sorted(self.repos, key=lambda repo: (repo.priority, repo.name))
+
+    def schedulable_repos(self) -> list[RepoConfig]:
+        """The repos work may be dispatched for, in scheduling order.
+
+        `enabled = false` keeps the row and takes the repo out of all scheduling
+        (decision 4's companion rule), so every consumer that picks what to run
+        next reads this, never `ordered_repos`.
+        """
+        return [repo for repo in self.ordered_repos() if repo.enabled]
 
 
 def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerConfig:
@@ -127,7 +140,8 @@ def _parse_repos(data: Mapping[str, object]) -> tuple[RepoConfig, ...]:
         raise ConfigError("repo: expected one or more [[repo]] tables")
 
     repos: list[RepoConfig] = []
-    first_seen: dict[str, int] = {}
+    # casefolded name -> (index, name as written), for the duplicate check
+    first_seen: dict[str, tuple[int, str]] = {}
     for index, row in enumerate(rows):
         repos.append(_parse_repo(row, index, first_seen))
 
@@ -140,7 +154,7 @@ def _parse_repos(data: Mapping[str, object]) -> tuple[RepoConfig, ...]:
 
 
 def _parse_repo(
-    row: object, index: int, first_seen: dict[str, int]
+    row: object, index: int, first_seen: dict[str, tuple[int, str]]
 ) -> RepoConfig:
     where = f"repo[{index}]"
 
@@ -156,12 +170,20 @@ def _parse_repo(
         raise ConfigError(
             f"{where}.name: {name!r} is not an owner/repo name"
         )
-    if name in first_seen:
+    # Compared case-insensitively, stored as written. GitHub resolves
+    # `o/Repo` and `o/repo` to one repository, so two rows differing only in case
+    # are one repo with two queue entries — and the rule that there is at most one
+    # in-flight run per repo (decision 6) is enforced per row. Keeping the
+    # operator's spelling matters because it is what the GitHub API is called with.
+    key = name.casefold()
+    if key in first_seen:
+        first_index, first_name = first_seen[key]
+        also = "" if first_name == name else f" (spelled {first_name!r} there)"
         raise ConfigError(
             f"{where}.name: duplicate repo {name!r}, already declared at "
-            f"repo[{first_seen[name]}]"
+            f"repo[{first_index}]{also}"
         )
-    first_seen[name] = index
+    first_seen[key] = (index, name)
 
     # `bool` is a subclass of `int`, so `priority = true` would otherwise parse
     # as 1 and quietly sort the repo ahead of everything at priority 2.

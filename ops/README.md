@@ -485,7 +485,7 @@ whole factory in one place and a host rebuild brings it back with everything els
 | File | What it is |
 |---|---|
 | `scheduler/repos.toml` | The work list: one `[[repo]]` table per target repository. `priority` is a signed integer and **smallest wins**; `environment_id` names a fabro environment; `enabled = false` keeps the row out of scheduling. |
-| `scheduler/src/fabro_scheduler/config.py` | The parser. Fails loudly: a duplicate repo name, an unknown key, a missing `priority`, a `true` where an integer belongs — each is an error naming the key, never a silently-applied default. |
+| `scheduler/src/fabro_scheduler/config.py` | The parser. Fails loudly: a duplicate repo name (compared **case-insensitively** — GitHub resolves `o/Repo` and `o/repo` to one repository, and two rows for it would each be allowed an in-flight run), an unknown key, a missing `priority`, a `true` where an integer belongs — each is an error naming the key, never a silently-applied default. Two accessors, deliberately not one: `ordered_repos()` is everything loaded, for reporting; `schedulable_repos()` drops `enabled = false` and is what anything choosing the next run must read. |
 | `scheduler/src/fabro_scheduler/app.py` | `/health` and the entrypoint. Validates the config *before* binding the port, so a broken file fails the container healthcheck instead of serving nothing. |
 | `scheduler/tests/` | `uv run pytest` from `ops/scheduler/`. Pure — no network, no container, no host. |
 | `scheduler/Dockerfile` | Two stages. Runs as uid 1000, bakes `repos.toml` in, and creates `/data` for the SQLite file drafts 06+ will use. |
