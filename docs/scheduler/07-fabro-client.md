@@ -120,7 +120,10 @@ loop; it is kept as a manual override.
   runs that never execute and never error.
 
   **4. `GET /runs/{id}`** — terminal detection reads
-  `.lifecycle.status.kind`, one of `succeeded | failed | cancelled | errored`.
+  `.lifecycle.status.kind`, which is terminal for exactly `succeeded | failed |
+  dead` (`00-overview-and-contracts.md`, finding 9). There is no `cancelled`
+  kind and no `errored` kind: a cancel arrives as `kind: "failed"` with
+  `reason: "cancelled"`, and the event's `category` reads `"canceled"`, one L.
   `.lifecycle.queue_position` is **always `null`** in production and must not be
   used.
 

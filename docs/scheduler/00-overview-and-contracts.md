@@ -234,6 +234,17 @@ written to avoid. This is a fact about fabro, not a proposal: which reasons are 
 decision 10's business. Draft 09 has to name `terminated`-with-a-restart message alongside
 `transient_infra`.
 
+**"Cancel" is spelled two ways, and only one of them is the category.** A cancelled run
+reports `reason: "cancelled"` (two Ls) under `kind: "failed"`, but
+`category: "canceled"` (one L), with `message: "Pipeline cancelled"`. Verified live on
+2026-09-18 by cancelling run `01M2V80N42R3V08SWHPNQBY81J`. The requeue predicate keys on the
+category, so a predicate written against `"cancelled"` matches nothing at all — the same
+silent-no-op shape as `category == "transient_infra"` matching no fabro bounce. Drafts 07
+and 09 both listed `cancelled` as a status *kind*; the kinds are finding 9's
+`succeeded | failed | dead`. Also worth knowing: a cancelled run is the one failure whose
+repair is not optional, because it exits before the graph's terminal label work — the issue
+keeps `agent-in-progress` and is invisible to `acquire` until a human restores `agent`.
+
 ### 11. The two list endpoints page with different, mostly-undocumented parameter names
 
 `GET /runs` reads `page[limit]` (max 100, default 20) and `page[offset]`. A bare

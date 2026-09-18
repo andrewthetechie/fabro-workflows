@@ -48,7 +48,7 @@ After this draft the scheduler is safe to leave running unattended.
 - Interfaces and names:
 
   ```python
-  TERMINAL = frozenset({"succeeded", "failed", "cancelled", "errored"})
+  TERMINAL = frozenset({"succeeded", "failed", "dead"})
   INFRA_CATEGORY = "transient_infra"
 
   def is_terminal(run: dict) -> bool:
@@ -61,6 +61,11 @@ After this draft the scheduler is safe to leave running unattended.
   def recover(leases, fabro_client, github_client, config) -> RecoveryReport: ...
   ```
 
+  Those three are the whole terminal set (`00-overview-and-contracts.md`, finding 9).
+  There is no `cancelled` kind and no `errored` kind — a cancel arrives as `failed`
+  with `reason: "cancelled"` — and `dead` has to be in the set or a dead run holds
+  its lease forever.
+
 - Verified external contracts (observed live on `10.10.0.32` on 2026-09-18):
 
   `GET /api/v1/runs/{id}` terminal shape:
@@ -71,9 +76,22 @@ After this draft the scheduler is safe to leave running unattended.
   ```
 
   `.lifecycle.status.kind` observed values: `submitted`, `runnable`, `running`,
-  `blocked`, `succeeded`, `failed`, `cancelled`.
+  `blocked`, `succeeded`, `failed`. **`cancelled` is not one of them** — a cancel
+  reports `kind: "failed"` with `reason: "cancelled"`.
   **`.lifecycle.queue_position` is always `null`** in production
   (`lib/components/fabro-store/src/run_state.rs:1212`) — never read it.
+
+  A cancel is the one terminal failure that leaves work behind, and it does so
+  silently. It exists before the graph's terminal label work, so the issue keeps
+  `agent-in-progress`; `acquire` lists by `--label agent` and filters that label out,
+  so the issue is invisible to every later run — not queued, not stuck, not reported.
+  `recover`'s GitHub pass is the only thing that restores `agent`. Observed on this
+  deployment by cancelling run `01M2V80N42R3V08SWHPNQBY81J`, whose jelly-swipe issue
+  had to be relabelled by hand.
+
+  The failure `category` for a cancel is **`canceled`, one L**, while the reason is
+  `cancelled`, two Ls. Both are in the event tail (finding 10), and the requeue
+  predicate keys on the category — so matching `"cancelled"` there matches nothing.
 
   Failure category, from a real timed-out stage on run
   `01M2SBJG92TX0DBRKY5881VM34`:
