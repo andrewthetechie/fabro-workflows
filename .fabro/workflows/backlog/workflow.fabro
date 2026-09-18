@@ -294,7 +294,43 @@ echo '{\"context_updates\":{\"task_disposition\":\"'$D'\"}}'"]
     // Do NOT promote this to a graph-level `default_max_retries`. That would also
     // apply to the command gates, whose `exit 1` is a deliberate routing signal and
     // whose attempt counters would be double-incremented by an engine retry.
-    coder [label="Implement task (tier 1)", class="coder", timeout="90m", max_retries=1, prompt="@prompts/coder.md.j2"]
+    // timeout="180m" and allow_partial=true together, for one measured failure.
+    //
+    // Run 01M2SBJG92TX0DBRKY5881VM34, task 2 of 3 on womens-fantasy-sports
+    // ("refactor(squads): one module resolving a squad's Season, actionable
+    // gameweek and typed opening-build state"). The coder was NOT stuck. It ran
+    // 90 minutes, was retried, ran 90 more, and was making progress both times:
+    // 55 then 77 tool calls, 43 then 67 assistant turns, context grown to 158k
+    // tokens. The last event before the first timeout, 11 seconds before it
+    // fired, was `edit_file -> "Successfully edited"`. It was mid-edit.
+    //
+    // Sandcastle ran the same work on the same strix box and did not have this
+    // problem, because its coder had NO wall clock. It had `--idle-timeout`
+    // (fails only when stdout is SILENT for 1800s) and a livelock watchdog that
+    // aborts after 5 consecutive IDENTICAL tool calls with an unchanged
+    // worktree. Both measure progress. Neither would have stopped this agent --
+    // it was never silent, and 13 consecutive reads of 13 different files are
+    // not identical calls. Fabro has no per-node equivalent: `stall_timeout` is
+    // graph-level and cancels the whole run.
+    //
+    // 180m is the longer budget, and it is still an arbitrary wall clock --
+    // which is why it is not the real fix. allow_partial is.
+    //
+    // WITHOUT allow_partial, a timed-out coder ends `failed`, takes its
+    // UNCONDITIONAL edge to human_rescue, and never produces a review verdict --
+    // so rework_t1..t4, the escalation ladder that exists precisely for a task
+    // the tier-1 coder cannot land, is never reached. Task 1 of that same run
+    // went coder -> review -> rework_t1 -> review -> rework_t2 -> review ->
+    // rework_t2 -> review -> integrate and shipped. Task 2 got none of it, and
+    // parked a scheduler slot on an unanswered human gate for 5h31m.
+    //
+    // WITH it, `finalize_retries_exhausted` promotes the stage to
+    // partially_succeeded (node_handler.rs:170) instead of failed. The partial
+    // work is already on disk in the run's own sandbox, so prep_review picks it
+    // up, validate catches anything left broken, and the reviewer's verdict
+    // drives the ladder onto a DIFFERENT model. That is Sandcastle's shape:
+    // whatever the agent produced gets reviewed, and escalation follows.
+    coder [label="Implement task (tier 1)", class="coder", timeout="180m", max_retries=1, allow_partial=true, prompt="@prompts/coder.md.j2"]
 
     prep_review [label="Prepare review inputs", shape=parallelogram, output_schema="routing",
         script="set -e
@@ -617,7 +653,25 @@ gh issue edit $N --remove-label agent-in-progress || true
 gh issue comment $N --body 'Agent run found no actionable decomposition for this issue; leaving it for human triage.' || true
 echo done"]
 
-    human_rescue [shape=hexagon,
+    // A human gate blocks until a human answers, and with no timeout that is
+    // forever. Run 01M2SBJG92TX0DBRKY5881VM34 sat here 5h31m holding one of the
+    // server's two scheduler slots -- half the factory's capacity parked on a
+    // question nobody was at the keyboard for. The notifications all worked: the
+    // discord-rescue hook fired at stage_start (hooks_matched=1) and the host
+    // monitor's C4 stuck-run condition alerted and re-alerted four hours later.
+    //
+    // `timeout` on a HUMAN node bounds the wait, despite the attribute table
+    // saying "waiting on human input doesn't consume it" -- that describes
+    // timeout_excluding_interview_wait, which pauses OTHER nodes' timeouts while
+    // an interview blocks. A human node is handler-managed and copies its own
+    // timeout onto the question (handler/human.rs:122).
+    //
+    // 4h matches the monitor's re-alert interval, so two Discord pings go out
+    // before it gives up. `human.default_choice` is a NODE ID, not an edge label
+    // -- make_choice_outcome puts it straight into suggested_next_ids -- so it is
+    // `mark_stuck`, not "[X] Abandon". Without it, an expired gate returns
+    // retry_classify("human gate timeout, no default") instead of routing.
+    human_rescue [shape=hexagon, timeout="4h", human.default_choice="mark_stuck",
         label="Agent stuck. Type guidance to retry, or choose an option."]
 
     mark_stuck [label="Mark stuck", shape=parallelogram,
@@ -667,6 +721,10 @@ echo done"]
     improve_gate -> human_rescue
 
     coder -> prep_review            [condition="outcome=succeeded"]
+    // Retries exhausted on a coder that was still working. allow_partial makes
+    // that partially_succeeded rather than failed; this edge is what stops it
+    // falling through to the unconditional human_rescue and skipping the ladder.
+    coder -> prep_review            [condition="outcome=partially_succeeded"]
     coder -> human_rescue
 
     prep_review -> rework_router    [condition="context.diff_too_large=true"]
