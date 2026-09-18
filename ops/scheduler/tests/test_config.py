@@ -8,14 +8,18 @@ ran it.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from fabro_scheduler.config import (
     DEFAULT_CODER_POOLS,
+    DEFAULT_DB_PATH,
     DEFAULT_FABRO_API_URL,
+    DEFAULT_GITHUB_POLL_SECONDS,
     DEFAULT_PORT,
+    DEFAULT_STARVATION_CEILING_SECONDS,
     ConfigError,
     load_config,
 )
@@ -274,6 +278,50 @@ def test_defaults_when_the_environment_is_empty(tmp_path):
     assert cfg.coder_pools == ("coders-a", "coders-b")
     assert cfg.fabro_api_url == DEFAULT_FABRO_API_URL
     assert cfg.port == DEFAULT_PORT == 32280
+    assert cfg.db_path == Path(DEFAULT_DB_PATH) == Path("/data/scheduler.db")
+    assert cfg.starvation_ceiling == timedelta(hours=4)
+    assert cfg.starvation_ceiling.total_seconds() == DEFAULT_STARVATION_CEILING_SECONDS
+    assert cfg.github_poll_seconds == DEFAULT_GITHUB_POLL_SECONDS == 60
+
+
+def test_the_queue_knobs_come_from_the_environment(tmp_path):
+    cfg = load_config(
+        write(tmp_path, repo()),
+        env={
+            "SCHEDULER_DB": "/tmp/elsewhere.db",
+            "SCHEDULER_CEILING_SECONDS": "600",
+            "SCHEDULER_GITHUB_POLL_SECONDS": "5",
+        },
+    )
+    assert cfg.db_path == Path("/tmp/elsewhere.db")
+    assert cfg.starvation_ceiling == timedelta(minutes=10)
+    assert cfg.github_poll_seconds == 5
+
+
+@pytest.mark.parametrize("key", ["SCHEDULER_CEILING_SECONDS", "SCHEDULER_GITHUB_POLL_SECONDS"])
+@pytest.mark.parametrize("raw", ["not-a-number", "0", "-1", "60.5"])
+def test_a_non_positive_or_unparsable_interval_names_the_key(tmp_path, key, raw):
+    # Zero is refused rather than clamped: a zero-second poll would spend the rate
+    # limit in minutes, and a zero-second ceiling would put every item in the
+    # starved tier and make repo priority dead configuration.
+    with pytest.raises(ConfigError, match=key):
+        load_config(write(tmp_path, repo()), env={key: raw})
+
+
+def test_a_blank_db_path_falls_back_to_the_default(tmp_path):
+    cfg = load_config(write(tmp_path, repo()), env={"SCHEDULER_DB": "   "})
+    assert cfg.db_path == Path(DEFAULT_DB_PATH)
+
+
+def test_the_config_carries_no_credentials(tmp_path):
+    # A deliberate design rule, not an accident: a config object that cannot hold
+    # a secret is one fewer thing to audit for a leak into /health or a log line.
+    cfg = load_config(
+        write(tmp_path, repo()),
+        env={"GITHUB_TOKEN": "ghp-do-not-echo", "FABRO_API_TOKEN": "tok-do-not-echo"},
+    )
+    assert "ghp-do-not-echo" not in repr(cfg)
+    assert "tok-do-not-echo" not in repr(cfg)
 
 
 def test_fabro_api_url_and_port_come_from_the_environment(tmp_path):

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The data behind this page is refreshed every {{ poll_seconds }}s, so the page
+     is refreshed on the same beat. A plain GET: this page has no state to lose. -->
+<meta http-equiv="refresh" content="{{ poll_seconds }}">
+<title>fabro coder scheduler &middot; queue</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1b1e24; --line: #2b3038;
+    --fg: #e6e9ee; --dim: #98a1ae; --accent: #8ab4f8;
+    --warn: #f2c14e; --bad: #ff6b6b; --ok: #5ec98a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.5rem;
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 .25rem; }
+  h2 { font-size: .95rem; margin: 1.75rem 0 .5rem; color: var(--dim); font-weight: 600; }
+  .sub { color: var(--dim); margin: 0 0 1rem; max-width: 90ch; }
+  .sub code { color: var(--fg); }
+  .banner {
+    background: var(--panel); border: 1px solid var(--line);
+    border-left: 3px solid var(--warn); border-radius: 4px;
+    padding: .6rem .8rem; margin: 0 0 1rem;
+  }
+  .banner.bad { border-left-color: var(--bad); }
+  .banner.ok { border-left-color: var(--ok); }
+  .banner p { margin: .2rem 0; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 600; white-space: nowrap; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  td.rank { color: var(--dim); }
+  td.title { max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  tr.starved td.title::before { content: "\2605 "; color: var(--warn); }
+  tr.overridden td.title::before { content: "\21E1 "; color: var(--accent); }
+  .label { color: var(--dim); font-size: .85em; }
+  .stale { color: var(--warn); }
+  .bad { color: var(--bad); }
+  .ok { color: var(--ok); }
+  .muted { color: var(--dim); }
+  footer { color: var(--dim); margin-top: 2rem; font-size: .85em; }
+</style>
+</head>
+<body>
+
+<h1>Queue</h1>
+<p class="sub">
+  Read-only. Dispatch order: an operator override first, then anything past the
+  <strong>Starvation ceiling</strong> ({{ ceiling|duration }}, oldest first), then
+  repo priority (smaller is more urgent), then issue number.
+  GitHub is polled every {{ poll_seconds }}s; this page follows it.
+  Nothing here writes to GitHub.
+</p>
+
+{% if not token_configured %}
+<div class="banner bad">
+  <p><strong>GITHUB_TOKEN is not set.</strong> The inventory cannot be refreshed,
+     so this page shows only whatever the cache already held.</p>
+</div>
+{% endif %}
+
+<div class="banner {% if starvation %}bad{% else %}ok{% endif %}">
+  {% if starvation %}
+    <p><strong>Starvation</strong> &mdash; no queue item in any schedulable repo.
+       The factory has no work to pick up.</p>
+  {% else %}
+    <p>{{ items|length }} queue item{{ '' if items|length == 1 else 's' }} waiting
+       across {{ repos|length }} schedulable repo{{ '' if repos|length == 1 else 's' }}.</p>
+  {% endif %}
+  {% for repo in repos if repo.stale %}
+    <p class="stale">
+      stale: <strong>{{ repo.name }}</strong> keeps its last known items
+      {%- if repo.last_success_at %} (last good fetch {{ (now - repo.last_success_at)|duration }} ago){% endif %}
+      &mdash; <span class="muted">{{ repo.last_error }}</span>
+    </p>
+  {% endfor %}
+</div>
+
+<h2>Queue</h2>
+{% if items %}
+<table>
+  <thead>
+    <tr>
+      <th class="num">#</th>
+      <th>Repo</th>
+      <th class="num">Issue</th>
+      <th>Title</th>
+      <th class="num">Priority</th>
+      <th class="num" title="Time since this scheduler first saw the item">Waited</th>
+      <th>Labels</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in items %}
+    <tr class="{% if item.override_rank is not none %}overridden{% elif item.waited > ceiling %}starved{% endif %}">
+      <td class="num rank">{{ loop.index }}</td>
+      <td>{{ item.issue.repo }}</td>
+      <td class="num">#{{ item.issue.number }}</td>
+      <td class="title" title="{{ item.issue.title }}">{{ item.issue.title }}</td>
+      <td class="num">{{ item.repo_priority }}</td>
+      <td class="num">{{ item.waited|duration }}</td>
+      <td class="label">{{ item.issue.labels|sort|join(' ') }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">Nothing queued.</p>
+{% endif %}
+
+<h2>Repos</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Repo</th>
+      <th class="num">Priority</th>
+      <th>Inventory</th>
+      <th class="num">Items</th>
+      <th>Last good fetch</th>
+      <th>ETag</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for repo in repos %}
+    <tr>
+      <td>{{ repo.name }}</td>
+      <td class="num">{{ repo.priority }}</td>
+      <td>
+        {%- if repo.stale -%}<span class="stale">stale</span>
+        {%- elif repo.pending -%}<span class="muted">not yet fetched</span>
+        {%- else -%}<span class="ok">ok</span>{%- endif -%}
+      </td>
+      <td class="num">{{ repo.item_count }}</td>
+      <td>{% if repo.last_success_at %}{{ (now - repo.last_success_at)|duration }} ago{% else %}&mdash;{% endif %}</td>
+      <td class="muted">{{ (repo.etag or '—')|truncate(20, true, '…', 0) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<footer>
+  {{ items|length }} queue item(s) &middot;
+  starvation ceiling {{ ceiling|duration }} &middot;
+  {{ now.strftime('%Y-%m-%dT%H:%M:%SZ') }}
+</footer>
+
+</body>
+</html>

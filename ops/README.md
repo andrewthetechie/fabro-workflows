@@ -21,7 +21,7 @@ locations instead.
 | `docker-compose.yaml` | Runs both containers: the `fabro` server and the `scheduler` (the coder scheduler, built from `./scheduler/`). It is also the only place the scheduler's port and volume are declared. |
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
-| `scheduler/` | The **coder scheduler**: a FastAPI service that owns admission to the two coder instances, so four uncoordinated automations stop fighting over two single-slot boxes. Reads `repos.toml`, serves `/health`; the GitHub client, the fabro client and the queue are drafts 06, 07 and 08. Deploy and verify under *The coder scheduler* below. |
+| `scheduler/` | The **coder scheduler**: a FastAPI service that owns admission to the two coder instances, so four uncoordinated automations stop fighting over two single-slot boxes. Reads `repos.toml`, inventories `agent`-labelled issues from GitHub with ETag caching, ranks them, serves the queue on `/`; the fabro client and the dispatch loop are drafts 07 and 08. Deploy and verify under *The coder scheduler* below. |
 | `profile-images/` | The four sandbox profile-image Dockerfiles, `build-images.sh` (clone, warm from real lockfiles, build, verify), `fabro-pg-ensure.sh` (in-sandbox PostgreSQL, because fabro cannot start a service beside a sandbox) and `warm-build-backend.sh`. Start at its `README.md`. |
 | `provision-server-state.sh` | Recreates the twelve **automations** (three per repo: `backlog`, `pr-review`, `issue-triage`) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
 | `provision-litellm-models.sh` | Creates the `high-reasoning` model group and its `kimi-k3` fallback in LiteLLM. Scoped to that one group; the other model rows predate this workflow and are reported, never corrected. The `coders` pool's concurrency tuning is recorded under *Server-side state*, not managed here. |
@@ -54,6 +54,17 @@ deployment and drift check are in the main `AGENTS.md`.
 - Server env: `/storage/server.env` and `/storage/.home/server.json` in the container.
 - Discord webhook URL: `/storage/secrets/discord_webhook_url` in the container volume.
 - Compose env: `~/fabro/.env` on the host (ready from `.env.example`).
+- Coder scheduler env: `~/fabro/scheduler.env` on the host (chmod 600), holding only
+  `GITHUB_TOKEN` today and `FABRO_API_TOKEN` from draft 07. It is a separate file because
+  the alternative — `env_file: .env` for both services — hands the scheduler fabro's
+  `SESSION_SECRET`, which it has no use for. The GitHub token is **not** in
+  `~/.fabro-deploy/env`; it was captured from `gh auth token` on the host, and the vault
+  it was also stored in has no read-back path (`fabro secret` is `list`/`set`/`rm` only).
+  Create it with:
+  ```sh
+  ssh andrew@<HOST> 'cd ~/fabro && umask 077 && { printf "GITHUB_TOKEN="; gh auth token; } \
+    > scheduler.env && chmod 600 scheduler.env'
+  ```
 
 ## Install (from a fresh host)
 
@@ -104,9 +115,10 @@ deployment and drift check are in the main `AGENTS.md`.
 11. **Coder scheduler** — `rsync -a --delete ops/scheduler/ andrew@<HOST>:~/fabro/scheduler/`
    then `cd ~/fabro && docker compose up -d --build scheduler`. It builds
    `fabro-scheduler:local` from `./scheduler`, resolved relative to the compose file, which
-   is why the tree has to sit beside it. Nothing from steps 3 or 9 is needed for `/health`;
-   the GitHub and fabro credentials are drafts 06 and 07's. See *The coder scheduler*
-   below.
+   is why the tree has to sit beside it. It reads its credentials from
+   `~/fabro/scheduler.env` (see *The coder scheduler* below), which is **not** `~/fabro/.env`
+   — fabro's session secret has no business in this container. Nothing from steps 3 or 9 is
+   needed for `/health`; `GITHUB_TOKEN` is draft 06's, `FABRO_API_TOKEN` is draft 07's.
 
 ## Server-side state (not in `settings.toml`)
 
@@ -475,9 +487,11 @@ one `backlog` run at a time, so four automations on independent schedules stop f
 over two single-slot boxes. Decisions and the contracts each later draft consumes:
 `../docs/scheduler/00-overview-and-contracts.md`.
 
-Today it is the **skeleton** (draft 04): it reads `repos.toml`, serves `/health`, and does
-nothing else. There is no GitHub client, no fabro client and no queue yet. Nothing an
-automation reads changes when this tree changes — it is `ops/`, not `.fabro/`.
+Today it is draft 06 of 14: it reads `repos.toml`, inventories the `agent`-labelled
+issues of every enabled repo from GitHub every 60s with conditional requests, ranks them,
+and serves the result on `/` (HTML) and `/api/queue` (JSON). There is no fabro client, no
+lease and no dispatch yet — nothing it does can start a run or write to GitHub. Nothing an
+automation reads changes when this tree changes: it is `ops/`, not `.fabro/`.
 
 It is a second service in the **same compose project**, so `docker compose ps` shows the
 whole factory in one place and a host rebuild brings it back with everything else.
@@ -485,10 +499,15 @@ whole factory in one place and a host rebuild brings it back with everything els
 | File | What it is |
 |---|---|
 | `scheduler/repos.toml` | The work list: one `[[repo]]` table per target repository. `priority` is a signed integer and **smallest wins**; `environment_id` names a fabro environment; `enabled = false` keeps the row out of scheduling. |
-| `scheduler/src/fabro_scheduler/config.py` | The parser. Fails loudly: a duplicate repo name (compared **case-insensitively** — GitHub resolves `o/Repo` and `o/repo` to one repository, and two rows for it would each be allowed an in-flight run), an unknown key, a missing `priority`, a `true` where an integer belongs — each is an error naming the key, never a silently-applied default. Two accessors, deliberately not one: `ordered_repos()` is everything loaded, for reporting; `schedulable_repos()` drops `enabled = false` and is what anything choosing the next run must read. |
-| `scheduler/src/fabro_scheduler/app.py` | `/health` and the entrypoint. Validates the config *before* binding the port, so a broken file fails the container healthcheck instead of serving nothing. |
-| `scheduler/tests/` | `uv run pytest` from `ops/scheduler/`. Pure — no network, no container, no host. |
-| `scheduler/Dockerfile` | Two stages. Runs as uid 1000, bakes `repos.toml` in, and creates `/data` for the SQLite file drafts 06+ will use. |
+| `scheduler/src/fabro_scheduler/config.py` | The parser. Fails loudly: a duplicate repo name (compared **case-insensitively** — GitHub resolves `o/Repo` and `o/repo` to one repository, and two rows for it would each be allowed an in-flight run), an unknown key, a missing `priority`, a `true` where an integer belongs — each is an error naming the key, never a silently-applied default. Two accessors, deliberately not one: `ordered_repos()` is everything loaded, for reporting; `schedulable_repos()` drops `enabled = false` and is what anything choosing the next run must read. Holds **no credential**, by rule: a config object that cannot carry a secret is one fewer thing to audit. |
+| `scheduler/src/fabro_scheduler/github.py` | The inventory request. One conditional `GET /repos/{owner}/{repo}/issues?labels=agent&state=open&per_page=100` per repo. Filters pull requests out (they come back from `/issues` too, told apart only by the presence of a `pull_request` key) and `agent-in-progress` / `agent-stuck` out. Returns an explicit `changed` flag, because a `304` carries no issue list and costs **zero** rate-limit quota — so it must never be read as "no work". Logs the `200`/`304` and `x-ratelimit-remaining` so a spent quota is distinguishable from a permission problem, and never the token. |
+| `scheduler/src/fabro_scheduler/store.py` | SQLite at `/data/scheduler.db`: `issue_cache` (one row per queue item) and `repo_etag` (per-repo ETag, attempt/success times, last error). `first_seen` is written once and **never** rewritten — an issue could otherwise be refreshed forever and never reach the starvation ceiling. **Only a successful fetch writes**: a failed one keeps the cached items and the ETag, so an unreachable GitHub does not look like an empty queue. |
+| `scheduler/src/fabro_scheduler/queue.py` | `rank()` — the one definition of "next", shared by the page and (draft 08) the dispatch loop. Order: operator override, then the starvation ceiling (anything waiting longer than `T`, oldest first), then repo priority ascending, then issue number. The override tier is honoured but inert until draft 11 sets the field. |
+| `scheduler/src/fabro_scheduler/inventory.py` | The 60s poll loop. One thread, four repos staggered 3s apart so they never fire in the same second — 3s and not `interval/4`, so a cold start fills the page in ~10s instead of 45. |
+| `scheduler/src/fabro_scheduler/templates/queue.html` | The page: repo, issue, title, priority, waited, and a per-repo freshness strip. Inline CSS, no external assets, refreshes itself on the same 60s beat. |
+| `scheduler/src/fabro_scheduler/app.py` | `/`, `/api/queue`, `/api/repos`, `/health`, and the entrypoint. Validates the config *before* binding the port, so a broken file fails the container healthcheck instead of serving nothing. |
+| `scheduler/tests/` | `uv run pytest` from `ops/scheduler/`. GitHub faked with `respx`, SQLite in `tmp_path` — no network, no container, no host. |
+| `scheduler/Dockerfile` | Two stages. Runs as uid 1000, bakes `repos.toml` in, and creates `/data` for the SQLite file. |
 
 ### Deploying it
 
@@ -505,7 +524,16 @@ ssh andrew@10.10.0.32 'cd ~/fabro && docker compose up -d --build scheduler'
 because a fabro restart fails every in-flight run. `--build` is what picks up a code or
 `repos.toml` change; without it compose reuses the `fabro-scheduler:local` image that is
 already there. `rsync --delete` is safe because nothing in `~/fabro/scheduler/` is
-generated on the host.
+generated on the host — but note it *does* delete `~/fabro/scheduler.env` if that file is
+inside the scheduler tree, so keep it one level up, beside `docker-compose.yaml`.
+
+The scheduler's one credential lives in `~/fabro/scheduler.env`, created once per host and
+never re-deployed:
+
+```sh
+ssh andrew@10.10.0.32 'cd ~/fabro && umask 077 && { printf "GITHUB_TOKEN="; gh auth token; } \
+  > scheduler.env && chmod 600 scheduler.env'
+```
 
 ### Verifying it
 
@@ -514,12 +542,28 @@ ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'   | diff - ops/docker-co
 ssh andrew@10.10.0.32 'cat ~/fabro/scheduler/repos.toml'  | diff - ops/scheduler/repos.toml
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose ps scheduler'
 curl -fsS http://10.10.0.32:32280/health | jq -r '.repos[] | "\(.priority)  \(.name)"'
+curl -fsS http://10.10.0.32:32280/health | jq .github
+ssh andrew@10.10.0.32 'cd ~/fabro && docker compose logs --tail 20 scheduler' \
+  | grep 'github:' | tail
+curl -fsS http://10.10.0.32:32280/api/repos | jq -r '.[] | "\(.items)\t\(.stale)\t\(.repo)"'
+curl -fsS http://10.10.0.32:32280/api/queue \
+  | jq -r '.[] | "\(.repo_priority)\t#\(.number)\t\(.repo)\t\(.waited_seconds)s"'
 ```
 
-The last one prints the four rows in scheduling order. The port is **32280**, beside
-fabro's 32276; both are LAN-only and unauthenticated (decision 16), consistent with
-fabro's own API. `/health` therefore publishes neither `fabro_api_url` nor anything from
-the container environment.
+`/health` prints the four rows in scheduling order and reports `github.configured` — a
+**boolean**, never the token. `/api/repos` is the freshness view: `items`, `stale`, and the
+ETag per repo. `/api/queue` is the ranked queue, in the order draft 08 will dispatch from.
+Open `http://10.10.0.32:32280/` for the page itself; it is the same data, read-only.
+
+The last check is the one that proves the conditional-request path is live: with the page
+idle, the log shows each repo's first fetch as `200` and every 60s refresh after it as
+`304 not modified`, with an **unchanged** `ratelimit-remaining`. A `200` on every tick means
+the ETag is being dropped or corrupted; a single `304` is the whole point of the design.
+
+The port is **32280**, beside fabro's 32276; both are LAN-only and unauthenticated
+(decision 16), consistent with fabro's own API. Nothing on this surface renders the token:
+`/health` reports only whether one is configured, and a missing one is a banner on the page
+naming the variable rather than a crash loop.
 
 A duplicate repo name is a hard failure, not last-wins, and it is worth seeing once:
 
@@ -541,12 +585,19 @@ how this project already passes per-host values:
 |---|---|---|
 | `SCHEDULER_PORT` | `32280` | Both the host port compose publishes and the port the container binds. **One** variable on both sides, resolved in `environment:` as well as in `ports:`, so a value set in the shell cannot leave the mapping pointing at a closed port. |
 | `FABRO_API_URL` | `http://10.10.0.32:32276/api/v1` | The base URL the fabro client (draft 07) calls. Same name and shape `fire-pr-review.sh` uses. |
-| `FABRO_API_TOKEN`, `GITHUB_TOKEN` | — | Neither is in `~/fabro/.env` today: `fabro secret list` holds both in the **fabro vault**, and that file carries only `FABRO_PORT`, `FABRO_VERSION`, `FABRO_WEB_URL` and `SESSION_SECRET`. So the `env_file:` block does not actually deliver them, and drafts 06 and 07 have to decide where the scheduler reads them — copy them into `.env`, or have it read the vault through the API. This row is the reminder. Neither belongs in `repos.toml`; this repository is public. |
+| `SCHEDULER_DB` | `/data/scheduler.db` | Where SQLite lives, on the compose `scheduler-data` volume. |
+| `SCHEDULER_CEILING_SECONDS` | `14400` (4h) | The starvation ceiling `T`. Anything waiting **longer** than this jumps the front of the queue regardless of repo priority. |
+| `SCHEDULER_GITHUB_POLL_SECONDS` | `60` | How often each repo is polled, conditionally. |
+| `GITHUB_TOKEN` | — | The inventory's credential, from `~/fabro/scheduler.env` on the host. **Not** in `~/fabro/.env`: the scheduler gets its own env file so it never receives fabro's `SESSION_SECRET`, and this repository is public, so neither belongs in `repos.toml`. The token needs `issues: read` on the four repos; a fine-grained PAT scoped to them is enough, and a classic token's `repo` scope also works. It is never logged, never rendered and never stored in SQLite. |
 
-The `env_file:` block as written hands this container everything in `~/fabro/.env`, which
-today means `SESSION_SECRET` — fabro's session-cookie signing key — for a service that has
-no use for it. Narrowing that is part of the same decision drafts 06 and 07 owe; it is
-called out here rather than left to be discovered.
+The two interval variables reject `0` and anything unparsable rather than clamping: a
+zero-second poll would spend the rate limit in minutes, and a zero-second ceiling would put
+every item in the starved tier and make repo priority dead configuration.
+
+The scheduler does **not** exit when `GITHUB_TOKEN` is missing. It logs one error,
+reports `github.configured: false` on `/health` (which draft 12's monitor reads), and
+serves the page with a banner naming the variable. Exiting would fail the container's
+healthcheck in a restart loop that says nothing about *which* variable is missing.
 
 `coders-a` and `coders-b` — the two per-box LiteLLM groups — are deliberately not
 configurable: they are decision 12's shape for this service, and `/health` reports them so

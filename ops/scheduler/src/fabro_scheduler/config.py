@@ -2,9 +2,15 @@
 
 `repos.toml` is the operator-editable half: one `[[repo]]` table per target
 repository. Everything else is deployment-shaped — the fabro API base URL, the
-port it listens on — and comes from the environment instead, for the same reason
-the compose project already passes `${VAR}` rather than literals: this repository
-is public, and a host-specific value belongs in `.env`.
+port it listens on, where its SQLite file lives — and comes from the environment
+instead, for the same reason the compose project already passes `${VAR}` rather
+than literals: this repository is public, and a host-specific value belongs in
+`.env`.
+
+**Credentials are deliberately not in `SchedulerConfig`.** `GITHUB_TOKEN` (draft
+06) and `FABRO_API_TOKEN` (draft 07) are read at the point of use and never land
+in a dataclass that gets logged, rendered into `/health` or passed around the app.
+A config object that cannot hold a secret is one fewer thing to audit.
 
 `load_config` is pure apart from the environment mapping handed to it, so the
 whole of its behaviour is testable without a container, a network or a server.
@@ -19,7 +25,8 @@ import os
 import re
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 
 # "owner/repo". Permissive about the characters GitHub allows, strict about the
@@ -35,6 +42,17 @@ DEFAULT_CODER_POOLS = ("coders-a", "coders-b")
 
 DEFAULT_FABRO_API_URL = "http://10.10.0.32:32276/api/v1"
 DEFAULT_PORT = 32280
+
+# The compose `scheduler-data` volume. Created in the image so the named volume
+# seeds from it with uid 1000; see the Dockerfile.
+DEFAULT_DB_PATH = "/data/scheduler.db"
+
+# Decision 5's `T`. Anything that has waited strictly longer than this jumps the
+# front of the queue regardless of repo priority.
+DEFAULT_STARVATION_CEILING_SECONDS = 4 * 60 * 60
+
+# Decision 8: GitHub every 60s, conditionally.
+DEFAULT_GITHUB_POLL_SECONDS = 60
 
 # Every key a `[[repo]]` table may carry. Unknown keys are errors rather than
 # warnings: `priorty = 0` would otherwise be silently ignored and the row would
@@ -62,12 +80,20 @@ class RepoConfig:
 
 @dataclass(frozen=True)
 class SchedulerConfig:
-    """Everything the service needs to start."""
+    """Everything the service needs to start.
+
+    Holds no credential — see the module docstring.
+    """
 
     repos: tuple[RepoConfig, ...]
     coder_pools: tuple[str, ...]
     fabro_api_url: str
     port: int = DEFAULT_PORT
+    db_path: Path = field(default_factory=lambda: Path(DEFAULT_DB_PATH))
+    starvation_ceiling: timedelta = field(
+        default_factory=lambda: timedelta(seconds=DEFAULT_STARVATION_CEILING_SECONDS)
+    )
+    github_poll_seconds: int = DEFAULT_GITHUB_POLL_SECONDS
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -106,6 +132,17 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
         coder_pools=DEFAULT_CODER_POOLS,
         fabro_api_url=_env_str(environ, "FABRO_API_URL", DEFAULT_FABRO_API_URL),
         port=_env_port(environ, "SCHEDULER_PORT", DEFAULT_PORT),
+        db_path=Path(_env_str(environ, "SCHEDULER_DB", DEFAULT_DB_PATH)),
+        starvation_ceiling=timedelta(
+            seconds=_env_positive_int(
+                environ,
+                "SCHEDULER_CEILING_SECONDS",
+                DEFAULT_STARVATION_CEILING_SECONDS,
+            )
+        ),
+        github_poll_seconds=_env_positive_int(
+            environ, "SCHEDULER_GITHUB_POLL_SECONDS", DEFAULT_GITHUB_POLL_SECONDS
+        ),
     )
 
 
@@ -213,6 +250,30 @@ def _parse_repo(
 def _env_str(environ: Mapping[str, str], key: str, default: str) -> str:
     value = environ.get(key, "").strip()
     return value or default
+
+
+def _env_positive_int(environ: Mapping[str, str], key: str, default: int) -> int:
+    """A strictly positive integer from the environment.
+
+    Zero is rejected rather than clamped: `SCHEDULER_GITHUB_POLL_SECONDS=0` means
+    "poll as fast as possible", which would spend the rate limit in minutes, and
+    a zero-second starvation ceiling would put every item in the starved tier and
+    make repo priority dead configuration. A typo'd `false` is the same class of
+    mistake, and `_env_port` already refuses those for the same reason.
+    """
+    raw = environ.get(key, "").strip()
+    if not raw:
+        return default
+
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{key}: {raw!r} is not an integer") from exc
+
+    if value <= 0:
+        raise ConfigError(f"{key}: {value} is not a positive number of seconds")
+
+    return value
 
 
 def _env_port(environ: Mapping[str, str], key: str, default: int) -> int:

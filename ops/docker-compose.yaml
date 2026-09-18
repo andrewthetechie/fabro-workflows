@@ -42,8 +42,14 @@ services:
       # bind one port while compose publishes another when the value is set in the
       # shell instead of ~/fabro/.env.
       SCHEDULER_PORT: "${SCHEDULER_PORT:-32280}"
+    # Deliberately **not** `env_file: .env`. That file carries fabro's
+    # SESSION_SECRET — a cookie-signing key this service has no use for — and the
+    # scheduler's credentials are its own two: GITHUB_TOKEN today, FABRO_API_TOKEN
+    # from draft 07. `required: false` because one service or the other has to
+    # come up first on a fresh host; a missing file leaves the scheduler serving a
+    # page that names the variable, not crash-looping.
     env_file:
-      - path: .env
+      - path: scheduler.env
         required: false
     healthcheck:
       # urllib, not curl: the runtime image is python:slim and deliberately has no
