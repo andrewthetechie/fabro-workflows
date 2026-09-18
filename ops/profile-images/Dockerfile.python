@@ -1,23 +1,79 @@
-# fabro-python:local — sandbox profile image for the `python` environment
-# (used by the backlog-jelly-swipe automation).
+# fabro-python:local -- sandbox profile image for the `python` environment
+# (backlog-jelly-swipe, pr-review-jelly-swipe, issue-triage-jelly-swipe).
 #
-# Reconstructed 2026-09-14 from the built image's layer history
-# (`docker history --no-trunc fabro-python:local`), which preserved the single
-# custom RUN layer verbatim. Verified by rebuild: see README.md.
+#   docker build -f Dockerfile.python -t fabro-python:local ctx/jelly-swipe
 #
-#   docker build -f Dockerfile.python -t fabro-python:local .
+# Do not build this by hand with `.` as the context. `build-images.sh` assembles
+# ctx/jelly-swipe from the repository's real manifests; the warm step below needs
+# them and a bare context silently produces an image with an empty cache.
 
 FROM python:3.13.15-trixie
 
-# git   — the clone stage
-# jq    — the workflow's command gates
-# gh    — GitHub CLI, used by acquire/claim/validate/open_pr
-# uv    — Python package/venv manager used by the target repos' .fabro/setup.sh
+# ---------------------------------------------------------------------------
+# Toolchain
+# ---------------------------------------------------------------------------
+# git   -- the clone stage
+# jq    -- the workflow's command gates
+# gh    -- GitHub CLI, used by acquire/claim/validate/open_pr
+# uv    -- Python package/venv manager used by .fabro/setup.sh
+# node  -- jelly-swipe's frontend/
 #
-# bash is already present in the Debian base; command stages run as POSIX sh.
-RUN apt-get update && apt-get install -y --no-install-recommends git jq curl \
+# Node is NEW and it is not optional. jelly-swipe's `.fabro/ci.sh` gained a
+# frontend half on 2026-09-17 (main @ 842df8a):
+#
+#     cd frontend && npm ci && npm run typecheck && npm run lint && npm test
+#
+# This image had no node and no npm, so under `set -euo pipefail` that ci.sh
+# exits 127 on `npm ci`, `validate` exits 1, and every task on every jelly-swipe
+# run enters the rework ladder against a failure no code change can fix -- four
+# tiers at 45 minutes each. The last run to complete before that commit landed
+# (01M2RX2SGJJT09WK5FS8GYJCDE) ran a ci.sh that stopped at pytest, which is why
+# it passed and why the gap went unnoticed.
+#
+# Node 20 matches `.github/workflows/test.yml`, which sets up Node 20 for both
+# the `frontend-test` and `frontend-build` jobs. Installed from the official
+# binary tarball rather than Debian's `nodejs` package, because trixie ships a
+# different major and the version has to track the repository's CI.
+ARG NODE_VERSION=20.19.5
+ARG GH_VERSION=2.100.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends git jq curl xz-utils \
   && rm -rf /var/lib/apt/lists/* \
-  && curl -fsSL -o /tmp/gh.tgz https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_amd64.tar.gz \
+  && curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
   && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
+  && curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+  && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+       --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE' \
+  && rm /tmp/node.tar.xz \
   && pip install --no-cache-dir uv \
-  && gh --version
+  && gh --version && node -v && npm -v && uv --version
+
+# ---------------------------------------------------------------------------
+# Cache layout -- see common.env.md
+# ---------------------------------------------------------------------------
+# UV_LINK_MODE=copy: uv hardlinks from its cache by default and warns, loudly and
+# on every run, when the cache and the target venv are on different filesystems.
+# They are here -- the cache is an image layer and the venv is in the workspace.
+ENV UV_CACHE_DIR=/opt/cache/uv \
+    UV_LINK_MODE=copy \
+    NPM_CONFIG_CACHE=/opt/cache/npm
+
+# ---------------------------------------------------------------------------
+# Warm the caches from the repository's own lockfiles
+# ---------------------------------------------------------------------------
+# `--no-install-project` installs the dependency closure and skips jelly-swipe
+# itself, so no source tree is needed and no stale copy of the project is baked
+# in. The resolved wheels land in UV_CACHE_DIR; the throwaway venv is deleted.
+#
+# `npm ci --ignore-scripts` populates NPM_CONFIG_CACHE without running install
+# hooks from the dependency tree at image build time. node_modules is deleted:
+# the run rebuilds it in the workspace, from this cache, offline.
+COPY warm/repo/ /tmp/warm/
+RUN cd /tmp/warm \
+  && uv sync --frozen --no-install-project \
+  && rm -rf .venv \
+  && cd /tmp/warm/frontend \
+  && npm ci --ignore-scripts \
+  && rm -rf node_modules \
+  && rm -rf /tmp/warm \
+  && du -sh /opt/cache/*
