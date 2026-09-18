@@ -27,11 +27,19 @@ segments, so the shared graph **cannot** be added at its `../` path — the vers
 has to be rooted one level up.
 
 ## Context Pack
-- Source decisions: overview decision 22 (verified). Q2(a) of the decomposition
-  grilling put this first deliberately.
+- Source decisions: overview decision 14 (the standalone `pr-review` package
+  stays and `fabro-fire-pr-review.sh` keeps being the way it is fired by hand),
+  resting on overview **finding 2** — an automation cannot be parameterised, so
+  the only route is `POST /workflow-versions` → `POST /runs` →
+  `POST /runs/{id}/start`, which is exactly the mechanism draft 07 reuses. Q2(a)
+  of the decomposition grilling put this first deliberately.
 - Repo facts: the script is tracked at
-  `.fabro/workflows/backlog/scripts/fire-pr-review.sh` and deployed to
-  `~/bin/fabro-fire-pr-review.sh`. `AGENTS.md` carries the drift check
+  `.fabro/workflows/backlog/scripts/fire-pr-review.sh`. **It is not itself
+  deployed.** `~/bin/fabro-fire-pr-review.sh` is a read-only wrapper
+  (`docs/auto-merge/fabro-fire-pr-review-wrapper.sh`) that `exec`s the tracked
+  script as it stands on `origin/main`, so the operator's manual fire and
+  `backlog`'s automated one cannot diverge — copying this file over that path is
+  the failure the wrapper exists to prevent. `AGENTS.md` carries the drift check
   (`ssh andrew@10.10.0.32 'cat ~/bin/fabro-fire-pr-review.sh' | diff - docs/auto-merge/fabro-fire-pr-review-wrapper.sh`).
   Its header documents an output contract that must not break: **the last line on
   stdout is the run id and nothing else; the last line on stderr is a one-line
@@ -122,8 +130,13 @@ has to be rooted one level up.
       `201` from `/runs` and `200` from `/runs/{id}/start`.
 - [ ] The created run leaves `submitted` and reaches at least `validate_input`.
 - [ ] The last stdout line is the bare run id.
-- [ ] Deployed copy matches the repo:
-      `ssh andrew@10.10.0.32 'cat ~/bin/fabro-fire-pr-review.sh' | diff - .fabro/workflows/backlog/scripts/fire-pr-review.sh` prints nothing.
+- [ ] There is **no** deployed copy to keep in sync, and this criterion is the
+      check that it stayed that way. `~/bin/fabro-fire-pr-review.sh` must still be
+      the wrapper, not this script:
+      `ssh andrew@10.10.0.32 'cat ~/bin/fabro-fire-pr-review.sh' | diff - docs/auto-merge/fabro-fire-pr-review-wrapper.sh` prints nothing.
+      The fix reaches the host by being on `origin/main`, which the wrapper reads
+      at every fire — confirm with
+      `ssh andrew@10.10.0.32 'git -C ~/.fabro-deploy/fabro-workflows fetch -q origin main && git -C ~/.fabro-deploy/fabro-workflows show origin/main:.fabro/workflows/backlog/scripts/fire-pr-review.sh | grep ^ENTRYPOINT='`.
 
 ## Test Expectations
 No unit-test framework — this is a POSIX `sh` operator script. Two checks:

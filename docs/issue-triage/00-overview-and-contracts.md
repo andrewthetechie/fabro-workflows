@@ -129,8 +129,12 @@ and `fix:` a patch. The title this workflow writes is the seed of the PR title
 
 ## Architecture
 
+`start` fed a `check_capacity` gate until 2026-09-18; it is deleted (ADR 0005,
+`9b0e4f1`) and `start` now feeds `acquire` directly. Triage competes for no coder
+instance, so it never had to stand down for one.
+
 ```
-start → check_capacity ──(host_busy)──→ exit               // quiet, no LLM
+start
              │
         acquire ──(outcome=failed: nothing to do)──→ exit   // quiet, no LLM
              │
@@ -160,7 +164,14 @@ removes the claim and ends the run.
 using it was the first design. It requires re-enabling the four `backlog` schedules
 that ADR 0001 deliberately disabled, and it puts a 30-minute human gate inside the
 workflow that force-pushes branches and opens pull requests. A `check_capacity` node
-reads the same idea off the server's own counter with neither cost.
+read the same idea off the server's own counter with neither cost.
+
+That node is gone (ADR 0005). The argument above still holds against the
+quiet-exit-as-idle-signal design; what changed is the conclusion it led to. Gating
+triage on a global run count was only ever right while the cap was 2 and triage held
+one of the two slots — at a cap of 4 the same check stands down for two coder runs
+triage does not compete with. Admission is the coder scheduler's job now, and triage
+is deliberately outside it (scheduler decision 13).
 
 ### Why the merge of "retitle" into triage
 
@@ -232,7 +243,6 @@ visit must never satisfy a condition meant for this one.
 
 | Node | Keys |
 |---|---|
-| `check_capacity` | `host_busy` |
 | `acquire` | none — it publishes nothing and routes on `outcome` alone |
 | `claim` | `issue_number`, `issue_url`, `answered` |
 | `improve_gate` | `improve_status` (published for the log; no edge reads it) |
@@ -279,7 +289,7 @@ matter here:
 
 | Risk | Detail |
 |---|---|
-| A 30-minute gate holds one of three slots | Bounded by ADR 0002 and by the capacity gate, which makes at most one blocked triage run possible. If `check_capacity` is ever loosened, that guarantee goes with it. |
+| A 30-minute gate holds one of the cap's slots | ~~Bounded by ADR 0002 and by the capacity gate, which makes at most one blocked triage run possible.~~ **Half of this bound is gone.** `check_capacity` was deleted on 2026-09-18 (ADR 0005, `9b0e4f1`), so nothing now limits triage to one blocked run: several can hold gates at once, up to the cap. ADR 0002's 30-minute timeout is the whole of what remains, and it is what keeps the hold bounded in *time* rather than in *number*. Triage is deliberately never queued by the coder scheduler (scheduler decision 13), so the scheduler does not re-establish the missing half either. |
 | An improve pass can degrade an issue | The agent rewrites the body in place. Decision 6's archive comment is the only copy of what the reporter wrote, and it is posted *before* the first write for exactly that reason. |
 | A human editing the bot's question comment is invisible | The return path reads the newest comment, not edits. The questions comment says "reply, do not edit". |
 | Promotion is unsupervised | A `ready` verdict puts the issue in `backlog`'s queue with no human in the loop. The gate exists for questions, not for approval, and decision 4 is deliberate. `backlog` schedules are disabled today, so today the promotion is a label and nothing more. |

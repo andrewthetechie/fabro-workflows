@@ -23,8 +23,10 @@ Two files change, one line each in `backlog`, one in `pr-review`. The shared
 `class="rebase"`, which matches the importing graph's root stylesheet by class.
 
 ## Context Pack
-- Source decisions: overview decisions 12 and 23, ADR 0005's "the stylesheet is
-  the only per-run routing lever" finding.
+- Source decisions: overview decision 12 (box pinning is a LiteLLM model group
+  plus a run input, not a fabro provider), resting on overview **finding 4** —
+  "the stylesheet is the only per-run routing lever, and it is strict" — and
+  finding 3 for why a provider per box is blocked.
 - Repo facts: the current `backlog` stylesheet, verbatim, is in
   `.fabro/workflows/backlog/workflow.fabro` and already carries
   `reasoning_effort: medium` on the coder classes (commit `ce831c0`) — that must
