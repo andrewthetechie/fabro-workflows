@@ -91,8 +91,9 @@
 <h2>Coder leases</h2>
 {# Every configured pool is listed, so "idle" and "not configured" cannot be
    confused with each other. One row per pool, and only while it is held: a lease
-   is a whole-run claim, not released when a run blocks on a human gate, and until
-   draft 09 there is no release at all. #}
+   is a whole-run claim, not released when a run blocks on a human gate. Draft 09
+   releases it when the run reaches a terminal state, so a row here means a run is
+   genuinely still in flight. #}
 {% set leased = leases|map(attribute='coder_pool')|list %}
 <p class="muted">
   {% for pool in pools %}

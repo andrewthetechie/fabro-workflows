@@ -553,6 +553,15 @@ Because of both, this draft **must not be left running unattended after its acce
 run**. Nothing an automation reads changes when this tree changes: it is `ops/`, not
 `.fabro/`.
 
+**Status, 2026-09-19 (later the same day):** drafts 10 and then 09 have both landed in
+this tree, in that order, so the *code* no longer has the three consequences above —
+`reconcile.py` releases, requeues and recovers, and the graph works only the issue it is
+given. **The container has not been redeployed**, so everything above still describes
+what is on the host: a stopped draft-08 image holding two leases. The block above is the
+deployed state, not the tree's. Redeploy (step 11 of the host rebuild), clear the two
+stale lease rows first, and write the new acceptance run up in the deployment log; the
+"do not deploy draft 09 before 10" gate is satisfied.
+
 It is a second service in the **same compose project**, so `docker compose ps` shows the
 whole factory in one place and a host rebuild brings it back with everything else.
 

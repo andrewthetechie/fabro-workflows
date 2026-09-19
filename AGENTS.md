@@ -144,7 +144,7 @@ them, except where a rule names one by id.
 | Delete a contract file before the agent that writes it runs | An agent that exits succeeded without writing hands the gate its predecessor's result. |
 | Agents do not run `git` | Two deliberate exceptions: `pr-review`'s rebase agent and `backlog`'s `resolve_merge` agent, which need `git add` and `--continue`. |
 | A conflicted merge or rebase never crosses a stage boundary | The checkpoint is `git add -A && git commit`, and `git add` marks a conflicted file resolved — so the checkpoint commits conflict markers. The command node aborts to restore a clean tree; a dedicated agent then redoes and resolves the whole thing inside one stage. |
-| `acquire` and `claim` are not atomic; `claim` arbitrates with a run-id marker and the lowest ULID wins | Two backlog runs whose `acquire` stages both finish before either `claim` lands will both claim the same issue — `gh issue edit` is idempotent, so the second succeeds silently and two runs implement it on separate branches. Observed on jelly-swipe#356. The 20s settle in `claim` must stay above the widest observed gap between two claims (4s), or both runs can conclude they won. |
+| `backlog` never chooses its own issue: `claim` validates `args.inputs.issue_number` and fails closed | Draft 10 deleted `acquire`, the marker comment and the lowest-ULID arbitration together — the race they patched (two runs implementing jelly-swipe#356 on separate branches) is now prevented upstream, by the scheduler's lease table rather than by the graph. Restoring any selection inside the graph re-opens it. `claim` must keep quitting on an issue that is missing, closed, or not `agent-in-progress` after its idempotent label swap; picking a different issue is the failure the whole design exists to prevent. |
 | Anchor hook matchers | They are unanchored regexes tested against `node_id`, `handler_type`, `edge_to`, `edge_from` and `tool_name`. Write `^open_pr$`, not `open_pr`, for any id that prefixes another. |
 | `[run.environment.env]` in backlog's `workflow.toml` must never gain an `id` key | It pins all four backlog automations to one environment, and two of the four repos fail CI on the wrong image. It also breaks `fabro validate`, which resolves a non-default id against the CLI's own local catalog and errors. |
 | `trigger_review` keeps `on_failure="succeed"` | Its single unconditional edge points at `exit`. A failed node still routes and takes its *unconditional* edge, so without the attribute a trigger failure routes to `exit` instead of to `human_rescue`. |
@@ -313,13 +313,22 @@ what the node's deliberate "`pr_number` unbound" validation warning exists to ca
 Binding `[run.inputs] pr_number` would silence the warning and turn a no-input fire
 into a review of PR #1. Send no body to that endpoint, or use the helper above.
 
-Firing `backlog` this way *is* correct, because `backlog` takes no inputs, and it does
-start the run:
+**Since draft 10, firing `backlog` that way does not work either**, and the paragraph
+above is exactly why. `backlog` used to take no inputs — `acquire` chose its own issue
+— so the bodyless automation fire was correct for it. It now requires
+`issue_number`, deliberately unbound in `workflow.toml` for the same reason
+`pr_number` is, so the automation endpoint drops the input it cannot carry and the run
+dies at compile with `422 run_compile_invalid`, having created nothing. Use the helper,
+which does the three-POST sequence with the input attached:
 
 ```sh
-curl -fsS -X POST -H "Authorization: Bearer $TOK" \
-  http://10.10.0.32:32276/api/v1/automations/backlog-<repo>/runs
+~/bin/fabro-fire-backlog.sh andrewthetechie/jelly-swipe 123
 ```
+
+The `backlog-<repo>` automations still exist and their rows are still where the
+per-repo `environment_id` is looked up; what changed is that firing one by hand is no
+longer a way to start work. The coder scheduler is the normal producer of `backlog`
+runs, and `fabro-fire-backlog.sh` is the escape hatch for when it is down.
 
 `ops/README.md` has the environments and automations tables, which schedules are
 enabled, host rebuild, the profile images, and the branch sweeper.

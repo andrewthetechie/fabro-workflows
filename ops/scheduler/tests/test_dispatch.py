@@ -32,6 +32,7 @@ from fabro_scheduler.fabro import FabroClient
 from fabro_scheduler.github import Issue
 from fabro_scheduler.lease import Lease, LeaseConflict, LeaseStore
 from fabro_scheduler.queue import QueueItem
+from fabro_scheduler.reconcile import reconcile_leases
 from fabro_scheduler.store import Store
 from fabro_scheduler.workflow_version import WorkflowVersionError
 
@@ -779,3 +780,47 @@ def test_the_loop_is_not_started_without_a_github_token(
 
     assert "GITHUB_TOKEN is not set: the dispatch loop will not start" in caplog.text
     assert "Automatic dispatch is off" in TestClient(app).get("/").text
+
+
+@respx.mock
+def test_an_agent_shaped_ending_is_not_dispatched_again(config, store, leases, fabro, loop):
+    """The whole loop, end to end: dispatch, terminal-agent-shaped, next tick.
+
+    Asserted here and not only in `test_reconcile` because the defect was only
+    visible where the two halves meet. Release and requeue were each right on their
+    own; what was wrong was that releasing the box left the `issue_cache` row the
+    5-second tick reads, so an ending the requeue rule had just refused to put back
+    was dispatched again inside the 60 seconds before the inventory poll noticed.
+    """
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    seed(store, JELLY, 350)
+
+    assert [a.run_id for a in loop.tick()] == ["R1"]
+    assert len(leases.active()) == 1
+
+    # `mark_stuck`: the issue keeps `agent-stuck` and waits for a human.
+    respx.get(f"{FABRO_API}/runs/R1").mock(
+        return_value=httpx.Response(
+            200,
+            json={"lifecycle": {"status": {"kind": "failed", "reason": "stage_failed"}}},
+        )
+    )
+    respx.get(f"{FABRO_API}/runs/R1/events").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "type": "run.failed",
+                        "properties": {"failure": {"detail": {"category": "agent"}}},
+                    }
+                ]
+            },
+        )
+    )
+    reconcile_leases(config, store, leases, fabro, "ghp_test")
+    assert leases.active() == []
+
+    assert loop.tick() == []

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
@@ -275,6 +275,110 @@ def last_failure_category(
     return None
 
 
+# The `status` filter on `GET /runs` takes `BoardColumn`, which is not the status
+# *kind*: eleven kinds fold onto nine columns (`submitted` arrives under `pending`,
+# verified live on 2026-09-19; `starting` under `initializing`, `paused` under
+# `blocked`). These are the columns a run that is still holding work can be in.
+# `succeeded` and `failed` are the terminal two; `dead` has no column at all, which
+# is harmless because it is terminal too. `removing` is in the list on purpose — it
+# is not in `is_terminal`'s set, so a run in it still counts as live, and every
+# reading here fails toward "someone is working this".
+ACTIVE_BOARD_COLUMNS = (
+    "pending",
+    "runnable",
+    "initializing",
+    "running",
+    "blocked",
+    "removing",
+)
+
+# `GET /runs` clamps `page[limit]` at 100 and ignores a bare `limit` (finding 11).
+# With `max_concurrent_runs` at 4 plus whatever sits on a human gate, one page is
+# already generous; the cap is here so a server that answers `has_more` forever
+# cannot spin this call.
+RUNS_PAGE_SIZE = 100
+MAX_ACTIVE_RUN_PAGES = 10
+
+
+def list_active_runs(
+    api: str,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> list[dict]:
+    """Every run fabro currently considers live, across every repo.
+
+    `GET /runs?status=...` filtered to `ACTIVE_BOARD_COLUMNS`. Paged with the
+    **bracketed** `page[limit]`/`page[offset]` that this endpoint honours — a bare
+    `limit=100` is silently clamped to 20 and the response then looks like a
+    20-run store (finding 11) — and continued while `meta.has_more` says to.
+    """
+    runs: list[dict] = []
+    offset = 0
+    for _ in range(MAX_ACTIVE_RUN_PAGES):
+        body = _request(
+            "GET",
+            api,
+            "/runs",
+            token,
+            params=[
+                *(("status", column) for column in ACTIVE_BOARD_COLUMNS),
+                ("page[limit]", RUNS_PAGE_SIZE),
+                ("page[offset]", offset),
+            ],
+            client=client,
+            timeout=timeout,
+        )
+        page = body.get("data")
+        if not isinstance(page, list):
+            raise FabroError(
+                f"GET /runs returned no `data` array: {_summarise(body)}"
+            )
+        runs.extend(item for item in page if isinstance(item, dict))
+
+        meta = body.get("meta")
+        if not (isinstance(meta, Mapping) and meta.get("has_more")):
+            return runs
+        offset += len(page)
+        if not page:
+            # `has_more` with an empty page would otherwise loop to the cap.
+            return runs
+
+    log.warning(
+        "fabro: stopped listing active runs after %d pages; treating the first "
+        "%d as the whole set",
+        MAX_ACTIVE_RUN_PAGES,
+        len(runs),
+    )
+    return runs
+
+
+def issue_claim(run: Mapping[str, object]) -> tuple[str, int] | None:
+    """`(repo, issue_number)` the run says it is working, or `None`.
+
+    Read from `labels.issue` and `repository.name`, both of which are in the list
+    projection (verified live on 2026-09-19 against run
+    `01M2VHAGXNM9JNEY71085HV82Y`: `labels` is `{"issue": "350", "source":
+    "scheduler"}`). `args.labels` values are strings, so the number is parsed back.
+
+    Every path that creates a `backlog` run stamps that label — the scheduler with
+    `source: scheduler` and `ops/fabro-fire-backlog.sh` with `source: manual` — so a
+    run without one is not attributable to an issue and returns `None` rather than
+    a guess.
+    """
+    repository = run.get("repository")
+    repo = repository.get("name") if isinstance(repository, Mapping) else None
+    labels = run.get("labels")
+    number = labels.get("issue") if isinstance(labels, Mapping) else None
+    if not isinstance(repo, str) or not repo:
+        return None
+    try:
+        return repo, int(str(number))
+    except (TypeError, ValueError):
+        return None
+
+
 def build_run_intent(
     *,
     workflow_version_id: str,
@@ -468,6 +572,29 @@ class FabroClient:
         """
         return get_run(self._api, self._token, run_id, timeout=self._call_timeout)
 
+    def active_issue_claims(self) -> set[tuple[str, int]]:
+        """`(repo, issue_number)` for every issue a live fabro run is working.
+
+        Draft 09's recovery asks this before it un-labels anything. Its GitHub pass
+        repairs "a receipt with no lease", and the premise underneath that phrase —
+        every live run holds a lease — is false by design for
+        `ops/fabro-fire-backlog.sh`, the escape hatch for when the scheduler is
+        down. A hand fire takes no lease on purpose (draft 10), its run's `claim`
+        writes `agent-in-progress` anyway, and the scheduler coming back up is
+        exactly when recovery runs. Without this the pass would strip that
+        receipt and dispatch a second run onto an issue already being implemented.
+
+        Raises `FabroError` rather than returning an empty set when fabro cannot
+        answer: an empty set reads as "nothing is live", which is the answer that
+        un-labels everything. The caller fails closed on the raise.
+        """
+        claims = set()
+        for run in list_active_runs(self._api, self._token, timeout=self._call_timeout):
+            claim = issue_claim(run)
+            if claim is not None:
+                claims.add(claim)
+        return claims
+
     def last_failure_category(self, run_id: str) -> str | None:
         """The failure `category` of a run, or `None` if it has none readable.
 
@@ -486,7 +613,9 @@ def _request(
     token: str,
     *,
     json: Mapping[str, object] | None = None,
-    params: Mapping[str, object] | None = None,
+    # A sequence of pairs as well as a mapping: `GET /runs` takes a repeated
+    # `status` key, which a dict cannot express.
+    params: Mapping[str, object] | Sequence[tuple[str, object]] | None = None,
     client: httpx.Client | None = None,
     timeout: float,
 ) -> dict:

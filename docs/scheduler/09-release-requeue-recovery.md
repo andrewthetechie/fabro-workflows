@@ -213,6 +213,42 @@ and the run's claim are all the same issue and this whole correction evaporates.
 dependency table in `00-overview-and-contracts.md` has 09 blocked only by 08; that is not
 enough while 08's receipt and the run's claim can disagree.
 
+#### Found in review, 2026-09-19 (both fixed in this draft's code)
+
+Two defects that only showed up where two rules meet, each reproduced by a test that
+fails without the fix.
+
+**1. Releasing a box without dropping its cache row re-dispatched the ending that was
+refused a requeue.** The Requeue contract is careful about the item it puts *back*; it
+said nothing about the item it does not. Dispatch removes `agent` from the issue, so
+the `issue_cache` row is stale from that moment — but only the 60-second inventory poll
+clears it, and the dispatch loop ticks every 5 seconds. While the lease was held the gap
+was harmless (one in-flight run per repo kept the repo out of `choose_next`); at the
+instant the lease was released it was the whole bug. Any run reaching a terminal state
+inside that minute — `bootstrap_failed`, a `prep` failure, an operator cancel — was
+dispatched a second time, which is exactly what "do not requeue an agent-shaped failure"
+forbids. `mark_stuck` takes hours and so passes the drafted acceptance criterion by hand,
+which is why the criterion did not catch it. The release path now calls
+`Store.forget_issue`.
+
+**2. Recovery stripped the receipt of a hand-fired run and dispatched a second run onto
+it.** The correction above fixed the half of the premise `acquire` broke. The other half
+is that "a receipt with no lease is an orphan" assumes every live run holds a lease, and
+draft 10's `ops/fabro-fire-backlog.sh` breaks that **on purpose** — "a hand fire must not
+pretend to hold a lease it does not" — for use precisely when the scheduler is down,
+which is the state it recovers from. So the GitHub pass now asks fabro which issues its
+live runs are working and treats those as accounted for too, via
+`GET /runs?status=<non-terminal BoardColumns>` reading `labels.issue` and
+`repository.name` (both in the list projection; verified live on 2026-09-19). Every
+`backlog` producer stamps that label — `source: scheduler` and `source: manual`. A fabro
+that cannot answer **stops the pass** rather than proceeding on an empty claim set,
+because empty and unreachable are the same value to the caller and one of them un-labels
+the whole factory.
+
+Also fixed: the failure-category read sat outside the per-lease `try`, so one flaky
+events call abandoned every lease after it on the tick — and at startup cost the boot its
+receipt scan entirely, since the 15-second poll re-runs only the fabro pass.
+
 ## Dependencies
 - Blocked by: "Lease state machine and the dispatch loop"
 - Why blocked: needs the lease table, the dispatch loop and the label writes to

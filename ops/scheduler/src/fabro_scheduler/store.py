@@ -333,6 +333,35 @@ class Store:
             self._conn.execute("DELETE FROM leases WHERE run_id = ?", (run_id,))
             return row
 
+    def forget_issue(self, repo: str, number: int) -> bool:
+        """Drop one cached queue item. Returns whether a row was there to drop.
+
+        The counterpart to `requeue`, and it exists for the release that does
+        **not** requeue. Dispatch removes `agent` from the issue, so from that
+        moment the cached row is stale by construction — but only the 60-second
+        inventory poll notices, and the dispatch loop ticks every 5 seconds. While
+        the lease is held that gap is harmless (one in-flight run per repo keeps
+        the repo out of `choose_next`), and at the instant the lease is released it
+        is exactly wrong: a run that ended agent-shaped would be dispatched again
+        off a row describing a queue membership GitHub no longer has. So the row
+        goes when the box does.
+
+        Deliberately **not** used on the requeue path, and the difference is
+        `first_seen`. This drops the wait along with the row, so an issue that is
+        somehow still `agent`-labelled comes back on the next poll as a brand-new
+        sighting. That is right here — every non-requeued ending (`mark_stuck`,
+        `close_noop`, a merged PR, a cancel) leaves the issue out of the `agent`
+        collection, so there is nothing to come back — and it is precisely wrong
+        for a requeue, which is why `requeue` restores the row itself from
+        `lease.queued_since` instead.
+        """
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM issue_cache WHERE repo = ? AND number = ?",
+                (repo, number),
+            )
+        return cursor.rowcount > 0
+
     def requeue(
         self,
         repo: str,

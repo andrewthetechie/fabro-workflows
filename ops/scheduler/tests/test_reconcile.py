@@ -376,6 +376,20 @@ def _mock_in_progress(
         )
 
 
+def _mock_active_runs(runs=None) -> None:
+    """`GET /runs?status=...` — the live-run list recovery asks before un-labelling.
+
+    Every `recover` test needs it now: the receipt scan treats a live fabro run as
+    accounting for an issue just as a lease does, so an unmocked list is not a
+    neutral default, it is the call that decides whether anything is an orphan.
+    """
+    respx.get(f"{FABRO_API}/runs").mock(
+        return_value=httpx.Response(
+            200, json={"data": runs or [], "meta": {"has_more": False}}
+        )
+    )
+
+
 @respx.mock
 def test_an_orphaned_receipt_is_unlabelled_and_requeued(config, store, leases, fabro):
     # The scheduler died between labelling and recording the lease: the issue wears
@@ -383,6 +397,7 @@ def test_an_orphaned_receipt_is_unlabelled_and_requeued(config, store, leases, f
     # Recovery's GitHub pass restores it. (No leases, so the fabro pass is empty.)
     _install_labels()
     _mock_in_progress()
+    _mock_active_runs()
 
     report = recover(config, store, leases, fabro, GH_TOKEN)
 
@@ -403,6 +418,7 @@ def test_an_issue_with_a_live_lease_is_left_alone(config, store, leases, fabro):
         )
     )
     _mock_in_progress([{"number": 7, "labels": [{"name": "agent-in-progress"}]}])
+    _mock_active_runs()
 
     report = recover(config, store, leases, fabro, GH_TOKEN)
 
@@ -417,6 +433,7 @@ def test_recover_is_idempotent(config, store, leases, fabro):
     # re-labelled `agent` and back in the queue, so the second scan finds nothing
     # wearing `agent-in-progress`.
     _install_labels()
+    _mock_active_runs()
     seen = {"n": 0}
 
     def issues(request: httpx.Request) -> httpx.Response:
@@ -442,3 +459,131 @@ def test_recover_is_idempotent(config, store, leases, fabro):
     assert second.orphaned == []
     assert store.get_issue(FF, 9) is not None
 
+
+
+@respx.mock
+def test_a_hand_fired_runs_receipt_is_not_stripped(config, store, leases, fabro):
+    # `ops/fabro-fire-backlog.sh` fires an issue by hand and takes **no lease** on
+    # purpose (draft 10), for use when the scheduler is down — and the scheduler
+    # coming back up is when this pass runs. The run's `claim` wrote
+    # `agent-in-progress`, so on the lease test alone the receipt looks orphaned:
+    # recovery would strip it and the loop would put a second run on work already
+    # in progress. The live-run list is what tells them apart.
+    _install_labels()
+    _mock_in_progress([{"number": 9, "labels": [{"name": "agent-in-progress"}]}])
+    _mock_active_runs(
+        [
+            {
+                "id": "01MANUAL",
+                "lifecycle": {"status": {"kind": "running"}},
+                "repository": {"name": FF},
+                "labels": {"source": "manual", "issue": "9"},
+            }
+        ]
+    )
+
+    report = recover(config, store, leases, fabro, GH_TOKEN)
+
+    assert report.orphaned == []
+    # Not back in the queue, so the dispatch loop cannot pick it up.
+    assert store.get_issue(FF, 9) is None
+
+
+@respx.mock
+def test_a_fabro_that_cannot_list_runs_leaves_every_receipt_alone(
+    config, store, leases, fabro
+):
+    # Fail closed. An empty claim set and "fabro is unreachable" are the same value
+    # to the caller, and one of them un-labels every receipt in the factory. An
+    # orphan left one more restart is cheap; two runs on one issue is not.
+    _install_labels()
+    _mock_in_progress([{"number": 9, "labels": [{"name": "agent-in-progress"}]}])
+    respx.get(f"{FABRO_API}/runs").mock(return_value=httpx.Response(503, json={}))
+
+    report = recover(config, store, leases, fabro, GH_TOKEN)
+
+    assert report.orphaned == []
+    assert store.get_issue(FF, 9) is None
+    assert report.github_errors and report.github_errors[0].startswith("fabro:")
+
+
+@respx.mock
+def test_a_terminal_run_that_is_not_requeued_drops_its_cache_row(
+    config, store, leases, fabro
+):
+    # The row is stale from the moment dispatch removed `agent`, and the 60s
+    # inventory poll is what would eventually clear it — but the dispatch loop
+    # ticks every 5s. Releasing the box without dropping the row is what let an
+    # agent-shaped ending be dispatched a second time.
+    store.upsert_issue(
+        Issue(FF, 7, "t", frozenset({"agent"}), datetime(2026, 9, 18, 8, 0, tzinfo=UTC))
+    )
+    leases.acquire(_lease(run_id="R1"))
+    respx.get(f"{FABRO_API}/runs/R1").mock(
+        return_value=httpx.Response(
+            200,
+            json={"lifecycle": {"status": {"kind": "failed", "reason": "stage_failed"}}},
+        )
+    )
+    respx.get(f"{FABRO_API}/runs/R1/events").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "type": "run.failed",
+                        "properties": {"failure": {"detail": {"category": "agent"}}},
+                    }
+                ]
+            },
+        )
+    )
+
+    actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    assert [action.outcome for action in actions] == ["released"]
+    assert leases.active() == []
+    assert store.get_issue(FF, 7) is None
+
+
+@respx.mock
+def test_an_unreadable_failure_category_keeps_the_lease(config, store, leases, fabro):
+    # The events call is a second call and fails on its own. Letting it escape would
+    # abandon every lease after this one on the tick, and at startup would cost the
+    # boot its receipt scan.
+    leases.acquire(_lease(run_id="R1"))
+    leases.acquire(
+        Lease("coders-b", FF, 8, "R2", datetime(2026, 9, 18, 12, 0, tzinfo=UTC))
+    )
+    respx.get(url__regex=RUNS).mock(
+        return_value=httpx.Response(
+            200,
+            json={"lifecycle": {"status": {"kind": "failed", "reason": "stage_failed"}}},
+        )
+    )
+    respx.get(f"{FABRO_API}/runs/R1/events").mock(
+        return_value=httpx.Response(500, json={})
+    )
+    respx.get(f"{FABRO_API}/runs/R2/events").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "type": "run.failed",
+                        "properties": {
+                            "failure": {"detail": {"category": INFRA_CATEGORY}}
+                        },
+                    }
+                ]
+            },
+        )
+    )
+    _install_labels()
+
+    actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    # R1 keeps its lease; R2 is still reconciled rather than abandoned with it.
+    by_run = {action.lease.run_id: action.outcome for action in actions}
+    assert by_run == {"R1": "failed", "R2": "released+requeued"}
+    assert [lease.run_id for lease in leases.active()] == ["R1"]

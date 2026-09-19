@@ -18,14 +18,22 @@ exact bounce the design exists to survive.
 
 **Recovery** — on startup, reconcile every lease against fabro (drop the ones whose
 run is terminal or is gone), then scan GitHub for receipts (`agent-in-progress`)
-with no lease behind them and requeue those. Recovery runs **before** the dispatch
-loop, or it would dispatch onto a box it had not yet reconciled.
+that neither a lease nor a live fabro run accounts for, and requeue those. Recovery
+runs **before** the dispatch loop, or it would dispatch onto a box it had not yet
+reconciled.
 
 Draft 10 (which collapsed `acquire`/`claim`) landed before this on purpose: it is
 what makes the lease's `issue_number` the issue the run actually works, so a
 GitHub-pass that keys on `lease.issue_number` can no longer un-label the issue a
 run is implementing. See `docs/scheduler/09-release-requeue-recovery.md`,
 *Corrected during draft 08's acceptance run*.
+
+What draft 10 did **not** close is the other half of the same premise. "A receipt
+with no lease is an orphan" assumes every live run holds a lease, and draft 10's own
+`ops/fabro-fire-backlog.sh` breaks that on purpose — a hand fire takes no lease, and
+it exists for when the scheduler is down, which is the state the scheduler recovers
+*from*. So the receipt scan asks fabro which issues its live runs are working
+(`FabroClient.active_issue_claims`) and treats those as accounted for too.
 
 Every release and requeue is logged with run id, repo and issue so the deployment
 log can reconstruct what happened.
@@ -184,7 +192,21 @@ def reconcile_leases(
 
         # Terminal. Decide requeue, fetching the failure category from the events
         # tail only when the projection does not already decide (`terminated`).
-        if should_requeue(_with_category(run, lease, fabro_client)):
+        # Inside the try because that is a second call and it can fail on its own:
+        # letting it escape would abandon every lease after this one on the tick,
+        # and at startup it would skip the GitHub pass for the whole boot.
+        try:
+            classified = _with_category(run, lease, fabro_client)
+        except FabroError as exc:
+            log.error(
+                "reconcile: %s#%s run %s: could not read the failure category, "
+                "keeping lease: %s",
+                lease.repo, lease.issue_number, lease.run_id, exc,
+            )
+            actions.append(ReleaseAction(lease, "failed", str(exc)))
+            continue
+
+        if should_requeue(classified):
             _requeue(store, leases, lease, github_token)
             actions.append(
                 ReleaseAction(lease, "released+requeued", _classify(run))
@@ -194,6 +216,15 @@ def reconcile_leases(
                 lease.repo, lease.issue_number, lease.run_id, _classify(run),
             )
         else:
+            # The cache row goes with the box. Dispatch removed `agent` from this
+            # issue, so the row has been stale since then; while the lease was
+            # held that was harmless (one in-flight run per repo kept the repo out
+            # of `choose_next`), and at this instant it is the whole bug — the
+            # 5-second dispatch tick would start a second run off it, up to a
+            # minute before the inventory poll cleared it. An agent-shaped ending
+            # must not come back, and this is what makes that true rather than
+            # merely likely.
+            store.forget_issue(lease.repo, lease.issue_number)
             leases.release(lease.run_id)
             actions.append(ReleaseAction(lease, "released", _classify(run)))
             log.info(
@@ -286,27 +317,56 @@ def recover(
     fabro_pass = reconcile_leases(
         config, store, leases, fabro_client, github_token
     )
-    return _github_pass(config, store, leases, github_token, fabro_pass)
+    return _github_pass(config, store, leases, fabro_client, github_token, fabro_pass)
 
 
 def _github_pass(
     config: SchedulerConfig,
     store: Store,
     leases: LeaseStore,
+    fabro_client: FabroClient,
     github_token: str,
     fabro_pass: list[ReleaseAction],
 ) -> RecoveryReport:
-    """The receipt scan: issues wearing `agent-in-progress` with no live lease.
+    """The receipt scan: issues wearing `agent-in-progress` that nothing is working.
 
     The scheduler died between labelling and recording the lease (or a cancel left
     the receipt behind), so the issue is invisible to `acquire` and to this queue.
-    An issue with a live lease is being worked and is left alone; anything else is
-    un-labelled and requeued. With draft 10 landed, `lease.issue_number` *is* the
-    issue the run works, so matching on it can no longer touch a run's own claim.
+    Anything nothing is working is un-labelled and requeued.
+
+    **Two things count as "being worked", not one.** A live lease is the first, and
+    with draft 10 landed `lease.issue_number` *is* the issue the run works, so
+    matching on it can no longer touch a run's own claim. The second is a live
+    fabro run that holds no lease, which is not a hypothetical: draft 10's
+    `ops/fabro-fire-backlog.sh` fires an issue by hand and deliberately takes no
+    lease ("a hand fire must not pretend to hold a lease it does not"), for use
+    exactly when the scheduler is down — and the scheduler starting back up is when
+    this pass runs. On the lease test alone it would strip that run's receipt,
+    requeue its issue and let the loop dispatch a second run onto work already in
+    progress: draft 09's own correction, with the manual path standing in for
+    `acquire`.
+
+    **A fabro that cannot answer stops the pass**, rather than letting it proceed
+    on an empty claim set — which is indistinguishable from "nothing is live" and
+    un-labels everything. An orphan left one more restart is cheap; two runs on one
+    issue is the failure this pass exists to prevent.
     """
     live = {(lease.repo, lease.issue_number) for lease in leases.active()}
     errors: list[str] = []
     orphaned: list[tuple[str, int]] = []
+
+    try:
+        live |= fabro_client.active_issue_claims()
+    except FabroError as exc:
+        log.error(
+            "recover: could not list live runs, so no receipt can be shown to be "
+            "orphaned; leaving every label alone: %s",
+            exc,
+        )
+        return RecoveryReport(
+            fabro_pass=fabro_pass, orphaned=[], github_errors=[f"fabro: {exc}"]
+        )
+
     for repo in config.schedulable_repos():
         try:
             numbers = fetch_in_progress(repo.name, github_token)
@@ -346,7 +406,9 @@ class ReleasePoller:
 
     One thread, exactly like `InventoryPoller`: `tick()` is pure and testable, and
     `start`/`stop` are the only things that touch a thread. Runs `reconcile_leases`
-    (the fabro pass only — the GitHub pass is startup-only, `recover_github`).
+    — the fabro pass only. The receipt scan belongs to `recover` and runs once at
+    startup: it reads every repo's `agent-in-progress` collection uncached, which
+    is four GitHub requests that answer a question only a restart can raise.
     """
 
     def __init__(
@@ -388,7 +450,7 @@ class ReleasePoller:
         self._thread.start()
 
     def stop(self, timeout: float = 10.0) -> None:
-        """Stop and close the HTTP client. Safe to call twice."""
+        """Stop ticking. Safe to call twice."""
         self._stop.set()
         thread, self._thread = self._thread, None
         if thread is not None:

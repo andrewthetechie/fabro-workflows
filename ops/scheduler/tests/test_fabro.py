@@ -16,6 +16,7 @@ import pytest
 import respx
 
 from fabro_scheduler.fabro import (
+    ACTIVE_BOARD_COLUMNS,
     DEFAULT_BRANCH,
     FabroClient,
     FabroError,
@@ -23,6 +24,8 @@ from fabro_scheduler.fabro import (
     build_run_intent,
     create_run,
     get_run,
+    issue_claim,
+    list_active_runs,
     register_version,
     start_run,
     status_kind,
@@ -356,3 +359,76 @@ def test_a_start_failure_names_the_run_it_left_in_submitted(fake_checkout):
 def test_configured_reflects_the_token_without_ever_reporting_it(fake_checkout):
     assert FabroClient(API, TOKEN, clone=fake_checkout.clone).configured is True
     assert FabroClient(API, "  ", clone=fake_checkout.clone).configured is False
+
+
+# --- the live-run list (draft 09's receipt scan) ------------------------------------
+
+
+@respx.mock
+def test_list_active_runs_filters_to_the_non_terminal_columns():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["params"] = request.url.params.multi_items()
+        return httpx.Response(200, json={"data": [], "meta": {"has_more": False}})
+
+    respx.get(f"{API}/runs").mock(side_effect=handler)
+
+    list_active_runs(API, TOKEN)
+
+    sent = captured["params"]
+    assert [value for key, value in sent if key == "status"] == list(
+        ACTIVE_BOARD_COLUMNS
+    )
+    # The **bracketed** name. `GET /runs` ignores a bare `limit` and clamps to 20,
+    # so a page of 100 asked for the other way is silently a page of 20 (finding 11).
+    assert ("page[limit]", "100") in sent
+
+
+@respx.mock
+def test_list_active_runs_follows_has_more():
+    pages = [
+        {"data": [{"id": "A"}], "meta": {"has_more": True}},
+        {"data": [{"id": "B"}], "meta": {"has_more": False}},
+    ]
+    offsets = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offsets.append(request.url.params.get("page[offset]"))
+        return httpx.Response(200, json=pages[len(offsets) - 1])
+
+    respx.get(f"{API}/runs").mock(side_effect=handler)
+
+    assert [run["id"] for run in list_active_runs(API, TOKEN)] == ["A", "B"]
+    assert offsets == ["0", "1"]
+
+
+@respx.mock
+def test_list_active_runs_stops_on_an_empty_page_that_claims_more():
+    # `has_more` with nothing in the page would otherwise spin to the page cap.
+    respx.get(f"{API}/runs").mock(
+        return_value=httpx.Response(200, json={"data": [], "meta": {"has_more": True}})
+    )
+
+    assert list_active_runs(API, TOKEN) == []
+
+
+def test_issue_claim_reads_the_label_and_the_repository():
+    # Verified live on 2026-09-19: `labels` is `{"issue": "350", "source":
+    # "scheduler"}` and `repository.name` is the slug. `args.labels` values are
+    # strings, so the number comes back as one.
+    assert issue_claim(
+        {
+            "repository": {"name": "andrewthetechie/jelly-swipe"},
+            "labels": {"issue": "350", "source": "scheduler"},
+        }
+    ) == ("andrewthetechie/jelly-swipe", 350)
+
+
+def test_issue_claim_is_none_when_the_run_names_no_issue():
+    # A run with no `issue` label is not attributable, and a guess here un-labels
+    # or protects the wrong issue. Both halves must be present.
+    assert issue_claim({"repository": {"name": "o/a"}, "labels": {}}) is None
+    assert issue_claim({"repository": {"name": "o/a"}}) is None
+    assert issue_claim({"labels": {"issue": "1"}}) is None
+    assert issue_claim({"repository": {"name": "o/a"}, "labels": {"issue": "x"}}) is None

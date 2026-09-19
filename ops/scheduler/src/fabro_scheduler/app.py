@@ -169,8 +169,11 @@ def build_app(
         # poller starts first so the loop reads a fresh queue. Draft 09's recovery
         # runs **before either**, synchronously, because a loop that dispatches
         # onto a box it has not yet reconciled is the failure this whole pass
-        # exists to prevent. Recovery is best-effort: a hiccup is logged and the
-        # 15-second release poll retries it.
+        # exists to prevent. Recovery is best-effort, but only half of it is
+        # retried: the 15-second poll re-runs the fabro pass every tick, while the
+        # receipt scan is startup-only, so a throw here costs this boot its orphan
+        # repair and the next restart is what fixes it. Logged as an exception for
+        # exactly that reason.
         if releaser is not None:
             try:
                 recover(config, store, leases, client, github_token)
