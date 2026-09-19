@@ -27,7 +27,9 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GRAPH="$REPO_ROOT/.fabro/workflows/backlog/workflow.fabro"
+SHARED="$REPO_ROOT/.fabro/workflows/_shared/review-merge/review-merge.fabro"
 [ -f "$GRAPH" ] || { echo "ERROR: $GRAPH not found" >&2; exit 1; }
+[ -f "$SHARED" ] || { echo "ERROR: $SHARED not found" >&2; exit 1; }
 
 command -v jq >/dev/null || { echo "ERROR: jq is required" >&2; exit 1; }
 
@@ -40,8 +42,13 @@ FAIL=0
 # ---------------------------------------------------------------------------
 # Extract a node's `script` attribute exactly as the DOT parser sees it.
 # ---------------------------------------------------------------------------
-extract() {
-    python3 - "$GRAPH" "$1" <<'PY'
+extract() { extract_from "$GRAPH" "$1"; }
+
+# `extract`, against a named graph. The shared review-merge graph is spliced into
+# both backlog and pr-review at parse time, so its nodes are not in either package's
+# own .fabro file and have to be read from the shared one.
+extract_from() {
+    python3 - "$1" "$2" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
 i = src.index("\n    %s [" % sys.argv[2])
@@ -625,6 +632,154 @@ ms_setup
 OUT=$(sh "$T/mark_stuck.sh" 2>&1); RC=$?
 check "no number, no gh call"         "0" "$(wc -l < "$T/gh.log" | tr -d ' ')"
 check "no number still exits 0"       "0" "$RC"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+
+# ---------------------------------------------------------------------------
+# review-merge `merge` — the checkpoint-push race
+#
+# Fabro commits and pushes the run branch after EVERY stage, and `merge` is the
+# one node whose branch is the thing being merged: the push lands ~15ms before the
+# node starts, GitHub invalidates the computed merge ref, and the mutation is
+# rejected with "Base branch was modified". The base is innocent -- jelly-swipe#386
+# lost its merge to this on 2026-09-19 with `main` unmoved for 35h -- so the node
+# waits for mergeability to settle, retries the race, and only then gives up.
+# ---------------------------------------------------------------------------
+echo ""
+echo "review-merge merge"
+SAVED_PATH="$PATH"
+T="$WORK/rmmerge"; mkdir -p "$T/bin"
+
+extract_from "$SHARED" merge | sed "s#/tmp/fabro#$T#g" > "$T/merge.sh"
+if ! sh -n "$T/merge.sh" 2>"$T/merge.syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL merge is not valid POSIX sh\n'; sed 's/^/       /' "$T/merge.syntax"
+fi
+
+cat > "$T/bin/sleep" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+cat > "$T/bin/git" <<'STUB'
+#!/bin/sh
+case "$1 $2" in
+  "merge-base --is-ancestor")
+      # exit 0 = base IS an ancestor of HEAD = we are NOT behind it
+      [ -f "$GH_STATE/behind_base" ] && exit 1
+      exit 0 ;;
+esac
+exit 0
+STUB
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr view")
+      case "$*" in
+        *"--json state"*)
+            cat "$GH_STATE/pr_state" 2>/dev/null || echo OPEN ;;
+        *"--json mergeable"*)
+            n=0; [ -f "$GH_STATE/m_calls" ] && n=$(cat "$GH_STATE/m_calls")
+            n=$((n + 1)); echo "$n" > "$GH_STATE/m_calls"
+            u=0; [ -f "$GH_STATE/unknown_until" ] && u=$(cat "$GH_STATE/unknown_until")
+            if [ "$n" -le "$u" ]; then echo UNKNOWN; else echo MERGEABLE; fi ;;
+      esac
+      exit 0 ;;
+  "pr merge")
+      n=0; [ -f "$GH_STATE/merge_calls" ] && n=$(cat "$GH_STATE/merge_calls")
+      n=$((n + 1)); echo "$n" > "$GH_STATE/merge_calls"
+      f=0; [ -f "$GH_STATE/merge_fails_until" ] && f=$(cat "$GH_STATE/merge_fails_until")
+      if [ "$n" -le "$f" ]; then
+          cat "$GH_STATE/merge_error" >&2
+          exit 1
+      fi
+      echo "Squashed and merged pull request #386"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/sleep" "$T/bin/git" "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+
+rm_setup() {
+    : > "$T/gh.log"
+    rm -f "$T/m_calls" "$T/merge_calls" "$T/unknown_until" "$T/merge_fails_until" \
+          "$T/behind_base" "$T/pr_state" "$T/strict_retry" \
+          "$T/merge_block_reason" "$T/needs_human_reason" "$T/merge_attempt.log"
+    echo 386 > "$T/pr_number"
+    echo main > "$T/base_ref"
+    printf 'fix: a subject (#356)' > "$T/commit_subject.txt"
+    : > "$T/commit_body.md"
+    printf 'GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)\n' \
+        > "$T/merge_error"
+}
+
+# 1. Clean merge.
+rm_setup
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "clean merge exits 0"        "0"      "$RC"
+check "clean merge reports merged" "merged" "$(jq -r '.context_updates.merge_state' <<<"$(lastjson "$OUT")")"
+check "clean merge tries once"     "1"      "$(cat "$T/merge_calls")"
+
+# 2. THE RACE, survived. First attempt is rejected, the retry wins.
+rm_setup
+echo 1 > "$T/merge_fails_until"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "race retried, exits 0"      "0"      "$RC"
+check "race retried, merged"       "merged" "$(jq -r '.context_updates.merge_state' <<<"$(lastjson "$OUT")")"
+check "race took two attempts"     "2"      "$(cat "$T/merge_calls")"
+
+# 3. THE RACE, unsurvivable. Bounded at three, and the reason must NOT blame
+#    permissions -- that wording is what sent a human looking for a token problem.
+rm_setup
+echo 9 > "$T/merge_fails_until"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "persistent race fails"      "1" "$RC"
+check "bounded at three attempts"  "3" "$(cat "$T/merge_calls")"
+check "names the race, not perms"  "1" "$(grep -c 'checkpoint-push race' "$T/merge_block_reason")"
+check "says the PR is mergeable"   "1" "$(grep -c 'mergeable as it stands' "$T/merge_block_reason")"
+
+# THE OTHER HALF OF #386: mark_needs_human renders `needs-human`, which reads
+# needs_human_reason, NOT merge_block_reason. Both must be written or the operator
+# is shown a stale placeholder from a stage that succeeded.
+check "writes merge_block_reason"  "1" "$([ -s "$T/merge_block_reason" ] && echo 1 || echo 0)"
+check "writes needs_human_reason"  "1" "$([ -s "$T/needs_human_reason" ] && echo 1 || echo 0)"
+check "both reasons agree"         "" "$(diff "$T/merge_block_reason" "$T/needs_human_reason")"
+
+# 4. A genuine failure is NOT retried and keeps its own wording.
+rm_setup
+echo 9 > "$T/merge_fails_until"
+printf 'GraphQL: Resource not accessible by integration (mergePullRequest)\n' > "$T/merge_error"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "non-race fails"             "1" "$RC"
+check "non-race is not retried"    "1" "$(cat "$T/merge_calls")"
+check "non-race says unexpected"   "1" "$(grep -c 'unexpected reason' "$T/merge_block_reason")"
+check "non-race sets both files"   "1" "$([ -s "$T/needs_human_reason" ] && echo 1 || echo 0)"
+
+# 5. Mergeability is UNKNOWN right after the checkpoint push; wait for it.
+rm_setup
+echo 2 > "$T/unknown_until"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "waits out UNKNOWN"          "0"      "$RC"
+check "polled mergeability"        "3"      "$(cat "$T/m_calls")"
+check "then merged"                "merged" "$(jq -r '.context_updates.merge_state' <<<"$(lastjson "$OUT")")"
+
+# 6. A PR someone else already handled is not a failure.
+rm_setup
+echo CLOSED > "$T/pr_state"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "closed PR exits 0"          "0"      "$RC"
+check "closed PR reports closed"   "closed" "$(jq -r '.context_updates.merge_state' <<<"$(lastjson "$OUT")")"
+check "closed PR never merges"     "0"      "$(grep -c 'pr merge' "$T/gh.log")"
+
+# 7. Genuinely behind the base: hand off to remerge_base, do not call it a failure.
+rm_setup
+echo 9 > "$T/merge_fails_until"
+: > "$T/behind_base"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "behind base exits 0"        "0"     "$RC"
+check "behind base is stale"       "stale" "$(jq -r '.context_updates.merge_state' <<<"$(lastjson "$OUT")")"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE

@@ -292,6 +292,18 @@ fi
 echo '{\"context_updates\":{\"fix_outcome\":\"'$O'\"}}'"]
 
     // ---- CI ----
+    // Both branches write `needs_human_reason`, and both are PLACEHOLDERS: each names the
+    // stopping point that would follow if the run died right here. That is the right
+    // shape, and it has one failure mode -- a placeholder describing a stopping point the
+    // run then goes on to PASS is a false statement left lying around for a later renderer
+    // to print. jelly-swipe#386 was told \"the run stopped after validate and before the
+    // review was delivered\" by a merge failure two stages later, while `deliver` had
+    // plainly succeeded and all three verdicts were in the same comment.
+    //
+    // So every stage that passes one of these points overwrites the placeholder with the
+    // next one: `deliver` on success, and `merge` on its failure path (which also writes
+    // `merge_block_reason`, because the two renderers read different files). Add a stage
+    // here and it inherits the same duty.
     validate [label="Validate (setup + ci)", shape=parallelogram, timeout="20m", output_schema="routing",
         script="echo 'The validate stage did not finish: ./.fabro/setup.sh and ./.fabro/ci.sh were still running when it was stopped, most likely on the stage timeout. CI never reported, so nothing was delivered.' > /tmp/fabro/needs_human_reason
 ./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1
@@ -322,6 +334,7 @@ H=$(cat /tmp/fabro/head_ref)
 B=$(cat /tmp/fabro/base_ref)
 if git push --force-with-lease origin HEAD:\"$H\"; then
   gh pr edit $PR --add-label ai-review-complete || echo 'WARNING: could not add the ai-review-complete label. Check that the run token has issues:write.' >&2
+  echo 'The review was delivered and the merge decision did not complete; a human should finish this PR.' > /tmp/fabro/needs_human_reason
   echo '{\"context_updates\":{\"delivered\":true}}'
 else
   echo 'git push --force-with-lease was rejected: the PR branch moved while this run was working. Not overwriting.' > /tmp/fabro/needs_human_reason
@@ -581,19 +594,63 @@ exit 0"]
     // Reaping the branch is ops/fabro-branch-sweep.sh's job, at its own grace: 24h
     // for a fabro/run/* branch whose tree matches the default branch, 168h for one
     // that still differs from it -- which is what a squash merge leaves behind.
-    // Behind the base is the only expected rejection: it is fixable by a re-merge on the
-    // one strict repo, or by a human read if the branch is still behind after that. Any
-    // other rejection -- a token without `contents: write`, a conflict that appeared
-    // since the review, an API 5xx -- is an unexpected failure and must be loud.
+    // Behind the base is one expected rejection: it is fixable by a re-merge on the one
+    // strict repo, or by a human read if the branch is still behind after that.
+    //
+    // The OTHER expected rejection is a race this graph causes itself, and it cost
+    // jelly-swipe#386 its merge on 2026-09-19. Fabro checkpoints -- commit and push to
+    // the run branch -- after EVERY stage, and this is the one node whose branch is the
+    // thing being merged, so the push lands about fifteen milliseconds before the node
+    // starts. That invalidates the merge ref GitHub has computed, and a merge attempted
+    // in that window is rejected with `GraphQL: Base branch was modified. Review and try
+    // the merge again. (mergePullRequest)`. The message names the base and the base is
+    // innocent: on #386 `main` had not moved in 35 hours and the PR's own `baseRefOid`
+    // was the same sha, with no branch protection on the repo at all. It is a pure race,
+    // won or lost on GitHub's timing -- run 01M2TFEHPYXXTQST6VPXREA854 had exactly the
+    // same 10ms gap and merged.
+    //
+    // So: wait for `mergeable` to leave UNKNOWN before attempting at all, and retry the
+    // attempt itself on a branch-moved rejection. Only what survives that is unexpected.
+    //
+    // The failure path writes BOTH reason files. `merge_block_reason` is what the
+    // `blocked` renderer reads; the unconditional edge from here goes to
+    // `mark_needs_human`, which renders `needs-human` and reads `needs_human_reason` --
+    // a different file. #386 therefore told its operator \"the run stopped after validate
+    // and before the review was delivered\", a placeholder `validate` had written on its
+    // SUCCESS path, while the real reason sat unread. Writing both is what keeps the
+    // comment true no matter which renderer sees it.
     merge [label="Squash merge", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
+block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
 S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
 if [ \"$S\" != OPEN ]; then
   echo 'PR '$PR' was no longer open at merge time; assuming it was handled elsewhere. No failure to report.' > /tmp/fabro/merge_block_reason
   echo '{\"context_updates\":{\"merge_state\":\"closed\"}}'
   exit 0
 fi
-if gh pr merge \"$PR\" --squash --delete-branch=false --subject \"$(cat /tmp/fabro/commit_subject.txt)\" --body-file /tmp/fabro/commit_body.md; then
+W=0
+while [ $W -lt 6 ]; do
+  M=$(gh pr view \"$PR\" --json mergeable --jq .mergeable 2>/dev/null || echo UNKNOWN)
+  if [ \"$M\" != UNKNOWN ]; then break; fi
+  echo 'mergeability is UNKNOWN; waiting for GitHub to recompute the merge ref after the checkpoint push'
+  W=$((W + 1))
+  sleep 5
+done
+A=1
+MERGED=0
+while :; do
+  if gh pr merge \"$PR\" --squash --delete-branch=false --subject \"$(cat /tmp/fabro/commit_subject.txt)\" --body-file /tmp/fabro/commit_body.md > /tmp/fabro/merge_attempt.log 2>&1; then
+    MERGED=1
+    break
+  fi
+  cat /tmp/fabro/merge_attempt.log
+  if [ $A -ge 3 ]; then break; fi
+  if ! grep -q 'branch was modified' /tmp/fabro/merge_attempt.log; then break; fi
+  echo 'attempt '$A' lost the branch-moved race; re-reading the PR and retrying'
+  A=$((A + 1))
+  sleep 10
+done
+if [ \"$MERGED\" = 1 ]; then
   echo '{\"context_updates\":{\"merge_state\":\"merged\"}}'
   exit 0
 fi
@@ -601,7 +658,11 @@ B=$(cat /tmp/fabro/base_ref)
 SR=$(cat /tmp/fabro/strict_retry 2>/dev/null || echo 0)
 git fetch origin \"$B\" 2>/dev/null || true
 if git merge-base --is-ancestor origin/\"$B\" HEAD 2>/dev/null; then
-  echo 'The squash merge failed for an unexpected reason (permissions, conflict since review, or API error); a human must merge this PR.' > /tmp/fabro/merge_block_reason
+  if grep -q 'branch was modified' /tmp/fabro/merge_attempt.log; then
+    block 'GitHub rejected the squash merge three times with a branch-moved error, while this branch is NOT behind its base. That is the checkpoint-push race, not a problem with the change: the PR is very likely mergeable as it stands, and a human can merge it directly.'
+  else
+    block 'The squash merge failed for an unexpected reason (permissions, conflict since review, or API error); a human must merge this PR.'
+  fi
   exit 1
 fi
 if [ \"$SR\" = 0 ]; then

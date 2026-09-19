@@ -252,6 +252,45 @@ removes the dependency instead of recreating the ref, and why
 `ops/test-task-gates.sh` now asserts that no `gh pr create`/`gh pr view` in this graph is
 left to infer the branch.
 
+### 12. Fabro's own checkpoint push races the `merge` node, and GitHub blames the base
+
+Fabro commits and pushes the run branch after **every** stage. `merge` is the one node
+whose branch *is* the thing being merged, so the checkpoint lands about fifteen
+milliseconds before it starts, GitHub invalidates the merge ref it had computed, and a
+merge attempted in that window is rejected with:
+
+```
+GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)
+```
+
+**The base is innocent.** Verified on `jelly-swipe#386` (run `01M2X2MVPC2NXY1BW5CVKPFF3S`,
+2026-09-19): `main` was `842df8a3`, unmoved for 35 hours, the PR's own `baseRefOid` was
+that same sha, and `gh api repos/.../rules/branches/main` returned `[]` — no protection
+rules at all. The only thing that had moved was the head, pushed by fabro 15 ms earlier.
+
+It is a pure race, won or lost on GitHub's timing. Run `01M2TFEHPYXXTQST6VPXREA854` has
+the identical 10 ms gap and merged cleanly:
+
+```
+FAILED   15:45:13.530 git.push → 15:45:13.545 merge starts → 15:45:15.686 rejected
+SUCCESS  23:10:46.714 git.push → 23:10:46.724 merge starts → 23:10:51.858 merged
+```
+
+Two consequences the graph now handles. The node waits for `mergeable` to leave `UNKNOWN`
+before attempting at all, and retries the attempt itself up to three times on a
+branch-moved rejection — anything that survives that is genuinely unexpected. And it
+**writes both reason files**: `merge_block_reason`, which the `blocked` renderer reads,
+and `needs_human_reason`, which the `needs-human` renderer reads. Its unconditional edge
+goes to `mark_needs_human`, which renders the second — so before this, #386's operator was
+shown a placeholder `validate` had written on its *success* path ("the run stopped after
+validate and before the review was delivered") while `deliver` had plainly succeeded and
+all three verdicts were in the same comment. The accurate reason sat unread in the other
+file.
+
+`ops/test-task-gates.sh` covers all of it: the race survived on a retry, the race bounded
+at three, a non-race failure that must *not* retry and must keep its own wording, the
+`UNKNOWN` wait, a PR someone else closed, and a branch genuinely behind its base.
+
 ## Architecture
 
 ### `pr-review` graph delta

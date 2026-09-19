@@ -464,7 +464,7 @@ within minutes of the re-arm, which is the evidence that closed it.
 Three things came out of that failure and are now part of the design rather than notes
 about one incident:
 
-1. **`ops/test-task-gates.sh` covers `claim` and `mark_stuck`** (112 checks, up from 82).
+1. **`ops/test-task-gates.sh` covers `claim` and `mark_stuck`** (137 checks, up from 82).
    Session 1 recorded "no offline gate can catch it" as a fact about the tooling; it was a
    fact about the gate's coverage. `claim` is staged against a sandbox directory that does
    **not** exist, which is the only way a test can observe a node creating one — every

@@ -19,7 +19,7 @@ locations instead.
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
 | `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
 | `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
-| `test-task-gates.sh` | Runs `backlog`'s `claim`, `mark_stuck`, `open_pr` and task-queue nodes against fixtures, extracted verbatim from the graph. Covers the split splice and the cursor arithmetic, where an off-by-one silently skips a task; `claim`'s directory creation, input validation and fetch retry; and `mark_stuck`'s receipt removal. The only gate that executes a node's shell — 112 checks, offline, no host, container or network — so it belongs in a pre-push hook beside `check-routing-schemas.py`. |
+| `test-task-gates.sh` | Runs `backlog`'s `claim`, `mark_stuck`, `open_pr`, the task-queue nodes, and the shared review-merge graph's `merge`, against fixtures, extracted verbatim from the graph. Covers the split splice and the cursor arithmetic, where an off-by-one silently skips a task; `claim`'s directory creation, input validation and fetch retry; and `mark_stuck`'s receipt removal. The only gate that executes a node's shell — 137 checks, offline, no host, container or network — so it belongs in a pre-push hook beside `check-routing-schemas.py`. |
 | `docker-compose.yaml` | Runs both containers: the `fabro` server and the `scheduler` (the coder scheduler, built from `./scheduler/`). It is also the only place the scheduler's port and volume are declared. |
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
@@ -597,7 +597,7 @@ line, so the factory had no working producer of work at all. `5fa974d` restored 
 and two runs have cleared `claim` and `prep` since.
 
 Three follow-ups from that failure are in the tree, not just in the log: `claim` and
-`mark_stuck` are now covered by `ops/test-task-gates.sh` (112 checks, up from 82); `claim`
+`mark_stuck` are now covered by `ops/test-task-gates.sh` (137 checks, up from 82); `claim`
 writes `/tmp/fabro/issue_number` before any network call so `mark_stuck` can always take
 the receipt off; and the receipt scan runs every 10 minutes rather than only at startup.
 Evidence, the measurement recipe and the pending criteria:
