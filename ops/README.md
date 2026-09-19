@@ -585,7 +585,9 @@ is kept only as the chronology; the current state is the block immediately below
 
 **Status, 2026-09-19 (draft 14, session 2 — current):** drafts 01–13 are deployed and the
 24-hour shakedown window is **running**, from the scheduler container's `StartedAt` of
-`2026-09-19T14:55:27Z`.
+`2026-09-19T15:13:51Z`. It was first armed at `14:55:27Z`; deploying the follow-ups below
+restarted the container, which moved the unattended clock but not the work — recovery
+adopted both live leases with their original `dispatched_at` and neither run paused.
 
 Session 1 deployed at `04:18:21Z`, armed the loop for 5m8s and stopped it at `04:23:29Z`,
 because both runs it dispatched died at `claim`: the node writes

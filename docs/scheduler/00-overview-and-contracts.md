@@ -359,7 +359,7 @@ in either direction; both fail only at runtime. Run the checker too.
 ## Task series
 
 **Status, 2026-09-19: drafts 01–13 are built and deployed; draft 14's shakedown
-window is running from `14:55:27Z`. The dated block at the end of this file is the
+window is running from `15:13:51Z`. The dated block at the end of this file is the
 current state — read it after this table.**
 
 Fourteen drafts. The initial frontier is 01, 02, 03 and 04 — fully parallel.
@@ -409,12 +409,21 @@ Everything the earlier drafts left "not yet deployed" is deployed: release, requ
 recovery (09), the collapsed `claim` (10), the page's bump/drain/cancel controls (11), the
 monitor's C7/C8 (12) and the four `backlog` schedules off (13).
 
-**The window started at `2026-09-19T14:55:27Z`** — the scheduler container's `StartedAt`
-after the `claim` fix landed on `main`. Draft 14's acceptance criteria are **pending**, not
-unstarted: elapsed time is the only thing most of them are waiting on. Two of them are
-already satisfied and worth recording — one run dispatched on each of `coders-a` and
-`coders-b`, three seconds apart, and startup recovery released both stale leases and
-requeued the two receipts behind them.
+**The window runs from `2026-09-19T15:13:51Z`** — the scheduler container's `StartedAt`.
+It was first armed at `14:55:27Z`, when the `claim` fix landed; the restart that deployed
+this block's own follow-ups moved the clock, and the unattended count runs from the later
+time. Draft 14's acceptance criteria are **pending**, not unstarted: elapsed time is the
+only thing most of them are waiting on.
+
+Evidence from the earlier arming still stands, because the restart carried it over rather
+than resetting it — the two leases were **adopted**, not released, keeping their original
+`dispatched_at` of `14:55:38Z` and `14:55:41Z`, and their runs never paused:
+
+- ≥1 run on each of `coders-a` and `coders-b`, dispatched three seconds apart;
+- startup recovery released both of session 1's stale leases and requeued the two receipts
+  behind them (`jelly-swipe#353`, `lawncare-saas#2277`);
+- `jelly-swipe#356` reached a **succeeded `coder` stage** on `coders-a`, which is the first
+  end-to-end proof that a pinned box serves a whole coder stage.
 
 ### The `claim` regression, and what it changed
 
