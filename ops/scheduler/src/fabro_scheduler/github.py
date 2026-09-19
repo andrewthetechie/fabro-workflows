@@ -224,6 +224,78 @@ def fetch_issues(
     return issues, new_etag, True
 
 
+def fetch_in_progress(
+    repo: str,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> list[int]:
+    """Numbers of open issues in `repo` carrying `agent-in-progress`.
+
+    Draft 09's recovery GitHub pass scans these: an issue wearing the scheduler's
+    receipt with no live lease is a receipt left behind by a crash between
+    labelling and recording, and this is how the pass finds it. Deliberately not
+    the ETag-cached `fetch_issues` — this runs once at startup, not on a poll,
+    and it asks for a *different* label collection (`agent-in-progress` rather
+    than `agent`), so none of that machinery carries over.
+
+    Raises `GitHubError` for anything that is not a `200`; the recovery pass then
+    leaves that repo alone rather than un-label issues on a guess.
+    """
+    if not token or not token.strip():
+        raise GitHubError(
+            "GITHUB_TOKEN is not set; the GitHub inventory cannot be refreshed"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    params = {"labels": IN_PROGRESS_LABEL, "state": "open", "per_page": PAGE_SIZE}
+
+    owned = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        response = http.get(
+            f"{GITHUB_API}/repos/{repo}/issues", params=params, headers=headers
+        )
+    except httpx.HTTPError as exc:
+        raise GitHubError(f"{repo}: GitHub request failed: {exc}") from exc
+    finally:
+        if owned:
+            http.close()
+
+    if response.status_code != 200:
+        remaining = response.headers.get("x-ratelimit-remaining")
+        raise GitHubError(
+            _error_message(repo, response, remaining),
+            status_code=response.status_code,
+            remaining=remaining,
+        )
+
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise GitHubError(
+            f"{repo}: expected a list of issues, got {type(payload).__name__}"
+        )
+    numbers = []
+    for item in payload:
+        if (
+            isinstance(item, Mapping)
+            and isinstance(item.get("number"), int)
+            and IN_PROGRESS_LABEL in _label_names(item)
+        ):
+            numbers.append(item["number"])
+    log.info(
+        "github: %s %d agent-in-progress issue(s)",
+        repo,
+        len(numbers),
+    )
+    return numbers
+
+
 def add_label(
     repo: str,
     number: int,

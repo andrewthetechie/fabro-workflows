@@ -18,11 +18,12 @@ scheduler processes can share the file, and one box still cannot be handed out
 twice. `acquire` raises `LeaseConflict` after the fact; it does not defend the
 invariant itself.
 
-**Nothing here releases a lease.** That is draft 09, and until it lands a lease is
-held until the row is deleted by hand. The consequence is bounded and worth
-stating: with two coder instances the loop can hold at most two leases, so once
-both boxes are taken it stops dispatching on its own. It does not spin, and it
-does not leak boxes beyond the two that exist.
+**Nothing here requeues an issue.** `release` drops the box, and dropping the
+box is not putting the work back in the queue — that decision (draft 09's requeue
+rule) lives in `reconcile.py`, which reads `queued_since` off the released lease
+first. The consequence of shipping draft 08 without it was bounded and worth
+stating then: with two coder instances the loop could hold at most two leases and
+stop dispatching on its own. Draft 09 closes that loop.
 
 **A lease carries the item's wait, and that is deliberate.** `queued_since` is the
 one field here that draft 08's contract does not name. The issue leaves the `agent`
@@ -40,7 +41,8 @@ host as soon as draft 08 is deployed.
 
 from __future__ import annotations
 
-from collections.abc import Sequence, Set
+from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -91,25 +93,26 @@ class LeaseStore:
         """Every lease currently held, ordered by coder instance.
 
         There is no expiry and no filtering by repo: a lease is live until the row
-        is gone, which for now means until an operator deletes it.
+        is gone, which for now means until an operator deletes it or draft 09's
+        release drops it.
         """
         return [
-            Lease(
-                coder_pool=row["coder_pool"],
-                repo=row["repo"],
-                issue_number=row["issue_number"],
-                run_id=row["run_id"],
-                dispatched_at=datetime.fromisoformat(row["dispatched_at"]),
-                queued_since=(
-                    None
-                    if row["queued_since"] is None
-                    else datetime.fromisoformat(row["queued_since"])
-                ),
-            )
-            for row in self._store.lease_rows()
+            _lease_from_row(row) for row in self._store.lease_rows()
         ]
 
-    def free_pools(self, all_pools: Sequence[str], drained: Set[str]) -> list[str]:
+    def release(self, run_id: str) -> Lease | None:
+        """Drop the lease for `run_id`, returning it (or `None` if it was absent).
+
+        Releasing is **not** requeueing: this only frees the box. Whether the
+        issue goes back in the queue is the requeue rule's decision (draft 09's
+        reconcile), and it reads `queued_since` off the returned lease first. The
+        single SQL statement that reads-and-deletes is what stops a concurrent
+        dispatch from re-taking the box between the two.
+        """
+        row = self._store.release_lease(run_id)
+        return None if row is None else _lease_from_row(row)
+
+    def free_pools(self, all_pools: Sequence[str], drained: AbstractSet[str]) -> list[str]:
         """The coder instances a new run may be dispatched to, in `all_pools` order.
 
         Free means "no lease and not drained". **Drain** never destroys work: a
@@ -160,3 +163,25 @@ class LeaseStore:
     def last_pool_for_repo(self, repo: str) -> str | None:
         """Where this repo last ran, or `None` if it never has. Soft affinity."""
         return self._store.last_pool_for_repo(repo)
+
+
+def _lease_from_row(row) -> Lease:
+    """One `leases` row into the `Lease` the rest of the code uses.
+
+    Centralised so `active()` and `release()` map identically — the two call
+    sites that turn a row into the domain type, and the two places that would
+    otherwise drift. `row` is a `sqlite3.Row`, typed loosely to avoid importing
+    sqlite types into the domain module.
+    """
+    return Lease(
+        coder_pool=row["coder_pool"],
+        repo=row["repo"],
+        issue_number=row["issue_number"],
+        run_id=row["run_id"],
+        dispatched_at=datetime.fromisoformat(row["dispatched_at"]),
+        queued_since=(
+            None
+            if row["queued_since"] is None
+            else datetime.fromisoformat(row["queued_since"])
+        ),
+    )

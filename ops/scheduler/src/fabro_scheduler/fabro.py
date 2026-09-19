@@ -223,6 +223,58 @@ def status_kind(run: Mapping[str, object]) -> str | None:
     return kind if isinstance(kind, str) and kind else None
 
 
+def last_failure_category(
+    api: str,
+    token: str,
+    run_id: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> str | None:
+    """The failure `category` of a terminal run, or `None` if it cannot be read.
+
+    The category is **not** in the run projection (finding 10); it lives only in
+    the `run.failed` event, at `properties.failure.detail.category`. Draft 09's
+    requeue predicate keys on it, so a classification step has to read it from
+    the tail: `GET /runs/{id}/events` with `order=desc` so the failure (second
+    from last) is in the first page.
+
+    Returns `None` for a run with no `run.failed` event or no readable category
+    — the requeue rule treats a missing category as *not* infra-shaped, which is
+    the fail-toward-dropping direction (Risk 4).
+    """
+    body = _request(
+        "GET",
+        api,
+        f"/runs/{run_id}/events",
+        token,
+        params={"limit": 100, "order": "desc"},
+        client=client,
+        timeout=timeout,
+    )
+    events = body.get("data") if isinstance(body, Mapping) else body
+    if not isinstance(events, list):
+        return None
+    for event in events:
+        if not isinstance(event, Mapping) or event.get("type") != "run.failed":
+            continue
+        properties = event.get("properties")
+        if not isinstance(properties, Mapping):
+            continue
+        failure = properties.get("failure")
+        if not isinstance(failure, Mapping):
+            continue
+        detail = failure.get("detail")
+        if isinstance(detail, Mapping):
+            category = detail.get("category")
+            if isinstance(category, str) and category:
+                return category
+        category = failure.get("category")
+        if isinstance(category, str) and category:
+            return category
+    return None
+
+
 def build_run_intent(
     *,
     workflow_version_id: str,
@@ -407,6 +459,25 @@ class FabroClient:
             status=status,
         )
 
+    def get_run(self, run_id: str) -> dict:
+        """The run projection, for draft 09's reconciliation.
+
+        Thin wrapper so `reconcile` talks to a client rather than to the API
+        internals. Raises `FabroError` on a non-2xx; a `404` (status_code 404) is
+        the "fabro never heard of this run" case that recovery treats as lost.
+        """
+        return get_run(self._api, self._token, run_id, timeout=self._call_timeout)
+
+    def last_failure_category(self, run_id: str) -> str | None:
+        """The failure `category` of a run, or `None` if it has none readable.
+
+        Draft 09's requeue predicate keys on it, and its one classification step
+        in `reconcile.py` reads it here rather than holding API internals.
+        """
+        return last_failure_category(
+            self._api, self._token, run_id, timeout=self._call_timeout
+        )
+
 
 def _request(
     method: str,
@@ -415,6 +486,7 @@ def _request(
     token: str,
     *,
     json: Mapping[str, object] | None = None,
+    params: Mapping[str, object] | None = None,
     client: httpx.Client | None = None,
     timeout: float,
 ) -> dict:
@@ -440,7 +512,12 @@ def _request(
     http = client or httpx.Client(timeout=timeout)
     try:
         response = http.request(
-            method, f"{api.rstrip('/')}{path}", headers=headers, json=json, timeout=timeout
+            method,
+            f"{api.rstrip('/')}{path}",
+            headers=headers,
+            json=json,
+            params=params,
+            timeout=timeout,
         )
     except httpx.HTTPError as exc:
         raise FabroError(f"{method} {path} failed: {exc}") from exc

@@ -54,6 +54,7 @@ from .fabro import FabroClient, FabroError, RunNotStarted
 from .inventory import InventoryPoller
 from .lease import Lease, LeaseConflict, LeaseStore
 from .queue import QueueItem, RepoStatus, build_queue, repo_statuses
+from .reconcile import ReleasePoller, recover
 from .store import Store
 from .workflow_version import WorkflowVersionError
 
@@ -136,6 +137,7 @@ def build_app(
             )
 
     dispatcher: DispatchLoop | None = None
+    releaser: ReleasePoller | None = None
     if start_dispatch_loop:
         # Both credentials are required and neither is optional: the loop's first
         # act is a label write, and without a fabro token there is no run to
@@ -154,17 +156,30 @@ def build_app(
             )
         else:
             dispatcher = DispatchLoop(config, store, leases, client, github_token)
+            # Draft 09. The same credentials that arm dispatch arm recovery: it
+            # reads fabro and writes the same GitHub labels.
+            releaser = ReleasePoller(config, store, leases, client, github_token)
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["duration"] = humanise_duration
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        # The poller first: the loop reads the queue the poller fills, and on a cold
-        # start the loop's first tick would otherwise find an empty cache. Ordering
-        # here is a nicety, not a guarantee — both run on their own threads.
+        # The poller and the dispatch loop both run on their own threads; the
+        # poller starts first so the loop reads a fresh queue. Draft 09's recovery
+        # runs **before either**, synchronously, because a loop that dispatches
+        # onto a box it has not yet reconciled is the failure this whole pass
+        # exists to prevent. Recovery is best-effort: a hiccup is logged and the
+        # 15-second release poll retries it.
+        if releaser is not None:
+            try:
+                recover(config, store, leases, client, github_token)
+            except Exception:  # noqa: BLE001 - startup must not fail on a blip
+                log.exception("recovery failed; the release poll will retry")
         if poller is not None:
             poller.start()
+        if releaser is not None:
+            releaser.start()
         if dispatcher is not None:
             dispatcher.start()
         try:
@@ -172,6 +187,8 @@ def build_app(
         finally:
             if dispatcher is not None:
                 dispatcher.stop()
+            if releaser is not None:
+                releaser.stop()
             if poller is not None:
                 poller.stop()
 

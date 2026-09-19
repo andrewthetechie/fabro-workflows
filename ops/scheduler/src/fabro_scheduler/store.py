@@ -33,7 +33,7 @@ import sqlite3
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .github import Issue
@@ -310,6 +310,65 @@ class Store:
                 "  last_attempt_at = excluded.last_attempt_at, "
                 "  last_error = excluded.last_error",
                 (repo, attempted_at.isoformat(), error),
+            )
+
+    def release_lease(self, run_id: str) -> sqlite3.Row | None:
+        """Drop the lease for `run_id`, returning the row it held (or `None`).
+
+        The single delete, and the reason it reads before it deletes: draft 09's
+        requeue needs the `queued_since` (and the repo/issue) off the row *after*
+        the decision to release has been made, and the only safe way to hand them
+        out is to read and delete in the same transaction so a concurrent
+        dispatch cannot re-take the box in between. Returns `None` when `run_id`
+        is not leased at all, which a recovery pass treats as already-released.
+        """
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
+                "queued_since FROM leases WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute("DELETE FROM leases WHERE run_id = ?", (run_id,))
+            return row
+
+    def requeue(
+        self,
+        repo: str,
+        number: int,
+        *,
+        first_seen: datetime | None = None,
+    ) -> None:
+        """Put an item back in the queue without resetting its wait.
+
+        Draft 09: a requeued item must keep its original `first_seen` or its
+        starvation ceiling restsarts, which makes decision 5's "nothing waits
+        longer than `T`" quietly false for everything that ever failed. The
+        caller hands it the lease's `queued_since`; when that is `None` (an
+        orphan adopted with no lease to read it from) and the row does not
+        already exist, the wait falls back to now.
+
+        Idempotent: if the row is already in the cache (a manual-path lease
+        never evicted it, so its `first_seen` is still there and authoritative)
+        nothing is written at all. The re-inserted title/labels are a placeholder
+        until the next inventory poll repopulates them from GitHub; what dispatch
+        needs is `(repo, number)` and the wait.
+        """
+        existing = self.get_issue(repo, number)
+        if existing is not None:
+            return
+        stamp = (
+            first_seen.isoformat()
+            if first_seen is not None
+            else datetime.now(UTC).isoformat()
+        )
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO issue_cache "
+                "(repo, number, title, labels, first_seen, last_seen) "
+                "VALUES (?, ?, '', ?, ?, ?)",
+                (repo, number, json.dumps(["agent"]), stamp, stamp),
             )
 
     def acquire_lease(

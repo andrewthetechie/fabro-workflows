@@ -14,8 +14,13 @@ with the loop armed.
 
 Nothing releases a lease yet — that is draft 09, with requeue and recovery — so with
 two coder instances the loop holds at most two leases and stops dispatching on its
-own once both are taken. The task series, the decisions behind it and the contracts
-each later draft consumes are in `docs/scheduler/`, starting at
+own once both are taken. **Draft 09 closes that loop**: a 15-second release poll
+drops a lease as soon as its fabro run reaches a terminal state, an infra-shaped
+failure is requeued (the issue re-labelled `agent` with its original wait), and
+startup recovery reconciles every lease against fabro and every GitHub receipt
+against the lease table before the dispatch loop begins. After draft 09 the
+scheduler is safe to leave running unattended. The task series, the decisions behind
+it and the contracts each later draft consumes are in `docs/scheduler/`, starting at
 `00-overview-and-contracts.md`.
 """
 
