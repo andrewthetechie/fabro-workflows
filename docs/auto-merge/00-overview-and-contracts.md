@@ -199,6 +199,59 @@ status the operator cannot act on. And the near miss: the same push event, had f
 classified it `transient_infra` instead of `deterministic`, would have requeued an issue
 that was already closed and merged.
 
+### 11. `gh pr create` cannot infer the branch in a fabro sandbox
+
+Found 2026-09-19 on run `01M2VHAGXNM9JNEY71085HV82Y`, jelly-swipe. `backlog`'s `open_pr`
+failed after 41 minutes of completed work, with the branch sitting on the remote at
+exactly `HEAD` the whole time:
+
+```
+Everything up-to-date
+branch 'fabro/run/01M2VHAGXNM9JNEY71085HV82Y' set up to track 'origin/fabro/run/...'.
+aborted: you must first push the current branch to a remote, or use the --head flag
+no pull requests found for branch "fabro/run/01M2VHAGXNM9JNEY71085HV82Y"
+```
+
+The sandbox clone is shallow and **single-branch** — `remote.origin.fetch` is
+`+refs/heads/main:refs/remotes/origin/main` — so no refspec can store a remote-tracking
+ref for `fabro/run/<id>`. `git push -u` still prints `set up to track` and still writes
+`branch.<name>.remote`/`.merge`, but `refs/remotes/origin/<branch>` is never created and
+`@{u}` fails with `not stored as a remote-tracking branch`. gh resolves the head remote
+through exactly that ref. Confirmed by re-running the push in the live sandbox: still
+`Everything up-to-date`, still only `origin/HEAD` and `origin/main` under `refs/remotes`.
+
+fabro's checkpoint publishes the run branch after every stage, so `open_pr`'s own push is
+always a no-op — and a no-op does no ref work, so the push can never repair it either.
+
+Then the fallback made it worse. `gh pr create ... || gh pr view --json url > /dev/null`
+reads as "tolerate an already-open PR", but it discards every real gh error, and
+`gh pr view` with no argument resolves the current branch the same failing way. Both
+halves failed, `set -e` killed the stage, and the run blocked at `human_rescue`.
+
+So `open_pr` now passes `--head "$B"` to `gh pr create`, names the branch on every
+`gh pr view`, and asks whether a PR exists *before* creating rather than after.
+`pr-review`'s `claim` meets the same clone property and solves it the other way, widening
+the refspec and fetching, which is right there because `gh pr checkout` genuinely needs a
+local tracking branch. `open_pr` needs none, so removing the dependency beats satisfying
+it.
+
+**What is not explained.** The identical script succeeded on jelly-swipe (PR **#385**, run
+`01M2RX2SGJJT09WK5FS8GYJCDE`) and on womens-fantasy-sports (PR **#1206**), both printing
+the same first two lines. Ruled out as the trigger: fabro version (pinned
+`0.354.0-nightly.0`, one image, unchanged), the recorded `clone`/`run_branch`/`checkpoint`
+settings (byte-identical across all three runs), git `2.47.3` and gh `2.100.0` (same in
+every profile image), image git config (empty in both), repo topology (both non-fork,
+default `main`), the target repo's `.fabro/setup.sh` (no git usage), and agent-run git
+commands (zero `git fetch`/`git remote` tool calls in either run). The one asymmetry left
+is that jelly-swipe is public and womens-fantasy-sports is private, and on a public repo
+gh looks for the viewer's fork as the head repo when it decides push access is missing —
+untested, because fabro injects the GitHub token per-exec and it cannot be read back.
+
+Treat `open_pr` as having worked on luck rather than on a guarantee. That is why the fix
+removes the dependency instead of recreating the ref, and why
+`ops/test-task-gates.sh` now asserts that no `gh pr create`/`gh pr view` in this graph is
+left to infer the branch.
+
 ## Architecture
 
 ### `pr-review` graph delta

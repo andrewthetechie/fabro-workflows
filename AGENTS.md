@@ -98,7 +98,7 @@ the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them 
 fixtures:
 
 ```sh
-./ops/test-task-gates.sh      # 71 checks, offline — no host, container or network
+./ops/test-task-gates.sh      # 82 checks, offline — no host, container or network
 ```
 
 It needs only `jq` and `python3`, so it belongs in the same pre-push hook. It covers
@@ -156,6 +156,7 @@ them, except where a rule names one by id.
 | `risk` is gate-enforced in `fix_gate`, not merely documented | Without the check the field is optional in practice, PRs quietly stop auto-merging, and the report still says "complete". |
 | The merge node re-reads PR `state` from GitHub immediately before merging | The bridge's double-fire marker is per-run and does not stop a second review fired by hand. Two runs reach `merge`; the loser must report "already handled", not fail. |
 | `gh pr merge` never passes `--delete-branch` (the merge node passes `--delete-branch=false`) | It deletes the **local** head branch as well as the remote one, and the merge is not the run's last stage: fabro's checkpoint publishes the run branch after every later stage, so the next publish fails with `src refspec … does not match any`, retries three times, and reports `failed/publish_failed`. A run whose PR merged and whose issue closed is then recorded as a failure — cost run `01M2TFEHPYXXTQST6VPXREA854` its status on 2026-09-18, eight seconds after PR #1206 merged. Reaping is `fabro-branch-sweep.sh`'s job. |
+| No `gh` call is left to infer the branch: `gh pr create` passes `--head "$B"`, and `gh pr view` names the branch or a PR number | The sandbox clone is shallow and **single-branch** (`remote.origin.fetch` is `+refs/heads/main:refs/remotes/origin/main`), so `refs/remotes/origin/fabro/run/<id>` can never be stored. `git push -u` still prints `set up to track` and writes the branch config, but `@{u}` fails — and gh resolves the head remote through exactly that ref, so a bare `gh pr create` aborts with `you must first push the current branch to a remote` while the branch sits on the remote at `HEAD`. Cost run `01M2VHAGXNM9JNEY71085HV82Y` its PR on 2026-09-19 after 41 minutes of finished work. `open_pr` is the only node that ever inferred it; `pr-review`'s `claim` meets the same clone property and widens the refspec instead, because `gh pr checkout` needs a real local branch. Finding 11 in `docs/auto-merge/00-overview-and-contracts.md`. |
 | Every merge-phase command node's unconditional edge lands on `mark_needs_human`; expected blocks are the *conditional* edges | A broken merge — a token without `contents: write`, an API 5xx — otherwise lands in the same quiet "not auto-merged" bucket as a risk-4 PR and stays invisible. |
 | Commit-body markers are `:start` / `:end`, never `<!-- /fabro:commit-body -->` | A closing marker with a slash forces `\/` into the extraction pattern, and `\"` is the only backslash a `.fabro` file may contain. |
 | The subject is the live PR title; the body comes from the marker block | `release-please` turns an agent's `feat:`/`fix:` subject into a release on `jelly-swipe`/`lawncare-saas`, and the derivation never emits `!` or `BREAKING CHANGE:`. |

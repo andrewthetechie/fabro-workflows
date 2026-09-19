@@ -356,6 +356,92 @@ check "duplicate follow-up dropped" "a" "$(jq -r '[.[].id]|join(" ")' "$T/tasks.
 check "dropped duplicate counts 0"  "0" "$(jq -r '.context_updates.new_tasks' <<<"$(lastjson "$OUT")")"
 
 # ---------------------------------------------------------------------------
+# open_pr — gh must never be left to infer the branch
+# ---------------------------------------------------------------------------
+echo ""
+echo "open_pr"
+SAVED_PATH="$PATH"
+T="$WORK/openpr"; mkdir -p "$T/bin"; stage open_pr
+BR="fabro/run/01TEST"
+
+# The sandbox clone is single-branch, so `refs/remotes/origin/<run branch>` never
+# exists and gh cannot resolve the head remote from it. These stubs therefore do
+# NOT emulate that lookup -- they assert the script never depends on it, by
+# logging every gh invocation so the checks below can read the arguments back.
+cat > "$T/bin/git" <<'STUB'
+#!/bin/sh
+case "$1 $2" in
+  "rev-parse --abbrev-ref") echo "fabro/run/01TEST" ;;
+  "push -u")                echo "Everything up-to-date" ;;
+esac
+exit 0
+STUB
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr view")
+      if [ -f "$GH_STATE/pr_exists" ] || [ -f "$GH_STATE/created" ]; then
+          echo "https://github.com/andrewthetechie/jelly-swipe/pull/123"; exit 0
+      fi
+      echo "no pull requests found for branch" >&2; exit 1 ;;
+  "pr create")
+      if [ -f "$GH_STATE/create_fails" ]; then
+          echo "aborted: you must first push the current branch to a remote, or use the --head flag" >&2
+          exit 1
+      fi
+      : > "$GH_STATE/created"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/git" "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+
+op_setup() {
+    rm -f "$T"/gh.log "$T"/pr_exists "$T"/created "$T"/create_fails "$T"/pr_number
+    printf '%s' '{"number":350,"title":"t"}' > "$T/issue.json"
+    printf '%s' 'fix: a title' > "$T/pr_title.txt"
+    : > "$T/pr_body.md"
+    [ -n "${1:-}" ] && : > "$T/$1"
+    return 0
+}
+
+# 1. No PR yet: create it, then read the URL back.
+op_setup
+OUT=$(sh "$T/open_pr.sh" 2>&1); RC=$?
+check "opens a PR, exit 0"        "0"   "$RC"
+check "pr_url reported"           "https://github.com/andrewthetechie/jelly-swipe/pull/123" \
+    "$(jq -r '.context_updates.pr_url' <<<"$(lastjson "$OUT")")"
+check "pr_number extracted"       "123" "$(cat "$T/pr_number")"
+
+# THE REGRESSION. A bare `gh pr create` resolves the head branch through
+# refs/remotes/origin/<branch>, which a single-branch clone cannot store.
+check "create passes --head"      "1" "$(grep -c -- "pr create --head $BR" "$T/gh.log")"
+# Same for `gh pr view`: with no argument it resolves the CURRENT branch the same
+# way. Every view call must name the branch.
+check "every pr view names branch" "0" \
+    "$(grep '^pr view' "$T/gh.log" | grep -vc "^pr view $BR" || true)"
+
+# 2. A PR already exists (retry after a partial failure): reuse, do not create.
+op_setup pr_exists
+OUT=$(sh "$T/open_pr.sh" 2>&1); RC=$?
+check "existing PR, exit 0"       "0"   "$RC"
+check "existing PR is reused"     "0"   "$(grep -c 'pr create' "$T/gh.log")"
+check "existing PR url reported"  "https://github.com/andrewthetechie/jelly-swipe/pull/123" \
+    "$(jq -r '.context_updates.pr_url' <<<"$(lastjson "$OUT")")"
+
+# 3. A real create failure must surface, not be swallowed by a fallback.
+op_setup create_fails
+OUT=$(sh "$T/open_pr.sh" 2>&1); RC=$?
+check "create failure fails stage" "1" "$RC"
+check "gh's own error survives"    "1" "$(grep -c 'you must first push the current branch' <<<"$OUT")"
+check "no pr_url on failure"       "" "$(lastjson "$OUT" | jq -r '.context_updates.pr_url // ""' 2>/dev/null)"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
 echo ""
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: $PASS checks"
