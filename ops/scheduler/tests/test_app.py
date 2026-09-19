@@ -3,11 +3,15 @@
 `/health`'s payload is a contract: later drafts and the host's healthcheck both
 read it, so its shape and its ordering are asserted rather than assumed. The page
 and `/api/queue` are asserted on the one thing that matters about them — that the
-order they show is the order `rank()` produced.
+order they show is the order `rank()` produced. `POST /api/dispatch-once` is
+asserted on the one thing that matters about it — that it creates and starts
+exactly one run with the repo's configured `environment_id` — and on every way it
+refuses before creating anything.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -18,12 +22,17 @@ from fastapi.testclient import TestClient
 
 from fabro_scheduler.app import build_app, create_app
 from fabro_scheduler.config import load_config
+from fabro_scheduler.fabro import FabroClient
 from fabro_scheduler.github import Issue
 from fabro_scheduler.inventory import InventoryPoller
 from fabro_scheduler.store import Store
 
 TRACKED_REPOS = Path(__file__).resolve().parents[1] / "repos.toml"
 NOW = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+
+FABRO_API = "http://10.10.0.32:32276/api/v1"
+FABRO_TOKEN = "dev-token-do-not-echo"
+VERSION_ID = "f" * 64
 
 
 @pytest.fixture
@@ -161,6 +170,19 @@ def test_health_reports_whether_a_github_token_is_configured(config, store):
 
     assert without["github"] == {"configured": False, "poll_seconds": 60}
     assert with_token["github"] == {"configured": True, "poll_seconds": 60}
+
+
+def test_health_reports_whether_the_dispatch_path_is_armed(config, store):
+    # Same rule as the GitHub token: a boolean, never the value. A client injected
+    # by a test counts as armed — it is a client.
+    unarmed = TestClient(build_app(config, store)).get("/health").json()
+    armed = TestClient(build_app(config, store, fabro_token=FABRO_TOKEN)).get(
+        "/health"
+    ).json()
+
+    assert unarmed["fabro"] == {"configured": False}
+    assert armed["fabro"] == {"configured": True}
+    assert FABRO_TOKEN not in json.dumps(armed)
 
 
 def test_health_reports_the_starvation_ceiling(config, store):
@@ -332,3 +354,247 @@ def test_only_eligible_issues_reach_the_page(config, store, client):
     assert "a real issue" in html
     assert "a pull request" not in html
     assert "already running" not in html
+
+
+# --- POST /api/dispatch-once -------------------------------------------------------
+
+
+def _fabro_client(fake_checkout) -> FabroClient:
+    return FabroClient(FABRO_API, FABRO_TOKEN, clone=fake_checkout.clone)
+
+
+def _dispatch_client(config, store, fake_checkout) -> TestClient:
+    return TestClient(
+        build_app(
+            config,
+            store,
+            github_token="ghp_test",
+            fabro_client=_fabro_client(fake_checkout),
+        )
+    )
+
+
+def _mock_the_three_calls(run_id: str = "R1", kind: str = "runnable"):
+    register = respx.post(f"{FABRO_API}/workflow-versions").mock(
+        return_value=httpx.Response(201, json={"workflow_version_id": VERSION_ID})
+    )
+    create = respx.post(f"{FABRO_API}/runs").mock(
+        return_value=httpx.Response(
+            201, json={"id": run_id, "lifecycle": {"status": {"kind": "submitted"}}}
+        )
+    )
+    respx.post(f"{FABRO_API}/runs/{run_id}/start").mock(
+        return_value=httpx.Response(
+            200, json={"id": run_id, "lifecycle": {"status": {"kind": kind}}}
+        )
+    )
+    return register, create
+
+
+@respx.mock
+def test_dispatch_once_creates_and_starts_one_run_for_the_named_issue(
+    config, store, fake_checkout
+):
+    register, create = _mock_the_three_calls()
+
+    response = _dispatch_client(config, store, fake_checkout).post(
+        "/api/dispatch-once",
+        json={
+            "repo": "andrewthetechie/jelly-swipe",
+            "issue_number": 123,
+            "coder_pool": "coders-a",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": "R1",
+        "workflow_version_id": VERSION_ID,
+        "commit_sha": fake_checkout.sha,
+        "version_reused": False,
+        "status": "runnable",
+    }
+
+    # `environment_id` comes from the repo's row in `repos.toml`, never from the
+    # caller: `jelly-swipe` is `python`, and `python` is the image that can build it.
+    sent = json.loads(create.calls.last.request.content)
+    assert sent["environment_id"] == "python"
+    assert sent["args"]["inputs"] == {"issue_number": 123, "coder_pool": "coders-a"}
+    assert sent["target"]["repo"] == "andrewthetechie/jelly-swipe"
+    # The tree is the whole `.fabro`, entrypoint included: a package-rooted version
+    # cannot resolve `../_shared/review-merge/review-merge.fabro`.
+    payload = json.loads(register.calls.last.request.content)
+    assert payload["entrypoint"] == "workflows/backlog/workflow.fabro"
+    assert "workflows/_shared/review-merge/review-merge.fabro" in payload["files"]
+
+
+@respx.mock
+def test_dispatch_once_twice_reuses_the_version_and_creates_two_runs(
+    config, store, fake_checkout
+):
+    register = respx.post(f"{FABRO_API}/workflow-versions").mock(
+        return_value=httpx.Response(201, json={"workflow_version_id": VERSION_ID})
+    )
+    ids = iter(["R1", "R2"])
+    create = respx.post(f"{FABRO_API}/runs").mock(
+        side_effect=lambda request: httpx.Response(
+            201, json={"id": next(ids), "lifecycle": {"status": {"kind": "submitted"}}}
+        )
+    )
+    respx.post(url__regex=rf"{FABRO_API}/runs/R[12]/start").mock(
+        return_value=httpx.Response(
+            200, json={"lifecycle": {"status": {"kind": "runnable"}}}
+        )
+    )
+    http = _dispatch_client(config, store, fake_checkout)
+    body = {
+        "repo": "andrewthetechie/jelly-swipe",
+        "issue_number": 123,
+        "coder_pool": "coders-a",
+    }
+
+    first = http.post("/api/dispatch-once", json=body).json()
+    second = http.post("/api/dispatch-once", json=body).json()
+
+    assert register.call_count == 1
+    assert create.call_count == 2
+    assert (first["run_id"], second["run_id"]) == ("R1", "R2")
+    assert first["version_reused"] is False
+    assert second["version_reused"] is True
+
+
+def test_dispatch_once_is_503_when_the_token_is_missing(config, store):
+    # A scheduler that cannot create runs must say so in one line, not fail the
+    # container's healthcheck in a restart loop that names nothing.
+    response = TestClient(build_app(config, store, github_token="ghp_test")).post(
+        "/api/dispatch-once",
+        json={
+            "repo": "andrewthetechie/jelly-swipe",
+            "issue_number": 1,
+            "coder_pool": "coders-a",
+        },
+    )
+
+    assert response.status_code == 503
+    assert "FABRO_API_TOKEN" in response.json()["detail"]
+
+
+def test_dispatch_once_refuses_a_repo_that_is_not_in_repos_toml(config, store):
+    response = TestClient(build_app(config, store, fabro_token=FABRO_TOKEN)).post(
+        "/api/dispatch-once",
+        json={"repo": "o/nope", "issue_number": 1, "coder_pool": "coders-a"},
+    )
+
+    assert response.status_code == 404
+    assert "o/nope" in response.json()["detail"]
+
+
+def test_dispatch_once_refuses_a_disabled_repo(tmp_path):
+    path = tmp_path / "repos.toml"
+    path.write_text(
+        '[[repo]]\nname = "o/off"\npriority = 0\nenvironment_id = "python"\n'
+        "enabled = false\n"
+    )
+    opened = Store(tmp_path / "scheduler.db")
+    try:
+        response = TestClient(
+            build_app(load_config(path, env={}), opened, fabro_token=FABRO_TOKEN)
+        ).post(
+            "/api/dispatch-once",
+            json={"repo": "o/off", "issue_number": 1, "coder_pool": "coders-a"},
+        )
+    finally:
+        opened.close()
+
+    assert response.status_code == 409
+    assert "disabled" in response.json()["detail"]
+
+
+def test_dispatch_once_refuses_the_load_balanced_pool(config, store):
+    # `coders` spans both boxes — dispatching through it would put the run back on
+    # whichever box LiteLLM picked, which is the contention the scheduler exists
+    # to remove.
+    for pool in ("coders", "", "coders-c"):
+        response = TestClient(build_app(config, store, fabro_token=FABRO_TOKEN)).post(
+            "/api/dispatch-once",
+            json={
+                "repo": "andrewthetechie/jelly-swipe",
+                "issue_number": 1,
+                "coder_pool": pool,
+            },
+        )
+        assert response.status_code == 422, pool
+        assert "coders-a, coders-b" in response.json()["detail"]
+
+
+def test_dispatch_once_refuses_a_malformed_body(config, store):
+    http = TestClient(build_app(config, store, fabro_token=FABRO_TOKEN))
+
+    # An unknown key is refused rather than ignored: a misspelled one would
+    # dispatch something other than what was typed.
+    extra = http.post(
+        "/api/dispatch-once",
+        json={
+            "repo": "andrewthetechie/jelly-swipe",
+            "issue_number": 1,
+            "coder_pool": "coders-a",
+            "environment_id": "rust-node",
+        },
+    )
+    assert extra.status_code == 422
+
+    for issue_number in (0, -3, "not a number", True, "7", 7.5):
+        bad = http.post(
+            "/api/dispatch-once",
+            json={
+                "repo": "andrewthetechie/jelly-swipe",
+                "issue_number": issue_number,
+                "coder_pool": "coders-a",
+            },
+        )
+        assert bad.status_code == 422, issue_number
+
+
+@respx.mock
+def test_dispatch_once_answers_502_with_fabros_own_detail(config, store, fake_checkout):
+    respx.post(f"{FABRO_API}/workflow-versions").mock(
+        return_value=httpx.Response(201, json={"workflow_version_id": VERSION_ID})
+    )
+    respx.post(f"{FABRO_API}/runs").mock(
+        return_value=httpx.Response(
+            422, json={"errors": [{"detail": "unknown environment id `nope`"}]}
+        )
+    )
+
+    response = _dispatch_client(config, store, fake_checkout).post(
+        "/api/dispatch-once",
+        json={
+            "repo": "andrewthetechie/jelly-swipe",
+            "issue_number": 1,
+            "coder_pool": "coders-a",
+        },
+    )
+
+    assert response.status_code == 502
+    assert "unknown environment id" in response.json()["detail"]
+
+
+@respx.mock
+def test_dispatch_once_never_echoes_the_token(config, store, fake_checkout):
+    respx.post(f"{FABRO_API}/workflow-versions").mock(
+        return_value=httpx.Response(
+            422, json={"errors": [{"detail": "not valid UTF-8"}]}
+        )
+    )
+
+    response = _dispatch_client(config, store, fake_checkout).post(
+        "/api/dispatch-once",
+        json={
+            "repo": "andrewthetechie/jelly-swipe",
+            "issue_number": 1,
+            "coder_pool": "coders-a",
+        },
+    )
+
+    assert response.status_code == 502
+    assert FABRO_TOKEN not in response.text

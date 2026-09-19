@@ -38,6 +38,17 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
     SCHEDULER_CONFIG=/app/repos.toml
 
+# `git`, for the one thing this service does that a Python library could not do
+# as cheaply: fetch `.fabro/` from `andrewthetechie/fabro-workflows@main`. The
+# workflow version is built from a shallow clone of that tree, exactly as
+# `fire-pr-review.sh` fetches it, and `python:slim` ships no git. `--no-install-
+# recommends` keeps it to git and its hard dependencies; `ca-certificates` is
+# listed explicitly because a clone over TLS is the whole point and it is one
+# base-image change away from not being there.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git \
+ && rm -rf /var/lib/apt/lists/*
+
 # Non-root, with a fixed uid so the /data volume's ownership is predictable.
 # `--system` on the group and user keeps them out of the login range.
 RUN groupadd --system --gid 1000 scheduler \

@@ -367,3 +367,28 @@ def test_the_tracked_repos_toml_parses(tmp_path):
         ("andrewthetechie/writers-app", "rust-node"),
     }
     assert all(r.enabled for r in cfg.repos)
+
+
+# --- repo lookup ----------------------------------------------------------------
+
+
+def test_repo_named_folds_case_and_reports_a_disabled_row(tmp_path):
+    # The lookup that `POST /api/dispatch-once` uses. It matches the way duplicates
+    # are detected — case-insensitively — because GitHub resolves `o/Repo` and
+    # `o/repo` to one repository, so asking for the other spelling means this row.
+    cfg = load_config(
+        write(
+            tmp_path,
+            '[[repo]]\nname = "o/Repo"\npriority = 0\nenvironment_id = "python"\n'
+            '[[repo]]\nname = "o/off"\npriority = 1\nenvironment_id = "ts"\n'
+            "enabled = false\n",
+        ),
+        env={},
+    )
+
+    assert cfg.repo_named("o/repo").name == "o/Repo"
+    assert cfg.repo_named("  O/REPO  ").name == "o/Repo"
+    # `enabled` is reported on the row, not filtered here, so the caller can tell
+    # "not configured" from "configured but switched off".
+    assert cfg.repo_named("o/off").enabled is False
+    assert cfg.repo_named("o/nope") is None

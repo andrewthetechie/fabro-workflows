@@ -1,22 +1,26 @@
 """The scheduler's HTTP surface.
 
-Three surfaces today, and the only one that writes anything is GitHub — which this
-service never writes to. `GET /` is the operator's page, `GET /api/queue` is the
-same data as JSON for whatever comes next (draft 11's mutations read it), and
-`GET /health` reports what the service loaded and whether it can reach GitHub.
+The read surfaces are the operator's page (`GET /`), its JSON twin
+(`GET /api/queue`), the per-repo freshness view (`GET /api/repos`) and `GET
+/health`. The one write surface is `POST /api/dispatch-once`, which creates and
+starts exactly one real fabro run — still by hand, because the loop that decides
+when to call it is draft 08.
 
 There is no auth: decision 16 binds this to the LAN, consistent with fabro's own
-`:32276`. Nothing here echoes the environment, so the `GITHUB_TOKEN` the container
-holds stays out of every response — including `/health`, which reports only whether
-one is *configured*, never its value. `fabro_api_url` is deliberately absent from
-the payload as well — it is a URL that could carry a credential in some future
-form, and it is not worth the risk to publish it on an unauthenticated endpoint.
+`:32276`. Nothing here echoes the environment, so the `GITHUB_TOKEN` and
+`FABRO_API_TOKEN` the container holds stay out of every response — including
+`/health`, which reports only whether each is *configured*, never its value.
+`fabro_api_url` is deliberately absent from the payload as well — it is a URL that
+could carry a credential in some future form, and it is not worth the risk to
+publish it on an unauthenticated endpoint.
 
-**A missing `GITHUB_TOKEN` does not stop the service.** It logs one error, serves
-the page with a banner naming the variable, and reports `github.configured: false`
-on `/health` for draft 12's monitor to alert on. Exiting instead would fail the
-container's healthcheck in a restart loop that says nothing about which variable is
-missing, and the page is the surface where that is visible at a glance.
+**Neither missing credential stops the service.** A missing `GITHUB_TOKEN` logs
+one error, serves the page with a banner naming the variable, and reports
+`github.configured: false` on `/health` for draft 12's monitor to alert on; a
+missing `FABRO_API_TOKEN` does the same and makes `/api/dispatch-once` answer
+`503`. Exiting instead would fail the container's healthcheck in a restart loop
+that says nothing about which variable is missing, and the page is the surface
+where that is visible at a glance.
 """
 
 from __future__ import annotations
@@ -32,13 +36,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 
 from . import __version__
 from .config import ConfigError, SchedulerConfig, load_config
+from .fabro import FabroClient, FabroError, RunNotStarted
 from .inventory import InventoryPoller
 from .queue import QueueItem, RepoStatus, build_queue, repo_statuses
 from .store import Store
@@ -54,19 +60,50 @@ DEFAULT_CONFIG_PATH = Path("/app/repos.toml")
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
+class DispatchOnceRequest(BaseModel):
+    """The body of `POST /api/dispatch-once`.
+
+    `extra="forbid"` because this is a hand-typed operator call: a misspelled key
+    that is silently ignored would dispatch the wrong thing, and the operator
+    would have no way to tell from the response.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str
+    # An issue number is a positive integer, and it has to arrive as one: the
+    # graph guards it with a POSIX `case`, so it must reach fabro as a JSON
+    # number rather than a string. `strict=True` because pydantic would otherwise
+    # coerce `true` to 1 and `"123"` to 123 — and `true` becoming "dispatch issue
+    # #1" is the same silent-mis-dispatch trap AGENTS.md records for `pr_number`.
+    issue_number: int = Field(gt=0, strict=True)
+    coder_pool: str
+
+
 def build_app(
     config: SchedulerConfig,
     store: Store,
     *,
     github_token: str = "",
+    fabro_token: str = "",
+    fabro_client: FabroClient | None = None,
     start_poller: bool = False,
 ) -> FastAPI:
     """The ASGI app for an already-validated config and an open store.
 
     `start_poller` is off by default so a test can drive the inventory by hand
     instead of racing a background thread. `main` turns it on.
+
+    `fabro_client` is injected rather than built here, which is what lets a test
+    exercise the dispatch path through the HTTP surface with neither a git binary
+    nor a live fabro. When it is not supplied, a client is built from
+    `fabro_token`; when that is empty too, there is no client and
+    `/api/dispatch-once` answers `503`.
     """
     token_configured = bool(github_token.strip())
+    client = fabro_client
+    if client is None and fabro_token.strip():
+        client = FabroClient(config.fabro_api_url, fabro_token)
 
     poller: InventoryPoller | None = None
     if start_poller:
@@ -126,6 +163,10 @@ def build_app(
                 "configured": token_configured,
                 "poll_seconds": config.github_poll_seconds,
             },
+            # A boolean, never the value. Draft 12's monitor alerts on a scheduler
+            # that cannot dispatch; the operator reading this page wants to know
+            # whether the dispatch path is armed without triggering a dispatch.
+            "fabro": {"configured": client is not None},
             "starvation_ceiling_seconds": int(
                 config.starvation_ceiling.total_seconds()
             ),
@@ -154,6 +195,83 @@ def build_app(
         return [_repo_status_payload(status) for status in repo_statuses(
             config.schedulable_repos(), store
         )]
+
+    @app.post("/api/dispatch-once")
+    def dispatch_once(body: DispatchOnceRequest) -> dict[str, object]:
+        """Create and start one `backlog` run, by hand.
+
+        The manual trigger draft 07 exists to prove: it takes `repo`,
+        `issue_number` and `coder_pool` explicitly and does exactly one dispatch.
+        Draft 08 replaces the body with the real loop and keeps this as the
+        operator's override.
+
+        `environment_id` is **not** a parameter: it comes from the repo's row in
+        `repos.toml`, which is the only place it is decided. A wrong one is a
+        server-side error the operator gets to read — fabro answers `422`
+        `unknown environment id 'nope'`, and that sentence is returned verbatim.
+        """
+        if client is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "FABRO_API_TOKEN is not set; the scheduler cannot create runs. "
+                    "See `ops/README.md`, *The coder scheduler*."
+                ),
+            )
+
+        repo = config.repo_named(body.repo)
+        if repo is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{body.repo} is not a [[repo]] in repos.toml",
+            )
+        if not repo.enabled:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{repo.name} is disabled in repos.toml",
+            )
+        if body.coder_pool not in config.coder_pools:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"coder_pool must be one of {', '.join(config.coder_pools)}; "
+                    f"got {body.coder_pool!r}"
+                ),
+            )
+
+        try:
+            result = client.dispatch(
+                repo=repo.name,
+                issue_number=body.issue_number,
+                coder_pool=body.coder_pool,
+                environment_id=repo.environment_id,
+            )
+        except RunNotStarted as exc:
+            # 502, not fabro's own status: the caller asked the scheduler for a
+            # run, and it is the scheduler that failed to finish making one.
+            log.error("dispatch-once: %s#%s: %s", repo.name, body.issue_number, exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except FabroError as exc:
+            log.error("dispatch-once: %s#%s: %s", repo.name, body.issue_number, exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        log.info(
+            "dispatch-once: %s#%s -> run %s pool=%s env=%s status=%s reused=%s",
+            repo.name,
+            body.issue_number,
+            result.run_id,
+            body.coder_pool,
+            repo.environment_id,
+            result.status,
+            result.version_reused,
+        )
+        return {
+            "run_id": result.run_id,
+            "workflow_version_id": result.workflow_version_id,
+            "commit_sha": result.commit_sha,
+            "version_reused": result.version_reused,
+            "status": result.status,
+        }
 
     @app.get("/", response_class=HTMLResponse)
     def queue_page(request: Request) -> HTMLResponse:
@@ -231,6 +349,8 @@ def create_app(
     *,
     store: Store | None = None,
     github_token: str | None = None,
+    fabro_token: str | None = None,
+    fabro_client: FabroClient | None = None,
     start_poller: bool = False,
 ) -> FastAPI:
     """Build the app from a config file.
@@ -246,10 +366,13 @@ def create_app(
     )
     config = load_config(path, environ)
     token = environ.get("GITHUB_TOKEN", "") if github_token is None else github_token
+    fabro = environ.get("FABRO_API_TOKEN", "") if fabro_token is None else fabro_token
     return build_app(
         config,
         store if store is not None else Store(config.db_path),
         github_token=token,
+        fabro_token=fabro,
+        fabro_client=fabro_client,
         start_poller=start_poller,
     )
 
@@ -314,6 +437,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config,
             store,
             github_token=os.environ.get("GITHUB_TOKEN", ""),
+            fabro_token=os.environ.get("FABRO_API_TOKEN", ""),
             start_poller=True,
         ),
         host="0.0.0.0",  # decision 16: LAN-only, published by compose

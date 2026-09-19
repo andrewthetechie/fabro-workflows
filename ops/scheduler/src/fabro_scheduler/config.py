@@ -118,6 +118,22 @@ class SchedulerConfig:
         """
         return [repo for repo in self.ordered_repos() if repo.enabled]
 
+    def repo_named(self, name: str) -> RepoConfig | None:
+        """The row for `name`, matched the way duplicates were detected.
+
+        Case-insensitively, because GitHub resolves `o/Repo` and `o/repo` to one
+        repository and `load_config` already refuses to let two rows exist for
+        it — so a caller asking for the other spelling means this row. Returns
+        `None` for a repo that is not configured at all; whether that is an error
+        is the caller's decision, and `enabled` is reported on the row rather than
+        filtered here so the two cases stay tellable apart.
+        """
+        wanted = name.strip().casefold()
+        for repo in self.repos:
+            if repo.name.casefold() == wanted:
+                return repo
+        return None
+
 
 def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerConfig:
     """Read `path` and the environment into a validated `SchedulerConfig`.

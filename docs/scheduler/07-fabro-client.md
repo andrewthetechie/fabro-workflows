@@ -136,6 +136,27 @@ loop; it is kept as a manual override.
   - Enumerate from the directory, never a hardcoded file list — a prompt added
     later would otherwise fail at admission on an unresolved `@prompts` reference.
   - Non-UTF-8 content is a hard error, not a skip.
+  - `args.inputs.issue_number` is **inert** until draft 10 collapses
+    `acquire`/`claim`. `backlog`'s `acquire` still selects the issue itself and
+    publishes `issue_number` as its own context update, so a run started by this
+    draft works on whatever `acquire` picks, not the number in the request. The
+    input is passed anyway, because it is the contract draft 10 relies on and
+    because `run.settings.inputs` is where its arrival is visible.
+
+#### Corrected against the live server, 2026-09-19
+
+Two observations from the acceptance run, neither of which changes a decision:
+
+* An unknown `environment_id` is a **`404`**, not a `422`. The body is flat —
+  `{"detail":"environment `nope` not found"}` — not `{"errors":[{...}]}`. The
+  criterion's point holds exactly (fabro's own sentence, not a generic error) and
+  the client reads both envelopes, so the only thing that was wrong was the
+  status code in this draft. The unit test keeps the drafted `422` body because
+  that shape is real on other routes.
+* The whole sequence was re-verified live: registration is idempotent across
+  processes (the same 64-hex id for the same commit, from two different processes,
+  and `version_reused: true` on the second call in one process), and the run
+  reached `prep` about 30 seconds after the start call.
 - Error and security rules: `FABRO_API_TOKEN` from the environment; never logged.
   Every non-2xx raises with the HTTP status and the response body's first error
   `detail`, because fabro's 422s carry the actionable message in
