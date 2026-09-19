@@ -30,7 +30,7 @@ actually lives.
 | `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
 | `ops/check-routing-schemas.py` | Catches command-node routing-schema mismatches that `fabro validate` accepts and fabro only reports at runtime. Reads the parsed AST, not the DOT text. |
-| `docs/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency. `00-overview-and-contracts.md` first — it carries 19 settled operator decisions and the 11 source findings behind them, then 14 numbered task drafts. Each draft is written to be implementable from the overview plus its own file plus this repository. **Drafts 01–06 are built and deployed**; 07 onward are still design. The service itself is `ops/scheduler/`. |
+| `docs/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency. `00-overview-and-contracts.md` first — it carries 19 settled operator decisions and the 11 source findings behind them, then 14 numbered task drafts. Each draft is written to be implementable from the overview plus its own file plus this repository. **Drafts 01–07 are built and deployed**; 08 onward are still design. The service itself is `ops/scheduler/`. |
 | `docs/perf/` | Why a run takes four hours, measured from the run store rather than guessed. `00-overview-and-measurements.md` first — it is also where the source-verified list of what fabro's docker provider **cannot** do lives (no mounts, no service provisioning). `01` is what was applied, `02` is what needs an operator decision, `03` is the per-repository `.fabro/ci.sh` work. |
 | `docs/research_improvements/` | An audit of all three packages against the Fabro source: what we hand-roll that Fabro already does, four operator-observed gaps traced to Fabro lines, and nine settled dead ends. A plan, not a changelog — nothing in it has been applied. `00-overview.md` first. |
 | `.scratch/` | Untracked working notes. |
@@ -180,9 +180,18 @@ ssh andrew@10.10.0.32 'cd ~/profile-images-build && ./build-images.sh'
 # `up -d scheduler` names one service and never recreates fabro, which matters:
 # a fabro restart fails every in-flight run. The tree carries no credential — the
 # scheduler reads its own from ~/fabro/scheduler.env (NOT ~/fabro/.env, which
-# holds fabro's SESSION_SECRET). Create it once per host; without it the queue is
-# empty and the page says which variable is missing.
-#   ssh andrew@10.10.0.32 'cd ~/fabro && umask 077 && { printf "GITHUB_TOKEN="; gh auth token; } > scheduler.env'
+# holds fabro's SESSION_SECRET). Create it once per host, with both variables:
+# without GITHUB_TOKEN the queue is empty and the page says so; without
+# FABRO_API_TOKEN every dispatch answers 503 and /health reports
+# `fabro.configured: false`. The fabro token is the server's own dev token, read
+# out of the volume rather than retyped — there is exactly one.
+#   ssh andrew@10.10.0.32 'cd ~/fabro && umask 077 && { \
+#     printf "GITHUB_TOKEN=%s\n" "$(gh auth token)"; \
+#     printf "FABRO_API_TOKEN=%s\n" "$(docker exec fabro-fabro-1 cat /storage/server.dev-token)"; \
+#   } > scheduler.env && chmod 600 scheduler.env'
+# `--build` is load-bearing: the runtime image carries `git`, which is how the
+# scheduler fetches .fabro/ from main at dispatch time. An image built before
+# draft 07 has no git and fails inside a dispatch.
 rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
   ops/scheduler/ andrew@10.10.0.32:~/fabro/scheduler/
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose up -d --build scheduler'
