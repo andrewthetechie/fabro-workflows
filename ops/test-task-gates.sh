@@ -64,8 +64,16 @@ PY
 # Mac fails in the sandbox, and running the tests under bash would hide it.
 # `sh -n` is blind inside `jq '...'`, as AGENTS.md notes -- that is what the
 # behavioural checks are for.
-stage() {
-    extract "$1" | sed "s#/tmp/fabro#$T#g" > "$T/$1.sh"
+stage() { stage_into "$1" "$T"; }
+
+# `stage`, with the sandbox root given explicitly. Every gate below rebases
+# /tmp/fabro onto its own $T, which already exists -- so none of them can observe
+# whether a node CREATES that directory. `claim` is the one node that has to, and
+# it passes a path that does not exist yet. That is the whole 2026-09-19
+# regression: `acquire` was deleted, it was the only node running
+# `mkdir -p /tmp/fabro`, and every gate stayed green.
+stage_into() {
+    extract "$1" | sed "s#/tmp/fabro#$2#g" > "$T/$1.sh"
     if ! sh -n "$T/$1.sh" 2>"$T/$1.syntax"; then
         FAIL=$((FAIL + 1))
         printf '  FAIL %s is not valid POSIX sh\n' "$1"
@@ -437,6 +445,186 @@ OUT=$(sh "$T/open_pr.sh" 2>&1); RC=$?
 check "create failure fails stage" "1" "$RC"
 check "gh's own error survives"    "1" "$(grep -c 'you must first push the current branch' <<<"$OUT")"
 check "no pr_url on failure"       "" "$(lastjson "$OUT" | jq -r '.context_updates.pr_url // ""' 2>/dev/null)"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
+# claim — the run's first node, and the only one that creates /tmp/fabro
+#
+# This section exists because of a live incident. Draft 10 deleted `acquire`,
+# `acquire` was the only node that ran `mkdir -p /tmp/fabro`, and `claim` --
+# now the first node -- still redirected into that directory. Every backlog run
+# died at its second node and parked on human_rescue for 4h holding a coder box,
+# and `fabro-fire-backlog.sh` failed identically. `fabro validate` and
+# check-routing-schemas.py were both green: neither runs a node's shell, and this
+# script covered the task-queue gates and open_pr but not claim.
+# ---------------------------------------------------------------------------
+echo ""
+echo "claim"
+SAVED_PATH="$PATH"
+T="$WORK/claim"; mkdir -p "$T/bin"
+# NOT created: the point of the first check below is that `claim` creates it.
+FAB="$T/fabro"
+
+# `sleep` is stubbed so the retry path costs no wall-clock time. `gh` logs every
+# invocation and reads its behaviour out of marker files, exactly like open_pr's.
+cat > "$T/bin/sleep" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "label create") exit 0 ;;
+  "issue edit")   exit 0 ;;
+  "issue view")
+      n=0
+      [ -f "$GH_STATE/view_attempts" ] && n=$(cat "$GH_STATE/view_attempts")
+      n=$((n + 1)); echo "$n" > "$GH_STATE/view_attempts"
+      fail_until=0
+      [ -f "$GH_STATE/view_fails_until" ] && fail_until=$(cat "$GH_STATE/view_fails_until")
+      if [ "$n" -le "$fail_until" ]; then
+          echo "could not connect to api.github.com" >&2; exit 1
+      fi
+      cat "$GH_STATE/issue_payload.json"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/sleep" "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+
+# Re-extracted per case because the issue number is a MiniJinja input, not a
+# variable: the graph carries `{{ inputs.issue_number }}` literally.
+claim_stage() {
+    extract claim \
+        | sed "s#/tmp/fabro#$FAB#g" \
+        | sed "s#{{ inputs.issue_number }}#$1#g" > "$T/claim.sh"
+}
+claim_setup() {
+    rm -rf "$FAB"; rm -f "$T/view_attempts" "$T/view_fails_until"
+    # Created empty, not deleted: a case that makes no gh call at all still has to
+    # be countable, and `wc -l` on a missing file is an error, not a zero.
+    : > "$T/gh.log"
+    printf '%s' '{"state":"OPEN","number":356,"title":"t","body":"b","labels":[{"name":"agent-in-progress"}]}' \
+        > "$T/issue_payload.json"
+    # `${1-356}`, NOT `${1:-356}`: the empty string is a case under test -- it is
+    # what an unset MiniJinja input renders to -- and `:-` would substitute the
+    # default for it and quietly test 356 four times.
+    claim_stage "${1-356}"
+}
+
+claim_setup 356
+sh -n "$T/claim.sh" 2>"$T/claim.syntax" \
+    || { FAIL=$((FAIL + 1)); printf '  FAIL claim is not valid POSIX sh\n'; sed 's/^/       /' "$T/claim.syntax"; }
+
+# 1. THE REGRESSION. /tmp/fabro does not exist when claim starts, and claim is
+#    the only node that can make it: prep's mkdir is one node too late.
+OUT=$(sh "$T/claim.sh" 2>&1); RC=$?
+check "happy path exits 0"            "0"   "$RC"
+check "claim creates /tmp/fabro"      "yes" "$([ -d "$FAB" ] && echo yes || echo no)"
+check "issue.json is written"         "356" "$(jq -r .number "$FAB/issue.json")"
+
+# 2. The number is written before any network call, so mark_stuck can always name
+#    the issue whose receipt it has to remove.
+check "issue_number is written"       "356" "$(cat "$FAB/issue_number")"
+
+# 3. The label swap is idempotent and never left to a default.
+check "swaps both labels"             "1" \
+    "$(grep -c -- 'issue edit 356 --add-label agent-in-progress --remove-label agent' "$T/gh.log")"
+
+# 4. Input validation fails closed, before anything is written to GitHub.
+for bad in "not-a-number" "" "0" "12x"; do
+    claim_setup "$bad"
+    OUT=$(sh "$T/claim.sh" 2>&1); RC=$?
+    check "rejects issue_number '$bad'"     "1" "$RC"
+    check "no gh call for '$bad'"           "0" "$(wc -l < "$T/gh.log" | tr -d ' ')"
+done
+
+# 5. A closed issue is a definitive answer: refuse, never work it.
+claim_setup 356
+printf '%s' '{"state":"CLOSED","number":356,"title":"t","body":"b","labels":[{"name":"agent-in-progress"}]}' \
+    > "$T/issue_payload.json"
+OUT=$(sh "$T/claim.sh" 2>&1); RC=$?
+check "refuses a CLOSED issue"        "1" "$RC"
+check "says why it refused"           "1" "$(grep -c 'not OPEN' <<<"$OUT")"
+
+# 6. The receipt must actually be on the issue after the swap, or this run is
+#    about to work an issue the scheduler did not lease.
+claim_setup 356
+printf '%s' '{"state":"OPEN","number":356,"title":"t","body":"b","labels":[{"name":"agent"}]}' \
+    > "$T/issue_payload.json"
+OUT=$(sh "$T/claim.sh" 2>&1); RC=$?
+check "refuses without the receipt"   "1" "$RC"
+check "names the wrong-issue risk"    "1" "$(grep -c 'refusing to work the wrong issue' <<<"$OUT")"
+
+# 7. A transient gh failure must not cost a coder box for four hours. Two
+#    failures then a success is a working run, not a human gate.
+claim_setup 356
+echo 2 > "$T/view_fails_until"
+OUT=$(sh "$T/claim.sh" 2>&1); RC=$?
+check "retries a transient failure"   "0" "$RC"
+check "took three view attempts"      "3" "$(cat "$T/view_attempts")"
+
+# 8. A permanent failure still fails closed, bounded, with gh's own reason.
+claim_setup 356
+echo 99 > "$T/view_fails_until"
+OUT=$(sh "$T/claim.sh" 2>&1); RC=$?
+check "gives up on a hard failure"    "1" "$RC"
+check "bounded at three attempts"     "3" "$(cat "$T/view_attempts")"
+check "surfaces gh's own error"       "1" "$(grep -c 'could not connect' <<<"$OUT")"
+check "issue_number survives failure" "356" "$(cat "$FAB/issue_number")"
+
+# ---------------------------------------------------------------------------
+# mark_stuck — the receipt must come off, especially when claim failed
+#
+# An issue left wearing `agent-in-progress` is in no collection the scheduler
+# reads, so it silently leaves the queue. Before 2026-09-19 this node read the
+# number only from issue.json and skipped all label work when that file was
+# absent -- which is precisely the run that reaches it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "mark_stuck"
+T="$WORK/markstuck"; mkdir -p "$T/bin"
+FAB="$T/fabro"; mkdir -p "$FAB"
+cp "$WORK/claim/bin/gh" "$T/bin/gh"; chmod +x "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+stage_into mark_stuck "$FAB"
+
+ms_setup() { : > "$T/gh.log"; rm -f "$FAB/issue.json" "$FAB/issue_number"; }
+
+ms_setup
+printf '%s' '{"number":356}' > "$FAB/issue.json"
+OUT=$(sh "$T/mark_stuck.sh" 2>&1); RC=$?
+check "exits 0 with issue.json"       "0" "$RC"
+check "swaps the receipt for stuck"   "1" \
+    "$(grep -c -- 'issue edit 356 --remove-label agent-in-progress --add-label agent-stuck' "$T/gh.log")"
+
+# THE REGRESSION: claim died before writing issue.json, so the only record of the
+# issue is the number claim wrote first.
+ms_setup
+echo 353 > "$FAB/issue_number"
+OUT=$(sh "$T/mark_stuck.sh" 2>&1); RC=$?
+check "falls back to issue_number"    "1" \
+    "$(grep -c -- 'issue edit 353 --remove-label agent-in-progress --add-label agent-stuck' "$T/gh.log")"
+check "fallback exits 0"              "0" "$RC"
+
+# A truncated or half-written issue.json reads back as null, not as a number.
+ms_setup
+printf '%s' '{"number":null}' > "$FAB/issue.json"
+echo 2277 > "$FAB/issue_number"
+OUT=$(sh "$T/mark_stuck.sh" 2>&1)
+check "null number falls back too"    "1" \
+    "$(grep -c -- 'issue edit 2277 --remove-label agent-in-progress' "$T/gh.log")"
+
+# Nothing to name at all: say nothing to GitHub rather than edit issue 0.
+ms_setup
+OUT=$(sh "$T/mark_stuck.sh" 2>&1); RC=$?
+check "no number, no gh call"         "0" "$(wc -l < "$T/gh.log" | tr -d ' ')"
+check "no number still exits 0"       "0" "$RC"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE

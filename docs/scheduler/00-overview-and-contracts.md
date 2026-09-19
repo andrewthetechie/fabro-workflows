@@ -306,7 +306,15 @@ that category can be read, and why a fabro restart does not carry it.
 
 On scheduler start: read lease rows; for each, query fabro. A run that is terminal, or
 that fabro has never heard of, releases its lease. Then reconcile GitHub: any issue
-labelled `agent-in-progress` with no live lease is un-labelled and requeued.
+labelled `agent-in-progress` that neither a live lease nor a live fabro run accounts for
+is un-labelled and requeued.
+
+The GitHub half also runs **every 10 minutes**, not only at start. A receipt is orphaned
+by any ending that skips the graph's own label work, which a restart is not required to
+produce — see the dated block's `mark_stuck` finding. While the dispatch loop is running
+the scan cannot act on a single sighting, because dispatch writes the receipt seconds
+before the run exists: an issue must look orphaned in **two consecutive scans** before
+anything is written.
 
 ## Before you start
 
@@ -350,9 +358,9 @@ in either direction; both fail only at runtime. Run the checker too.
 
 ## Task series
 
-**Status, 2026-09-19: drafts 01–13 are built and deployed; draft 14's window is
-unstarted. The dated block at the end of this file is the current state — read it
-after this table.**
+**Status, 2026-09-19: drafts 01–13 are built and deployed; draft 14's shakedown
+window is running from `14:55:27Z`. The dated block at the end of this file is the
+current state — read it after this table.**
 
 Fourteen drafts. The initial frontier is 01, 02, 03 and 04 — fully parallel.
 
@@ -389,67 +397,84 @@ row this scheduler writes therefore names the scheduler's pick, not the run's. *
 deploy 09 before 10.** 09's GitHub pass would un-label the run's own claim (`#351` has no
 lease) and leave the scheduler's orphan in place (`#350` has the lease) — both halves of
 its intent inverted. Draft 09's file carries the detail and the two ways out.
-
-## Status, 2026-09-19 (draft 14, session 1) — drafts 01–13 are deployed; the window is unstarted
+## Status, 2026-09-19 (draft 14, session 2) — drafts 01–13 deployed; the shakedown window is RUNNING
 
 This block is the series' current state. Later text above is planning history; where it
-and this block disagree, this block is right.
+and this block disagree, this block is right. It supersedes session 1's block, which said
+the container was stopped and the window unstarted — both were true when written and
+neither is true now.
 
-**Built and live.** Drafts 01–13 are committed on `main`, and the host now runs that image
-(`~/fabro/scheduler/` was rsynced and `docker compose up -d --build scheduler` at
-`2026-09-19T04:18:21Z`, with `docker-compose.yaml` and `repos.toml` already byte-identical).
+**Built and live.** Drafts 01–13 are committed on `main` and the host runs that image.
 Everything the earlier drafts left "not yet deployed" is deployed: release, requeue and
 recovery (09), the collapsed `claim` (10), the page's bump/drain/cancel controls (11), the
-monitor's C7/C8 (12) and the four `backlog` schedules off (13). The two hazards the series
-laundered in its task table are spent: 08 is no longer a lease-holding dead end, and 13's
-successor (10's manual escape hatch) shipped. Roughly six minutes of live evidence exist
-and every part of them behaved as designed — the startup recovery pass released both of
-draft 08's stale leases, requeued `womens-fantasy-sports#1195` on `reason: cancelled` (the
-category-vs-reason trap, live) and requeued `#1197`, whose receipt had no lease; the first
-tick dispatched one run per box, one per repo, three seconds apart; the second reused the
-registered workflow version; and the 60s inventory poll went `200` then `304` with a flat
-rate-limit count.
+monitor's C7/C8 (12) and the four `backlog` schedules off (13).
 
-**The container is stopped, deliberately, and the 24-hour window has NOT started.**
-`docker compose stop scheduler` at `2026-09-19T04:23:29Z`, five minutes after bring-up.
-Draft 14's acceptance criteria are **unstarted**, not pending, and no number from those five
-minutes may be counted toward any of them.
+**The window started at `2026-09-19T14:55:27Z`** — the scheduler container's `StartedAt`
+after the `claim` fix landed on `main`. Draft 14's acceptance criteria are **pending**, not
+unstarted: elapsed time is the only thing most of them are waiting on. Two of them are
+already satisfied and worth recording — one run dispatched on each of `coders-a` and
+`coders-b`, three seconds apart, and startup recovery released both stale leases and
+requeued the two receipts behind them.
 
-**Finding, 2026-09-19 (draft 14's bring-up): no `backlog` run can get past `claim`.** Both
-dispatched runs failed at the second node within three seconds —
-`bash: line 13: /tmp/fabro/issue.json: No such file or directory`, `category:
-deterministic` — then took the node's unconditional edge to `human_rescue` and blocked. The
-cause is draft 10: `claim` writes `gh issue view … > /tmp/fabro/issue.json`, and the
-`acquire` node `ca39b8f` deleted began `mkdir -p /tmp/fabro && …`. Nothing else creates that
-directory — `prep`, the next node, does `mkdir -p /tmp/fabro/review`, one node too late, and
-`/tmp/fabro` is absent from the live sandboxes (`docker exec fabro-run-… ls -la /tmp`).
+### The `claim` regression, and what it changed
 
-Three consequences, all of which bound what this series may claim.
+Session 1's bring-up armed the loop for 5m8s and both runs it dispatched died at the second
+node: `bash: line 13: /tmp/fabro/issue.json: No such file or directory`. Draft 10 deleted
+`acquire`, `acquire` was the only node that ran `mkdir -p /tmp/fabro`, and `claim` — the
+run's first node since — still redirected into that directory. `prep` creates
+`/tmp/fabro/review` one node too late. Every `backlog` run failed there, including
+`ops/fabro-fire-backlog.sh`, so the factory's only two producers of work were both dead.
 
-1. **The blast radius is every `backlog` run, including the manual fire.**
-   `ops/fabro-fire-backlog.sh` starts the same graph through the same node, so the escape
-   hatch the design relies on when the scheduler is down does not work either. Nothing had
-   executed the new `claim` before this session: the last run to reach the node was
-   `01M2VHAGXNM9JNEY71085HV82Y` at 00:33, on the graph that still had `acquire` (its stage
-   list starts `start → acquire → claim`), and the only run created after it was a
-   `submitted` one that never started and was cancelled two hours later. So draft 10 shipped
-   a node no run had run.
-2. **The cost is a leased box for up to four hours.** A `claim` failure holds its coder
-   lease and its repo (decisions 1 and 6) until the `human_rescue` gate is answered, so an
-   armed loop with this defect burns both boxes on gates rather than on work. Draft 14's
-   session 1 answered both gates by hand and stopped the container.
-3. **No offline gate can catch it.** `fabro validate` and `ops/check-routing-schemas.py`
-   never execute a node's shell, which is the blind spot `ops/test-task-gates.sh` exists for
-   — except that script covers three queue nodes of one graph, and `claim` is not one of
-   them. Any future claim that a graph change is safe because both gates are green should be
-   read with this in mind.
+`5fa974d` restored the `mkdir`. Two scheduler-dispatched runs cleared `claim` and `prep`
+within minutes of the re-arm, which is the evidence that closed it.
 
-**Before the window can start:** add the missing `mkdir -p /tmp/fabro` to `claim` and take
-it through the validation pass and a push (the scheduler clones `main` at dispatch, so a
-local commit changes nothing); then restart the container, whose startup pass will release
-the two leases held now and requeue `jelly-swipe#353` and `lawncare-saas#2277`; then
-re-baseline the window. The evidence, the measurement recipe and the full list of unstarted
-criteria are in `14-shakedown-and-log.md` and in the dated section of
-`~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`.
+Three things came out of that failure and are now part of the design rather than notes
+about one incident:
+
+1. **`ops/test-task-gates.sh` covers `claim` and `mark_stuck`** (112 checks, up from 82).
+   Session 1 recorded "no offline gate can catch it" as a fact about the tooling; it was a
+   fact about the gate's coverage. `claim` is staged against a sandbox directory that does
+   **not** exist, which is the only way a test can observe a node creating one — every
+   other gate rebases onto a directory the harness already made. Deleting the `mkdir`
+   again now fails eight checks offline.
+
+2. **`mark_stuck` no longer depends on `issue.json` alone.** It read the issue number only
+   from that file and did no label work at all when the file was missing — which is
+   exactly the run that reaches it after `claim` fails. That is what left `jelly-swipe#353`
+   and `lawncare-saas#2277` wearing `agent-in-progress` with nothing working them. `claim`
+   now writes `/tmp/fabro/issue_number` before any network call and `mark_stuck` falls back
+   to it, the same shape `pr-review` already uses for `pr_number`.
+
+3. **The receipt scan runs periodically, not only at startup.** Draft 09 justified
+   startup-only with "a question only a restart can raise"; the `mark_stuck` stranding
+   raised it with the scheduler up and healthy. `ReleasePoller` now runs the scan every
+   10 minutes as well. Because `_dispatch` writes the receipt several seconds before the
+   run exists — it clones `main` in between — a scan landing in that gap sees exactly what
+   an orphan looks like, so a receipt must appear orphaned in **two consecutive scans**
+   before anything is written. Cost: four uncached GitHub requests per scan, 24/hour
+   against a 5,000/hour budget.
+
+### A fourth thing, accepted rather than fixed
+
+A `claim` failure is infra-shaped in cause and agent-shaped in outcome, and the requeue
+rule cannot see it. The node's unconditional edge parks the run on `human_rescue`, whose
+default choice is `mark_stuck`, so the run ends **`succeeded`** — and decision 10's
+predicate keys on a *failed* run's reason. A transient `gh` blip at `claim` therefore costs
+a coder box for up to four hours and never requeues.
+
+`claim` now retries `gh issue view` three times, five seconds apart, which removes the
+common cause. The structural gap is left open on purpose: closing it means either
+releasing a lease on `blocked` (which ADR 0006 rejected, because there is no mechanism to
+re-acquire one) or teaching the scheduler to read a succeeded run's *stage* outcomes, which
+is a second definition of failure to keep in step with fabro's.
+
+### Observation for whoever reads the window's numbers
+
+Every queue item currently shows `waited_seconds` around 58,000 (≈16h), far past the 4h
+ceiling `T`, so the **entire** queue sits in decision 5's ceiling tier and is ordered
+oldest-first across repos. Repo priority is inert until the queue drains below `T`. That is
+the ceiling working as designed. A fresh database — where every `first_seen` starts at the
+scheduler's first sighting — orders by repo priority instead, and the two states must be
+told apart before anyone reads a priority inversion out of the page.
 
 No credential appears in this block.

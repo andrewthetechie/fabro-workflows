@@ -25,6 +25,7 @@ from fabro_scheduler.lease import Lease, LeaseStore
 from fabro_scheduler.reconcile import (
     INFRA_CATEGORY,
     TERMINAL,
+    ReleasePoller,
     is_terminal,
     reconcile_leases,
     recover,
@@ -613,3 +614,152 @@ def test_an_unreadable_failure_category_keeps_the_lease(config, store, leases, f
     by_run = {action.lease.run_id: action.outcome for action in actions}
     assert by_run == {"R1": "failed", "R2": "released+requeued"}
     assert [lease.run_id for lease in leases.active()] == ["R1"]
+
+
+# --- the periodic receipt scan --------------------------------------------------
+#
+# Draft 09 ran the receipt scan only at startup, on the premise that only a restart
+# could orphan a receipt. 2026-09-19 disproved it: `mark_stuck` skipped its label
+# work whenever `claim` had died before writing `issue.json`, so two issues kept
+# `agent-in-progress` and silently left the queue while the scheduler was up.
+#
+# Running it on a timer instead needs the confirmation gate, because `_dispatch`
+# writes the receipt several seconds before the run exists — it clones `main` in
+# between — and a scan landing in that gap sees exactly what an orphan looks like.
+
+
+def _poller(config, store, leases, fabro) -> ReleasePoller:
+    return ReleasePoller(config, store, leases, fabro, GH_TOKEN)
+
+
+@respx.mock
+def test_the_periodic_scan_requeues_nothing_on_its_first_sighting(
+    config, store, leases, fabro
+):
+    _install_labels()
+    _mock_in_progress()
+    _mock_active_runs()
+    poller = _poller(config, store, leases, fabro)
+
+    first = poller.receipt_tick()
+
+    assert first.orphaned == []
+    assert store.get_issue(FF, 9) is None
+
+
+@respx.mock
+def test_the_periodic_scan_requeues_on_the_second_consecutive_sighting(
+    config, store, leases, fabro
+):
+    _install_labels()
+    _mock_in_progress()
+    _mock_active_runs()
+    poller = _poller(config, store, leases, fabro)
+
+    poller.receipt_tick()
+    second = poller.receipt_tick()
+
+    assert second.orphaned == [(FF, 9)]
+    assert store.get_issue(FF, 9) is not None
+
+
+@respx.mock
+def test_a_receipt_that_gains_a_lease_between_scans_is_never_touched(
+    config, store, leases, fabro
+):
+    # THE RACE the gate exists for. Dispatch labels the issue, then spends seconds
+    # cloning `main` before the run and the lease exist. A scan in that gap sees a
+    # receipt with no lease and no live run — indistinguishable from an orphan.
+    # One scan later the lease is there, and nothing was written in between.
+    _install_labels()
+    _mock_in_progress([{"number": 7, "labels": [{"name": "agent-in-progress"}]}])
+    _mock_active_runs()
+    poller = _poller(config, store, leases, fabro)
+
+    poller.receipt_tick()  # mid-dispatch: looks orphaned, is only a candidate
+    leases.acquire(_lease(number=7, run_id="R1"))  # the dispatch completes
+    second = poller.receipt_tick()
+
+    assert second.orphaned == []
+    assert store.get_issue(FF, 7) is None
+    assert [lease.run_id for lease in leases.active()] == ["R1"]
+
+
+@respx.mock
+def test_a_hand_fired_run_is_still_protected_by_its_fabro_claim(
+    config, store, leases, fabro
+):
+    # `ops/fabro-fire-backlog.sh` takes no lease on purpose, so the live-run check
+    # is the only thing standing between it and a stripped receipt — twice over
+    # now that the scan repeats every ten minutes rather than once per boot.
+    _install_labels()
+    _mock_in_progress([{"number": 9, "labels": [{"name": "agent-in-progress"}]}])
+    _mock_active_runs(
+        [
+            {
+                "id": "MANUAL",
+                "repository": {"name": FF},
+                "labels": {"source": "manual", "issue": "9"},
+            }
+        ]
+    )
+    poller = _poller(config, store, leases, fabro)
+
+    assert poller.receipt_tick().orphaned == []
+    assert poller.receipt_tick().orphaned == []
+    assert store.get_issue(FF, 9) is None
+
+
+@respx.mock
+def test_a_candidate_lapses_when_its_repo_cannot_be_read(
+    config, store, leases, fabro
+):
+    # A repo that errors contributes no candidates, so anything pending for it
+    # lapses and needs two fresh sightings. That is the direction that does not
+    # write on a guess: an orphan waits one more scan, which costs ten minutes.
+    _install_labels()
+    _mock_active_runs()
+    seen = {"n": 0}
+
+    def issues(request: httpx.Request) -> httpx.Response:
+        seen["n"] += 1
+        if seen["n"] == 2:  # the second scan's jelly-swipe fetch
+            return httpx.Response(502, json={"message": "bad gateway"})
+        return httpx.Response(
+            200, json=[{"number": 9, "labels": [{"name": "agent-in-progress"}]}]
+        )
+
+    respx.get(f"{GITHUB_API}/repos/{FF}/issues").mock(side_effect=issues)
+    for slug in ("lawncare-saas", "womens-fantasy-sports", "writers-app"):
+        respx.get(f"{GITHUB_API}/repos/andrewthetechie/{slug}/issues").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+    poller = _poller(config, store, leases, fabro)
+
+    poller.receipt_tick()                      # sighting 1 -> candidate
+    lapsed = poller.receipt_tick()             # the fetch fails -> candidate lapses
+    third = poller.receipt_tick()              # sighting 1 again, not 2
+
+    assert lapsed.orphaned == []
+    assert lapsed.github_errors != []
+    assert third.orphaned == []
+    assert store.get_issue(FF, 9) is None
+
+    fourth = poller.receipt_tick()
+    assert fourth.orphaned == [(FF, 9)]
+
+
+@respx.mock
+def test_a_fabro_that_cannot_list_runs_stops_the_periodic_scan_too(
+    config, store, leases, fabro
+):
+    # Same fail-closed rule as at startup: an empty claim set reads as "nothing is
+    # live", which is the answer that un-labels everything.
+    _install_labels()
+    _mock_in_progress()
+    respx.get(f"{FABRO_API}/runs").mock(return_value=httpx.Response(503, json={}))
+    poller = _poller(config, store, leases, fabro)
+
+    assert poller.receipt_tick().orphaned == []
+    assert poller.receipt_tick().orphaned == []
+    assert store.get_issue(FF, 9) is None

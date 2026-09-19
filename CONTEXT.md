@@ -42,9 +42,9 @@ The operator's escape hatch when the **Scheduler** is down: `ops/fabro-fire-back
 `backlog` run for exactly that issue with `coder_pool: "coders"` (the both-boxes group,
 never a pinned box — a hand fire holds no lease). The graph's `claim` swaps the labels
 as a fallback for what the scheduler does at dispatch, so a manual run needs no lease.
-**It does not currently work**: from 2026-09-19 a `backlog` run dies at `claim`, the manual
-path included, because that node writes into `/tmp/fabro` and nothing creates the
-directory — the dated block in `docs/scheduler/00-overview-and-contracts.md` carries it.
+It was broken for nine hours on 2026-09-19 — `claim` wrote into `/tmp/fabro` and nothing
+created the directory after `acquire` was deleted — and `5fa974d` fixed it; the same class
+of regression is now caught offline by `ops/test-task-gates.sh`.
 _Avoid_: manually, by hand (the adverb, not the noun)
 
 **Automation**:

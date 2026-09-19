@@ -30,9 +30,9 @@ actually lives.
 | `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
 | `ops/check-routing-schemas.py` | Catches command-node routing-schema mismatches that `fabro validate` accepts and fabro only reports at runtime. Reads the parsed AST, not the DOT text. |
-| `ops/test-task-gates.sh` | Runs `backlog`'s task-queue gates (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. Offline; no host or container. |
+| `ops/test-task-gates.sh` | Runs `backlog`'s `claim`, `mark_stuck`, `open_pr` and task-queue nodes (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. The only gate that executes a node's shell. Offline; no host or container. |
 | `ops/fabro-run-status.sh` | LLM-free health check for an in-flight run: alive, where in the graph, making progress, and whether a compaction says the decomposition was oversized. |
-| `docs/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency. `00-overview-and-contracts.md` first — it carries 19 settled operator decisions and the 11 source findings behind them, then 14 numbered task drafts. Each draft is written to be implementable from the overview plus its own file plus this repository. **Drafts 01–13 are built and the host runs that image (deployed 2026-09-19T04:18:21Z); the `scheduler` container is stopped on purpose since 04:23:29Z and draft 14's 24-hour window has NOT started.** Draft 14's bring-up armed the loop for 5m8s, and both runs it dispatched — the only two — died at the second node: `claim` writes `gh issue view … > /tmp/fabro/issue.json` and draft 10 deleted `acquire`, the only node that ran `mkdir -p /tmp/fabro`, so **every `backlog` run, `ops/fabro-fire-backlog.sh` included, fails at `claim` and parks at `human_rescue` for 4h while holding its coder lease and its repo.** Neither `fabro validate` nor `ops/check-routing-schemas.py` can see it, because neither runs a node's shell. The one-line fix belongs in the graph and is deliberately not in this tree yet; `docs/scheduler/14-shakedown-and-log.md` and the deployment log carry the evidence and the unstarted acceptance criteria. Draft 13 turned the four `backlog-<repo>` schedules off, so the scheduler is the only producer of `backlog` runs; `ops/fabro-automation-schedule.sh` is the way back on. The service itself is `ops/scheduler/`. |
+| `docs/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency. `00-overview-and-contracts.md` first — it carries 19 settled operator decisions and the 11 source findings behind them, then 14 numbered task drafts. Each draft is written to be implementable from the overview plus its own file plus this repository. **Drafts 01–13 are built and deployed, and draft 14's 24-hour shakedown window is running: the loop was re-armed at 2026-09-19T14:55:27Z and its acceptance criteria are pending, not unstarted.** The `claim` regression that killed the first bring-up is fixed (`5fa974d`, the `mkdir -p /tmp/fabro` that died with `acquire`) and two runs have cleared that node since. `ops/test-task-gates.sh` now covers `claim` and `mark_stuck`, so the same class of shell-level regression fails offline instead of costing two coder boxes four hours each. Draft 13 turned the four `backlog-<repo>` schedules off, so the scheduler is the only producer of `backlog` runs; `ops/fabro-automation-schedule.sh` is the way back on, and `ops/fabro-fire-backlog.sh` is the manual escape hatch. The service itself is `ops/scheduler/`; its LAN page is `http://10.10.0.32:32280/`. |
 | `docs/perf/` | Why a run takes four hours, measured from the run store rather than guessed. `00-overview-and-measurements.md` first — it is also where the source-verified list of what fabro's docker provider **cannot** do lives (no mounts, no service provisioning). `01` is what was applied, `02` is what needs an operator decision, `03` is the per-repository `.fabro/ci.sh` work, `04` is why compaction is a sizing alarm rather than a cost and what the task-size work changed. |
 | `docs/research_improvements/` | An audit of all three packages against the Fabro source: what we hand-roll that Fabro already does, four operator-observed gaps traced to Fabro lines, and nine settled dead ends. A plan, not a changelog — nothing in it has been applied. `00-overview.md` first. |
 | `.scratch/` | Untracked working notes. |
@@ -98,12 +98,22 @@ the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them 
 fixtures:
 
 ```sh
-./ops/test-task-gates.sh      # 82 checks, offline — no host, container or network
+./ops/test-task-gates.sh      # 112 checks, offline — no host, container or network
 ```
 
 It needs only `jq` and `python3`, so it belongs in the same pre-push hook. It covers
-queue mechanics only — selection, the split splice, the cursor, the guards — and says
-nothing about whether an agent fills a contract correctly.
+the task-queue gates, `open_pr`, and — since 2026-09-19 — `claim` and `mark_stuck`.
+It says nothing about whether an agent fills a contract correctly.
+
+**`claim` is in there because leaving it out cost the cutover.** Draft 10 deleted
+`acquire`, `acquire` was the only node that ran `mkdir -p /tmp/fabro`, and `claim`
+— now the run's first node — still redirected into that directory. Every `backlog`
+run died at its second node and parked on `human_rescue` for four hours holding a
+coder box; `fabro-fire-backlog.sh` failed identically; both offline gates stayed
+green throughout, because neither runs a node's shell. `claim` is staged against a
+sandbox path that *does not exist*, which is the only way a test can observe that a
+node creates it — every other gate rebases onto a directory the harness already
+made. If you add a node that writes before `prep`, stage it the same way.
 
 `fabro validate` does not parse `workflow.toml` strictly. A dotted model key that loses
 its quotes becomes a nested table and the automation fire returns 422, with nothing
@@ -204,9 +214,6 @@ ssh andrew@10.10.0.32 'cd ~/profile-images-build && ./build-images.sh'
 # *Breaking a stuck lease* in ops/README.md is now only the escape hatch. The rsync is
 # load-bearing before the build: the host tree is whatever was last copied there,
 # and `--build` alone happily rebuilds an older one.
-# Dated correction, 2026-09-19: as armed today, every dispatch dies at `claim`
-# (see the docs/scheduler/ Layout row above), so a deploy that ends in `up -d
-# --build scheduler` is arming two 4h human gates rather than two working runs.
 # `up -d scheduler` names one service and never recreates fabro, which matters:
 # a fabro restart fails every in-flight run. The tree carries no credential — the
 # scheduler reads its own from ~/fabro/scheduler.env (NOT ~/fabro/.env, which

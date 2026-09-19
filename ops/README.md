@@ -19,7 +19,7 @@ locations instead.
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
 | `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
 | `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
-| `test-task-gates.sh` | Runs `backlog`'s task-queue gates (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. Covers the split splice and the cursor arithmetic, where an off-by-one silently skips a task. Offline — no host, container or network — so it belongs in a pre-push hook beside `check-routing-schemas.py`. |
+| `test-task-gates.sh` | Runs `backlog`'s `claim`, `mark_stuck`, `open_pr` and task-queue nodes against fixtures, extracted verbatim from the graph. Covers the split splice and the cursor arithmetic, where an off-by-one silently skips a task; `claim`'s directory creation, input validation and fetch retry; and `mark_stuck`'s receipt removal. The only gate that executes a node's shell — 112 checks, offline, no host, container or network — so it belongs in a pre-push hook beside `check-routing-schemas.py`. |
 | `docker-compose.yaml` | Runs both containers: the `fabro` server and the `scheduler` (the coder scheduler, built from `./scheduler/`). It is also the only place the scheduler's port and volume are declared. |
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
@@ -583,23 +583,22 @@ and **cancel** the run on one. `POST /api/dispatch-once` stays as the operator's
 override. Every `Status, 2026-09-19` block below this one describes an earlier deploy and
 is kept only as the chronology; the current state is the block immediately below.
 
-**Status, 2026-09-19 (draft 14, session 1 — current):** drafts 09–13 are deployed. The
-host was rsynced and `docker compose up -d --build scheduler` was run at
-`04:18:21Z` (`docker-compose.yaml` and `repos.toml` were already identical, so neither was
-copied — and the rsync is load-bearing: the tree on the host was still draft 08, and
-`--build` alone would have rebuilt that). The container is **stopped again** as of
-`04:23:29Z`, on purpose, five minutes after it started. It was stopped because of a live
-finding: **every `backlog` run dies at `claim`**, the runs this deploy dispatched included.
-`claim` writes `gh issue view … > /tmp/fabro/issue.json` and draft 10 deleted `acquire`, the
-only node that ran `mkdir -p /tmp/fabro`; nothing else creates that directory (`prep` is the
-next node), and the node's unconditional edge parks the run at `human_rescue` for 4h while
-holding its lease and its repo. The manual escape hatch `fabro-fire-backlog.sh` is broken
-by the same line. Neither `fabro validate` nor `check-routing-schemas.py` can see it — they
-never run a node's shell. So **the 24-hour shakedown has not started** and draft 14's
-acceptance criteria are unstarted; the fix is a one-line `mkdir` in the graph, deliberately
-taken separately. Evidence, the measurement recipe and the unstarted criteria:
-`../docs/scheduler/00-overview-and-contracts.md` (the dated block at the end) and the dated
-section of the deployment log.
+**Status, 2026-09-19 (draft 14, session 2 — current):** drafts 01–13 are deployed and the
+24-hour shakedown window is **running**, from the scheduler container's `StartedAt` of
+`2026-09-19T14:55:27Z`.
+
+Session 1 deployed at `04:18:21Z`, armed the loop for 5m8s and stopped it at `04:23:29Z`,
+because both runs it dispatched died at `claim`: the node writes
+`gh issue view … > /tmp/fabro/issue.json`, draft 10 deleted `acquire`, and `acquire` was the
+only node that ran `mkdir -p /tmp/fabro`. `fabro-fire-backlog.sh` was broken by the same
+line, so the factory had no working producer of work at all. `5fa974d` restored the `mkdir`
+and two runs have cleared `claim` and `prep` since.
+
+Three follow-ups from that failure are in the tree, not just in the log: `claim` and
+`mark_stuck` are now covered by `ops/test-task-gates.sh` (112 checks, up from 82); `claim`
+writes `/tmp/fabro/issue_number` before any network call so `mark_stuck` can always take
+the receipt off; and the receipt scan runs every 10 minutes rather than only at startup.
+Evidence, the measurement recipe and the pending criteria:
 
 What the five minutes did prove, in order: the startup recovery pass released both stale
 draft-08 leases (`#350` released and not requeued, `#1195` requeued on `reason: cancelled`,
@@ -673,7 +672,7 @@ whole factory in one place and a host rebuild brings it back with everything els
 | `scheduler/src/fabro_scheduler/dispatch.py` | The **5-second dispatch loop**. `choose_next` is pure — it takes the already-ranked queue and skips any repo with a run in flight rather than idling the box — and `DispatchLoop.tick` performs the side effects for every free box it can fill. Order: labels, create, start, lease; a failure before the run exists rolls the labels back, and a failed repo is backed off for the rest of that tick. It owns the two `agent-in-progress` writes and the `issue_number`/`coder_pool` inputs, excludes a drained box via `pool_state`, and clears an operator override once the lease is recorded. |
 | `scheduler/src/fabro_scheduler/templates/queue.html` | The page: the **coder instances** (state, lease, and the Drain/Undrain and Cancel-run controls), the queue with a **Next** button per row, and a per-repo freshness strip. Inline CSS and a few lines of inline JS, no external assets, refreshes itself on the same 60s beat. Each control is a real `<form method="post">`, so the buttons work with scripting off (the response is raw JSON); with scripting on the submit is intercepted, the page reloads on success and shows the error otherwise. |
 | `scheduler/src/fabro_scheduler/app.py` | `/`, `/api/queue`, `/api/repos`, `/api/pools`, `/health`, `POST /api/dispatch-once`, and draft 11's `POST /api/queue/{repo}/{issue}/bump`, `POST /api/pools/{pool}/drain`, `/undrain` and `/cancel`. Validates the config *before* binding the port, so a broken file fails the container healthcheck instead of serving nothing. `main` starts the inventory poller, the dispatch loop **and** the 15s release poll; every one of them is off in any other construction, which is what lets a test drive a tick by hand. `dispatch-once` takes `repo`, `issue_number` and `coder_pool`, takes `environment_id` from that repo's `repos.toml` row, refuses a pool that is already leased with a `409`, records the lease on the way out, and answers `503` when no `FABRO_API_TOKEN` is configured — it never invents one. Every mutating route is `POST` and every one logs what it changed, because there is no auth to attribute it to. |
-| `scheduler/src/fabro_scheduler/reconcile.py` | Draft 09's release/requeue/recovery, plus draft 11's one change to it: a cancel requeues. `should_requeue` keys on the failure **reason** for the two failures whose category cannot decide — `terminated` (a fabro restart, category `deterministic`) and `cancelled` (the operator's cancel, category `canceled`, one L). Both are in the run projection, so neither costs the extra events call. |
+| `scheduler/src/fabro_scheduler/reconcile.py` | Draft 09's release/requeue/recovery, plus draft 11's one change to it: a cancel requeues. `should_requeue` keys on the failure **reason** for the two failures whose category cannot decide — `terminated` (a fabro restart, category `deterministic`) and `cancelled` (the operator's cancel, category `canceled`, one L). Both are in the run projection, so neither costs the extra events call. Two cadences share one thread: the fabro pass every **15s** (one cheap `GET /runs/{id}` per held lease) and the GitHub receipt scan every **10 minutes** (four uncached requests, 24/hour against 5,000). The receipt scan used to run only at startup, on the premise that only a restart could orphan a receipt; 2026-09-19 disproved that, so it repeats — and because `_dispatch` writes the receipt seconds before the run exists, a receipt must look orphaned in **two consecutive scans** before anything is written. |
 | `scheduler/tests/` | `uv run pytest` from `ops/scheduler/`. GitHub and fabro faked with `respx`, SQLite in `tmp_path`, the `.fabro` tree a fixture — no network, no container, no host. The clone path is exercised against a local git repository. `test_dispatch.py` asserts the *order* of the label and run calls, not just their effect, and covers the failures that must leave nothing behind. `test_overrides.py` covers bump/drain/cancel, including that a bump beats both the ceiling and repo priority, that drain leaves a held lease alone, and that cancel never releases one itself. |
 | `scheduler/Dockerfile` | Two stages. Runs as uid 1000, bakes `repos.toml` in, creates `/data` for the SQLite file, and installs `git` (draft 07 fetches `.fabro/` with a shallow clone). |
 
@@ -705,13 +704,12 @@ the page, which is the point of the draft and also the sharpest edge in the serv
 are unauthenticated on a LAN page and one of them cancels a running job. Deploy only with
 the operator watching, and prefer draining a misbehaving box to cancel-cycling it.
 
-The 2026-09-19 deploy was the acceptance run and the container was then stopped. Starting
-an older image again with lease rows still present dispatches nothing until they are
-cleared (*Breaking a stuck lease* below) or the run behind each is reconciled; the draft-14
-image does that itself on startup. **Dated correction, 2026-09-19:** the deployment that
-matters is now the one in the draft-14 status block above — deployed, armed for 5m8s, then
-stopped, because every dispatch dies at `claim`. Treat a deploy of this service as arming
-two 4h human gates until that graph fix lands.
+Starting an older image with lease rows still present dispatches nothing until they are
+cleared (*Breaking a stuck lease* below) or the run behind each is reconciled; the current
+image does that itself on startup, which is what the draft-14 re-arm demonstrated — it
+released two stale leases and requeued the two receipts behind them before dispatching
+anything. Treat a deploy of this service as arming the loop: within seconds of coming up it
+takes both boxes, writes `agent-in-progress` to GitHub and creates real runs.
 
 #### The three controls
 

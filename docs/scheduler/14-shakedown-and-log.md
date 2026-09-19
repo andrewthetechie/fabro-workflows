@@ -1,32 +1,35 @@
 # Shakedown and deployment-log entry
 
-## Status, 2026-09-19 (session 1 of 2) — the setup is done, the window has NOT started
+## Status, 2026-09-19 (session 2) — the window is RUNNING; criteria are pending
 
-The in-session setup this draft calls for was executed and is committed: the pre-flight
-(the four `backlog` rows schedule-off / api-on, the two stale draft-08 lease rows, both
-variable names in `~/fabro/scheduler.env`), the deploy and bring-up, the verification
-against `/health`, `/api/queue`, `/api/pools` and the page, the measurement recipe below as
-a runnable script, the dated deployment-log section, and the doc corrections.
+**The 24-hour window started at `2026-09-19T14:55:27Z`**, the scheduler container's
+`StartedAt` after the `claim` fix landed on `main`. Supersedes session 1's block below,
+which correctly said the window had not started — it had not, then.
 
-**The 24-hour window did not run.** The loop was armed at `2026-09-19T04:18:21Z`, dispatched
-two real runs in its first three seconds, and both died at the second node: `claim` writes
-`gh issue view … > /tmp/fabro/issue.json` and draft 10 (`ca39b8f`) deleted `acquire`, the only
-node that ran `mkdir -p /tmp/fabro`. Every `backlog` run fails there —
-`ops/fabro-fire-backlog.sh` included — and the node's unconditional edge parks the run at
-`human_rescue` for 4h while it holds its coder lease and its repo. The container was stopped
-at `04:23:29Z`, five minutes in, and both runs were answered `[X] Abandon` at their gates so
-their boxes would not be held for four hours. **No acceptance criterion in this file is met
-or in progress; every one is unstarted**, and no number from those five minutes may be
-counted toward any of them. Before a window can start, the missing `mkdir` has to land on
-`main` (the scheduler clones `main` at dispatch, so a local commit changes nothing) and the
-container has to be restarted, which is when its recovery pass releases the two leases and
-requeues `jelly-swipe#353` and `lawncare-saas#2277`.
+Session 1 did the setup and the deploy, armed the loop for 5m8s, and stopped it: both runs
+it dispatched died at `claim`, because draft 10 deleted `acquire` and `acquire` was the
+only node that ran `mkdir -p /tmp/fabro`. `5fa974d` restored it. Session 2 re-armed and
+watched two runs clear `claim` and `prep`, then closed the three follow-ups that failure
+exposed — `claim` and `mark_stuck` coverage in `ops/test-task-gates.sh`, a
+`/tmp/fabro/issue_number` fallback so `mark_stuck` can always take the receipt off, and a
+periodic receipt scan so an orphan no longer waits for a restart. The overview's dated
+block carries the detail.
 
-The recipe is the *The measurement recipe — NOT YET MEASURED* section (§7) of
-`~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`'s dated 2026-09-19 draft-14 section. Every
-command in it was run against the live run store, and the two ways of bounding tool calls to
-a stage were cross-checked against each other. **Corrected in the Context Pack:** the
-baseline figures are *not* in `docs/perf/00-overview-and-measurements.md`. They are in
+**Already satisfied, and recorded as such:**
+
+- ≥1 run on each of `coders-a` and `coders-b` — `01M2X2MVPC2NXY1BW5CVKPFF3S`
+  (`jelly-swipe#356`) and `01M2X2MYMR2XP5XANKH7D7XS2W` (`lawncare-saas#2590`), dispatched
+  three seconds apart within 14 seconds of container start.
+- Startup recovery released both stale leases and requeued both orphaned receipts
+  (`jelly-swipe#353`, `lawncare-saas#2277`) — draft 09 working on live state.
+
+**Still pending, waiting only on elapsed time:** ≥24h unattended, ≥1 run per repo, every
+lease released within 10 minutes of terminal, one infra-shaped requeue that completes on
+retry, and per-tool-call minutes for ≥1 coder stage per repo against the 1.33 baseline.
+
+The recipe is §7 of the dated 2026-09-19 section in
+`~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`. **Corrected in the Context Pack below:**
+the baseline figures are *not* in `docs/perf/00-overview-and-measurements.md`. They are in
 `docs/scheduler/00-overview-and-contracts.md` (0.57 and 1.33 minutes per tool call, the
 ~1.7× contention component and the 1.38× `reasoning_effort` part) and in
 `docs/perf/04-compaction-and-task-sizing.md` (the 17.4 tok/s box ceiling).

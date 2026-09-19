@@ -31,6 +31,16 @@ that neither a lease nor a live fabro run accounts for, and requeue those. Recov
 runs **before** the dispatch loop, or it would dispatch onto a box it had not yet
 reconciled.
 
+The receipt scan also runs **periodically** (`DEFAULT_RECEIPT_SCAN_SECONDS`), which
+draft 09 did not do. Its reasoning was that only a restart could orphan a receipt;
+2026-09-19 showed otherwise — `mark_stuck` read the issue number only from
+`issue.json` and did no label work at all when `claim` had died before writing it,
+so two issues kept `agent-in-progress` and left the queue with the scheduler up and
+healthy. The graph now writes `/tmp/fabro/issue_number` before any network call and
+`mark_stuck` falls back to it, which closes that path; the periodic scan closes the
+class, for every future ending that skips the graph's label work. Running it while
+the loop dispatches needs the confirmation gate described on `_github_pass`.
+
 Draft 10 (which collapsed `acquire`/`claim`) landed before this on purpose: it is
 what makes the lease's `issue_number` the issue the run actually works, so a
 GitHub-pass that keys on `lease.issue_number` can no longer un-label the issue a
@@ -52,6 +62,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -102,6 +113,19 @@ REQUEUE_REASONS = frozenset({TERMINATED_REASON, CANCELLED_REASON})
 
 # Decision 8 / the Release contract: poll fabro this often for terminal runs.
 DEFAULT_RELEASE_INTERVAL_SECONDS = 15.0
+
+# How often the receipt scan runs *after* startup. Four uncached GitHub requests
+# per scan (one `agent-in-progress` collection per repo), so at 600s that is 24
+# requests an hour against the 5,000/hour budget — the poll that matters, the 60s
+# inventory one, is conditional and free.
+#
+# It exists because draft 09's original "a question only a restart can raise" is
+# false. A receipt is orphaned by any ending that does not reach the graph's own
+# label work, and `mark_stuck` skipped that work entirely whenever `claim` died
+# before writing `issue.json` — which stranded `jelly-swipe#353` and
+# `lawncare-saas#2277` on 2026-09-19 with no scheduler crash involved. The graph
+# fix closes that path; this closes the class.
+DEFAULT_RECEIPT_SCAN_SECONDS = 600.0
 
 
 # --- the two predicates ---------------------------------------------------------
@@ -340,6 +364,10 @@ def recover(
     fabro_pass = reconcile_leases(
         config, store, leases, fabro_client, github_token
     )
+    # `pending=None`: requeue an orphan the moment it is seen. Safe here and only
+    # here, because `recover` runs before the dispatch loop starts, so there is no
+    # dispatch in flight for this pass to mistake for an orphan. The periodic scan
+    # has no such guarantee and gates on confirmation instead.
     return _github_pass(config, store, leases, fabro_client, github_token, fabro_pass)
 
 
@@ -350,6 +378,8 @@ def _github_pass(
     fabro_client: FabroClient,
     github_token: str,
     fabro_pass: list[ReleaseAction],
+    *,
+    pending: set[tuple[str, int]] | None = None,
 ) -> RecoveryReport:
     """The receipt scan: issues wearing `agent-in-progress` that nothing is working.
 
@@ -373,10 +403,22 @@ def _github_pass(
     on an empty claim set — which is indistinguishable from "nothing is live" and
     un-labels everything. An orphan left one more restart is cheap; two runs on one
     issue is the failure this pass exists to prevent.
+
+    **`pending` is what makes this safe to run while the loop is dispatching.**
+    At startup it is `None` and an orphan is repaired on sight. On the periodic
+    scan it is a set carried between scans, and a receipt has to look orphaned in
+    **two consecutive scans** before anything is written — because `_dispatch`
+    writes the receipt several seconds before the run exists (it clones `main` in
+    between), and a scan landing in that gap sees a receipt with no lease and no
+    live run. Confirming across a scan interval closes a window measured in
+    seconds with one measured in minutes, and costs an orphan one extra scan.
     """
     live = {(lease.repo, lease.issue_number) for lease in leases.active()}
     errors: list[str] = []
     orphaned: list[tuple[str, int]] = []
+    # Receipts that looked orphaned this pass, and so are eligible next pass.
+    # Anything requeued is deliberately absent: it is repaired, not pending.
+    candidates: set[tuple[str, int]] = set()
 
     try:
         live |= fabro_client.active_issue_claims()
@@ -398,14 +440,32 @@ def _github_pass(
             errors.append(f"{repo.name}: {exc}")
             continue
         for number in numbers:
-            if (repo.name, number) in live:
+            key = (repo.name, number)
+            if key in live:
+                continue
+            if pending is not None and key not in pending:
+                candidates.add(key)
+                log.info(
+                    "recover: %s#%s has a receipt with no lease; confirming on the "
+                    "next scan before touching it",
+                    repo.name, number,
+                )
                 continue
             _requeue(store, leases, _orphan_lease(repo.name, number), github_token)
-            orphaned.append((repo.name, number))
+            orphaned.append(key)
             log.info(
                 "recover: %s#%s had the receipt with no lease; requeued",
                 repo.name, number,
             )
+
+    if pending is not None:
+        # Rebuilt rather than unioned: a receipt that stopped looking orphaned —
+        # its run started, or a human re-labelled it — must not stay armed. A repo
+        # whose fetch failed contributes nothing, so its candidates lapse and need
+        # two more scans, which is the direction that does not write on a guess.
+        pending.clear()
+        pending.update(candidates)
+
     return RecoveryReport(fabro_pass=fabro_pass, orphaned=orphaned, github_errors=errors)
 
 
@@ -428,10 +488,16 @@ class ReleasePoller:
     """The 15-second loop that turns terminal fabro runs into free boxes.
 
     One thread, exactly like `InventoryPoller`: `tick()` is pure and testable, and
-    `start`/`stop` are the only things that touch a thread. Runs `reconcile_leases`
-    — the fabro pass only. The receipt scan belongs to `recover` and runs once at
-    startup: it reads every repo's `agent-in-progress` collection uncached, which
-    is four GitHub requests that answer a question only a restart can raise.
+    `start`/`stop` are the only things that touch a thread.
+
+    Two cadences on the one thread, because they answer different questions at
+    very different prices. `tick()` is the fabro pass every 15 seconds — one cheap
+    `GET /runs/{id}` per held lease, at most two. `receipt_tick()` is the GitHub
+    receipt scan every `receipt_scan_seconds`, four uncached requests that catch an
+    `agent-in-progress` label no run is behind. Draft 09 ran the second only at
+    startup on the premise that only a restart could orphan a receipt; the
+    2026-09-19 `mark_stuck` stranding disproved that, so it runs here too — gated
+    on confirmation across two scans so it can never race a dispatch.
     """
 
     def __init__(
@@ -443,6 +509,7 @@ class ReleasePoller:
         github_token: str,
         *,
         interval_seconds: float = DEFAULT_RELEASE_INTERVAL_SECONDS,
+        receipt_scan_seconds: float = DEFAULT_RECEIPT_SCAN_SECONDS,
     ) -> None:
         self._config = config
         self._store = store
@@ -450,17 +517,39 @@ class ReleasePoller:
         self._fabro = fabro_client
         self._github_token = github_token
         self._interval = interval_seconds
+        self._receipt_interval = receipt_scan_seconds
+        # Carried between receipt scans; see `_github_pass`. Starts empty because
+        # `recover` has just repaired everything orphaned at boot, so the first
+        # periodic scan has nothing legitimately outstanding to confirm.
+        self._pending_orphans: set[tuple[str, int]] = set()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def tick(self) -> list[ReleaseAction]:
-        """One pass, by hand — the testing seam and the loop body."""
+        """One fabro pass, by hand — the testing seam and the loop body."""
         return reconcile_leases(
             self._config,
             self._store,
             self._leases,
             self._fabro,
             self._github_token,
+        )
+
+    def receipt_tick(self) -> RecoveryReport:
+        """One confirmation-gated receipt scan, by hand.
+
+        The same pass `recover` runs, minus the fabro leg and plus the two-scan
+        confirmation. Separate from `tick()` rather than folded into it on a
+        counter, so a test drives each cadence directly instead of faking a clock.
+        """
+        return _github_pass(
+            self._config,
+            self._store,
+            self._leases,
+            self._fabro,
+            self._github_token,
+            [],
+            pending=self._pending_orphans,
         )
 
     def start(self) -> None:
@@ -486,14 +575,30 @@ class ReleasePoller:
     def _run(self) -> None:
         """Tick immediately, then every `interval`, forever until stopped.
 
+        The receipt scan rides the same thread on its own, much longer schedule,
+        anchored on completion so a slow GitHub cannot queue up a backlog of them.
+        It is deliberately not run on the first pass: `recover` has just done that
+        work synchronously, and repeating it immediately would spend four requests
+        to re-answer a question with a fresh answer.
+
         A tick that raises is logged and the loop continues: an unhandled bug must
         not silently stop all releasing while `/health` keeps answering `ok`, the
-        same rule the dispatch and inventory loops follow.
+        same rule the dispatch and inventory loops follow. The two cadences are
+        caught separately, so a broken receipt scan cannot stop leases releasing.
         """
+        next_receipt = time.monotonic() + self._receipt_interval
         while not self._stop.is_set():
             try:
                 self.tick()
             except Exception:  # noqa: BLE001 - see the docstring above
                 log.exception("release: tick failed")
+
+            if time.monotonic() >= next_receipt:
+                try:
+                    self.receipt_tick()
+                except Exception:  # noqa: BLE001 - as above, and independently
+                    log.exception("release: receipt scan failed")
+                next_receipt = time.monotonic() + self._receipt_interval
+
             if self._stop.wait(self._interval):
                 return

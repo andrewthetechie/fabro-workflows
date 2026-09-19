@@ -99,6 +99,13 @@ mkdir -p /tmp/fabro
 ISSUE='{{ inputs.issue_number }}'
 case \"$ISSUE\" in '' | *[!0-9]*) echo 'issue_number must be a positive integer' >&2; exit 1;; esac
 if [ \"$ISSUE\" -lt 1 ]; then echo 'issue_number must be a positive integer' >&2; exit 1; fi
+# Written BEFORE the label swap and before any network call, because mark_stuck
+# needs it precisely when everything below this line failed. issue.json is the
+# usual source of the number, and it does not exist until the fetch further down
+# succeeds -- so an issue whose receipt has already been written but whose fetch
+# then failed would reach mark_stuck with nothing to name, and the receipt would
+# stay on the issue. `pr-review` writes /tmp/fabro/pr_number for the same reason.
+echo $ISSUE > /tmp/fabro/issue_number
 gh label create agent-in-progress --color FBCA04 2>/dev/null || true
 gh label create agent-stuck --color D93F0B 2>/dev/null || true
 gh label create agent-authored --color 1D76DB 2>/dev/null || true
@@ -106,7 +113,26 @@ gh label create Review --color 0E8A16 2>/dev/null || true
 gh issue edit $ISSUE --add-label agent-in-progress --remove-label agent || true
 # state is fetched so the fail-closed checks below can see a closed issue; the
 # downstream readers (open_pr_prep, open_pr, mark_stuck) use number/title/body/labels.
-gh issue view $ISSUE --json state,number,title,body,labels > /tmp/fabro/issue.json
+#
+# Retried, because this is the one network call between the receipt being written
+# and the run being able to do anything, and a single transient `gh` failure here
+# costs a coder box for four hours: the node's unconditional edge parks the run on
+# human_rescue, whose default choice is mark_stuck, so the run ends `succeeded`
+# and the scheduler's requeue rule -- which keys on a FAILED run's reason -- never
+# sees it. Three attempts five seconds apart turns a blip into a working run
+# instead of a parked box. A genuinely missing or unreadable issue still fails
+# closed, which is the behaviour the whole node exists for.
+A=1
+while :; do
+  if gh issue view $ISSUE --json state,number,title,body,labels > /tmp/fabro/issue.json 2>/tmp/fabro/issue_view.err; then break; fi
+  if [ $A -ge 3 ]; then
+    echo 'could not read issue '$ISSUE' after '$A' attempts:' >&2
+    cat /tmp/fabro/issue_view.err >&2
+    exit 1
+  fi
+  A=$((A + 1))
+  sleep 5
+done
 S=$(jq -r .state /tmp/fabro/issue.json)
 if [ \"$S\" != OPEN ]; then
   echo 'issue '$ISSUE' is '$S', not OPEN; refusing to work a closed issue' >&2
@@ -834,8 +860,22 @@ echo done"]
     human_rescue [shape=hexagon, timeout="4h", human.default_choice="mark_stuck",
         label="Agent stuck. Type guidance to retry, or choose an option."]
 
+    // Taking the receipt off is the load-bearing half of this node, not the
+    // comment. `claim` swapped `agent` -> `agent-in-progress`, and an issue left
+    // wearing it is in no collection the scheduler reads: `agent` no longer has
+    // it, so it is out of the queue, and the only thing that repairs it is the
+    // scheduler's startup receipt scan plus the periodic one added with it.
+    //
+    // So the number is resolved from two sources, not one. issue.json is absent
+    // whenever `claim` failed before its fetch -- which is exactly the run that
+    // arrives here -- and the old `|| echo 0` then silently skipped the label work
+    // entirely. That is what stranded jelly-swipe#353 and lawncare-saas#2277 on
+    // 2026-09-19. /tmp/fabro/issue_number is written by `claim` before any network
+    // call, so it is there whenever the run got past input validation at all.
     mark_stuck [label="Mark stuck", shape=parallelogram,
-        script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || echo 0)
+        script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || true)
+case \"$N\" in '' | *[!0-9]*) N=$(cat /tmp/fabro/issue_number 2>/dev/null || echo 0) ;; esac
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
 if [ \"$N\" != 0 ]; then
   gh issue edit $N --remove-label agent-in-progress --add-label agent-stuck || true
   gh issue comment $N --body 'Agent run could not complete this issue and gave up. See the fabro run for details.' || true
