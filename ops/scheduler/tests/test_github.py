@@ -1,12 +1,16 @@
-"""`fetch_issues` against a faked GitHub — `respx`, no live network.
+"""`fetch_issues` and the two label writes, against a faked GitHub — `respx`, no
+live network.
 
-The three things worth pinning here are the three the design leans on: the ETag
-goes back verbatim, a `304` is distinguishable from "no work", and a `403` says
-whether the quota is gone.
+The three things worth pinning on the read path are the three the design leans on:
+the ETag goes back verbatim, a `304` is distinguishable from "no work", and a `403`
+says whether the quota is gone. On the write path there is one: a `404` from
+`DELETE .../labels/{name}` is success, because the rollback path is a retry and a
+retry that finds the work already done has not failed.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -14,7 +18,13 @@ import httpx
 import pytest
 import respx
 
-from fabro_scheduler.github import GitHubError, fetch_issues, is_eligible
+from fabro_scheduler.github import (
+    GitHubError,
+    add_label,
+    fetch_issues,
+    is_eligible,
+    remove_label,
+)
 
 ISSUES_URL = "https://api.github.com/repos/o/a/issues"
 TOKEN = "ghp_not-a-real-token"
@@ -290,4 +300,94 @@ def test_the_token_never_appears_in_an_error_message():
     sentinel = "ghp_sentinel-do-not-log"
     with pytest.raises(GitHubError) as caught:
         fetch_issues("o/a", "", None)
+    assert sentinel not in str(caught.value)
+
+
+# --- label writes ------------------------------------------------------------------
+#
+# The only mutating calls this module makes, and the reason `EXCLUDED_LABELS` and
+# `REQUIRED_LABEL` are not just constants: a dispatch adds `agent-in-progress`,
+# removes `agent`, and has to be able to undo both without treating the undo as a
+# failure when it finds nothing to undo.
+
+MARK_URL = "https://api.github.com/repos/o/a/issues/7/labels"
+REMOVE_URL = "https://api.github.com/repos/o/a/issues/7/labels/agent"
+
+
+@respx.mock
+def test_add_label_posts_the_label():
+    route = respx.post(MARK_URL).mock(return_value=httpx.Response(200, json=[]))
+
+    add_label("o/a", 7, "agent-in-progress", TOKEN)
+
+    assert route.called
+    request = route.calls.last.request
+    assert json.loads(request.content) == {"labels": ["agent-in-progress"]}
+    assert request.headers["authorization"] == f"Bearer {TOKEN}"
+
+
+@respx.mock
+def test_remove_label_treats_a_404_as_success():
+    # GitHub answers 404 when the label is not on the issue. The caller's intent is
+    # "this label must not be there", which is equally true either way — and the
+    # rollback path *is* a retry, so a 404 read as failure would report a failure
+    # for work that is already done.
+    route = respx.delete(REMOVE_URL).mock(
+        return_value=httpx.Response(404, json={"message": "Label does not exist"})
+    )
+
+    remove_label("o/a", 7, "agent", TOKEN)  # does not raise
+
+    assert route.called
+
+
+@respx.mock
+def test_remove_label_url_encodes_the_label():
+    route = respx.delete(
+        "https://api.github.com/repos/o/a/issues/7/labels/a%2Fb%20c"
+    ).mock(return_value=httpx.Response(200, json=[]))
+
+    remove_label("o/a", 7, "a/b c", TOKEN)
+
+    assert route.called
+
+
+@respx.mock
+def test_a_refused_label_write_is_a_GitHubError_naming_the_status_and_the_scope():
+    respx.post(MARK_URL).mock(
+        return_value=httpx.Response(
+            403,
+            json={"message": "Resource not accessible by integration"},
+            headers={"x-ratelimit-remaining": "4971"},
+        )
+    )
+
+    with pytest.raises(GitHubError) as caught:
+        add_label("o/a", 7, "agent-in-progress", TOKEN)
+
+    message = str(caught.value)
+    assert "403" in message
+    assert "issues: write" in message
+    assert "4971" in message
+
+
+@respx.mock
+def test_a_connection_error_on_a_label_write_is_a_GitHubError():
+    respx.post(MARK_URL).mock(side_effect=httpx.ConnectTimeout("timed out"))
+    with pytest.raises(GitHubError, match="request failed|failed"):
+        add_label("o/a", 7, "agent-in-progress", TOKEN)
+
+
+@respx.mock
+def test_a_missing_token_never_reaches_the_network_for_a_label_write():
+    route = respx.post(MARK_URL).mock(return_value=httpx.Response(200, json=[]))
+    with pytest.raises(GitHubError, match="GITHUB_TOKEN"):
+        add_label("o/a", 7, "agent-in-progress", "")
+    assert not route.called
+
+
+def test_the_token_never_appears_in_a_label_write_error():
+    sentinel = "ghp_sentinel-do-not-log"
+    with pytest.raises(GitHubError) as caught:
+        add_label("o/a", 7, "agent-in-progress", sentinel)
     assert sentinel not in str(caught.value)

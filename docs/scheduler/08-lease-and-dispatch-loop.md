@@ -52,6 +52,7 @@ unattended operation before 09.
       issue_number: int
       run_id: str
       dispatched_at: datetime
+      queued_since: datetime | None = None   # added by draft 08; see the correction below
 
   class LeaseStore:
       def active(self) -> list[Lease]: ...
@@ -74,12 +75,53 @@ unattended operation before 09.
     repo          TEXT NOT NULL,
     issue_number  INTEGER NOT NULL,
     run_id        TEXT NOT NULL UNIQUE,
-    dispatched_at TEXT NOT NULL               -- ISO-8601 UTC
+    dispatched_at TEXT NOT NULL,              -- ISO-8601 UTC
+    queued_since  TEXT                        -- ISO-8601 UTC; issue_cache.first_seen
   );
   ```
 
   The primary key on `coder_pool` is what makes double-dispatch to one box
   impossible even if the loop is re-entered.
+
+#### Corrected during implementation, 2026-09-19
+
+**The table needs one more column — `queued_since TEXT` — and leaving it out breaks
+draft 09.** The issue leaves the `agent` collection the moment the scheduler labels
+it `agent-in-progress`, so the 60s inventory poll gets a `200`, `sync_repo` finds the
+issue absent from the new list, and its `issue_cache` row — with `first_seen` — is
+deleted within a minute of dispatch. Draft 09's Requeue contract ("restore the item
+with its **original** `first_seen` so the starvation ceiling is not reset") then has
+nothing to restore from, and neither does its acceptance criterion "a requeued item
+keeps its original wait time". Decision 5's guarantee — nothing waits more than
+`T` — would be quietly false for every item that ever failed.
+
+The lease is the only row that survives the dispatch, so `queued_since` is copied
+there from `issue_cache.first_seen`, and `Lease.queued_since` carries it as an
+optional trailing field. Nullable on purpose: a lease adopted from an older row, or
+written by the manual override for an issue that was never in the cache, has none,
+and draft 09 falls back to "now" for that case.
+
+Added by 08 rather than by 09 because it cannot be added later for free:
+`CREATE TABLE IF NOT EXISTS` does not add a column to a table that already exists, so
+once this draft is deployed the column can only arrive via an explicit `ALTER TABLE`
+migration. Nothing else about the drafted schema changed, and the five fields this
+draft's `Lease` contract names still read as the contract.
+
+**A lease is also recorded by `POST /api/dispatch-once`**, which the draft left
+implicit. It has to be: the manual path is otherwise the one way to put two runs on
+a single-slot coder instance, which is the contention the whole service exists to
+remove. The endpoint refuses a pool that is already leased with a `409` that names
+the holder, and takes the lease on the way out. It deliberately does **not** write
+labels — the issue a human names by hand need not be in the `agent` queue at all, and
+a rollback would have to decide what to restore.
+
+**One behaviour the draft does not spell out: a failed dispatch can leave an orphan
+run.** `RunNotStarted` means fabro created a run and could not start it, so the run
+sits in `submitted` forever while the labels are rolled back and no lease is
+recorded. The loop reports it with its run id and retries the issue on the next tick,
+because the drafted backoff is exactly one tick; nothing cancels the orphan until
+draft 09's recovery. Deliberate, and the one residue this draft leaves — which is
+also why it must not be left running unattended.
 
 - Verified external contracts:
 

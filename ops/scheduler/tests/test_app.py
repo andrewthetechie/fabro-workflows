@@ -25,7 +25,9 @@ from fabro_scheduler.config import load_config
 from fabro_scheduler.fabro import FabroClient
 from fabro_scheduler.github import Issue
 from fabro_scheduler.inventory import InventoryPoller
+from fabro_scheduler.lease import Lease, LeaseStore
 from fabro_scheduler.store import Store
+from fabro_scheduler.workflow_version import WorkflowVersionError
 
 TRACKED_REPOS = Path(__file__).resolve().parents[1] / "repos.toml"
 NOW = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
@@ -447,20 +449,134 @@ def test_dispatch_once_twice_reuses_the_version_and_creates_two_runs(
         )
     )
     http = _dispatch_client(config, store, fake_checkout)
-    body = {
-        "repo": "andrewthetechie/jelly-swipe",
-        "issue_number": 123,
-        "coder_pool": "coders-a",
-    }
 
-    first = http.post("/api/dispatch-once", json=body).json()
-    second = http.post("/api/dispatch-once", json=body).json()
+    first = http.post(
+        "/api/dispatch-once",
+        json={
+            "repo": "andrewthetechie/jelly-swipe",
+            "issue_number": 123,
+            "coder_pool": "coders-a",
+        },
+    ).json()
+    # The second fire names the other box on purpose: a manual dispatch takes the
+    # lease, so firing twice at one pool is a 409 rather than two runs sharing a
+    # single-slot instance (`test_dispatch_once_refuses_a_leased_pool`).
+    second = http.post(
+        "/api/dispatch-once",
+        json={
+            "repo": "andrewthetechie/jelly-swipe",
+            "issue_number": 123,
+            "coder_pool": "coders-b",
+        },
+    ).json()
 
     assert register.call_count == 1
     assert create.call_count == 2
     assert (first["run_id"], second["run_id"]) == ("R1", "R2")
     assert first["version_reused"] is False
     assert second["version_reused"] is True
+    assert {lease.coder_pool for lease in LeaseStore(store).active()} == {
+        "coders-a",
+        "coders-b",
+    }
+
+
+@respx.mock
+def test_dispatch_once_refuses_a_leased_pool(config, store, fake_checkout):
+    # The manual path must respect the lease or it is the one way back to two runs
+    # on one single-slot coder instance — the contention this service exists to
+    # remove. The refusal happens before the create call, so nothing is started.
+    register, create = _mock_the_three_calls()
+    http = _dispatch_client(config, store, fake_checkout)
+    body = {
+        "repo": "andrewthetechie/jelly-swipe",
+        "issue_number": 123,
+        "coder_pool": "coders-a",
+    }
+    assert http.post("/api/dispatch-once", json=body).status_code == 200
+
+    response = http.post("/api/dispatch-once", json=body)
+
+    assert response.status_code == 409
+    assert "coders-a" in response.json()["detail"]
+    assert "R1" in response.json()["detail"]
+    assert create.call_count == 1  # nothing was created for the refused call
+    assert len(LeaseStore(store).active()) == 1
+
+
+@respx.mock
+def test_dispatch_once_records_a_lease_for_the_manual_run(config, store, fake_checkout):
+    _mock_the_three_calls()
+    queued = issue("andrewthetechie/jelly-swipe", 123)
+    store.upsert_issue(queued)
+
+    _dispatch_client(config, store, fake_checkout).post(
+        "/api/dispatch-once",
+        json={
+            "repo": "andrewthetechie/jelly-swipe",
+            "issue_number": 123,
+            "coder_pool": "coders-a",
+        },
+    )
+
+    lease = LeaseStore(store).active()[0]
+    assert lease.coder_pool == "coders-a"
+    assert lease.repo == "andrewthetechie/jelly-swipe"
+    assert lease.issue_number == 123
+    assert lease.run_id == "R1"
+    assert lease.dispatched_at.tzinfo is not None
+    # The wait travels with the lease so draft 09's requeue can restore it — the
+    # manual path writes no labels, but the poll drops the row all the same once
+    # the run's own `claim` relabels the issue.
+    assert lease.queued_since == queued.first_seen
+
+
+def test_the_page_shows_the_active_leases(config, store, client):
+    LeaseStore(store).acquire(
+        Lease(
+            coder_pool="coders-b",
+            repo="andrewthetechie/writers-app",
+            issue_number=42,
+            run_id="01MRUN",
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+
+    html = client.get("/").text
+
+    assert "coders-b &mdash;" in html or "coders-b \u2014" in html
+    assert "andrewthetechie/writers-app" in html
+    assert "#42" in html
+    assert "01MRUN" in html
+    # Both configured pools are always named, so "free" and "not configured"
+    # cannot be read as the same state.
+    assert "coders-a" in html
+
+
+def test_the_page_says_no_lease_is_held_when_none_is(config, store, client):
+    assert "No coder instance is leased." in client.get("/").text
+
+
+def test_the_page_says_when_automatic_dispatch_is_off(config, store):
+    # `build_app` without `start_dispatch_loop` is what a test and a manually run
+    # process get. The operator must be able to tell that page from the armed one.
+    html = TestClient(build_app(config, store, github_token="ghp_test")).get("/").text
+    assert "Automatic dispatch is off" in html
+
+
+def test_the_page_stays_silent_about_dispatch_when_it_is_armed(config, store, fake_checkout):
+    app = build_app(
+        config,
+        store,
+        github_token="ghp_test",
+        fabro_client=_fabro_client(fake_checkout),
+        start_dispatch_loop=True,
+    )
+    # `start_dispatch_loop` only arms the loop; the thread starts with the ASGI
+    # lifespan, which a bare `TestClient` here does not enter. That is why the
+    # inference is from the app's configuration, not from a thread count.
+    html = TestClient(app).get("/").text
+    assert "Automatic dispatch is off" not in html
 
 
 def test_dispatch_once_is_503_when_the_token_is_missing(config, store):
@@ -553,6 +669,40 @@ def test_dispatch_once_refuses_a_malformed_body(config, store):
             },
         )
         assert bad.status_code == 422, issue_number
+
+
+@respx.mock
+def test_dispatch_once_answers_502_when_the_workflow_tree_cannot_be_fetched(
+    config, store
+):
+    # A failure before fabro is called at all — git missing, clone timing out. No
+    # run exists to cancel, but the operator gets fabro's own sentence rather than a
+    # traceback.
+    class NoTree:
+        def clone(self, repo: str, ref: str):
+            raise WorkflowVersionError(
+                "git is not on PATH; the workflow tree cannot be fetched"
+            )
+
+    response = TestClient(
+        build_app(
+            config,
+            store,
+            github_token="ghp_test",
+            fabro_client=FabroClient(FABRO_API, FABRO_TOKEN, clone=NoTree().clone),
+        )
+    ).post(
+        "/api/dispatch-once",
+        json={
+            "repo": "andrewthetechie/jelly-swipe",
+            "issue_number": 1,
+            "coder_pool": "coders-a",
+        },
+    )
+
+    assert response.status_code == 502
+    assert "workflow tree" in response.json()["detail"]
+    assert LeaseStore(store).active() == []
 
 
 @respx.mock

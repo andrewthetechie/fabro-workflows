@@ -120,7 +120,13 @@ After this draft the scheduler is safe to leave running unattended.
   - A lease whose `run_id` fabro returns `404` for is released and requeued —
     that is the "fabro lost it" case.
   - **Requeue** = remove `agent-in-progress`, add `agent`, and restore the item
-    with its **original `first_seen`** so the starvation ceiling is not reset.
+    with its **original `first_seen`** so the starvation ceiling is not reset. That
+    value is no longer in `issue_cache` by the time you need it — the poll deletes
+    the row within a minute of dispatch, because the issue has left the `agent`
+    collection — so read `lease.queued_since`, draft 08's one addition to the drafted
+    lease schema (`docs/scheduler/08-lease-and-dispatch-loop.md`, *Corrected during
+    implementation, 2026-09-19*). It is nullable, and `None` means "fall back to
+    now".
   - **Do not requeue** an agent-shaped failure. The issue keeps whatever the run
     left on it (`agent-stuck` from `mark_stuck`, or nothing from `close_noop`)
     and a human re-arms it.

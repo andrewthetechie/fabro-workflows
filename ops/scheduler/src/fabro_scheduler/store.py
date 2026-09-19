@@ -1,17 +1,28 @@
-"""The scheduler's SQLite state: the issue cache and the per-repo ETag record.
+"""The scheduler's SQLite state: the issue cache, the per-repo ETag record, and the
+coder leases.
 
-Two tables, both keyed by repo, both owned exclusively by this service. The
-database is at `/data/scheduler.db` on the compose `scheduler-data` volume, so it
-survives a restart — which matters most for `first_seen`: the starvation ceiling
-is measured from when *this scheduler* first saw an issue, and a restart that
-reset it would reset every item's wait.
+Four tables, all owned exclusively by this service. The database is at
+`/data/scheduler.db` on the compose `scheduler-data` volume, so it survives a
+restart — and two of the things it holds are *only* safe because it does:
 
-Draft 08 adds a `leases` table here and draft 11 an `overrides` one. Nothing about
-this file's shape is draft-06-specific except which tables exist today.
+* `first_seen` — the starvation ceiling is measured from when *this scheduler*
+  first saw an issue, and a restart that reset it would reset every item's wait;
+* the `leases` table — a restart must adopt the leases it already holds rather
+  than forget them and put a second run on a busy box. Draft 09's recovery
+  reconciles those rows against fabro; it does not rebuild them.
 
-**Only a successful fetch writes.** A failed fetch records the failure against the
-repo and leaves every cached issue row alone, which is the difference between a
-stale page and a page that says "starvation" because GitHub had a bad minute.
+**Only a successful fetch writes a cache row.** A failed fetch records the failure
+against the repo and leaves every cached issue row alone, which is the difference
+between a stale page and a page that says "starvation" because GitHub had a bad
+minute. The lease tables are not inventory and are not covered by that rule: they
+are written by dispatch, which never touches the cache.
+
+`repo_affinity` is the one table not named in draft 08's contract, and it exists
+because decision 11's soft affinity has to outlive a lease. `leases` holds only the
+*active* claim — one row per box, deleted when the run ends — so after draft 09
+releases a row there would be nothing left anywhere to say which box last ran a
+repo, and `last_pool_for_repo` would always answer `None`. Draft 11 adds
+`overrides` and `pool_state`.
 """
 
 from __future__ import annotations
@@ -48,6 +59,41 @@ CREATE TABLE IF NOT EXISTS repo_etag (
   last_attempt_at TEXT,
   last_success_at TEXT,
   last_error      TEXT
+);
+
+-- One row per coder instance currently holding a run. The primary key on
+-- `coder_pool` is what makes double-dispatch to one box impossible: it is the
+-- database enforcing it, not the loop, so it holds even if the loop is entered
+-- twice or two scheduler processes share the file. `run_id` is UNIQUE as a
+-- second, different guard — the same run must never hold two boxes.
+--
+-- `queued_since` is the item's `first_seen`, copied off the `issue_cache` row at
+-- dispatch, and it is the one column here that draft 08's contract does not name.
+-- It is load-bearing for draft 09: the issue leaves the `agent` collection the
+-- moment the scheduler labels it `agent-in-progress`, so `sync_repo` deletes the
+-- cache row within a minute of dispatch and `first_seen` goes with it. Without a
+-- copy here, a requeued item would come back with a fresh wait, its starvation
+-- ceiling would restart, and decision 5's "nothing waits more than T" would be
+-- quietly false for every item that ever failed. Nullable because it is optional
+-- knowledge: draft 09 falls back to "now" when it is absent. Added now rather
+-- than by draft 09 because `CREATE TABLE IF NOT EXISTS` will not add a column to
+-- a table that already exists, and this one will exist on the host as soon as
+-- draft 08 is deployed.
+CREATE TABLE IF NOT EXISTS leases (
+  coder_pool    TEXT PRIMARY KEY,
+  repo          TEXT NOT NULL,
+  issue_number  INTEGER NOT NULL,
+  run_id        TEXT NOT NULL UNIQUE,
+  dispatched_at TEXT NOT NULL,  -- ISO-8601 UTC
+  queued_since  TEXT            -- ISO-8601 UTC; `issue_cache.first_seen`
+);
+
+-- The box that last ran each repo, kept after its lease is gone. Rewritten on
+-- every acquire; one row per repo, most recent wins.
+CREATE TABLE IF NOT EXISTS repo_affinity (
+  repo        TEXT PRIMARY KEY,
+  coder_pool  TEXT NOT NULL,
+  recorded_at TEXT NOT NULL     -- ISO-8601 UTC
 );
 """
 
@@ -134,6 +180,32 @@ class Store:
                 "SELECT repo, COUNT(*) AS n FROM issue_cache GROUP BY repo"
             ).fetchall()
         return {row["repo"]: row["n"] for row in rows}
+
+    def lease_rows(self) -> list[sqlite3.Row]:
+        """Every active lease, one row per coder instance, ordered by pool.
+
+        Plain columns rather than a `Lease`: that dataclass lives in `lease.py`,
+        which imports this module, and a persistence layer that returned a domain
+        type would have to import it back. `LeaseStore` is where the mapping
+        belongs.
+        """
+        with self._lock:
+            return self._conn.execute(
+                "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
+                "queued_since FROM leases ORDER BY coder_pool"
+            ).fetchall()
+
+    def last_pool_for_repo(self, repo: str) -> str | None:
+        """The coder instance this repo most recently ran on, if it ever has.
+
+        Read from `repo_affinity`, not from `leases`, so the answer survives the
+        lease being released — which is exactly the moment affinity is useful.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT coder_pool FROM repo_affinity WHERE repo = ?", (repo,)
+            ).fetchone()
+        return None if row is None else row["coder_pool"]
 
     def fetch_state(self, repo: str) -> RepoFetch | None:
         with self._lock:
@@ -239,6 +311,57 @@ class Store:
                 "  last_error = excluded.last_error",
                 (repo, attempted_at.isoformat(), error),
             )
+
+    def acquire_lease(
+        self,
+        *,
+        coder_pool: str,
+        repo: str,
+        issue_number: int,
+        run_id: str,
+        dispatched_at: datetime,
+        queued_since: datetime | None = None,
+    ) -> bool:
+        """Take one coder instance, or report that someone else holds it.
+
+        Returns `False` when `coder_pool` is already leased and `True` when this
+        call took it. `ON CONFLICT(coder_pool) DO NOTHING` is the whole mechanism:
+        the conflict is resolved inside SQLite, in the same statement that would
+        insert, so there is no read-then-write window for a second caller to slip
+        through. A conflicting `run_id` still raises — that is a bug in the
+        caller, not a race, and silently ignoring it would hide it.
+
+        The affinity row is written in the same transaction and only on success,
+        so "this repo last ran on this box" is never recorded for a lease that was
+        refused.
+        """
+        stamp = dispatched_at.isoformat()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "INSERT INTO leases "
+                "(coder_pool, repo, issue_number, run_id, dispatched_at, queued_since) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(coder_pool) DO NOTHING",
+                (
+                    coder_pool,
+                    repo,
+                    issue_number,
+                    run_id,
+                    stamp,
+                    None if queued_since is None else queued_since.isoformat(),
+                ),
+            )
+            if cursor.rowcount == 0:
+                return False
+            self._conn.execute(
+                "INSERT INTO repo_affinity (repo, coder_pool, recorded_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(repo) DO UPDATE SET "
+                "  coder_pool = excluded.coder_pool, "
+                "  recorded_at = excluded.recorded_at",
+                (repo, coder_pool, stamp),
+            )
+            return True
 
     def close(self) -> None:
         with self._lock:

@@ -1,10 +1,13 @@
-"""The GitHub half of the inventory: open `agent`-labelled issues, cached by ETag.
+"""The GitHub half: the read-only inventory, and the label writes dispatch needs.
 
-Read-only, and deliberately so. Nothing in this module writes a label, a comment
-or a state; the label writes that dispatch needs are draft 08's business. The
-worst thing a bug here can do is show the operator a stale queue.
+One conditional `GET /repos/{owner}/{repo}/issues?labels=agent&state=open` per
+repo per minute keeps the queue current. `add_label` / `remove_label` are the only
+writes, and they exist for one thing: the durable handoff receipt a dispatch leaves
+behind (`agent-in-progress`) and the queue label it takes away (`agent`). Nothing
+here closes an issue, comments, or touches anything else — the worst thing a bug in
+the read path can do is show the operator a stale queue.
 
-Two facts drive the shape of the one request this makes.
+Two facts drive the shape of the one request the inventory makes.
 
 **A conditional request is free.** GitHub answers `If-None-Match` with `304 Not
 Modified` and an empty body, and a `304` costs **zero** of the 5,000/hour
@@ -24,6 +27,10 @@ collection (`?labels=agent&state=open`), so an issue that gains
 `agent-in-progress` leaves the collection and changes the ETag. A `304` therefore
 implies the membership and the labels of every cached item are unchanged, which is
 what lets the caller skip re-filtering on every tick.
+
+**A label write is not conditional and not free**, and it does not go through the
+cache: it is a small mutation whose only safety property is that both operations
+are idempotent, so a rollback or a retry can be repeated without harm.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -55,7 +63,9 @@ REQUIRED_LABEL = "agent"
 # `agent-stuck` is what `mark_stuck` leaves on an issue a human has to re-arm;
 # `agent-in-progress` is the scheduler's own durable handoff receipt. A queue item
 # is neither (CONTEXT.md, **Queue item**).
-EXCLUDED_LABELS = frozenset({"agent-in-progress", "agent-stuck"})
+IN_PROGRESS_LABEL = "agent-in-progress"
+STUCK_LABEL = "agent-stuck"
+EXCLUDED_LABELS = frozenset({IN_PROGRESS_LABEL, STUCK_LABEL})
 
 
 class GitHubError(RuntimeError):
@@ -212,6 +222,127 @@ def fetch_issues(
         )
 
     return issues, new_etag, True
+
+
+def add_label(
+    repo: str,
+    number: int,
+    label: str,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> None:
+    """`POST /repos/{owner}/{repo}/issues/{n}/labels` — add one label.
+
+    Idempotent: the response is the issue's full label list, `200` whether or not
+    the label was already there, so a retry after a partial failure is safe. Raises
+    `GitHubError` for anything else, because a dispatch that could not set its own
+    receipt must not proceed.
+    """
+    path = f"/repos/{repo}/issues/{number}/labels"
+    response = _write(
+        "POST", path, token, json={"labels": [label]}, client=client, timeout=timeout
+    )
+    if not 200 <= response.status_code < 300:
+        raise _write_error(path, label, response)
+    log.info("github: %s#%s +%s", repo, number, label)
+
+
+def remove_label(
+    repo: str,
+    number: int,
+    label: str,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> None:
+    """`DELETE /repos/{owner}/{repo}/issues/{n}/labels/{label}` — remove one.
+
+    **A `404` is success**, not failure. GitHub answers `404` when the label is not
+    on the issue at all, and the caller's intent is "this label must not be there"
+    — which is equally true either way. Treating it as an error would make the
+    retry-after-partial-failure path (roll back the receipt, restore the queue
+    label) report failures for work that is already done.
+    """
+    path = f"/repos/{repo}/issues/{number}/labels/{quote(label, safe='')}"
+    response = _write("DELETE", path, token, client=client, timeout=timeout)
+    if response.status_code == 404:
+        log.info("github: %s#%s -%s (not present)", repo, number, label)
+        return
+    if not 200 <= response.status_code < 300:
+        raise _write_error(path, label, response)
+    log.info("github: %s#%s -%s", repo, number, label)
+
+
+def _write(
+    method: str,
+    path: str,
+    token: str,
+    *,
+    json: Mapping[str, object] | None = None,
+    client: httpx.Client | None,
+    timeout: float,
+) -> httpx.Response:
+    """One mutating request, un-checked. The caller decides what counts as success."""
+    if not token or not token.strip():
+        raise GitHubError(
+            "GITHUB_TOKEN is not set; the scheduler cannot write issue labels"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if json is not None:
+        headers["Content-Type"] = "application/json"
+
+    owned = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        return http.request(
+            method, f"{GITHUB_API}{path}", headers=headers, json=json, timeout=timeout
+        )
+    except httpx.HTTPError as exc:
+        raise GitHubError(f"{method} {path} failed: {exc}") from exc
+    finally:
+        if owned:
+            http.close()
+
+
+def _write_error(path: str, label: str, response: httpx.Response) -> GitHubError:
+    """A failed label write, in the same shape `fetch_issues` reports failures.
+
+    `path`, not the whole URL, and never the token: this message is logged and can
+    reach an HTTP response body. `x-ratelimit-remaining` is carried for the same
+    reason it is on the read path — a spent quota and a token without
+    `issues: write` are both `403` and are told apart by nothing else.
+    """
+    remaining = response.headers.get("x-ratelimit-remaining")
+    detail = ""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, Mapping) and isinstance(body.get("message"), str):
+        detail = f": {body['message']}"
+
+    hint = ""
+    if response.status_code == 403:
+        hint = (
+            " (rate limit exhausted)"
+            if remaining == "0"
+            else " (not a rate limit — check the token has `issues: write` on this repo)"
+        )
+
+    return GitHubError(
+        f"{path} [{label}] -> HTTP {response.status_code}{detail}{hint} "
+        f"[x-ratelimit-remaining={remaining if remaining is not None else '?'}]",
+        status_code=response.status_code,
+        remaining=remaining,
+    )
 
 
 def _label_names(payload: Mapping[str, Any]) -> frozenset[str]:

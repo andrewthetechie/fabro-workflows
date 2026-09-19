@@ -2,9 +2,14 @@
 
 The read surfaces are the operator's page (`GET /`), its JSON twin
 (`GET /api/queue`), the per-repo freshness view (`GET /api/repos`) and `GET
-/health`. The one write surface is `POST /api/dispatch-once`, which creates and
-starts exactly one real fabro run — still by hand, because the loop that decides
-when to call it is draft 08.
+/health`. The one write surface is `POST /api/dispatch-once` — the operator's
+manual override, which creates and starts exactly one real fabro run.
+
+The other writer is not a request at all: draft 08's `DispatchLoop` runs on its own
+thread, and while it is running this service writes `agent-in-progress` to GitHub
+and creates runs without anyone asking. It is off unless `main` turns it on, which
+`start_dispatch_loop` is there to make explicit — a test builds the same app with
+no thread at all, and an unarmed process still serves the whole read surface.
 
 There is no auth: decision 16 binds this to the LAN, consistent with fabro's own
 `:32276`. Nothing here echoes the environment, so the `GITHUB_TOKEN` and
@@ -17,10 +22,10 @@ publish it on an unauthenticated endpoint.
 **Neither missing credential stops the service.** A missing `GITHUB_TOKEN` logs
 one error, serves the page with a banner naming the variable, and reports
 `github.configured: false` on `/health` for draft 12's monitor to alert on; a
-missing `FABRO_API_TOKEN` does the same and makes `/api/dispatch-once` answer
-`503`. Exiting instead would fail the container's healthcheck in a restart loop
-that says nothing about which variable is missing, and the page is the surface
-where that is visible at a glance.
+missing `FABRO_API_TOKEN` does the same, makes `/api/dispatch-once` answer `503`,
+and keeps the dispatch loop from starting. Exiting instead would fail the
+container's healthcheck in a restart loop that says nothing about which variable is
+missing, and the page is the surface where that is visible at a glance.
 """
 
 from __future__ import annotations
@@ -44,10 +49,13 @@ from starlette.requests import Request
 
 from . import __version__
 from .config import ConfigError, SchedulerConfig, load_config
+from .dispatch import DispatchLoop
 from .fabro import FabroClient, FabroError, RunNotStarted
 from .inventory import InventoryPoller
+from .lease import Lease, LeaseConflict, LeaseStore
 from .queue import QueueItem, RepoStatus, build_queue, repo_statuses
 from .store import Store
+from .workflow_version import WorkflowVersionError
 
 log = logging.getLogger(__name__)
 
@@ -88,11 +96,13 @@ def build_app(
     fabro_token: str = "",
     fabro_client: FabroClient | None = None,
     start_poller: bool = False,
+    start_dispatch_loop: bool = False,
 ) -> FastAPI:
     """The ASGI app for an already-validated config and an open store.
 
-    `start_poller` is off by default so a test can drive the inventory by hand
-    instead of racing a background thread. `main` turns it on.
+    `start_poller` and `start_dispatch_loop` are both off by default so a test can
+    drive the inventory and the dispatch decisions by hand instead of racing two
+    background threads. `main` turns both on.
 
     `fabro_client` is injected rather than built here, which is what lets a test
     exercise the dispatch path through the HTTP surface with neither a git binary
@@ -104,6 +114,11 @@ def build_app(
     client = fabro_client
     if client is None and fabro_token.strip():
         client = FabroClient(config.fabro_api_url, fabro_token)
+
+    # One lease table for the whole process: the dispatch loop writes it and the
+    # manual override reads it, which is the only way the override can avoid
+    # putting a second run on a box the loop already took.
+    leases = LeaseStore(store)
 
     poller: InventoryPoller | None = None
     if start_poller:
@@ -120,16 +135,43 @@ def build_app(
                 "The queue page will show only what the cache already holds."
             )
 
+    dispatcher: DispatchLoop | None = None
+    if start_dispatch_loop:
+        # Both credentials are required and neither is optional: the loop's first
+        # act is a label write, and without a fabro token there is no run to
+        # dispatch onto. Starting it half-armed would retry a doomed dispatch every
+        # 5 seconds forever, which is worse than not starting it and saying so.
+        if client is None:
+            log.error(
+                "FABRO_API_TOKEN is not set: the dispatch loop will not start. "
+                "Nothing will be dispatched automatically."
+            )
+        elif not token_configured:
+            log.error(
+                "GITHUB_TOKEN is not set: the dispatch loop will not start, because "
+                "a dispatch whose label write fails leaves nothing behind. Nothing "
+                "will be dispatched automatically."
+            )
+        else:
+            dispatcher = DispatchLoop(config, store, leases, client, github_token)
+
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["duration"] = humanise_duration
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        # The poller first: the loop reads the queue the poller fills, and on a cold
+        # start the loop's first tick would otherwise find an empty cache. Ordering
+        # here is a nicety, not a guarantee — both run on their own threads.
         if poller is not None:
             poller.start()
+        if dispatcher is not None:
+            dispatcher.start()
         try:
             yield
         finally:
+            if dispatcher is not None:
+                dispatcher.stop()
             if poller is not None:
                 poller.stop()
 
@@ -200,10 +242,16 @@ def build_app(
     def dispatch_once(body: DispatchOnceRequest) -> dict[str, object]:
         """Create and start one `backlog` run, by hand.
 
-        The manual trigger draft 07 exists to prove: it takes `repo`,
-        `issue_number` and `coder_pool` explicitly and does exactly one dispatch.
-        Draft 08 replaces the body with the real loop and keeps this as the
-        operator's override.
+        The operator's override, which draft 07 built to prove the client and draft
+        08 keeps. It takes `repo`, `issue_number` and `coder_pool` explicitly and
+        does exactly one dispatch; the loop does the rest.
+
+        **It takes the lease, and refuses a box that is already leased.** Without
+        that, the one write path the loop does not own would be the one way to put
+        two runs on a single-slot coder instance — which is the contention the whole
+        service exists to remove. It does **not** write labels: the issue a human
+        names by hand need not be in the `agent` queue at all, and a rollback would
+        have to decide what to restore.
 
         `environment_id` is **not** a parameter: it comes from the repo's row in
         `repos.toml`, which is the only place it is decided. A wrong one is a
@@ -239,6 +287,23 @@ def build_app(
                 ),
             )
 
+        held = next(
+            (
+                lease
+                for lease in leases.active()
+                if lease.coder_pool == body.coder_pool
+            ),
+            None,
+        )
+        if held is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{body.coder_pool} is already leased by {held.repo}"
+                    f"#{held.issue_number} (run {held.run_id})"
+                ),
+            )
+
         try:
             result = client.dispatch(
                 repo=repo.name,
@@ -251,9 +316,40 @@ def build_app(
             # run, and it is the scheduler that failed to finish making one.
             log.error("dispatch-once: %s#%s: %s", repo.name, body.issue_number, exc)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except FabroError as exc:
+        except (FabroError, WorkflowVersionError) as exc:
+            # `WorkflowVersionError` is the fetch-and-read half: git is missing, the
+            # clone timed out, `.fabro/` moved. Fabro was never called, so no run
+            # exists — but the operator still gets the sentence that says why.
             log.error("dispatch-once: %s#%s: %s", repo.name, body.issue_number, exc)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        # The primary key is the real guard; the check above is what makes the
+        # common case a clean refusal instead of a started run.
+        try:
+            cached = store.get_issue(repo.name, body.issue_number)
+            leases.acquire(
+                Lease(
+                    coder_pool=body.coder_pool,
+                    repo=repo.name,
+                    issue_number=body.issue_number,
+                    run_id=result.run_id,
+                    dispatched_at=datetime.now(UTC),
+                    # The manual fire need not name a queue item at all, so the
+                    # wait is recorded when there is one to record. This path
+                    # writes no labels and so does not itself evict the cache row.
+                    queued_since=None if cached is None else cached.first_seen,
+                )
+            )
+        except LeaseConflict as exc:
+            log.error(
+                "dispatch-once: run %s was started but holds no lease: %s",
+                result.run_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"run {result.run_id} was started but has no lease: {exc}",
+            ) from exc
 
         log.info(
             "dispatch-once: %s#%s -> run %s pool=%s env=%s status=%s reused=%s",
@@ -277,16 +373,20 @@ def build_app(
     def queue_page(request: Request) -> HTMLResponse:
         items, now = current_queue()
         statuses = repo_statuses(config.schedulable_repos(), store)
+        active = leases.active()
         return templates.TemplateResponse(
             request,
             "queue.html",
             {
                 "items": items,
                 "repos": statuses,
+                "leases": active,
+                "pools": list(config.coder_pools),
                 "now": now,
                 "ceiling": config.starvation_ceiling,
                 "poll_seconds": config.github_poll_seconds,
                 "token_configured": token_configured,
+                "dispatching": dispatcher is not None,
                 # `Starvation` in the CONTEXT.md sense — zero queue items across
                 # every schedulable repo — which is not the starvation *ceiling*.
                 "starvation": not items,
@@ -352,6 +452,7 @@ def create_app(
     fabro_token: str | None = None,
     fabro_client: FabroClient | None = None,
     start_poller: bool = False,
+    start_dispatch_loop: bool = False,
 ) -> FastAPI:
     """Build the app from a config file.
 
@@ -374,6 +475,7 @@ def create_app(
         fabro_token=fabro,
         fabro_client=fabro_client,
         start_poller=start_poller,
+        start_dispatch_loop=start_dispatch_loop,
     )
 
 
@@ -439,6 +541,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             github_token=os.environ.get("GITHUB_TOKEN", ""),
             fabro_token=os.environ.get("FABRO_API_TOKEN", ""),
             start_poller=True,
+            start_dispatch_loop=True,
         ),
         host="0.0.0.0",  # decision 16: LAN-only, published by compose
         port=config.port,

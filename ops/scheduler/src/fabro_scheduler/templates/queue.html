@@ -51,11 +51,17 @@
 
 <h1>Queue</h1>
 <p class="sub">
-  Read-only. Dispatch order: an operator override first, then anything past the
+  Dispatch order: an operator override first, then anything past the
   <strong>Starvation ceiling</strong> ({{ ceiling|duration }}, oldest first), then
   repo priority (smaller is more urgent), then issue number.
   GitHub is polled every {{ poll_seconds }}s; this page follows it.
-  Nothing here writes to GitHub.
+  There are no controls here and nothing on this page writes anything.
+  {% if dispatching %}
+    The scheduler dispatches on its own while a coder instance is free.
+  {% else %}
+    <strong>Automatic dispatch is off in this process</strong> &mdash; nothing starts
+    on its own, and <code>POST /api/dispatch-once</code> is the only way work begins.
+  {% endif %}
 </p>
 
 {% if not token_configured %}
@@ -81,6 +87,44 @@
     </p>
   {% endfor %}
 </div>
+
+<h2>Coder leases</h2>
+{# Every configured pool is listed, so "idle" and "not configured" cannot be
+   confused with each other. One row per pool, and only while it is held: a lease
+   is a whole-run claim, not released when a run blocks on a human gate, and until
+   draft 09 there is no release at all. #}
+{% set leased = leases|map(attribute='coder_pool')|list %}
+<p class="muted">
+  {% for pool in pools %}
+    {{ pool }} &mdash; {% if pool in leased %}<span class="stale">leased</span>{% else %}<span class="ok">free</span>{% endif %}{% if not loop.last %} &middot; {% endif %}
+  {% endfor %}
+</p>
+{% if leases %}
+<table>
+  <thead>
+    <tr>
+      <th>Coder instance</th>
+      <th>Repo</th>
+      <th class="num">Issue</th>
+      <th>Run</th>
+      <th class="num" title="When the run was created and the box taken">Dispatched</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for lease in leases %}
+    <tr>
+      <td>{{ lease.coder_pool }}</td>
+      <td>{{ lease.repo }}</td>
+      <td class="num">#{{ lease.issue_number }}</td>
+      <td class="muted">{{ lease.run_id }}</td>
+      <td class="num">{{ (now - lease.dispatched_at)|duration }} ago</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No coder instance is leased.</p>
+{% endif %}
 
 <h2>Queue</h2>
 {% if items %}
