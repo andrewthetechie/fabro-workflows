@@ -1,5 +1,36 @@
 # Shakedown and deployment-log entry
 
+## Status, 2026-09-19 (session 1 of 2) — the setup is done, the window has NOT started
+
+The in-session setup this draft calls for was executed and is committed: the pre-flight
+(the four `backlog` rows schedule-off / api-on, the two stale draft-08 lease rows, both
+variable names in `~/fabro/scheduler.env`), the deploy and bring-up, the verification
+against `/health`, `/api/queue`, `/api/pools` and the page, the measurement recipe below as
+a runnable script, the dated deployment-log section, and the doc corrections.
+
+**The 24-hour window did not run.** The loop was armed at `2026-09-19T04:18:21Z`, dispatched
+two real runs in its first three seconds, and both died at the second node: `claim` writes
+`gh issue view … > /tmp/fabro/issue.json` and draft 10 (`ca39b8f`) deleted `acquire`, the only
+node that ran `mkdir -p /tmp/fabro`. Every `backlog` run fails there —
+`ops/fabro-fire-backlog.sh` included — and the node's unconditional edge parks the run at
+`human_rescue` for 4h while it holds its coder lease and its repo. The container was stopped
+at `04:23:29Z`, five minutes in, and both runs were answered `[X] Abandon` at their gates so
+their boxes would not be held for four hours. **No acceptance criterion in this file is met
+or in progress; every one is unstarted**, and no number from those five minutes may be
+counted toward any of them. Before a window can start, the missing `mkdir` has to land on
+`main` (the scheduler clones `main` at dispatch, so a local commit changes nothing) and the
+container has to be restarted, which is when its recovery pass releases the two leases and
+requeues `jelly-swipe#353` and `lawncare-saas#2277`.
+
+The recipe is the *The measurement recipe — NOT YET MEASURED* section (§7) of
+`~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`'s dated 2026-09-19 draft-14 section. Every
+command in it was run against the live run store, and the two ways of bounding tool calls to
+a stage were cross-checked against each other. **Corrected in the Context Pack:** the
+baseline figures are *not* in `docs/perf/00-overview-and-measurements.md`. They are in
+`docs/scheduler/00-overview-and-contracts.md` (0.57 and 1.33 minutes per tool call, the
+~1.7× contention component and the 1.38× `reasoning_effort` part) and in
+`docs/perf/04-compaction-and-task-sizing.md` (the 17.4 tok/s box ceiling).
+
 ## Tracer-Bullet Outcome
 The scheduler runs unattended for 24 hours across all four repos, and the
 deployment log records what it actually did — runs dispatched per box, queue depth

@@ -22,8 +22,11 @@ _Avoid_: connection, request
 global integer — there is no per-pool or per-label variant. Runs fired beyond it queue;
 they are not rejected (verified 2026-09-16). It is **4** as of 2026-09-18, raised from 2
 when the **Scheduler** took over admission (ADR 0005), and it is now a backstop rather
-than the thing shaping behaviour: it stops a runaway, it does not allocate. Not to be
-confused with a **Coder lease**, which is the control that actually matters.
+than the thing shaping behaviour: it stops a runaway, it does not allocate. Still 4, and
+still in force, on 2026-09-19: the container's `StartedAt` (23:13:39Z on the 18th) is later
+than the settings overlay's mtime (21:47:03Z), which is the only way to check a value the
+server copies out once at startup. Not to be confused with a **Coder lease**, which is
+the control that actually matters.
 _Avoid_: limit, throttle
 
 **Quiet-exit** *(retired)*:
@@ -39,6 +42,9 @@ The operator's escape hatch when the **Scheduler** is down: `ops/fabro-fire-back
 `backlog` run for exactly that issue with `coder_pool: "coders"` (the both-boxes group,
 never a pinned box — a hand fire holds no lease). The graph's `claim` swaps the labels
 as a fallback for what the scheduler does at dispatch, so a manual run needs no lease.
+**It does not currently work**: from 2026-09-19 a `backlog` run dies at `claim`, the manual
+path included, because that node writes into `/tmp/fabro` and nothing creates the
+directory — the dated block in `docs/scheduler/00-overview-and-contracts.md` carries it.
 _Avoid_: manually, by hand (the adverb, not the noun)
 
 **Automation**:
@@ -108,9 +114,12 @@ priority. The whole anti-starvation mechanism — chosen over a continuous aging
 because "nothing waits more than T" is verifiable by looking at the queue.
 _Avoid_: aging, decay
 
-**Double-fire guard**:
-The `/tmp/fabro/review_triggered` marker file that prevents a second bridge fire when
-`open_pr` is revisited via the human_rescue path.
+**Double-fire guard** *(retired)*:
+Was the `/tmp/fabro/review_triggered` marker file that stopped `trigger_review` firing a
+second time when `open_pr` was revisited through the `human_rescue` path. Nothing writes or
+reads it any more: the **Bridge** is gone and no node in any graph names the marker, so a
+reopen of `open_pr` has nothing left to guard. Kept here only so the word is not reused for
+something else.
 
 **User guide**:
 `docs/USER-GUIDE.md`, the public, secrets-free operating manual: adding work, watching
@@ -135,14 +144,25 @@ nothing to pick.
 _Avoid_: idle, empty queue
 
 **Heartbeat**:
-The external dead-man's ping the monitor sends every run; its absence means the host
-itself is silent, which no in-band or on-host signal can report.
+The external dead-man's ping `fabro-monitor.sh` is *able* to send once per run
+(`FABRO_HEARTBEAT_URL`), whose absence would mean the host itself is silent — which no
+in-band or on-host signal can report. **Declined and not configured** (turn-it-on task 03,
+2026-09-16; the crontab sets no such variable), so host death currently looks like silence
+and the operator runbook carries the manual disambiguation. Corrected 2026-09-19: the
+mechanism exists in the script, the signal does not exist in production.
 _Avoid_: healthcheck (the compose container already has one, and it is a different thing)
 
-**Canary**:
-The first repo whose `backlog` schedule is enabled at turn-on — `jelly-swipe`, because
-it has branch protection and no deploy-on-merge.
+**Canary** *(retired)*:
+Was to be the first repo whose `backlog` schedule is enabled at turn-on — `jelly-swipe`,
+because it has branch protection and no deploy-on-merge. No canary turn-on ever happened:
+the four `backlog` schedules have been off since 2026-09-14 and draft 13 turned them off for
+good (2026-09-19), and the **Scheduler** replaced the staggered-schedule rollout with a
+four-repos-at-once cutover (scheduler overview decision 18). Kept here only so the word is
+not reused for something else.
 
-**Observation window**:
-The five-day, human-verified period between canary turn-on and full-fleet expansion,
-with a daily checklist and explicit exit and stop conditions.
+**Observation window** *(retired)*:
+Was the five-day, human-verified period between canary turn-on and full-fleet expansion,
+with a daily checklist and explicit exit and stop conditions. Superseded: there was no
+canary and no schedule-driven expansion to gate, so the period never began. Its successor
+is draft 14's 24-hour scheduler shakedown — a measurement window with a written recipe
+rather than a daily checklist, and as of 2026-09-19 an unstarted one.

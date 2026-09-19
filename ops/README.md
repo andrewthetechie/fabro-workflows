@@ -570,27 +570,57 @@ scheduler is now the only producer of a `backlog` run and `ops/fabro-fire-backlo
 the manual escape hatch when it is down. Decisions and the contracts each later draft
 consumes: `../docs/scheduler/00-overview-and-contracts.md`.
 
-Today it is draft 11 of 14: it reads `repos.toml`, inventories the `agent`-labelled
-issues of every enabled repo from GitHub every 60s with conditional requests, ranks
-them, serves the result on `/` (HTML), `/api/queue`, `/api/repos` and `/api/pools`
-(JSON) — and **dispatches**. Every 5 seconds it takes the top-ranked item whose repo
-has no run in flight, labels it `agent-in-progress`, removes `agent`, creates and
-starts a real `backlog` run on a free coder instance, and records the **lease** that
+Today it is **draft 13 of 14**, and the host runs it: it reads `repos.toml`, inventories the
+`agent`-labelled issues of every enabled repo from GitHub every 60s with conditional
+requests, ranks them, serves the result on `/` (HTML), `/api/queue`, `/api/repos` and
+`/api/pools` (JSON) — and **dispatches**. Every 5 seconds it takes the top-ranked item
+whose repo has no run in flight, labels it `agent-in-progress`, removes `agent`, creates
+and starts a real `backlog` run on a free coder instance, and records the **lease** that
 makes that instance exclusive. Draft 09 releases that lease when the run reaches a
-terminal state, requeues infra-shaped failures, and reconciles at startup. Draft 11
-adds the three controls on the page: **bump** an issue to the front, **drain** a coder
-instance, and **cancel** the run on one. `POST /api/dispatch-once` stays as the
-operator's manual override.
+terminal state, requeues infra-shaped failures, and reconciles at startup. Draft 11 adds
+the three controls on the page: **bump** an issue to the front, **drain** a coder instance,
+and **cancel** the run on one. `POST /api/dispatch-once` stays as the operator's manual
+override. Every `Status, 2026-09-19` block below this one describes an earlier deploy and
+is kept only as the chronology; the current state is the block immediately below.
 
-**Status, 2026-09-19:** deployed, acceptance run done (the dated logs are in the
-deployment log), and the `scheduler` container is **stopped** — parked until draft 09.
-The two leases its acceptance run took are still held, so simply starting it again
-dispatches nothing until those rows are cleared (*Clearing a lease* below).
+**Status, 2026-09-19 (draft 14, session 1 — current):** drafts 09–13 are deployed. The
+host was rsynced and `docker compose up -d --build scheduler` was run at
+`04:18:21Z` (`docker-compose.yaml` and `repos.toml` were already identical, so neither was
+copied — and the rsync is load-bearing: the tree on the host was still draft 08, and
+`--build` alone would have rebuilt that). The container is **stopped again** as of
+`04:23:29Z`, on purpose, five minutes after it started. It was stopped because of a live
+finding: **every `backlog` run dies at `claim`**, the runs this deploy dispatched included.
+`claim` writes `gh issue view … > /tmp/fabro/issue.json` and draft 10 deleted `acquire`, the
+only node that ran `mkdir -p /tmp/fabro`; nothing else creates that directory (`prep` is the
+next node), and the node's unconditional edge parks the run at `human_rescue` for 4h while
+holding its lease and its repo. The manual escape hatch `fabro-fire-backlog.sh` is broken
+by the same line. Neither `fabro validate` nor `check-routing-schemas.py` can see it — they
+never run a node's shell. So **the 24-hour shakedown has not started** and draft 14's
+acceptance criteria are unstarted; the fix is a one-line `mkdir` in the graph, deliberately
+taken separately. Evidence, the measurement recipe and the unstarted criteria:
+`../docs/scheduler/00-overview-and-contracts.md` (the dated block at the end) and the dated
+section of the deployment log.
 
-Three consequences, and the first two are draft 09's to fix:
+What the five minutes did prove, in order: the startup recovery pass released both stale
+draft-08 leases (`#350` released and not requeued, `#1195` requeued on `reason: cancelled`,
+`#1197` requeued as a receipt with no lease); the first tick dispatched one run per box, one
+per repo, three seconds apart; the second dispatch reused the registered workflow version;
+and the 60s inventory poll answered `200` once per repo then `304` with a flat rate-limit
+count. Two leases are held now (`coders-a/jelly-swipe/353`, `coders-b/lawncare-saas/2277`)
+and both issues still carry `agent-in-progress`; the next start's recovery pass releases and
+requeues both.
+
+**Status, 2026-09-19 (draft 08's deploy — historical, superseded by the block above):** deployed,
+acceptance run done (the dated logs are in the deployment log), and the `scheduler`
+container was **stopped** — parked until draft 09. The two leases its acceptance run took
+were held then, so starting that image again dispatched nothing until those rows were
+cleared (*Breaking a stuck lease* below), which the draft-14 image now does by itself.
+
+Three consequences of the draft-08 image, kept because the acceptance run is what found
+them. All three are fixed in the deployed code above:
 
 - **Nothing releases a lease.** A lease is held from dispatch until its row is deleted
-  by hand (see *Clearing a lease* below), so with two coder instances the loop can take
+  by hand (see *Breaking a stuck lease* below), so with two coder instances the loop can take
   at most two boxes and then stops dispatching on its own. It parks; it does not spin.
   Draft 09 adds release, requeue and recovery.
 - **A failure after the run exists leaves an orphan.** If `POST /runs/{id}/start`
@@ -614,21 +644,17 @@ Because of both, this draft **must not be left running unattended after its acce
 run**. Nothing an automation reads changes when this tree changes: it is `ops/`, not
 `.fabro/`.
 
-**Status, 2026-09-19 (later the same day):** drafts 10 and then 09 have both landed in
-this tree, in that order, so the *code* no longer has the three consequences above —
+**Status, 2026-09-19 (later the same day — historical):** drafts 10 and then 09 landed in
+this tree, in that order, so the *code* no longer had the three consequences above —
 `reconcile.py` releases, requeues and recovers, and the graph works only the issue it is
-given. **The container has not been redeployed**, so everything above still describes
-what is on the host: a stopped draft-08 image holding two leases. The block above is the
-deployed state, not the tree's. Redeploy (step 11 of the host rebuild), clear the two
-stale lease rows first, and write the new acceptance run up in the deployment log; the
-"do not deploy draft 09 before 10" gate is satisfied.
+given. At that moment the container had not been redeployed, so the block above described
+what was on the host: a stopped draft-08 image holding two leases. Superseded by the
+draft-14 status block: the redeploy has happened, and the two draft-08 lease rows are gone.
 
-**Status, 2026-09-19 (draft 11 in this tree):** the tree is now 11 of 14 and the page has
-controls. Still nothing on the host has been redeployed: the running image is draft 08
-and the container is stopped, so the controls exist in this repository and in a local
-`uv run pytest`, not on `:32280`. Redeploying arms automatic dispatch *and* puts live
-mutation buttons on an unauthenticated LAN page — see *The three controls* below before
-doing it.
+**Status, 2026-09-19 (draft 11 in the tree — historical):** the tree reached 11 of 14 and
+the page gained its controls. Still nothing on the host had been redeployed then. Superseded
+by the draft-14 status block. Redeploying arms automatic dispatch *and* puts live mutation
+buttons on an unauthenticated LAN page — see *The three controls* below.
 
 It is a second service in the **same compose project**, so `docker compose ps` shows the
 whole factory in one place and a host rebuild brings it back with everything else.
@@ -680,8 +706,12 @@ are unauthenticated on a LAN page and one of them cancels a running job. Deploy 
 the operator watching, and prefer draining a misbehaving box to cancel-cycling it.
 
 The 2026-09-19 deploy was the acceptance run and the container was then stopped. Starting
-it again with both draft-08 lease rows still present dispatches nothing until they are
-cleared (*Breaking a stuck lease* below) or the run behind each is reconciled.
+an older image again with lease rows still present dispatches nothing until they are
+cleared (*Breaking a stuck lease* below) or the run behind each is reconciled; the draft-14
+image does that itself on startup. **Dated correction, 2026-09-19:** the deployment that
+matters is now the one in the draft-14 status block above — deployed, armed for 5m8s, then
+stopped, because every dispatch dies at `claim`. Treat a deploy of this service as arming
+two 4h human gates until that graph fix lands.
 
 #### The three controls
 
@@ -934,12 +964,16 @@ the scheduler is a separate container, so a fabro outage neither hides nor inven
 scheduler problem, and they are evaluated even while C1 fires.
 
 **C7/C8 are the dead-scheduler alarm now that the schedules are off.** C3 only
-alarms while some automation has an enabled schedule; it currently reports
-`inert, no enabled schedules` and will stay inert after draft 13 turns the four
-`backlog` schedules off for good. A scheduler that is stopped raises C7, and one that
-is up but has stopped dispatching raises C8 — the two conditions C3 cannot cover once
-nothing is scheduled. The scheduler container is stopped on the host at the time of
-writing, so C7 is firing by design until draft 14 starts it.
+alarms while some automation has an enabled schedule; it reports
+`inert, no enabled schedules` — confirmed live on 2026-09-19 with all four `backlog`
+schedules off and all four `issue-triage` ones off too. A scheduler that is stopped raises
+C7, and one that is up but has stopped dispatching raises C8 — the two conditions C3
+cannot cover once nothing is scheduled. **Corrected 2026-09-19:** C7/C8 were resolved by
+the draft-14 bring-up (`ok C7 scheduler: …/health 200`, `ok C8 scheduler-wedged: 27 queued,
+0 of 2 pools idle`), and fired again as soon as the container was stopped on purpose, which
+is what they are for. They had never actually been evaluated by cron before that day's
+04:22 tick — the script that carries them was deployed at 04:08, one minute after the 04:07
+tick - so the first live reading of either condition is that one.
 
 ## Upgrading the server
 

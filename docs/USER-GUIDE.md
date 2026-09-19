@@ -17,11 +17,23 @@ issue labeled needs-triage
   → issue-triage   (improves the issue, asks blocking questions, retitles
                     to Conventional Commits, promotes the label)
   → issue labeled agent
-  → backlog        (decomposes the issue, implements it, opens a PR)
-  → bridge         (backlog triggers a pr-review run on the PR it just opened)
-  → pr-review      (rebases, reviews, fixes, watches CI, squash-merges when eligible)
+  → backlog        (decomposes the issue, implements each task, reviews and
+                    fixes, opens a PR, and squash-merges it once CI is green)
   → issue closed
 ```
+
+**A scheduler decides when a `backlog` run starts.** It is a small service beside
+fabro that inventories the open `agent`-labelled issues across the four repositories
+every minute, orders them (operator bump, then anything waiting longer than four hours,
+then repo priority, then issue number), and starts **one `backlog` run at a time**: one
+run per repository, one run per coder box, and there are two boxes. It takes the issue
+itself as the run's input, so a run works exactly the issue the scheduler picked, and it
+marks that issue `agent-in-progress` at the moment it starts the run. There is nothing
+left on a timer — the schedules that used to fire `backlog` are off, deliberately, so
+there is exactly one thing deciding what gets worked next. The scheduler's own page shows
+the ranked queue, which box is busy with what, and the three operator controls (bump an
+issue to the front, pause a box, cancel the run on one); `ops/README.md` has the calls
+behind each one and when to reach for them.
 
 Auto-merge is **armed**. A well-specified issue can travel from label to merged
 with no human touching anything. That is the fact that shapes every section
@@ -43,7 +55,7 @@ Once work is moving, the labels mean:
 
 | Label | Meaning |
 |---|---|
-| `agent-in-progress` | Claimed by a backlog run. Do not edit the issue; it is mid-flight. |
+| `agent-in-progress` | Claimed — the scheduler set it when it started the run for this issue. Do not edit the issue; it is mid-flight. |
 | `agent-authored` | The PR is automation-written. **A human commit pushed to that branch vetoes auto-merge** — deliberate, so automation never merges code a human touched. |
 | `ai-review-complete` | The review run finished and found the PR merge-eligible. |
 | `ai-review-needs-human` | The review run wants a human to look before merging. |
@@ -83,18 +95,21 @@ issue be done" better than a stopwatch:
 
 | Stage | Measured | Expectation |
 |---|---|---|
-| issue-triage | seconds for a quiet exit; no full triage run measured yet | minutes when there is real work, plus a **30-minute question gate** (answer in the web UI, or the questions post to the issue) |
+| issue-triage | no full triage run measured yet | minutes when there is real work, plus a **30-minute question gate** (answer in the web UI, or the questions post to the issue) |
 | backlog | 13.9 min and 45.5 min wall for two full runs | tens of minutes |
 | pr-review | 6.3–26.8 min across four happy-path runs (one 40-min outlier was a transient provider failure, not a bug) | minutes, plus a **60-minute CI/merge budget** (checks are watched for up to 35 min; the merge phase stops at 60) |
 
 Cadence and queue:
 
-- One issue per run per repo: each backlog fire acquires the **lowest-numbered
-  open `agent` issue** on that repo.
-- Backlog fires per repo **every 15 minutes** (staggered); issue-triage four
-  times an hour.
-- **Up to four runs are live at once** host-wide (fabro's `max_concurrent_runs`);
-  the rest queue and wait. Queuing is normal, designed for, and not a problem.
+- **The scheduler picks what runs next, and it starts one run at a time**: one run
+  per repository, and one per coder box. Two boxes, so at most two runs are doing
+  coder work at once — that is the point of the thing, not a shortage. Everything
+  else waits in the scheduler's queue, and waiting is normal.
+- **An issue can wait a while.** Nothing waits longer than **four hours** before it
+  jumps to the front of the queue regardless of repo priority — that ceiling is the
+  anti-starvation rule, so a low-priority repo's issue cannot be skipped forever.
+- `issue-triage` is **not** queued: it needs no coder box and stays on its own
+  hourly schedule (per repo, staggered).
 
 ## Getting notified when something needs attention
 
@@ -108,7 +123,6 @@ Cadence and queue:
 | 🟠 `fabro issue triage released a claim without finishing` | Triage gave up mid-issue; read the comment it left. | eventually |
 | `agent-stuck` label + comment | Same idea, on the issue itself. | eventually |
 | ✅ `fabro opened a PR` | Informational — work moved forward. | — |
-| 🔎 `fabro triggered a PR review` | Informational — the bridge fired. | — |
 | 🚀 `fabro squash-merged a PR` | Informational — done. | — |
 
 ### From the monitor (`fabro monitor: …`)
@@ -122,7 +136,7 @@ prevent runs from happening at all. While a condition persists it re-alerts
 |---|---|---|
 | 🔴 `container-down` | The fabro container is not running or not healthy. | See the operator runbook — server recovery. |
 | 🔴 `api-unreachable` | The API doesn't answer (or the token was rejected — the message says which). | Runbook; a 401 means the token rotated. |
-| 🔴 `dead-scheduler` | Schedules are on but nothing has run in 2h. | Runbook — the scheduler is wedged. |
+| 🔴 `dead-scheduler` | Schedules are on but nothing has run in 2h. With every schedule off (the current state) this condition is **inert** — `scheduler-down` and `scheduler-wedged` below are what watch the scheduler now. | Runbook — the scheduler is wedged. |
 | 🔴 `stuck-run` | A run has sat non-terminal for 3h. | Open the run; cancel or let it ride. |
 | 🟡 `starvation` | Zero `agent` issues on all four repos. | The queue is empty: file issues labeled `needs-triage` (or `agent`). |
 | 🟠 `disk-pressure` | The host disk is ≥ 85% full. | Runbook — run the sweepers. |
@@ -131,8 +145,11 @@ prevent runs from happening at all. While a condition persists it re-alerts
 
 ### The silence signals
 
-- No run in 2h while schedules are enabled → the monitor's C3 says so. If it
-  hasn't, schedules may be off (turn-on is deliberate; check the runbook).
+- **Nothing is being dispatched.** Either the scheduler is not running
+  (`scheduler-down`) or it is running and every box has sat idle with work queued
+  (`scheduler-wedged`) — the monitor says which. Both are the conditions that matter
+  now that no `backlog` schedule exists to notice on its own; the older `dead-scheduler`
+  condition is inert while the schedules are off.
 - No Discord noise at all is **ambiguous**: it can mean everything is healthy,
   or it can mean the host itself is down — the monitor, its cron, and the
   Discord webhook all live on that host, and there is deliberately no external
@@ -147,7 +164,8 @@ Pointers, not duplication — the kill switches and how to use them live in
   "Auto-merge kill switches". Flipping one takes effect on the next run and
   never undoes a merge that already happened.
 - **Schedule toggles** — enable/disable a repo's automations; same file.
-- The bluntest switch: the `FABRO_API_TOKEN` vault entry is what lets backlog
-  trigger reviews. Breaking it fails every backlog run closed — nothing opens,
-  nothing merges. For when you want the factory *stopped*, not just unmerged;
-  how, in the operator runbook.
+- The bluntest switch: the `FABRO_API_TOKEN` vault entry is what the run's PR
+  handoff reads the server's own API with (the per-repo merge switch lives there).
+  Breaking it fails every backlog run closed — nothing opens, nothing merges. For
+  when you want the factory *stopped*, not just unmerged; how, in the operator
+  runbook.
