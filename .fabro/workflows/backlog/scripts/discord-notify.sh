@@ -1,7 +1,7 @@
 #!/bin/sh
 # discord-notify.sh — best-effort Discord notification for fabro runs.
 #
-# Usage: discord-notify.sh <rescue|complete|failed|merged|blocked|needs-human|triage-question|triage-failed|review-triggered>
+# Usage: discord-notify.sh <rescue|complete|failed|merged|blocked|needs-human|triage-question|triage-failed>
 #
 # Runs as a hook with sandbox = false, i.e. inside the fabro server container
 # (Alpine: /bin/sh + wget, no bash, no curl, no jq). The event context JSON is
@@ -47,8 +47,6 @@ token_file="/storage/server.dev-token"
 repo_url=""
 issue=""
 pr_url=""
-review_run_id=""
-review_err=""
 triage_questions=""
 if [ -r "$token_file" ]; then
   auth="Authorization: Bearer $(cat "$token_file")"
@@ -68,19 +66,6 @@ if [ -r "$token_file" ]; then
   # every run that did not get that far.
   pr_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"pr_url":"[^"]*"' | head -1 | cut -d'"' -f4)
-  # trigger_review's two context keys. Both are always written by that node, so an
-  # empty pair means the node skipped (the double-fire guard tripped, or open_pr
-  # recorded no usable pr_number) — not that the notification failed.
-  review_run_id=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
-    | grep -o '"review_run_id":"[^"]*"' | head -1 | cut -d'"' -f4)
-  review_err=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
-    | grep -o '"review_trigger_error":"[^"]*"' | head -1 | cut -d'"' -f4)
-  # The reason is server `detail` text, so it can carry a quote, which trigger_review
-  # now encodes as \" rather than emitting a broken object. The grep above stops at
-  # that quote and hands back the trailing backslash, which would then break the
-  # Discord payload the same way. Drop both characters: the message is already
-  # truncated at that point and only has to be readable.
-  review_err=$(printf '%s' "$review_err" | sed 's/[\\"]//g')
   triage_questions=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"triage_questions":"[^"]*"' | head -1 | cut -d'"' -f4)
   # `[^"]*` stops at the first `\"` in the serialized state, which silently dropped
@@ -126,19 +111,6 @@ case "$kind" in
   # the link block below lands on the PR for both of them.
   blocked)  msg="🟡 fabro finished a review without merging - the PR needs you${subject}" ;;
   needs-human) msg="🔴 fabro's review could not finish - the PR needs you${subject}" ;;
-  review-triggered)
-    # A trigger failure cannot fail the run (trigger_review carries
-    # on_failure="succeed"), so `run_failed` never fires for it and this hook is the
-    # only place it surfaces. The failure line carries the reason the node captured;
-    # a success stays short because `discord-complete` already fired for this PR.
-    if [ -n "$review_err" ]; then
-      msg="🔴 fabro could not trigger a PR review${subject}: ${review_err}"
-    elif [ -n "$review_run_id" ]; then
-      msg="🔎 fabro triggered a PR review${subject}"
-    else
-      exit 0
-    fi
-    ;;
   triage-question)
     # A literal newline here (rather than the \\n every other multi-part message in
     # this file uses) would land as a raw, unescaped control character inside the
@@ -159,13 +131,6 @@ links=""
 [ -n "$pr_url" ] && links="${links}\\n${pr_url}"
 if [ -n "$base_url" ] && [ "$kind" != "triage-question" ]; then
   links="${links}\\n${base_url}/runs/${run_id}"
-fi
-# The review this run spawned, on the notification that is about that review. The
-# key is only populated once trigger_review has checkpointed, which is after every
-# other kind has already fired, so gate on the kind rather than rely on that order
-# holding as the graph changes.
-if [ "$kind" = "review-triggered" ] && [ -n "$review_run_id" ] && [ -n "$base_url" ]; then
-  links="${links}\\n${base_url}/runs/${review_run_id}"
 fi
 if [ -n "$repo_url" ] && [ -n "$issue" ]; then
   links="${links}\\n${repo_url}/issues/${issue}"

@@ -34,10 +34,13 @@ locations instead.
 
 **Not here, deliberately:** `fire-pr-review.sh` is tracked at
 `.fabro/workflows/backlog/scripts/fire-pr-review.sh` and *deployed* to
-`~/bin/fabro-fire-pr-review.sh` on the host. `backlog`'s `trigger_review` stage executes
-it from a fresh clone of `main`, so it is code a live automation runs — and `ops/` is
-the tree no automation reads, which is what makes editing `ops/` safe. Moving it here
-for tidiness would turn every `ops/` edit into a live deploy. Its absolute-path
+`~/bin/fabro-fire-pr-review.sh` on the host. It was written as the reference
+implementation for `backlog`'s `trigger_review` node, which ran it from a fresh clone of
+`main`; `54c21be` deleted that node on 2026-09-17, so today its only caller is the
+operator's wrapper, which reads the script out of `origin/main` rather than keeping a
+second copy. That also removes the original reason it could not live in `ops/` — nothing
+runs it automatically any more — and it has not moved only because the deployed wrapper
+reads that exact path and `AGENTS.md`'s drift check pins it there. Its absolute-path
 deployment and drift check are in the main `AGENTS.md`.
 
 `fabro-fire-backlog.sh`, by contrast, **is** here in `ops/`: it is an operator-only
@@ -59,14 +62,15 @@ Checked on 2026-09-18, because the list below had drifted from the host:
 - `GITHUB_TOKEN` also lives in `~/fabro/scheduler.env` on the host, for the coder
   scheduler, captured from `gh auth token` there (see *The coder scheduler* below).
 - `FABRO_API_TOKEN` → the fabro vault, and **only** the vault. `backlog`'s
-  `workflow.toml` injects it into the sandbox with
-  `[run.environment.env]` so `trigger_review` can create a `pr-review` run through the
-  API. The vault entry fails **closed**: if it is missing, every `backlog` run aborts at
-  startup before its sandbox exists, on all four repos at once. That is also the fastest
-  kill switch for the bridge, and the bluntest — it stops `backlog` entirely.
-- The bridge reuses the server's own dev token because fabro supports exactly **one**
+  `workflow.toml` injects it into the sandbox with `[run.environment.env]` so a command
+  node can reach this server's own API: `pr_handoff` reads the per-repo auto-merge switch
+  off the `pr-review-<repo>` row, and the imported review-merge phase reads the
+  host-wide one. The vault entry fails **closed**: if it is missing, every `backlog` run
+  aborts at startup before its sandbox exists, on all four repos at once. That is also
+  the bluntest kill switch there is — it stops `backlog` entirely.
+- It is the server's own dev token, because fabro supports exactly **one**
   (`dev_token: Option<String>`, compared against a single expected value). It therefore
-  **cannot be rotated independently**: revoking the bridge's access means rotating the
+  **cannot be rotated independently**: revoking a run's API access means rotating the
   server token, which also breaks the CLI and `discord-notify.sh`. Accepted, not
   overlooked.
 - Server env: `/storage/server.env` and `/storage/.home/server.json` in the container.
@@ -128,9 +132,9 @@ Checked on 2026-09-18, because the list below had drifted from the host:
 8. **Vault secrets** — `fabro secret set GITHUB_TOKEN <...>` and
    `fabro secret set LITELLM_API_KEY <...>` on the host. `settings.toml` references
    these by name; the values are never in config.
-9. **Bridge token** — `fabro secret set FABRO_API_TOKEN "$(cat
-   /storage/server.dev-token)"`, read from the volume rather than retyped, so the
-   bridge reuses the server's single dev token exactly. Confirm **by name only** with
+9. **Run API token** — `fabro secret set FABRO_API_TOKEN "$(cat
+   /storage/server.dev-token)"`, read from the volume rather than retyped, so a run
+   reuses the server's single dev token exactly. Confirm **by name only** with
    `fabro secret list | grep FABRO_API_TOKEN`. This is a hard startup dependency of
    every `backlog` run — see the Secrets section — so do it before step 10, and before
    any `backlog` automation fires.
@@ -303,14 +307,15 @@ from the live server 2026-09-16:
 | `pr-review-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `true` | `api:manual` enabled — **configuration only, never fired** |
 | `pr-review-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `true` | `api:manual` enabled — **configuration only, never fired** |
 
-The `pr-review-*` rows are **not dead**. The bridge resolves each repo's
-`environment_id` and `target` from its own `pr-review-<repo>` automation rather than
-hardcoding a map, so a fifth repository needs no change to any graph, and deleting a row
-silently breaks the bridge for that repo. They are read, never fired — and now they are
-read for one more thing: the per-repo auto-merge kill switch. The `auto_merge` token
-lives in the row's `description`, read by `fire-pr-review.sh`; "an absent token is on"
-(decision 10). These rows are genuinely fireable through the same `api:manual` trigger
-now that `watch_checks`→`merge` exists, but they are still never fired by anything on a
+The `pr-review-*` rows are **not dead**, but nothing fires them: they are read, never
+fired. Two readers remain, and both find the row by `target.repo` rather than a hardcoded
+map, so a fifth repository needs no change to any graph. `pr_handoff` reads the row's
+`description` for the per-repo auto-merge kill switch (the `auto_merge` token; "an absent
+token is on", decision 10), and the operator's `~/bin/fabro-fire-pr-review.sh` reads
+`environment_id` from it to build the run intent. Deleting a row silently breaks both.
+**What used to read it was `backlog`'s `trigger_review` node**, deleted by `54c21be`
+(2026-09-17) when review-and-merge moved into the backlog run itself. The rows are
+genuinely fireable through the same `api:manual` trigger, but nothing fires them on a
 cron.
 
 ### LiteLLM coder pool — concurrency and retry tuning
@@ -422,7 +427,8 @@ mid-incident.
 
 `backlog-writers-app` carried **no `api:manual` trigger** until 2026-09-16, so it could
 not be fired through the API at all — only its disabled schedule would have started it,
-and the bridge was therefore live on three repos rather than four. Corrected in place
+and the `trigger_review` bridge that existed at the time was therefore live on three
+repos rather than four. Corrected in place
 with `PUT /api/v1/automations/backlog-writers-app` (`If-Match` the row's ETag; the PUT
 is a full replace, so the existing row is read, the trigger added to it, and the whole
 thing sent back). All four rows now match.
@@ -447,9 +453,10 @@ disabled as well, and were before draft 13 — it touched only `backlog`. Decisi
 `issue-triage` staying on its own schedule and never queued, so those four are still the
 operator's to enable; nothing in the coder-scheduler series turns them on.
 
-A `pr-review` run that reaches the merge phase holds a scheduler slot until CI settles,
-bounded by the 60-minute merge budget. Because fabro queues rather than rejects
-(ADR 0001), a `trigger_review` fire behind three merging runs is delayed, not dropped.
+A run that reaches the merge phase keeps its coder lease and its fabro slot until CI
+settles, bounded by the 60-minute merge budget. Because admission queues rather than
+rejects — fabro's own queue (ADR 0001) and the scheduler's lease table above it — work
+behind two merging runs waits, it is not dropped.
 
 The cap is **4**, raised from 2 on 2026-09-18 alongside the coder scheduler that now
 owns admission (ADR 0005). It is a backstop, not an allocator: it stops a runaway, it
