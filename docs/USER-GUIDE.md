@@ -113,7 +113,7 @@ Cadence and queue:
 
 ### From the monitor (`fabro monitor: …`)
 
-A cron job on the host evaluates six health conditions every 15 minutes. It
+A cron job on the host evaluates eight health conditions every 15 minutes. It
 never reports run *failures* (the hooks own those); it reports the things that
 prevent runs from happening at all. While a condition persists it re-alerts
 (4h; starvation weekly, disk 24h); when it clears you get one ✅ resolved.
@@ -126,6 +126,8 @@ prevent runs from happening at all. While a condition persists it re-alerts
 | 🔴 `stuck-run` | A run has sat non-terminal for 3h. | Open the run; cancel or let it ride. |
 | 🟡 `starvation` | Zero `agent` issues on all four repos. | The queue is empty: file issues labeled `needs-triage` (or `agent`). |
 | 🟠 `disk-pressure` | The host disk is ≥ 85% full. | Runbook — run the sweepers. |
+| 🔴 `scheduler-down` | The scheduler's health endpoint stopped answering. | Runbook — the scheduler is down or its container is stopped. |
+| 🔴 `scheduler-wedged` | Work is queued and every coder box has sat idle for 20 minutes. | Runbook — the scheduler is running but not dispatching. |
 
 ### The silence signals
 

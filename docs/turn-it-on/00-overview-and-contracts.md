@@ -9,8 +9,8 @@ The last stage of the fabro factory: making it a system you *operate* instead of
 system you *test*. Three workstreams, one series:
 
 1. **Monitoring** — an out-of-band health layer on the host, so a dead server, a dead
-   scheduler, a stuck run, an empty work queue, or a full disk surfaces in Discord
-   instead of in a post-mortem.
+   or wedged scheduler, a stuck run, an empty work queue, or a full disk surfaces in
+   Discord instead of in a post-mortem.
 2. **User guide** — the secrets-free operating manual (`docs/USER-GUIDE.md`) and its
    private companion, the operator runbook (`~/.fabro-deploy/docs/OPERATOR-RUNBOOK.md`).
 3. **Turn-on** — enable the schedules, watch a canary repo produce real PRs for five
@@ -113,7 +113,7 @@ id *is* a timestamp. The monitor must not depend on a field the API does not gua
 logging to `~/.local/state/fabro-monitor.log`, state in
 `~/.local/state/fabro-monitor.state`.
 
-Each run evaluates six conditions. Every condition is a mechanical test; there is no
+Each run evaluates eight conditions. Every condition is a mechanical test; there is no
 judgment and no model. Firing means: send Discord, stamp the state file. Cleared with a
 stamp present means: send one ✅ resolved, clear the stamp.
 
@@ -125,6 +125,16 @@ stamp present means: send one ✅ resolved, clear the stamp.
 | C4 | stuck-run | any run in a non-terminal state older than 3h — includes `submitted`, which never executes (AGENTS.md) | 3h | 🔴 | 4h |
 | C5 | starvation | zero open `agent`-labeled issues across all four repos (`gh issue list -R … --label agent --state open`) | immediate | 🟡 | 7d |
 | C6 | disk-pressure | `df /` use ≥ 85% | 85% | 🟠 | 24h |
+| C7 | scheduler-down | `GET $SCHEDULER_URL/health` does not answer 200 within 5s | immediate | 🔴 | 4h |
+| C8 | scheduler-wedged | `/api/queue` non-empty **and** every entry in `/api/pools` has `lease == null` and `drained == false`, held for `WEDGE_MINUTES` | 20m | 🔴 | 4h |
+
+`SCHEDULER_URL` defaults to `http://127.0.0.1:32280` (the scheduler's LAN-only,
+unauthenticated surface — no token is read for C7/C8); `WEDGE_MINUTES` defaults to 20
+and `WEDGE_MINUTES=0` fires on the first qualifying sample, which is the forced test.
+C8's window lives in the state file under its own `C8_since=<epoch>` key and is cleared
+the moment a sample stops qualifying. C7 and C8 arrived with the coder scheduler
+(`docs/scheduler/12-monitor-conditions.md`), after the C1–C6 shakedown; that they read
+the scheduler's container, not fabro's, is decision 17.
 
 Rules:
 
@@ -132,6 +142,12 @@ Rules:
   cause, not its symptom. A 401 is *not* suppressed and gets its own message — the dev
   token rotated and the monitor's copy of how to read it is fine but the server
   disagrees.
+- **C7 suppresses C8.** An unreachable scheduler cannot answer "queued work, idle
+  boxes", so C7 reports the cause and C8 is skipped — its stamp and its `C8_since`
+  window are left untouched rather than resolved. C7 and C8 are independent of C1: the
+  scheduler is a *separate* container, so they are evaluated even when C1 is firing or
+  the fabro API is unreachable, and a fabro outage neither hides nor invents a
+  scheduler problem. Only C7 suppresses C8, never the reverse.
 - **C3 self-activates** (decision 13): read the automation list every run, gate on any
   enabled schedule. Before turn-on the condition cannot fire; the monitor is deployed
   and soaking *before* task 06 so its quiet baseline is proven.
@@ -214,7 +230,7 @@ series touches none. What bites instead:
 |---|---|---|
 | 00 | This document | — |
 | 01 | `ops/fabro-monitor.sh` + ADR 0004 | no |
-| 02 | Deploy the monitor, cron it, shake down all six conditions | no |
+| 02 | Deploy the monitor, cron it, shake down all six conditions (C7/C8 were added later, by the scheduler series) | no |
 | 03 | ~~The heartbeat~~ — **skipped**: operator declined healthchecks.io; no external dead-man's ping exists | no |
 | 04 | `docs/USER-GUIDE.md` | **yes** |
 | 05 | `~/.fabro-deploy/docs/OPERATOR-RUNBOOK.md` | **yes** |

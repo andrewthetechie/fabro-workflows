@@ -17,7 +17,7 @@ locations instead.
 |---|---|
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). Deterministic; see its header comments. |
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
-| `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
+| `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
 | `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
 | `test-task-gates.sh` | Runs `backlog`'s task-queue gates (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. Covers the split splice and the cursor arithmetic, where an off-by-one silently skips a task. Offline — no host, container or network — so it belongs in a pre-push hook beside `check-routing-schemas.py`. |
 | `docker-compose.yaml` | Runs both containers: the `fabro` server and the `scheduler` (the coder scheduler, built from `./scheduler/`). It is also the only place the scheduler's port and volume are declared. |
@@ -870,7 +870,19 @@ there is no doubt which pair a run will be pinned to. The load-balanced `coders`
 absent on purpose; dispatching through it would reintroduce the contention the scheduler
 exists to remove.
 
-`fabro-monitor.sh` does not watch this container yet — draft 12 adds the conditions.
+`fabro-monitor.sh` watches this container through C7 (its `/health` does not answer
+200) and C8 (queued work with every coder pool idle for `WEDGE_MINUTES`) — both read
+`SCHEDULER_URL`, default `http://127.0.0.1:32280`. C7 and C8 are independent of C1:
+the scheduler is a separate container, so a fabro outage neither hides nor invents a
+scheduler problem, and they are evaluated even while C1 fires.
+
+**C7/C8 are the dead-scheduler alarm now that the schedules are off.** C3 only
+alarms while some automation has an enabled schedule; it currently reports
+`inert, no enabled schedules` and will stay inert after draft 13 turns the four
+`backlog` schedules off for good. A scheduler that is stopped raises C7, and one that
+is up but has stopped dispatching raises C8 — the two conditions C3 cannot cover once
+nothing is scheduled. The scheduler container is stopped on the host at the time of
+writing, so C7 is firing by design until draft 14 starts it.
 
 ## Upgrading the server
 
@@ -960,21 +972,29 @@ Every 15 minutes at offset 7 — it never shares a minute with a backlog fire
 (`2/5/8/11-59/15`) and lands between the triage fires (`:30/:35/:40/:45`).
 `fabro-monitor.sh` is the third member of the sweeper pattern and the only
 thing on the host that watches the *gaps between runs*: a dead container, a
-dead API, a dead scheduler, a run wedged non-terminal, an empty `agent` queue
-across the four repos, a full disk. It never alerts on a failed run — that
-stays with the hooks (`discord-notify.sh`), which see the run context it
-cannot (ADR 0004, `../docs/adr/0004-monitoring-is-out-of-band.md`).
+dead API, a dead scheduler, a scheduler that answers but never dispatches, a run
+wedged non-terminal, an empty `agent` queue across the four repos, a full disk. It
+never alerts on a failed run — that stays with the hooks (`discord-notify.sh`),
+which see the run context it cannot (ADR 0004,
+`../docs/adr/0004-monitoring-is-out-of-band.md`).
 
 - **Log:** `~/.local/state/fabro-monitor.log` — one `ok`/`skip` line per
   condition per run; a silent log means a dead monitor, not a healthy host.
   Rotate by hand when it grows.
 - **State:** `~/.local/state/fabro-monitor.state` — one `C<n>=<epoch>` line
-  per firing condition (dedup: re-alert 4h, starvation 7d, disk 24h). Absent
-  or empty when nothing is firing; a clean tick writes no file at all.
+  per firing condition (dedup: re-alert 4h, starvation 7d, disk 24h). C8 also
+  keeps a `C8_since=<epoch>` line: the first qualifying sample of the current
+  wedge window, cleared the moment a sample stops qualifying. Absent or empty
+  when nothing is firing; a clean tick writes no file at all.
 - **Knobs** (force a condition without breaking anything real):
   `DISK_PCT=1` fires C6, `FABRO_PORT=1` fires C2, `IDLE_HOURS=0` fires C3
-  once a schedule is enabled. `DRY_RUN=1` (the default) prints the alerts it
-  would send and writes nothing.
+  once a schedule is enabled, `SCHEDULER_URL=http://127.0.0.1:1` fires C7, and
+  `WEDGE_MINUTES=0` fires C8 on the first qualifying sample. `DRY_RUN=1` (the
+  default) prints the alerts it would send and writes nothing.
+- **C7 suppresses C8**, exactly as C1 suppresses C2's connection failures: an
+  unreachable scheduler cannot answer "queued work, idle boxes", so C7 reports
+  the cause and C8 is skipped, not evaluated. C7 and C8 are evaluated even when
+  C1 is firing or the fabro API is unreachable.
 - The condition table, thresholds, and message contract:
   `../docs/turn-it-on/00-overview-and-contracts.md`. An optional dead-man's
   heartbeat (`FABRO_HEARTBEAT_URL`) is supported by the script but **not

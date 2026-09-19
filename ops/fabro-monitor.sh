@@ -4,10 +4,11 @@
 # This runs ON THE HOST (cron), unlike the in-band hook notifications
 # (discord-notify.sh): those fire from inside a run, so anything that prevents
 # a run from starting or finishing never reaches them. This script watches
-# exactly that gap — dead container, dead API, dead scheduler, stuck run,
-# empty work queue, full disk. It never alerts on a run FAILURE: that stays
-# hook-owned, because double pings train the operator to ignore the channel
-# (ADR 0004). See docs/turn-it-on/00-overview-and-contracts.md.
+# exactly that gap — dead container, dead API, dead scheduler, a scheduler that
+# answers but never dispatches, stuck run, empty work queue, full disk. It
+# never alerts on a run FAILURE: that stays hook-owned, because double pings
+# train the operator to ignore the channel (ADR 0004). See
+# docs/turn-it-on/00-overview-and-contracts.md.
 #
 # Conditions (thresholds are env knobs so a shakedown can force each one):
 #   C1 container-down   container not running, or healthcheck not healthy   🔴 4h
@@ -16,6 +17,9 @@
 #   C4 stuck-run        non-terminal run older than STUCK_HOURS             🔴 4h
 #   C5 starvation       zero open agent-labeled issues across the repos     🟡 7d
 #   C6 disk-pressure    df / use >= DISK_PCT                                🟠 24h
+#   C7 scheduler-down   GET SCHEDULER_URL/health does not answer 200 in 5s   🔴 4h
+#   C8 scheduler-wedged queue non-empty AND every coder pool idle AND not
+#                       drained, held for > WEDGE_MINUTES                    🔴 4h
 #
 # C1 suppresses C2's connection failures (report the cause, not the symptom)
 # but never its 401 — a rejected token is its own problem. When the container
@@ -23,6 +27,15 @@
 # untouched so a resolved message is not fabricated. C3 self-activates: it
 # gates on "any automation has an enabled schedule", read live, so the alarm
 # exists the moment task 06 turns schedules on, with no config change here.
+#
+# C7 suppresses C8 — an unreachable scheduler cannot answer "queued work, idle
+# boxes", so C8's stamp is left untouched and the cause (C7) is reported alone.
+# Both are independent of C1: the scheduler is a SEPARATE container, so a fabro
+# outage does not clear a wedged scheduler and a scheduler outage does not clear
+# a dead fabro. They are evaluated even while C1 fires or the fabro API is
+# unreachable. C8 is the post-cutover dead-scheduler alarm: once draft 13
+# disables the four backlog schedules, C3 goes inert ("no enabled schedules")
+# and a scheduler that answers but never dispatches is caught here instead.
 #
 # Probed against the live server 2026-09-16 (fabro 0.354.0-nightly.0); the
 # parser depends only on what the probes proved:
@@ -87,6 +100,12 @@
 #   FABRO_HOST=10.10.0.32
 #   FABRO_PORT=32276
 #   FABRO_CONTAINER=fabro-fabro-1
+#   SCHEDULER_URL=http://127.0.0.1:32280  C7/C8: the scheduler's HTTP surface
+#                                 (LAN-only, unauthenticated) — /health,
+#                                 /api/queue, /api/pools
+#   WEDGE_MINUTES=20              C8: fire only after queued work with every
+#                                 coder pool idle for this long; 0 fires on
+#                                 the first qualifying sample (the forced test)
 #   FABRO_MONITOR_REPOS="a/b c/d"  space-separated; an EMPTY value falls back
 #                                 to the four factory repos (`:-`), so pass a
 #                                 real value to narrow a run
@@ -104,6 +123,8 @@ DISK_PCT="${DISK_PCT:-85}"
 FABRO_HOST="${FABRO_HOST:-10.10.0.32}"
 FABRO_PORT="${FABRO_PORT:-32276}"
 CONTAINER="${FABRO_CONTAINER:-fabro-fabro-1}"
+SCHEDULER_URL="${SCHEDULER_URL:-http://127.0.0.1:32280}"
+WEDGE_MINUTES="${WEDGE_MINUTES:-20}"
 REPOS="${FABRO_MONITOR_REPOS:-andrewthetechie/jelly-swipe andrewthetechie/womens-fantasy-sports andrewthetechie/lawncare-saas andrewthetechie/writers-app}"
 STATE_FILE="${FABRO_MONITOR_STATE:-$HOME/.local/state/fabro-monitor.state}"
 API="http://$FABRO_HOST:$FABRO_PORT/api/v1"
@@ -139,6 +160,8 @@ cond_name() {
     C4) printf '%s' "stuck-run" ;;
     C5) printf '%s' "starvation" ;;
     C6) printf '%s' "disk-pressure" ;;
+    C7) printf '%s' "scheduler-down" ;;
+    C8) printf '%s' "scheduler-wedged" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -450,6 +473,85 @@ else
   printf 'ok    C6 disk-pressure: / at %s%% (threshold %s%%)\n' "$use_pct" "$DISK_PCT"
 fi
 
+# --------------------------------------------------------- C7 scheduler -------
+# Evaluated unconditionally — the scheduler is a separate container and its
+# liveness does not depend on fabro's, so C1 firing (or the fabro API being
+# unreachable) must not silence this. /health is unauthenticated (decision 16),
+# so no token is read for either condition. A curl failure IS the condition:
+# it is never `eval_failed`.
+
+mark_evaluated C7
+c7_firing=0
+http="$(curl -sS -o "$tmp/sched.json" -w '%{http_code}' -m 5 \
+  "$SCHEDULER_URL/health" 2>"$tmp/sched.err")" || http=000
+if [ "$http" = 200 ]; then
+  printf 'ok    C7 scheduler: %s/health 200\n' "$SCHEDULER_URL"
+else
+  c7_firing=1
+  err="$(tr '\n' ' ' < "$tmp/sched.err" | cut -c1-120)"
+  if [ -n "$err" ]; then
+    fire C7 "$ALERT_SECONDS" "🔴" \
+      "scheduler-down — GET $SCHEDULER_URL/health failed (HTTP $http, $err)"
+  else
+    fire C7 "$ALERT_SECONDS" "🔴" \
+      "scheduler-down — GET $SCHEDULER_URL/health failed (HTTP $http)"
+  fi
+fi
+
+# ----------------------------------------------- C8 scheduler-wedged --------
+# Queued work with every coder pool idle (no lease) and none drained, held for
+# WEDGE_MINUTES. A box is momentarily idle between runs — the design keeps that
+# gap near 15s — so a single sample is never enough; the window is what stops
+# this from crying wolf. A drained pool is intentionally idle, so it is never a
+# wedge. The first qualifying sample's epoch lives in the state file under its
+# own key `C8_since`, seeded into `c8_since`; it is cleared the moment a sample
+# stops qualifying. WEDGE_MINUTES=0 fires on the FIRST qualifying sample — that
+# zero-length window is the documented forced test. C7 suppresses C8 (an
+# unreachable scheduler makes the question unanswerable) and leaves the C8 stamp
+# and C8_since untouched, exactly as C1 leaves C3/C4 alone.
+
+c8_manage=0        # 1 once C8 was evaluated -> the state rewrite owns C8_since
+c8_since_write=""  # the epoch to persist under C8_since when c8_manage=1
+if [ "$c7_firing" = 1 ]; then
+  printf 'skip  C8 scheduler-wedged: C7 scheduler-down is firing (queue unreadable by construction)\n'
+else
+  qhttp="$(curl -sS -o "$tmp/queue.json" -w '%{http_code}' -m 5 \
+    "$SCHEDULER_URL/api/queue" 2>/dev/null)" || qhttp=000
+  phttp="$(curl -sS -o "$tmp/pools.json" -w '%{http_code}' -m 5 \
+    "$SCHEDULER_URL/api/pools" 2>/dev/null)" || phttp=000
+  if [ "$qhttp" != 200 ] || [ "$phttp" != 200 ] \
+    || ! jq -e 'type == "array"' "$tmp/queue.json" >/dev/null 2>&1 \
+    || ! jq -e 'type == "array"' "$tmp/pools.json" >/dev/null 2>&1; then
+    # /health answered but the data is unreadable: not definitive, so C8 is NOT
+    # marked evaluated and its stamp is carried over rather than resolved.
+    printf 'skip  C8 scheduler-wedged: /api/queue or /api/pools unreadable (HTTP %s/%s)\n' \
+      "$qhttp" "$phttp"
+  else
+    mark_evaluated C8
+    c8_manage=1
+    qlen="$(jq 'length' "$tmp/queue.json" 2>/dev/null)"
+    n_pools="$(jq 'length' "$tmp/pools.json" 2>/dev/null)"
+    n_idle="$(jq '[.[] | select((.lease == null) and (.drained == false))] | length' \
+      "$tmp/pools.json" 2>/dev/null)"
+    if printf '%s' "$qlen$n_pools$n_idle" | grep -Eq '^[0-9]+$' \
+      && [ "$qlen" -gt 0 ] && [ "$n_pools" -gt 0 ] && [ "$n_idle" = "$n_pools" ]; then
+      c8_since="$(stamp_of C8_since)"
+      printf '%s' "$c8_since" | grep -Eq '^[0-9]+$' || c8_since="$now"
+      c8_since_write="$c8_since"
+      if [ $(( now - c8_since )) -ge $(( WEDGE_MINUTES * 60 )) ]; then
+        fire C8 "$ALERT_SECONDS" "🔴" \
+          "scheduler-wedged — $qlen item(s) queued and all $n_pools coder pool(s) idle for $(( (now - c8_since) / 60 ))min (limit ${WEDGE_MINUTES}min); none drained"
+      else
+        printf 'ok    C8 scheduler-wedged: %s queued, all %s pools idle for %smin/%smin\n' \
+          "$qlen" "$n_pools" $(( (now - c8_since) / 60 )) "$WEDGE_MINUTES"
+      fi
+    else
+      printf 'ok    C8 scheduler-wedged: %s queued, %s of %s pools idle\n' \
+        "$qlen" "$n_idle" "$n_pools"
+    fi
+  fi
+fi
+
 # ------------------------------------------------------------- dispatch ----
 # A firing condition with no stamp alerts; with a stamp older than its re-alert
 # interval it re-alerts; otherwise it stays quiet and keeps its stamp. A stamp
@@ -482,7 +584,7 @@ while IFS="$TAB" read -r cond interval emoji detail; do
 done < "$tmp/firing"
 
 if [ -f "$STATE_FILE" ]; then
-  for cond in C1 C2 C3 C4 C5 C6; do
+  for cond in C1 C2 C3 C4 C5 C6 C7 C8; do
     s="$(stamp_of "$cond")"
     [ -n "$s" ] || continue
     case "$firing_ids" in *" $cond "*) continue ;; esac
@@ -499,11 +601,19 @@ if [ "$DRY_RUN" != "1" ]; then
       [ -n "$cond" ] || continue
       case "$remove" in *" $cond "*) continue ;; esac
       case "$restamp" in *" $cond="*) continue ;; esac
+      # C8_since is C8's wedge window, not a dedup stamp: it is re-emitted from
+      # c8_since_write below whenever C8 was evaluated this run, and dropped
+      # when the sample stopped qualifying. When C8 was skipped (C7 firing),
+      # c8_manage stays 0 and the existing key is carried over untouched.
+      if [ "$cond" = "C8_since" ] && [ "$c8_manage" = 1 ]; then continue; fi
       printf '%s=%s\n' "$cond" "$val" >> "$tmp/state.new"
     done < "$STATE_FILE"
   fi
   # shellcheck disable=SC2086
   for kv in $restamp; do printf '%s\n' "$kv" >> "$tmp/state.new"; done
+  if [ "$c8_manage" = 1 ] && [ -n "$c8_since_write" ]; then
+    printf 'C8_since=%s\n' "$c8_since_write" >> "$tmp/state.new"
+  fi
   # Nothing firing and no prior stamps: write no file at all, so a clean tick
   # leaves no state behind (acceptance: no state file when nothing fires).
   if [ -s "$tmp/state.new" ] || [ -f "$STATE_FILE" ]; then
