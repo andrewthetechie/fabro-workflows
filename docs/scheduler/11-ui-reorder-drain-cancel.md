@@ -161,3 +161,68 @@ cancel path is the same one an operator already has in fabro's UI.
 ## Validator Stopping Point
 `uv run pytest` green; bump, drain, undrain and cancel each observed working
 against a live queue.
+
+#### Corrected during implementation, 2026-09-19
+
+**Cancel requeues the issue, which means one change in `reconcile.py` — a file this
+draft's expected-files list does not name.** The draft says cancel "lets draft 09's
+normal release path observe the terminal state", and the overview's decision 15 says
+cancel "kills the run on it **and requeues the issue**". Those only agree if the release
+path requeues a cancel, and draft 09's landed predicate did not: a cancel arrives
+`failed` with `reason: "cancelled"` and events category `canceled` (one L), neither of
+which was in `should_requeue`. Draft 09's own test asserted the non-requeue and explained
+that recovery's GitHub pass repairs the receipt at the next restart.
+
+That is the failure finding 10 describes, and leaving it would make the operator's own
+button silently lose work: a cancel exits before the graph's terminal label work, so the
+issue keeps `agent-in-progress`, leaves the cache, and is invisible to `acquire` and to
+the queue until someone relabels it by hand or the scheduler restarts. So `should_requeue`
+now checks the projection's `reason` for `cancelled` alongside `terminated`, exactly as it
+already did for the fabro restart — and for the same reason, that the reason is in the
+projection while the category is not. The draft 09 test was renamed and inverted
+(`test_a_cancel_is_requeued_and_resets_the_issue_labels`) and now also asserts that the
+events endpoint is never called. The operator's ruling on the ambiguity: *"requeue the
+issue" means reset the labels on the issue so it can be picked up if the scheduler is
+re-run.*
+
+**`cancel_run` is new in `fabro.py`**, because the draft names the endpoint under
+verified contracts but no client method. Read out of the live OpenAPI on 2026-09-19:
+`POST /api/v1/runs/{id}/cancel` answers `200` (cancelled synchronously, before execution)
+or **`202`** (the cancellation was durably recorded and a live run converges later), both
+with the run projection; `409` when the run has already completed or been cancelled. The
+`202` is why the route releases nothing: a live run is still using its box when fabro has
+answered.
+
+**Three smaller decisions the draft leaves open.**
+
+* **Cancel checks the lease before the credential.** An unleased pool answers `409`
+  "there is no run to cancel" even when `FABRO_API_TOKEN` is unset, because that is the
+  true answer and a `503` about a token would misdirect. A fabro `409` is propagated as
+  the scheduler's `409` with a sentence saying the release poll will free the box, not as
+  a `502`: the outcome is the one the operator asked for, the box just has not caught up.
+* **Bump refuses an issue that is not in the cache, and canonicalises the repo spelling.**
+  An override keyed to a row that does not exist is invisible on the page and would never
+  be cleared by a dispatch, so it is a `404` rather than a silent write. The repo is
+  taken from `repo_named(...).name`, not from the path segment, because that lookup is
+  case-insensitive (GitHub resolves `o/Repo` and `o/repo` to one repository) and the other
+  spelling would create a row no cached issue matches — a `200` that changes nothing.
+* **Undrain writes `drained = 0` rather than deleting the row.** `drained_pools()` reads
+  only the `1`s, so the two are equivalent; keeping the row leaves the record of the
+  operator's action where the bump table's `created_at` already leaves its own.
+
+**`bump_override` computes `MIN(override_rank) - 1` and upserts inside one lock and one
+transaction**, not two statements. Two operators clicking at the same instant must not both
+be handed `-1`, because the rank is what the response reports and `rank()` sorts on it.
+
+**The page uses real forms plus a few lines of inline JavaScript.** Every control is a
+`<form method="post">`, so it works with scripting disabled — the fallback is the raw JSON
+body, which the page says in a `<noscript>` banner. With scripting on, the submit is
+intercepted with `fetch`, the page reloads on success, and a refusal is rendered inline in
+`#note`. Cancel carries a `window.confirm` because it is the one irreversible button.
+
+**Verified live on 2026-09-19**, through a real `uvicorn` process on `:32281` and `curl`
+(a local stand-in for fabro's cancel endpoint, so nothing real was cancelled): bump moved
+an item above both the ceiling and repo priority and descended `-1`, `-2`; drain and
+undrain flipped `GET /api/pools`; cancel reached the endpoint and **left the lease held**;
+`409` on an unleased pool, `404` on an unknown pool, `405` on a `GET`; and both the drain
+flag and the overrides survived a process restart. `uv run pytest`: 271 passed.

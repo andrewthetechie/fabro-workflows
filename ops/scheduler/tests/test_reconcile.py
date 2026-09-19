@@ -153,6 +153,29 @@ def test_a_fabro_restart_requeues_via_its_reason():
     ) is False
 
 
+def test_an_operator_cancel_requeues_via_its_reason():
+    # Decision 15: a cancel kills the run *and* requeues the issue. The reason is
+    # in the projection and the category is only in the events tail (`canceled`, one
+    # L), so reading the reason is both correct and free.
+    run = {"lifecycle": {"status": {"kind": "failed", "reason": "cancelled"}}}
+    assert should_requeue(run) is True
+    # The events category, if it ever got read, agrees — but it is not what decides.
+    assert should_requeue(
+        {
+            "lifecycle": {"status": {"kind": "failed", "reason": "cancelled"}},
+            "_last_failure": {"category": "canceled"},
+        }
+    ) is True
+    # The one-L/two-L trap in the other direction: a category-only predicate written
+    # against `cancelled` would match nothing.
+    assert should_requeue(
+        {
+            "lifecycle": {"status": {"kind": "failed"}},
+            "_last_failure": {"category": "canceled"},
+        }
+    ) is False
+
+
 # --- the store and the lease ----------------------------------------------------
 
 
@@ -273,37 +296,40 @@ def test_a_transient_infra_failure_requeues_via_the_events_category(
 
 
 @respx.mock
-def test_a_cancel_is_released_but_not_requeued(config, store, leases, fabro):
-    # A cancel arrives `failed/reason=cancelled`; the events category is `canceled`
-    # (one L). Neither is infra-shaped, and a cancel also leaves the receipt
-    # behind — which the *recovery* GitHub pass, not this pass, repairs.
-    leases.acquire(_lease(run_id="R1"))
+def test_a_cancel_is_requeued_and_resets_the_issue_labels(config, store, leases, fabro):
+    # A cancel arrives `failed/reason=cancelled` (two Ls); the events category is
+    # `canceled` (one L). Decision 15 makes a cancel requeue the issue, and it has
+    # to: the run exits before the graph's terminal label work, so without this the
+    # issue keeps `agent-in-progress`, leaves the cache, and is invisible to both
+    # `acquire` and the queue. The reason alone decides it, so the events endpoint is
+    # never called — the mock below is there to prove that.
+    leases.acquire(
+        _lease(run_id="R1", queued_since=datetime(2026, 9, 18, 8, 0, tzinfo=UTC))
+    )
+    labels = _install_labels()
     respx.get(f"{FABRO_API}/runs/R1").mock(
         return_value=httpx.Response(
             200,
             json={"lifecycle": {"status": {"kind": "failed", "reason": "cancelled"}}},
         )
     )
-    respx.get(f"{FABRO_API}/runs/R1/events").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "data": [
-                    {
-                        "type": "run.failed",
-                        "properties": {"failure": {"detail": {"category": "canceled"}}},
-                    }
-                ]
-            },
-        )
+    events = respx.get(f"{FABRO_API}/runs/R1/events").mock(
+        return_value=httpx.Response(200, json={"data": []})
     )
 
     actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
 
-    assert [(a.outcome) for a in actions] == ["released"]
+    assert [(a.outcome) for a in actions] == ["released+requeued"]
     assert leases.active() == []
-    # Not requeued: no cache row for the issue.
-    assert store.get_issue(FF, 7) is None
+    # The labels are reset, so a later inventory poll picks the issue up again.
+    assert ("DELETE", "agent-in-progress") in labels
+    assert ("POST", "add") in labels
+    restored = store.get_issue(FF, 7)
+    assert restored is not None
+    assert "agent" in restored.labels
+    # The wait travels back with it, so the starvation ceiling is not reset.
+    assert restored.first_seen == datetime(2026, 9, 18, 8, 0, tzinfo=UTC)
+    assert events.call_count == 0
 
 
 @respx.mock

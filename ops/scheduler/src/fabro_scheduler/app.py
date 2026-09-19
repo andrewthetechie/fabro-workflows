@@ -1,23 +1,32 @@
 """The scheduler's HTTP surface.
 
-The read surfaces are the operator's page (`GET /`), its JSON twin
-(`GET /api/queue`), the per-repo freshness view (`GET /api/repos`) and `GET
-/health`. The one write surface is `POST /api/dispatch-once` — the operator's
-manual override, which creates and starts exactly one real fabro run.
+The read surfaces are the operator's page (`GET /`), its JSON twins
+(`GET /api/queue`, `GET /api/repos`, `GET /api/pools`) and `GET /health`. The write
+surfaces are `POST /api/dispatch-once` — the operator's manual override, which
+creates and starts exactly one real fabro run — and draft 11's three controls:
+bump an issue, drain or undrain a coder instance, and cancel the run on one.
+
+**Drain and cancel are separate routes on purpose.** Draining stops *new* dispatch
+to a box and lets its current run finish; cancelling is a second, explicitly-labelled
+button that ends that run. Collapsing them would make the word "drain" destroy work
+(CONTEXT.md; overview decision 15). Cancel does not release the lease either — it
+asks fabro to stop the run and lets draft 09's one release path notice.
+
+**There is no auth, by decision 16**, and the compensating control is that every
+mutation is logged with what changed: there is no identity to attribute it to, so
+the log is the whole audit trail. Every mutating route is `POST`, so a link preload
+cannot trigger one. Nothing here echoes the environment, so the `GITHUB_TOKEN` and
+`FABRO_API_TOKEN` the container holds stay out of every response — including
+`/health`, which reports only whether each is *configured*, never its value.
+`fabro_api_url` is deliberately absent from the payload as well — it is a URL that
+could carry a credential in some future form, and it is not worth the risk to
+publish it on an unauthenticated endpoint.
 
 The other writer is not a request at all: draft 08's `DispatchLoop` runs on its own
 thread, and while it is running this service writes `agent-in-progress` to GitHub
 and creates runs without anyone asking. It is off unless `main` turns it on, which
 `start_dispatch_loop` is there to make explicit — a test builds the same app with
 no thread at all, and an unarmed process still serves the whole read surface.
-
-There is no auth: decision 16 binds this to the LAN, consistent with fabro's own
-`:32276`. Nothing here echoes the environment, so the `GITHUB_TOKEN` and
-`FABRO_API_TOKEN` the container holds stay out of every response — including
-`/health`, which reports only whether each is *configured*, never its value.
-`fabro_api_url` is deliberately absent from the payload as well — it is a URL that
-could carry a credential in some future form, and it is not worth the risk to
-publish it on an unauthenticated endpoint.
 
 **Neither missing credential stops the service.** A missing `GITHUB_TOKEN` logs
 one error, serves the page with a banner naming the variable, and reports
@@ -37,6 +46,7 @@ import sqlite3
 import sys
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -87,6 +97,21 @@ class DispatchOnceRequest(BaseModel):
     # #1" is the same silent-mis-dispatch trap AGENTS.md records for `pr_number`.
     issue_number: int = Field(gt=0, strict=True)
     coder_pool: str
+
+
+@dataclass(frozen=True)
+class PoolState:
+    """One coder instance's current state, for `GET /api/pools` and the page.
+
+    `drained` and `lease` are independent on purpose. A drained box that is still
+    running its last run is the normal mid-drain state (overview decision 15), so
+    the page has to be able to say "drained, still busy" without either field
+    implying the other.
+    """
+
+    coder_pool: str
+    drained: bool
+    lease: Lease | None
 
 
 def build_app(
@@ -207,6 +232,42 @@ def build_app(
         )
         return items, now
 
+    def pool_states() -> list[PoolState]:
+        """Every configured coder instance, its drain flag and its lease.
+
+        One definition for both `GET /api/pools` and the page, so the two can never
+        disagree about whether a box is drained. Built per request for the same
+        reason the queue is: it is two reads over at most four rows, and "the page
+        says drained but the API says not" is exactly the kind of staleness that
+        costs an ssh session.
+        """
+        drained = store.drained_pools()
+        held = {lease.coder_pool: lease for lease in leases.active()}
+        return [
+            PoolState(
+                coder_pool=pool,
+                drained=pool in drained,
+                lease=held.get(pool),
+            )
+            for pool in config.coder_pools
+        ]
+
+    def require_pool(coder_pool: str) -> None:
+        """Refuse an unknown coder instance before it can be written to `pool_state`.
+
+        A 404 rather than creating a row: a `pool_state` row for a name that is not
+        in `repos.toml` would never be read (the dispatch loop only walks the
+        configured pools), so accepting it would report a drain that does nothing.
+        """
+        if coder_pool not in config.coder_pools:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"{coder_pool} is not a coder instance; expected one of "
+                    f"{', '.join(config.coder_pools)}"
+                ),
+            )
+
     @app.get("/health")
     def health() -> dict[str, object]:
         return {
@@ -257,6 +318,18 @@ def build_app(
         return [_repo_status_payload(status) for status in repo_statuses(
             config.schedulable_repos(), store
         )]
+
+    @app.get("/api/pools")
+    def api_pools() -> list[dict[str, object]]:
+        """Every coder instance, with its drain flag and its current lease or null.
+
+        Draft 12's wedged-scheduler condition reads exactly this: a non-empty queue
+        with every pool idle and none drained is the wedge it alerts on. That is why
+        every configured pool appears whether or not it is leased — an absent row
+        and an idle box would otherwise be the same answer, and only one of them is
+        a problem.
+        """
+        return [_pool_payload(state) for state in pool_states()]
 
     @app.post("/api/dispatch-once")
     def dispatch_once(body: DispatchOnceRequest) -> dict[str, object]:
@@ -381,6 +454,15 @@ def build_app(
             result.status,
             result.version_reused,
         )
+        # Same rule as the loop's dispatch: a bump means "next", and this item has
+        # just stopped waiting. Absent for an issue that was never in the cache,
+        # which `clear_override_on_dispatch` reports as `False` rather than failing.
+        if store.clear_override_on_dispatch(repo.name, body.issue_number):
+            log.info(
+                "dispatch-once: %s#%s: cleared the operator override on dispatch",
+                repo.name,
+                body.issue_number,
+            )
         return {
             "run_id": result.run_id,
             "workflow_version_id": result.workflow_version_id,
@@ -388,6 +470,159 @@ def build_app(
             "version_reused": result.version_reused,
             "status": result.status,
         }
+
+    @app.post("/api/queue/{repo:path}/{issue_number}/bump")
+    def bump_issue(repo: str, issue_number: int) -> dict[str, object]:
+        """Mark one queued issue to be dispatched next.
+
+        Takes `MIN(override_rank) - 1`, so the most recent bump wins and the newest
+        mark sorts above every earlier one. It changes ordering **only**: it never
+        pre-empts a running lease, and one in-flight run per repo (decision 6) still
+        applies, so a bumped issue whose repo is busy goes next *for that repo*.
+
+        The mark is cleared when the item is dispatched. It is deliberately not a
+        permanent priority and deliberately not editable beyond "next": repo
+        priority lives in `repos.toml`, which is reviewed policy, and the two never
+        share a field (overview decision 4).
+        """
+        scheduled = config.repo_named(repo)
+        if scheduled is None or not scheduled.enabled:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{repo} is not a schedulable [[repo]] in repos.toml",
+            )
+        # `scheduled.name`, not the path segment: `repo_named` matches
+        # case-insensitively (GitHub resolves `o/Repo` and `o/repo` to one
+        # repository), and everything else in the service keys off the spelling in
+        # `repos.toml`. Writing the other spelling would create an override that
+        # matches no cached row and silently does nothing.
+        repo = scheduled.name
+        # The page can only offer a row it is showing, so a miss here is a typo or a
+        # stale page rather than a normal case — and an override for an item that is
+        # not queued is invisible and would never be cleared by a dispatch.
+        if store.get_issue(repo, issue_number) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{repo}#{issue_number} is not in the queue",
+            )
+
+        rank = store.bump_override(repo, issue_number)
+        log.info(
+            "override: %s#%s bumped to rank %d; it dispatches next unless its repo "
+            "is busy",
+            repo,
+            issue_number,
+            rank,
+        )
+        return {"override_rank": rank}
+
+    @app.post("/api/pools/{coder_pool}/drain")
+    def drain_pool(coder_pool: str) -> dict[str, object]:
+        """Stop new dispatch to one coder instance, leaving its current run alone.
+
+        **Drain never destroys work** (CONTEXT.md; overview decision 15). The lease
+        already on the box is untouched and runs to completion; only `free_pools`
+        stops offering it. Cancelling the run is the separate route below.
+        """
+        require_pool(coder_pool)
+        store.set_drained(coder_pool, True)
+        held = next(
+            (lease for lease in leases.active() if lease.coder_pool == coder_pool),
+            None,
+        )
+        log.info(
+            "drain: %s drained; new dispatch stops%s",
+            coder_pool,
+            (
+                f", its run {held.run_id} ({held.repo}#{held.issue_number}) continues"
+                if held is not None
+                else "; it holds no lease"
+            ),
+        )
+        return {"drained": True}
+
+    @app.post("/api/pools/{coder_pool}/undrain")
+    def undrain_pool(coder_pool: str) -> dict[str, object]:
+        """Put one coder instance back in rotation. Takes effect on the next tick.
+
+        No restart and no second step: the flag is read fresh every time the dispatch
+        loop asks which pools are free.
+        """
+        require_pool(coder_pool)
+        store.set_drained(coder_pool, False)
+        log.info("drain: %s undrained; new dispatch may resume", coder_pool)
+        return {"drained": False}
+
+    @app.post("/api/pools/{coder_pool}/cancel")
+    def cancel_pool(coder_pool: str) -> dict[str, object]:
+        """Cancel the run currently on one coder instance.
+
+        Asks fabro to cancel, and **stops there**. It does not release the lease, and
+        it does not touch `pool_state`: the run is only over when fabro says it is
+        terminal, which draft 09's release poll observes within 15 seconds, and that
+        one release path is the only thing that frees a box. A cancel is asynchronous
+        for a live run (fabro answers `202`), so releasing here would free the box
+        while the worker was still using it.
+
+        The cancel itself does not un-drain the box: a drained instance stays drained
+        after its run is cancelled, which is the point of draining it.
+        """
+        require_pool(coder_pool)
+        # The lease is checked before the credential so an unleased pool always gets
+        # the honest 409 — "there is nothing to cancel" — rather than a 503 about a
+        # token that is irrelevant to the answer.
+        held = next(
+            (lease for lease in leases.active() if lease.coder_pool == coder_pool),
+            None,
+        )
+        if held is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{coder_pool} has no active lease, so there is no run to cancel",
+            )
+        if client is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "FABRO_API_TOKEN is not set; the scheduler cannot cancel run "
+                    f"{held.run_id}"
+                ),
+            )
+
+        try:
+            client.cancel_run(held.run_id)
+        except FabroError as exc:
+            if exc.status_code == 409:
+                # Fabro says the run already finished or was already cancelled. That
+                # is not a failed cancel — the outcome is the one the operator wanted
+                # — but the box is still leased for the next few seconds, so the
+                # honest answer is the 409 with what to expect, not a claimed success.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"run {held.run_id} is already over ({exc}); the release "
+                        f"poll will free {coder_pool} shortly"
+                    ),
+                ) from exc
+            log.error(
+                "cancel: %s run %s (%s#%s): fabro refused: %s",
+                coder_pool,
+                held.run_id,
+                held.repo,
+                held.issue_number,
+                exc,
+            )
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        log.info(
+            "cancel: %s run %s (%s#%s) asked to stop; the release poll frees the box "
+            "when fabro reports it terminal",
+            coder_pool,
+            held.run_id,
+            held.repo,
+            held.issue_number,
+        )
+        return {"cancelled_run_id": held.run_id}
 
     @app.get("/", response_class=HTMLResponse)
     def queue_page(request: Request) -> HTMLResponse:
@@ -401,7 +636,9 @@ def build_app(
                 "items": items,
                 "repos": statuses,
                 "leases": active,
-                "pools": list(config.coder_pools),
+                # Rich `PoolState`s, not the pool names: the page needs the drain
+                # flag and the lease to draw both the status and the controls.
+                "pools": pool_states(),
                 "now": now,
                 "ceiling": config.starvation_ceiling,
                 "poll_seconds": config.github_poll_seconds,
@@ -456,6 +693,30 @@ def _repo_status_payload(status: RepoStatus) -> dict[str, object]:
         "last_attempt_at": _iso(status.last_attempt_at),
         "last_success_at": _iso(status.last_success_at),
         "last_error": status.last_error,
+    }
+
+
+def _pool_payload(state: PoolState) -> dict[str, object]:
+    """`GET /api/pools`'s documented shape: the lease as a flat object, or `null`.
+
+    `issue_number` and `run_id` are what the page and the operator need to act; the
+    lease's `queued_since` is deliberately not published, because it is an internal
+    detail of the starvation accounting and nothing outside reads it.
+    """
+    lease = state.lease
+    return {
+        "coder_pool": state.coder_pool,
+        "drained": state.drained,
+        "lease": (
+            None
+            if lease is None
+            else {
+                "repo": lease.repo,
+                "issue_number": lease.issue_number,
+                "run_id": lease.run_id,
+                "dispatched_at": lease.dispatched_at.isoformat(),
+            }
+        ),
     }
 
 

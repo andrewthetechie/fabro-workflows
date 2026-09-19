@@ -7,8 +7,9 @@ definition of "next" in the system.
 The order, from overview decisions 4 and 5:
 
 1. **Override** — an item the operator bumped to the front (draft 11). Ascending
-   rank, so repeated bumps put the newest first. Inert here: nothing sets
-   `override_rank` yet.
+   rank, so repeated bumps put the newest first. Read from the `overrides` table,
+   which is the operator's click and not repo policy: it lives in the scheduler's
+   database, is one issue wide, and is cleared when the item is dispatched.
 2. **Starvation ceiling** — anything that has waited longer than `T` (default 4h)
    jumps ahead of everything that has not, oldest first. Deliberately a cliff and
    not an aging score: the claim the operator can check by looking is "nothing
@@ -44,7 +45,7 @@ class QueueItem:
 
     issue: Issue
     repo_priority: int
-    override_rank: int | None  # set by draft 11; always None here
+    override_rank: int | None  # the operator's "next" mark, or None
     waited: timedelta
 
 
@@ -140,6 +141,11 @@ def build_queue(
     must not appear as work waiting.
     """
     priorities = {repo.name: repo.priority for repo in repos}
+    # One SELECT for every override, keyed by `(repo, number)`. A cached issue with
+    # no row is simply not overridden. Deliberately **not** filtered by repo here:
+    # an override for an issue that has since left the cache is unreachable anyway,
+    # because only cached issues become items.
+    overrides = store.override_ranks()
 
     items = []
     for issue in store.issues():
@@ -150,10 +156,7 @@ def build_queue(
             QueueItem(
                 issue=issue,
                 repo_priority=priority,
-                # Draft 11 fills this from the `overrides` table. Ranking already
-                # honours a non-null value so that adding the table is the only
-                # change that draft makes here.
-                override_rank=None,
+                override_rank=overrides.get((issue.repo, issue.number)),
                 waited=now - issue.first_seen,
             )
         )

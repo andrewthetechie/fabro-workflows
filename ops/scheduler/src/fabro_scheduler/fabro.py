@@ -205,6 +205,32 @@ def get_run(
     return _request("GET", api, f"/runs/{run_id}", token, client=client, timeout=timeout)
 
 
+def cancel_run(
+    api: str,
+    token: str,
+    run_id: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> None:
+    """`POST /runs/{id}/cancel` — ask fabro to stop a run. Returns nothing useful.
+
+    `200` means the run was cancelled synchronously (it had not started), `202`
+    means the cancellation was durably recorded and a live run will converge to a
+    terminal state. Both carry the run projection, which this ignores: the
+    scheduler's next evidence is its release poll observing a terminal kind, never
+    the cancel call's own answer. A cancel produces `failed` with
+    `reason: "cancelled"` — not a `cancelled` kind (overview finding 9).
+
+    `409` is fabro saying the run already finished or was already cancelled, and
+    it is left to surface as a `FabroError` with that status: it is not an error in
+    this call, and the caller can say so more usefully than this function can.
+    """
+    _request(
+        "POST", api, f"/runs/{run_id}/cancel", token, client=client, timeout=timeout
+    )
+
+
 def status_kind(run: Mapping[str, object]) -> str | None:
     """`.lifecycle.status.kind` from a run projection, or `None` if it is absent.
 
@@ -571,6 +597,17 @@ class FabroClient:
         the "fabro never heard of this run" case that recovery treats as lost.
         """
         return get_run(self._api, self._token, run_id, timeout=self._call_timeout)
+
+    def cancel_run(self, run_id: str) -> None:
+        """Ask fabro to cancel a run. Draft 11's Cancel control.
+
+        Deliberately does **not** release the lease or touch any state here. A
+        cancel is asynchronous for a live run, so the only honest next step is to
+        let draft 09's release poll observe the terminal state — one release path
+        for both a cancel and a natural ending. Raises `FabroError` (status 409
+        when the run was already over) and changes nothing on the way out.
+        """
+        cancel_run(self._api, self._token, run_id, timeout=self._call_timeout)
 
     def active_issue_claims(self) -> set[tuple[str, int]]:
         """`(repo, issue_number)` for every issue a live fabro run is working.

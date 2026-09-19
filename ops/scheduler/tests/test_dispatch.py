@@ -504,10 +504,10 @@ def test_the_loop_parks_itself_once_every_box_is_leased(loop, store):
 
 
 @respx.mock
-def test_a_drained_box_takes_no_new_work(loop, store, monkeypatch):
-    # Draft 11 owns the control and the `pool_state` table; the exclusion is
-    # honoured here, which is what makes adding it a lookup rather than a redesign.
-    monkeypatch.setattr(loop, "_drained_pools", lambda: frozenset({"coders-a"}))
+def test_a_drained_box_takes_no_new_work(loop, store):
+    # Draft 11's control, through the real `pool_state` table: draining excludes a
+    # box from `free_pools` and does nothing else.
+    store.set_drained("coders-a", True)
     recorder = Recorder()
     install_labels(recorder)
     install_fabro(recorder)
@@ -520,6 +520,15 @@ def test_a_drained_box_takes_no_new_work(loop, store, monkeypatch):
     assert [body["target"]["repo"] for body in recorder.bodies("POST", "/api/v1/runs")] == [
         JELLY
     ]
+
+    # Undraining needs no restart: the flag is read on every tick.
+    store.set_drained("coders-a", False)
+    attempts = loop.tick()
+
+    assert [attempt.coder_pool for attempt in attempts] == ["coders-a"]
+    assert [body["target"]["repo"] for body in recorder.bodies("POST", "/api/v1/runs")][-1] == (
+        LAWN
+    )
 
 
 # --- failures leave nothing behind -------------------------------------------------

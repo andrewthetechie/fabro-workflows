@@ -31,12 +31,17 @@
   .banner.bad { border-left-color: var(--bad); }
   .banner.ok { border-left-color: var(--ok); }
   .banner p { margin: .2rem 0; }
+  #note {
+    background: var(--panel); border: 1px solid var(--line);
+    border-left: 3px solid var(--bad); border-radius: 4px;
+    padding: .6rem .8rem; margin: 0 0 1rem; color: var(--bad);
+  }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid var(--line); }
   th { color: var(--dim); font-weight: 600; white-space: nowrap; }
   td.num, th.num { text-align: right; white-space: nowrap; }
   td.rank { color: var(--dim); }
-  td.title { max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.title { max-width: 50ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   tr.starved td.title::before { content: "\2605 "; color: var(--warn); }
   tr.overridden td.title::before { content: "\21E1 "; color: var(--accent); }
   .label { color: var(--dim); font-size: .85em; }
@@ -44,6 +49,16 @@
   .bad { color: var(--bad); }
   .ok { color: var(--ok); }
   .muted { color: var(--dim); }
+  .controls { white-space: nowrap; }
+  form.control { display: inline; }
+  button {
+    font: inherit; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 3px;
+    padding: .15rem .5rem; margin-right: .3rem; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button:disabled { color: var(--dim); border-color: var(--line); cursor: not-allowed; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
   footer { color: var(--dim); margin-top: 2rem; font-size: .85em; }
 </style>
 </head>
@@ -55,13 +70,14 @@
   <strong>Starvation ceiling</strong> ({{ ceiling|duration }}, oldest first), then
   repo priority (smaller is more urgent), then issue number.
   GitHub is polled every {{ poll_seconds }}s; this page follows it.
-  There are no controls here and nothing on this page writes anything.
   {% if dispatching %}
     The scheduler dispatches on its own while a coder instance is free.
   {% else %}
     <strong>Automatic dispatch is off in this process</strong> &mdash; nothing starts
     on its own, and <code>POST /api/dispatch-once</code> is the only way work begins.
   {% endif %}
+  Buttons here write immediately; there is no authentication, so anyone on the LAN
+  can press them.
 </p>
 
 {% if not token_configured %}
@@ -70,6 +86,8 @@
      so this page shows only whatever the cache already held.</p>
 </div>
 {% endif %}
+
+<p id="note" hidden></p>
 
 <div class="banner {% if starvation %}bad{% else %}ok{% endif %}">
   {% if starvation %}
@@ -88,42 +106,71 @@
   {% endfor %}
 </div>
 
-<h2>Coder leases</h2>
+<h2>Coder instances</h2>
 {# Every configured pool is listed, so "idle" and "not configured" cannot be
-   confused with each other. One row per pool, and only while it is held: a lease
-   is a whole-run claim, not released when a run blocks on a human gate. Draft 09
-   releases it when the run reaches a terminal state, so a row here means a run is
-   genuinely still in flight. #}
-{% set leased = leases|map(attribute='coder_pool')|list %}
+   confused with each other. `drained` and a lease are independent: a drained box
+   still running its last run is the normal mid-drain state, and the box frees
+   itself when that run reaches a terminal state. #}
 <p class="muted">
-  {% for pool in pools %}
-    {{ pool }} &mdash; {% if pool in leased %}<span class="stale">leased</span>{% else %}<span class="ok">free</span>{% endif %}{% if not loop.last %} &middot; {% endif %}
-  {% endfor %}
+  <strong>Drain</strong> stops <em>new</em> dispatch to a box and lets its current run
+  finish. <strong>Cancel run</strong> is separate and ends that run now — the issue
+  goes back to <code>agent</code> for a later run, and the box frees itself when
+  fabro reports the run terminal.
 </p>
-{% if leases %}
 <table>
   <thead>
     <tr>
       <th>Coder instance</th>
+      <th>State</th>
       <th>Repo</th>
       <th class="num">Issue</th>
       <th>Run</th>
       <th class="num" title="When the run was created and the box taken">Dispatched</th>
+      <th>Controls</th>
     </tr>
   </thead>
   <tbody>
-    {% for lease in leases %}
+    {% for pool in pools %}
     <tr>
-      <td>{{ lease.coder_pool }}</td>
-      <td>{{ lease.repo }}</td>
-      <td class="num">#{{ lease.issue_number }}</td>
-      <td class="muted">{{ lease.run_id }}</td>
-      <td class="num">{{ (now - lease.dispatched_at)|duration }} ago</td>
+      <td>{{ pool.coder_pool }}</td>
+      <td>
+        {%- if pool.drained -%}<span class="stale">drained</span>
+        {%- else -%}<span class="ok">accepting</span>{%- endif -%}
+        <span class="muted">&middot;</span>
+        {%- if pool.lease %} <span class="stale">leased</span>
+        {%- else %} <span class="muted">idle</span>{%- endif -%}
+      </td>
+      {% if pool.lease %}
+        <td>{{ pool.lease.repo }}</td>
+        <td class="num">#{{ pool.lease.issue_number }}</td>
+        <td class="muted">{{ pool.lease.run_id }}</td>
+        <td class="num">{{ (now - pool.lease.dispatched_at)|duration }} ago</td>
+      {% else %}
+        <td class="muted">&mdash;</td>
+        <td class="num muted">&mdash;</td>
+        <td class="muted">&mdash;</td>
+        <td class="num muted">&mdash;</td>
+      {% endif %}
+      <td class="controls">
+        <form class="control" method="post"
+              action="/api/pools/{{ pool.coder_pool }}/{{ 'undrain' if pool.drained else 'drain' }}">
+          <button type="submit">{{ 'Undrain' if pool.drained else 'Drain' }}</button>
+        </form>
+        <form class="control" method="post"
+              action="/api/pools/{{ pool.coder_pool }}/cancel"
+              {% if pool.lease %}
+              data-confirm="Cancel run {{ pool.lease.run_id }} on {{ pool.coder_pool }}? The run is killed and {{ pool.lease.repo }}#{{ pool.lease.issue_number }} goes back to the agent queue."
+              {% endif %}>
+          <button type="submit" class="danger" {% if not pool.lease %}disabled{% endif %}>
+            Cancel run
+          </button>
+        </form>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
-{% else %}
+{% if not leases %}
 <p class="muted">No coder instance is leased.</p>
 {% endif %}
 
@@ -139,6 +186,7 @@
       <th class="num">Priority</th>
       <th class="num" title="Time since this scheduler first saw the item">Waited</th>
       <th>Labels</th>
+      <th>Order</th>
     </tr>
   </thead>
   <tbody>
@@ -151,6 +199,12 @@
       <td class="num">{{ item.repo_priority }}</td>
       <td class="num">{{ item.waited|duration }}</td>
       <td class="label">{{ item.issue.labels|sort|join(' ') }}</td>
+      <td class="controls">
+        <form class="control" method="post"
+              action="/api/queue/{{ item.issue.repo|urlencode }}/{{ item.issue.number }}/bump">
+          <button type="submit">Next</button>
+        </form>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
@@ -191,9 +245,72 @@
 
 <footer>
   {{ items|length }} queue item(s) &middot;
+  {{ leases|length }} leased &middot;
   starvation ceiling {{ ceiling|duration }} &middot;
+  overrides are cleared when the item is dispatched &middot;
   {{ now.strftime('%Y-%m-%dT%H:%M:%SZ') }}
 </footer>
+
+<noscript>
+  <div class="banner">
+    <p><strong>JavaScript is off.</strong> The buttons still work — each one is a
+       plain <code>POST</code> — but the response is raw JSON. Reload this page
+       afterwards.</p>
+  </div>
+</noscript>
+
+<script>
+// Each button is a real form POST, so it works with scripting off. With scripting
+// on, this intercepts the submit, POSTs it, and reloads the page so the operator
+// sees the new state instead of a JSON body. A failure is shown in #note rather
+// than swallowed, because there is no auth and no other feedback channel.
+(function () {
+  var note = document.getElementById("note");
+
+  function show(text) {
+    if (!note) { return; }
+    note.textContent = text;
+    note.hidden = false;
+  }
+
+  function message(form, response, body) {
+    var label = form.dataset.label || form.action;
+    var detail = body && body.detail ? body.detail : "";
+    return label + ": HTTP " + response.status + (detail ? " — " + detail : "");
+  }
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll("form.control"),
+    function (form) {
+      form.dataset.label = form.getAttribute("action");
+      form.addEventListener("submit", function (event) {
+        var confirmText = form.dataset.confirm;
+        if (confirmText && !window.confirm(confirmText)) {
+          event.preventDefault();
+          return;
+        }
+        event.preventDefault();
+        fetch(form.action, {
+          method: "POST",
+          headers: { "Accept": "application/json" },
+          redirect: "manual"
+        }).then(function (response) {
+          if (response.ok) {
+            window.location.reload();
+            return;
+          }
+          return response.json().then(
+            function (body) { show(message(form, response, body)); },
+            function () { show(message(form, response, null)); }
+          );
+        }).catch(function (error) {
+          show(form.dataset.label + ": " + error);
+        });
+      });
+    }
+  );
+})();
+</script>
 
 </body>
 </html>

@@ -94,6 +94,14 @@ finish. Deliberately *not* cancellation — cancelling the run on a box is a sep
 explicitly-labelled control, because the word "drain" should never destroy work.
 _Avoid_: disable, cordon
 
+**Override**:
+An operator's "dispatch this next" mark on one **Queue item**, set from the web UI and
+held in the scheduler's database. It outranks both the **Starvation ceiling** and repo
+priority, it is cleared the moment the item is dispatched, and it is never a permanent
+priority — repo priority lives in `repos.toml` and is reviewed policy, not a click. Not
+a **Manual fire**, which starts a run immediately and takes no queue position.
+_Avoid_: priority (that is the repo's), pin, jump
+
 **Starvation ceiling**:
 `T`, default 4h. Any queue item waiting longer than `T` jumps the front regardless of
 priority. The whole anti-starvation mechanism — chosen over a continuous aging score

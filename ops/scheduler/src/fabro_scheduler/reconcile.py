@@ -11,10 +11,19 @@ is free again. Draining, cancelling and reordering are draft 11; the exclusion f
 **Requeue** — infra-shaped failures go back in the queue; agent-shaped ones do not.
 The issue is un-labelled (`agent-in-progress` off, `agent` on) and restored to the
 cache with its **original `first_seen`** so its starvation ceiling is not reset.
-The one canonical infra failure a fabro restart produces is classified
-`deterministic`, so requeueing it is a *reason* check (`terminated`, finding 10),
-not a category check — reading only `transient_infra` would requeue nothing on the
-exact bounce the design exists to survive.
+Two failures requeue that are not `transient_infra`, and both are *reason* checks
+rather than category checks:
+
+* the fabro restart, which ends every in-flight run `failed/terminated` with
+  category `deterministic` (finding 10) — reading only `transient_infra` would
+  requeue nothing on the exact bounce the design exists to survive; and
+* an **operator cancel**, which arrives `failed/cancelled` with category
+  `canceled` (one L, and only in the events tail). Decision 15 makes a cancel
+  requeue the issue, and it has to: a cancel exits before the graph's terminal
+  label work, so without this the issue keeps `agent-in-progress`, leaves the
+  cache, and is invisible to `acquire` and to the queue — work lost silently.
+
+Selections: `mark_stuck` and `close_noop` are agent-shaped and are *not* requeued.
 
 **Recovery** — on startup, reconcile every lease against fabro (drop the ones whose
 run is terminal or is gone), then scan GitHub for receipts (`agent-in-progress`)
@@ -78,6 +87,19 @@ INFRA_CATEGORY = "transient_infra"
 # and are *not* requeued.
 TERMINATED_REASON = "terminated"
 
+# The operator's cancel (draft 11), and a second reason that has to be checked
+# because the category does not appear at all until the events tail is read. A
+# cancel is `failed` with `reason: "cancelled"` and the events category `canceled`,
+# one L. Decision 15 makes it requeue: a cancel exits before the graph's terminal
+# label work, so the issue would otherwise keep `agent-in-progress` and be invisible
+# to `acquire` and to the queue (finding 10). Reading the reason also saves the
+# events call — it is in the projection, the category is not.
+CANCELLED_REASON = "cancelled"
+
+# Reasons that requeue whatever the category says. Both are read out of the run
+# projection, so neither costs the extra `GET /runs/{id}/events`.
+REQUEUE_REASONS = frozenset({TERMINATED_REASON, CANCELLED_REASON})
+
 # Decision 8 / the Release contract: poll fabro this often for terminal runs.
 DEFAULT_RELEASE_INTERVAL_SECONDS = 15.0
 
@@ -91,19 +113,20 @@ def is_terminal(run: Mapping[str, object]) -> bool:
 
 
 def should_requeue(run: Mapping[str, object]) -> bool:
-    """True only for an infra-shaped failure.
+    """True only for a failure that must go back in the queue.
 
     Reads the failure `category` (from `_last_failure`, which the reconcile pass
     populates from the events tail when the projection does not carry it) **and**
-    the projection's `reason` for the one infra failure whose category lies
-    (`terminated`, the fabro restart — finding 10). A missing category is NOT
-    infra-shaped: that default fails toward dropping work rather than looping a
-    broken issue forever, which is the direction a human notices (Risk 4).
+    the projection's `reason`, for the two failures whose category is either a lie
+    (`terminated`, the fabro restart) or absent (`cancelled`, the operator's
+    cancel — decision 15). A missing category is NOT infra-shaped: that default
+    fails toward dropping work rather than looping a broken issue forever, which
+    is the direction a human notices (Risk 4).
     """
     lifecycle = run.get("lifecycle")
     if isinstance(lifecycle, Mapping):
         status = lifecycle.get("status")
-        if isinstance(status, Mapping) and status.get("reason") == TERMINATED_REASON:
+        if isinstance(status, Mapping) and status.get("reason") in REQUEUE_REASONS:
             return True
 
     failure = run.get("_last_failure")
@@ -238,11 +261,11 @@ def _with_category(
     run: dict, lease: Lease, fabro_client: FabroClient
 ) -> dict:
     """Attach `_last_failure.category` to a failed run when its reason does not
-    already decide the requeue (i.e. it is not `terminated`)."""
+    already decide the requeue (i.e. it is neither `terminated` nor `cancelled`)."""
     status = run.get("lifecycle", {}).get("status", {})
     if not isinstance(status, Mapping):
         status = {}
-    if status.get("reason") == TERMINATED_REASON:
+    if status.get("reason") in REQUEUE_REASONS:
         return run
     if status_kind(run) == "failed":
         category = fabro_client.last_failure_category(lease.run_id)

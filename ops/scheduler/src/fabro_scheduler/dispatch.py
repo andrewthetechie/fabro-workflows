@@ -328,6 +328,19 @@ class DispatchLoop:
                 run_id=result.run_id, failed_stage=STAGE_LEASE, error=str(exc)
             )
 
+        # The bump has done its job. An override means "next", not "forever"
+        # (overview decision 4), and the item is no longer waiting to be next — the
+        # lease is the durable proof of that. Cleared after the lease and not before:
+        # a dispatch that failed to record a lease is not one the queue should stop
+        # prioritising. Logged only when there was something to clear, so the line
+        # is evidence rather than noise.
+        if self._store.clear_override_on_dispatch(repo, number):
+            log.info(
+                "dispatch: %s#%s: cleared the operator override on dispatch",
+                repo,
+                number,
+            )
+
         log.info(
             "dispatch: %s#%s -> run %s on %s (env=%s)",
             repo,
@@ -370,14 +383,15 @@ class DispatchLoop:
             )
 
     def _drained_pools(self) -> Set[str]:
-        """The coder instances taken out of rotation. Empty in this draft.
+        """The coder instances taken out of rotation, read from `pool_state`.
 
-        **Drain** is draft 11's control: a `pool_state` table and two buttons, and
-        it never cancels the run already on the box (overview decision 15). The
-        exclusion is honoured here anyway — `free_pools` already filters it — so
-        that draft only has to make this method return rows.
+        **Drain** is draft 11's control (decision 15): it stops *new* dispatch to a
+        box and lets the run already on it finish. It never cancels — cancelling the
+        run is its own, explicitly-labelled route — so this is read only by
+        `free_pools`, which excludes a drained pool from the set a new run may take
+        and does nothing at all to the lease that is already there.
         """
-        return frozenset()
+        return set(self._store.drained_pools())
 
     # --- the loop ---------------------------------------------------------------
 

@@ -544,13 +544,59 @@ def test_the_page_shows_the_active_leases(config, store, client):
 
     html = client.get("/").text
 
-    assert "coders-b &mdash;" in html or "coders-b \u2014" in html
+    assert "coders-b" in html
     assert "andrewthetechie/writers-app" in html
     assert "#42" in html
     assert "01MRUN" in html
+    assert "leased" in html
     # Both configured pools are always named, so "free" and "not configured"
     # cannot be read as the same state.
     assert "coders-a" in html
+    assert "accepting" in html
+
+
+def test_the_page_offers_a_bump_control_per_queue_item(config, store, client):
+    store.upsert_issue(issue("andrewthetechie/writers-app", 5))
+
+    html = client.get("/").text
+
+    # The control posts to the route that exists, with the repo urlencoded so a
+    # name can never break out of the action attribute.
+    assert "/api/queue/andrewthetechie/writers-app/5/bump" in html
+    assert ">Next<" in html
+
+
+def test_the_page_offers_drain_and_cancel_for_each_pool(config, store, client):
+    LeaseStore(store).acquire(
+        Lease(
+            coder_pool="coders-a",
+            repo="andrewthetechie/writers-app",
+            issue_number=42,
+            run_id="01MRUN",
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+
+    html = client.get("/").text
+
+    assert "/api/pools/coders-a/drain" in html
+    assert "/api/pools/coders-b/drain" in html
+    assert "/api/pools/coders-a/cancel" in html
+    assert "/api/pools/coders-b/cancel" in html
+    # The cancel button is disabled on the pool with no lease, so an operator
+    # cannot aim it at nothing and get a 409 for their trouble.
+    assert "disabled" in html
+
+
+def test_the_page_shows_an_undrain_control_for_a_drained_box(config, store, client):
+    store.set_drained("coders-a", True)
+
+    html = client.get("/").text
+
+    assert "/api/pools/coders-a/undrain" in html
+    assert "/api/pools/coders-a/drain" not in html
+    assert "/api/pools/coders-b/drain" in html
+    assert "drained" in html
 
 
 def test_the_page_says_no_lease_is_held_when_none_is(config, store, client):

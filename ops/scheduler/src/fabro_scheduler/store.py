@@ -21,8 +21,14 @@ are written by dispatch, which never touches the cache.
 because decision 11's soft affinity has to outlive a lease. `leases` holds only the
 *active* claim — one row per box, deleted when the run ends — so after draft 09
 releases a row there would be nothing left anywhere to say which box last ran a
-repo, and `last_pool_for_repo` would always answer `None`. Draft 11 adds
-`overrides` and `pool_state`.
+repo, and `last_pool_for_repo` would always answer `None`.
+
+Draft 11 adds two more, and both are operator state rather than inventory:
+`overrides` (the UI's "make this next" mark, ephemeral by design — overview
+decision 4) and `pool_state` (the **Drain** flag per coder instance). They live in
+SQLite for the same reason the leases do: a restart that forgot a drained box would
+quietly put new work straight back onto it, and an operator who drained a
+misbehaving instance would have to notice and drain it again.
 """
 
 from __future__ import annotations
@@ -95,6 +101,34 @@ CREATE TABLE IF NOT EXISTS repo_affinity (
   coder_pool  TEXT NOT NULL,
   recorded_at TEXT NOT NULL     -- ISO-8601 UTC
 );
+
+-- Draft 11. One row per issue the operator has bumped to the front. `override_rank`
+-- is a signed integer that sorts *before* the starvation ceiling, ascending, so
+-- `bump_override` takes `MIN(...) - 1` and the most recent bump wins. The row is
+-- deleted the moment the item is dispatched: it means "next", not "forever"
+-- (overview decision 4), and a mark that outlived its dispatch would pin an item
+-- to the front of the queue for a reason nobody remembers.
+--
+-- Not a `priority` column and not in `repos.toml` on purpose: repo priority is a
+-- reviewed policy decision, this is one operator's click, which is why the two
+-- never share a field.
+CREATE TABLE IF NOT EXISTS overrides (
+  repo          TEXT    NOT NULL,
+  issue_number  INTEGER NOT NULL,
+  override_rank INTEGER NOT NULL,
+  created_at    TEXT    NOT NULL,  -- ISO-8601 UTC
+  PRIMARY KEY (repo, issue_number)
+);
+
+-- Draft 11. The **Drain** flag, one row per coder instance. A row is written only
+-- when the operator drains or undrains a box, so "no row" and `drained = 0` mean
+-- the same thing; `drained_pools` reads only the `1`s. Draining never touches the
+-- lease column: the run already on the box keeps running (overview decision 15),
+-- which is why this is a separate table and not a column on `leases`.
+CREATE TABLE IF NOT EXISTS pool_state (
+  coder_pool TEXT PRIMARY KEY,
+  drained    INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -145,6 +179,44 @@ class Store:
         self._conn.commit()
 
     # --- reads ------------------------------------------------------------------
+
+    def override_ranks(self) -> dict[tuple[str, int], int]:
+        """Every operator override, keyed by `(repo, issue_number)`.
+
+        Read whole by `build_queue`, which needs the rank for each cached issue
+        anyway — one SELECT beats one per item, and the table is a handful of rows.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT repo, issue_number, override_rank FROM overrides"
+            ).fetchall()
+        return {
+            (row["repo"], row["issue_number"]): row["override_rank"] for row in rows
+        }
+
+    def get_override(self, repo: str, number: int) -> int | None:
+        """This issue's override rank, or `None` if the operator never bumped it."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT override_rank FROM overrides "
+                "WHERE repo = ? AND issue_number = ?",
+                (repo, number),
+            ).fetchone()
+        return None if row is None else int(row["override_rank"])
+
+    def drained_pools(self) -> set[str]:
+        """The coder instances taken out of rotation, by name.
+
+        Only the `drained = 1` rows: a row exists for a box that was drained and
+        then undrained, and it must not read as drained. Unknown names are returned
+        as they are stored — filtering against `config.coder_pools` is
+        `LeaseStore.free_pools`'s job, which already only walks the configured set.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT coder_pool FROM pool_state WHERE drained = 1"
+            ).fetchall()
+        return {row["coder_pool"] for row in rows}
 
     def get_issue(self, repo: str, number: int) -> Issue | None:
         with self._lock:
@@ -225,6 +297,73 @@ class Store:
         )
 
     # --- writes -----------------------------------------------------------------
+
+    def bump_override(
+        self, repo: str, number: int, *, created_at: datetime | None = None
+    ) -> int:
+        """Mark one issue to be dispatched next, and return the rank it got.
+
+        `MIN(override_rank) - 1` (`-1` when the table is empty), so the most recent
+        bump is the smallest number and sorts first — `rank()` orders this tier
+        ascending. The read and the write are one transaction under one lock: two
+        operators clicking at the same instant must not both be handed `-1` for
+        different issues, and the rank is what the response reports.
+        """
+        stamp = _stamp(created_at)
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT MIN(override_rank) AS lowest FROM overrides"
+            ).fetchone()
+            lowest = None if row is None else row["lowest"]
+            rank = -1 if lowest is None else int(lowest) - 1
+            self._upsert_override(repo, number, rank, stamp)
+        return rank
+
+    def set_override(
+        self,
+        repo: str,
+        number: int,
+        override_rank: int,
+        *,
+        created_at: datetime | None = None,
+    ) -> None:
+        """Write one override rank verbatim. Upserts, so a re-set replaces it.
+
+        The explicit-rank half of `bump_override`, kept separate because the two
+        have different callers: this one is what a test (or a future "set the
+        order" control) needs, and that one is what the UI's bump button needs.
+        """
+        with self._lock, self._conn:
+            self._upsert_override(repo, number, override_rank, _stamp(created_at))
+
+    def clear_override_on_dispatch(self, repo: str, number: int) -> bool:
+        """Drop an issue's override, returning whether one was there.
+
+        Called when the item is dispatched, because the mark means "next" and the
+        item is no longer waiting for it. Returning the boolean is what lets the
+        dispatch loop log the clear only when there was something to clear.
+        """
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM overrides WHERE repo = ? AND issue_number = ?",
+                (repo, number),
+            )
+        return cursor.rowcount > 0
+
+    def set_drained(self, coder_pool: str, drained: bool) -> None:
+        """Put a coder instance in or out of rotation for *new* dispatch.
+
+        The current lease is untouched and runs to completion — that is the whole
+        difference between **Drain** and cancel (CONTEXT.md; decision 15). The row
+        is written for the undrained case too, rather than deleted: the flag is the
+        record, and an absent row and `drained = 0` are read the same way.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO pool_state (coder_pool, drained) VALUES (?, ?) "
+                "ON CONFLICT(coder_pool) DO UPDATE SET drained = excluded.drained",
+                (coder_pool, 1 if drained else 0),
+            )
 
     def upsert_issue(self, issue: Issue) -> None:
         """Insert one item, or update it without disturbing `first_seen`."""
@@ -457,6 +596,19 @@ class Store:
 
     # --- internals --------------------------------------------------------------
 
+    def _upsert_override(
+        self, repo: str, number: int, override_rank: int, stamp: str
+    ) -> None:
+        """The one `overrides` upsert. Callers hold the lock and the transaction."""
+        self._conn.execute(
+            "INSERT INTO overrides (repo, issue_number, override_rank, created_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(repo, issue_number) DO UPDATE SET "
+            "  override_rank = excluded.override_rank, "
+            "  created_at = excluded.created_at",
+            (repo, number, override_rank, stamp),
+        )
+
     def _upsert_issue(self, issue: Issue) -> None:
         self._conn.execute(
             "INSERT INTO issue_cache (repo, number, title, labels, first_seen, last_seen) "
@@ -491,3 +643,8 @@ def _row_to_issue(row: sqlite3.Row) -> Issue:
 
 def _parse_or_none(value: str | None) -> datetime | None:
     return None if value is None else datetime.fromisoformat(value)
+
+
+def _stamp(value: datetime | None) -> str:
+    """An ISO-8601 UTC timestamp, defaulting to now."""
+    return (datetime.now(UTC) if value is None else value).isoformat()

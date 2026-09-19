@@ -513,13 +513,17 @@ one `backlog` run at a time, so four automations on independent schedules stop f
 over two single-slot boxes. Decisions and the contracts each later draft consumes:
 `../docs/scheduler/00-overview-and-contracts.md`.
 
-Today it is draft 08 of 14: it reads `repos.toml`, inventories the `agent`-labelled
+Today it is draft 11 of 14: it reads `repos.toml`, inventories the `agent`-labelled
 issues of every enabled repo from GitHub every 60s with conditional requests, ranks
-them, serves the result on `/` (HTML) and `/api/queue` (JSON) — and **dispatches**.
-Every 5 seconds it takes the top-ranked item whose repo has no run in flight, labels it
-`agent-in-progress`, removes `agent`, creates and starts a real `backlog` run on a free
-coder instance, and records the **lease** that makes that instance exclusive.
-`POST /api/dispatch-once` stays as the operator's manual override.
+them, serves the result on `/` (HTML), `/api/queue`, `/api/repos` and `/api/pools`
+(JSON) — and **dispatches**. Every 5 seconds it takes the top-ranked item whose repo
+has no run in flight, labels it `agent-in-progress`, removes `agent`, creates and
+starts a real `backlog` run on a free coder instance, and records the **lease** that
+makes that instance exclusive. Draft 09 releases that lease when the run reaches a
+terminal state, requeues infra-shaped failures, and reconciles at startup. Draft 11
+adds the three controls on the page: **bump** an issue to the front, **drain** a coder
+instance, and **cancel** the run on one. `POST /api/dispatch-once` stays as the
+operator's manual override.
 
 **Status, 2026-09-19:** deployed, acceptance run done (the dated logs are in the
 deployment log), and the `scheduler` container is **stopped** — parked until draft 09.
@@ -562,6 +566,13 @@ deployed state, not the tree's. Redeploy (step 11 of the host rebuild), clear th
 stale lease rows first, and write the new acceptance run up in the deployment log; the
 "do not deploy draft 09 before 10" gate is satisfied.
 
+**Status, 2026-09-19 (draft 11 in this tree):** the tree is now 11 of 14 and the page has
+controls. Still nothing on the host has been redeployed: the running image is draft 08
+and the container is stopped, so the controls exist in this repository and in a local
+`uv run pytest`, not on `:32280`. Redeploying arms automatic dispatch *and* puts live
+mutation buttons on an unauthenticated LAN page — see *The three controls* below before
+doing it.
+
 It is a second service in the **same compose project**, so `docker compose ps` shows the
 whole factory in one place and a host rebuild brings it back with everything else.
 
@@ -572,14 +583,15 @@ whole factory in one place and a host rebuild brings it back with everything els
 | `scheduler/src/fabro_scheduler/github.py` | The two halves of the GitHub surface. The inventory is one conditional `GET /repos/{owner}/{repo}/issues?labels=agent&state=open&per_page=100` per repo: pull requests are filtered out (they come back from `/issues` too, told apart only by the presence of a `pull_request` key), as are `agent-in-progress` / `agent-stuck`. It returns an explicit `changed` flag, because a `304` carries no issue list and costs **zero** rate-limit quota — so it must never be read as "no work". The writes are exactly two: `add_label` and `remove_label`, which are the dispatch receipt and the queue label. `DELETE .../labels/{name}` returning `404` is **success** — the label was not there, which is what was wanted — because the rollback path is a retry. Both log the `200`/`304`/`4xx` and `x-ratelimit-remaining`, and never the token. |
 | `scheduler/src/fabro_scheduler/workflow_version.py` | `build_version_payload` and `clone_fabro_tree`. The version is rooted at **`.fabro/`** with the **graph** as its entrypoint, and both are forced: rooted at the package the `../_shared/review-merge/review-merge.fabro` import cannot resolve, and naming `workflow.toml` is a 422 (`docs/scheduler/02-fix-fire-pr-review-rooting.md` carries the exact errors). Enumerates the directory rather than a file list, so a prompt added later cannot fail the run at admission; a non-UTF-8 file or a symlink is refused outright. The clone is one `git clone --depth 1` of `andrewthetechie/fabro-workflows@main` — public, anonymous, no credential — into a temp directory that is removed on the way out. |
 | `scheduler/src/fabro_scheduler/fabro.py` | The three calls: `POST /workflow-versions`, `POST /runs` (creates, does **not** start), `POST /runs/{id}/start`. `args.inputs` is scalars only, and `issue_number` is sent as a JSON **number** because the graph guards it with a POSIX `case`. Every non-2xx raises with fabro's own `errors[0].detail`. The version id is cached by commit sha, so `main` being unchanged means one registration for many runs. `FABRO_API_TOKEN` lives here and nowhere else, and every message passes through a redactor so a `user:password@` in `FABRO_API_URL` cannot leak. |
-| `scheduler/src/fabro_scheduler/store.py` | SQLite at `/data/scheduler.db`: `issue_cache` (one row per queue item), `repo_etag` (per-repo ETag, attempt/success times, last error), `leases` (one row per box currently holding a run, `coder_pool` as the primary key) and `repo_affinity` (the box each repo last ran on). `first_seen` is written once and **never** rewritten — an issue could otherwise be refreshed forever and never reach the starvation ceiling. **Only a successful fetch writes a cache row**: a failed one keeps the cached items and the ETag, so an unreachable GitHub does not look like an empty queue. The lease tables are the deliberate exception — they are not inventory. The `leases` primary key is what makes double-dispatch to one box impossible: the database enforces it, not the loop. |
-| `scheduler/src/fabro_scheduler/queue.py` | `rank()` — the one definition of "next", shared by the page and the dispatch loop. Order: operator override, then the starvation ceiling (anything waiting longer than `T`, oldest first), then repo priority ascending, then issue number. The override tier is honoured but inert until draft 11 sets the field. |
+| `scheduler/src/fabro_scheduler/store.py` | SQLite at `/data/scheduler.db`: `issue_cache` (one row per queue item), `repo_etag` (per-repo ETag, attempt/success times, last error), `leases` (one row per box currently holding a run, `coder_pool` as the primary key), `repo_affinity` (the box each repo last ran on), and draft 11's `overrides` (one row per operator bump) and `pool_state` (the **Drain** flag per box). `first_seen` is written once and **never** rewritten — an issue could otherwise be refreshed forever and never reach the starvation ceiling. **Only a successful fetch writes a cache row**: a failed one keeps the cached items and the ETag, so an unreachable GitHub does not look like an empty queue. The lease, override and pool-state tables are the deliberate exception — they are not inventory. The `leases` primary key is what makes double-dispatch to one box impossible: the database enforces it, not the loop. `bump_override` reads `MIN(override_rank)` and writes `MIN - 1` in one transaction, so two simultaneous clicks cannot both be handed `-1`. |
+| `scheduler/src/fabro_scheduler/queue.py` | `rank()` — the one definition of "next", shared by the page and the dispatch loop. Order: operator **Override** (ascending, so the newest bump is first), then the starvation ceiling (anything waiting longer than `T`, oldest first), then repo priority ascending, then issue number. `build_queue` joins the `overrides` table onto the cached issues, so an override is read by the same sort the loop dispatches from. |
 | `scheduler/src/fabro_scheduler/inventory.py` | The 60s poll loop. One thread, four repos staggered 3s apart so they never fire in the same second — 3s and not `interval/4`, so a cold start fills the page in ~10s instead of 45. |
-| `scheduler/src/fabro_scheduler/lease.py` | The **Coder lease**: `Lease`, `LeaseStore` and `LeaseConflict`. `active()` reads the rows, `free_pools()` answers "leased or drained?", `acquire()` takes a box and records the repo's affinity, `last_pool_for_repo()` is the soft-affinity tiebreak (decision 11). The exclusion itself is the table's primary key, not this class — two scheduler processes could share the file and one box would still not be handed out twice. Nothing here releases a lease; that is draft 09. |
-| `scheduler/src/fabro_scheduler/dispatch.py` | The **5-second dispatch loop**. `choose_next` is pure — it takes the already-ranked queue and skips any repo with a run in flight rather than idling the box — and `DispatchLoop.tick` performs the side effects for every free box it can fill. Order: labels, create, start, lease; a failure before the run exists rolls the labels back, and a failed repo is backed off for the rest of that tick. It owns the two `agent-in-progress` writes and the `issue_number`/`coder_pool` inputs. |
-| `scheduler/src/fabro_scheduler/templates/queue.html` | The page: the active **coder leases** (box, repo, issue, run id, age, and every configured box marked free or leased), the queue, and a per-repo freshness strip. Inline CSS, no external assets, refreshes itself on the same 60s beat. There are no controls on it, and it says so when the process is running without the dispatch loop armed. |
-| `scheduler/src/fabro_scheduler/app.py` | `/`, `/api/queue`, `/api/repos`, `/health`, `POST /api/dispatch-once`, and the entrypoint. Validates the config *before* binding the port, so a broken file fails the container healthcheck instead of serving nothing. `main` starts the inventory poller **and** the dispatch loop; the loop is off in every other construction, which is what lets a test drive a tick by hand. `dispatch-once` takes `repo`, `issue_number` and `coder_pool`, takes `environment_id` from that repo's `repos.toml` row, refuses a pool that is already leased with a `409`, records the lease on the way out, and answers `503` when no `FABRO_API_TOKEN` is configured — it never invents one. |
-| `scheduler/tests/` | `uv run pytest` from `ops/scheduler/`. GitHub and fabro faked with `respx`, SQLite in `tmp_path`, the `.fabro` tree a fixture — no network, no container, no host. The clone path is exercised against a local git repository. `test_dispatch.py` asserts the *order* of the label and run calls, not just their effect, and covers the failures that must leave nothing behind. |
+| `scheduler/src/fabro_scheduler/lease.py` | The **Coder lease**: `Lease`, `LeaseStore` and `LeaseConflict`. `active()` reads the rows, `free_pools()` answers "leased or drained?" (the drained set now comes from `pool_state`), `acquire()` takes a box and records the repo's affinity, `release()` frees it and returns the row, `last_pool_for_repo()` is the soft-affinity tiebreak (decision 11). The exclusion itself is the table's primary key, not this class — two scheduler processes could share the file and one box would still not be handed out twice. Nothing here requeues an issue; that is `reconcile.py`. |
+| `scheduler/src/fabro_scheduler/dispatch.py` | The **5-second dispatch loop**. `choose_next` is pure — it takes the already-ranked queue and skips any repo with a run in flight rather than idling the box — and `DispatchLoop.tick` performs the side effects for every free box it can fill. Order: labels, create, start, lease; a failure before the run exists rolls the labels back, and a failed repo is backed off for the rest of that tick. It owns the two `agent-in-progress` writes and the `issue_number`/`coder_pool` inputs, excludes a drained box via `pool_state`, and clears an operator override once the lease is recorded. |
+| `scheduler/src/fabro_scheduler/templates/queue.html` | The page: the **coder instances** (state, lease, and the Drain/Undrain and Cancel-run controls), the queue with a **Next** button per row, and a per-repo freshness strip. Inline CSS and a few lines of inline JS, no external assets, refreshes itself on the same 60s beat. Each control is a real `<form method="post">`, so the buttons work with scripting off (the response is raw JSON); with scripting on the submit is intercepted, the page reloads on success and shows the error otherwise. |
+| `scheduler/src/fabro_scheduler/app.py` | `/`, `/api/queue`, `/api/repos`, `/api/pools`, `/health`, `POST /api/dispatch-once`, and draft 11's `POST /api/queue/{repo}/{issue}/bump`, `POST /api/pools/{pool}/drain`, `/undrain` and `/cancel`. Validates the config *before* binding the port, so a broken file fails the container healthcheck instead of serving nothing. `main` starts the inventory poller, the dispatch loop **and** the 15s release poll; every one of them is off in any other construction, which is what lets a test drive a tick by hand. `dispatch-once` takes `repo`, `issue_number` and `coder_pool`, takes `environment_id` from that repo's `repos.toml` row, refuses a pool that is already leased with a `409`, records the lease on the way out, and answers `503` when no `FABRO_API_TOKEN` is configured — it never invents one. Every mutating route is `POST` and every one logs what it changed, because there is no auth to attribute it to. |
+| `scheduler/src/fabro_scheduler/reconcile.py` | Draft 09's release/requeue/recovery, plus draft 11's one change to it: a cancel requeues. `should_requeue` keys on the failure **reason** for the two failures whose category cannot decide — `terminated` (a fabro restart, category `deterministic`) and `cancelled` (the operator's cancel, category `canceled`, one L). Both are in the run projection, so neither costs the extra events call. |
+| `scheduler/tests/` | `uv run pytest` from `ops/scheduler/`. GitHub and fabro faked with `respx`, SQLite in `tmp_path`, the `.fabro` tree a fixture — no network, no container, no host. The clone path is exercised against a local git repository. `test_dispatch.py` asserts the *order* of the label and run calls, not just their effect, and covers the failures that must leave nothing behind. `test_overrides.py` covers bump/drain/cancel, including that a bump beats both the ceiling and repo priority, that drain leaves a held lease alone, and that cancel never releases one itself. |
 | `scheduler/Dockerfile` | Two stages. Runs as uid 1000, bakes `repos.toml` in, creates `/data` for the SQLite file, and installs `git` (draft 07 fetches `.fabro/` with a shallow clone). |
 
 ### Deploying it
@@ -600,22 +612,74 @@ already there. `rsync --delete` is safe because nothing in `~/fabro/scheduler/` 
 generated on the host — but note it *does* delete `~/fabro/scheduler.env` if that file is
 inside the scheduler tree, so keep it one level up, beside `docker-compose.yaml`.
 
-**From draft 08 on, deploying this arms automatic dispatch.** The container starts the
-5-second loop as soon as it is up, so a deploy labels issues and starts real runs — the
-acceptance run *is* the deploy. Two things bound it: the loop can hold at most one lease
-per coder instance, so with both boxes leased it stops dispatching on its own; and nothing
-releases a lease until draft 09, so it does not start a third run. It is still not safe to
-leave unattended, for the reasons in the section above.
+**From draft 08 on, deploying this arms automatic dispatch; from draft 09 it also
+self-releases.** The container starts the 5-second dispatch loop, the 60s inventory poller
+and the 15s release poll as soon as it is up, so a deploy labels issues, starts real runs,
+and keeps starting them as boxes free up — the acceptance run *is* the deploy. The only
+things bounding it are one in-flight run per repo, one lease per coder instance, and
+fabro's own `max_concurrent_runs` backstop of 4. Draft 11 adds the mutation controls to
+the page, which is the point of the draft and also the sharpest edge in the service: they
+are unauthenticated on a LAN page and one of them cancels a running job. Deploy only with
+the operator watching, and prefer draining a misbehaving box to cancel-cycling it.
 
 The 2026-09-19 deploy was the acceptance run and the container was then stopped. Starting
-it again with both lease rows still present dispatches nothing — clear them first if the
-intent is to dispatch.
+it again with both draft-08 lease rows still present dispatches nothing until they are
+cleared (*Breaking a stuck lease* below) or the run behind each is reconciled.
 
-#### Clearing a lease
+#### The three controls
 
-There is no release path in this draft. A lease is a row, and the operator's escape
-hatch is to delete it — which is what frees a box (or a hand-fired run's pool) for a
-re-run:
+Every control on the page is a `POST`, and none of them is authenticated (decision 16).
+Each one is the same call as the `curl` below; each one logs what it changed, because there
+is no identity to attribute it to.
+
+```sh
+B=http://10.10.0.32:32280
+R=andrewthetechie%2Fjelly-swipe      # the repo, urlencoded; an unencoded / also works
+
+# Bump one issue to the front. Ranks descend (-1, -2, ...), so the newest bump wins.
+# Ordering only: it never pre-empts a running lease, and one-run-per-repo still applies.
+# Cleared automatically when the item is dispatched — it means "next", not "forever".
+curl -fsS -X POST "$B/api/queue/$R/123/bump"                 # {"override_rank":-1}
+
+# Drain stops NEW dispatch to one coder instance; the run already on it keeps running.
+curl -fsS -X POST "$B/api/pools/coders-a/drain"              # {"drained":true}
+curl -fsS -X POST "$B/api/pools/coders-a/undrain"            # {"drained":false}
+
+# Cancel is separate from drain and ends the run now.
+curl -fsS -X POST "$B/api/pools/coders-a/cancel"             # {"cancelled_run_id":"01M..."}
+
+# Every pool, its drain flag and its lease (draft 12's C8 condition reads this):
+curl -fsS "$B/api/pools" | jq -c '.[] | {coder_pool, drained, run: .lease.run_id}'
+```
+
+Four things about **Cancel** that are not obvious:
+
+* It calls fabro's `POST /runs/{id}/cancel` and then **stops**. It does not release the
+  lease. A cancel is asynchronous for a live run (fabro answers `202`), so the box frees
+  itself through draft 09's 15-second release poll, which is the one path that drops a
+  lease — a natural ending and a cancel take the same route.
+* The issue is **requeued**: the release path removes `agent-in-progress` and restores
+  `agent`, so the next inventory poll picks it up again with its original wait. That is
+  decision 15's "cancel kills the run on it and requeues the issue", and it is why
+  `should_requeue` treats a `cancelled` reason as requeuable — a cancel exits before the
+  graph's terminal label work, so without it the issue would keep the receipt and be
+  invisible to `acquire` and to the queue.
+* A `409` means either the pool has no lease (nothing to cancel) or fabro says the run was
+  already over. Both are "there is nothing left to stop"; in the second case the release
+  poll frees the box within 15s anyway.
+* It does **not** un-drain the box. A drained instance stays drained after its run is
+  cancelled, which is the point of draining it.
+
+All of them are on `http://10.10.0.32:32280/`. The page is plain HTML with a few
+lines of inline JavaScript: each button is a real `POST` form, so it works with scripting
+disabled (the response is raw JSON), and with scripting on the page reloads on success and
+shows the error inline otherwise.
+
+#### Breaking a stuck lease
+
+The normal paths out of a lease are draft 09's release poll and the page's **Cancel run**
+button; deleting the row is the escape hatch for a lease whose run fabro can no longer
+answer for, or for clearing draft 08's two stale rows on the host. A lease is a row:
 
 ```sh
 # one box
@@ -632,7 +696,9 @@ c.execute(\"DELETE FROM leases\"); c.commit()"'
 tiebreak, not a claim. Deleting a lease row while its run is still live does **not**
 stop the run and does not cancel anything — it only lets the loop put another run on
 that box, which is two single-slot runs on one slot. Delete a lease only after its run
-is over, or to break a stuck state on purpose.
+is over, or to break a stuck state on purpose. **Cancel first, then delete** if the run is
+still live and you want the box back: cancel asks fabro to stop it, the poll frees the row,
+and the issue is relabelled on the way out — a delete alone skips all three.
 
 The scheduler's two credentials live in `~/fabro/scheduler.env`, created once per host and
 never re-deployed:
@@ -662,12 +728,15 @@ ssh andrew@10.10.0.32 'cd ~/fabro && docker compose logs --tail 20 scheduler' \
 curl -fsS http://10.10.0.32:32280/api/repos | jq -r '.[] | "\(.items)\t\(.stale)\t\(.repo)"'
 curl -fsS http://10.10.0.32:32280/api/queue \
   | jq -r '.[] | "\(.repo_priority)\t#\(.number)\t\(.repo)\t\(.waited_seconds)s"'
+# draft 11: every pool, its drain flag, and the lease it holds (or null)
+curl -fsS http://10.10.0.32:32280/api/pools \
+  | jq -c '.[] | {coder_pool, drained, run: .lease.run_id}'
 curl -fsS http://10.10.0.32:32280/health | jq .fabro
 
 # draft 08: what it dispatched, and which boxes it holds
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose logs --tail 60 scheduler' \
-  | grep -E 'dispatch:'
-curl -fsS http://10.10.0.32:32280/ | sed -n '/Coder leases/,/<h2>Queue/p'
+  | grep -E 'dispatch:|reconcile:|override:|drain:|cancel:'
+curl -fsS http://10.10.0.32:32280/ | sed -n '/Coder instances/,/<h2>Queue/p'
 # the box each run is actually on — one slot per box, so exactly one is_processing true
 curl -fsS http://10.10.0.29:8000/slots | jq '.[0].is_processing'
 curl -fsS http://10.10.0.56:8000/slots | jq '.[0].is_processing'
@@ -675,9 +744,11 @@ curl -fsS http://10.10.0.56:8000/slots | jq '.[0].is_processing'
 
 `/health` prints the four rows in scheduling order and reports `github.configured` — a
 **boolean**, never the token. `/api/repos` is the freshness view: `items`, `stale`, and the
-ETag per repo. `/api/queue` is the ranked queue, in the order the dispatch loop reads it.
-Open `http://10.10.0.32:32280/` for the page itself: the queue, the active leases, and a
-per-repo freshness strip, with no controls on it.
+ETag per repo. `/api/queue` is the ranked queue, in the order the dispatch loop reads it,
+including each item's `override_rank` (null unless the operator bumped it). `/api/pools` is
+the per-box view: `drained` and the lease, or `null`. Open `http://10.10.0.32:32280/` for
+the page itself: the coder instances with their Drain/Undrain and Cancel-run buttons, the
+queue with a **Next** button on every row, and a per-repo freshness strip.
 
 The last check is the one that proves the conditional-request path is live: with the page
 idle, the log shows each repo's first fetch as `200` and every 60s refresh after it as
@@ -691,9 +762,10 @@ on the page naming the variable rather than a crash loop.
 
 ### Dispatching by hand
 
-The one write endpoint. It creates and starts **one real run** — a `backlog` run that
-will open a pull request — so it is the operator's tool, and draft 08's loop is what will
-call the same client automatically:
+`POST /api/dispatch-once` is the manual override and the oldest of the five write routes
+(the other four are the page's controls, above). It creates and starts **one real run** —
+a `backlog` run that will open a pull request — so it is the operator's tool, and draft
+08's loop calls the same client automatically:
 
 ```sh
 curl -fsS -X POST http://10.10.0.32:32280/api/dispatch-once \
@@ -724,29 +796,29 @@ so both are correct and neither accumulates anything. Watch the run with
 `ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro events <run id> -p'`;
 the first stage it must reach is `prep`.
 
-**Until draft 10 lands, `issue_number` is passed and ignored.** `backlog`'s `acquire`
-stage still selects the issue itself from the `agent` queue and publishes
-`issue_number` as its own context update, so a run started this way works on whatever
-`acquire` picks — not necessarily the number in the request. The run is real and the
-coder lease is real; the issue is not the one you named. Draft 10 collapses
-`acquire`/`claim` so the input decides.
+**Since draft 10 the `issue_number` you send is the issue the run works.** `acquire`
+still selects nothing: a `backlog` run works exactly the `issue_number` it is given and
+fails closed rather than choosing (or skipping) work, so the input decides. Before draft
+10 a run started this way worked whatever `acquire` picked, which is why draft 09 had to
+wait for 10.
 
 **This endpoint now takes the lease, and refuses a box that is already leased** — `409`,
 with the holding repo, issue and run id in the body. Before draft 08 it could put a
 second run on a single-slot instance, which is the contention the scheduler exists to
 remove; it now cannot, because it reads the same `leases` table the loop writes. It
 does **not** write labels: the issue a human names by hand need not be in the `agent`
-queue at all, so there is nothing to restore if the dispatch fails. And because nothing
-releases a lease until draft 09, a hand-fire takes that box until the row is deleted
-(*Clearing a lease* above) — a `409` on the next attempt for the same pool is that, not a
-bug.
+queue at all, so there is nothing to restore if the dispatch fails. A hand-fire's lease is
+released like any other — draft 09's poll drops it when the run reaches a terminal state —
+so a `409` on the next attempt for the same pool means that run is genuinely still in
+flight.
 
 One failure leaves something behind: if `/runs/{id}/start` fails, the run is in
 `submitted` and will never execute. The `502` body names it. Cancel it with
-`POST /api/v1/runs/{id}/cancel` — draft 09's recovery reconciles these automatically,
-nothing does today. The dispatch loop leaves the same kind of orphan when its own start
-call fails, and says so in the log with the run id; it also rolls the issue's labels back,
-so the issue is still queued and will be tried again on the next tick.
+`POST /api/v1/runs/{id}/cancel`, or with the page's **Cancel run** button on the pool it
+holds; draft 09's recovery reconciles a run fabro no longer knows about. The dispatch loop
+leaves the same kind of orphan when its own start call fails, and says so in the log with
+the run id; it also rolls the issue's labels back, so the issue is still queued and will be
+tried again on the next tick.
 
 A duplicate repo name is a hard failure, not last-wins, and it is worth seeing once:
 

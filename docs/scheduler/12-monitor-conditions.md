@@ -75,6 +75,11 @@ puts health out-of-band and run failures in-band.
   file** if it is missing, or this condition has nothing to read. Flag it rather
   than inventing a different shape.
 
+  **Since draft 11 it exists**, in exactly the shape above: every configured pool,
+  in `coder_pools` order, with `drained` and a flat `lease` (`repo`, `issue_number`,
+  `run_id`, `dispatched_at`) or `null`. Nothing is left for this draft to add — read
+  it and do not reshape it.
+
 - Behavior rules:
   - `SCHEDULER_URL` defaults to `http://127.0.0.1:32280`, overridable.
   - **C7** fires when `/health` does not answer `200` within 5s.
