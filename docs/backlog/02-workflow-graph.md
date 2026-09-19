@@ -5,6 +5,12 @@
 job is faithful transcription, then fixing any `fabro validate` complaints in task 08.
 DOT escaping mistakes are the main risk.
 
+> **The graph below is the transcription source, not the current graph.** It has
+> moved on since — timeouts were resized from measurement, `_shared/review-merge/`
+> was factored out, and `improve_gate` gained a `split` disposition. Read
+> `.fabro/workflows/backlog/workflow.fabro` for what actually runs; it carries the
+> reasoning for each change inline.
+
 ## Goal
 
 Replace `~/.fabro-deploy/fabro-workflows/.fabro/workflows/backlog/workflow.fabro`

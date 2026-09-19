@@ -136,6 +136,7 @@ echo '{\"context_updates\":{\"claim_lost\":\"false\",\"issue_number\":'$N'}}'"]
         script="set -e
 mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra
 echo 0 > /tmp/fabro/extra_round
+echo 0 > /tmp/fabro/split_rounds
 ./.fabro/setup.sh"]
 
     // ---- Decomposition (agent writes file; gate validates) ----
@@ -175,11 +176,20 @@ if [ \"$S\" = invalid ]; then
 fi
 echo 0 > /tmp/fabro/decompose_attempts
 if [ \"$S\" = issues ]; then
-  jq '[.issues[] | . + {source: \"decompose\"}]' $F > /tmp/fabro/tasks.json
+  jq '[.issues[] | . + {source: \"decompose\", covers: (if (.covers | type) == \"array\" then .covers else [] end)}]' $F > /tmp/fabro/tasks.json
   echo 0 > /tmp/fabro/task_index
 fi
 CNT=$(jq '.issues | length' $F 2>/dev/null || echo 0)
-echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT'}}'"]
+OVER=0
+if [ \"$S\" = issues ]; then
+  OVER=$(jq '[.[] | select((.covers | length) > 3)] | length' /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+  if [ \"$OVER\" != 0 ]; then
+    echo 'WARNING: '$OVER' task(s) declare more than three covers entries, which on measured history means they will not land in one coder stage:'
+    jq -r '.[] | select((.covers | length) > 3) | \"  - \" + .id + \": \" + ((.covers | length) | tostring) + \" requirements\"' /tmp/fabro/tasks.json
+    echo 'improve decides what to do about it: it runs per task against the checkout as it will actually be, and can split.'
+  fi
+fi
+echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT',\"oversized_tasks\":'$OVER'}}'"]
 
     // ---- Sequential task loop ----
     next_task [label="Next task + mainline refresh", shape=parallelogram, output_schema="routing",
@@ -192,6 +202,7 @@ echo 0 > /tmp/fabro/round
 echo 0 > /tmp/fabro/review_attempts
 echo 0 > /tmp/fabro/improve_attempts
 echo 0 > /tmp/fabro/merge_attempts
+rm -f /tmp/fabro/improve_result.json
 git rev-parse HEAD > /tmp/fabro/pre_merge_sha
 if git fetch origin main && git merge --no-edit origin/main; then
   git rev-parse HEAD > /tmp/fabro/task_base_sha
@@ -269,13 +280,83 @@ fi"]
     // See docs/perf/00-overview-and-measurements.md.
     improve [label="Improve task spec", class="improve", timeout="15m", max_retries=1, prompt="@prompts/improve.md.j2"]
 
+    // The `split` disposition, and why the size check lives HERE rather than in
+    // `decompose`.
+    //
+    // Sandcastle's coder had no wall clock -- `--idle-timeout` plus a livelock
+    // watchdog, both progress-based -- so an oversized task merely ran longer and
+    // finished. Task size was a latency property, never a failure mode. The
+    // decomposer prompt is a faithful port of that component (see
+    // docs/backlog/06, `extra-issue-decomposer-prompt-prd.md`), and it splits on
+    // cohesion and independence, with no notion of effort anywhere in it. Under
+    // `coder`'s timeout="180m" that assumption no longer holds: a task too large
+    // for one stage is killed mid-edit, so size became a correctness constraint
+    // and nothing in the pipeline measured it.
+    //
+    // Measured on run 01M2TFEHPYXXTQST6VPXREA854 (womens-fantasy-sports#1196),
+    // the third time this same task overran: `decompose` emitted two tasks, and
+    // announced the problem in its own summary -- task 1 was "the fix for parent
+    // criterion 2" (coder: 46m), task 2 "the consolidation for criteria 1, 3, 4,
+    // 5, 6" (coder: 180m timeout + a 14m resuming retry). Across the 20 retained
+    // coder/rework stages on this server the median is 24m and p90 is 47m, so
+    // that task was ~4x p90 -- not a task to tune, a task to split. The signal
+    // was already computed and written down in prose, and read by nothing.
+    //
+    // `covers` makes it a field. `decompose_gate` warns above three entries but
+    // does NOT reject: rejecting costs a full retry round, and some issues
+    // genuinely carry one fat criterion.
+    //
+    // `improve` is what acts on it, because that is where the information is. It
+    // runs per task, immediately before the coder, against the checkout as it
+    // ACTUALLY is -- earlier tasks in this run already committed -- so it can see
+    // how much work genuinely remains. `decompose` is estimating work it has not
+    // inspected, before any of the run has happened; on this same run `improve`
+    // had already proved the point by catching drift the decomposer could not
+    // have known about.
+    //
+    // Two independent guards stop a split loop, because one is not enough: slices
+    // are stamped `source: "split"` and a slice can never be split again, AND
+    // `split_rounds` caps the whole run at 2. Either guard alone would coerce the
+    // disposition to `ready`; together they bound the queue whatever the model
+    // does. The coercion deliberately leaves `current_task.json` untouched (a
+    // `split` result carries no `.task` to write), so the refused task is
+    // implemented as it stands rather than failing the run.
+    //
+    // The splice replaces the task IN PLACE at its own slot and rewinds
+    // `task_index` to it, rather than appending the way `extra_gate` does. Slices
+    // are prerequisites of each other and of nothing else, so appending them
+    // after every remaining task would run them out of order.
     improve_gate [label="Validate improved task", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/improve_result.json
 A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
 D=$(jq -r .disposition $F 2>/dev/null || echo invalid)
-if [ \"$D\" != ready ] && [ \"$D\" != redundant ] && [ \"$D\" != needs_human ]; then D=invalid; fi
-if [ \"$D\" = ready ]; then
+if [ \"$D\" != ready ] && [ \"$D\" != redundant ] && [ \"$D\" != needs_human ] && [ \"$D\" != split ]; then D=invalid; fi
+KEEP=0
+SR=$(cat /tmp/fabro/split_rounds 2>/dev/null || echo 0)
+case \"$SR\" in ''|*[!0-9]*) SR=0 ;; esac
+SRC=$(jq -r '.source // \"\"' /tmp/fabro/current_task.json 2>/dev/null || echo '')
+if [ \"$D\" = split ] && [ \"$SRC\" = split ]; then
+  echo 'split refused: this task is already a slice of an earlier split; implementing it as-is.'
+  D=ready; KEEP=1
+fi
+if [ \"$D\" = split ] && [ $SR -ge 2 ]; then
+  echo 'split refused: the per-run split budget of 2 is spent; implementing this task as-is.'
+  D=ready; KEEP=1
+fi
+if [ \"$D\" = ready ] && [ $KEEP = 0 ]; then
   jq -e '.task and ((.task.title | type) == \"string\") and ((.task.body | type) == \"string\") and ((.task.body | length) > 0)' $F >/dev/null 2>&1 || D=invalid
+fi
+if [ \"$D\" = split ]; then
+  jq -e '(.tasks | type) == \"array\" and (.tasks | length) >= 2 and (.tasks | length) <= 4' $F >/dev/null 2>&1 || D=invalid
+fi
+if [ \"$D\" = split ]; then
+  BAD=$(jq '[.tasks[] | select((.id | type) != \"string\" or (.title | type) != \"string\" or (.body | type) != \"string\" or (.id | length) == 0 or (.title | length) == 0 or (.body | length) == 0)] | length' $F 2>/dev/null || echo 99)
+  if [ \"$BAD\" != 0 ]; then D=invalid; fi
+fi
+if [ \"$D\" = split ]; then
+  CID=$(jq -r '.id // \"\"' /tmp/fabro/current_task.json)
+  COLLIDE=$(jq --slurpfile cur /tmp/fabro/tasks.json --arg cid \"$CID\" '[.tasks[].id] as $new | (if ($new | unique | length) != ($new | length) then 1 else 0 end) + ([$new[] | select(. as $i | [$cur[0][] | select(.id != $cid) | .id] | index($i))] | length)' $F 2>/dev/null || echo 99)
+  if [ \"$COLLIDE\" != 0 ]; then D=invalid; fi
 fi
 if [ \"$D\" = invalid ]; then
   A=$((A+1))
@@ -283,8 +364,18 @@ if [ \"$D\" = invalid ]; then
   if [ $A -lt 2 ]; then echo 'improve_result.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
 fi
 echo 0 > /tmp/fabro/improve_attempts
-if [ \"$D\" = ready ]; then jq .task $F > /tmp/fabro/current_task.json; fi
-echo '{\"context_updates\":{\"task_disposition\":\"'$D'\"}}'"]
+if [ \"$D\" = ready ] && [ $KEEP = 0 ]; then jq .task $F > /tmp/fabro/current_task.json; fi
+if [ \"$D\" = split ]; then
+  IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 1)
+  POS=$((IDX-1))
+  if [ $POS -lt 0 ]; then POS=0; fi
+  jq --slurpfile new $F --argjson pos $POS '.[0:$pos] + [$new[0].tasks[] | . + {source: \"split\", covers: (if (.covers | type) == \"array\" then .covers else [] end)}] + .[($pos+1):]' /tmp/fabro/tasks.json > /tmp/fabro/tasks.split.json
+  mv /tmp/fabro/tasks.split.json /tmp/fabro/tasks.json
+  echo $POS > /tmp/fabro/task_index
+  echo $((SR+1)) > /tmp/fabro/split_rounds
+fi
+TC=$(jq length /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+echo '{\"context_updates\":{\"task_disposition\":\"'$D'\",\"task_count\":'$TC'}}'"]
 
     // `timeout` and `max_retries` are both sized from measured data, not guessed.
     //
@@ -513,10 +604,16 @@ fi
 echo 0 > /tmp/fabro/extra_decompose_attempts
 if [ \"$S\" = issues ]; then
   OLD=$(jq length /tmp/fabro/tasks.json)
-  jq -n --slurpfile cur /tmp/fabro/tasks.json --slurpfile new $F '$cur[0] + [$new[0].issues[] | select(.id as $i | [$cur[0][].id] | index($i) | not) | . + {source: \"extra-review\"}]' > /tmp/fabro/tasks.merged.json
+  jq -n --slurpfile cur /tmp/fabro/tasks.json --slurpfile new $F '$cur[0] + [$new[0].issues[] | select(.id as $i | [$cur[0][].id] | index($i) | not) | . + {source: \"extra-review\", covers: (if (.covers | type) == \"array\" then .covers else [] end)}]' > /tmp/fabro/tasks.merged.json
   mv /tmp/fabro/tasks.merged.json /tmp/fabro/tasks.json
   NOW=$(jq length /tmp/fabro/tasks.json)
   NEWCNT=$((NOW-OLD))
+  OVER=$(jq '[.[] | select(.source == \"extra-review\") | select((.covers | length) > 3)] | length' /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+  if [ \"$OVER\" != 0 ] && [ \"$OVER\" != \"\" ]; then
+    echo 'WARNING: '$OVER' follow-up task(s) declare more than three covers entries and will not land in one coder stage:'
+    jq -r '.[] | select(.source == \"extra-review\") | select((.covers | length) > 3) | \"  - \" + .id + \": \" + ((.covers | length) | tostring) + \" findings\"' /tmp/fabro/tasks.json
+    echo 'improve sees each of these before its coder runs and can split it.'
+  fi
 fi
 echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'}}'"]
 
@@ -756,6 +853,11 @@ echo done"]
     improve -> human_rescue
     improve_gate -> improve         [condition="outcome=failed"]
     improve_gate -> next_task       [condition="context.task_disposition=redundant"]
+    // A split rewound `task_index` to the slot the oversized task occupied and
+    // replaced it in place, so `next_task` re-selects that slot and picks up the
+    // first slice. It also re-runs the mainline merge and resets the per-task
+    // counters, which is exactly right: a slice is a new task.
+    improve_gate -> next_task       [condition="context.task_disposition=split"]
     improve_gate -> coder           [condition="context.task_disposition=ready"]
     improve_gate -> human_rescue
 

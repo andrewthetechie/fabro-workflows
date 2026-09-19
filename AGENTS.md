@@ -30,8 +30,10 @@ actually lives.
 | `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
 | `ops/check-routing-schemas.py` | Catches command-node routing-schema mismatches that `fabro validate` accepts and fabro only reports at runtime. Reads the parsed AST, not the DOT text. |
-| `docs/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency. `00-overview-and-contracts.md` first — it carries 19 settled operator decisions and the 11 source findings behind them, then 14 numbered task drafts. Each draft is written to be implementable from the overview plus its own file plus this repository. **Drafts 01–07 are built and deployed**; 08 onward are still design. The service itself is `ops/scheduler/`. |
-| `docs/perf/` | Why a run takes four hours, measured from the run store rather than guessed. `00-overview-and-measurements.md` first — it is also where the source-verified list of what fabro's docker provider **cannot** do lives (no mounts, no service provisioning). `01` is what was applied, `02` is what needs an operator decision, `03` is the per-repository `.fabro/ci.sh` work. |
+| `ops/test-task-gates.sh` | Runs `backlog`'s task-queue gates (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. Offline; no host or container. |
+| `ops/fabro-run-status.sh` | LLM-free health check for an in-flight run: alive, where in the graph, making progress, and whether a compaction says the decomposition was oversized. |
+| `docs/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency. `00-overview-and-contracts.md` first — it carries 19 settled operator decisions and the 11 source findings behind them, then 14 numbered task drafts. Each draft is written to be implementable from the overview plus its own file plus this repository. **Drafts 01–06 are built and deployed**; 07 onward are still design. The service itself is `ops/scheduler/`. |
+| `docs/perf/` | Why a run takes four hours, measured from the run store rather than guessed. `00-overview-and-measurements.md` first — it is also where the source-verified list of what fabro's docker provider **cannot** do lives (no mounts, no service provisioning). `01` is what was applied, `02` is what needs an operator decision, `03` is the per-repository `.fabro/ci.sh` work, `04` is why compaction is a sizing alarm rather than a cost and what the task-size work changed. |
 | `docs/research_improvements/` | An audit of all three packages against the Fabro source: what we hand-roll that Fabro already does, four operator-observed gaps traced to Fabro lines, and nine settled dead ends. A plan, not a changelog — nothing in it has been applied. `00-overview.md` first. |
 | `.scratch/` | Untracked working notes. |
 
@@ -60,7 +62,7 @@ ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate
 ```
 
 Baselines as of 2026-09-18 (review+merge shared and imported):
-`Backlog (60 nodes, 140 edges)` clean, `PrReview (30 nodes, 65 edges)` with exactly
+`Backlog (60 nodes, 141 edges)` clean, `PrReview (30 nodes, 65 edges)` with exactly
 one warning — `pr_number` unbound in `validate_input` — and
 `IssueTriage (14 nodes, 32 edges)` clean. Backlog and PrReview both include the ~21
 nodes of `_shared/review-merge/`, which `fabro validate` splices in; `fabro parse`
@@ -86,6 +88,21 @@ non-zero on any mismatch, so it drops into a pre-push hook. A node that declares
 `output_schema="routing"` and prints no routing object fails deterministically with no
 retry — that cost run `01M2R057XAWN8ZG0A7ZV7YPJXK` at `pr_handoff`, with the PR
 already open.
+
+Neither gate runs the command nodes' shell. `backlog`'s task queue is several hundred
+bytes of `jq` spread across `decompose_gate`, `improve_gate` and `next_task`, and a
+cursor off-by-one there silently skips a task rather than failing — the same class of
+bug, one layer down. `ops/test-task-gates.sh` extracts those `script` attributes from
+the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them against
+fixtures:
+
+```sh
+./ops/test-task-gates.sh      # 71 checks, offline — no host, container or network
+```
+
+It needs only `jq` and `python3`, so it belongs in the same pre-push hook. It covers
+queue mechanics only — selection, the split splice, the cursor, the guards — and says
+nothing about whether an agent fills a contract correctly.
 
 `fabro validate` does not parse `workflow.toml` strictly. A dotted model key that loses
 its quotes becomes a nested table and the automation fire returns 422, with nothing

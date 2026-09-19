@@ -119,24 +119,25 @@ tiers over 6 rounds):
 | `candidates.json` | `acquire` | raw `gh issue list` output |
 | `acquire.json` | `acquire` | filtered: 1-elem array `[{number,title,labels}]` |
 | `issue.json` | `claim` | full issue: `gh issue view N --json number,title,body,labels,comments` |
-| `decomposition.json` | `decompose` (agent) | `{status: "issues"\|"no_work"\|"needs_human_review", summary, issues: [{id,title,body,files[],priority}]}` |
-| `tasks.json` | `decompose_gate`, `extra_gate` | `[{id,title,body,files[],priority,source}]` — `source`: `"decompose"` or `"extra-review"` |
-| `task_index` | `decompose_gate` (init `0`), `next_task` (incr) | integer |
+| `decomposition.json` | `decompose` (agent) | `{status: "issues"\|"no_work"\|"needs_human_review", summary, issues: [{id,title,body,files[],covers[],priority}]}` |
+| `tasks.json` | `decompose_gate`, `extra_gate`, `improve_gate` | `[{id,title,body,files[],covers[],priority,source}]` — `source`: `"decompose"`, `"extra-review"`, or `"split"` |
+| `task_index` | `decompose_gate` (init `0`), `next_task` (incr), `improve_gate` (rewinds on a split) | integer |
 | `current_task.json` | `next_task`, `improve_gate` | single task object |
 | `task_base_sha` | `next_task`, `resolve_merge_gate` | git SHA stamped at task start (after a clean mainline merge; `resolve_merge_gate` re-stamps it once a conflicted merge has been resolved) |
 | `pre_merge_sha` | `next_task` (writes), `resolve_merge_gate` (reads) | the run-branch commit before the mainline merge attempt; the `git reset --hard` target if a resolution fails |
 | `merge_attempts` | `next_task` (reset `0`), `resolve_merge_gate` (incr) | integer, cap 2: one agent retry after the first failed resolution |
 | `round` | `next_task` (reset `0`), `rework_router` (incr) | integer |
 | `extra_round` | `prep` (init `0`), `extra_prep` (incr) | integer, cap 2 |
+| `split_rounds` | `prep` (init `0`), `improve_gate` (incr) | integer, cap 2 — splits allowed per run |
 | `<gate>_attempts` | each gate | per-task retry counter (max 2), reset on success |
-| `improve_result.json` | `improve` (agent) | `{disposition: "ready"\|"redundant"\|"needs_human", reason, task: {...} (required when ready)}` |
+| `improve_result.json` | `improve` (agent) | `{disposition: "ready"\|"redundant"\|"needs_human"\|"split", reason, task: {...} (required when ready), tasks: [{...}] (2–4, required when split)}` |
 | `review/verdict.json` | `review` (agent) | `{decision: "approved"\|"changes_requested"\|"needs_human_review", summary, findings: [{severity,message}]}` |
 | `review/diff.patch`, `review/diffstat.txt`, `review/changed_files.txt` | `prep_review` | diff of `task_base_sha..HEAD` |
 | `feedback/rework.md` | `validate`, `review_gate`, `next_task`, `prep_review` | markdown feedback for the next rework attempt |
 | `validate_output.log` | `validate` | full setup+ci log |
 | `extra/diff.patch`, `extra/diffstat.txt`, `extra/changed_files.txt` | `extra_prep` | whole-branch diff `origin/main...HEAD` |
 | `extra/standards.json`, `extra/spec.json`, `extra/quality.json` | extra reviewers | `{decision: "approve"\|"findings"\|"needs_human_review", summary, findings: [{message,files[],suggestion}]}` |
-| `extra/followups.json` | `extra_decompose` (agent) | `{status: "issues"\|"no_work"\|"needs_human_review", summary, issues: [{id,title,body,files[],priority}]}` |
+| `extra/followups.json` | `extra_decompose` (agent) | `{status: "issues"\|"no_work"\|"needs_human_review", summary, issues: [{id,title,body,files[],covers[],priority}]}` |
 | `completed.md` | `integrate` (appends) | per-task completion notes for the PR body |
 | `pr_title.txt`, `pr_body.md` | `open_pr_prep` | deterministic PR content |
 

@@ -31,7 +31,11 @@ Operate read-only.
 
 - Ask no clarifying questions.
 - Create child tasks only for actionable implementation work.
-- Merge overlapping work when one implementation change resolves it together.
+- Merge overlapping work when one implementation change resolves it together --
+  **provided the merged task still fits the size budget below.** Cohesion is a
+  reason to merge; it is not a reason to exceed the budget. When one cohesive
+  change is too large for a single implementation stage, split it into ordered
+  slices that each land on their own and say so in each body.
 - Split independent work into separate child tasks when they should drain through
   separate implementation loops.
 - If no actionable implementation work remains -- the change is already present in
@@ -43,6 +47,37 @@ Operate read-only.
   `needs_human_review`.
 - Tasks run sequentially in array order. Order the array so prerequisites come
   first.
+
+## Task size budget
+
+Each task is implemented by one agent in one stage with a **hard wall-clock
+limit**. A task that cannot land inside it is killed mid-edit, regardless of how
+well it was going. Size is therefore a correctness constraint here, not a
+preference — an oversized task does not run slowly, it fails.
+
+Measured on this server: a healthy implementation stage runs about 24 minutes
+(median) and 47 minutes at p90. The worst observed overrun was a single task that
+consolidated five parent acceptance criteria into one "cohesive" change across
+eleven files; it exhausted a three-hour ceiling, was killed, and only landed
+because a retry resumed its partial work.
+
+So, before you emit a task:
+
+- **Count the parent requirements it satisfies.** One or two is right. Three is a
+  warning. More than three means you have merged slices that should drain
+  separately, however cohesive they look.
+- Prefer several ordered tasks that each leave the repository green over one task
+  that does the whole job. A later task may depend on an earlier one — that is
+  what array order is for.
+- A task that introduces a new module *and* migrates every call site to it is two
+  tasks: add the module with its tests, then migrate the callers.
+- Do not pad in the other direction. Splitting one small coherent edit into
+  several tasks costs a full review-and-integrate cycle each, and the budget is
+  generous for genuinely small work.
+
+Record the count in `covers` (below). It is the field a gate reads to flag an
+oversized decomposition, so it must reflect the real scope of the task rather
+than a summary of it.
 
 ## Task draft rules
 
@@ -78,6 +113,7 @@ no extra keys:
       "title": "short child task title",
       "body": "self-contained body with ## User Story, ## Context, ## Acceptance Criteria",
       "files": ["path/to/file.ts"],
+      "covers": ["the distinct parent requirements this task delivers"],
       "priority": "high" | "medium" | "low"
     }
   ]
@@ -99,6 +135,18 @@ costs a full retry round:
   `add-gameweek-score-column`). Later stages dedupe follow-up work by `id`, so the
   same slice of work must produce the same `id`.
 - `files` holds repository-relative paths only, unique within an entry.
+- `covers` is an array of short strings, one per distinct parent requirement the
+  task delivers. When the parent issue numbers or bullets its acceptance
+  criteria, name them (`"criterion 2"`, `"AC3"`); when it does not, name each
+  behavioural outcome in a few words. One or two entries is the target.
+
+  **This one is not enforced, which is exactly why it matters.** The gate warns
+  above three entries and otherwise accepts whatever you write: a missing
+  `covers`, or one of the wrong type, is silently read as `[]` rather than
+  rejected, because a rejection here would cost a full retry round over a field
+  that carries no routing. So an omitted or padded-down `covers` does not fail —
+  it just turns off the only size check the pipeline has, and the oversized task
+  reaches a coder that cannot finish it. Fill it honestly.
 - Use only the keys above; do not add extra keys.
 - Markdown inside a `body` string is allowed; the JSON file itself must be raw
   JSON — do not wrap the file contents in a ` ```json ` fence.
@@ -114,6 +162,7 @@ Minimal valid example (a single cohesive change is ONE task, status `issues`):
       "title": "Extract the shared formatting into a reusable helper",
       "body": "## User Story\nAs a user, I want ...\n\n## Context\nA single cohesive change that implements the parent issue.\n\n## Acceptance Criteria\n- Behavior is unchanged apart from the extraction.\n- Existing tests pass.",
       "files": ["src/example.ts"],
+      "covers": ["criterion 1"],
       "priority": "medium"
     }
   ]

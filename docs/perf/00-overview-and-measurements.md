@@ -4,7 +4,7 @@ Written 2026-09-18 from two complete `backlog` runs on the live server, read fro
 `/api/v1/runs/<id>/events` (full event stream, `since_seq` paginated) and
 `/runs/<id>/stages`. Every number here is measured, not estimated.
 
-Read this before `01-`, `02-`, `03-`. It exists because the three obvious
+Read this before `01-`, `02-`, `03-`, `04-`. It exists because the three obvious
 explanations for a four-hour run — dependency installation, review count, and
 "the graph is too big" — are all wrong, and the measurements say where the time
 actually goes.

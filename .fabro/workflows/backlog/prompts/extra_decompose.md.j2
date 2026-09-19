@@ -72,6 +72,7 @@ extra keys:
       "title": "short follow-up task title",
       "body": "self-contained body with ## User Story, ## Context, ## Acceptance Criteria",
       "files": ["path/to/file.ts"],
+      "covers": ["the distinct findings this task resolves"],
       "priority": "high" | "medium" | "low"
     }
   ]
@@ -92,6 +93,15 @@ costs a full retry round:
 - `id` must be a stable, human-readable kebab-case key derived from the finding's
   subject and scope (e.g. `extract-shared-query-key-helper`). See the id-stability
   rule above — it is what prevents duplicate follow-ups across rounds.
+- `covers` is an array of short strings, one per distinct review finding the task
+  resolves. Follow-up tasks run through the same implementation stage as every
+  other task, under the same hard wall-clock limit, so the same size budget
+  applies: one or two entries is the target. When one finding is too large to
+  land in a single stage, emit ordered slices rather than one task carrying all
+  of it. Like `covers` on the parent decomposition this is **not** enforced — the
+  gate warns above three entries and reads a missing or wrong-typed `covers` as
+  `[]` rather than rejecting it — so leaving it out silently disables the size
+  check for that task.
 - Use only the keys above. No provenance fields.
 - Markdown inside a `body` string is allowed; the JSON file itself must be raw JSON —
   do not wrap the file contents in a ` ```json ` fence.

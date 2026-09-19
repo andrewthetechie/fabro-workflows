@@ -8,7 +8,9 @@ Preserve reporter intent, evidence, and human discussion. Ask no questions.
 Read these before deciding:
 
 - `/tmp/fabro/current_task.json` — the single task object being improved:
-  `{id, title, body, files, priority, source}`.
+  `{id, title, body, files, covers, priority, source}`. `covers` lists the distinct
+  parent requirements the task delivers and is the size signal described below;
+  `source` is `decompose`, `extra-review`, or `split`.
 - `/tmp/fabro/issue.json` — the parent issue, for reporter intent and human
   discussion (`.body` is the report, `.comments` is the human discussion).
 - The repository checkout in the current working directory, read-only, at its
@@ -33,9 +35,12 @@ detectable — an earlier task in this same run may already have done the work.
 
 ## Decision rules
 
-- `ready` — the task is implementation-ready. If the task needed no changes,
-  return it unchanged; if title or body needed sharpening, return the improved
-  version and explain what changed in `reason`.
+- `ready` — the task is implementation-ready and lands in one stage. If the task
+  needed no changes, return it unchanged; if title or body needed sharpening,
+  return the improved version and explain what changed in `reason`.
+- `split` — the task is real and correct but **too large for one implementation
+  stage**. See the size budget below. Return ordered slices in `tasks`; they
+  replace this task in the queue and run in the order you give.
 - `redundant` — current repository evidence proves the work is already done or is
   a duplicate of work already landed in this run. `reason` must cite the concrete
   evidence (file, symbol, or commit).
@@ -48,6 +53,43 @@ detectable — an earlier task in this same run may already have done the work.
   repository file, command output, or issue context it came from. Do not assert
   what you have not verified.
 
+## Size budget
+
+The coder that receives this task runs in one stage with a **hard wall-clock
+limit**. A task that cannot finish inside it is killed mid-edit no matter how
+well it was going, so size is a correctness constraint, not a preference.
+
+You are the last and best-informed check on this. The decomposer estimated size
+before any of this run's work landed; you are looking at the checkout as it
+actually is, with earlier tasks already committed, so you can see how much is
+genuinely left.
+
+Measured on this server: a healthy implementation stage runs about 24 minutes
+(median) and 47 minutes at p90. The worst observed overrun consolidated five
+parent acceptance criteria across eleven files into one task, exhausted a
+three-hour ceiling, and was killed mid-edit.
+
+Judge size by the work that remains, not by the size of the body:
+
+- `covers` on the task records the distinct parent requirements it delivers. One
+  or two is right; more than three is the strongest signal that it should split.
+- A task that adds a new module *and* migrates every call site to it is two
+  slices: land the module with its tests, then migrate the callers.
+- Weigh what is already done. An earlier task in this run may have completed part
+  of this one, which makes what is left small enough to keep whole.
+- Do not split small coherent work. Each extra slice costs a full
+  review-and-integrate cycle, and the budget is generous for genuinely small
+  changes. If it lands in one stage, return `ready`.
+
+Each slice you return must stand on its own: it leaves the repository building
+and its tests green, so it can be reviewed and integrated before the next slice
+starts. If you cannot carve the work that way, keep it whole and return `ready`
+rather than emitting slices that only make sense together.
+
+**Never split a task that is already a slice.** If `current_task.json` has
+`"source": "split"`, this task came from an earlier split; return `ready`,
+`redundant`, or `needs_human`. The gate enforces this and will overrule you.
+
 ## Output
 
 Write your result as raw JSON to `/tmp/fabro/improve_result.json`. The file must
@@ -56,15 +98,26 @@ no extra keys:
 
 ```json
 {
-  "disposition": "ready" | "redundant" | "needs_human",
+  "disposition": "ready" | "redundant" | "needs_human" | "split",
   "reason": "one or two sentences justifying the disposition",
   "task": {
     "id": "unchanged id from current_task.json",
     "title": "final title",
     "body": "final self-contained body",
     "files": ["path/to/file.ts"],
+    "covers": ["the distinct parent requirements this task delivers"],
     "priority": "high" | "medium" | "low"
-  }
+  },
+  "tasks": [
+    {
+      "id": "new-stable-kebab-case-key-for-this-slice",
+      "title": "short slice title",
+      "body": "self-contained body with ## User Story, ## Context, ## Acceptance Criteria",
+      "files": ["path/to/file.ts"],
+      "covers": ["the parent requirements this slice delivers"],
+      "priority": "high" | "medium" | "low"
+    }
+  ]
 }
 ```
 
@@ -74,11 +127,32 @@ costs a full retry round:
 - `ready` requires `task` with a non-empty string `title` and a non-empty string
   `body`. Keep `id` byte-for-byte from `current_task.json`. The gate overwrites
   `current_task.json` with `.task`, so whatever you put there is exactly what the
-  coder gets.
-- `redundant` and `needs_human` may omit `task`. The gate validates only
-  `disposition`, but always write `reason` anyway: it is the record a human reads
-  when deciding whether the call was right, and a `redundant` with no cited
+  coder gets — carry `files`, `covers`, and `priority` through rather than
+  dropping them, and update `covers` if your edits changed what the task
+  delivers.
+- `redundant` and `needs_human` may omit `task` and `tasks`. The gate validates
+  only `disposition`, but always write `reason` anyway: it is the record a human
+  reads when deciding whether the call was right, and a `redundant` with no cited
   evidence is indistinguishable from a task that was silently skipped.
+- `split` requires `tasks`: **two to four** slices, in the order they must run,
+  each with a non-empty string `id`, `title`, and `body`, and array `files` and
+  `covers`. Omit `task` — the slices replace the current task in the queue
+  entirely. Give every slice a new kebab-case `id` derived from its own subject:
+  later stages dedupe follow-up work by `id`, so a slice carrying the original
+  task's id misreports a part as the whole.
+
+  What the gate actually enforces, each costing a full retry round and sending
+  the run to a human on the second failure: `tasks` must hold **2 to 4** entries,
+  each with a non-empty string `id`, `title` and `body`; the slice ids must be
+  unique among themselves; and no slice id may collide with a **different** task
+  already in the queue. Reusing the id of the task being replaced is permitted —
+  it is leaving the queue — but it is still the wrong answer for the reason
+  above.
+
+  Two things the gate handles silently rather than rejecting, so do not rely on
+  either: a `split` of a task whose `source` is already `split`, and a `split`
+  once the run's budget of 2 is spent. Both are converted to `ready` and the task
+  is implemented as it stands.
 - Never invent an assumption. Label unsupported or ambiguous claims as open
   questions inside the proposed body rather than asserting them.
 - Use only the keys above; do not add extra keys.

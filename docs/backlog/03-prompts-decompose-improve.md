@@ -4,6 +4,12 @@
 **Do before:** task 08 (validation).
 **LLM level:** local is fine — this is careful copy-editing against a fixed contract.
 
+> **Both contracts below have since been extended** for task sizing: every task
+> carries `covers`, and `improve` gained a fourth disposition, `split`. This file
+> records the original port; `00-overview-and-contracts.md` is the live contract,
+> and `docs/perf/04-compaction-and-task-sizing.md` has the measurements behind the
+> change.
+
 ## Goal
 
 Port two Sandcastle agent prompts into fabro prompt files that use the
