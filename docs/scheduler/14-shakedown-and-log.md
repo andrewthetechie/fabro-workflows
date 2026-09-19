@@ -2,7 +2,7 @@
 
 ## Status, 2026-09-19 (session 2) — the window is RUNNING; criteria are pending
 
-**The 24-hour window runs from `2026-09-19T15:13:51Z`**, the scheduler container's
+**The 24-hour window runs from `2026-09-19T15:29:13Z`**, the scheduler container's
 `StartedAt`. It was first armed at `14:55:27Z` when the `claim` fix landed; deploying the
 follow-ups below restarted the container and so moved the unattended clock. Supersedes
 session 1's block below, which correctly said the window had not started — it had not, then.
@@ -20,9 +20,9 @@ block carries the detail.
 
 - ≥1 run on each of `coders-a` and `coders-b` — `01M2X2MVPC2NXY1BW5CVKPFF3S`
   (`jelly-swipe#356`) and `01M2X2MYMR2XP5XANKH7D7XS2W` (`lawncare-saas#2590`), dispatched
-  three seconds apart within 14 seconds of the first arming. Both survived the 15:13:51Z
-  restart: recovery **adopted** their leases rather than releasing them, `dispatched_at`
-  still reads `14:55:38Z`/`14:55:41Z`, and neither run paused.
+  three seconds apart within 14 seconds of the first arming. Both survived the two later
+  restarts: recovery **adopted** their leases rather than releasing them each time,
+  `dispatched_at` still reads `14:55:38Z`/`14:55:41Z`, and neither run paused.
 - Startup recovery released both stale leases and requeued both orphaned receipts
   (`jelly-swipe#353`, `lawncare-saas#2277`) — draft 09 working on live state.
 - `jelly-swipe#356` reached a **succeeded `coder` stage** on `coders-a` — the first
