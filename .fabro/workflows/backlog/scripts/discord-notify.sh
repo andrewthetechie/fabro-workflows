@@ -1,7 +1,7 @@
 #!/bin/sh
 # discord-notify.sh — best-effort Discord notification for fabro runs.
 #
-# Usage: discord-notify.sh <rescue|complete|failed|review-triggered|merged>
+# Usage: discord-notify.sh <rescue|complete|failed|merged|blocked|needs-human|triage-question|triage-failed|review-triggered>
 #
 # Runs as a hook with sandbox = false, i.e. inside the fabro server container
 # (Alpine: /bin/sh + wget, no bash, no curl, no jq). The event context JSON is
@@ -113,6 +113,19 @@ case "$kind" in
   # `issue_number` as context_updates precisely so the enrichment above (unchanged)
   # fills in `$subject` and the PR link on this line.
   merged)   msg="🚀 fabro squash-merged a PR${subject}" ;;
+  # The two ways the imported review-merge phase stops without merging. Two kinds and
+  # not one, because they ask the operator for different things: `blocked` is the
+  # expected outcome of the eligibility gate -- the kill switch, a reviewer verdict,
+  # or CI the fix ladder could not land -- and the PR is fine to merge by hand, while
+  # `needs-human` means the phase could not produce a verdict at all and the PR now
+  # carries the `ai-review-needs-human` label.
+  #
+  # Neither can carry the reason: `merge_block_reason` is written to a file inside the
+  # run's sandbox and never reaches the run context, so the PR comment that the report
+  # node posts is where that text lives. `pr_url` IS a context key by this point, so
+  # the link block below lands on the PR for both of them.
+  blocked)  msg="🟡 fabro finished a review without merging - the PR needs you${subject}" ;;
+  needs-human) msg="🔴 fabro's review could not finish - the PR needs you${subject}" ;;
   review-triggered)
     # A trigger failure cannot fail the run (trigger_review carries
     # on_failure="succeed"), so `run_failed` never fires for it and this hook is the

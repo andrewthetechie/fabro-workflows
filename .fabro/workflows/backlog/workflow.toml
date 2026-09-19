@@ -42,9 +42,10 @@ contents = "write"
 issues = "write"
 pull_requests = "write"
 
-# The trigger_review stage calls the fabro API to create a pr-review run for the PR
-# this run just opened. The token is a vault entry resolved at launch; only its name
-# appears here, because this repository is public.
+# `FABRO_API_TOKEN` is how a command node reaches this server's own API: `pr_handoff`
+# reads the per-repo auto-merge switch off the `pr-review-<repo>` automation row, and
+# the imported review-merge phase reads the host-wide one. The token is a vault entry
+# resolved at launch; only its name appears here, because this repository is public.
 #
 # [run.environment.*] is a SPARSE OVERRIDE on the environment the automation already
 # selected. Do NOT add `[run.environment] id = "..."` — that would pin all four
@@ -101,25 +102,58 @@ blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh failed"
 
-# trigger_review emits review_run_id / review_trigger_error and cannot fail the run
-# (on_failure="succeed"), so `run_failed` will never fire for a trigger problem.
-# Without this hook a bridge that has quietly stopped firing is invisible until
-# someone notices an empty review queue.
+# The three terminal reports of the imported review-and-merge phase. Every one of
+# them notifies, because each asks the operator for something different.
 #
-# Anchor the matcher: fabro_hooks compiles `matcher` as an unanchored regex and tests
-# it against node_id, handler_type, edge_to, edge_from and tool_name.
+# History, and why this block exists at all. Before 54c21be this phase was a separate
+# `pr-review` run reached by a `trigger_review` bridge node, and the merge
+# notification lived in `pr-review/workflow.toml`. That commit deleted the bridge and
+# spliced the phase into this run with `review_merge [import=...]`; the notification
+# was not carried across, so `pr-review/workflow.toml` kept the only `report_merged`
+# hook and this file gained none for any report node. A scheduler-dispatched run —
+# now the only kind there is — pinged `^open_pr$` when the PR opened and then said
+# nothing about what the review decided, in either direction. Run
+# 01M2X2MYMR2XP5XANKH7D7XS2W is the concrete case: it reviewed lawncare-saas PR
+# #2601, declined to merge, ended `succeeded`, and produced no notification, no
+# label and no failed-run event.
 #
-# `checkpoint_saved`, not `stage_complete`: the composite lifecycle runs
-# git -> event -> hook on checkpoint, so the checkpoint envelope carrying
-# review_run_id has already been written by the time the hook runs — the same race
-# the `discord-complete` hook was moved here to avoid.
+# Ids arrive prefixed from the import (`review_merge.report_blocked`). An anchored
+# matcher is still the right form — `pr-review`'s identical `^report_merged$` has
+# been observed firing on the prefixed id, for run 01M2MG7F8Q7DVSBQ52VHGDB9H2 — and
+# anchoring is also what keeps `report_blocked` from matching `report_merged`.
 #
-# blocking = false so a Discord outage cannot stall a run; sandbox = false so it runs
-# in the server container, where the webhook URL and dev token already live.
+# `checkpoint_saved`, not `stage_complete`: the report node's context writes
+# (`pr_url`, `review_merge_outcome`) are in the checkpoint envelope by the time the
+# hook runs, the same race the `discord-complete` hook above was moved here to
+# avoid. blocking = false so a Discord outage cannot stall a run; sandbox = false so
+# it runs in the server container, where the webhook URL and dev token already live.
 [[run.hooks]]
-id = "discord-review-triggered"
+id = "discord-merged"
 event = "checkpoint_saved"
-matcher = "^trigger_review$"
+matcher = "^report_merged$"
 blocking = false
 sandbox = false
-script = "/storage/scripts/discord-notify.sh review-triggered"
+script = "/storage/scripts/discord-notify.sh merged"
+
+# The EXPECTED block. The review completed and the PR is healthy, but something made
+# it ineligible for automatic merge: the kill switch, a reviewer verdict, or CI the
+# fix ladder could not land. The reason is written to the PR as a comment by that
+# node; it lives in the run's sandbox and never reaches the run context, so this
+# message cannot carry it and links the PR instead.
+[[run.hooks]]
+id = "discord-blocked"
+event = "checkpoint_saved"
+matcher = "^report_blocked$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh blocked"
+
+# The UNEXPECTED path: the phase could not produce a verdict at all. The PR gains
+# `ai-review-needs-human`, which is the label to watch for.
+[[run.hooks]]
+id = "discord-needs-human"
+event = "checkpoint_saved"
+matcher = "^mark_needs_human$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh needs-human"
