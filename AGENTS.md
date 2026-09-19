@@ -61,10 +61,11 @@ ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp 
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
 ```
 
-Baselines as of 2026-09-18 (review+merge shared and imported):
-`Backlog (60 nodes, 141 edges)` clean, `PrReview (30 nodes, 65 edges)` with exactly
-one warning — `pr_number` unbound in `validate_input` — and
-`IssueTriage (14 nodes, 32 edges)` clean. Backlog and PrReview both include the ~21
+Baselines as of 2026-09-19 (review+merge shared and imported):
+`Backlog (59 nodes, 138 edges)` with exactly one warning — `issue_number` unbound in
+`claim` (draft 10's deliberate fail-closed input, the same shape as `pr_number`) — and
+`PrReview (30 nodes, 65 edges)` with exactly one warning — `pr_number` unbound in
+`validate_input` — and `IssueTriage (14 nodes, 32 edges)` clean. Backlog and PrReview both include the ~21
 nodes of `_shared/review-merge/`, which `fabro validate` splices in; `fabro parse`
 shows the unexpanded placeholder instead, so node counts only match after validate. That warning is deliberate. Binding
 `[run.inputs] pr_number` would silence it and let a run fired with no input review PR
@@ -229,6 +230,12 @@ ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-monitor.sh'
 scp ops/fabro-auto-merge-switch.sh andrew@10.10.0.32:~/bin/fabro-auto-merge-switch.sh
 ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-auto-merge-switch.sh'
 
+# the operator's manual backlog escape hatch (draft 10). Same reasoning as the
+# auto-merge switch: an incident that starts with an ssh session should not also need
+# a git clone. Operator-only; no automation runs it, which is why it lives in ops/.
+scp ops/fabro-fire-backlog.sh andrew@10.10.0.32:~/bin/fabro-fire-backlog.sh
+ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-fire-backlog.sh'
+
 # automations, when the provisioning script changed or a row is missing
 FABRO_API_URL=http://10.10.0.32:32276/api/v1 FABRO_DEV_TOKEN=<dev token> \
   ./ops/provision-server-state.sh
@@ -242,6 +249,7 @@ ssh andrew@10.10.0.32 'cat ~/bin/fabro-branch-sweep.sh' | diff - ops/fabro-branc
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-sandbox-sweep.sh' | diff - ops/fabro-sandbox-sweep.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-monitor.sh' | diff - ops/fabro-monitor.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-auto-merge-switch.sh' | diff - ops/fabro-auto-merge-switch.sh
+ssh andrew@10.10.0.32 'cat ~/bin/fabro-fire-backlog.sh' | diff - ops/fabro-fire-backlog.sh
 ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'  | diff - ops/docker-compose.yaml
 ssh andrew@10.10.0.32 'cat ~/fabro/scheduler/repos.toml' | diff - ops/scheduler/repos.toml
 ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/scripts/discord-notify.sh' \

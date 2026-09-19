@@ -26,9 +26,20 @@ than the thing shaping behaviour: it stops a runaway, it does not allocate. Not 
 confused with a **Coder lease**, which is the control that actually matters.
 _Avoid_: limit, throttle
 
-**Quiet-exit**:
-A backlog run that finds no `agent`-labeled issue and routes `acquire → exit` in
-seconds, having spawned a sandbox and cloned the repo but started no LLM session.
+**Quiet-exit** *(retired)*:
+Was a backlog run that found no `agent`-labeled issue and routed `acquire → exit` in
+seconds, having spawned a sandbox and cloned the repo but started no LLM session. Draft
+10 collapsed `acquire`/`claim`: a backlog run now works exactly the `issue_number` it is
+given and fails closed rather than choosing (or skipping) work, so there is no
+quiet-exit path left. Kept here only so the word is not reused for something else.
+
+**Manual fire**:
+The operator's escape hatch when the **Scheduler** is down: `ops/fabro-fire-backlog.sh
+<owner/repo> <issue_number>`, deployed to `~/bin/fabro-fire-backlog.sh`. It creates one
+`backlog` run for exactly that issue with `coder_pool: "coders"` (the both-boxes group,
+never a pinned box — a hand fire holds no lease). The graph's `claim` swaps the labels
+as a fallback for what the scheduler does at dispatch, so a manual run needs no lease.
+_Avoid_: manually, by hand (the adverb, not the noun)
 
 **Automation**:
 A server-side row binding a workflow package to a target repo and environment, with

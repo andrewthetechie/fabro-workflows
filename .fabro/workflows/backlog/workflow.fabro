@@ -67,70 +67,49 @@ digraph Backlog {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    // ---- Deterministic acquisition (no LLM) ----
-    acquire [label="Acquire issue", shape=parallelogram,
-        script="mkdir -p /tmp/fabro && gh issue list --label agent --state open --json number,title,labels --limit 10 > /tmp/fabro/candidates.json && jq '[.[] | select(([.labels[].name] | contains([\"agent-in-progress\"]) | not))] | sort_by(.number) | .[0:1]' /tmp/fabro/candidates.json > /tmp/fabro/acquire.json && test \"$(jq length /tmp/fabro/acquire.json)\" != \"0\""]
-
-    // `acquire` and `claim` are separate stages, and the pair is NOT atomic: `acquire`
-    // reads the issue list, `claim` writes the label swap, and GitHub offers no
-    // compare-and-swap on labels. Two runs whose `acquire` stages both complete before
-    // either `claim` lands will both claim the same issue, and `gh issue edit` is
-    // idempotent so the second one succeeds silently.
+    // ---- Claim the dispatched issue ----
+    // The scheduler chose the issue and passed it as `issue_number` (overview
+    // decision 3). The graph no longer selects an issue itself; the run input is the
+    // only way to decide what this run works. `args.inputs` values that reach
+    // this POSIX `case` guard are JSON numbers (the scheduler sends one and
+    // `ops/fabro-fire-backlog.sh` sends one); a string would either fail the guard
+    // or, worse, match it by accident. `pr-review`'s `validate_input` is the
+    // precedent for exactly this shape.
     //
-    // Observed live on 2026-09-17, both runs on jelly-swipe#356:
-    //   PVWESA acquire 15:20:34.447 -> 15:20:35.381   claim 15:20:37.203 -> 15:20:41.628
-    //   PWQXPC acquire 15:20:38.358 -> 15:20:39.511   claim 15:20:41.386 -> 15:20:44.870
-    // PWQXPC read the list 2.1s before PVWESA's label swap landed. Both then
-    // implemented the same issue on separate branches. The scheduler frees slots in
-    // pairs, so this recurs whenever two backlog runs for one repo start together.
+    // The label swap stays here as a fallback. The scheduler already swapped
+    // `agent` -> `agent-in-progress` at dispatch (overview decision 9), but the
+    // manual path does not, so `claim` is idempotent about it: add
+    // `agent-in-progress` if absent, remove `agent` if present, never fail because
+    // either is already in the target state.
     //
-    // Fixed by optimistic claim plus arbitration rather than a lock, which GitHub
-    // cannot give us. Each run posts a marker comment carrying its run id, waits for
-    // the window to settle, re-reads, and the LOWEST run id wins. ULIDs are
-    // lexicographically ordered by creation time, so the lowest is the run that was
-    // created first -- a deterministic winner both sides compute identically.
-    //
-    // The settle is 20s against an observed 4s window between two claims. It has to
-    // exceed the window: a run that re-reads before its rival has posted would see
-    // only its own marker and wrongly conclude it won, and if its id were the higher
-    // of the two, BOTH runs would think they had won. Only reached by a run that
-    // actually claimed, so it never costs the quiet-exit path anything.
-    //
-    // Markers are matched within a 15-minute recency window. Without it, an issue that
-    // was reclaimed later (agent-stuck -> agent) would still carry markers from the
-    // original run, whose older ULID would win forever and starve every new attempt.
-    // The window is computed in jq from `now` rather than with `date -d`, which is a
-    // GNU extension.
-    claim [label="Claim issue and fetch it", shape=parallelogram, output_schema="routing",
+    // Fail closed. The run's job description is exactly `issue_number`; working a
+    // different issue is the failure this whole design exists to prevent. So `claim`
+    // quits rather than continue when the issue is gone, closed, or does not carry
+    // `agent-in-progress` after the swap -- all three route to human_rescue via the
+    // node's unconditional edge. (The old optimistic-claim/ULID arbitration this
+    // replaced is recorded in ADR 0005 and the scheduler overview.)
+    claim [label="Claim issue and fetch it", shape=parallelogram,
         script="set -e
-N=$(jq -r '.[0].number' /tmp/fabro/acquire.json)
+ISSUE='{{ inputs.issue_number }}'
+case \"$ISSUE\" in '' | *[!0-9]*) echo 'issue_number must be a positive integer' >&2; exit 1;; esac
+if [ \"$ISSUE\" -lt 1 ]; then echo 'issue_number must be a positive integer' >&2; exit 1; fi
 gh label create agent-in-progress --color FBCA04 2>/dev/null || true
 gh label create agent-stuck --color D93F0B 2>/dev/null || true
 gh label create agent-authored --color 1D76DB 2>/dev/null || true
 gh label create Review --color 0E8A16 2>/dev/null || true
-gh issue edit $N --add-label agent-in-progress --remove-label agent
-RID=$(basename $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ''))
-if [ ${#RID} -ne 26 ]; then RID=''; fi
-case \"$RID\" in *[!0-9A-Z]*) RID='' ;; esac
-LOST=false
-if [ -n \"$RID\" ]; then
-  gh issue comment $N --body '<!-- fabro:claim:'$RID' -->' || true
-  sleep 20
-  if gh issue view $N --json comments > /tmp/fabro/claim_comments.json 2>/dev/null; then
-    W=$(jq -r '[.comments[] | select(.body | test(\"fabro:claim:\")) | select((.createdAt | fromdateiso8601) > (now - 900)) | (.body | capture(\"fabro:claim:(?<i>[0-9A-Z]{26})\").i)] | sort | .[0] // \"\"' /tmp/fabro/claim_comments.json)
-    if [ -n \"$W\" ] && [ \"$W\" != \"$RID\" ]; then LOST=true; fi
-  fi
+gh issue edit $ISSUE --add-label agent-in-progress --remove-label agent || true
+# state is fetched so the fail-closed checks below can see a closed issue; the
+# downstream readers (open_pr_prep, open_pr, mark_stuck) use number/title/body/labels.
+gh issue view $ISSUE --json state,number,title,body,labels > /tmp/fabro/issue.json
+S=$(jq -r .state /tmp/fabro/issue.json)
+if [ \"$S\" != OPEN ]; then
+  echo 'issue '$ISSUE' is '$S', not OPEN; refusing to work a closed issue' >&2
+  exit 1
 fi
-if [ \"$LOST\" = true ]; then
-  # Stand down. The winner holds agent-in-progress and both runs applied the same
-  # label swap, so the issue is already in the right state -- touching it here would
-  # unclaim the winner's issue.
-  echo 'lost the claim race for issue '$N' to run '$W'; standing down'
-  echo '{\"context_updates\":{\"claim_lost\":\"true\",\"issue_number\":'$N'}}'
-  exit 0
-fi
-gh issue view $N --json number,title,body,labels,comments > /tmp/fabro/issue.json
-echo '{\"context_updates\":{\"claim_lost\":\"false\",\"issue_number\":'$N'}}'"]
+if ! jq -e '.labels | map(.name) | index(\"agent-in-progress\")' /tmp/fabro/issue.json >/dev/null 2>&1; then
+  echo 'issue '$ISSUE' does not carry agent-in-progress after the label swap; refusing to work the wrong issue' >&2
+  exit 1
+fi"]
 
     prep [label="Prep workspace and install deps", shape=parallelogram, timeout="20m",
         script="set -e
@@ -819,10 +798,7 @@ fi
 echo done"]
 
     // ---- Edges ----
-    start -> acquire
-    acquire -> claim
-    acquire -> exit                 [condition="outcome=failed"]
-    claim -> exit                   [condition="context.claim_lost=true", weight=10]
+    start -> claim
     claim -> prep                   [condition="outcome=succeeded"]
     claim -> human_rescue
     prep -> decompose               [condition="outcome=succeeded"]

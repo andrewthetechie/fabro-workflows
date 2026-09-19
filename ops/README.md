@@ -28,6 +28,7 @@ locations instead.
 | `provision-server-state.sh` | Recreates the twelve **automations** (three per repo: `backlog`, `pr-review`, `issue-triage`) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
 | `provision-litellm-models.sh` | Creates the `high-reasoning` model group and its `kimi-k3` fallback in LiteLLM. Scoped to that one group; the other model rows predate this workflow and are reported, never corrected. The `coders` pool's concurrency tuning is recorded under *Server-side state*, not managed here. |
 | `provision-coder-groups.sh` | Creates the per-box `coders-a` and `coders-b` model groups that the coder scheduler pins a run to, and adds both names to the fabro key's model allowlist. Leaves the load-balanced `coders` rows alone. Idempotent, `DRY_RUN=1` by default. |
+| `fabro-fire-backlog.sh` | The manual escape hatch for the coder scheduler: fire exactly one issue through the `backlog` workflow by hand (three-POST sequence, `args.inputs = {issue_number, coder_pool: "coders"}`, environment looked up from the repo's `backlog-<repo>` automation row). Since draft 10 a `backlog` run works only the issued `issue_number`, so this is the only way to move an issue when the scheduler is down. `DRY_RUN=1` by default; see `docs/scheduler/10-collapse-acquire-claim.md`. |
 | `README.md` | This file — bring-up, install, and replication steps. |
 
 **Not here, deliberately:** `fire-pr-review.sh` is tracked at
@@ -37,6 +38,13 @@ it from a fresh clone of `main`, so it is code a live automation runs — and `o
 the tree no automation reads, which is what makes editing `ops/` safe. Moving it here
 for tidiness would turn every `ops/` edit into a live deploy. Its absolute-path
 deployment and drift check are in the main `AGENTS.md`.
+
+`fabro-fire-backlog.sh`, by contrast, **is** here in `ops/`: it is an operator-only
+tool (no automation node runs it) and it ships the manual escape hatch for the coder
+scheduler, so the same "no automation reads `ops/`" rule makes `ops/` the safe home for
+it. It is a hand tool; deployed to `~/bin/fabro-fire-backlog.sh` on the host so an
+incident that starts with an ssh session does not need a git clone. See
+`docs/scheduler/10-collapse-acquire-claim.md`.
 
 ## Secrets — where they live, never in this repo
 
