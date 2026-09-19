@@ -715,6 +715,9 @@ takes both boxes, writes `agent-in-progress` to GitHub and creates real runs.
 
 #### The three controls
 
+`docs/scheduler/OPERATING.md` is the short operator-facing version of this section
+and the ones around it; this one carries the reasoning.
+
 Every control on the page is a `POST`, and none of them is authenticated (decision 16).
 Each one is the same call as the `curl` below; each one logs what it changed, because there
 is no identity to attribute it to.
