@@ -67,9 +67,21 @@ puts health out-of-band and run failures in-band.
 
   ```
   GET /health      -> 200 {"status":"ok","repos":[...],"coder_pools":[...]}
-  GET /api/queue   -> 200 [ {repo, number, title, priority, waited_seconds}, ... ]
+  GET /api/queue   -> 200 [ {repo, number, title, labels, repo_priority,
+                            override_rank, first_seen, waited_seconds}, ... ]
   GET /api/pools   -> 200 [ {coder_pool, drained, lease: {...}|null}, ... ]
   ```
+
+  **Corrected 2026-09-19, after this draft landed:** `/api/queue` returns
+  `repo_priority`, not `priority` — the row is
+  `{repo, number, title, labels, repo_priority, override_rank, first_seen,
+  waited_seconds}`, and `priority` is not a key at all, so a consumer reading it
+  gets `null` rather than an error. Draft 06 built the endpoint, draft 11's page
+  already reads `repo_priority`, and `ops/README.md`'s example query uses it. The
+  C7/C8 implementation is unaffected, because C8 reads only the queue's length
+  and each pool's `lease`/`drained`. The field name here was wrong from draft 06
+  onward and is corrected rather than silently edited so that the next consumer
+  does not write a monitor against a key that does not exist.
 
   `GET /api/pools` does not exist before this draft — **add it in draft 11's
   file** if it is missing, or this condition has nothing to read. Flag it rather
