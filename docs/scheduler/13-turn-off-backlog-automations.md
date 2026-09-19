@@ -128,3 +128,44 @@ before state and by the rows surviving, so re-enabling is the same script with
 The `jq` query shows all four schedule triggers disabled and all four API triggers
 enabled, `provision-server-state.sh` reports no drift, and an hour passes with no
 unattended `backlog` run.
+
+## Corrected during implementation, 2026-09-19
+
+**All four schedules were already `enabled: false`, so this draft's cutover PUT
+nothing.** The rows have been disabled since 2026-09-14 (operator decision, recorded
+in `ops/README.md`), and draft 13 as written assumes they are on. Verified live before
+touching anything:
+
+| id | schedule `enabled` | api `enabled` |
+|---|---|---|
+| backlog-jelly-swipe | false | true |
+| backlog-lawncare-saas | false | true |
+| backlog-womens-fantasy-sports | false | true |
+| backlog-writers-app | false | true |
+
+What that changes: the *state* this draft's acceptance criteria describe already held,
+and `ops/fabro-automation-schedule.sh <id> off` answered `already off` on all four —
+which is the draft's own idempotency rule doing its job, not a failure. The task's real
+deliverable is therefore the switch and the documentation that makes the state
+deliberate: without them the four rows are off by an accident of history, and the next
+host rebuild (which creates them disabled) is the only thing that would re-establish
+it. The write path — PUT, `If-Match`, the `workflow_source` projection, the `412`
+refusal — was exercised against a scratch automation row instead, created and deleted
+for the purpose; the detail is in the deployment log's 2026-09-19 (task 13) section.
+
+Two smaller facts confirmed live while implementing, both of which the draft states
+and neither of which is checked by anything offline:
+
+- `POST /automations/{id}/runs` really does answer `409` with
+  `code: automation_api_trigger_disabled` when the row has no enabled API trigger —
+  reproduced on a scratch row carrying `api:manual enabled:false`. That is why the
+  script rewrites only `schedule` triggers and sends `api` back exactly as read.
+- `DELETE /automations/{id}` requires `If-Match` too: without it the answer is
+  **428 Precondition Required**, with it `204`. Worth knowing for anything that has to
+  clean up a row.
+
+The "over one hour with the scheduler stopped, zero `backlog` runs are created"
+criterion was not observable in-session and is recorded as pending in the deployment
+log. Its substance is checkable and was checked: every `backlog-*` schedule trigger
+reads `false`, and the scheduler container is stopped, so nothing in the deployment can
+create a `backlog` run.

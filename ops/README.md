@@ -29,6 +29,7 @@ locations instead.
 | `provision-litellm-models.sh` | Creates the `high-reasoning` model group and its `kimi-k3` fallback in LiteLLM. Scoped to that one group; the other model rows predate this workflow and are reported, never corrected. The `coders` pool's concurrency tuning is recorded under *Server-side state*, not managed here. |
 | `provision-coder-groups.sh` | Creates the per-box `coders-a` and `coders-b` model groups that the coder scheduler pins a run to, and adds both names to the fabro key's model allowlist. Leaves the load-balanced `coders` rows alone. Idempotent, `DRY_RUN=1` by default. |
 | `fabro-fire-backlog.sh` | The manual escape hatch for the coder scheduler: fire exactly one issue through the `backlog` workflow by hand (three-POST sequence, `args.inputs = {issue_number, coder_pool: "coders"}`, environment looked up from the repo's `backlog-<repo>` automation row). Since draft 10 a `backlog` run works only the issued `issue_number`, so this is the only way to move an issue when the scheduler is down. `DRY_RUN=1` by default; see `docs/scheduler/10-collapse-acquire-claim.md`. |
+| `fabro-automation-schedule.sh` | Turns one automation's `schedule` triggers on or off — the switch behind draft 13's cutover, which left the four `backlog-<repo>` schedules off so the coder scheduler is the only producer of `backlog` runs. `GET` + full-body `PUT` with `If-Match`, because fabro has no `PATCH` on an automation; only `schedule` triggers are written, so `api:manual` keeps working. Idempotent, `DRY_RUN=1` by default. |
 | `README.md` | This file — bring-up, install, and replication steps. |
 
 **Not here, deliberately:** `fire-pr-review.sh` is tracked at
@@ -434,11 +435,17 @@ excluded — it is the operator's to set — while `api:manual` being disabled i
 since a disabled trigger is exactly as dead as a missing one.
 
 Every `backlog` schedule is **disabled** — an operator decision (2026-09-14) while
-development and testing continue. The four schedules are **staggered** three minutes
-apart (ADR 0001, implemented 2026-09-16) so a re-enabled fleet never fires four runs
+development and testing continue, and re-asserted 2026-09-19 as draft 13's cutover. All
+four rows already read `false`, so the cutover PUT nothing; what it added is the switch
+below, which makes the state deliberate rather than a leftover. The four schedules are
+**staggered** three minutes apart (ADR 0001, implemented 2026-09-16) so a re-enabled
+fleet never fires four runs
 in the same minute. The `pr-review` automations carry no schedule at
 all by design: they are fired against a named PR, so there is nothing to poll.
-Nothing in this deployment currently fires on a cron.
+Nothing in this deployment fires on a cron. The four `issue-triage` schedules are
+disabled as well, and were before draft 13 — it touched only `backlog`. Decision 13 has
+`issue-triage` staying on its own schedule and never queued, so those four are still the
+operator's to enable; nothing in the coder-scheduler series turns them on.
 
 A `pr-review` run that reaches the merge phase holds a scheduler slot until CI settles,
 bounded by the 60-minute merge budget. Because fabro queues rather than rejects
@@ -505,13 +512,63 @@ full trigger set and the schedule expressions, and reports zero drift.
 `provision-server-state.sh` recreates the automations. The environments above are
 created by hand (step 6).
 
+### Automation schedules
+
+`ops/fabro-automation-schedule.sh <automation-id> <on|off>` flips the `enabled` flag on
+the `schedule` triggers of one automation row and nothing else. It takes the full row id
+(`backlog-jelly-swipe`), not an `owner/repo` — a repo carries three rows, with three
+different schedules. `DRY_RUN=1` by default and prints the PUT it would send:
+
+```sh
+# turn the four backlog schedules off (2026-09-19, draft 13). Rows survive; this is
+# what makes the coder scheduler the only thing that starts a backlog run.
+for id in backlog-jelly-swipe backlog-lawncare-saas \
+          backlog-womens-fantasy-sports backlog-writers-app; do
+  FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ./ops/fabro-automation-schedule.sh "$id" off
+done
+
+# the same script with `on` is the whole undo
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ./ops/fabro-automation-schedule.sh backlog-writers-app on
+```
+
+The same script is deployed to the host at `~/bin/fabro-automation-schedule.sh`, so an
+incident that starts in an ssh session does not also need a checkout:
+
+```sh
+ssh andrew@10.10.0.32
+FABRO_DEV_TOKEN=<dev token> DRY_RUN=0 ~/bin/fabro-automation-schedule.sh backlog-jelly-swipe off
+```
+
+It is a GET plus a **full-body PUT** with `If-Match` on the row's `revision` because
+fabro has no `PATCH /automations/{id}` (405). Three properties of that shape are worth
+knowing before editing the script:
+
+- The body must carry `workflow_source` when the row has one. A PUT that omits it does
+  not preserve the old value, it unpins the source — every later fire would resolve
+  against the default instead of `andrewthetechie/fabro-workflows@main`. The `jq`
+  projection adds the key only when the row has one.
+- Only `schedule` triggers are rewritten. `api:manual` is sent back exactly as read:
+  `POST /automations/{id}/runs` answers `409 automation_api_trigger_disabled` when no
+  **enabled** API trigger remains, so disabling the API trigger by accident would take
+  the manual fire path down with the schedule.
+- A `412` is fatal and loud. The row changed between the read and the write; the script
+  exits non-zero rather than re-reading and retrying, which would silently overwrite
+  whoever else edited it.
+
+Idempotent: a row whose schedule triggers already read the wanted value is reported and
+not PUT at all, so re-running the cutover is safe. Re-enabling a schedule puts a second
+admission controller back on the same two boxes, which is exactly what decision 9 and
+ADR 0005 exist to prevent — do it only while the scheduler is stopped.
+
 ## The coder scheduler
 
 `ops/scheduler/` — a FastAPI service that owns admission to the two llama.cpp coder
 instances. It inventories `agent`-labelled issues from GitHub, orders them, and creates
 one `backlog` run at a time, so four automations on independent schedules stop fighting
-over two single-slot boxes. Decisions and the contracts each later draft consumes:
-`../docs/scheduler/00-overview-and-contracts.md`.
+over two single-slot boxes — **the four schedules are off as of draft 13**, so the
+scheduler is now the only producer of a `backlog` run and `ops/fabro-fire-backlog.sh` is
+the manual escape hatch when it is down. Decisions and the contracts each later draft
+consumes: `../docs/scheduler/00-overview-and-contracts.md`.
 
 Today it is draft 11 of 14: it reads `repos.toml`, inventories the `agent`-labelled
 issues of every enabled repo from GitHub every 60s with conditional requests, ranks

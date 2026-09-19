@@ -32,7 +32,7 @@ actually lives.
 | `ops/check-routing-schemas.py` | Catches command-node routing-schema mismatches that `fabro validate` accepts and fabro only reports at runtime. Reads the parsed AST, not the DOT text. |
 | `ops/test-task-gates.sh` | Runs `backlog`'s task-queue gates (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. Offline; no host or container. |
 | `ops/fabro-run-status.sh` | LLM-free health check for an in-flight run: alive, where in the graph, making progress, and whether a compaction says the decomposition was oversized. |
-| `docs/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency. `00-overview-and-contracts.md` first — it carries 19 settled operator decisions and the 11 source findings behind them, then 14 numbered task drafts. Each draft is written to be implementable from the overview plus its own file plus this repository. **Drafts 01–08 are built; 08 is deployed on the host but the `scheduler` container is stopped (2026-09-19), parked until 09.** 08 is the dispatch loop: it labels issues `agent-in-progress`, starts real runs by itself, and nothing releases a coder lease until 09. Its acceptance run showed the loop is right and that **the run works a different issue than the one dispatched** until 10 lands — see 08's and 09's dated corrections, and do not deploy 09 before 10. The service itself is `ops/scheduler/`. |
+| `docs/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency. `00-overview-and-contracts.md` first — it carries 19 settled operator decisions and the 11 source findings behind them, then 14 numbered task drafts. Each draft is written to be implementable from the overview plus its own file plus this repository. **Drafts 01–13 are built; the host runs draft 08's image and the `scheduler` container is stopped (2026-09-19), parked until 09 is redeployed.** 08 is the dispatch loop: it labels issues `agent-in-progress`, starts real runs by itself, and nothing releases a coder lease until 09. Its acceptance run showed the loop is right and that **the run works a different issue than the one dispatched** until 10 lands — see 08's and 09's dated corrections, and do not deploy 09 before 10. Draft 13 turned the four `backlog-<repo>` schedules off, so the scheduler is the only producer of `backlog` runs; `ops/fabro-automation-schedule.sh` is the way back on. The service itself is `ops/scheduler/`. |
 | `docs/perf/` | Why a run takes four hours, measured from the run store rather than guessed. `00-overview-and-measurements.md` first — it is also where the source-verified list of what fabro's docker provider **cannot** do lives (no mounts, no service provisioning). `01` is what was applied, `02` is what needs an operator decision, `03` is the per-repository `.fabro/ci.sh` work, `04` is why compaction is a sizing alarm rather than a cost and what the task-size work changed. |
 | `docs/research_improvements/` | An audit of all three packages against the Fabro source: what we hand-roll that Fabro already does, four operator-observed gaps traced to Fabro lines, and nine settled dead ends. A plan, not a changelog — nothing in it has been applied. `00-overview.md` first. |
 | `.scratch/` | Untracked working notes. |
@@ -237,6 +237,13 @@ ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-auto-merge-switch.sh'
 scp ops/fabro-fire-backlog.sh andrew@10.10.0.32:~/bin/fabro-fire-backlog.sh
 ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-fire-backlog.sh'
 
+# the automation-schedule switch (draft 13). The four backlog-<repo> schedules are off,
+# which is what makes the scheduler the only producer of backlog runs; this is the
+# switch that keeps that deliberate, and `on` is the only undo. Operator-only, same
+# reasoning as the two above. It talks to the API over the network and needs no restart.
+scp ops/fabro-automation-schedule.sh andrew@10.10.0.32:~/bin/fabro-automation-schedule.sh
+ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-automation-schedule.sh'
+
 # automations, when the provisioning script changed or a row is missing
 FABRO_API_URL=http://10.10.0.32:32276/api/v1 FABRO_DEV_TOKEN=<dev token> \
   ./ops/provision-server-state.sh
@@ -251,6 +258,7 @@ ssh andrew@10.10.0.32 'cat ~/bin/fabro-sandbox-sweep.sh' | diff - ops/fabro-sand
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-monitor.sh' | diff - ops/fabro-monitor.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-auto-merge-switch.sh' | diff - ops/fabro-auto-merge-switch.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-fire-backlog.sh' | diff - ops/fabro-fire-backlog.sh
+ssh andrew@10.10.0.32 'cat ~/bin/fabro-automation-schedule.sh' | diff - ops/fabro-automation-schedule.sh
 ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'  | diff - ops/docker-compose.yaml
 ssh andrew@10.10.0.32 'cat ~/fabro/scheduler/repos.toml' | diff - ops/scheduler/repos.toml
 ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/scripts/discord-notify.sh' \
@@ -327,8 +335,12 @@ which does the three-POST sequence with the input attached:
 
 The `backlog-<repo>` automations still exist and their rows are still where the
 per-repo `environment_id` is looked up; what changed is that firing one by hand is no
-longer a way to start work. The coder scheduler is the normal producer of `backlog`
-runs, and `fabro-fire-backlog.sh` is the escape hatch for when it is down.
+longer a way to start work. **Their schedules are off** (draft 13, 2026-09-19), so
+nothing starts them on a timer either: the coder scheduler is the only producer of a
+`backlog` run, and `fabro-fire-backlog.sh` is the escape hatch for when it is down.
+`ops/fabro-automation-schedule.sh <automation-id> on|off` is the switch, and it is the
+only undo — turning one back on puts a second admission controller on the same two
+coder boxes, which is what the scheduler exists to prevent.
 
 `ops/README.md` has the environments and automations tables, which schedules are
 enabled, host rebuild, the profile images, and the branch sweeper.
