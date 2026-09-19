@@ -513,7 +513,12 @@ Every 5 seconds it takes the top-ranked item whose repo has no run in flight, la
 coder instance, and records the **lease** that makes that instance exclusive.
 `POST /api/dispatch-once` stays as the operator's manual override.
 
-Two consequences, and both are draft 09's to fix:
+**Status, 2026-09-19:** deployed, acceptance run done (the dated logs are in the
+deployment log), and the `scheduler` container is **stopped** — parked until draft 09.
+The two leases its acceptance run took are still held, so simply starting it again
+dispatches nothing until those rows are cleared (*Clearing a lease* below).
+
+Three consequences, and the first two are draft 09's to fix:
 
 - **Nothing releases a lease.** A lease is held from dispatch until its row is deleted
   by hand (see *Clearing a lease* below), so with two coder instances the loop can take
@@ -524,6 +529,17 @@ Two consequences, and both are draft 09's to fix:
   no lease is recorded, and the loop retries the issue on the next tick. The log line
   names the run id — cancel it with `POST /api/v1/runs/{id}/cancel`. Draft 09
   reconciles these automatically.
+- **The run works a different issue than the one dispatched, until draft 10.** `acquire`
+  still selects the issue itself, and the scheduler removed `agent` from its own pick
+  before the run started, so the run claims the *next* `agent` issue in that repo. The
+  acceptance run dispatched `jelly-swipe#350` and the run implemented `jelly-swipe#351`;
+  likewise `womens-fantasy-sports#1195` / `#1197`. One dispatch therefore leaves **two**
+  issues marked `agent-in-progress`, and the scheduler's pick — the one holding the lease
+  — is worked by nobody. Repair it exactly as the loop repairs a failed dispatch, by hand:
+  remove `agent-in-progress` and restore `agent`. That is what was done to #350 and #1195
+  after the acceptance run. Draft 10 makes the two picks agree; **do not deploy draft 09
+  before 10**, because 09's recovery keys on the lease's issue number and would invert —
+  it would un-label the run's claim and leave the orphan.
 
 Because of both, this draft **must not be left running unattended after its acceptance
 run**. Nothing an automation reads changes when this tree changes: it is `ops/`, not
@@ -568,11 +584,15 @@ generated on the host — but note it *does* delete `~/fabro/scheduler.env` if t
 inside the scheduler tree, so keep it one level up, beside `docker-compose.yaml`.
 
 **From draft 08 on, deploying this arms automatic dispatch.** The container starts the
-5-second loop as soon as it is up, so the next deploy will label issues and start real
-runs — the acceptance run is the deploy. Two things bound it: the loop can hold at most
-one lease per coder instance, so with both boxes leased it stops dispatching on its own;
-and nothing releases a lease until draft 09, so it does not start a third run. It is
-still not safe to leave unattended, for the reasons in the section above.
+5-second loop as soon as it is up, so a deploy labels issues and starts real runs — the
+acceptance run *is* the deploy. Two things bound it: the loop can hold at most one lease
+per coder instance, so with both boxes leased it stops dispatching on its own; and nothing
+releases a lease until draft 09, so it does not start a third run. It is still not safe to
+leave unattended, for the reasons in the section above.
+
+The 2026-09-19 deploy was the acceptance run and the container was then stopped. Starting
+it again with both lease rows still present dispatches nothing — clear them first if the
+intent is to dispatch.
 
 #### Clearing a lease
 

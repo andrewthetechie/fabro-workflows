@@ -156,6 +156,60 @@ also why it must not be left running unattended.
   no lease and no half-applied labels. Log the issue and back off that repo for
   one loop tick rather than retrying instantly in a tight loop.
 
+#### Acceptance run, 2026-09-19
+
+Deployed to the host at 00:33:37 and parked after the run. The loop did exactly what
+this draft specifies: both coder instances were free and 29 items were queued, and the
+first tick dispatched **one run to each box, one per repo**, in 3 seconds:
+
+```
+00:33:37.633  github: jelly-swipe#350 +agent-in-progress
+00:33:38.311  github: jelly-swipe#350 -agent
+00:33:39.219  fabro: registered workflow version 628845c6e0e1 for fabro-workflows@4d4bb6e3e67e
+00:33:39.474  fabro: dispatched jelly-swipe#350 -> run 01M2VHAGXNM9JNEY71085HV82Y status=runnable pool=coders-a
+00:33:40.403  github: womens-fantasy-sports#1195 +agent-in-progress
+00:33:40.931  github: womens-fantasy-sports#1195 -agent
+00:33:42.002  fabro: fabro-workflows@4d4bb6e3e67e unchanged, reusing workflow version 628845c6e0e1
+00:33:42.194  fabro: dispatched womens-fantasy-sports#1195 -> run 01M2VHAKMRVQQNTCXZWXMV6CV9 status=runnable pool=coders-b
+```
+
+So: the label write precedes the run creation by ~1.3s and precedes the *start* by ~1.8s,
+`agent` is gone from both issues and `agent-in-progress` is on both, both leases are
+recorded (`coders-a`/jelly-swipe/350 and `coders-b`/womens-fantasy-sports/1195, each with
+its `queued_since` from before dispatch), `repo_affinity` has a row per repo, the version
+was registered once and reused once, and **only two `dispatch:` lines appear in the log
+afterwards** — the loop parked itself exactly as designed. That is every acceptance
+criterion this draft can check without waiting hours for a coder stage.
+
+**The one thing it does not check, and cannot yet: the run works a different issue than
+the one the scheduler labelled.** `acquire` and `claim` still select (decision 3 deletes
+their selection in draft 10), and by the time the run's `acquire` listed `--label agent`
+the scheduler had already removed `agent` from its pick. So the run took the *next*
+`agent`-labelled issue in that repo:
+
+| | scheduler's pick (labelled + leased) | the run's pick (claimed + worked) |
+|---|---|---|
+| jelly-swipe | #350 | #351 |
+| womens-fantasy-sports | #1195 | #1197 |
+
+The evidence is in the run itself: run `01M2VHAGXNM9JNEY71085HV82Y` carries
+`labels: {"source": "scheduler", "issue": "350"}` and its claim comment —
+`<!-- fabro:claim:01M2VHAGXNM9JNEY71085HV82Y -->` — is on #351. One dispatch therefore
+marks **two** issues `agent-in-progress`: the run's, which is correct, and the
+scheduler's, which no run is working and which is invisible to both `acquire` and this
+loop's inventory. The operator's repair is this draft's own rollback written backwards —
+remove `agent-in-progress`, restore `agent` — and it was applied by hand to #350 and
+#1195 after the run. Both were back in the queue within a minute.
+
+This is an interim-state finding, not a defect in the loop: the loop's four steps are
+right, and the receipt is the right receipt *for the issue the scheduler picked*. What
+is not yet true is the premise underneath it — that the scheduler's pick and the run's
+pick are the same issue. That premise arrives with draft 10. Until then, read "the
+durable handoff receipt draft 09's recovery reads" as "a receipt on the issue this draft
+dispatched, which is not the issue the run is working", and see draft 09's correction
+below for why that matters to its recovery pass.
+
+
 ## Acceptance Criteria
 - [ ] `uv run pytest` passes.
 - [ ] With two free boxes and ≥2 eligible issues in ≥2 repos, two runs start, one

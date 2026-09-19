@@ -376,3 +376,12 @@ the manual escape hatch.
 
 Each draft is written to be implementable from this file plus its own file plus
 the repository — no other context.
+
+**Finding, 2026-09-19 (found by draft 08's acceptance run).** Drafts 08 and 09 both
+assume the run works the issue the scheduler dispatched. It does not until draft 10:
+`acquire` still selects, so run `01M2VHAGXNM9JNEY71085HV82Y` claimed and worked
+`jelly-swipe#351` while the scheduler labelled and leased `jelly-swipe#350`. Every lease
+row this scheduler writes therefore names the scheduler's pick, not the run's. **Do not
+deploy 09 before 10.** 09's GitHub pass would un-label the run's own claim (`#351` has no
+lease) and leave the scheduler's orphan in place (`#350` has the lease) — both halves of
+its intent inverted. Draft 09's file carries the detail and the two ways out.

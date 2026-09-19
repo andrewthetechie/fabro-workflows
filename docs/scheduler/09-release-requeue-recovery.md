@@ -183,6 +183,36 @@ def test_requeue_preserves_first_seen(store):
     assert store.get_issue("o/a", 7).first_seen == original
 ```
 
+#### Corrected during draft 08's acceptance run, 2026-09-19
+
+**The GitHub pass must not key on the lease's `issue_number`, and this draft should not
+ship before draft 10.** Draft 08's acceptance run showed the scheduler's receipt and the
+run's own `claim` landing on *different* issues, because `acquire` still selects until
+draft 10 deletes its selection: the loop labelled and leased `jelly-swipe#350` while run
+`01M2VHAGXNM9JNEY71085HV82Y` claimed and worked `jelly-swipe#351`. Every lease row this
+scheduler records therefore names the issue the *scheduler* picked, not the issue the
+**run** is working.
+
+Recovery as written — "any issue labelled `agent-in-progress` with no live lease is
+un-labelled and requeued" — would do exactly the wrong thing with those rows:
+
+* `#350` has a live lease and no run working it, so recovery leaves it labelled and
+  invisible, which is the state it exists to repair;
+* `#351` has the run's `claim` and **no** lease, so recovery un-labels it and puts it
+  back in the queue *while its run is implementing it* — the issue is then dispatched a
+  second time.
+
+Both halves are inverted, and the fix is not a better predicate on the lease: the run's
+claim marker is `<!-- fabro:claim:<run id> -->` in an issue comment, and the run id in it
+is the one this scheduler holds, so recovery can match on that instead. Failing that, the
+lease's `issue_number` should be reconciled against the marker before either pass runs.
+
+The clean answer is ordering: **draft 10 first, or draft 10 alongside this one.** Once
+`acquire` honours `args.inputs.issue_number`, the scheduler's pick, its label, its lease
+and the run's claim are all the same issue and this whole correction evaporates. The
+dependency table in `00-overview-and-contracts.md` has 09 blocked only by 08; that is not
+enough while 08's receipt and the run's claim can disagree.
+
 ## Dependencies
 - Blocked by: "Lease state machine and the dispatch loop"
 - Why blocked: needs the lease table, the dispatch loop and the label writes to
