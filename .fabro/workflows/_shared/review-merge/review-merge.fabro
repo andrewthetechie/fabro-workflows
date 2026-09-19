@@ -247,6 +247,13 @@ echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
     // ---- Review and fix (one agent, as Sandcastle does) ----
     review_fix [label="Review and fix", class="review", timeout="15m", max_retries=1, prompt="@prompts/review_fix.md.j2"]
+    // Every error-severity own finding must be accounted for, by its own id, in
+    // `fixes_applied` or `not_fixed`. The prompt says the same thing, and merge_gate's
+    // check 10 blocks a merge when it is not true -- but merge_gate has no repair turn,
+    // so without this gate the agent first learns it got the bookkeeping wrong by having
+    // a correct fix refused at the end of the run, under a message that says the finding
+    // was not fixed. Observed live on jelly-swipe#379 (run 01M2NC5XBC16B2TD4YTN41JB77):
+    // OWN-001 was found, fixed and shipped, and the merge blocked saying it had not been.
     fix_gate [label="Validate fix result", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/fix_result.json
 A=$(cat /tmp/fabro/fix_result_attempts 2>/dev/null || echo 0)
@@ -259,13 +266,6 @@ if [ \"$O\" = fixed ]; then
     O=invalid
   fi
 fi
-# Every error-severity own finding must be accounted for, by its own id, in
-# fixes_applied or not_fixed. The prompt says the same thing, and merge_gate check 10
-# blocks a merge when it is not true -- but merge_gate has no repair turn, so without
-# this the agent first learns it got the bookkeeping wrong by having a correct fix
-# refused at the end of the run, under a message that says the finding was not fixed.
-# Observed live on jelly-swipe#379 (run 01M2NC5XBC16B2TD4YTN41JB77): OWN-001 was found,
-# fixed and shipped, and the merge blocked saying it had not been.
 if [ \"$O\" != invalid ] && [ \"$O\" != needs_human ]; then
   M=$(jq '[.own_findings[]? | select(.severity == \"error\") | .id] - ([.fixes_applied[]?.finding_id] + [.not_fixed[]?.finding_id]) | length' $F 2>/dev/null || echo 99)
   if [ \"$M\" != 0 ]; then
@@ -329,6 +329,22 @@ else
 fi"]
 
     // ---- Auto-merge: decide, watch CI, fix CI, merge ----
+    // The twelve checks are marked inline, one line each, next to the code that runs
+    // them. Two need more room than that:
+    //
+    // Check 10 -- every own error finding accounted for by its own id in `fixes_applied`.
+    // An entry in `not_fixed` is already caught by check 9, so reaching here means the
+    // finding is cited nowhere. `fix_gate` enforces the same rule WITH a repair turn, so
+    // by the time a run gets here this should be unreachable; it stays as the fail-closed
+    // backstop, and its wording says what it tests rather than asserting the fix never
+    // happened. Saying it was not fixed, of a finding the agent fixed but failed to
+    // record, sent a human to re-do work that was already done (jelly-swipe#379).
+    //
+    // The scope ceiling for `ci_fix` is snapshotted in this node rather than reused from
+    // prep_review's changed_files.txt. That file predates `review_fix`, so a file
+    // review_fix legitimately added would read as out-of-scope later and block the merge
+    // over a file `ci_fix` never touched. This is the set the merge decision was actually
+    // made against.
     merge_gate [label="Evaluate merge eligibility", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 F=/tmp/fabro/review/fix_result.json
@@ -381,13 +397,7 @@ if [ \"$E\" = true ]; then
   NF=$(jq '[.not_fixed[]?] | length' \"$F\" 2>/dev/null || echo 99)
   if [ \"$NF\" != 0 ]; then fail 'There are unfixed findings; a human must merge this PR.'; fi
 fi
-# 10. every own error finding is accounted for, by its own id, in fixes_applied.
-# An entry in not_fixed is already caught by check 9, so reaching here means the
-# finding is cited nowhere. fix_gate enforces the same rule with a repair turn, so by
-# the time a run gets here this should be unreachable -- it stays as the fail-closed
-# backstop, and its wording says what it tests rather than asserting the fix never
-# happened. Saying it was not fixed, of a finding the agent fixed but failed to record,
-# sent a human to re-do work that was already done (jelly-swipe#379).
+# 10. every own error finding is accounted for, by its own id, in fixes_applied
 if [ \"$E\" = true ]; then
   M=$(jq '[.own_findings[]? | select(.severity == \"error\") | .id] - [.fixes_applied[]?.finding_id] | length' \"$F\" 2>/dev/null || echo 99)
   if [ \"$M\" != 0 ]; then fail 'The review reported an error-severity finding of its own that its record does not account for, so whether it was fixed cannot be told from the report; a human must merge this PR.'; fi
@@ -405,11 +415,6 @@ if [ \"$E\" = true ]; then
 fi
 if [ \"$E\" = true ]; then
   gh pr view \"$PR\" --json title --jq .title > /tmp/fabro/commit_subject.txt
-  # The scope ceiling for ci_fix, snapshotted HERE rather than reused from
-  # prep_review's changed_files.txt. That file predates review_fix, so a file
-  # review_fix legitimately added would read as out-of-scope later and block the
-  # merge over a file ci_fix never touched. This is the set the merge decision was
-  # actually made against.
   git diff --name-only origin/\"$(cat /tmp/fabro/base_ref)\"...HEAD > /tmp/fabro/review/merge_base_files.txt 2>/dev/null || : > /tmp/fabro/review/merge_base_files.txt
   echo 0 > /tmp/fabro/gh_fix_attempts
   echo 0 > /tmp/fabro/strict_retry
@@ -418,6 +423,31 @@ if [ \"$E\" = true ]; then
 else
   echo '{\"context_updates\":{\"merge_eligible\":false}}'
 fi"]
+    // Poll, never a flat sleep. A blind `sleep 1800` held one of three concurrency slots
+    // doing nothing in the common case where the checks have already settled, and it
+    // spent the 60-minute budget before the second fix tier's result could ever be read:
+    // 1800 + agent + 900 + agent exceeds 3600, so `ci_fix_t2` was structurally dead.
+    //
+    // `gh pr checks --json` exits 0 even when a check is failing or pending -- unlike the
+    // plain form, which exits 1 and 8 -- so `|| echo '[]'` fires only on a real error and
+    // never discards a good result.
+    //
+    // GitHub takes a moment to register checks after a push, so the first poll gets a
+    // five-minute grace rather than spinning out the whole budget and then reporting the
+    // wrong reason.
+    //
+    // `gh run view --log-failed` with no argument fails outright -- run or job ID is
+    // required when not running interactively -- which left ci_fix.md holding check names
+    // and no logs at all, while the ci_fix prompt promised the agent that output. The run
+    // ids are derived from each failing check's `link`. A non-Actions check (CodeQL posts
+    // /runs/<id>, not /actions/runs/<id>) survives the first substitution unchanged and
+    // is dropped by the numeric guard.
+    //
+    // The contract file is cleared before the tier that writes it runs. Without that, a
+    // ci_fix agent that times out writes nothing and ci_fix_gate reads the PREVIOUS
+    // tier's result -- it reported `ci_fix_ok=true` twice for a tier that never produced
+    // one, which is what fed the loop above. Same rule prep_review applies to the review
+    // contracts, and the invariant AGENTS.md states.
     watch_checks [label="Watch GitHub checks", shape=parallelogram, timeout="35m", output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 A=$(cat /tmp/fabro/gh_fix_attempts 2>/dev/null || echo 0)
@@ -427,14 +457,6 @@ blocked() {
   echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":true,\"gh_fix_attempts\":'$A'}}'
   exit 0
 }
-# Poll, never a flat sleep. A blind `sleep 1800` held one of three concurrency slots
-# doing nothing in the common case where the checks have already settled, and it spent
-# the 60-minute budget before the second fix tier's result could ever be read: 1800 +
-# agent + 900 + agent exceeds 3600, so ci_fix_t2 was structurally dead.
-#
-# `gh pr checks --json` exits 0 even when a check is failing or pending -- unlike the
-# plain form, which exits 1 and 8 -- so `|| echo '[]'` fires only on a real error and
-# never discards a good result.
 GRACE=$(( $(date +%s) + 300 ))
 while : ; do
   NOW=$(date +%s)
@@ -443,9 +465,6 @@ while : ; do
   TOTAL=$(jq length /tmp/fabro/checks.json 2>/dev/null || echo 0)
   PEND=$(jq '[.[] | select(.bucket == \"pending\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
   if [ \"$TOTAL\" = 0 ]; then
-    # GitHub takes a moment to register checks after a push, so give the first one a
-    # five-minute grace rather than spinning out the whole budget and then reporting
-    # the wrong reason.
     if [ \"$NOW\" -ge \"$GRACE\" ]; then blocked 'No CI checks were reported on the PR head within five minutes; a merge with no evidence is refused.'; fi
   elif [ \"$PEND\" = 0 ]; then
     break
@@ -463,17 +482,6 @@ if [ \"$A\" -ge 2 ]; then
 fi
 A=$((A+1))
 echo $A > /tmp/fabro/gh_fix_attempts
-# `gh run view --log-failed` with no argument fails outright -- \"run or job ID required
-# when not running interactively\" -- which left ci_fix.md holding check names and no
-# logs at all, while the ci_fix prompt promised the agent that output. Derive the run
-# ids from each failing check's `link`. A non-Actions check (CodeQL posts
-# /runs/<id>, not /actions/runs/<id>) survives the first substitution unchanged and is
-# dropped by the numeric guard.
-# Clear the contract before the tier that writes it runs. Without this, a ci_fix
-# agent that times out writes nothing and ci_fix_gate reads the PREVIOUS tier's
-# result -- it reported ci_fix_ok=true twice for a tier that never produced one,
-# which is what fed the loop above. Same rule prep_review applies to the review
-# contracts, and the invariant AGENTS.md states.
 rm -f /tmp/fabro/review/ci_fix_result.json
 {
   echo '## Failing GitHub checks'
@@ -573,6 +581,10 @@ exit 0"]
     // Reaping the branch is ops/fabro-branch-sweep.sh's job, at its own grace: 24h
     // for a fabro/run/* branch whose tree matches the default branch, 168h for one
     // that still differs from it -- which is what a squash merge leaves behind.
+    // Behind the base is the only expected rejection: it is fixable by a re-merge on the
+    // one strict repo, or by a human read if the branch is still behind after that. Any
+    // other rejection -- a token without `contents: write`, a conflict that appeared
+    // since the review, an API 5xx -- is an unexpected failure and must be loud.
     merge [label="Squash merge", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
@@ -588,10 +600,6 @@ fi
 B=$(cat /tmp/fabro/base_ref)
 SR=$(cat /tmp/fabro/strict_retry 2>/dev/null || echo 0)
 git fetch origin \"$B\" 2>/dev/null || true
-# Behind the base is the only expected rejection: it is fixable by a re-merge on the
-# one strict repo, or by a human read if the branch is still behind after that. Any
-# other rejection -- token without contents: write, a conflict that appeared since
-# the review, an API 5xx -- is an unexpected failure and must be loud.
 if git merge-base --is-ancestor origin/\"$B\" HEAD 2>/dev/null; then
   echo 'The squash merge failed for an unexpected reason (permissions, conflict since review, or API error); a human must merge this PR.' > /tmp/fabro/merge_block_reason
   exit 1

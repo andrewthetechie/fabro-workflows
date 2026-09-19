@@ -5,7 +5,7 @@ digraph IssueTriage {
         // with up to 25 lines of command output each, to every agent prompt. Every
         // prompt here names its inputs by path, so the preamble carries no signal this
         // graph relies on. See backlog's graph block for the full reasoning.
-        default_fidelity="summary:low",
+        default_fidelity="truncate",
         model_stylesheet="
             *         { model: high-reasoning; }
             .improve  { model: high-reasoning; }

@@ -5,7 +5,7 @@ digraph PrReview {
         // with up to 25 lines of command output each, to every agent prompt. Every
         // prompt here names its inputs by path, so the preamble carries no signal this
         // graph relies on. See backlog's graph block for the full reasoning.
-        default_fidelity="summary:low",
+        default_fidelity="truncate",
             // reasoning_effort: medium on the classes that run on `coders`, and only
             // those. Measured against the llama.cpp box itself (10.10.0.29, direct,
             // no gateway), identical prompt:

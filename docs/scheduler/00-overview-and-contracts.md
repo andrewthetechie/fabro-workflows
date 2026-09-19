@@ -196,19 +196,43 @@ The Requeue rule keys on the failure `category`. Two problems, both verified liv
 **The category is not in the run projection.** `GET /runs` and `GET /runs/{id}` return
 `lifecycle.status` (kind and reason), `lifecycle.error`, `queue_position` and `archived`,
 and nothing else about the failure — `RunLifecycle` in the live OpenAPI has no category
-field, and on a cancelled run `lifecycle.error` is `null`. The category exists only in the
-`run.failed` event payload, at `properties.failure.detail.category`, so classifying a
-terminal run costs one extra call — and it has to be read from the **tail**:
+field, and on a cancelled run `lifecycle.error` is `null`. The category exists only in a
+failure **event**, so classifying a terminal run costs one extra call — and it has to be
+read from the **tail**:
 
 ```
-GET /runs/{id}/events?order=desc&limit=100     the run.failed event is in there
+GET /runs/{id}/events?order=desc&limit=100     the failure event is in there
 ```
 
 Verified on the 10.4-hour run `01M2PSA224HXTXJSSVBGTVPYF1` (3233 events) and on a 5-event
 run alike. An ascending read cannot work: the failure is the second-to-last event, the
 endpoint caps at 1000 events, and `page[offset]` is ignored on it (finding 11). A
-first-page ascending read of any run with more than 100 events contains **no** `run.failed`
+first-page ascending read of any run with more than 100 events contains **no** failure
 event at all, which is indistinguishable from "this run has no failure category".
+
+> **Corrected 2026-09-19 — the event shape above was read from the wrong build, and the
+> code written against it never worked.** This paragraph originally said the category is
+> in the `run.failed` event at `properties.failure.detail.category`. That is the
+> `0.357.0` checkout's shape; the caveat at the head of this findings section applies.
+> The deployed `0.354.0-nightly.0` differs in three ways, each of which alone makes a
+> reader return nothing:
+>
+> | | documented here | actually served |
+> |---|---|---|
+> | discriminator field | `type` | **`event`** |
+> | event name | `run.failed` | **`stage.failed`** — there is no `run.failed` at all |
+> | category path | `failure.detail.category` | **`failure.category`** |
+>
+> Enumerated live on run `01M2VY68XF9VNSY63Q37NQF1T0`, whose full event-name set is
+> `run.blocked | run.completed | run.created | run.runnable | run.running |
+> run.start_requested | run.started | run.starting | run.submitted | run.unblocked |
+> stage.failed`. `FabroClient.last_failure_category` filtered on `event["type"] ==
+> "run.failed"` and so returned `None` for **every run ever made**, which made decision
+> 10's `transient_infra` predicate dead code from the day draft 09 shipped. Its unit
+> tests mocked the documented shape, so they were green the whole time — the lesson is
+> that a fixture written from a document proves only that the code matches the document.
+> Fixed 2026-09-19; both shapes are now accepted so the upgrade cannot switch it off
+> again.
 
 The reason, by contrast, *is* in the projection as `lifecycle.status.reason`
 (`FailureReason`, `status.rs:304-315`) — so a scheduler that can decide on `reason` alone
@@ -485,5 +509,50 @@ oldest-first across repos. Repo priority is inert until the queue drains below `
 the ceiling working as designed. A fresh database — where every `first_seen` starts at the
 scheduler's first sighting — orders by repo priority instead, and the two states must be
 told apart before anyone reads a priority inversion out of the page.
+
+### Added 2026-09-19 (session 4) — the preamble, a flaky-test dead end, and a dead predicate
+
+Three things found while reading what fabro actually sends, all now fixed.
+
+**The fidelity preamble was a quarter of every agent prompt.** Measured on run
+`01M2X2MVPC2NXY1BW5CVKPFF3S`: 21 KB of 89 KB across eight agent stages, and 13.7 KB of
+that was command-node scripts printed **twice** — fabro writes the whole script into
+`outcome.notes` (`handler/command.rs:198`) and the preamble prints the same script again
+as `- Script:`. That duplication happens at every `summary:*` level, including the
+cheapest. All three graphs moved from `summary:low` to **`truncate`** (`Goal:` and
+`Run ID:`, ~60 characters). Nothing needed the recap: every prompt names its inputs by
+path, which is what the file-backed contracts are for, and the one exception —
+`human.gate.text` — already goes through `record_guidance` to a file.
+
+The same measurement produced a rule worth keeping: **a `#` comment inside a `script=`
+attribute is paid twice in the next agent's prompt.** `claim` was 54% comments. The prose
+moved to `//` DOT comments above each node, which cost nothing; inline comment bytes
+across all four graphs went from 7,238 to 1,433.
+
+**`open_pr_prep` had no way back from a failure, and a flaky test used it.** The node
+re-runs the same `setup.sh && ci.sh` that `validate` already ran, but where `validate`
+writes `/tmp/fabro/feedback/rework.md` and routes to the escalation ladder, this one
+`exit 1`'d with no feedback and took its unconditional edge to a 4h `human_rescue` gate
+holding a coder box. Run `01M2X2MVPC2NXY1BW5CVKPFF3S` died there: `coder` touched only
+`JoinModal.tsx` and two test files, `validate` passed on that tree, the three extra-round
+reviewers are read-only by prompt and wrote only `/tmp/fabro/extra/*.json`, `git merge
+origin/main` said `Already up to date` (main had not moved in 35h, its own CI green) — and
+then `useMovieCast.test.tsx`, which the run never touched, failed one async assertion in a
+sandbox whose environment setup took 240s. The suite is now retried once before the node
+gives up, and the feedback file is written either way.
+
+**Decision 10's `transient_infra` predicate had never once fired.** See finding 10's
+correction above. Repairing it *armed* a loop that had been unreachable: the same flaky
+test was classified `transient_infra`, and a requeue puts the issue back at the front of
+the queue with its original `first_seen`, so a recurring failure would hold a coder box
+forever. `MAX_REQUEUES = 3` bounds it; past that the issue is released without a requeue,
+keeps `agent-in-progress`, and waits for a human, which is what decision 10 does with
+every failure it cannot fix.
+
+**Still open, deliberately.** `open_pr_prep` failing still routes to `human_rescue` rather
+than to the rework ladder, because `rework_router` is task-scoped and the task loop is
+finished by then. And a `claim` or `open_pr_prep` failure is infra-shaped in cause but
+agent-shaped in outcome — `human_rescue`'s default is `mark_stuck`, so the run ends
+`succeeded` and the requeue rule, which keys on a *failed* run's reason, never sees it.
 
 No credential appears in this block.

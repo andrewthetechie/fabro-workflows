@@ -111,6 +111,24 @@ CANCELLED_REASON = "cancelled"
 # projection, so neither costs the extra `GET /runs/{id}/events`.
 REQUEUE_REASONS = frozenset({TERMINATED_REASON, CANCELLED_REASON})
 
+# How many times one issue may be requeued before the scheduler stops and hands it
+# to a human. The requeue rule is what carries work across a fabro restart, and it
+# is also the one rule that can loop: it puts the issue back at the FRONT of the
+# queue (its original `first_seen` is preserved, so it is past the starvation
+# ceiling), so a failure that recurs every time would reserve a coder box forever.
+#
+# Live evidence that this is reachable: on 2026-09-19 fabro classified a flaky unit
+# test as `category: "transient_infra"` on run 01M2X2MVPC2NXY1BW5CVKPFF3S — a test
+# that run never touched, against a `main` whose own CI was green. Until the same
+# day's fix to `FabroClient.last_failure_category` that category could never be read
+# at all, so this predicate was dead code; repairing the read is what arms it, and
+# this is the bound that keeps arming it safe.
+#
+# Three, not one: a fabro restart during a deploy window can legitimately take two
+# runs of the same issue, and the third attempt is where "this is not transient"
+# becomes the better reading.
+MAX_REQUEUES = 3
+
 # Decision 8 / the Release contract: poll fabro this often for terminal runs.
 DEFAULT_RELEASE_INTERVAL_SECONDS = 15.0
 
@@ -253,14 +271,35 @@ def reconcile_leases(
             actions.append(ReleaseAction(lease, "failed", str(exc)))
             continue
 
-        if should_requeue(classified):
+        spent = store.requeue_count(lease.repo, lease.issue_number) >= MAX_REQUEUES
+        if should_requeue(classified) and not spent:
             _requeue(store, leases, lease, github_token)
+            attempt = store.bump_requeue_count(lease.repo, lease.issue_number)
             actions.append(
                 ReleaseAction(lease, "released+requeued", _classify(run))
             )
             log.info(
-                "reconcile: %s#%s run %s terminal (%s); requeued",
+                "reconcile: %s#%s run %s terminal (%s); requeued (%d of %d)",
                 lease.repo, lease.issue_number, lease.run_id, _classify(run),
+                attempt, MAX_REQUEUES,
+            )
+        elif should_requeue(classified):
+            # The budget is spent. Fall through to the release-without-requeue
+            # path, which drops the cache row and leaves `agent-in-progress` on the
+            # issue — so it stops taking a coder box and starts waiting for a human,
+            # which is what decision 10 does with every failure it cannot fix.
+            store.forget_issue(lease.repo, lease.issue_number)
+            leases.release(lease.run_id)
+            actions.append(
+                ReleaseAction(lease, "released", f"{_classify(run)}, requeue budget spent")
+            )
+            log.error(
+                "reconcile: %s#%s run %s terminal (%s) and requeuable, but it has "
+                "already been requeued %d times; releasing without requeue so it "
+                "stops cycling a coder box. The issue keeps `agent-in-progress` and "
+                "needs a human.",
+                lease.repo, lease.issue_number, lease.run_id, _classify(run),
+                MAX_REQUEUES,
             )
         else:
             # The cache row goes with the box. Dispatch removed `agent` from this
@@ -272,6 +311,7 @@ def reconcile_leases(
             # must not come back, and this is what makes that true rather than
             # merely likely.
             store.forget_issue(lease.repo, lease.issue_number)
+            store.clear_requeue_count(lease.repo, lease.issue_number)
             leases.release(lease.run_id)
             actions.append(ReleaseAction(lease, "released", _classify(run)))
             log.info(

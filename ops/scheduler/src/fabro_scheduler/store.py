@@ -129,6 +129,28 @@ CREATE TABLE IF NOT EXISTS pool_state (
   coder_pool TEXT PRIMARY KEY,
   drained    INTEGER NOT NULL DEFAULT 0
 );
+
+-- How many times each issue has been requeued after a failure. The requeue rule
+-- is what keeps work moving across a fabro restart, and it is also the one rule
+-- that can loop: it puts the issue straight back at the front of the queue, so a
+-- failure that recurs every time reserves a coder box forever and never reaches a
+-- human.
+--
+-- That is not hypothetical. On 2026-09-19 fabro classified a **flaky unit test**
+-- as `category: "transient_infra"` (run 01M2X2MVPC2NXY1BW5CVKPFF3S, a test the run
+-- never touched, on a `main` whose own CI was green). Until the same day's fix to
+-- `last_failure_category` that category could never be read, so the predicate was
+-- dead code and the loop was unreachable; repairing the read is what arms it.
+--
+-- Cleared when the issue reaches an ending that is NOT a requeue, because that is
+-- the issue leaving the queue on its own terms.
+CREATE TABLE IF NOT EXISTS requeue_counts (
+  repo         TEXT    NOT NULL,
+  issue_number INTEGER NOT NULL,
+  count        INTEGER NOT NULL DEFAULT 0,
+  last_at      TEXT    NOT NULL,  -- ISO-8601 UTC
+  PRIMARY KEY (repo, issue_number)
+);
 """
 
 
@@ -349,6 +371,51 @@ class Store:
                 (repo, number),
             )
         return cursor.rowcount > 0
+
+    def requeue_count(self, repo: str, number: int) -> int:
+        """How many times this issue has been requeued. `0` when never."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT count FROM requeue_counts WHERE repo = ? AND issue_number = ?",
+                (repo, number),
+            ).fetchone()
+        return 0 if row is None else int(row["count"])
+
+    def bump_requeue_count(
+        self, repo: str, number: int, *, at: datetime | None = None
+    ) -> int:
+        """Record one more requeue for this issue, returning the new total.
+
+        Read and write in one statement under one lock, so two paths requeueing
+        the same issue cannot both read the same number and write it back.
+        """
+        stamp = _stamp(at)
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO requeue_counts (repo, issue_number, count, last_at) "
+                "VALUES (?, ?, 1, ?) "
+                "ON CONFLICT(repo, issue_number) DO UPDATE SET "
+                "  count = requeue_counts.count + 1, "
+                "  last_at = excluded.last_at",
+                (repo, number, stamp),
+            )
+            row = self._conn.execute(
+                "SELECT count FROM requeue_counts WHERE repo = ? AND issue_number = ?",
+                (repo, number),
+            ).fetchone()
+        return int(row["count"])
+
+    def clear_requeue_count(self, repo: str, number: int) -> None:
+        """Forget this issue's requeue history.
+
+        Called on an ending that is not a requeue — the issue left the queue on its
+        own terms, so the next time it appears it starts with a clean budget.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM requeue_counts WHERE repo = ? AND issue_number = ?",
+                (repo, number),
+            )
 
     def set_drained(self, coder_pool: str, drained: bool) -> None:
         """Put a coder instance in or out of rotation for *new* dispatch.

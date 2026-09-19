@@ -66,6 +66,13 @@ DEFAULT_BRANCH = "main"
 
 USERINFO = re.compile(r"(?<=://)[^/@\s]+:[^/@\s]+@")
 
+# The event names that can carry a failure `category`. `stage.failed` is the one
+# the deployed `0.354.0-nightly.0` actually emits — there is no `run.failed` event
+# on that build at all — and `run.failed` is kept because overview finding 10 was
+# read from a newer checkout and names it. Both are matched so an upgrade cannot
+# silently switch this off again. See `last_failure_category`.
+FAILURE_EVENTS = frozenset({"stage.failed", "run.failed"})
+
 
 class FabroError(RuntimeError):
     """A fabro API call that did not succeed.
@@ -259,15 +266,38 @@ def last_failure_category(
 ) -> str | None:
     """The failure `category` of a terminal run, or `None` if it cannot be read.
 
-    The category is **not** in the run projection (finding 10); it lives only in
-    the `run.failed` event, at `properties.failure.detail.category`. Draft 09's
-    requeue predicate keys on it, so a classification step has to read it from
-    the tail: `GET /runs/{id}/events` with `order=desc` so the failure (second
-    from last) is in the first page.
+    The category is **not** in the run projection (finding 10); it lives only in a
+    failure event. Draft 09's requeue predicate keys on it, so a classification step
+    has to read it from the tail: `GET /runs/{id}/events` with `order=desc` so the
+    failure (second from last) is in the first page.
 
-    Returns `None` for a run with no `run.failed` event or no readable category
-    — the requeue rule treats a missing category as *not* infra-shaped, which is
-    the fail-toward-dropping direction (Risk 4).
+    **Three things about the event shape were wrong until 2026-09-19, and each on
+    its own made this function return `None` for every run ever.** Verified live
+    against `0.354.0-nightly.0` on run `01M2VY68XF9VNSY63Q37NQF1T0`:
+
+    * the discriminator field is **`event`**, not `type` — so `event.get("type")`
+      was `None` on every event and the filter never matched anything;
+    * there is **no `run.failed` event at all** on this build. The failure arrives
+      as **`stage.failed`**, and the enumerated event names on that run are
+      `run.blocked | run.completed | run.created | run.runnable | run.running |
+      run.start_requested | run.started | run.starting | run.submitted |
+      run.unblocked | stage.failed`;
+    * the category sits at `properties.failure.category`, **not**
+      `properties.failure.detail.category`.
+
+    Overview finding 10 describes the `detail` shape, which was read from the
+    newer `0.357.0` checkout rather than the deployed binary — the caveat at the
+    head of that findings section applies to it. Both spellings are accepted here,
+    and both `event` and `type` are read, so this keeps working across the upgrade
+    either way.
+
+    The **last** matching event wins, because `order=desc` puts the newest first
+    and a run that failed a node, was rescued and failed again should be
+    classified by the failure that ended it.
+
+    Returns `None` for a run with no failure event or no readable category — the
+    requeue rule treats a missing category as *not* infra-shaped, which is the
+    fail-toward-dropping direction (Risk 4).
     """
     body = _request(
         "GET",
@@ -282,7 +312,10 @@ def last_failure_category(
     if not isinstance(events, list):
         return None
     for event in events:
-        if not isinstance(event, Mapping) or event.get("type") != "run.failed":
+        if not isinstance(event, Mapping):
+            continue
+        name = event.get("event") or event.get("type")
+        if name not in FAILURE_EVENTS:
             continue
         properties = event.get("properties")
         if not isinstance(properties, Mapping):
@@ -290,14 +323,14 @@ def last_failure_category(
         failure = properties.get("failure")
         if not isinstance(failure, Mapping):
             continue
+        category = failure.get("category")
+        if isinstance(category, str) and category:
+            return category
         detail = failure.get("detail")
         if isinstance(detail, Mapping):
             category = detail.get("category")
             if isinstance(category, str) and category:
                 return category
-        category = failure.get("category")
-        if isinstance(category, str) and category:
-            return category
     return None
 
 

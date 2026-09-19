@@ -24,6 +24,7 @@ from fabro_scheduler.github import Issue
 from fabro_scheduler.lease import Lease, LeaseStore
 from fabro_scheduler.reconcile import (
     INFRA_CATEGORY,
+    MAX_REQUEUES,
     TERMINAL,
     ReleasePoller,
     is_terminal,
@@ -263,6 +264,14 @@ def test_a_transient_infra_failure_requeues_via_the_events_category(
 ):
     # A coder timeout ends `failed` with category `transient_infra`, which is only
     # in the events tail — the one classification that costs an extra call.
+    #
+    # THE SHAPE HERE IS THE LIVE ONE, and it is not what this test used to assert.
+    # It mocked `{"type": "run.failed", "properties": {"failure": {"detail":
+    # {"category": ...}}}}`, which `0.354.0-nightly.0` never sends: the
+    # discriminator field is `event`, the event is `stage.failed` (there is no
+    # `run.failed` on that build at all), and the category sits directly on
+    # `failure`. So the test passed against a fiction while the real call returned
+    # `None` for every run ever made. Verified on run 01M2VY68XF9VNSY63Q37NQF1T0.
     leases.acquire(_lease(run_id="R1"))
     labels = _install_labels()
     respx.get(f"{FABRO_API}/runs/R1").mock(
@@ -276,11 +285,14 @@ def test_a_transient_infra_failure_requeues_via_the_events_category(
             json={
                 "data": [
                     {
-                        "type": "run.failed",
+                        "event": "stage.failed",
+                        "node_id": "coder",
                         "properties": {
                             "failure": {
-                                "detail": {"category": "transient_infra"}
-                            }
+                                "message": "Script failed with exit code: 1",
+                                "category": "transient_infra",
+                            },
+                            "will_retry": False,
                         },
                     }
                 ]
@@ -763,3 +775,119 @@ def test_a_fabro_that_cannot_list_runs_stops_the_periodic_scan_too(
     assert poller.receipt_tick().orphaned == []
     assert poller.receipt_tick().orphaned == []
     assert store.get_issue(FF, 9) is None
+
+
+# --- the event shape, and the requeue budget ------------------------------------
+#
+# `last_failure_category` returned `None` for every run ever made until 2026-09-19:
+# it filtered on `event["type"] == "run.failed"`, and the deployed server sends
+# `event` (not `type`), `stage.failed` (there is no `run.failed`), and the category
+# on `failure` (not `failure.detail`). Three independent reasons, each sufficient.
+# The tests it had mocked the shape the code wanted, so they were green throughout.
+
+
+def _events(payload: list[dict]) -> None:
+    respx.get(f"{FABRO_API}/runs/R1/events").mock(
+        return_value=httpx.Response(200, json={"data": payload})
+    )
+
+
+def _failed_projection() -> None:
+    respx.get(f"{FABRO_API}/runs/R1").mock(
+        return_value=httpx.Response(
+            200, json={"lifecycle": {"status": {"kind": "failed"}}}
+        )
+    )
+
+
+@respx.mock
+def test_category_is_read_from_the_live_stage_failed_shape(fabro):
+    _events([
+        {
+            "event": "stage.failed",
+            "properties": {"failure": {"category": "transient_infra"}},
+        }
+    ])
+    assert fabro.last_failure_category("R1") == "transient_infra"
+
+
+@respx.mock
+def test_category_is_also_read_from_the_documented_run_failed_shape(fabro):
+    # Overview finding 10's shape, read from the newer 0.357.0 checkout. Both are
+    # accepted so an upgrade cannot silently switch the predicate off again.
+    _events([
+        {
+            "type": "run.failed",
+            "properties": {"failure": {"detail": {"category": "transient_infra"}}},
+        }
+    ])
+    assert fabro.last_failure_category("R1") == "transient_infra"
+
+
+@respx.mock
+def test_a_run_with_no_failure_event_has_no_category(fabro):
+    _events([{"event": "run.completed", "properties": {}}])
+    assert fabro.last_failure_category("R1") is None
+
+
+@respx.mock
+def test_the_newest_failure_wins(fabro):
+    # `order=desc`, so the first match is the newest. A run that failed, was
+    # rescued and failed again is classified by the failure that ended it.
+    _events([
+        {"event": "stage.failed", "properties": {"failure": {"category": "deterministic"}}},
+        {"event": "stage.failed", "properties": {"failure": {"category": "transient_infra"}}},
+    ])
+    assert fabro.last_failure_category("R1") == "deterministic"
+
+
+@respx.mock
+def test_requeues_are_capped(config, store, leases, fabro):
+    # Fabro classified a FLAKY UNIT TEST as `transient_infra` on 2026-09-19. With
+    # the category now readable, an issue that fails that way every time would be
+    # requeued to the front of the queue forever and hold a coder box for good.
+    _install_labels()
+    _failed_projection()
+    _events([
+        {"event": "stage.failed", "properties": {"failure": {"category": "transient_infra"}}}
+    ])
+
+    outcomes = []
+    for _ in range(MAX_REQUEUES + 1):
+        leases.acquire(_lease(run_id="R1"))
+        actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+        outcomes.append(actions[0].outcome)
+
+    assert outcomes == ["released+requeued"] * MAX_REQUEUES + ["released"]
+    # The last one dropped the cache row instead, so nothing re-dispatches it.
+    assert store.get_issue(FF, 7) is None
+    assert leases.active() == []
+
+
+@respx.mock
+def test_the_budget_resets_after_an_ending_that_is_not_a_requeue(
+    config, store, leases, fabro
+):
+    # An issue that burns two requeues and then finishes properly must not carry
+    # that history into the next time it is worked.
+    _install_labels()
+    _failed_projection()
+    _events([
+        {"event": "stage.failed", "properties": {"failure": {"category": "transient_infra"}}}
+    ])
+    for _ in range(2):
+        leases.acquire(_lease(run_id="R1"))
+        reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+    assert store.requeue_count(FF, 7) == 2
+
+    # Now a clean success: released, not requeued, and the count is forgotten.
+    respx.get(f"{FABRO_API}/runs/R1").mock(
+        return_value=httpx.Response(
+            200, json={"lifecycle": {"status": {"kind": "succeeded"}}}
+        )
+    )
+    leases.acquire(_lease(run_id="R1"))
+    actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    assert [a.outcome for a in actions] == ["released"]
+    assert store.requeue_count(FF, 7) == 0

@@ -6,11 +6,21 @@ digraph Backlog {
         // (handler/llm/preamble.rs:391, COMPACT_OUTPUT_MAX_LINES=25), plus the whole
         // context table. By task 7 of a long run that is tens of thousands of tokens of
         // jq gate chatter in front of an 8 KB prompt -- and on local llama.cpp, prefill
-        // is a real share of per-turn latency. `summary:low` keeps the last two stages
-        // and an omission count. Every prompt here names its inputs by path, so nothing
-        // in the preamble is load bearing; the one exception was `human.gate.text`,
-        // which `record_guidance` now writes to a file instead.
-        default_fidelity="summary:low",
+        // is a real share of per-turn latency.
+        //
+        // `truncate` is the floor: `Goal:` and `Run ID:`, about sixty characters. It
+        // replaced `summary:low` on 2026-09-19 after the preamble was measured on run
+        // 01M2X2MVPC2NXY1BW5CVKPFF3S -- 21 KB of 89 KB across eight agent stages, 23%,
+        // of which 13.7 KB was command-node scripts printed TWICE. Fabro writes the whole
+        // script into `outcome.notes` (handler/command.rs:198, \"Script completed: {script}\")
+        // and the preamble then prints the same script again as `- Script:`
+        // (handler/llm/preamble.rs, both the Low and Medium branches). Even the cheapest
+        // summary level pays that duplication.
+        //
+        // Nothing here needs the recap: every prompt names its inputs by path, which is
+        // the point of the file-backed contracts. The one exception was `human.gate.text`,
+        // which `record_guidance` writes to a file instead.
+        default_fidelity="truncate",
             // reasoning_effort: medium on the classes that run on `coders`, and only
             // those. Measured against the llama.cpp box itself (10.10.0.29, direct,
             // no gateway), identical prompt:
@@ -88,40 +98,48 @@ digraph Backlog {
     // `agent-in-progress` after the swap -- all three route to human_rescue via the
     // node's unconditional edge. (The old optimistic-claim/ULID arbitration this
     // replaced is recorded in ADR 0005 and the scheduler overview.)
+    // `mkdir -p /tmp/fabro` is load bearing. `claim` is the run's first node since draft
+    // 10 deleted `acquire`, and `acquire` was the only node that created that directory.
+    // Without it every redirect below fails with `/tmp/fabro/issue.json: No such file or
+    // directory` and the run parks on human_rescue for 4h holding its coder lease.
+    // `ops/test-task-gates.sh` stages this node against a path that does not exist, which
+    // is the only way a test can catch it -- neither `fabro validate` nor
+    // ops/check-routing-schemas.py runs a node's shell.
+    //
+    // `/tmp/fabro/issue_number` is written BEFORE the label swap and before any network
+    // call, because mark_stuck needs it precisely when everything after that line failed.
+    // issue.json is the usual source of the number and does not exist until the fetch
+    // below succeeds, so an issue whose receipt was already written but whose fetch then
+    // failed would reach mark_stuck with nothing to name, and the receipt would stay on
+    // the issue forever. `pr-review` writes /tmp/fabro/pr_number for the same reason.
+    //
+    // The fetch is retried three times, five seconds apart. It is the one network call
+    // between the receipt being written and the run being able to do anything, and a
+    // single transient `gh` failure costs a coder box for four hours: the unconditional
+    // edge parks the run on human_rescue, whose default choice is mark_stuck, so the run
+    // ends `succeeded` and the scheduler's requeue rule -- which keys on a FAILED run's
+    // reason -- never sees it. A genuinely missing or unreadable issue still fails closed,
+    // which is what the whole node is for. `state` is fetched so those checks can see a
+    // closed issue; the downstream readers (open_pr_prep, open_pr, mark_stuck) use
+    // number/title/body/labels.
+    //
+    // These comments live here rather than inside `script=` on purpose. Fabro writes a
+    // command node's whole script into `outcome.notes` and its preamble then prints it
+    // again, so every byte inside the attribute was paid twice in the next agent's prompt
+    // at any `summary:*` fidelity. `truncate` removes that cost today; keeping the prose
+    // out here means raising fidelity later cannot bring it back.
     claim [label="Claim issue and fetch it", shape=parallelogram,
         script="set -e
-# `claim` is the run's first node since draft 10 deleted `acquire`, and `acquire`
-# was the only node that created this directory. Without it every redirect below
-# fails with '/tmp/fabro/issue.json: No such file or directory' and the run parks
-# on human_rescue for 4h holding its coder lease. No offline gate can see this:
-# `fabro validate` and ops/check-routing-schemas.py never run a node's shell.
 mkdir -p /tmp/fabro
 ISSUE='{{ inputs.issue_number }}'
 case \"$ISSUE\" in '' | *[!0-9]*) echo 'issue_number must be a positive integer' >&2; exit 1;; esac
 if [ \"$ISSUE\" -lt 1 ]; then echo 'issue_number must be a positive integer' >&2; exit 1; fi
-# Written BEFORE the label swap and before any network call, because mark_stuck
-# needs it precisely when everything below this line failed. issue.json is the
-# usual source of the number, and it does not exist until the fetch further down
-# succeeds -- so an issue whose receipt has already been written but whose fetch
-# then failed would reach mark_stuck with nothing to name, and the receipt would
-# stay on the issue. `pr-review` writes /tmp/fabro/pr_number for the same reason.
 echo $ISSUE > /tmp/fabro/issue_number
 gh label create agent-in-progress --color FBCA04 2>/dev/null || true
 gh label create agent-stuck --color D93F0B 2>/dev/null || true
 gh label create agent-authored --color 1D76DB 2>/dev/null || true
 gh label create Review --color 0E8A16 2>/dev/null || true
 gh issue edit $ISSUE --add-label agent-in-progress --remove-label agent || true
-# state is fetched so the fail-closed checks below can see a closed issue; the
-# downstream readers (open_pr_prep, open_pr, mark_stuck) use number/title/body/labels.
-#
-# Retried, because this is the one network call between the receipt being written
-# and the run being able to do anything, and a single transient `gh` failure here
-# costs a coder box for four hours: the node's unconditional edge parks the run on
-# human_rescue, whose default choice is mark_stuck, so the run ends `succeeded`
-# and the scheduler's requeue rule -- which keys on a FAILED run's reason -- never
-# sees it. Three attempts five seconds apart turns a blip into a working run
-# instead of a parked box. A genuinely missing or unreadable issue still fails
-# closed, which is the behaviour the whole node exists for.
 A=1
 while :; do
   if gh issue view $ISSUE --json state,number,title,body,labels > /tmp/fabro/issue.json 2>/tmp/fabro/issue_view.err; then break; fi
@@ -629,16 +647,63 @@ fi
 echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'}}'"]
 
     // ---- Delivery ----
+    // This node re-runs the SAME `setup.sh && ci.sh` that `validate` already ran, and the
+    // two treat a failure completely differently: `validate` writes
+    // /tmp/fabro/feedback/rework.md and takes `validate -> rework_router` into the
+    // escalation ladder, while this one used to `exit 1` with no feedback at all and take
+    // its unconditional edge to `human_rescue` -- a 4h gate holding a coder box, with no
+    // route back to work.
+    //
+    // Run 01M2X2MVPC2NXY1BW5CVKPFF3S died that way on 2026-09-19 to a FLAKY TEST. The
+    // evidence: `coder` touched only JoinModal.tsx and two test files, `validate` passed
+    // on that tree, the three extra-round reviewers are read-only by prompt and wrote only
+    // /tmp/fabro/extra/*.json, `git merge origin/main` reported `Already up to date`
+    // (main had not moved in 35h and its own CI was green) -- and then an async test the
+    // run never touched, useMovieCast.test.tsx, failed one assertion under a sandbox whose
+    // own environment setup took 240s. Nothing the run did could have caused it and
+    // nothing at the gate could fix it.
+    //
+    // So the suite is retried once before the node gives up. A flake passes on the second
+    // run; a real failure fails twice and still reaches the gate, now with
+    // /tmp/fabro/feedback/rework.md written so the human sees which of the four things
+    // this node does actually broke.
+    //
+    // The rest of the node derives the Conventional Commits subject, in three steps the
+    // script marks inline. Two notes that do not fit on one line:
+    //
+    // A bracket word is as often a label name as a Conventional Commits type -- `[BUG]`
+    // and `[Feature]` are the two commonest title shapes in these repos -- so step 2 maps
+    // both vocabularies and strips the bracket either way. Leaving it produced subjects
+    // like `fix: [BUG] ...`, which lint accepts and release-please publishes.
+    //
+    // The subject is truncated so that it plus the appended issue reference fits 72
+    // characters, cutting at a word boundary where one exists within the last 12. The
+    // reference is appended after the cut and is never truncated away.
     open_pr_prep [label="Final aggregate and PR prep", shape=parallelogram, timeout="20m",
         script="set -e
 git fetch origin main
 git merge --no-edit origin/main
-if ./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1; then
-  tail -c 4000 /tmp/fabro/validate_output.log
-else
-  tail -c 4000 /tmp/fabro/validate_output.log
-  exit 1
-fi
+A=1
+while :; do
+  if ./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1; then
+    tail -c 4000 /tmp/fabro/validate_output.log
+    break
+  fi
+  if [ $A -ge 2 ]; then
+    tail -c 4000 /tmp/fabro/validate_output.log
+    mkdir -p /tmp/fabro/feedback
+    echo '## Final validation failed twice after merging origin/main' > /tmp/fabro/feedback/rework.md
+    echo >> /tmp/fabro/feedback/rework.md
+    echo 'This ran after every task passed its own validate, so it is either a change' >> /tmp/fabro/feedback/rework.md
+    echo 'merged from main or a flaky test. The second attempt failed too.' >> /tmp/fabro/feedback/rework.md
+    echo >> /tmp/fabro/feedback/rework.md
+    tail -c 6000 /tmp/fabro/validate_output.log >> /tmp/fabro/feedback/rework.md
+    exit 1
+  fi
+  echo '## final validation attempt '$A' failed; retrying once in case it is a flake'
+  A=$((A + 1))
+  sleep 5
+done
 N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(jq -r .title /tmp/fabro/issue.json | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 CC='^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .'
@@ -651,11 +716,6 @@ if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
       W=${S#?}
       W=${W%%]*}
       W=$(printf '%s' \"$W\" | tr 'A-Z' 'a-z')
-      # A bracket word is as often a label name as a Conventional Commits type --
-      # [BUG] and [Feature] are the two commonest title shapes in these repos -- so
-      # map both vocabularies and strip the bracket either way. Leaving it produced
-      # subjects like `fix: [BUG] ...`, which lint accepts and release-please
-      # publishes.
       case \"$W\" in
         bug) W=fix ;;
         feature|enhancement) W=feat ;;
@@ -689,9 +749,6 @@ if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
     fi
   fi
 fi
-# Truncate so subject plus the appended issue reference fits 72 characters, cutting
-# at a word boundary where one exists within the last 12 characters. The reference
-# is appended after the cut and is never truncated away.
 SUBJ=$(printf '%s' \"$S\" | awk -v maxd=$((72 - ${#N} - 4)) '{ if (length($0) <= maxd) { print $0; exit } t = substr($0, 1, maxd); st = maxd - 11; if (st < 1) st = 1; for (i = maxd; i >= st; i--) { if (substr(t, i, 1) == \" \") { print substr(t, 1, i - 1); exit } } print t }')
 SUBJ=$(printf '%s' \"$SUBJ\" | sed 's/[[:space:]]*$//')
 printf '%s (#%s)' \"$SUBJ\" \"$N\" > /tmp/fabro/commit_subject.txt
@@ -799,6 +856,17 @@ echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\"}}'"]
     // validation, which for a command node is deterministic and non-retryable: no
     // repair turn, no retry, straight to human_rescue with the PR already open.
     // Cost one run (01M2R057XAWN8ZG0A7ZV7YPJXK) on 2026-09-17.
+    //
+    // `run_base_sha` is the BRANCH POINT, not the last task's base. `task_base_sha` is
+    // rewritten by `next_task` on every task, so using it would make the report's
+    // "Commits with changes" section cover only the final task instead of everything
+    // this run did.
+    //
+    // The per-repo auto-merge switch lives in the pr-review-<repo> automation's
+    // description, because an automation row has no inputs or labels field. The bridge
+    // used to read it; this does now, so the switch keeps working unchanged. An absent
+    // token means ON (decision 10); anything present that is not `true` means OFF, and an
+    // unreachable API means OFF, because a switch that cannot be read is not armed.
     pr_handoff [label="Hand off to review and merge", shape=parallelogram,
         script="set -e
 PR=$(cat /tmp/fabro/pr_number)
@@ -806,17 +874,9 @@ gh pr view $PR --json number,title,body,url,state,isCrossRepository,headRefName,
 jq -r .baseRefName /tmp/fabro/pr.json > /tmp/fabro/base_ref
 jq -r .headRefName /tmp/fabro/pr.json > /tmp/fabro/head_ref
 jq '[.closingIssuesReferences[]?]' /tmp/fabro/pr.json > /tmp/fabro/linked_issues.json
-# The branch point, not the last task's base. `task_base_sha` is rewritten by
-# `next_task` on every task, so using it would make the report's \"Commits with
-# changes\" section cover only the final task instead of everything this run did.
 B=$(cat /tmp/fabro/base_ref)
 git fetch origin \"$B\" 2>/dev/null || true
 git merge-base origin/\"$B\" HEAD > /tmp/fabro/run_base_sha 2>/dev/null || git rev-parse HEAD > /tmp/fabro/run_base_sha
-# The per-repo auto-merge switch lives in the pr-review-<repo> automation's
-# description, because an automation row has no inputs or labels field. The bridge
-# used to read it; this does now, so the switch keeps working unchanged. An absent
-# token means ON (decision 10); anything present that is not `true` means OFF, and an
-# unreachable API means OFF, because a switch that cannot be read is not armed.
 echo 0 > /tmp/fabro/auto_merge_repo
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo '')
 if [ -n \"$REPO\" ] && [ -n \"${FABRO_API_URL:-}\" ] && [ -n \"${FABRO_API_TOKEN:-}\" ]; then
@@ -1005,8 +1065,8 @@ echo done"]
     // issue-triage's `record_answer`: a command node cannot read context, and
     // `stdin_source` pipes exactly one key. This exists so `rework.md.j2` can read the
     // guidance from a path like every other input, which in turn lets the graph run at
-    // `summary:low` fidelity -- that level drops the context table, and the guidance
-    // used to reach the rework agent only through it.
+    // `truncate` fidelity -- every level below `compact` drops the context table, and the
+    // guidance used to reach the rework agent only through it.
     record_guidance [label="Record the human guidance", shape=parallelogram,
         stdin_source="human.gate.text",
         script="mkdir -p /tmp/fabro/feedback
