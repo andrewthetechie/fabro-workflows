@@ -90,6 +90,12 @@ digraph Backlog {
     // replaced is recorded in ADR 0005 and the scheduler overview.)
     claim [label="Claim issue and fetch it", shape=parallelogram,
         script="set -e
+# `claim` is the run's first node since draft 10 deleted `acquire`, and `acquire`
+# was the only node that created this directory. Without it every redirect below
+# fails with '/tmp/fabro/issue.json: No such file or directory' and the run parks
+# on human_rescue for 4h holding its coder lease. No offline gate can see this:
+# `fabro validate` and ops/check-routing-schemas.py never run a node's shell.
+mkdir -p /tmp/fabro
 ISSUE='{{ inputs.issue_number }}'
 case \"$ISSUE\" in '' | *[!0-9]*) echo 'issue_number must be a positive integer' >&2; exit 1;; esac
 if [ \"$ISSUE\" -lt 1 ]; then echo 'issue_number must be a positive integer' >&2; exit 1; fi
