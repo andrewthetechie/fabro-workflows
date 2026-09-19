@@ -18,6 +18,8 @@ locations instead.
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). Deterministic; see its header comments. |
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
 | `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
+| `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
+| `test-task-gates.sh` | Runs `backlog`'s task-queue gates (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. Covers the split splice and the cursor arithmetic, where an off-by-one silently skips a task. Offline — no host, container or network — so it belongs in a pre-push hook beside `check-routing-schemas.py`. |
 | `docker-compose.yaml` | Runs both containers: the `fabro` server and the `scheduler` (the coder scheduler, built from `./scheduler/`). It is also the only place the scheduler's port and volume are declared. |
 | `.env.example` | Env key names for the compose file. Copy to `.env` beside the compose file and fill in real values. |
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
@@ -634,6 +636,14 @@ stage still selects the issue itself from the `agent` queue and publishes
 `acquire` picks — not necessarily the number in the request. The run is real and the
 coder lease is real; the issue is not the one you named. Draft 10 collapses
 `acquire`/`claim` so the input decides.
+
+**This endpoint does not know whether a box is free** — that is draft 08's loop. With
+both coder instances leased, a third dispatch is still admitted and starts as soon as a
+slot frees, because fabro's own `max_concurrent_runs` is the only thing gating it. That
+is the state decision 7 exists to avoid, so fire by hand only when [`coders-a`,
+`coders-b`] show a free slot (`curl http://10.10.0.29:8000/slots` and `.56`, look for
+`is_processing: false`). A run admitted this way is not lost — it is queued in fabro,
+which is the wrong place for the queue to be.
 
 One failure leaves something behind: if `/runs/{id}/start` fails, the run is in
 `submitted` and will never execute. The `502` body names it. Cancel it with
