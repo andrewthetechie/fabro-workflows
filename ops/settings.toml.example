@@ -74,40 +74,60 @@ api_model = "coders"
 limits = { context_tokens = 262144, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }
 
-# One pinned group per box: `coders-a` is 10.10.0.29, `coders-b` is 10.10.0.56. A
-# run's `coder_pool` input selects one of them through the root graph's
+# One direct provider per Local inference box (ADR 0007, docs/direct-providers/
+# 01-local-boxes-direct.md). `coders-a`/`coders-b`/`long-context` resolve to a
+# provider whose base_url is the box, instead of crossing the LiteLLM ingress. The
+# model ids do not change; the graphs and workflow TOMLs address them by id. Replace
+# <IP>/<PORT> with each box's real address.
+#
+# A run's `coder_pool` input selects `coders-a` or `coders-b` through the root graph's
 # `model_stylesheet`, which is how the scheduler leases a whole llama.cpp box for a
 # run (docs/scheduler/00-overview-and-contracts.md, findings 3 and 4).
 #
-# These entries are not decoration. LiteLLM serving the name is not enough: fabro
-# resolves a node's model against this catalog, and a name it does not list fails
-# before any call is made -- `fabro model test -p litellm -m coders-a` answered
-# `Unknown model: coders-a` while only the LiteLLM rows existed. `fabro validate`
-# does not check the catalog, so validation cannot stand in for these blocks.
+# `limits`/`capabilities` were copied from the rows they replace (now removed from
+# `litellm`), so only the endpoint changed. `api_model` is the wire name the box
+# reports from `/v1/models` -- the same GGUF model answers all three names.
 #
-# `limits` and `capabilities` are identical to `coders` above: the same GGUF model is
-# behind all three names, and only the box differs. `api_model` is the name sent to
-# the proxy, so it must equal the LiteLLM `model_name`.
-#
-# `coders-a`/`coders-b` take effect **without a restart** -- unlike
-# `server.scheduler.max_concurrent_runs`, the LLM catalog is rebuilt by
-# `replace_runtime_settings` on the 5s settings poll. See the `[server.scheduler]` note
-# above for the one value that is not.
-[llm.providers.litellm.models."coders-a"]
+# A Local box needs no provider key (`auth = { type = "none" }`). These take effect
+# **without a restart** -- unlike `server.scheduler.max_concurrent_runs`, the LLM
+# catalog is rebuilt by `replace_runtime_settings` on the 5s settings poll. See the
+# `[server.scheduler]` note above for the one value that is not.
+[llm.providers.box-a]
+display_name = "Local coder A (10.10.0.29)"
+base_url = "http://<IP>:8000/v1"
+adapter = "openai-compatible"
+codec = "openai-chat"
+auth = { type = "none" }
+
+[llm.providers.box-a.models."coders-a"]
 display_name = "Local coders A (strix 10.10.0.29)"
-api_model = "coders-a"
+api_model = "deepseek-v4-flash-0731-iq3-xxs"
 limits = { context_tokens = 262144, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }
 
-[llm.providers.litellm.models."coders-b"]
+[llm.providers.box-b]
+display_name = "Local coder B (10.10.0.56)"
+base_url = "http://<IP>:8000/v1"
+adapter = "openai-compatible"
+codec = "openai-chat"
+auth = { type = "none" }
+
+[llm.providers.box-b.models."coders-b"]
 display_name = "Local coders B (strix 10.10.0.56)"
-api_model = "coders-b"
+api_model = "deepseek-v4-flash-0731-iq3-xxs"
 limits = { context_tokens = 262144, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }
 
-[llm.providers.litellm.models."long-context"]
+[llm.providers.spark]
+display_name = "Local long-context (10.10.0.30)"
+base_url = "http://<IP>:8888/v1"
+adapter = "openai-compatible"
+codec = "openai-chat"
+auth = { type = "none" }
+
+[llm.providers.spark.models."long-context"]
 display_name = "Local long-context (spark)"
-api_model = "long-context"
+api_model = "deepseek-v4-flash-0731"
 limits = { context_tokens = 1048576, max_output_tokens = 65536 }
 capabilities = { text = true, tools = true, reasoning = true, response_format = { json_object = true, json_schema = true } }
 # Preferred for small utility calls such as generated run titles.
