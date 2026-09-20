@@ -1,7 +1,7 @@
 #!/bin/sh
 # discord-notify.sh — best-effort Discord notification for fabro runs.
 #
-# Usage: discord-notify.sh <rescue|complete|failed|merged|blocked|needs-human|triage-question|triage-failed>
+# Usage: discord-notify.sh <rescue|complete|failed|merged|blocked|needs-human|fallback|triage-question|triage-failed>
 #
 # Runs as a hook with sandbox = false, i.e. inside the fabro server container
 # (Alpine: /bin/sh + wget, no bash, no curl, no jq). The event context JSON is
@@ -33,6 +33,27 @@ case "$kind" in
     if printf '%s' "$ctx" | grep -qi 'cancel'; then exit 0; fi
     ;;
 esac
+
+# A `fallback` alert (stage_start on an escalation tier) names the hosted model
+# the stage moved to. The mapping lives here, not in the hook matcher: one hook
+# covers several nodes with different models. Imported nodes arrive prefixed
+# (`review_merge.ci_fix_t2`), so key on the last segment. An unknown node is not
+# an escalation -- exit without a message rather than send a vague one.
+model=""
+node_short=""
+if [ "$kind" = "fallback" ]; then
+  node_id=$(printf '%s' "$ctx" | grep -o '"node_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+  node_short="${node_id##*.}"
+  case "$node_short" in
+    rework_t2)       model="glm-4.7" ;;
+    rework_t3)       model="kimi-for-coding" ;;
+    rework_t4)       model="glm-5.3" ;;
+    rebase_agent_t2) model="glm-5.3" ;;
+    ci_fix_t2)       model="glm-5.3" ;;
+    resolve_merge)   model="glm-5.3" ;;
+    *) exit 0 ;;
+  esac
+fi
 
 run_id="${FABRO_RUN_ID:-?}"
 base_url="${FABRO_WEB_URL:-}"
@@ -111,6 +132,11 @@ case "$kind" in
   # the link block below lands on the PR for both of them.
   blocked)  msg="🟡 fabro finished a review without merging - the PR needs you${subject}" ;;
   needs-human) msg="🔴 fabro's review could not finish - the PR needs you${subject}" ;;
+  # A task left the local coder box for a hosted model. Fires once per escalating
+  # stage: the rework ladder's hosted tiers, the merge resolver, and the imported
+  # CI-fix / rebase ladders. `model` and `node_short` are set above; the run link
+  # below carries the rest.
+  fallback)  msg="🔼 fabro model fallback: escalated to ${model} (${node_short})${subject}" ;;
   triage-question)
     # A literal newline here (rather than the \\n every other multi-part message in
     # this file uses) would land as a raw, unescaped control character inside the

@@ -127,12 +127,13 @@ script = "/storage/scripts/discord-notify.sh merged"
 # not alert.
 #
 # The matcher is `(^|[.])...$`, not `^...$`, because the imported node keeps its
-# prefix and the hook context carries the prefixed id verbatim. See the same hook
-# in backlog's workflow.toml for the full reasoning.
+# prefix and the hook context carries the prefixed id verbatim. The node -> model
+# map lives in discord-notify.sh's `fallback` kind. See the same hook in backlog's
+# workflow.toml for the full reasoning.
 [[run.hooks]]
-id = "slack-fallback"
+id = "discord-fallback"
 event = "stage_start"
 matcher = "(^|[.])(rebase_agent_t2|ci_fix_t2)$"
 blocking = false
 sandbox = false
-script = "/storage/scripts/slack-fallback.sh"
+script = "/storage/scripts/discord-notify.sh fallback"

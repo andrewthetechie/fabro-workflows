@@ -183,13 +183,15 @@ script = "/storage/scripts/discord-notify.sh needs-human"
 # the whole event with no log line. The `$` still keeps `rework_t2` from matching
 # a hypothetical `rework_t20`, so anchoring is not lost.
 #
-# blocking = false so a Slack outage cannot stall a run; sandbox = false so the
+# blocking = false so a Discord outage cannot stall a run; sandbox = false so the
 # script runs in the server container, where the webhook lives. Absolute container
-# path because hook `script` is a shell command, not an `@` file import.
+# path because hook `script` is a shell command, not an `@` file import. The
+# node -> model map lives in discord-notify.sh's `fallback` kind, because one
+# matcher covers six nodes with three different models.
 [[run.hooks]]
-id = "slack-fallback"
+id = "discord-fallback"
 event = "stage_start"
 matcher = "(^|[.])(rework_t[2-4]|resolve_merge|ci_fix_t2)$"
 blocking = false
 sandbox = false
-script = "/storage/scripts/slack-fallback.sh"
+script = "/storage/scripts/discord-notify.sh fallback"
