@@ -71,7 +71,8 @@ def _stages() -> list[dict]:
 def test_probe_reads_task_count_and_current_stage(tmp_path):
     store = Store(tmp_path / "scheduler.db")
     _lease(store)
-    docker = FakeDocker("3\n")
+    # tasks.json length 3, task_index 2 → 1 completed of 3 total.
+    docker = FakeDocker("3\n2\n")
     fabro = FakeFabro(stages=_stages())
 
     probe = RunProbe(fabro, LeaseStore(store), docker)
@@ -80,11 +81,36 @@ def test_probe_reads_task_count_and_current_stage(tmp_path):
     snap = probe.snapshot("01MRUN")
     assert snap is not None
     assert snap.tasks_total == 3
+    assert snap.tasks_completed == 1
     assert snap.stage_name == "coder"
     assert snap.stage_visit == 1
     assert snap.status == "running"
     # The exec asked for the tasks.json length, as fabro-run-status.sh does.
     assert TASKS_CMD in docker.commands
+
+
+def test_probe_counts_completed_as_index_minus_one(tmp_path):
+    store = Store(tmp_path / "scheduler.db")
+    _lease(store)
+    # index 6, total 10 → 5 completed of 10.
+    probe = RunProbe(FakeFabro(stages=_stages()), LeaseStore(store), FakeDocker("10\n6\n"))
+
+    probe.tick()
+
+    snap = probe.snapshot("01MRUN")
+    assert (snap.tasks_completed, snap.tasks_total) == (5, 10)
+
+
+def test_probe_clamps_completed_when_total_shrinks(tmp_path):
+    store = Store(tmp_path / "scheduler.db")
+    _lease(store)
+    # index 8 but total consolidated to 3 → never show 7/3.
+    probe = RunProbe(FakeFabro(stages=_stages()), LeaseStore(store), FakeDocker("3\n8\n"))
+
+    probe.tick()
+
+    snap = probe.snapshot("01MRUN")
+    assert (snap.tasks_completed, snap.tasks_total) == (3, 3)
 
 
 def test_probe_reports_no_tasks_before_decompose(tmp_path):
@@ -97,6 +123,7 @@ def test_probe_reports_no_tasks_before_decompose(tmp_path):
 
     snap = probe.snapshot("01MRUN")
     assert snap.tasks_total is None
+    assert snap.tasks_completed is None
 
 
 def test_probe_falls_back_when_no_stage_is_running(tmp_path):
@@ -106,13 +133,14 @@ def test_probe_falls_back_when_no_stage_is_running(tmp_path):
         {"node_id": "claim", "visit": 1, "status": "succeeded", "started_at": "t1"},
         {"node_id": "prep", "visit": 1, "status": "succeeded", "started_at": "t2"},
     ]
-    probe = RunProbe(FakeFabro(stages=stages), LeaseStore(store), FakeDocker("2"))
+    # tasks.json length 2, no task_index yet → 0 completed of 2.
+    probe = RunProbe(FakeFabro(stages=stages), LeaseStore(store), FakeDocker("2\n"))
 
     probe.tick()
 
     snap = probe.snapshot("01MRUN")
     assert snap.stage_name == "prep"  # the most recent, even though finished
-    assert snap.tasks_total == 2
+    assert (snap.tasks_completed, snap.tasks_total) == (0, 2)
 
 
 def test_probe_prunes_a_released_lease(tmp_path):

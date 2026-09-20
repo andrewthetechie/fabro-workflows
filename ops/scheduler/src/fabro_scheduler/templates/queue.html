@@ -68,9 +68,10 @@
   fabro reports the run terminal.
 </p>
 <p class="muted">
-  <strong>Tasks</strong> is the decomposed-task count for the issue in flight;
-  <strong>Stage</strong> is the workflow stage in progress, linked to the run in fabro.
-  Both refresh in the background every {{ run_probe_seconds }}s.
+  <strong>Sub Tasks</strong> is the decomposed-task count for the issue in flight, as
+  <em>completed / total</em> (the total can grow when an extra review finds new
+  issues); <strong>Stage</strong> is the workflow stage in progress, linked to the run
+  in fabro. Both refresh in the background every {{ run_probe_seconds }}s.
 </p>
 <table>
   <thead>
@@ -79,7 +80,7 @@
       <th>State</th>
       <th>Repo</th>
       <th class="num">Issue</th>
-      <th class="num">Tasks</th>
+      <th class="num" title="Sub-tasks completed / decomposed total">Sub Tasks</th>
       <th>Run</th>
       <th>Stage</th>
       <th class="num" title="When the run was created and the box taken">Dispatched</th>
@@ -101,7 +102,7 @@
         {% set prog = run_progress[pool.lease.run_id] %}
         <td><a href="https://github.com/{{ pool.lease.repo }}">{{ pool.lease.repo }}</a></td>
         <td class="num"><a href="https://github.com/{{ pool.lease.repo }}/issues/{{ pool.lease.issue_number }}">#{{ pool.lease.issue_number }}</a></td>
-        <td class="num">{%- if prog and prog.tasks_total is not none -%}{{ prog.tasks_total }}{%- else -%}<span class="muted">&mdash;</span>{%- endif -%}</td>
+        <td class="num">{%- if prog and prog.tasks_total is not none -%}{{ prog.tasks_completed or 0 }}/{{ prog.tasks_total }}{%- else -%}<span class="muted">&mdash;</span>{%- endif -%}</td>
         <td class="muted"><a href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}">{{ pool.lease.run_id }}</a></td>
         <td>{%- if prog and prog.stage_name -%}
           <a href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}/stages/{{ prog.stage_name }}{% if prog.stage_visit is not none %}@{{ prog.stage_visit }}{% endif %}" title="{{ prog.status or 'stage' }}">{{ prog.stage_name }}</a>

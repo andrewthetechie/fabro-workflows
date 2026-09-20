@@ -604,7 +604,7 @@ def test_the_page_shows_tasks_and_stage_columns(config, store):
 
     class _FakeDocker:
         def exec(self, container_id, command, *, timeout=10.0):
-            return "4\n"
+            return "4\n3\n"  # total 4, index 3 → 2 completed
 
     probe = RunProbe(_FakeFabro(), LeaseStore(store), _FakeDocker())
     probe.tick()
@@ -612,10 +612,10 @@ def test_the_page_shows_tasks_and_stage_columns(config, store):
 
     html = TestClient(app).get("/").text
 
-    # The task count (4) and the current-stage link, pointing at the fabro run.
+    # The sub-task count (2/4) and the current-stage link, pointing at the fabro run.
     assert "/runs/01MRUN/stages/review_merge.validate@2" in html
     assert "review_merge.validate" in html
-    assert "<td class=\"num\">4</td>" in html
+    assert "<td class=\"num\">2/4</td>" in html
 
 
 def test_the_page_offers_drain_and_cancel_for_each_pool(config, store, client):

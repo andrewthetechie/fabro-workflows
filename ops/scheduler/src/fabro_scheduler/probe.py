@@ -42,10 +42,14 @@ DEFAULT_INTERVAL_SECONDS = 30.0
 TASKS_CMD = [
     "sh",
     "-c",
-    # Present after decompose; a missing file (run still in `prep`/`decompose`)
-    # prints nothing, which the probe reads as "not yet decomposed" → "—".
-    # `jq 'length'` reports the size of the array even when it is `[]` (0).
-    "if [ -f /tmp/fabro/tasks.json ]; then jq -r 'length' /tmp/fabro/tasks.json; fi",
+    # Line 1: the decomposed-task count (`jq length` on the array — present after
+    # `decompose`; a missing file prints nothing, which the probe reads as "not
+    # yet decomposed" → "—"). Line 2: `task_index`, which fabro bumps *after* a
+    # task is selected, so completed = index − 1 (see `fabro-run-status.sh`). The
+    # total can grow later when an extra review finds new issues, so reading the
+    # length fresh each beat is what keeps `completed/total` current.
+    "if [ -f /tmp/fabro/tasks.json ]; then jq -r 'length' /tmp/fabro/tasks.json; fi; "
+    "cat /tmp/fabro/task_index 2>/dev/null || true",
 ]
 
 
@@ -63,7 +67,8 @@ class RunProgress:
     status: str | None  # the current stage's status ("running"/"succeeded"/...)
     stage_name: str | None
     stage_visit: int | None
-    tasks_total: int | None
+    tasks_completed: int | None  # completed / `tasks_total`, as `fabro-run-status.sh`
+    tasks_total: int | None  # the decomposed-task count; can grow with extra review
     fetched_at: datetime
     error: str | None = None
 
@@ -131,6 +136,7 @@ class RunProbe:
                     status=None,
                     stage_name=None,
                     stage_visit=None,
+                    tasks_completed=None,
                     tasks_total=None,
                     fetched_at=datetime.now(UTC),
                     error=str(exc),
@@ -140,13 +146,14 @@ class RunProbe:
 
     def _probe(self, run_id: str) -> RunProgress:
         stage_name, stage_visit, status = self._current_stage(run_id)
-        tasks = self._task_count(run_id)
+        completed, total = self._task_progress(run_id)
         return RunProgress(
             run_id=run_id,
             status=status,
             stage_name=stage_name,
             stage_visit=stage_visit,
-            tasks_total=tasks,
+            tasks_completed=completed,
+            tasks_total=total,
             fetched_at=datetime.now(UTC),
         )
 
@@ -169,24 +176,42 @@ class RunProbe:
             current.get("status"),
         )
 
-    def _task_count(self, run_id: str) -> int | None:
+    def _task_progress(self, run_id: str) -> tuple[int | None, int | None]:
+        """`(completed, total)` from the sandbox, or `(None, None)` pre-decompose.
+
+        `total` is `jq length` on `tasks.json` — the authority on the task list,
+        so it reflects any growth from an extra review. `completed` is
+        `task_index − 1` (fabro bumps the index after a task is selected), clamped
+        to `[0, total]` so a consolidation that shrinks the list never shows a
+        nonsense fraction. A missing `tasks.json` (run still in `prep`/`decompose`)
+        reads as "—".
+        """
         container_id = self._sandbox_ids.get(run_id)
         if container_id is None:
             if self._fabro is None:
-                return None
+                return None, None
             run = self._fabro.get_run(run_id)
             runtime = (run.get("sandbox") or {}).get("instance", {}).get("runtime", {})
             container_id = runtime.get("id")
             if not container_id:
-                return None  # sandbox not ready yet; try again next beat
+                return None, None  # sandbox not ready yet; try again next beat
             self._sandbox_ids[run_id] = container_id
         raw = self._docker.exec(container_id, TASKS_CMD).strip()
-        if not raw:
-            return None  # tasks.json not present → decompose not done (or empty)
+        lines = [line for line in raw.splitlines() if line]
+        if not lines:
+            return None, None  # tasks.json not present → decompose not done
         try:
-            return int(raw)
+            total = int(lines[0])
         except ValueError:
-            return None
+            return None, None
+        if total < 0:
+            return None, None
+        try:
+            index = int(lines[1]) if len(lines) > 1 else 0
+        except ValueError:
+            index = 0
+        completed = max(min(index - 1, total), 0)
+        return completed, total
 
     # -- the thread ----------------------------------------------------------
 
