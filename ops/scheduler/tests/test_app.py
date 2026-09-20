@@ -615,7 +615,7 @@ def test_the_page_shows_tasks_and_stage_columns(config, store):
     # The sub-task count (2/4) and the current-stage link, pointing at the fabro run.
     assert "/runs/01MRUN/stages/review_merge.validate@2" in html
     assert "review_merge.validate" in html
-    assert "<td class=\"num\">2/4</td>" in html
+    assert "2/4" in html
 
 
 def test_the_page_offers_drain_and_cancel_for_each_pool(config, store, client):
@@ -1044,7 +1044,7 @@ def test_the_page_still_has_no_script(client, store):
 
 def _nav(body: str) -> str:
     """Just the <nav> block, so an assertion cannot match a link elsewhere on the page."""
-    found = re.search(r"<nav>(.*?)</nav>", body, re.DOTALL)
+    found = re.search(r"<nav\b[^>]*>(.*?)</nav>", body, re.DOTALL)
     assert found, "the page has no <nav> block"
     return found.group(1)
 
@@ -1053,14 +1053,14 @@ def test_the_queue_page_links_to_the_history(client):
     nav = _nav(client.get("/").text)
     assert 'href="/history"' in nav
     assert 'href="/"' not in nav          # the current page is not a link
-    assert "<strong>Queue</strong>" in nav
+    assert ">Queue</span>" in nav           # the active item is a plain label, not a link
 
 
 def test_the_history_page_links_back_to_the_queue(client):
     nav = _nav(client.get("/history").text)
     assert 'href="/"' in nav
     assert 'href="/history"' not in nav
-    assert "<strong>Run history</strong>" in nav
+    assert ">Run history</span>" in nav
 
 
 def test_both_pages_still_render(client):

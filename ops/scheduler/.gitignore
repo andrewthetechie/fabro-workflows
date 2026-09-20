@@ -4,3 +4,6 @@
 __pycache__/
 .pytest_cache/
 *.pyc
+
+# Dev-only Tailwind build (see package.json). Never in the deploy image.
+node_modules/

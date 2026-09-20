@@ -3,3 +3,9 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .gitignore
+# Dev-only build tools; never needed in the image.
+node_modules
+package.json
+package-lock.json
+assets
+build-css.sh

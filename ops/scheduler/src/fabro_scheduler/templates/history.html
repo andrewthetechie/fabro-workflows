@@ -6,15 +6,17 @@
 {# No meta-refresh, unlike queue.html: a released run never changes, so a reload
    would discard the operator's sort for nothing. ADR 0008. #}
 <title>fabro coder scheduler &middot; run history</title>
-{% include "_style.html" %}
+<link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body class="min-h-screen bg-slate-100 text-slate-800 antialiased">
+
+<div class="mx-auto max-w-6xl px-4 py-6 sm:py-8">
 
 {% set here = 'history' %}
 {% include "_nav.html" with context %}
 
-<h1>Run history</h1>
-<p class="sub">
+<h1 class="mt-6 text-xl font-semibold text-slate-900">Run history</h1>
+<p class="mt-1 mb-6 max-w-prose text-sm leading-6 text-slate-500">
   One row per released coder lease, written when the run reached a terminal state.
   This is a point-in-time record: it says what each run's ending <em>was</em>, not
   what became of its PR afterwards. In-flight runs are not here &mdash; they are on
@@ -23,13 +25,14 @@
 </p>
 
 {% if not views %}
-<div class="banner">
+<div class="rounded-md border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
   <p>No released runs yet. A row appears here when a scheduler-dispatched run
      reaches a terminal state and its coder instance is freed.</p>
 </div>
 {% else %}
-<table>
-  <thead>
+<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+<table class="w-full text-sm">
+  <thead class="bg-slate-50 text-slate-500">
     <tr>
       {% for column, heading, numeric in [
           ('coder_pool',      'Coder instance', false),
@@ -43,9 +46,9 @@
           ('requeue_attempt', 'Requeues',       true),
           ('merged',          'PR',             false),
       ] %}
-      <th{% if numeric %} class="num"{% endif %}>
+      <th class="whitespace-nowrap px-4 py-2.5 text-xs font-medium uppercase tracking-wide {% if numeric %}text-right{% else %}text-left{% endif %}">
         {% if column %}
-          <a href="{{ sort_link(column, active=sort, descending=descending, limit=limit) }}">
+          <a class="text-slate-500 hover:text-blue-600" href="{{ sort_link(column, active=sort, descending=descending, limit=limit) }}">
             {{ heading }}{% if column == sort %}{{ ' ▾' if descending else ' ▴' }}{% endif %}
           </a>
         {% else %}
@@ -55,39 +58,41 @@
       {% endfor %}
     </tr>
   </thead>
-  <tbody>
+  <tbody class="divide-y divide-slate-100">
   {% for view in views %}
     {% set row = view.row %}
-    <tr>
-      <td>{{ row.coder_pool }}</td>
-      <td><a href="https://github.com/{{ row.repo }}">{{ row.repo }}</a></td>
-      <td class="num"><a href="https://github.com/{{ row.repo }}/issues/{{ row.issue_number }}">{{ row.issue_number }}</a></td>
-      <td><a href="{{ fabro_ui_url }}/runs/{{ row.run_id }}"><code>{{ row.run_id }}</code></a></td>
-      <td class="num">{{ row.dispatched_at }}</td>
-      <td class="num">{{ row.finished_at }}</td>
-      <td class="num">{% if view.elapsed %}{{ view.elapsed|duration }}{% else %}&mdash;{% endif %}</td>
-      <td title="{{ row.kind }}{% if row.reason %}/{{ row.reason }}{% endif %}{% if row.category %} [{{ row.category }}]{% endif %}">{{ final_state(row) }}</td>
-      <td class="num">{{ row.requeue_attempt }}</td>
-      <td>
+    <tr class="hover:bg-slate-50">
+      <td class="whitespace-nowrap px-4 py-3 font-medium text-slate-800">{{ row.coder_pool }}</td>
+      <td class="whitespace-nowrap px-4 py-3"><a class="text-blue-600 hover:underline" href="https://github.com/{{ row.repo }}">{{ row.repo }}</a></td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums"><a class="text-blue-600 hover:underline" href="https://github.com/{{ row.repo }}/issues/{{ row.issue_number }}">{{ row.issue_number }}</a></td>
+      <td class="whitespace-nowrap px-4 py-3 font-mono text-[0.85em] text-slate-500"><a class="text-blue-600 hover:underline" href="{{ fabro_ui_url }}/runs/{{ row.run_id }}"><code>{{ row.run_id }}</code></a></td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-600">{{ row.dispatched_at }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-600">{{ row.finished_at }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{% if view.elapsed %}{{ view.elapsed|duration }}{% else %}&mdash;{% endif %}</td>
+      <td class="whitespace-nowrap px-4 py-3" title="{{ row.kind }}{% if row.reason %}/{{ row.reason }}{% endif %}{% if row.category %} [{{ row.category }}]{% endif %}">{{ final_state(row) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ row.requeue_attempt }}</td>
+      <td class="whitespace-nowrap px-4 py-3">
         {% if row.pr_lookup == 'found' and row.pr_url %}
-          <a href="{{ row.pr_url }}">#{{ row.pr_number }}</a>
-          {% if row.merged %}<span class="muted">merged</span>{% endif %}
+          <a class="text-blue-600 hover:underline" href="{{ row.pr_url }}">#{{ row.pr_number }}</a>
+          {% if row.merged %}<span class="text-slate-400">merged</span>{% endif %}
         {% elif row.pr_lookup == 'failed' %}
-          <span class="muted" title="GitHub could not be reached at release">unknown</span>
+          <span class="text-slate-400" title="GitHub could not be reached at release">unknown</span>
         {% else %}
-          <span class="muted">&mdash;</span>
+          <span class="text-slate-400">&mdash;</span>
         {% endif %}
       </td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}
 
-<footer>
+<footer class="mt-8 text-xs text-slate-400">
   Written by the scheduler when it releases a coder lease. Manual fires and
-  hand-fired <code>pr-review</code> runs take no lease and are not recorded here.
+  hand-fired <code class="rounded bg-slate-200 px-1 py-0.5 font-mono text-[0.85em]">pr-review</code> runs take no lease and are not recorded here.
 </footer>
 
+</div>
 </body>
 </html>

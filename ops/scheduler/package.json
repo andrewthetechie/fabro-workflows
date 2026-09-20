@@ -1,0 +1,9 @@
+{
+  "name": "fabro-scheduler-build",
+  "private": true,
+  "description": "Dev-only tooling to regenerate the scheduler's committed Tailwind stylesheet (static/app.css). Not part of the runtime; the deploy image is Python only and serves the prebuilt CSS. See build-css.sh.",
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.0",
+    "tailwindcss": "^4.1.0"
+  }
+}

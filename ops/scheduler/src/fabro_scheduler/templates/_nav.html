@@ -2,16 +2,15 @@
    reloads the page you are on is a small lie about what clicking does. `here` is
    passed as a literal by each includer -- there is no route-introspection here
    because two pages do not need one. #}
-<nav>
+<nav class="flex items-center gap-2 text-sm">
   {% if here == 'queue' %}
-    <strong>Queue</strong>
+    <span class="rounded-md border border-slate-200 bg-white px-3 py-1.5 font-medium text-slate-900 shadow-sm">Queue</span>
   {% else %}
-    <a href="/">Queue</a>
+    <a class="rounded-md px-3 py-1.5 text-slate-500 hover:bg-white hover:text-slate-900" href="/">Queue</a>
   {% endif %}
-  <span class="sep">&middot;</span>
   {% if here == 'history' %}
-    <strong>Run history</strong>
+    <span class="rounded-md border border-slate-200 bg-white px-3 py-1.5 font-medium text-slate-900 shadow-sm">Run history</span>
   {% else %}
-    <a href="/history">Run history</a>
+    <a class="rounded-md px-3 py-1.5 text-slate-500 hover:bg-white hover:text-slate-900" href="/history">Run history</a>
   {% endif %}
 </nav>

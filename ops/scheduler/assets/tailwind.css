@@ -1,0 +1,17 @@
+/* Tailwind entrypoint for the scheduler's two pages.
+ *
+ * This is the source for the *committed, prebuilt* `static/app.css`. The runtime
+ * image carries no node and the pages link a static stylesheet, so a viewer is
+ * never dependent on a CDN and the LAN stays self-contained. Rebuild after
+ * editing a template (or adding a class) with:
+ *
+ *     ./ops/scheduler/build-css.sh
+ *
+ * and commit both `assets/tailwind.css` (if changed) and the generated
+ * `static/app.css`. The `@source` line points Tailwind at the templates so it
+ * generates only the classes they actually use; the path is relative to the
+ * directory the CLI is run from (ops/scheduler).
+ */
+@import "tailwindcss";
+
+@source "./src/fabro_scheduler/templates";

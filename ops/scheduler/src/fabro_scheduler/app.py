@@ -56,6 +56,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
+from starlette.staticfiles import StaticFiles
 
 from . import __version__
 from .config import ConfigError, SchedulerConfig, load_config
@@ -248,6 +249,11 @@ def build_app(
                 poller.stop()
 
     app = FastAPI(title="fabro coder scheduler", version=__version__, lifespan=lifespan)
+
+    # The prebuilt Tailwind stylesheet the pages link. It is committed (see
+    # build-css.sh) so the runtime image needs no node and viewers are never
+    # dependent on a CDN.
+    app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
     def current_queue() -> tuple[list[QueueItem], datetime]:
         # Assembled per request rather than cached: it is four indexed SELECTs and
