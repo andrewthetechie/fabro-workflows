@@ -61,12 +61,14 @@ deploy.
   14's shakedown window.
   ```
 
-  Replace it with a statement of what actually shipped — the series, and the one thing the
-  deploy taught that the ADR could not know:
+  Replace it with a statement of what actually shipped — the work, and the one thing the
+  deploy taught that the ADR could not know. Name no path: decision 9 is that the ADR
+  stays standalone, and the grep below enforces it, so "seventeen tasks" is as close as
+  this paragraph may come to citing the series.
 
   ```md
-  Built as `docs/run-history/`, seventeen tasks, and deployed on <YYYY-MM-DD>. The deploy
-  restarted the scheduler container and so re-dated draft 14's shakedown window, to
+  Built and deployed on <YYYY-MM-DD>, as seventeen tasks. The deploy restarted the
+  scheduler container and so re-dated draft 14's shakedown window, to
   `<the StartedAt captured in task 15>`.
   ```
 

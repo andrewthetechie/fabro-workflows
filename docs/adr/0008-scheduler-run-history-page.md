@@ -227,6 +227,6 @@ The page adds no auth and leaks no secrets — only GitHub links and scheduler-o
 — consistent with decision 16, "LAN-only, no auth"
 (`docs/scheduler/00-overview-and-contracts.md:47`).
 
-Built as `docs/run-history/`, seventeen tasks, and deployed on 2026-09-20. The deploy
-restarted the scheduler container and so re-dated draft 14's shakedown window, to
+Built and deployed on 2026-09-20, as seventeen tasks. The deploy restarted the scheduler
+container and so re-dated draft 14's shakedown window, to
 `2026-09-20T21:50:41.952847122Z`.
