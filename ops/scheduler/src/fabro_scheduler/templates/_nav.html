@@ -4,13 +4,13 @@
    because two pages do not need one. #}
 <nav class="flex items-center gap-2 text-sm">
   {% if here == 'queue' %}
-    <span class="rounded-md border border-slate-200 bg-white px-3 py-1.5 font-medium text-slate-900 shadow-sm">Queue</span>
+    <span class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 font-medium text-slate-100 shadow-sm">Queue</span>
   {% else %}
-    <a class="rounded-md px-3 py-1.5 text-slate-500 hover:bg-white hover:text-slate-900" href="/">Queue</a>
+    <a class="rounded-md px-3 py-1.5 text-slate-400 hover:bg-slate-900 hover:text-slate-100" href="/">Queue</a>
   {% endif %}
   {% if here == 'history' %}
-    <span class="rounded-md border border-slate-200 bg-white px-3 py-1.5 font-medium text-slate-900 shadow-sm">Run history</span>
+    <span class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 font-medium text-slate-100 shadow-sm">Run history</span>
   {% else %}
-    <a class="rounded-md px-3 py-1.5 text-slate-500 hover:bg-white hover:text-slate-900" href="/history">Run history</a>
+    <a class="rounded-md px-3 py-1.5 text-slate-400 hover:bg-slate-900 hover:text-slate-100" href="/history">Run history</a>
   {% endif %}
 </nav>

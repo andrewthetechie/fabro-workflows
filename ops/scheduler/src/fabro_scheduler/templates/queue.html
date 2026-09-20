@@ -9,39 +9,39 @@
 <title>fabro coder scheduler &middot; queue</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
-<body class="min-h-screen bg-slate-100 text-slate-800 antialiased">
+<body class="min-h-screen bg-slate-950 text-slate-200 antialiased">
 
 <div class="mx-auto max-w-6xl px-4 py-6 sm:py-8">
 
 {% set here = 'queue' %}
 {% include "_nav.html" with context %}
 
-<h1 class="mt-6 text-xl font-semibold text-slate-900">Queue</h1>
-<p class="mt-1 mb-6 max-w-prose text-sm leading-6 text-slate-500">
+<h1 class="mt-6 text-xl font-semibold text-slate-100">Queue</h1>
+<p class="mt-1 mb-6 max-w-prose text-sm leading-6 text-slate-400">
   Dispatch order: an operator override first, then anything past the
-  <strong class="font-medium text-slate-700">Starvation ceiling</strong> ({{ ceiling|duration }}, oldest first), then
+  <strong class="font-medium text-slate-200">Starvation ceiling</strong> ({{ ceiling|duration }}, oldest first), then
   repo priority (smaller is more urgent), then issue number.
   GitHub is polled every {{ poll_seconds }}s; this page follows it.
   {% if dispatching %}
     The scheduler dispatches on its own while a coder instance is free.
   {% else %}
-    <strong class="font-medium text-red-600">Automatic dispatch is off in this process</strong> &mdash; nothing starts
-    on its own, and <code class="rounded bg-slate-200 px-1 py-0.5 font-mono text-[0.85em]">POST /api/dispatch-once</code> is the only way work begins.
+    <strong class="font-medium text-red-400">Automatic dispatch is off in this process</strong> &mdash; nothing starts
+    on its own, and <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">POST /api/dispatch-once</code> is the only way work begins.
   {% endif %}
   Buttons here write immediately; there is no authentication, so anyone on the LAN
   can press them.
 </p>
 
 {% if not token_configured %}
-<div class="mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+<div class="mb-6 rounded-md border border-red-900/70 bg-red-950 px-4 py-3 text-sm text-red-200">
   <strong>GITHUB_TOKEN is not set.</strong> The inventory cannot be refreshed,
   so this page shows only whatever the cache already held.
 </div>
 {% endif %}
 
-<p id="note" hidden class="mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"></p>
+<p id="note" hidden class="mb-6 rounded-md border border-red-900/70 bg-red-950 px-4 py-3 text-sm text-red-200"></p>
 
-<div class="mb-6 rounded-md border px-4 py-3 text-sm {% if starvation %}border-red-200 bg-red-50 text-red-800{% else %}border-emerald-200 bg-emerald-50 text-emerald-800{% endif %}">
+<div class="mb-6 rounded-md border px-4 py-3 text-sm {% if starvation %}border-red-900/70 bg-red-950 text-red-200{% else %}border-emerald-900/70 bg-emerald-950 text-emerald-200{% endif %}">
   {% if starvation %}
     <p><strong>Starvation</strong> &mdash; no queue item in any schedulable repo.
        The factory has no work to pick up.</p>
@@ -50,7 +50,7 @@
        across {{ repos|length }} schedulable repo{{ '' if repos|length == 1 else 's' }}.</p>
   {% endif %}
   {% for repo in repos if repo.stale %}
-    <p class="mt-1 text-amber-700">
+    <p class="mt-1 text-amber-300">
       stale: <strong>{{ repo.name }}</strong> keeps its last known items
       {%- if repo.last_success_at %} (last good fetch {{ (now - repo.last_success_at)|duration }} ago){% endif %}
       &mdash; <span class="text-slate-500">{{ repo.last_error }}</span>
@@ -63,21 +63,21 @@
    confused with each other. `drained` and a lease are independent: a drained box
    still running its last run is the normal mid-drain state, and the box frees
    itself when that run reaches a terminal state. #}
-<p class="mb-2 max-w-prose text-sm leading-6 text-slate-500">
-  <strong class="font-medium text-slate-700">Drain</strong> stops <em>new</em> dispatch to a box and lets its current run
-  finish. <strong class="font-medium text-slate-700">Cancel run</strong> is separate and ends that run now &mdash; the issue
-  goes back to <code class="rounded bg-slate-200 px-1 py-0.5 font-mono text-[0.85em]">agent</code> for a later run, and the box frees itself when
+<p class="mb-2 max-w-prose text-sm leading-6 text-slate-400">
+  <strong class="font-medium text-slate-200">Drain</strong> stops <em>new</em> dispatch to a box and lets its current run
+  finish. <strong class="font-medium text-slate-200">Cancel run</strong> is separate and ends that run now &mdash; the issue
+  goes back to <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">agent</code> for a later run, and the box frees itself when
   fabro reports the run terminal.
 </p>
-<p class="mb-4 max-w-prose text-sm leading-6 text-slate-500">
-  <strong class="font-medium text-slate-700">Sub Tasks</strong> is the decomposed-task count for the issue in flight, as
+<p class="mb-4 max-w-prose text-sm leading-6 text-slate-400">
+  <strong class="font-medium text-slate-200">Sub Tasks</strong> is the decomposed-task count for the issue in flight, as
   <em>completed / total</em> (the total can grow when an extra review finds new
-  issues); <strong class="font-medium text-slate-700">Stage</strong> is the workflow stage in progress, linked to the run
+  issues); <strong class="font-medium text-slate-200">Stage</strong> is the workflow stage in progress, linked to the run
   in fabro. Both refresh in the background every {{ run_probe_seconds }}s.
 </p>
-<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-<table class="w-full text-sm">
-  <thead class="bg-slate-50 text-slate-500">
+<div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
+<table class="min-w-full text-sm">
+  <thead class="bg-slate-900/60 text-slate-400">
     <tr>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Coder instance</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">State</th>
@@ -90,46 +90,46 @@
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Controls</th>
     </tr>
   </thead>
-  <tbody class="divide-y divide-slate-100">
+  <tbody class="divide-y divide-slate-800">
     {% for pool in pools %}
-    <tr class="hover:bg-slate-50">
-      <td class="whitespace-nowrap px-4 py-3 font-medium text-slate-800">{{ pool.coder_pool }}</td>
+    <tr class="hover:bg-slate-800/60">
+      <td class="whitespace-nowrap px-4 py-3 font-medium text-slate-200">{{ pool.coder_pool }}</td>
       <td class="whitespace-nowrap px-4 py-3">
-        {%- if pool.drained -%}<span class="text-amber-600">drained</span>
-        {%- else -%}<span class="text-emerald-600">accepting</span>{%- endif -%}
-        <span class="text-slate-300">&middot;</span>
-        {%- if pool.lease %} <span class="text-amber-600">leased</span>
-        {%- else %} <span class="text-slate-400">idle</span>{%- endif -%}
+        {%- if pool.drained -%}<span class="text-amber-400">drained</span>
+        {%- else -%}<span class="text-emerald-400">accepting</span>{%- endif -%}
+        <span class="text-slate-600">&middot;</span>
+        {%- if pool.lease %} <span class="text-amber-400">leased</span>
+        {%- else %} <span class="text-slate-500">idle</span>{%- endif -%}
       </td>
       {% if pool.lease %}
         {% set prog = run_progress[pool.lease.run_id] %}
-        <td class="whitespace-nowrap px-4 py-3"><a class="text-blue-600 hover:underline" href="https://github.com/{{ pool.lease.repo }}">{{ pool.lease.repo }}</a></td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums"><a class="text-blue-600 hover:underline" href="https://github.com/{{ pool.lease.repo }}/issues/{{ pool.lease.issue_number }}">#{{ pool.lease.issue_number }}</a></td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{%- if prog and prog.tasks_total is not none -%}{{ prog.tasks_completed or 0 }}/{{ prog.tasks_total }}{%- else -%}<span class="text-slate-400">&mdash;</span>{%- endif -%}</td>
-        <td class="whitespace-nowrap px-4 py-3 font-mono text-[0.85em] text-slate-500"><a class="text-blue-600 hover:underline" href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}">{{ pool.lease.run_id }}</a></td>
+        <td class="whitespace-nowrap px-4 py-3"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}">{{ pool.lease.repo }}</a></td>
+        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}/issues/{{ pool.lease.issue_number }}">#{{ pool.lease.issue_number }}</a></td>
+        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{%- if prog and prog.tasks_total is not none -%}{{ prog.tasks_completed or 0 }}/{{ prog.tasks_total }}{%- else -%}<span class="text-slate-500">&mdash;</span>{%- endif -%}</td>
+        <td class="whitespace-nowrap px-4 py-3 font-mono text-[0.85em] text-slate-500"><a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}">{{ pool.lease.run_id }}</a></td>
         <td class="whitespace-nowrap px-4 py-3">{%- if prog and prog.stage_name -%}
-          <a class="text-blue-600 hover:underline" href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}/stages/{{ prog.stage_name }}{% if prog.stage_visit is not none %}@{{ prog.stage_visit }}{% endif %}" title="{{ prog.status or 'stage' }}">{{ prog.stage_name }}</a>
-        {%- else -%}<span class="text-slate-400">&mdash;</span>{%- endif -%}</td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-600">{{ (now - pool.lease.dispatched_at)|duration }} ago</td>
+          <a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}/stages/{{ prog.stage_name }}{% if prog.stage_visit is not none %}@{{ prog.stage_visit }}{% endif %}" title="{{ prog.status or 'stage' }}">{{ prog.stage_name }}</a>
+        {%- else -%}<span class="text-slate-500">&mdash;</span>{%- endif -%}</td>
+        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-400">{{ (now - pool.lease.dispatched_at)|duration }} ago</td>
       {% else %}
-        <td class="whitespace-nowrap px-4 py-3 text-slate-400">&mdash;</td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-400">&mdash;</td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-400">&mdash;</td>
-        <td class="whitespace-nowrap px-4 py-3 text-slate-400">&mdash;</td>
-        <td class="whitespace-nowrap px-4 py-3 text-slate-400">&mdash;</td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-400">&mdash;</td>
+        <td class="whitespace-nowrap px-4 py-3 text-slate-500">&mdash;</td>
+        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-500">&mdash;</td>
+        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-500">&mdash;</td>
+        <td class="whitespace-nowrap px-4 py-3 text-slate-500">&mdash;</td>
+        <td class="whitespace-nowrap px-4 py-3 text-slate-500">&mdash;</td>
+        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-500">&mdash;</td>
       {% endif %}
       <td class="whitespace-nowrap px-4 py-3">
         <form class="control inline" method="post"
               action="/api/pools/{{ pool.coder_pool }}/{{ 'undrain' if pool.drained else 'drain' }}">
-          <button type="submit" class="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:border-slate-400 hover:bg-slate-50">{{ 'Undrain' if pool.drained else 'Drain' }}</button>
+          <button type="submit" class="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-700">{{ 'Undrain' if pool.drained else 'Drain' }}</button>
         </form>
         <form class="control inline" method="post"
               action="/api/pools/{{ pool.coder_pool }}/cancel"
               {% if pool.lease %}
               data-confirm="Cancel run {{ pool.lease.run_id }} on {{ pool.coder_pool }}? The run is killed and {{ pool.lease.repo }}#{{ pool.lease.issue_number }} goes back to the agent queue."
               {% endif %}>
-          <button type="submit" {% if not pool.lease %}disabled{% endif %} class="ml-1 rounded border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50 {% if not pool.lease %}cursor-not-allowed opacity-50{% endif %}">
+          <button type="submit" {% if not pool.lease %}disabled{% endif %} class="ml-1 rounded border border-red-900/70 bg-slate-800 px-2.5 py-1 text-xs font-medium text-red-400 hover:bg-red-950 {% if not pool.lease %}cursor-not-allowed opacity-50{% endif %}">
             Cancel run
           </button>
         </form>
@@ -140,14 +140,14 @@
 </table>
 </div>
 {% if not leases %}
-<p class="mt-3 text-sm text-slate-400">No coder instance is leased.</p>
+<p class="mt-3 text-sm text-slate-500">No coder instance is leased.</p>
 {% endif %}
 
 <h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Queue</h2>
 {% if items %}
-<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-<table class="w-full text-sm">
-  <thead class="bg-slate-50 text-slate-500">
+<div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
+<table class="min-w-full text-sm">
+  <thead class="bg-slate-900/60 text-slate-400">
     <tr>
       <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">#</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Repo</th>
@@ -159,20 +159,20 @@
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Order</th>
     </tr>
   </thead>
-  <tbody class="divide-y divide-slate-100">
+  <tbody class="divide-y divide-slate-800">
     {% for item in items %}
-    <tr class="hover:bg-slate-50 {% if item.override_rank is not none %}overridden{% elif item.waited > ceiling %}starved{% endif %}">
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-400">{{ loop.index }}</td>
-      <td class="whitespace-nowrap px-4 py-3"><a class="text-blue-600 hover:underline" href="https://github.com/{{ item.issue.repo }}">{{ item.issue.repo }}</a></td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums"><a class="text-blue-600 hover:underline" href="https://github.com/{{ item.issue.repo }}/issues/{{ item.issue.number }}">#{{ item.issue.number }}</a></td>
-      <td class="max-w-[46ch] truncate px-4 py-3 {% if item.override_rank is not none %}before:mr-1 before:content-['↡'] before:text-blue-600{% elif item.waited > ceiling %}before:mr-1 before:content-['★'] before:text-amber-500{% endif %}" title="{{ item.issue.title }}">{{ item.issue.title }}</td>
+    <tr class="hover:bg-slate-800/60 {% if item.override_rank is not none %}overridden{% elif item.waited > ceiling %}starved{% endif %}">
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-500">{{ loop.index }}</td>
+      <td class="whitespace-nowrap px-4 py-3"><a class="text-sky-400 hover:underline" href="https://github.com/{{ item.issue.repo }}">{{ item.issue.repo }}</a></td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums"><a class="text-sky-400 hover:underline" href="https://github.com/{{ item.issue.repo }}/issues/{{ item.issue.number }}">#{{ item.issue.number }}</a></td>
+      <td class="max-w-[46ch] truncate px-4 py-3 {% if item.override_rank is not none %}before:mr-1 before:content-['↡'] before:text-sky-400{% elif item.waited > ceiling %}before:mr-1 before:content-['★'] before:text-amber-400{% endif %}" title="{{ item.issue.title }}">{{ item.issue.title }}</td>
       <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ item.repo_priority }}</td>
       <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ item.waited|duration }}</td>
       <td class="whitespace-nowrap px-4 py-3 text-xs text-slate-500">{{ item.issue.labels|sort|join(' ') }}</td>
       <td class="whitespace-nowrap px-4 py-3">
         <form class="control inline" method="post"
               action="/api/queue/{{ item.issue.repo|urlencode }}/{{ item.issue.number }}/bump">
-          <button type="submit" class="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:border-slate-400 hover:bg-slate-50">Next</button>
+          <button type="submit" class="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-700">Next</button>
         </form>
       </td>
     </tr>
@@ -181,13 +181,13 @@
 </table>
 </div>
 {% else %}
-<p class="text-sm text-slate-400">Nothing queued.</p>
+<p class="text-sm text-slate-500">Nothing queued.</p>
 {% endif %}
 
 <h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Repos</h2>
-<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-<table class="w-full text-sm">
-  <thead class="bg-slate-50 text-slate-500">
+<div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
+<table class="min-w-full text-sm">
+  <thead class="bg-slate-900/60 text-slate-400">
     <tr>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Repo</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Priority</th>
@@ -197,18 +197,18 @@
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">ETag</th>
     </tr>
   </thead>
-  <tbody class="divide-y divide-slate-100">
+  <tbody class="divide-y divide-slate-800">
     {% for repo in repos %}
-    <tr class="hover:bg-slate-50">
-      <td class="whitespace-nowrap px-4 py-3"><a class="text-blue-600 hover:underline" href="https://github.com/{{ repo.name }}">{{ repo.name }}</a></td>
+    <tr class="hover:bg-slate-800/60">
+      <td class="whitespace-nowrap px-4 py-3"><a class="text-sky-400 hover:underline" href="https://github.com/{{ repo.name }}">{{ repo.name }}</a></td>
       <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ repo.priority }}</td>
       <td class="whitespace-nowrap px-4 py-3">
-        {%- if repo.stale -%}<span class="text-amber-600">stale</span>
-        {%- elif repo.pending -%}<span class="text-slate-400">not yet fetched</span>
-        {%- else -%}<span class="text-emerald-600">ok</span>{%- endif -%}
+        {%- if repo.stale -%}<span class="text-amber-400">stale</span>
+        {%- elif repo.pending -%}<span class="text-slate-500">not yet fetched</span>
+        {%- else -%}<span class="text-emerald-400">ok</span>{%- endif -%}
       </td>
       <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ repo.item_count }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-slate-600">{% if repo.last_success_at %}{{ (now - repo.last_success_at)|duration }} ago{% else %}&mdash;{% endif %}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-slate-400">{% if repo.last_success_at %}{{ (now - repo.last_success_at)|duration }} ago{% else %}&mdash;{% endif %}</td>
       <td class="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-500">{{ (repo.etag or '—')|truncate(20, true, '…', 0) }}</td>
     </tr>
     {% endfor %}
@@ -216,7 +216,7 @@
 </table>
 </div>
 
-<footer class="mt-8 text-xs text-slate-400">
+<footer class="mt-8 text-xs text-slate-500">
   {{ items|length }} queue item(s) &middot;
   {{ leases|length }} leased &middot;
   starvation ceiling {{ ceiling|duration }} &middot;
@@ -225,9 +225,9 @@
 </footer>
 
 <noscript>
-  <div class="rounded-md border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+  <div class="rounded-md border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-slate-300">
     <p><strong>JavaScript is off.</strong> The buttons still work &mdash; each one is a
-       plain <code class="rounded bg-slate-200 px-1 py-0.5 font-mono text-[0.85em]">POST</code> &mdash; but the response is raw JSON. Reload this page
+       plain <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">POST</code> &mdash; but the response is raw JSON. Reload this page
        afterwards.</p>
   </div>
 </noscript>
