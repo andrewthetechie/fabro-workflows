@@ -3,9 +3,11 @@ _version = 1
 [workflow]
 graph = "workflow.fabro"
 
-# No [run.model.fallbacks]. `high-reasoning` resolves in LiteLLM, which owns the
-# overflow to kimi-k3; a second chain here would race it and make the effective route
-# unknowable from either side. See docs/adr/0003-high-reasoning-alias.md.
+# high-reasoning is a role alias on zai:glm-5.3 (ADR 0003, reversed by
+# direct-providers task 03). When z.ai is rate-limited or errors, the overflow
+# that used to live inside LiteLLM now falls back here, to Kimi's kimi-k3.
+[run.model.fallbacks]
+high-reasoning = ["kimi:kimi-k3"]
 
 # Triage reads code and writes issues. It never writes code, so `contents` is "read".
 # `issues` must be "write": the run creates labels (needs-info, triage-in-progress,

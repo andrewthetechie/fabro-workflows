@@ -8,22 +8,25 @@ graph = "workflow.fabro"
 # z.ai before kimi. long-context and kimi-k3 never fall back into a coder
 # role, and kimi-k3 is never a primary coder.
 #
+# Targets name the provider directly (zai:/kimi:) since task 03 pointed the
+# hosted models at their own providers; the proxy is gone.
+#
 # Keys containing a dot MUST be quoted or the TOML parse fails with a 422 at
 # automation fire time.
 [run.model.fallbacks]
-coders = ["litellm:glm-4.7"]
+coders = ["zai:glm-4.7"]
 # The scheduler pins a run to one box by naming `coders-a` or `coders-b` in the
 # run's `coder_pool` input (see the stylesheet). Fallbacks are keyed on the
 # REQUESTED model name, so each pinned group needs its own entry or a pinned run
 # has no fallback at all. Same target as `coders` above, so pinning changes only
 # which box answers, never the escalation ladder.
-"coders-a" = ["litellm:glm-4.7"]
-"coders-b" = ["litellm:glm-4.7"]
-"glm-4.7" = ["litellm:kimi-for-coding"]
-kimi-for-coding = ["litellm:glm-5.3"]
-"glm-5.3" = ["litellm:kimi-k3"]
-kimi-k3 = ["litellm:glm-5.3"]
-long-context = ["litellm:kimi-k3"]
+"coders-a" = ["zai:glm-4.7"]
+"coders-b" = ["zai:glm-4.7"]
+"glm-4.7" = ["kimi:kimi-for-coding"]
+kimi-for-coding = ["zai:glm-5.3"]
+"glm-5.3" = ["kimi:kimi-k3"]
+kimi-k3 = ["zai:glm-5.3"]
+long-context = ["kimi:kimi-k3"]
 
 # Do not push the run metadata branch. Fabro pushes fabro/meta/<run_id> to the
 # target repository on every run and never deletes it; nothing reads the pushed

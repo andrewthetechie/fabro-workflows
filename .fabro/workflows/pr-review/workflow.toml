@@ -4,19 +4,21 @@ _version = 1
 graph = "workflow.fabro"
 
 # One model for review and fixes; coders only for the first rebase attempt.
+# Targets name the provider directly (zai:/kimi:) since task 03 pointed the
+# hosted models at their own providers; the proxy is gone.
 # Quoted keys are mandatory where the name contains a dot, or TOML builds a
 # nested table and the automation fire returns 422.
 [run.model.fallbacks]
-"glm-5.3" = ["litellm:kimi-k3"]
-coders = ["litellm:glm-5.3"]
+"glm-5.3" = ["kimi:kimi-k3"]
+coders = ["zai:glm-5.3"]
 # The scheduler pins a run to one box by naming `coders-a` or `coders-b` in the
 # run's `coder_pool` input (see the stylesheet). Fallbacks are keyed on the
 # REQUESTED model name, so each pinned group needs its own entry or a pinned run
 # has no fallback at all. Same target as `coders` above -- review and fixes stay
 # on glm-5.3, and only the first rebase attempt runs on a box.
-"coders-a" = ["litellm:glm-5.3"]
-"coders-b" = ["litellm:glm-5.3"]
-kimi-k3 = ["litellm:glm-5.3"]
+"coders-a" = ["zai:glm-5.3"]
+"coders-b" = ["zai:glm-5.3"]
+kimi-k3 = ["zai:glm-5.3"]
 
 # The run works on the PR head branch, not on fabro/run/<id>.
 #   enabled = true  -> checkpoints still commit between stages, onto the PR branch
