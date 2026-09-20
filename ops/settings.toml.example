@@ -61,18 +61,17 @@ root = "/storage/objects"
 enabled = true
 url = "http://<HOST>:<FABRO_PORT>"
 
-# --- LLM catalog overlay (litellm proxy) ---
-# Provider credentials live in the fabro vault, not here.
-[llm.providers.litellm]
-base_url = "https://<LITELLM_PROXY>/v1"
-enabled = true
-default_model = "coders"
-
-[llm.providers.litellm.models."coders"]
-display_name = "Local coders (strix x2)"
-api_model = "coders"
-limits = { context_tokens = 262144, max_output_tokens = 38400 }
-capabilities = { text = true, tools = true, reasoning = true }
+# --- LLM catalog overlay ---
+# Provider credentials live in the fabro vault, not here. There is no litellm
+# provider and no `coders` model row (ADR 0007, docs/direct-providers/
+# 04-retire-the-litellm-rows.md): the coders pool crossed the LiteLLM ingress
+# to balance the two boxes, and every model id now resolves to a direct
+# provider. An unpinned `coder_pool` (the operator's fire helpers, the
+# stylesheet `default(...)`) resolves to `coders-a`, a pinned box.
+#
+# The server's default model for small utility calls such as generated run
+# titles is the model marked `small_default = true` (long-context on `spark`),
+# and `[llm.providers.spark] default_model` names that model for the provider.
 
 # One direct provider per Local inference box (ADR 0007, docs/direct-providers/
 # 01-local-boxes-direct.md). `coders-a`/`coders-b`/`long-context` resolve to a
@@ -84,8 +83,8 @@ capabilities = { text = true, tools = true, reasoning = true }
 # `model_stylesheet`, which is how the scheduler leases a whole llama.cpp box for a
 # run (docs/scheduler/00-overview-and-contracts.md, findings 3 and 4).
 #
-# `limits`/`capabilities` were copied from the rows they replace (now removed from
-# `litellm`), so only the endpoint changed. `api_model` is the wire name the box
+# `limits`/`capabilities` were copied from the litellm rows they replace, so
+# only the endpoint changed. `api_model` is the wire name the box
 # reports from `/v1/models` -- the same GGUF model answers all three names.
 #
 # A Local box needs no provider key (`auth = { type = "none" }`). These take effect
@@ -124,6 +123,7 @@ base_url = "http://<IP>:8888/v1"
 adapter = "openai-compatible"
 codec = "openai-chat"
 auth = { type = "none" }
+default_model = "long-context"
 
 [llm.providers.spark.models."long-context"]
 display_name = "Local long-context (spark)"

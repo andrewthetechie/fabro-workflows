@@ -16,8 +16,10 @@
 #   3. /runs/<id>/start     actually launch it
 #
 # It does NOT enqueue or take a box: there is no lease. The run is fired with
-# `coder_pool: "coders"` (the both-boxes group, decision 12's fallback), never a
-# pinned box, because a hand fire must not pretend to hold a lease it does not.
+# `coder_pool: "coders-a"` -- a pinned box. The both-boxes `coders` group and the
+# LiteLLM provider behind it are retired (ADR 0007, task 04), so a hand fire has
+# no untethered pool to aim at; it pins coders-a and must not run while the
+# scheduler could also be dispatching to that box.
 #
 # This file lives in ops/ — the tree no automation reads — and is deployed to
 # ~/bin/fabro-fire-backlog.sh on the host (AGENTS.md, *Deploying*). It is the
@@ -267,9 +269,9 @@ fi
 
 # args.inputs values that reach a POSIX `case` guard are JSON numbers, not strings:
 # backlog's `claim` runs `case "$ISSUE" in *[!0-9]*)`. A number is the shape that
-# cannot carry shell syntax. `coder_pool` is a string and names the both-boxes group
-# `coders` — never a pinned box, because a hand fire holds no lease. args.labels
-# values are strings.
+# cannot carry shell syntax. `coder_pool` is a string and pins `coders-a` (the
+# retired both-boxes `coders` group left no untethered pool; ADR 0007, task 04).
+# args.labels values are strings.
 jq -n \
   --arg vvid "$version_id" \
   --argjson target "$target" \
@@ -280,7 +282,7 @@ jq -n \
     workflow_version_id: $vvid,
     target: $target,
     args: {
-      inputs: { issue_number: $issue, coder_pool: "coders" },
+      inputs: { issue_number: $issue, coder_pool: "coders-a" },
       labels: { source: "manual", issue: $issue_s }
     },
     environment_id: $env_id

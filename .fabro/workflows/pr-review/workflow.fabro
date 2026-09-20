@@ -35,17 +35,17 @@ digraph PrReview {
             // covers the imported review-merge graph's `ci_fix_t1`, which carries
             // class="rebase" and has no stylesheet of its own.
             //
-            // The `default('coders')` filter is LOAD-BEARING, and single quotes are
+            // The `default('coders-a')` filter is LOAD-BEARING, and single quotes are
             // mandatory: the stylesheet renders in strict mode, so an unbound input
             // FAILS the run at compile (`422 run_compile_invalid`) rather than rendering
             // empty, and an unescaped `"` would terminate this DOT attribute string.
-            // Do NOT bind `coder_pool` in `[run.inputs]` -- a bound default turns "no
-            // input supplied" into one specific box, which silently sends every
-            // hand-fired run there.
+            // The default is a pinned box (`coders-a`), not the retired both-boxes
+            // `coders` group (ADR 0007, task 04 removed it with the LiteLLM provider);
+            // the escape hatch fires an explicit `coder_pool` so it never relies on this.
         model_stylesheet="
             *           { model: glm-5.3; }
             .review     { model: glm-5.3; }
-            .rebase     { model: {{ inputs.coder_pool | default('coders') }}; reasoning_effort: medium; }
+            .rebase     { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .rebase-t2  { model: glm-5.3; }
         "
     ]

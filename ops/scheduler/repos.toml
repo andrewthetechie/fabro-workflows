@@ -20,25 +20,25 @@
 # Both credentials arrive through the container's environment.
 
 [[repo]]
-name           = "andrewthetechie/jelly-swipe"
-priority       = 0
-environment_id = "python"
-enabled        = true
-
-[[repo]]
-name           = "andrewthetechie/lawncare-saas"
-priority       = 1
-environment_id = "python-node"
-enabled        = true
-
-[[repo]]
 name           = "andrewthetechie/womens-fantasy-sports"
-priority       = 1
+priority       = 10
 environment_id = "ts"
 enabled        = true
 
 [[repo]]
 name           = "andrewthetechie/writers-app"
-priority       = 2
+priority       = 20
 environment_id = "rust-node"
+enabled        = true
+
+[[repo]]
+name           = "andrewthetechie/lawncare-saas"
+priority       = 30
+environment_id = "python-node"
+enabled        = true
+
+[[repo]]
+name           = "andrewthetechie/jelly-swipe"
+priority       = 99
+environment_id = "python"
 enabled        = true

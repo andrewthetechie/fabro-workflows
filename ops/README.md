@@ -28,7 +28,7 @@ locations instead.
 | `provision-server-state.sh` | Recreates the twelve **automations** (three per repo: `backlog`, `pr-review`, `issue-triage`) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
 | `provision-litellm-models.sh` | Creates the `high-reasoning` model group and its `kimi-k3` fallback in LiteLLM. Scoped to that one group; the other model rows predate this workflow and are reported, never corrected. The `coders` pool's concurrency tuning is recorded under *Server-side state*, not managed here. |
 | `provision-coder-groups.sh` | Creates the per-box `coders-a` and `coders-b` model groups that the coder scheduler pins a run to, and adds both names to the fabro key's model allowlist. Leaves the load-balanced `coders` rows alone. Idempotent, `DRY_RUN=1` by default. |
-| `fabro-fire-backlog.sh` | The manual escape hatch for the coder scheduler: fire exactly one issue through the `backlog` workflow by hand (three-POST sequence, `args.inputs = {issue_number, coder_pool: "coders"}`, environment looked up from the repo's `backlog-<repo>` automation row). Since draft 10 a `backlog` run works only the issued `issue_number`, so this is the only way to move an issue when the scheduler is down. `DRY_RUN=1` by default; see `docs/scheduler/10-collapse-acquire-claim.md`. |
+| `fabro-fire-backlog.sh` | The manual escape hatch for the coder scheduler: fire exactly one issue through the `backlog` workflow by hand (three-POST sequence, `args.inputs = {issue_number, coder_pool: "coders-a"}`, environment looked up from the repo's `backlog-<repo>` automation row). Since draft 10 a `backlog` run works only the issued `issue_number`, so this is the only way to move an issue when the scheduler is down. It pins a single box because the both-boxes `coders` group was retired with the LiteLLM provider (task 04). `DRY_RUN=1` by default; see `docs/scheduler/10-collapse-acquire-claim.md`. |
 | `fabro-automation-schedule.sh` | Turns one automation's `schedule` triggers on or off — the switch behind draft 13's cutover, which left the four `backlog-<repo>` schedules off so the coder scheduler is the only producer of `backlog` runs. `GET` + full-body `PUT` with `If-Match`, because fabro has no `PATCH` on an automation; only `schedule` triggers are written, so `api:manual` keeps working. Idempotent, `DRY_RUN=1` by default. |
 | `README.md` | This file — bring-up, install, and replication steps. |
 
@@ -247,19 +247,19 @@ loudly:
 **How a run asks for a box.** Both root stylesheets carry the same two rules:
 
 ```
-.coder  { model: {{ inputs.coder_pool | default('coders') }}; reasoning_effort: medium; }
-.rebase { model: {{ inputs.coder_pool | default('coders') }}; reasoning_effort: medium; }
+.coder  { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+.rebase { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
 ```
 
 `backlog` has both, `pr-review` only `.rebase` (its `review`/`fix` classes stay on
 `glm-5.3`). The scheduler will pass `args.inputs.coder_pool = "coders-a"` on the intent;
-a hand-fired run passes nothing and gets the load-balanced `coders` group, which is why
-that group is retained. The `default()` is not cosmetic — the stylesheet renders strict
-at run time, so without it a fire carrying no `coder_pool` fails at `POST /runs` with
-`422 run_compile_invalid`. Verified 2026-09-18 by registering the identical package with
-the filter removed: `201` on the version, then `422 run_compile_invalid`
-("run intent could not be compiled: Validation failed") on a no-input fire, against
-`201` for the real package.
+a hand-fired run passes nothing and gets the pinned `coders-a` box (the both-boxes
+`coders` group was retired with the LiteLLM provider, task 04). The `default()` is not
+cosmetic — the stylesheet renders strict at run time, so without it a fire carrying no
+`coder_pool` fails at `POST /runs` with `422 run_compile_invalid`. Verified 2026-09-18
+by registering the identical package with the filter removed: `201` on the version, then
+`422 run_compile_invalid` ("run intent could not be compiled: Validation failed") on a
+no-input fire, against `201` for the real package.
 
 Changing any of this needs the **master key**, not `FABRO_LITELLM_KEY`: that one is an
 `internal_user` and `POST /model/update` answers 403. The master key is the

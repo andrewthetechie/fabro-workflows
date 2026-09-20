@@ -49,8 +49,9 @@ five upstreams through one provider.
 | `kimi-for-coding` | `https://api.kimi.com/coding` | `KIMI_API_KEY` |
 | `kimi-k3` | `https://api.kimi.com/coding` | `KIMI_API_KEY` |
 
-`coders` has two deployments and LiteLLM balances them. The scheduler does not use it, and
-no node resolves to it except the server's own `default_model`. See task 04.
+`coders` has two deployments and LiteLLM balances them. The scheduler does not use it,
+and no node resolves to it except the server's own `default_model` — plus the
+stylesheet `default('coders')` and the escape hatch, which task 04 retires. See task 04.
 
 ## Findings established against the live deployment
 
@@ -93,9 +94,10 @@ or `KIMI_API_KEY`. Those live in the cluster for LiteLLM. Task 03 moves them.
 
 ### 5. `coders` is the server `default_model`
 
-The overlay sets `default_model = "coders"`, and the server uses it for utility calls such
-as generated run titles. Task 04 must give that name a target before it removes the
-LiteLLM provider.
+The overlay sets `default_model = "coders"`, and the server uses it for utility calls
+such as generated run titles. Task 04 retires `coders` with the LiteLLM provider and
+points the `default_model` at `spark`/`long-context` (the `small_default` utility model),
+per the operator decision recorded in `04-retire-the-litellm-rows.md`.
 
 ## Contracts
 

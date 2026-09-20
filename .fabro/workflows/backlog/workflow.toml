@@ -14,12 +14,13 @@ graph = "workflow.fabro"
 # Keys containing a dot MUST be quoted or the TOML parse fails with a 422 at
 # automation fire time.
 [run.model.fallbacks]
-coders = ["zai:glm-4.7"]
 # The scheduler pins a run to one box by naming `coders-a` or `coders-b` in the
 # run's `coder_pool` input (see the stylesheet). Fallbacks are keyed on the
 # REQUESTED model name, so each pinned group needs its own entry or a pinned run
-# has no fallback at all. Same target as `coders` above, so pinning changes only
-# which box answers, never the escalation ladder.
+# has no fallback at all. The both-boxes `coders` key has no home anymore --
+# task 04 retired that id with the LiteLLM provider (ADR 0007) and an unpinned
+# run resolves to `coders-a`; pinning changes only which box answers, never the
+# escalation ladder.
 "coders-a" = ["zai:glm-4.7"]
 "coders-b" = ["zai:glm-4.7"]
 "glm-4.7" = ["kimi:kimi-for-coding"]

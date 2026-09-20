@@ -39,8 +39,9 @@ quiet-exit path left. Kept here only so the word is not reused for something els
 **Manual fire**:
 The operator's escape hatch when the **Scheduler** is down: `ops/fabro-fire-backlog.sh
 <owner/repo> <issue_number>`, deployed to `~/bin/fabro-fire-backlog.sh`. It creates one
-`backlog` run for exactly that issue with `coder_pool: "coders"` (the both-boxes group,
-never a pinned box — a hand fire holds no lease). The graph's `claim` swaps the labels
+`backlog` run for exactly that issue with `coder_pool: "coders-a"` (a pinned box — the
+both-boxes `coders` group was retired with the LiteLLM provider, task 04). The graph's
+`claim` swaps the labels
 as a fallback for what the scheduler does at dispatch, so a manual run needs no lease.
 It was broken for nine hours on 2026-09-19 — `claim` wrote into `/tmp/fabro` and nothing
 created the directory after `acquire` was deleted — and `5fa974d` fixed it; the same class
