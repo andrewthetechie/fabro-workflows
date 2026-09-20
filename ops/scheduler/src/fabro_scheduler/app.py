@@ -60,9 +60,11 @@ from starlette.requests import Request
 from . import __version__
 from .config import ConfigError, SchedulerConfig, load_config
 from .dispatch import DispatchLoop
+from .docker import DockerClient
 from .fabro import FabroClient, FabroError, RunNotStarted
 from .inventory import InventoryPoller
 from .lease import Lease, LeaseConflict, LeaseStore
+from .probe import RunProbe
 from .queue import QueueItem, RepoStatus, build_queue, repo_statuses
 from .reconcile import ReleasePoller, recover
 from .store import DEFAULT_HISTORY_LIMIT, DEFAULT_HISTORY_SORT, Store
@@ -121,6 +123,7 @@ def build_app(
     github_token: str = "",
     fabro_token: str = "",
     fabro_client: FabroClient | None = None,
+    run_probe: RunProbe | None = None,
     start_poller: bool = False,
     start_dispatch_loop: bool = False,
 ) -> FastAPI:
@@ -145,6 +148,19 @@ def build_app(
     # manual override reads it, which is the only way the override can avoid
     # putting a second run on a box the loop already took.
     leases = LeaseStore(store)
+
+    # The run probe: a background refresher of per-lease task count and current
+    # stage. Created whenever it is not injected, so the page always has a
+    # `run_progress` view to render (it just shows "—" until a beat fills it). The
+    # thread only starts when there is a fabro client to fetch stages from.
+    probe = run_probe
+    if probe is None:
+        probe = RunProbe(
+            client,
+            leases,
+            DockerClient(),
+            interval_seconds=config.run_probe_seconds,
+        )
 
     poller: InventoryPoller | None = None
     if start_poller:
@@ -214,9 +230,16 @@ def build_app(
             releaser.start()
         if dispatcher is not None:
             dispatcher.start()
+        # The probe populates the page's task/stage columns. It runs whenever the
+        # service has a fabro client — a read-only observer, independent of the
+        # dispatch loop, so a page is live even when automatic dispatch is off.
+        if probe is not None and client is not None:
+            probe.start()
         try:
             yield
         finally:
+            if probe is not None and client is not None:
+                probe.stop()
             if dispatcher is not None:
                 dispatcher.stop()
             if releaser is not None:
@@ -667,6 +690,12 @@ def build_app(
                 "poll_seconds": config.github_poll_seconds,
                 "token_configured": token_configured,
                 "dispatching": dispatcher is not None,
+                # The live task/stage view for each leased run, read from the
+                # probe's cache so a page load does no API or socket work.
+                "run_progress": {
+                    lease.run_id: probe.snapshot(lease.run_id) for lease in active
+                },
+                "run_probe_seconds": config.run_probe_seconds,
                 # `Starvation` in the CONTEXT.md sense — zero queue items across
                 # every schedulable repo — which is not the starvation *ceiling*.
                 "starvation": not items,
@@ -945,6 +974,7 @@ def create_app(
     github_token: str | None = None,
     fabro_token: str | None = None,
     fabro_client: FabroClient | None = None,
+    run_probe: RunProbe | None = None,
     start_poller: bool = False,
     start_dispatch_loop: bool = False,
 ) -> FastAPI:
@@ -968,6 +998,7 @@ def create_app(
         github_token=token,
         fabro_token=fabro,
         fabro_client=fabro_client,
+        run_probe=run_probe,
         start_poller=start_poller,
         start_dispatch_loop=start_dispatch_loop,
     )

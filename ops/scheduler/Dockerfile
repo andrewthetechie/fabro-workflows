@@ -45,6 +45,10 @@ ENV PYTHONUNBUFFERED=1 \
 # recommends` keeps it to git and its hard dependencies; `ca-certificates` is
 # listed explicitly because a clone over TLS is the whole point and it is one
 # base-image change away from not being there.
+#
+# NB: no `docker` CLI is installed. The scheduler reaches the socket it is given
+# through the Docker Engine HTTP API (see `fabro_scheduler.docker`), so no client
+# binary is needed.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git \
  && rm -rf /var/lib/apt/lists/*
@@ -53,6 +57,17 @@ RUN apt-get update \
 # `--system` on the group and user keeps them out of the login range.
 RUN groupadd --system --gid 1000 scheduler \
  && useradd --system --uid 1000 --gid scheduler --no-create-home scheduler
+
+# The host's docker group GID, so the non-root `scheduler` user can open the
+# mounted /var/run/docker.sock (which is `root:docker` mode 660 on the host).
+# This container only ever runs on the single fabro host, so the default pins
+# that host's observed GID; override with --build-arg if the host is rebuilt.
+# Mounting the socket IS the security boundary — it grants root-equivalent host
+# access regardless of UID — so this group only keeps the process non-root for
+# everything it touches that is not the socket.
+ARG DOCKER_GID=983
+RUN groupadd --system --gid ${DOCKER_GID} docker \
+ && gpasswd -a scheduler docker
 
 WORKDIR /app
 COPY --from=builder --chown=1000:1000 /app /app

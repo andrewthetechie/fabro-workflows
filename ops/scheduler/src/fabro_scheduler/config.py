@@ -54,6 +54,14 @@ DEFAULT_STARVATION_CEILING_SECONDS = 4 * 60 * 60
 # Decision 8: GitHub every 60s, conditionally.
 DEFAULT_GITHUB_POLL_SECONDS = 60
 
+# The run probe's beat: how often the background thread refreshes the cached
+# per-lease task count and current stage that the page renders. Stages last tens
+# of seconds to minutes each, so 30s keeps the display visibly current while
+# making at most ~2 fabro API calls + ~2 sandbox reads per beat (one per leased
+# coder instance, and there are at most four). `probe.py` owns the reasoning;
+# this is the handle an operator thins it with.
+DEFAULT_RUN_PROBE_SECONDS = 30
+
 # Every key a `[[repo]]` table may carry. Unknown keys are errors rather than
 # warnings: `priorty = 0` would otherwise be silently ignored and the row would
 # sort by whatever the default turned out to be.
@@ -94,6 +102,8 @@ class SchedulerConfig:
         default_factory=lambda: timedelta(seconds=DEFAULT_STARVATION_CEILING_SECONDS)
     )
     github_poll_seconds: int = DEFAULT_GITHUB_POLL_SECONDS
+    # Cached per-lease task count and current stage; see `probe.py`.
+    run_probe_seconds: int = DEFAULT_RUN_PROBE_SECONDS
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -158,6 +168,9 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
         ),
         github_poll_seconds=_env_positive_int(
             environ, "SCHEDULER_GITHUB_POLL_SECONDS", DEFAULT_GITHUB_POLL_SECONDS
+        ),
+        run_probe_seconds=_env_positive_int(
+            environ, "SCHEDULER_RUN_PROBE_SECONDS", DEFAULT_RUN_PROBE_SECONDS
         ),
     )
 

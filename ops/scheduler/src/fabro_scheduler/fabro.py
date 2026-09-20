@@ -212,6 +212,30 @@ def get_run(
     return _request("GET", api, f"/runs/{run_id}", token, client=client, timeout=timeout)
 
 
+def get_stages(
+    api: str,
+    token: str,
+    run_id: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> list[dict]:
+    """`GET /runs/{id}/stages` → the stage list for the run.
+
+    Each stage carries `node_id` (e.g. `review_merge.merge_gate`), `visit` (the
+    `@N` suffix), `status` and `started_at`. The probe turns its most recent
+    in-progress stage into the page's current-stage link; the `id` field (already
+    `node_id@visit`) is what that link's path uses.
+    """
+    body = _request("GET", api, f"/runs/{run_id}/stages", token, client=client, timeout=timeout)
+    data = body.get("data")
+    if not isinstance(data, list):
+        raise FabroError(
+            f"GET /runs/{run_id}/stages returned no `data` array: {_summarise(body)}"
+        )
+    return data
+
+
 def cancel_run(
     api: str,
     token: str,
@@ -630,6 +654,15 @@ class FabroClient:
         the "fabro never heard of this run" case that recovery treats as lost.
         """
         return get_run(self._api, self._token, run_id, timeout=self._call_timeout)
+
+    def get_stages(self, run_id: str) -> list[dict]:
+        """The run's stage list, for the probe's current-stage column.
+
+        Timeout is deliberately short: this powers a 30-second background beat and
+        a slow owner (a stuck scheduler) must not let one stage check stall the
+        whole page's probe.
+        """
+        return get_stages(self._api, self._token, run_id, timeout=5.0)
 
     def cancel_run(self, run_id: str) -> None:
         """Ask fabro to cancel a run. Draft 11's Cancel control.

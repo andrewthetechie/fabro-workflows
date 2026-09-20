@@ -26,6 +26,7 @@ from fabro_scheduler.fabro import FabroClient
 from fabro_scheduler.github import Issue
 from fabro_scheduler.inventory import InventoryPoller
 from fabro_scheduler.lease import Lease, LeaseStore
+from fabro_scheduler.probe import RunProbe
 from fabro_scheduler.store import Store
 from fabro_scheduler.workflow_version import WorkflowVersionError
 
@@ -578,6 +579,43 @@ def test_the_page_links_each_repo_row_to_github(config, store, client):
     # The Repos table lists every configured repo, and each name links to it.
     for repo in config.ordered_repos():
         assert f"https://github.com/{repo.name}" in html
+
+
+def test_the_page_shows_tasks_and_stage_columns(config, store):
+    LeaseStore(store).acquire(
+        Lease(
+            coder_pool="coders-a",
+            repo="andrewthetechie/writers-app",
+            issue_number=42,
+            run_id="01MRUN",
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+
+    class _FakeFabro:
+        def get_stages(self, run_id):
+            return [
+                {"node_id": "claim", "visit": 1, "status": "succeeded", "started_at": "t1"},
+                {"node_id": "review_merge.validate", "visit": 2, "status": "running", "started_at": "t2"},
+            ]
+
+        def get_run(self, run_id):
+            return {"sandbox": {"instance": {"runtime": {"id": "cid1"}}}}
+
+    class _FakeDocker:
+        def exec(self, container_id, command, *, timeout=10.0):
+            return "4\n"
+
+    probe = RunProbe(_FakeFabro(), LeaseStore(store), _FakeDocker())
+    probe.tick()
+    app = build_app(config, store, run_probe=probe)
+
+    html = TestClient(app).get("/").text
+
+    # The task count (4) and the current-stage link, pointing at the fabro run.
+    assert "/runs/01MRUN/stages/review_merge.validate@2" in html
+    assert "review_merge.validate" in html
+    assert "<td class=\"num\">4</td>" in html
 
 
 def test_the_page_offers_drain_and_cancel_for_each_pool(config, store, client):
