@@ -805,6 +805,39 @@ check "names branch protection"     "1" "$(grep -c 'Branch protection on the bas
 check "names the required check"    "1" "$(grep -c 'required status check' "$T/merge_block_reason")"
 check "protection sets both files"  ""  "$(diff "$T/merge_block_reason" "$T/needs_human_reason")"
 
+# 4d. THE #1234 FAILURE: the same checkpoint push, but GitHub serves a STALE
+#     `MERGEABLE` instead of UNKNOWN, so the wait loop never engages and the
+#     mutation refuses. Not a conflict -- the branch is not behind -- so it must
+#     be retried, not reported as one.
+rm_setup
+echo 1 > "$T/merge_fails_until"
+printf 'GraphQL: Pull Request is not mergeable (mergePullRequest)\n' > "$T/merge_error"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "stale-mergeable retried"     "0"      "$RC"
+check "stale-mergeable merged"      "merged" "$(jq -r '.context_updates.merge_state' <<<"$(lastjson "$OUT")")"
+check "stale-mergeable two tries"   "2"      "$(cat "$T/merge_calls")"
+
+# 4e. It persists: bounded, and reported as the race rather than as a conflict.
+rm_setup
+echo 9 > "$T/merge_fails_until"
+printf 'GraphQL: Pull Request is not mergeable (mergePullRequest)\n' > "$T/merge_error"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "stale-mergeable fails"       "1" "$RC"
+check "stale-mergeable bounded"     "3" "$(cat "$T/merge_calls")"
+check "names the race not conflict" "1" "$(grep -c 'checkpoint-push race' "$T/merge_block_reason")"
+check "rules out a conflict"        "1" "$(grep -c 'cannot be a conflict' "$T/merge_block_reason")"
+check "no stray doubled quote"      "0" "$(grep -c 'GitHubs' "$T/merge_block_reason")"
+
+# 4f. ORDERING TRAP: the protection rejection also contains "not mergeable", so a
+#     general match must not swallow it. It has to still be reported as protection.
+rm_setup
+echo 9 > "$T/merge_fails_until"
+printf 'X Pull request andrewthetechie/jelly-swipe#389 is not mergeable: the base branch policy prohibits the merge.\n' \
+    > "$T/merge_error"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "protection wins the match"   "1" "$(grep -c 'Branch protection on the base' "$T/merge_block_reason")"
+check "not reported as the race"    "0" "$(grep -c 'checkpoint-push race' "$T/merge_block_reason")"
+
 # 5. Mergeability is UNKNOWN right after the checkpoint push; wait for it.
 rm_setup
 echo 2 > "$T/unknown_until"

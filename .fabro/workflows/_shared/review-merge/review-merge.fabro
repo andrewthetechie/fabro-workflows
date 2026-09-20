@@ -625,6 +625,20 @@ exit 0"]
     // unseen until 2026-09-20 only because no repo had a required check before then --
     // #386 merged with no protection on the repo at all.
     //
+    // The push has a THIRD effect, and womens-fantasy-sports#1234 lost its merge to it
+    // the same evening, on a repo with no protection at all. The wait above guards
+    // against `mergeable` reading UNKNOWN -- but GitHub can instead serve a STALE
+    // `MERGEABLE`, computed for the head before the push, while the mutation evaluates
+    // the new one and refuses with `GraphQL: Pull Request is not mergeable
+    // (mergePullRequest)`. #1234 merged one second after its checkpoint, got a
+    // non-UNKNOWN answer on the first poll so the wait never engaged, and was refused;
+    // `main` had not moved in 23 hours and the branch was not behind by a single commit.
+    // A stale MERGEABLE is indistinguishable from a fresh one, so the read cannot be
+    // trusted -- the rejection has to be retried instead, which is what the loop does.
+    // Note the ordering in both the retry and the report: the protection rejection also
+    // contains the words `not mergeable`, so it must be tested FIRST or it is swallowed
+    // by the more general match.
+    //
     // The fix is structural rather than a longer retry: the wait for checks has to be
     // INSIDE this node. A node boundary is a checkpoint is a new head, so `watch_checks`
     // -- being a separate node -- can never be the last word before a merge, no matter
@@ -698,6 +712,12 @@ while :; do
     A=$((A + 1))
     continue
   fi
+  if grep -q 'not mergeable' /tmp/fabro/merge_attempt.log; then
+    echo 'attempt '$A' was told the PR is not mergeable moments after a checkpoint push; letting GitHub catch up and retrying'
+    A=$((A + 1))
+    sleep 10
+    continue
+  fi
   break
 done
 if [ \"$MERGED\" = 1 ]; then
@@ -712,6 +732,8 @@ if git merge-base --is-ancestor origin/\"$B\" HEAD 2>/dev/null; then
     block 'GitHub rejected the squash merge three times with a branch-moved error, while this branch is NOT behind its base. That is the checkpoint-push race, not a problem with the change: the PR is very likely mergeable as it stands, and a human can merge it directly.'
   elif grep -q 'policy prohibits' /tmp/fabro/merge_attempt.log; then
     block 'Branch protection on the base refused the merge: a required status check was not successful on the head commit at merge time. Fabro pushes a checkpoint commit after every stage, so the head moved after CI was confirmed and the required checks had to start over; this node waited for them and still ran out of attempts. The change itself was approved and CI passed on the reviewed head, so a human can merge this PR once the checks on the current head are green.'
+  elif grep -q 'not mergeable' /tmp/fabro/merge_attempt.log; then
+    block 'GitHub refused the squash merge three times as not mergeable, while this branch is NOT behind its base. It cannot be a conflict: the base is an ancestor of this branch, so there is nothing to conflict with. This is the checkpoint-push race seen through the GitHub mergeability cache, which can report the PREVIOUS head as mergeable while the mutation evaluates the new one. The PR is very likely mergeable as it stands, and a human can merge it directly.'
   else
     R=$(grep -v '^$' /tmp/fabro/merge_attempt.log | tail -3)
     block 'The squash merge was rejected and this run could not complete it; a human must merge this PR. GitHub said: '\"$R\"
