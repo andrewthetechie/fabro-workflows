@@ -670,6 +670,10 @@ def build_app(
                 # `Starvation` in the CONTEXT.md sense — zero queue items across
                 # every schedulable repo — which is not the starvation *ceiling*.
                 "starvation": not items,
+                # The fabro web UI root for the run link, derived from the API base
+                # by stripping `/api/v1`. Rendered only into the server-side HTML
+                # page the operator views, never into a JSON payload.
+                "fabro_ui_url": config.fabro_api_url.removesuffix("/api/v1").removesuffix("/"),
             },
         )
 
@@ -897,9 +901,11 @@ def _sort_link(column: str, *, active: str, descending: bool, limit: int | None)
     other column starts it descending, which is the useful default for every one
     of them -- newest, longest, most requeues first.
 
-    `limit` is carried through so a sort does not silently reset the page size an
-    operator chose. `None` is `?limit=all`, which is the only non-default value
-    worth preserving in a URL.
+    `?limit=all` -- `limit=None` here -- is the one value carried through, because
+    an operator who asked for every row still means it after a re-sort. A numeric
+    limit is deliberately dropped: the default is the default, and a link that
+    pinned a page size would make `?limit=5` sticky with nothing on the page to
+    undo it.
     """
     flip = not descending if column == active else True
     query = f"sort={column}&dir={'desc' if flip else 'asc'}"

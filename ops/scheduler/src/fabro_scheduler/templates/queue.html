@@ -91,9 +91,9 @@
         {%- else %} <span class="muted">idle</span>{%- endif -%}
       </td>
       {% if pool.lease %}
-        <td>{{ pool.lease.repo }}</td>
-        <td class="num">#{{ pool.lease.issue_number }}</td>
-        <td class="muted">{{ pool.lease.run_id }}</td>
+        <td><a href="https://github.com/{{ pool.lease.repo }}">{{ pool.lease.repo }}</a></td>
+        <td class="num"><a href="https://github.com/{{ pool.lease.repo }}/issues/{{ pool.lease.issue_number }}">#{{ pool.lease.issue_number }}</a></td>
+        <td class="muted"><a href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}">{{ pool.lease.run_id }}</a></td>
         <td class="num">{{ (now - pool.lease.dispatched_at)|duration }} ago</td>
       {% else %}
         <td class="muted">&mdash;</td>

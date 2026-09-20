@@ -545,7 +545,9 @@ def test_the_page_shows_the_active_leases(config, store, client):
     html = client.get("/").text
 
     assert "coders-b" in html
-    assert "andrewthetechie/writers-app" in html
+    assert "https://github.com/andrewthetechie/writers-app" in html
+    assert "https://github.com/andrewthetechie/writers-app/issues/42" in html
+    assert "http://10.10.0.32:32276/runs/01MRUN" in html
     assert "#42" in html
     assert "01MRUN" in html
     assert "leased" in html
