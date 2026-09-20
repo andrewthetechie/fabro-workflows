@@ -686,6 +686,18 @@ case "$1 $2" in
             if [ "$n" -le "$u" ]; then echo UNKNOWN; else echo MERGEABLE; fi ;;
       esac
       exit 0 ;;
+  "pr checks")
+      # Real `gh pr checks` exits 8 while anything is pending and still prints the
+      # rows, so the node must read the JSON and ignore the exit code. The stub
+      # reproduces that, because a `|| echo []` fallback would silently turn every
+      # pending poll into "no checks at all".
+      n=0; [ -f "$GH_STATE/check_polls" ] && n=$(cat "$GH_STATE/check_polls")
+      n=$((n + 1)); echo "$n" > "$GH_STATE/check_polls"
+      p=0; [ -f "$GH_STATE/checks_pending_until" ] && p=$(cat "$GH_STATE/checks_pending_until")
+      if [ "$n" -le "$p" ]; then
+          echo '[{"name":"test","bucket":"pending"}]'; exit 8
+      fi
+      echo '[{"name":"test","bucket":"pass"}]'; exit 0 ;;
   "pr merge")
       n=0; [ -f "$GH_STATE/merge_calls" ] && n=$(cat "$GH_STATE/merge_calls")
       n=$((n + 1)); echo "$n" > "$GH_STATE/merge_calls"
@@ -706,9 +718,13 @@ rm_setup() {
     : > "$T/gh.log"
     rm -f "$T/m_calls" "$T/merge_calls" "$T/unknown_until" "$T/merge_fails_until" \
           "$T/behind_base" "$T/pr_state" "$T/strict_retry" \
-          "$T/merge_block_reason" "$T/needs_human_reason" "$T/merge_attempt.log"
+          "$T/merge_block_reason" "$T/needs_human_reason" "$T/merge_attempt.log" \
+          "$T/check_polls" "$T/checks_pending_until" "$T/merge_checks.json"
     echo 386 > "$T/pr_number"
     echo main > "$T/base_ref"
+    # A real budget, or `settle` sees DL=0, returns on its first line, and every
+    # assertion below about waiting for CI would pass without running anything.
+    echo $(( $(date +%s) + 3600 )) > "$T/merge_deadline"
     printf 'fix: a subject (#356)' > "$T/commit_subject.txt"
     : > "$T/commit_body.md"
     printf 'GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)\n' \
@@ -747,15 +763,47 @@ check "writes merge_block_reason"  "1" "$([ -s "$T/merge_block_reason" ] && echo
 check "writes needs_human_reason"  "1" "$([ -s "$T/needs_human_reason" ] && echo 1 || echo 0)"
 check "both reasons agree"         "" "$(diff "$T/merge_block_reason" "$T/needs_human_reason")"
 
-# 4. A genuine failure is NOT retried and keeps its own wording.
+# 4. A genuine failure is NOT retried, and it QUOTES GitHub instead of guessing.
+#    The old wording named "permissions, conflict since review, or API error" for
+#    every unrecognised rejection, which is what sent a human looking in three
+#    wrong places when jelly-swipe#389 was refused by branch protection.
 rm_setup
 echo 9 > "$T/merge_fails_until"
 printf 'GraphQL: Resource not accessible by integration (mergePullRequest)\n' > "$T/merge_error"
 OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
 check "non-race fails"             "1" "$RC"
 check "non-race is not retried"    "1" "$(cat "$T/merge_calls")"
-check "non-race says unexpected"   "1" "$(grep -c 'unexpected reason' "$T/merge_block_reason")"
+check "non-race quotes GitHub"     "1" "$(grep -c 'Resource not accessible' "$T/merge_block_reason")"
+check "non-race is not the race"   "0" "$(grep -c 'checkpoint-push race' "$T/merge_block_reason")"
 check "non-race sets both files"   "1" "$([ -s "$T/needs_human_reason" ] && echo 1 || echo 0)"
+
+# 4b. THE #389 FAILURE: branch protection refuses because the checkpoint push reset
+#     the required checks. The node must wait for CI on the NEW head and retry --
+#     and the wait has to be in this node, because any node boundary is another
+#     checkpoint and another new head.
+rm_setup
+echo 1 > "$T/merge_fails_until"
+echo 2 > "$T/checks_pending_until"
+printf 'X Pull request andrewthetechie/jelly-swipe#389 is not mergeable: the base branch policy prohibits the merge.\n' \
+    > "$T/merge_error"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "protection retried, exits 0" "0"      "$RC"
+check "protection retried, merged"  "merged" "$(jq -r '.context_updates.merge_state' <<<"$(lastjson "$OUT")")"
+check "protection took two tries"   "2"      "$(cat "$T/merge_calls")"
+check "waited out pending CI"       "1"      "$([ "$(cat "$T/check_polls")" -ge 3 ] && echo 1 || echo 0)"
+
+# 4c. Protection refuses for good. Bounded, and the reason names the real cause
+#     rather than the three-guess wording.
+rm_setup
+echo 9 > "$T/merge_fails_until"
+printf 'X Pull request andrewthetechie/jelly-swipe#389 is not mergeable: the base branch policy prohibits the merge.\n' \
+    > "$T/merge_error"
+OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
+check "protection persists, fails"  "1" "$RC"
+check "protection bounded at three" "3" "$(cat "$T/merge_calls")"
+check "names branch protection"     "1" "$(grep -c 'Branch protection on the base' "$T/merge_block_reason")"
+check "names the required check"    "1" "$(grep -c 'required status check' "$T/merge_block_reason")"
+check "protection sets both files"  ""  "$(diff "$T/merge_block_reason" "$T/needs_human_reason")"
 
 # 5. Mergeability is UNKNOWN right after the checkpoint push; wait for it.
 rm_setup

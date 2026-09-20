@@ -612,6 +612,27 @@ exit 0"]
     // So: wait for `mergeable` to leave UNKNOWN before attempting at all, and retry the
     // attempt itself on a branch-moved rejection. Only what survives that is unexpected.
     //
+    // That SAME checkpoint push has a second victim, and it cost jelly-swipe#389 its
+    // merge on 2026-09-20. The push does not only invalidate the merge ref, it resets
+    // every REQUIRED STATUS CHECK -- the checks branch protection requires are the ones
+    // on the head commit, and the head is now a commit CI has never seen. `watch_checks`
+    // confirmed a green set and its own checkpoint pushed a new head in the same second
+    // (766dee71, 22:19:18); `test` did not start on that head until 22:19:31; the merge
+    // at 22:19:20 was refused with `Pull request ... is not mergeable: the base branch
+    // policy prohibits the merge.` Unlike the branch-moved race this one cannot be won
+    // by luck: fabro checkpoints after EVERY stage, so on a branch with a required check
+    // the head is ALWAYS newer than the evidence and the merge ALWAYS fails. It went
+    // unseen until 2026-09-20 only because no repo had a required check before then --
+    // #386 merged with no protection on the repo at all.
+    //
+    // The fix is structural rather than a longer retry: the wait for checks has to be
+    // INSIDE this node. A node boundary is a checkpoint is a new head, so `watch_checks`
+    // -- being a separate node -- can never be the last word before a merge, no matter
+    // what it observes. `settle` below is that in-node wait; it polls the CURRENT head
+    // and is bounded by the same `merge_deadline` the rest of the phase uses, with a
+    // short grace for the case where no check ever appears. The retry loop re-settles
+    // once if protection refuses anyway, so a check that starts late still merges.
+    //
     // The failure path writes BOTH reason files. `merge_block_reason` is what the
     // `blocked` renderer reads; the unconditional edge from here goes to
     // `mark_needs_human`, which renders `needs-human` and reads `needs_human_reason` --
@@ -621,7 +642,26 @@ exit 0"]
     // comment true no matter which renderer sees it.
     merge [label="Squash merge", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
+DL=$(cat /tmp/fabro/merge_deadline 2>/dev/null || echo 0)
 block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
+settle() {
+  G=$(( $(date +%s) + 120 ))
+  while : ; do
+    NOW=$(date +%s)
+    if [ \"$NOW\" -ge \"$DL\" ]; then return 0; fi
+    gh pr checks \"$PR\" --json name,bucket > /tmp/fabro/merge_checks.json 2>/dev/null || true
+    jq -e type /tmp/fabro/merge_checks.json > /dev/null 2>&1 || echo '[]' > /tmp/fabro/merge_checks.json
+    T=$(jq length /tmp/fabro/merge_checks.json 2>/dev/null || echo 0)
+    P=$(jq '[.[] | select(.bucket == \"pending\")] | length' /tmp/fabro/merge_checks.json 2>/dev/null || echo 0)
+    if [ \"$T\" = 0 ]; then
+      if [ \"$NOW\" -ge \"$G\" ]; then return 0; fi
+    elif [ \"$P\" = 0 ]; then
+      return 0
+    fi
+    echo 'waiting for CI on the head the checkpoint push created ('$P' pending of '$T')'
+    sleep 15
+  done
+}
 S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
 if [ \"$S\" != OPEN ]; then
   echo 'PR '$PR' was no longer open at merge time; assuming it was handled elsewhere. No failure to report.' > /tmp/fabro/merge_block_reason
@@ -636,6 +676,7 @@ while [ $W -lt 6 ]; do
   W=$((W + 1))
   sleep 5
 done
+settle
 A=1
 MERGED=0
 while :; do
@@ -645,10 +686,19 @@ while :; do
   fi
   cat /tmp/fabro/merge_attempt.log
   if [ $A -ge 3 ]; then break; fi
-  if ! grep -q 'branch was modified' /tmp/fabro/merge_attempt.log; then break; fi
-  echo 'attempt '$A' lost the branch-moved race; re-reading the PR and retrying'
-  A=$((A + 1))
-  sleep 10
+  if grep -q 'branch was modified' /tmp/fabro/merge_attempt.log; then
+    echo 'attempt '$A' lost the branch-moved race; re-reading the PR and retrying'
+    A=$((A + 1))
+    sleep 10
+    continue
+  fi
+  if grep -q 'policy prohibits' /tmp/fabro/merge_attempt.log; then
+    echo 'attempt '$A' was refused by branch protection; waiting for the required checks on the current head'
+    settle
+    A=$((A + 1))
+    continue
+  fi
+  break
 done
 if [ \"$MERGED\" = 1 ]; then
   echo '{\"context_updates\":{\"merge_state\":\"merged\"}}'
@@ -660,8 +710,11 @@ git fetch origin \"$B\" 2>/dev/null || true
 if git merge-base --is-ancestor origin/\"$B\" HEAD 2>/dev/null; then
   if grep -q 'branch was modified' /tmp/fabro/merge_attempt.log; then
     block 'GitHub rejected the squash merge three times with a branch-moved error, while this branch is NOT behind its base. That is the checkpoint-push race, not a problem with the change: the PR is very likely mergeable as it stands, and a human can merge it directly.'
+  elif grep -q 'policy prohibits' /tmp/fabro/merge_attempt.log; then
+    block 'Branch protection on the base refused the merge: a required status check was not successful on the head commit at merge time. Fabro pushes a checkpoint commit after every stage, so the head moved after CI was confirmed and the required checks had to start over; this node waited for them and still ran out of attempts. The change itself was approved and CI passed on the reviewed head, so a human can merge this PR once the checks on the current head are green.'
   else
-    block 'The squash merge failed for an unexpected reason (permissions, conflict since review, or API error); a human must merge this PR.'
+    R=$(grep -v '^$' /tmp/fabro/merge_attempt.log | tail -3)
+    block 'The squash merge was rejected and this run could not complete it; a human must merge this PR. GitHub said: '\"$R\"
   fi
   exit 1
 fi
