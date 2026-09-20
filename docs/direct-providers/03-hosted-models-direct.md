@@ -21,13 +21,18 @@ providers, and no `litellm:` target remains in a workflow TOML. Fabro holds both
    value belongs in this repository.
 2. Add two providers.
 
-```toml
-[llm.providers.zai]
-base_url = "https://api.z.ai/api/coding/paas/v4"
-adapter = "openai-compatible"
-codec = "openai-chat"
-auth = { type = "bearer" }
+   **A provider name fabro does not know built-in must declare `display_name`.** Fabro
+   knows `zai`, so a bare model table extends it and needs no provider table. Fabro does
+   not know `kimi` — its built-in name for those models is `moonshot` — so `kimi` is a new
+   provider and needs the full table. Omitting `display_name` there fails the whole `[llm]`
+   layer with `catalog layer "settings [llm]" is invalid TOML: missing field
+   display_name`, and the failure is close to silent: the server rejects the reload and
+   keeps the previous catalog, so `GET /settings` and `fabro model list` both keep
+   answering with the good one. Only a **worker** reads the file, so every new run dies at
+   its first node with `Worker exited before emitting a terminal run event: exit status:
+   1`. That cost 14 hours on 2026-09-20 — see the deployment log.
 
+```toml
 [llm.providers.zai.models."glm-5.3"]
 display_name = "GLM 5.3 (z.ai coding plan)"
 api_model = "glm-5.3"
@@ -36,16 +41,25 @@ limits = { context_tokens = 202752, max_output_tokens = 16384 }
 capabilities = { text = true, tools = true, reasoning = true }
 
 [llm.providers.kimi]
+display_name = "Kimi (coding plan)"
 base_url = "https://api.kimi.com/coding"
+enabled = true
 adapter = "anthropic"
 codec = "anthropic-messages"
 auth = { type = "bearer" }
 
 [llm.providers.kimi.models."kimi-for-coding"]
-display_name = "Kimi (coding plan)"
+display_name = "Kimi for Coding (coding plan)"
 api_model = "kimi-for-coding"
+limits = { context_tokens = 1048576, max_output_tokens = 16384 }
+capabilities = { text = true, tools = true, reasoning = true }
 ```
-   `glm-4.7` and `kimi-k3` follow on the same two providers.
+   `glm-4.7` resolves on built-in `zai` and needs no row. `kimi-k3` follows `kimi-for-coding`
+   on `kimi`.
+
+   Watch the 5s poll confirm the edit before you walk away. `docker logs --since 1m
+   fabro-fabro-1 | grep -c "Rejected reloaded"` must print `0`. A non-zero count means the
+   catalog was refused and the next run will die.
 3. Delete those five rows from the `litellm` provider.
 4. Rewrite the thirteen fallback targets. `litellm:glm-4.7` and `litellm:glm-5.3` become
    `zai:...`. `litellm:kimi-for-coding` and `litellm:kimi-k3` become `kimi:...`. The keys

@@ -1,6 +1,12 @@
 # Fabro reaches the inference providers directly, and LiteLLM leaves the workflow path
 
-**Status:** proposed (2026-09-19)
+**Status:** accepted (2026-09-20), partly applied
+
+Tasks 01 and 03 of `docs/direct-providers/` are live. `coders-a`, `coders-b` and
+`long-context` resolve to `box-a`, `box-b` and `spark`. The hosted models resolve to
+`zai` and `kimi`. No `litellm:` target remains in a workflow TOML, and `litellm` keeps
+only the `coders` row. Task 02 (the request timeout that the ingress used to bound) and
+task 04 (retiring that last row) are not applied.
 
 Every workflow in this repository reaches every model through one fabro provider. That
 provider has `base_url = "https://litellm.herrington.services/v1"` and nine model rows. The
