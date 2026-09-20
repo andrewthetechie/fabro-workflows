@@ -39,10 +39,18 @@ esac
 # covers several nodes with different models. Imported nodes arrive prefixed
 # (`review_merge.ci_fix_t2`), so key on the last segment. An unknown node is not
 # an escalation -- exit without a message rather than send a vague one.
+#
+# The pattern allows whitespace around the colon. The enrichment greps below read
+# the fabro HTTP API, whose JSON is compact and proven in production; this one reads
+# the HookContext piped to stdin, which is a different producer that nothing here
+# has observed. `"node_id": "x"` with a space would yield an empty id, and an empty
+# id takes the `*)` branch and exits 0 -- a silent no-message, which is the same
+# failure shape as the unprefixed matcher this hook was written to avoid. `cut -f4`
+# is already space-tolerant, so only the pattern needed widening.
 model=""
 node_short=""
 if [ "$kind" = "fallback" ]; then
-  node_id=$(printf '%s' "$ctx" | grep -o '"node_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+  node_id=$(printf '%s' "$ctx" | grep -o '"node_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
   node_short="${node_id##*.}"
   case "$node_short" in
     rework_t2)       model="glm-4.7" ;;
