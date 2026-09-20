@@ -82,6 +82,15 @@ state and is released by nothing else — not by a human gate, not by a hosted-m
 stage. See ADR 0006.
 _Avoid_: lock, pin, reservation
 
+**Run history**:
+One row per released **Coder lease**, in the scheduler's own `run_history` table: which
+box ran it, which issue, how it ended, and whether its PR had merged at that instant.
+Written inside the transaction that deletes the lease, so it survives the crash that
+would otherwise lose both. A point-in-time record — it says what the ending *was*, not
+what became of the PR later — and it covers scheduler-dispatched `backlog` runs only, so
+a **Manual fire** appears nowhere in it. Read at `GET /history`. See ADR 0008.
+_Avoid_: audit log, run log (fabro has its own), archive
+
 **Queue item**:
 One open, `agent`-labelled issue that is neither `agent-in-progress` nor `agent-stuck`.
 Becomes exactly one `backlog` run, which may decompose into many tasks and produces one

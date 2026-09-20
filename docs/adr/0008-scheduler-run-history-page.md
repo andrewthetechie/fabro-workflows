@@ -1,6 +1,6 @@
 # The scheduler keeps a run-history page, persisted at release time
 
-**Status:** proposed (2026-09-20)
+**Status:** accepted (2026-09-20), applied 2026-09-20
 
 The scheduler's web page is the operator's window onto admission, but it only knows the
 *present*: `queue_page` renders the queue, the repo statuses and the live leases and
@@ -227,6 +227,6 @@ The page adds no auth and leaks no secrets — only GitHub links and scheduler-o
 — consistent with decision 16, "LAN-only, no auth"
 (`docs/scheduler/00-overview-and-contracts.md:47`).
 
-Nothing here is built. This ADR records the decision; the implementation is a separate,
-deliberate act, and deploying it restarts the scheduler container and so re-dates draft
-14's shakedown window.
+Built as `docs/run-history/`, seventeen tasks, and deployed on 2026-09-20. The deploy
+restarted the scheduler container and so re-dated draft 14's shakedown window, to
+`2026-09-20T21:50:41.952847122Z`.
