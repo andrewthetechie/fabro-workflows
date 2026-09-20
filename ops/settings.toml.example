@@ -171,3 +171,21 @@ display_name = "Kimi K3 (coding plan)"
 api_model = "kimi-k3"
 limits = { context_tokens = 262144, max_output_tokens = 16384 }
 capabilities = { text = true, tools = true, reasoning = true }
+
+# Disabling the built-in `moonshot` provider is load-bearing, not tidying.
+# Fabro's built-in `moonshot` provider reads `KIMI_API_KEY` -- the same secret the
+# `kimi` provider above needs. Storing that key therefore flips `moonshot` to
+# `configured`, and a built-in provider precedes an overlay-defined one when both
+# carry the same model id. So an unqualified `kimi-k3` resolves to `moonshot` and
+# fails with `Invalid Authentication`, because a coding-plan key is not valid for
+# moonshot's own endpoint. `backlog`'s `.review-frontier` class (the `spec` and
+# `extra_decompose` nodes) names `kimi-k3` unqualified, and a stylesheet cannot
+# qualify it: `kimi:kimi-k3` is `Unknown model`, because `provider:model` is only
+# valid as a `[run.model.fallbacks]` target.
+#
+# Nothing here names `moonshot`, and its only other model (`kimi-k2.5`) is unused.
+# Check with `fabro model test -m kimi-k3`, which must report provider `kimi`.
+# `venice` carries `kimi-k3` and `glm-5.3` too, but has no key and stays
+# `configured = false`, so it never competes.
+[llm.providers.moonshot]
+enabled = false

@@ -88,3 +88,44 @@ Blocked by operator acceptance of the key move, not by code. Task 01 is independ
 
 4. Two wrong adapter or codec pairs fail every hosted stage, and the hosted models are the
 fallback for a broken box. The Kimi pair has no precedent in this repository.
+
+---
+
+## Finding — recorded 2026-09-20: storing `KIMI_API_KEY` activates the built-in `moonshot`
+
+Step 1 has a side effect the acceptance criteria did not catch, because they test
+`kimi-for-coding` (unique to `kimi`) and not `kimi-k3` (which collides).
+
+Fabro's **built-in `moonshot` provider reads `KIMI_API_KEY`** — the same secret this task
+stores for the new `kimi` provider. Storing it flips `moonshot` to `configured = true`, and
+a built-in provider precedes an overlay-defined one when both carry the same model id. So:
+
+```
+fabro model test -m kimi-k3        → moonshot   error: provider moonshot Invalid Authentication
+fabro model test -p kimi -m kimi-k3 → kimi      ok
+```
+
+The coding-plan key is not valid for moonshot's own endpoint, so the row resolves and then
+fails auth. `backlog`'s `.review-frontier` class — the `spec` and `extra_decompose` nodes —
+names `kimi-k3` unqualified and is what breaks.
+
+**A stylesheet cannot qualify its way out.** `kimi:kimi-k3` is `Unknown model`; the
+`provider:model` form is only valid as a `[run.model.fallbacks]` target. That is why the
+fallback entries in both workflow TOMLs were unaffected and only the stylesheet broke.
+
+**Resolution.** Disable the built-in provider in the overlay, which changes no model id and
+no graph:
+
+```toml
+[llm.providers.moonshot]
+enabled = false
+```
+
+`venice` also carries `kimi-k3` and `glm-5.3`, but it has no key and stays
+`configured = false`, so it never competed — which is also why `glm-5.3` correctly reached
+`zai` throughout. Verified 2026-09-20: `fabro model test -m kimi-k3` reports provider
+`kimi`, `ok`, and all seven ids the graphs name resolve to the intended provider.
+
+**Add to the acceptance criteria:** every model id a stylesheet names resolves to the
+intended provider, not merely to *a* provider. `fabro model test -m <id>` prints the
+provider it chose, which is the only check that shows a collision.
