@@ -178,7 +178,7 @@
   <tbody>
     {% for repo in repos %}
     <tr>
-      <td>{{ repo.name }}</td>
+      <td><a href="https://github.com/{{ repo.name }}">{{ repo.name }}</a></td>
       <td class="num">{{ repo.priority }}</td>
       <td>
         {%- if repo.stale -%}<span class="stale">stale</span>

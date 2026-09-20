@@ -572,6 +572,14 @@ def test_the_page_offers_a_bump_control_per_queue_item(config, store, client):
     assert "https://github.com/andrewthetechie/writers-app/issues/5" in html
 
 
+def test_the_page_links_each_repo_row_to_github(config, store, client):
+    html = client.get("/").text
+
+    # The Repos table lists every configured repo, and each name links to it.
+    for repo in config.ordered_repos():
+        assert f"https://github.com/{repo.name}" in html
+
+
 def test_the_page_offers_drain_and_cancel_for_each_pool(config, store, client):
     LeaseStore(store).acquire(
         Lease(
