@@ -60,9 +60,9 @@
     {% set row = view.row %}
     <tr>
       <td>{{ row.coder_pool }}</td>
-      <td>{{ row.repo }}</td>
-      <td class="num">{{ row.issue_number }}</td>
-      <td><code>{{ row.run_id }}</code></td>
+      <td><a href="https://github.com/{{ row.repo }}">{{ row.repo }}</a></td>
+      <td class="num"><a href="https://github.com/{{ row.repo }}/issues/{{ row.issue_number }}">{{ row.issue_number }}</a></td>
+      <td><a href="{{ fabro_ui_url }}/runs/{{ row.run_id }}"><code>{{ row.run_id }}</code></a></td>
       <td class="num">{{ row.dispatched_at }}</td>
       <td class="num">{{ row.finished_at }}</td>
       <td class="num">{% if view.elapsed %}{{ view.elapsed|duration }}{% else %}&mdash;{% endif %}</td>

@@ -955,6 +955,10 @@ def test_history_page_lists_released_runs_newest_first(client, store):
     assert "andrewthetechie/jelly-swipe" in body
     assert "coders-a" in body
     assert "350" in body
+    # Repo, issue and run all link out, like the queue page's coder table.
+    assert "https://github.com/andrewthetechie/jelly-swipe" in body
+    assert "https://github.com/andrewthetechie/jelly-swipe/issues/350" in body
+    assert "http://10.10.0.32:32276/runs/B" in body
 
 
 def test_history_page_carries_no_refresh_and_no_script(client, store):

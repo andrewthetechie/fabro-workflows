@@ -728,6 +728,9 @@ def build_app(
                 "sort": column,
                 "descending": descending,
                 "limit": capped,
+                # The fabro web UI root for the run link, derived from the API
+                # base, as on the queue page.
+                "fabro_ui_url": config.fabro_api_url.removesuffix("/api/v1").removesuffix("/"),
             },
         )
 
