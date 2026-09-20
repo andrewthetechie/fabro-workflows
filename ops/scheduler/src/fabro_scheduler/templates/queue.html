@@ -11,7 +11,7 @@
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-200 antialiased">
 
-<div class="mx-auto max-w-6xl px-4 py-6 sm:py-8">
+<div class="mx-auto w-full px-4 py-6 sm:px-8 sm:py-8">
 
 {% set here = 'queue' %}
 {% include "_nav.html" with context %}
@@ -76,16 +76,14 @@
   in fabro. Both refresh in the background every {{ run_probe_seconds }}s.
 </p>
 <div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
-<table class="min-w-full text-sm">
+<table class="w-full text-sm">
   <thead class="bg-slate-900/60 text-slate-400">
     <tr>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Coder instance</th>
-      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">State</th>
-      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Repo</th>
-      <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Issue</th>
+      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Status</th>
+      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Issue</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide" title="Sub-tasks completed / decomposed total">Sub Tasks</th>
-      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Run</th>
-      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Stage</th>
+      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Run / Stage</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide" title="When the run was created and the box taken">Dispatched</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Controls</th>
     </tr>
@@ -93,33 +91,32 @@
   <tbody class="divide-y divide-slate-800">
     {% for pool in pools %}
     <tr class="hover:bg-slate-800/60">
-      <td class="whitespace-nowrap px-4 py-3 font-medium text-slate-200">{{ pool.coder_pool }}</td>
-      <td class="whitespace-nowrap px-4 py-3">
-        {%- if pool.drained -%}<span class="text-amber-400">drained</span>
-        {%- else -%}<span class="text-emerald-400">accepting</span>{%- endif -%}
-        <span class="text-slate-600">&middot;</span>
-        {%- if pool.lease %} <span class="text-amber-400">leased</span>
-        {%- else %} <span class="text-slate-500">idle</span>{%- endif -%}
+      <td class="whitespace-nowrap px-4 py-3 align-top font-medium text-slate-200">{{ pool.coder_pool }}</td>
+      <td class="whitespace-nowrap px-4 py-3 align-top">
+        <span class="block">{%- if pool.drained -%}<span class="text-amber-400">drained</span>{%- else -%}<span class="text-emerald-400">accepting</span>{%- endif -%}</span>
+        <span class="block">{%- if pool.lease -%}<span class="text-amber-400">leased</span>{%- else -%}<span class="text-slate-500">idle</span>{%- endif -%}</span>
       </td>
       {% if pool.lease %}
         {% set prog = run_progress[pool.lease.run_id] %}
-        <td class="whitespace-nowrap px-4 py-3"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}">{{ pool.lease.repo }}</a></td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}/issues/{{ pool.lease.issue_number }}">#{{ pool.lease.issue_number }}</a></td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{%- if prog and prog.tasks_total is not none -%}{{ prog.tasks_completed or 0 }}/{{ prog.tasks_total }}{%- else -%}<span class="text-slate-500">&mdash;</span>{%- endif -%}</td>
-        <td class="whitespace-nowrap px-4 py-3 font-mono text-[0.85em] text-slate-500"><a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}">{{ pool.lease.run_id }}</a></td>
-        <td class="whitespace-nowrap px-4 py-3">{%- if prog and prog.stage_name -%}
-          <a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}/stages/{{ prog.stage_name }}{% if prog.stage_visit is not none %}@{{ prog.stage_visit }}{% endif %}" title="{{ prog.status or 'stage' }}">{{ prog.stage_name }}</a>
-        {%- else -%}<span class="text-slate-500">&mdash;</span>{%- endif -%}</td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-400">{{ (now - pool.lease.dispatched_at)|duration }} ago</td>
+        <td class="px-4 py-3 align-top">
+          <span class="block whitespace-nowrap"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}">{{ pool.lease.repo }}</a></span>
+          <span class="block whitespace-nowrap text-xs text-slate-500"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}/issues/{{ pool.lease.issue_number }}">#{{ pool.lease.issue_number }}</a></span>
+        </td>
+        <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums">{%- if prog and prog.tasks_total is not none -%}{{ prog.tasks_completed or 0 }}/{{ prog.tasks_total }}{%- else -%}<span class="text-slate-500">&mdash;</span>{%- endif -%}</td>
+        <td class="px-4 py-3 align-top">
+          <span class="block whitespace-nowrap">{%- if prog and prog.stage_name -%}
+            <a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}/stages/{{ prog.stage_name }}{% if prog.stage_visit is not none %}@{{ prog.stage_visit }}{% endif %}" title="{{ prog.status or 'stage' }}">{{ prog.stage_name }}</a>
+          {%- else -%}<span class="text-slate-500">&mdash;</span>{%- endif -%}</span>
+          <span class="block whitespace-nowrap font-mono text-xs text-slate-500"><a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}">{{ pool.lease.run_id }}</a></span>
+        </td>
+        <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums text-slate-400">{{ (now - pool.lease.dispatched_at)|duration }} ago</td>
       {% else %}
-        <td class="whitespace-nowrap px-4 py-3 text-slate-500">&mdash;</td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-500">&mdash;</td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-500">&mdash;</td>
-        <td class="whitespace-nowrap px-4 py-3 text-slate-500">&mdash;</td>
-        <td class="whitespace-nowrap px-4 py-3 text-slate-500">&mdash;</td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-500">&mdash;</td>
+        <td class="px-4 py-3 text-slate-500">&mdash;</td>
+        <td class="px-4 py-3 text-right text-slate-500">&mdash;</td>
+        <td class="px-4 py-3 text-slate-500">&mdash;</td>
+        <td class="px-4 py-3 text-right text-slate-500">&mdash;</td>
       {% endif %}
-      <td class="whitespace-nowrap px-4 py-3">
+      <td class="whitespace-nowrap px-4 py-3 align-top">
         <form class="control inline" method="post"
               action="/api/pools/{{ pool.coder_pool }}/{{ 'undrain' if pool.drained else 'drain' }}">
           <button type="submit" class="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-700">{{ 'Undrain' if pool.drained else 'Drain' }}</button>
@@ -146,12 +143,11 @@
 <h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Queue</h2>
 {% if items %}
 <div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
-<table class="min-w-full text-sm">
+<table class="w-full text-sm">
   <thead class="bg-slate-900/60 text-slate-400">
     <tr>
       <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">#</th>
-      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Repo</th>
-      <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Issue</th>
+      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Issue</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Title</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Priority</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide" title="Time since this scheduler first saw the item">Waited</th>
@@ -162,14 +158,16 @@
   <tbody class="divide-y divide-slate-800">
     {% for item in items %}
     <tr class="hover:bg-slate-800/60 {% if item.override_rank is not none %}overridden{% elif item.waited > ceiling %}starved{% endif %}">
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-500">{{ loop.index }}</td>
-      <td class="whitespace-nowrap px-4 py-3"><a class="text-sky-400 hover:underline" href="https://github.com/{{ item.issue.repo }}">{{ item.issue.repo }}</a></td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums"><a class="text-sky-400 hover:underline" href="https://github.com/{{ item.issue.repo }}/issues/{{ item.issue.number }}">#{{ item.issue.number }}</a></td>
-      <td class="max-w-[46ch] truncate px-4 py-3 {% if item.override_rank is not none %}before:mr-1 before:content-['↡'] before:text-sky-400{% elif item.waited > ceiling %}before:mr-1 before:content-['★'] before:text-amber-400{% endif %}" title="{{ item.issue.title }}">{{ item.issue.title }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ item.repo_priority }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ item.waited|duration }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-xs text-slate-500">{{ item.issue.labels|sort|join(' ') }}</td>
-      <td class="whitespace-nowrap px-4 py-3">
+      <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums text-slate-500">{{ loop.index }}</td>
+      <td class="px-4 py-3 align-top">
+        <span class="block whitespace-nowrap"><a class="text-sky-400 hover:underline" href="https://github.com/{{ item.issue.repo }}">{{ item.issue.repo }}</a></span>
+        <span class="block whitespace-nowrap text-xs text-slate-500"><a class="text-sky-400 hover:underline" href="https://github.com/{{ item.issue.repo }}/issues/{{ item.issue.number }}">#{{ item.issue.number }}</a></span>
+      </td>
+      <td class="max-w-[46ch] truncate px-4 py-3 align-top {% if item.override_rank is not none %}before:mr-1 before:content-['↡'] before:text-sky-400{% elif item.waited > ceiling %}before:mr-1 before:content-['★'] before:text-amber-400{% endif %}" title="{{ item.issue.title }}">{{ item.issue.title }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums">{{ item.repo_priority }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums">{{ item.waited|duration }}</td>
+      <td class="max-w-[24ch] truncate px-4 py-3 align-top text-xs text-slate-500" title="{{ item.issue.labels|sort|join(' ') }}">{{ item.issue.labels|sort|join(' ') }}</td>
+      <td class="whitespace-nowrap px-4 py-3 align-top">
         <form class="control inline" method="post"
               action="/api/queue/{{ item.issue.repo|urlencode }}/{{ item.issue.number }}/bump">
           <button type="submit" class="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-700">Next</button>
@@ -186,7 +184,7 @@
 
 <h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Repos</h2>
 <div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
-<table class="min-w-full text-sm">
+<table class="w-full text-sm">
   <thead class="bg-slate-900/60 text-slate-400">
     <tr>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Repo</th>

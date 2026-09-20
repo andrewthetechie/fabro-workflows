@@ -10,7 +10,7 @@
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-200 antialiased">
 
-<div class="mx-auto max-w-6xl px-4 py-6 sm:py-8">
+<div class="mx-auto w-full px-4 py-6 sm:px-8 sm:py-8">
 
 {% set here = 'history' %}
 {% include "_nav.html" with context %}
@@ -31,19 +31,17 @@
 </div>
 {% else %}
 <div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
-<table class="min-w-full text-sm">
+<table class="w-full text-sm">
   <thead class="bg-slate-900/60 text-slate-400">
     <tr>
       {% for column, heading, numeric in [
           ('coder_pool',      'Coder instance', false),
-          ('repo',            'Repo',           false),
-          ('issue_number',    'Issue',          true),
+          ('repo',            'Issue',          false),
           (none,              'Run',            false),
-          ('dispatched_at',   'Dispatched',     true),
-          ('finished_at',     'Finished',       true),
+          ('finished_at',     'Window',         true),
           (none,              'Took',           true),
           ('kind',            'Ending',         false),
-          ('requeue_attempt', 'Requeues',       true),
+          ('requeue_attempt', 'Req',            true),
           ('merged',          'PR',             false),
       ] %}
       <th class="whitespace-nowrap px-4 py-2.5 text-xs font-medium uppercase tracking-wide {% if numeric %}text-right{% else %}text-left{% endif %}">
@@ -62,16 +60,20 @@
   {% for view in views %}
     {% set row = view.row %}
     <tr class="hover:bg-slate-800/60">
-      <td class="whitespace-nowrap px-4 py-3 font-medium text-slate-200">{{ row.coder_pool }}</td>
-      <td class="whitespace-nowrap px-4 py-3"><a class="text-sky-400 hover:underline" href="https://github.com/{{ row.repo }}">{{ row.repo }}</a></td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums"><a class="text-sky-400 hover:underline" href="https://github.com/{{ row.repo }}/issues/{{ row.issue_number }}">{{ row.issue_number }}</a></td>
-      <td class="whitespace-nowrap px-4 py-3 font-mono text-[0.85em] text-slate-500"><a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ row.run_id }}"><code>{{ row.run_id }}</code></a></td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-400">{{ row.dispatched_at }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-400">{{ row.finished_at }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{% if view.elapsed %}{{ view.elapsed|duration }}{% else %}&mdash;{% endif %}</td>
-      <td class="whitespace-nowrap px-4 py-3" title="{{ row.kind }}{% if row.reason %}/{{ row.reason }}{% endif %}{% if row.category %} [{{ row.category }}]{% endif %}">{{ final_state(row) }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ row.requeue_attempt }}</td>
-      <td class="whitespace-nowrap px-4 py-3">
+      <td class="whitespace-nowrap px-4 py-3 align-top font-medium text-slate-200">{{ row.coder_pool }}</td>
+      <td class="px-4 py-3 align-top">
+        <span class="block whitespace-nowrap"><a class="text-sky-400 hover:underline" href="https://github.com/{{ row.repo }}">{{ row.repo }}</a></span>
+        <span class="block whitespace-nowrap text-xs text-slate-500"><a class="text-sky-400 hover:underline" href="https://github.com/{{ row.repo }}/issues/{{ row.issue_number }}">#{{ row.issue_number }}</a></span>
+      </td>
+      <td class="whitespace-nowrap px-4 py-3 align-top font-mono text-[0.85em] text-slate-500"><a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ row.run_id }}"><code>{{ row.run_id }}</code></a></td>
+      <td class="px-4 py-3 align-top text-right">
+        <span class="block whitespace-nowrap tabular-nums text-slate-400">{{ row.dispatched_at|compact_ts }}</span>
+        <span class="block whitespace-nowrap tabular-nums text-slate-500">&rarr; {{ row.finished_at|compact_ts }}</span>
+      </td>
+      <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums">{% if view.elapsed %}{{ view.elapsed|duration }}{% else %}&mdash;{% endif %}</td>
+      <td class="whitespace-nowrap px-4 py-3 align-top" title="{{ row.kind }}{% if row.reason %}/{{ row.reason }}{% endif %}{% if row.category %} [{{ row.category }}]{% endif %}">{{ final_state(row) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums">{{ row.requeue_attempt }}</td>
+      <td class="whitespace-nowrap px-4 py-3 align-top">
         {% if row.pr_lookup == 'found' and row.pr_url %}
           <a class="text-sky-400 hover:underline" href="{{ row.pr_url }}">#{{ row.pr_number }}</a>
           {% if row.merged %}<span class="text-slate-500">merged</span>{% endif %}

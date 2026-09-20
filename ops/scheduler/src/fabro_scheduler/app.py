@@ -204,6 +204,7 @@ def build_app(
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["duration"] = humanise_duration
+    templates.env.filters["compact_ts"] = compact_timestamp
     # A global rather than a filter: it takes the page's whole sort state, not a
     # value being formatted.
     templates.env.globals["sort_link"] = _sort_link
@@ -756,6 +757,22 @@ def humanise_duration(delta: timedelta) -> str:
     if minutes:
         return f"{minutes}m {seconds:02d}s"
     return f"{seconds}s"
+
+
+def compact_timestamp(iso: str) -> str:
+    """`2026-09-20T14:05:11+00:00` → `09-20 14:05`, for dense table cells.
+
+    Drops the year and the seconds so a run-history row's start/finish fit one
+    narrow cell; a run never spans a year, so the month-day still disambiguates
+    at a glance. Any value that does not parse is returned unchanged rather than
+    hiding the raw record.
+    """
+    try:
+        normalised = iso[:-1] + "+00:00" if iso.endswith("Z") else iso
+        dt = datetime.fromisoformat(normalised)
+    except (TypeError, ValueError):
+        return iso
+    return dt.strftime("%m-%d %H:%M")
 
 
 def final_state_label(row: sqlite3.Row) -> str:

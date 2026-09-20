@@ -190,9 +190,7 @@ CREATE TABLE IF NOT EXISTS run_history (
 # and arbitrary SQL. Adding a column to `run_history` does not add it here.
 HISTORY_SORT_COLUMNS = frozenset({
     "finished_at",
-    "dispatched_at",
     "repo",
-    "issue_number",
     "coder_pool",
     "kind",
     "merged",

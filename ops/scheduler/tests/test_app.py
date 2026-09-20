@@ -939,6 +939,16 @@ def test_an_unknown_sort_column_is_not_an_error(client, store):
     assert [r["run_id"] for r in response.json()] == ["A"]
 
 
+def test_compact_timestamp_drops_year_and_seconds():
+    from fabro_scheduler.app import compact_timestamp
+
+    # ISO with offset and ISO with Z both reduce to month-day hour:minute.
+    assert compact_timestamp("2026-09-20T14:05:11+00:00") == "09-20 14:05"
+    assert compact_timestamp("2026-09-20T14:05:11Z") == "09-20 14:05"
+    # A value that cannot parse is returned unchanged rather than hidden.
+    assert compact_timestamp("not-a-time") == "not-a-time"
+
+
 def test_history_page_is_empty_and_friendly(client):
     response = client.get("/history")
     assert response.status_code == 200
@@ -1010,7 +1020,7 @@ def test_the_active_column_link_flips_direction(client, store):
     body = client.get("/history?sort=repo&dir=desc").text
 
     assert "/history?sort=repo&amp;dir=asc" in body          # the active one flips
-    assert "/history?sort=issue_number&amp;dir=desc" in body  # the others start descending
+    assert "/history?sort=kind&amp;dir=desc" in body            # the others start descending
 
 
 def test_limit_all_is_carried_through_the_links(client, store):
@@ -1024,13 +1034,13 @@ def test_limit_all_is_carried_through_the_links(client, store):
 
 
 def test_the_sort_is_applied_before_the_limit(client, store):
-    # C finished most recently but has the highest issue number. Sorting by issue
-    # number ascending with limit=2 must show 9 and 10 -- not the two newest.
+    # C finished most recently; sorting by finished_at ascending with limit=2 must
+    # show the two that finished first (A, B) -- not the two newest.
     _archive(store, "A", finished="2026-09-20T10:00:00+00:00", number=9)
     _archive(store, "B", finished="2026-09-20T11:00:00+00:00", number=10)
     _archive(store, "C", finished="2026-09-20T12:00:00+00:00", number=350)
 
-    body = client.get("/history?sort=issue_number&dir=asc&limit=2").text
+    body = client.get("/history?sort=finished_at&dir=asc&limit=2").text
 
     assert "<code>A</code>" in body
     assert "<code>B</code>" in body
