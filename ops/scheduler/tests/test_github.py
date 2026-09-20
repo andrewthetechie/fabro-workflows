@@ -19,9 +19,12 @@ import pytest
 import respx
 
 from fabro_scheduler.github import (
+    PR_LOOKUP_TIMEOUT_SECONDS,
     GitHubError,
+    PullRequest,
     add_label,
     fetch_issues,
+    fetch_pull_for_branch,
     is_eligible,
     remove_label,
 )
@@ -391,3 +394,79 @@ def test_the_token_never_appears_in_a_label_write_error():
     with pytest.raises(GitHubError) as caught:
         add_label("o/a", 7, "agent-in-progress", sentinel)
     assert sentinel not in str(caught.value)
+
+
+# --- the PR lookup ---------------------------------------------------------------
+
+FF = "andrewthetechie/jelly-swipe"
+BRANCH = "fabro/run/01M2ZQG1AGP23KERJF6FKHHMCR"
+PULLS = "https://api.github.com/repos/andrewthetechie/jelly-swipe/pulls"
+MERGED = [{
+    "number": 388,
+    "html_url": "https://github.com/andrewthetechie/jelly-swipe/pull/388",
+    "merged_at": "2026-09-20T18:03:22Z",
+    "state": "closed",
+}]
+
+
+@respx.mock
+def test_a_merged_pr_is_found_and_reported_merged():
+    route = respx.get(PULLS).mock(return_value=httpx.Response(200, json=MERGED))
+
+    found = fetch_pull_for_branch(FF, BRANCH, "ghp_test")
+
+    assert found == PullRequest(
+        number=388,
+        url="https://github.com/andrewthetechie/jelly-swipe/pull/388",
+        merged=True,
+    )
+    request = route.calls.last.request
+    assert request.url.params["head"] == f"andrewthetechie:{BRANCH}"
+    assert request.url.params["state"] == "all"      # the regression this guards
+    assert request.url.params["per_page"] == "1"
+
+
+@respx.mock
+def test_an_open_pr_is_found_and_reported_unmerged():
+    respx.get(PULLS).mock(return_value=httpx.Response(200, json=[
+        {"number": 389, "html_url": "https://example.invalid/389", "merged_at": None}
+    ]))
+    found = fetch_pull_for_branch(FF, BRANCH, "ghp_test")
+    assert found is not None and found.merged is False
+
+
+@respx.mock
+def test_no_pr_returns_none():
+    respx.get(PULLS).mock(return_value=httpx.Response(200, json=[]))
+    assert fetch_pull_for_branch(FF, BRANCH, "ghp_test") is None
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [403, 404, 500])
+def test_a_non_200_raises_with_its_status(status):
+    respx.get(PULLS).mock(return_value=httpx.Response(status, json={}))
+    with pytest.raises(GitHubError) as caught:
+        fetch_pull_for_branch(FF, BRANCH, "ghp_test")
+    assert caught.value.status_code == status
+
+
+@respx.mock
+def test_a_transport_error_raises():
+    respx.get(PULLS).mock(side_effect=httpx.ConnectError("boom"))
+    with pytest.raises(GitHubError):
+        fetch_pull_for_branch(FF, BRANCH, "ghp_test")
+
+
+def test_an_empty_token_raises_before_any_request():
+    with pytest.raises(GitHubError):
+        fetch_pull_for_branch(FF, BRANCH, "   ")
+
+
+def test_the_lookup_timeout_is_five_seconds():
+    import inspect
+
+    assert PR_LOOKUP_TIMEOUT_SECONDS == 5.0
+    assert (
+        inspect.signature(fetch_pull_for_branch).parameters["timeout"].default
+        == PR_LOOKUP_TIMEOUT_SECONDS
+    )

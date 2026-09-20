@@ -27,6 +27,7 @@ from fabro_scheduler.reconcile import (
     MAX_REQUEUES,
     TERMINAL,
     ReleasePoller,
+    _outcome_from_run,
     is_terminal,
     reconcile_leases,
     recover,
@@ -44,6 +45,7 @@ GH_TOKEN = "ghp_test"
 
 RUNS = re.compile(rf"{re.escape(FABRO_API)}/runs/(?P<id>[^/]+)$")
 EVENTS = re.compile(rf"{re.escape(FABRO_API)}/runs/(?P<id>[^/]+)/events$")
+PULLS = re.compile(rf"{re.escape(GITHUB_API)}/repos/[^/]+/[^/]+/pulls(?:\?.*)?$")
 LABEL_POST = re.compile(
     rf"{re.escape(GITHUB_API)}/repos/[^/]+/[^/]+/issues/\d+/labels$"
 )
@@ -226,6 +228,7 @@ def test_a_terminal_success_is_released_but_not_requeued(config, store, leases, 
             200, json={"lifecycle": {"status": {"kind": "succeeded", "reason": "completed"}}}
         )
     )
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
 
     actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
 
@@ -246,6 +249,7 @@ def test_a_fabro_restart_requeues_and_keeps_the_original_wait(config, store, lea
             json={"lifecycle": {"status": {"kind": "failed", "reason": "terminated"}}},
         )
     )
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
 
     actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
 
@@ -299,6 +303,7 @@ def test_a_transient_infra_failure_requeues_via_the_events_category(
             },
         )
     )
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
 
     actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
 
@@ -329,6 +334,7 @@ def test_a_cancel_is_requeued_and_resets_the_issue_labels(config, store, leases,
     events = respx.get(f"{FABRO_API}/runs/R1/events").mock(
         return_value=httpx.Response(200, json={"data": []})
     )
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
 
     actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
 
@@ -577,6 +583,7 @@ def test_a_terminal_run_that_is_not_requeued_drops_its_cache_row(
             },
         )
     )
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
 
     actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
 
@@ -619,6 +626,7 @@ def test_an_unreadable_failure_category_keeps_the_lease(config, store, leases, f
         )
     )
     _install_labels()
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
 
     actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
 
@@ -851,6 +859,7 @@ def test_requeues_are_capped(config, store, leases, fabro):
     _events([
         {"event": "stage.failed", "properties": {"failure": {"category": "transient_infra"}}}
     ])
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
 
     outcomes = []
     for _ in range(MAX_REQUEUES + 1):
@@ -875,6 +884,7 @@ def test_the_budget_resets_after_an_ending_that_is_not_a_requeue(
     _events([
         {"event": "stage.failed", "properties": {"failure": {"category": "transient_infra"}}}
     ])
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
     for _ in range(2):
         leases.acquire(_lease(run_id="R1"))
         reconcile_leases(config, store, leases, fabro, GH_TOKEN)
@@ -887,7 +897,258 @@ def test_the_budget_resets_after_an_ending_that_is_not_a_requeue(
         )
     )
     leases.acquire(_lease(run_id="R1"))
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
     actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
 
     assert [a.outcome for a in actions] == ["released"]
     assert store.requeue_count(FF, 7) == 0
+
+
+def test_outcome_reads_kind_reason_and_completed_at():
+    run = _run(
+        lifecycle={"status": {"kind": "succeeded", "reason": "completed"}},
+        timestamps={"completed_at": "2026-09-20T16:00:00Z"},
+    )
+    outcome = _outcome_from_run(run)
+    assert outcome.kind == "succeeded"
+    assert outcome.reason == "completed"
+    assert outcome.category is None
+    assert outcome.finished_at == datetime(2026, 9, 20, 16, 0, tzinfo=UTC)
+    assert outcome.pr_lookup == "none"
+    assert outcome.merged is None
+
+
+def test_outcome_reads_an_attached_category():
+    outcome = _outcome_from_run(_failed_run("stage_failed", INFRA_CATEGORY))
+    assert outcome.kind == "failed"
+    assert outcome.reason == "stage_failed"
+    assert outcome.category == INFRA_CATEGORY
+
+
+def test_outcome_accepts_a_missing_category():
+    outcome = _outcome_from_run(_failed_run("terminated"))
+    assert outcome.category is None
+
+
+@pytest.mark.parametrize(
+    "timestamps",
+    [None, {}, {"completed_at": None}, {"completed_at": ""}, {"completed_at": "nonsense"}],
+)
+def test_outcome_leaves_finished_at_none_when_fabro_has_no_usable_time(timestamps):
+    run = _run(lifecycle={"status": {"kind": "dead"}})
+    if timestamps is not None:
+        run["timestamps"] = timestamps
+    assert _outcome_from_run(run).finished_at is None
+
+
+def test_outcome_carries_the_requeue_attempt():
+    assert _outcome_from_run(_failed_run("terminated"), requeue_attempt=2).requeue_attempt == 2
+
+
+def _history(store) -> list:
+    return store._conn.execute(
+        "SELECT * FROM run_history ORDER BY run_id"
+    ).fetchall()
+
+
+@respx.mock
+def test_a_succeeded_run_is_recorded(config, store, leases, fabro):
+    leases.acquire(_lease())
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(200, json={
+        "id": "R1",
+        "lifecycle": {"status": {"kind": "succeeded", "reason": "completed"}},
+        "timestamps": {"completed_at": "2026-09-20T16:00:00Z"},
+    }))
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
+
+    reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    (row,) = _history(store)
+    assert row["run_id"] == "R1"
+    assert row["kind"] == "succeeded"
+    assert row["reason"] == "completed"
+    assert row["coder_pool"] == "coders-a"
+    assert row["issue_number"] == 7
+    assert row["finished_at"] == "2026-09-20T16:00:00+00:00"
+    assert row["requeue_attempt"] == 0
+    assert row["pr_lookup"] == "none"
+    assert row["merged"] is None
+    assert leases.active() == []
+
+
+@respx.mock
+def test_a_requeued_failure_is_recorded_with_its_attempt(config, store, leases, fabro):
+    leases.acquire(_lease())
+    _install_labels()
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(200, json={
+        "id": "R1", "lifecycle": {"status": {"kind": "failed", "reason": "terminated"}},
+    }))
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
+
+    reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    (row,) = _history(store)
+    assert row["kind"] == "failed"
+    assert row["reason"] == "terminated"
+    assert row["requeue_attempt"] == 1
+
+
+@respx.mock
+def test_a_run_that_succeeds_after_two_requeues_records_two(config, store, leases, fabro):
+    store.bump_requeue_count(FF, 7)
+    store.bump_requeue_count(FF, 7)
+    leases.acquire(_lease())
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(200, json={
+        "id": "R1", "lifecycle": {"status": {"kind": "succeeded"}},
+    }))
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
+
+    reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    (row,) = _history(store)
+    assert row["requeue_attempt"] == 2
+    assert store.requeue_count(FF, 7) == 0    # still cleared afterwards
+
+
+@respx.mock
+def test_a_non_terminal_run_writes_nothing(config, store, leases, fabro):
+    leases.acquire(_lease())
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(200, json=_run()))
+
+    reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    assert _history(store) == []
+    assert len(leases.active()) == 1
+
+
+@respx.mock
+def test_a_run_fabro_lost_is_recorded_as_lost(config, store, leases, fabro):
+    leases.acquire(_lease())
+    _install_labels()
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(404, json={}))
+
+    actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    (row,) = _history(store)
+    assert row["kind"] == "lost"
+    assert row["reason"] == "fabro 404"
+    assert row["category"] is None
+    assert row["pr_lookup"] == "none"
+    assert row["coder_pool"] == "coders-a"
+    assert row["issue_number"] == 7
+    assert row["dispatched_at"] == "2026-09-18T12:00:00+00:00"
+    assert row["finished_at"]                      # the release time, non-empty
+    assert row["requeue_attempt"] == 0
+    assert [a.outcome for a in actions] == ["released+requeued"]
+    assert leases.active() == []
+
+
+@respx.mock
+def test_a_transient_fabro_error_writes_no_row_and_keeps_the_lease(config, store, leases, fabro):
+    leases.acquire(_lease())
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(500, json={}))
+
+    actions = reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    assert _history(store) == []
+    assert len(leases.active()) == 1
+    assert [a.outcome for a in actions] == ["failed"]
+
+
+@respx.mock
+def test_an_orphan_repair_writes_no_history_row(config, store, leases, fabro):
+    _install_labels()
+    _mock_in_progress()
+    _mock_active_runs()
+
+    report = recover(config, store, leases, fabro, GH_TOKEN)
+
+    assert report.orphaned == [(FF, 9)]
+    assert store.get_issue(FF, 9) is not None
+    assert _history(store) == []
+
+
+def test_requeue_still_defaults_to_not_archiving():
+    import inspect
+
+    from fabro_scheduler.reconcile import _requeue
+
+    assert inspect.signature(_requeue).parameters["outcome"].default is None
+
+
+MERGED_PR = [{
+    "number": 388,
+    "html_url": "https://github.com/andrewthetechie/jelly-swipe/pull/388",
+    "merged_at": "2026-09-20T18:03:22Z",
+}]
+
+
+@respx.mock
+def test_a_merged_pr_is_recorded(config, store, leases, fabro):
+    leases.acquire(_lease())
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(200, json={
+        "id": "R1", "lifecycle": {"status": {"kind": "succeeded"}},
+    }))
+    pulls = respx.get(url__regex=PULLS).mock(
+        return_value=httpx.Response(200, json=MERGED_PR)
+    )
+
+    reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    (row,) = _history(store)
+    assert row["pr_lookup"] == "found"
+    assert row["pr_number"] == 388
+    assert row["pr_url"] == "https://github.com/andrewthetechie/jelly-swipe/pull/388"
+    assert row["merged"] == 1
+    assert pulls.call_count == 1
+    params = pulls.calls.last.request.url.params
+    assert params["head"] == "andrewthetechie:fabro/run/R1"
+    assert params["state"] == "all"
+
+
+@respx.mock
+def test_no_pr_is_recorded_as_none(config, store, leases, fabro):
+    leases.acquire(_lease())
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(200, json={
+        "id": "R1", "lifecycle": {"status": {"kind": "failed", "reason": "stage_failed"}},
+    }))
+    respx.get(f"{FABRO_API}/runs/R1/events").mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
+
+    reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    (row,) = _history(store)
+    assert row["pr_lookup"] == "none"
+    assert row["pr_number"] is None
+    assert row["merged"] is None
+
+
+@respx.mock
+def test_a_github_failure_records_unknown_and_still_releases(config, store, leases, fabro):
+    leases.acquire(_lease())
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(200, json={
+        "id": "R1", "lifecycle": {"status": {"kind": "succeeded"}},
+    }))
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(500, json={}))
+
+    reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    (row,) = _history(store)
+    assert row["pr_lookup"] == "failed"
+    assert row["merged"] is None
+    assert leases.active() == []          # the box is free; this is the point
+
+
+@respx.mock
+def test_the_lost_run_path_makes_no_pr_request(config, store, leases, fabro):
+    leases.acquire(_lease())
+    _install_labels()
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(404, json={}))
+    pulls = respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
+
+    reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    assert pulls.call_count == 0
+    (row,) = _history(store)
+    assert row["kind"] == "lost"
+    assert row["pr_lookup"] == "none"

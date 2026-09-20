@@ -43,6 +43,7 @@ LAWN = "andrewthetechie/lawncare-saas"  # priority 1, environment_id "python-nod
 
 FABRO_API = "http://10.10.0.32:32276/api/v1"
 GITHUB_API = "https://api.github.com"
+PULLS = re.compile(rf"{re.escape(GITHUB_API)}/repos/[^/]+/[^/]+/pulls(?:\?.*)?$")
 FABRO_TOKEN = "dev-token-do-not-echo"
 VERSION_ID = "f" * 64
 NOW = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
@@ -829,6 +830,7 @@ def test_an_agent_shaped_ending_is_not_dispatched_again(config, store, leases, f
             },
         )
     )
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
     reconcile_leases(config, store, leases, fabro, "ghp_test")
     assert leases.active() == []
 

@@ -46,7 +46,7 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
 
-from .store import Store
+from .store import RunOutcome, Store
 
 
 @dataclass(frozen=True)
@@ -110,6 +110,17 @@ class LeaseStore:
         dispatch from re-taking the box between the two.
         """
         row = self._store.release_lease(run_id)
+        return None if row is None else _lease_from_row(row)
+
+    def archive_and_release(self, run_id: str, outcome: RunOutcome) -> Lease | None:
+        """Record the run in `run_history`, then drop its lease. Returns the lease.
+
+        The archiving form of `release`, and what every path that KNOWS how the run
+        ended should call. `release` stays for the one path that does not: the
+        orphan requeue, which has a synthetic lease with an empty `run_id` and no
+        run behind it at all.
+        """
+        row = self._store.archive_and_release_lease(run_id, outcome)
         return None if row is None else _lease_from_row(row)
 
     def free_pools(self, all_pools: Sequence[str], drained: AbstractSet[str]) -> list[str]:

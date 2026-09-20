@@ -794,3 +794,270 @@ def test_dispatch_once_never_echoes_the_token(config, store, fake_checkout):
 
     assert response.status_code == 502
     assert FABRO_TOKEN not in response.text
+
+
+from datetime import UTC, datetime
+
+from fabro_scheduler.store import RunOutcome
+
+DISPATCHED = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+FF = "andrewthetechie/jelly-swipe"
+
+
+def _archive(store, run_id: str, *, finished: str, number: int = 350, **outcome) -> None:
+    store.acquire_lease(
+        coder_pool="coders-a", repo=FF, issue_number=number,
+        run_id=run_id, dispatched_at=DISPATCHED,
+    )
+    store.archive_and_release_lease(
+        run_id,
+        RunOutcome(
+            kind=outcome.pop("kind", "succeeded"),
+            finished_at=datetime.fromisoformat(finished),
+            **outcome,
+        ),
+    )
+
+
+def test_history_is_empty_before_anything_is_released(client):
+    response = client.get("/api/history")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_history_is_newest_finished_first(client, store):
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00")
+    _archive(store, "B", finished="2026-09-20T12:00:00+00:00")
+
+    body = client.get("/api/history").json()
+
+    assert [row["run_id"] for row in body] == ["B", "A"]
+    assert body[0]["repo"] == FF
+    assert body[0]["coder_pool"] == "coders-a"
+    assert body[0]["kind"] == "succeeded"
+    assert set(body[0]) == {
+        "run_id", "coder_pool", "repo", "issue_number", "dispatched_at",
+        "finished_at", "kind", "reason", "category", "requeue_attempt",
+        "pr_lookup", "pr_number", "pr_url", "merged",
+    }
+
+
+def test_merged_is_published_as_a_real_boolean(client, store):
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00",
+             pr_lookup="found", pr_number=388, pr_url="https://example.invalid/388",
+             merged=True)
+    _archive(store, "B", finished="2026-09-20T09:00:00+00:00")
+
+    by_id = {row["run_id"]: row for row in client.get("/api/history").json()}
+
+    assert by_id["A"]["merged"] is True
+    assert by_id["A"]["pr_number"] == 388
+    assert by_id["B"]["merged"] is None
+    assert by_id["B"]["pr_lookup"] == "none"
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("?dir=asc", ["A", "B"]),
+    ("?dir=ASC", ["A", "B"]),
+    ("?dir=banana", ["B", "A"]),
+    ("", ["B", "A"]),
+])
+def test_direction_is_ascending_only_for_asc(client, store, query, expected):
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00")
+    _archive(store, "B", finished="2026-09-20T12:00:00+00:00")
+
+    assert [r["run_id"] for r in client.get(f"/api/history{query}").json()] == expected
+
+
+@pytest.mark.parametrize("limit,count", [
+    ("?limit=2", 2), ("?limit=all", 3), ("?limit=abc", 3),
+    ("?limit=0", 3), ("?limit=-1", 3),
+])
+def test_limit_parsing(client, store, limit, count):
+    for name, hour in (("A", 10), ("B", 11), ("C", 12)):
+        _archive(store, name, finished=f"2026-09-20T{hour}:00:00+00:00")
+
+    assert len(client.get(f"/api/history{limit}").json()) == count
+
+
+def test_an_unknown_sort_column_is_not_an_error(client, store):
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00")
+    response = client.get("/api/history?sort=nonsense")
+    assert response.status_code == 200
+    assert [r["run_id"] for r in response.json()] == ["A"]
+
+
+def test_history_page_is_empty_and_friendly(client):
+    response = client.get("/history")
+    assert response.status_code == 200
+    assert "No released runs yet" in response.text
+
+
+def test_history_page_lists_released_runs_newest_first(client, store):
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00", number=9)
+    _archive(store, "B", finished="2026-09-20T12:00:00+00:00", number=350)
+
+    body = client.get("/history").text
+
+    assert body.index("B") < body.index("A")
+    assert "andrewthetechie/jelly-swipe" in body
+    assert "coders-a" in body
+    assert "350" in body
+
+
+def test_history_page_carries_no_refresh_and_no_script(client, store):
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00")
+    body = client.get("/history").text
+    assert "http-equiv=\"refresh\"" not in body
+    assert "<script" not in body
+
+
+def test_history_page_distinguishes_the_three_pr_states(client, store):
+    _archive(store, "A", finished="2026-09-20T12:00:00+00:00",
+             pr_lookup="found", pr_number=388,
+             pr_url="https://github.com/andrewthetechie/jelly-swipe/pull/388",
+             merged=True)
+    _archive(store, "B", finished="2026-09-20T11:00:00+00:00", pr_lookup="failed")
+    _archive(store, "C", finished="2026-09-20T10:00:00+00:00", pr_lookup="none")
+
+    body = client.get("/history").text
+
+    assert "https://github.com/andrewthetechie/jelly-swipe/pull/388" in body
+    assert "#388" in body
+    assert "unknown" in body
+
+
+def test_the_queue_page_still_refreshes(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "http-equiv=\"refresh\"" in response.text
+
+
+import re
+
+from fabro_scheduler.store import HISTORY_SORT_COLUMNS
+
+
+def test_every_linked_column_is_sortable(client, store):
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00")
+    body = client.get("/history").text
+
+    # Jinja autoescapes `&` in an attribute value, so the rendered href reads
+    # `/history?sort=repo&amp;dir=desc`. Match the entity form, not the raw `&`.
+    linked = set(re.findall(r"/history\?sort=([a-z_]+)&amp;", body))
+    assert linked == HISTORY_SORT_COLUMNS
+
+
+def test_the_active_column_link_flips_direction(client, store):
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00")
+
+    body = client.get("/history?sort=repo&dir=desc").text
+
+    assert "/history?sort=repo&amp;dir=asc" in body          # the active one flips
+    assert "/history?sort=issue_number&amp;dir=desc" in body  # the others start descending
+
+
+def test_limit_all_is_carried_through_the_links(client, store):
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00")
+
+    everything = client.get("/history?limit=all").text
+    assert "&amp;limit=all" in everything
+
+    paged = client.get("/history?limit=5").text
+    assert "&amp;limit=" not in paged
+
+
+def test_the_sort_is_applied_before_the_limit(client, store):
+    # C finished most recently but has the highest issue number. Sorting by issue
+    # number ascending with limit=2 must show 9 and 10 -- not the two newest.
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00", number=9)
+    _archive(store, "B", finished="2026-09-20T11:00:00+00:00", number=10)
+    _archive(store, "C", finished="2026-09-20T12:00:00+00:00", number=350)
+
+    body = client.get("/history?sort=issue_number&dir=asc&limit=2").text
+
+    assert "<code>A</code>" in body
+    assert "<code>B</code>" in body
+    assert "<code>C</code>" not in body
+
+
+def test_the_page_still_has_no_script(client, store):
+    _archive(store, "A", finished="2026-09-20T10:00:00+00:00")
+    assert "<script" not in client.get("/history?sort=kind").text
+
+
+def _nav(body: str) -> str:
+    """Just the <nav> block, so an assertion cannot match a link elsewhere on the page."""
+    found = re.search(r"<nav>(.*?)</nav>", body, re.DOTALL)
+    assert found, "the page has no <nav> block"
+    return found.group(1)
+
+
+def test_the_queue_page_links_to_the_history(client):
+    nav = _nav(client.get("/").text)
+    assert 'href="/history"' in nav
+    assert 'href="/"' not in nav          # the current page is not a link
+    assert "<strong>Queue</strong>" in nav
+
+
+def test_the_history_page_links_back_to_the_queue(client):
+    nav = _nav(client.get("/history").text)
+    assert 'href="/"' in nav
+    assert 'href="/history"' not in nav
+    assert "<strong>Run history</strong>" in nav
+
+
+def test_both_pages_still_render(client):
+    assert client.get("/").status_code == 200
+    assert client.get("/history").status_code == 200
+    assert "http-equiv=\"refresh\"" in client.get("/").text
+    assert "http-equiv=\"refresh\"" not in client.get("/history").text
+
+
+from fabro_scheduler.app import final_state_label
+
+
+def _row(**overrides) -> dict:
+    row = {
+        "kind": "succeeded", "reason": None, "category": None,
+        "requeue_attempt": 0, "pr_lookup": "none", "merged": None,
+    }
+    row.update(overrides)
+    return row
+
+
+@pytest.mark.parametrize("overrides,expected", [
+    ({"pr_lookup": "found", "merged": 1}, "merged"),
+    ({"pr_lookup": "found", "merged": 0}, "not merged"),
+    ({"pr_lookup": "none"}, "succeeded, no PR"),
+    ({"pr_lookup": "failed"}, "succeeded, PR unknown"),
+    ({"kind": "failed", "reason": "terminated", "category": "deterministic"},
+     "failed (fabro restart)"),
+    ({"kind": "failed", "reason": "cancelled"}, "cancelled"),
+    ({"kind": "failed", "reason": "stage_failed", "category": "transient_infra"},
+     "failed (infra)"),
+    ({"kind": "failed", "reason": "stage_failed"}, "failed (stage_failed)"),
+    ({"kind": "failed"}, "failed"),
+    ({"kind": "dead"}, "dead"),
+    ({"kind": "lost", "reason": "fabro 404"}, "lost (fabro 404)"),
+    ({"kind": "wat", "reason": "huh"}, "wat/huh"),
+])
+def test_final_state_label(overrides, expected):
+    assert final_state_label(_row(**overrides)) == expected
+
+
+@pytest.mark.parametrize("attempts,suffix", [(0, ""), (1, " ×2"), (2, " ×3")])
+def test_the_requeue_suffix_counts_attempts(attempts, suffix):
+    row = _row(pr_lookup="found", merged=1, requeue_attempt=attempts)
+    assert final_state_label(row) == f"merged{suffix}"
+
+
+def test_the_page_renders_the_label_and_keeps_the_raw_facts(client, store):
+    _archive(store, "A", finished="2026-09-20T12:00:00+00:00",
+             pr_lookup="found", pr_number=388,
+             pr_url="https://example.invalid/388", merged=True)
+
+    body = client.get("/history").text
+
+    assert "merged" in body
+    assert 'title="succeeded' in body      # the raw kind is still one hover away

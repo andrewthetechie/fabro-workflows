@@ -65,7 +65,7 @@ from .inventory import InventoryPoller
 from .lease import Lease, LeaseConflict, LeaseStore
 from .queue import QueueItem, RepoStatus, build_queue, repo_statuses
 from .reconcile import ReleasePoller, recover
-from .store import Store
+from .store import DEFAULT_HISTORY_LIMIT, DEFAULT_HISTORY_SORT, Store
 from .workflow_version import WorkflowVersionError
 
 log = logging.getLogger(__name__)
@@ -187,6 +187,10 @@ def build_app(
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["duration"] = humanise_duration
+    # A global rather than a filter: it takes the page's whole sort state, not a
+    # value being formatted.
+    templates.env.globals["sort_link"] = _sort_link
+    templates.env.globals["final_state"] = final_state_label
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -330,6 +334,25 @@ def build_app(
         a problem.
         """
         return [_pool_payload(state) for state in pool_states()]
+
+    @app.get("/api/history")
+    def api_history(
+        sort: str | None = None,
+        dir: str | None = None,
+        limit: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Released runs, newest finished first. The JSON twin of `/history`.
+
+        `limit` is a string rather than an int because `all` is a legal value;
+        `_history_query` is what turns it into `None`.
+        """
+        column, descending, capped = _history_query(sort, dir, limit)
+        return [
+            _history_payload(row)
+            for row in store.history_rows(
+                sort=column, descending=descending, limit=capped
+            )
+        ]
 
     @app.post("/api/dispatch-once")
     def dispatch_once(body: DispatchOnceRequest) -> dict[str, object]:
@@ -650,6 +673,31 @@ def build_app(
             },
         )
 
+    @app.get("/history", response_class=HTMLResponse)
+    def history_page(
+        request: Request,
+        sort: str | None = None,
+        dir: str | None = None,
+        limit: str | None = None,
+    ) -> HTMLResponse:
+        """Released runs, newest finished first.
+
+        Deliberately carries no `poll_seconds`: unlike the queue page this one has
+        no live data and no meta-refresh (ADR 0008). A released run never changes.
+        """
+        column, descending, capped = _history_query(sort, dir, limit)
+        rows = store.history_rows(sort=column, descending=descending, limit=capped)
+        return templates.TemplateResponse(
+            request,
+            "history.html",
+            {
+                "views": [_history_view(row) for row in rows],
+                "sort": column,
+                "descending": descending,
+                "limit": capped,
+            },
+        )
+
     return app
 
 
@@ -666,6 +714,63 @@ def humanise_duration(delta: timedelta) -> str:
     if minutes:
         return f"{minutes}m {seconds:02d}s"
     return f"{seconds}s"
+
+
+def final_state_label(row: sqlite3.Row) -> str:
+    """What a released run's ending means, in the operator's vocabulary.
+
+    Derived, never stored (ADR 0008): the raw facts are the record and this is
+    presentation, so rewording a label is this function plus its test and nothing
+    else. That matters more than usual here, because `run_history` cannot gain a
+    column after it ships.
+
+    The ordering below is the whole logic, and two steps in it are not obvious:
+
+    * `succeeded` is checked against `merged` BEFORE anything else, because a
+      run whose PR was deliberately not auto-merged -- a risk-4 block -- also
+      ends `succeeded`. `kind` alone cannot tell shipping from blocking.
+    * a failure's REASON is checked before its CATEGORY, because the canonical
+      infra failure lies about its category: a fabro restart ends every in-flight
+      run `failed/terminated` with category `deterministic`, and a cancel carries
+      no category in the projection at all.
+    """
+    kind = row["kind"]
+    reason = row["reason"]
+
+    if kind == "lost":
+        return _with_requeues("lost (fabro 404)", row)
+
+    if kind == "succeeded":
+        if row["pr_lookup"] == "failed":
+            return _with_requeues("succeeded, PR unknown", row)
+        if row["pr_lookup"] == "none":
+            return _with_requeues("succeeded, no PR", row)
+        return _with_requeues("merged" if row["merged"] else "not merged", row)
+
+    if kind == "failed":
+        if reason == "terminated":
+            return _with_requeues("failed (fabro restart)", row)
+        if reason == "cancelled":
+            return _with_requeues("cancelled", row)
+        if row["category"] == "transient_infra":
+            return _with_requeues("failed (infra)", row)
+        return _with_requeues(f"failed ({reason})" if reason else "failed", row)
+
+    if kind == "dead":
+        return _with_requeues("dead", row)
+
+    return _with_requeues(f"{kind}/{reason}" if reason else str(kind), row)
+
+
+def _with_requeues(label: str, row: sqlite3.Row) -> str:
+    """Append the requeue count, when there was one.
+
+    A run that took three attempts to get here is a different fact from one that
+    took none, and it is the fact that precedes a human being called -- the
+    requeue budget is `MAX_REQUEUES = 3`.
+    """
+    attempts = row["requeue_attempt"] or 0
+    return f"{label} ×{attempts + 1}" if attempts else label
 
 
 def _queue_item_payload(item: QueueItem) -> dict[str, object]:
@@ -720,8 +825,110 @@ def _pool_payload(state: PoolState) -> dict[str, object]:
     }
 
 
+def _history_query(
+    sort: str | None, direction: str | None, limit: str | None
+) -> tuple[str, bool, int | None]:
+    """Three URL values into `(sort, descending, limit)`. Never raises.
+
+    Shared by `/api/history` and `/history` so the two can never disagree about
+    what a query string means.
+
+    Everything here arrives as text from a URL and ends up shaping SQL, so the
+    rule is "turn anything into a valid triple", not "reject the invalid". A
+    typo shows the operator the ordinary page rather than a 422:
+
+    * an unknown sort column is left for `Store.history_rows`, whose whitelist
+      is the actual guard and which falls back to `finished_at`;
+    * any direction other than the literal `"asc"` means descending, which is
+      the useful default for a history;
+    * `limit="all"` means every row; a non-integer or a non-positive value means
+      the default page.
+    """
+    descending = (direction or "").lower() != "asc"
+
+    if (limit or "").lower() == "all":
+        capped: int | None = None
+    else:
+        try:
+            parsed = int(limit) if limit else DEFAULT_HISTORY_LIMIT
+        except ValueError:
+            parsed = DEFAULT_HISTORY_LIMIT
+        capped = parsed if parsed > 0 else DEFAULT_HISTORY_LIMIT
+
+    return (sort or DEFAULT_HISTORY_SORT), descending, capped
+
+
+def _history_payload(row: sqlite3.Row) -> dict[str, object]:
+    """One `run_history` row as JSON.
+
+    `merged` is stored as 0/1/NULL because SQLite has no boolean, and is
+    published as a real `true`/`false`/`null` -- a consumer should not have to
+    know about the storage type. `pr_lookup` is published as-is: it is the field
+    that says whether `merged` means anything, and flattening it into the null
+    would lose exactly the distinction it exists to make.
+    """
+    merged = row["merged"]
+    return {
+        "run_id": row["run_id"],
+        "coder_pool": row["coder_pool"],
+        "repo": row["repo"],
+        "issue_number": row["issue_number"],
+        "dispatched_at": row["dispatched_at"],
+        "finished_at": row["finished_at"],
+        "kind": row["kind"],
+        "reason": row["reason"],
+        "category": row["category"],
+        "requeue_attempt": row["requeue_attempt"],
+        "pr_lookup": row["pr_lookup"],
+        "pr_number": row["pr_number"],
+        "pr_url": row["pr_url"],
+        "merged": None if merged is None else bool(merged),
+    }
+
+
 def _iso(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()
+
+
+def _sort_link(column: str, *, active: str, descending: bool, limit: int | None) -> str:
+    """The href for one sortable header.
+
+    Clicking the column that is already active flips the direction; clicking any
+    other column starts it descending, which is the useful default for every one
+    of them -- newest, longest, most requeues first.
+
+    `limit` is carried through so a sort does not silently reset the page size an
+    operator chose. `None` is `?limit=all`, which is the only non-default value
+    worth preserving in a URL.
+    """
+    flip = not descending if column == active else True
+    query = f"sort={column}&dir={'desc' if flip else 'asc'}"
+    if limit is None:
+        query += "&limit=all"
+    return f"/history?{query}"
+
+
+@dataclass(frozen=True)
+class HistoryView:
+    """One `run_history` row, with the two things the template cannot compute.
+
+    `row` is passed through whole rather than unpacked, because the template
+    reads it by column name and a second field list here would be one more thing
+    to keep in step with a schema that cannot change.
+    """
+
+    row: sqlite3.Row
+    elapsed: timedelta | None      # finished_at - dispatched_at, when both parse
+
+
+def _history_view(row: sqlite3.Row) -> HistoryView:
+    """Attach the run's elapsed time. Never raises on a malformed timestamp."""
+    try:
+        started = datetime.fromisoformat(row["dispatched_at"])
+        ended = datetime.fromisoformat(row["finished_at"])
+    except (TypeError, ValueError):
+        return HistoryView(row=row, elapsed=None)
+    return HistoryView(row=row, elapsed=ended - started)
 
 
 def create_app(

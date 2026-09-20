@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{# No meta-refresh, unlike queue.html: a released run never changes, so a reload
+   would discard the operator's sort for nothing. ADR 0008. #}
+<title>fabro coder scheduler &middot; run history</title>
+{% include "_style.html" %}
+</head>
+<body>
+
+{% set here = 'history' %}
+{% include "_nav.html" with context %}
+
+<h1>Run history</h1>
+<p class="sub">
+  One row per released coder lease, written when the run reached a terminal state.
+  This is a point-in-time record: it says what each run's ending <em>was</em>, not
+  what became of its PR afterwards. In-flight runs are not here &mdash; they are on
+  the queue page.
+  {% if limit %}Showing at most {{ limit }} rows.{% else %}Showing every row.{% endif %}
+</p>
+
+{% if not views %}
+<div class="banner">
+  <p>No released runs yet. A row appears here when a scheduler-dispatched run
+     reaches a terminal state and its coder instance is freed.</p>
+</div>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      {% for column, heading, numeric in [
+          ('coder_pool',      'Coder instance', false),
+          ('repo',            'Repo',           false),
+          ('issue_number',    'Issue',          true),
+          (none,              'Run',            false),
+          ('dispatched_at',   'Dispatched',     true),
+          ('finished_at',     'Finished',       true),
+          (none,              'Took',           true),
+          ('kind',            'Ending',         false),
+          ('requeue_attempt', 'Requeues',       true),
+          ('merged',          'PR',             false),
+      ] %}
+      <th{% if numeric %} class="num"{% endif %}>
+        {% if column %}
+          <a href="{{ sort_link(column, active=sort, descending=descending, limit=limit) }}">
+            {{ heading }}{% if column == sort %}{{ ' ▾' if descending else ' ▴' }}{% endif %}
+          </a>
+        {% else %}
+          {{ heading }}
+        {% endif %}
+      </th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+  {% for view in views %}
+    {% set row = view.row %}
+    <tr>
+      <td>{{ row.coder_pool }}</td>
+      <td>{{ row.repo }}</td>
+      <td class="num">{{ row.issue_number }}</td>
+      <td><code>{{ row.run_id }}</code></td>
+      <td class="num">{{ row.dispatched_at }}</td>
+      <td class="num">{{ row.finished_at }}</td>
+      <td class="num">{% if view.elapsed %}{{ view.elapsed|duration }}{% else %}&mdash;{% endif %}</td>
+      <td title="{{ row.kind }}{% if row.reason %}/{{ row.reason }}{% endif %}{% if row.category %} [{{ row.category }}]{% endif %}">{{ final_state(row) }}</td>
+      <td class="num">{{ row.requeue_attempt }}</td>
+      <td>
+        {% if row.pr_lookup == 'found' and row.pr_url %}
+          <a href="{{ row.pr_url }}">#{{ row.pr_number }}</a>
+          {% if row.merged %}<span class="muted">merged</span>{% endif %}
+        {% elif row.pr_lookup == 'failed' %}
+          <span class="muted" title="GitHub could not be reached at release">unknown</span>
+        {% else %}
+          <span class="muted">&mdash;</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<footer>
+  Written by the scheduler when it releases a coder lease. Manual fires and
+  hand-fired <code>pr-review</code> runs take no lease and are not recorded here.
+</footer>
+
+</body>
+</html>

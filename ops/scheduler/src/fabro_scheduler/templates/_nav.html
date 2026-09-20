@@ -1,0 +1,17 @@
+{# Two pages, and the current one is text rather than a link: a nav item that
+   reloads the page you are on is a small lie about what clicking does. `here` is
+   passed as a literal by each includer -- there is no route-introspection here
+   because two pages do not need one. #}
+<nav>
+  {% if here == 'queue' %}
+    <strong>Queue</strong>
+  {% else %}
+    <a href="/">Queue</a>
+  {% endif %}
+  <span class="sep">&middot;</span>
+  {% if here == 'history' %}
+    <strong>Run history</strong>
+  {% else %}
+    <a href="/history">Run history</a>
+  {% endif %}
+</nav>

@@ -151,7 +151,79 @@ CREATE TABLE IF NOT EXISTS requeue_counts (
   last_at      TEXT    NOT NULL,  -- ISO-8601 UTC
   PRIMARY KEY (repo, issue_number)
 );
+
+-- One row per released coder lease: what the run turned out to be. Written inside
+-- the same transaction that deletes the lease, so a crash cannot lose the row and
+-- the lease together (ADR 0008). Point-in-time: it records what the ending WAS, not
+-- what became of the PR afterwards.
+--
+-- Every column the series needs is here, including the four the PR lookup does not
+-- fill until a later task, because `CREATE TABLE IF NOT EXISTS` will not add a
+-- column to a table that already exists -- the same constraint that put
+-- `queued_since` on `leases` a draft early.
+--
+-- `run_id` is the key because it is already UNIQUE on `leases` and one dispatch
+-- produces exactly one run. A requeued issue comes back under a NEW run id, so a
+-- second attempt is a second row rather than a collision.
+CREATE TABLE IF NOT EXISTS run_history (
+  run_id          TEXT PRIMARY KEY,
+  coder_pool      TEXT NOT NULL,
+  repo            TEXT NOT NULL,
+  issue_number    INTEGER NOT NULL,
+  dispatched_at   TEXT NOT NULL,  -- ISO-8601 UTC, copied from `leases.dispatched_at`
+  finished_at     TEXT NOT NULL,  -- ISO-8601 UTC
+  kind            TEXT NOT NULL,  -- "succeeded" | "failed" | "dead" | "lost"
+  reason          TEXT,
+  category        TEXT,
+  requeue_attempt INTEGER NOT NULL DEFAULT 0,
+  pr_lookup       TEXT NOT NULL,  -- "found" | "none" | "failed"
+  pr_number       INTEGER,
+  pr_url          TEXT,
+  merged          INTEGER         -- 0 | 1 | NULL
+);
 """
+
+
+# The columns `/history` may be sorted by. This is a WHITELIST, not documentation:
+# SQLite cannot parameterise an ORDER BY column, so the name is interpolated into
+# the statement and membership here is the only thing between a URL query string
+# and arbitrary SQL. Adding a column to `run_history` does not add it here.
+HISTORY_SORT_COLUMNS = frozenset({
+    "finished_at",
+    "dispatched_at",
+    "repo",
+    "issue_number",
+    "coder_pool",
+    "kind",
+    "merged",
+    "requeue_attempt",
+})
+
+# Most-recently-finished first, and the page size the operator gets when they ask
+# for nothing in particular.
+DEFAULT_HISTORY_SORT = "finished_at"
+DEFAULT_HISTORY_LIMIT = 200
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    """What a released run turned out to be, for its `run_history` row.
+
+    Every field after `kind` has a default, so the paths that know less -- a run
+    fabro has lost, a release taken before the PR lookup exists -- construct one
+    without inventing facts they do not have. `finished_at=None` means "use the
+    release time", which is the only answer the lost-run path has.
+    """
+
+    kind: str                              # "succeeded" | "failed" | "dead" | "lost"
+    reason: str | None = None
+    category: str | None = None
+    finished_at: datetime | None = None
+    requeue_attempt: int = 0
+    pr_lookup: str = "none"                # "found" | "none" | "failed"
+    pr_number: int | None = None
+    pr_url: str | None = None
+    merged: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -288,6 +360,42 @@ class Store:
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
                 "queued_since FROM leases ORDER BY coder_pool"
             ).fetchall()
+
+    def history_rows(
+        self,
+        *,
+        sort: str = DEFAULT_HISTORY_SORT,
+        descending: bool = True,
+        limit: int | None = DEFAULT_HISTORY_LIMIT,
+    ) -> list[sqlite3.Row]:
+        """Released runs, newest first by default.
+
+        `sort` is interpolated, not parameterised -- SQLite has no placeholder for an
+        ORDER BY column -- so it is checked against `HISTORY_SORT_COLUMNS` first. An
+        unknown column falls back to the default rather than raising: this is reached
+        from a URL query string, and a typo should show the operator the ordinary page
+        rather than a 500.
+
+        `limit=None` means every row, which is what `?limit=all` asks for.
+
+        The ORDER BY and the LIMIT are one statement on purpose. Sorting a fetched
+        page in Python would answer a different question -- "the longest of the most
+        recent 200" rather than "the longest" -- and it would look right.
+
+        `run_id` is the tiebreaker on every sort so the order is total and a page does
+        not reshuffle between two requests that sort on equal values.
+        """
+        column = sort if sort in HISTORY_SORT_COLUMNS else DEFAULT_HISTORY_SORT
+        direction = "DESC" if descending else "ASC"
+        statement = (
+            f"SELECT * FROM run_history ORDER BY {column} {direction}, run_id {direction}"
+        )
+        params: tuple[object, ...] = ()
+        if limit is not None:
+            statement += " LIMIT ?"
+            params = (limit,)
+        with self._lock:
+            return self._conn.execute(statement, params).fetchall()
 
     def last_pool_for_repo(self, repo: str) -> str | None:
         """The coder instance this repo most recently ran on, if it ever has.
@@ -536,6 +644,64 @@ class Store:
             ).fetchone()
             if row is None:
                 return None
+            self._conn.execute("DELETE FROM leases WHERE run_id = ?", (run_id,))
+            return row
+
+    def archive_and_release_lease(
+        self, run_id: str, outcome: RunOutcome, *, at: datetime | None = None
+    ) -> sqlite3.Row | None:
+        """Record the run in `run_history` and drop its lease, in one transaction.
+
+        The archiving counterpart to `release_lease`, and the only way a release
+        should be taken once a run's ending is known. Returns the lease row exactly
+        as `release_lease` does -- the requeue rule reads `queued_since` off it --
+        or `None` when `run_id` is not leased, in which case nothing is written.
+
+        One transaction is the whole point. The row and the lease are the same fact
+        seen from two sides, and a crash between a delete and a separate insert
+        would lose both.
+
+        `at` is the release time, defaulting to now. It is what `finished_at`
+        becomes when the outcome does not carry one, which is every path that has no
+        run projection to read `timestamps.completed_at` from.
+        """
+        released = _stamp(at)
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
+                "queued_since FROM leases WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute(
+                "INSERT INTO run_history ("
+                "  run_id, coder_pool, repo, issue_number, dispatched_at, finished_at,"
+                "  kind, reason, category, requeue_attempt, pr_lookup, pr_number,"
+                "  pr_url, merged"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(run_id) DO NOTHING",
+                (
+                    row["run_id"],
+                    row["coder_pool"],
+                    row["repo"],
+                    row["issue_number"],
+                    row["dispatched_at"],
+                    (
+                        released
+                        if outcome.finished_at is None
+                        else outcome.finished_at.isoformat()
+                    ),
+                    outcome.kind,
+                    outcome.reason,
+                    outcome.category,
+                    outcome.requeue_attempt,
+                    outcome.pr_lookup,
+                    outcome.pr_number,
+                    outcome.pr_url,
+                    outcome.merged,
+                ),
+            )
             self._conn.execute("DELETE FROM leases WHERE run_id = ?", (run_id,))
             return row
 

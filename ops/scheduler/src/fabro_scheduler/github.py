@@ -58,6 +58,14 @@ REQUEST_TIMEOUT_SECONDS = 15.0
 # apart. A full page is logged as a possible truncation instead.
 PAGE_SIZE = 100
 
+# The PR lookup's own timeout, deliberately shorter than this module's 15s
+# default. It runs inside the 15-second release poll
+# (`DEFAULT_RELEASE_INTERVAL_SECONDS`), and a call that can consume a whole tick
+# delays the release of the OTHER coder instance's lease -- the scarcest resource
+# the scheduler has. Five seconds is long enough for a healthy api.github.com and
+# short enough that a sick one costs a third of one tick.
+PR_LOOKUP_TIMEOUT_SECONDS = 5.0
+
 REQUIRED_LABEL = "agent"
 
 # `agent-stuck` is what `mark_stuck` leaves on an issue a human has to re-arm;
@@ -104,6 +112,19 @@ class Issue:
     title: str
     labels: frozenset[str]
     first_seen: datetime
+
+
+@dataclass(frozen=True)
+class PullRequest:
+    """The PR on a run branch, as the history record needs it.
+
+    `merged` is a point-in-time snapshot: it is whether the PR had merged when
+    this was read, not a promise about what it becomes later.
+    """
+
+    number: int
+    url: str
+    merged: bool
 
 
 def is_eligible(payload: Mapping[str, Any]) -> bool:
@@ -294,6 +315,81 @@ def fetch_in_progress(
         len(numbers),
     )
     return numbers
+
+
+def fetch_pull_for_branch(
+    repo: str,
+    branch: str,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = PR_LOOKUP_TIMEOUT_SECONDS,
+) -> PullRequest | None:
+    """The pull request whose head is `branch`, or `None` if there is none.
+
+    `repo` is `"owner/repo"`; `branch` is a bare ref such as
+    `"fabro/run/01M2ZQG1AGP23KERJF6FKHHMCR"`. The `head` filter wants the
+    `owner:ref` form, so the owner is taken from `repo` and prefixed here rather
+    than by the caller.
+
+    **`state=all` is load-bearing.** The endpoint defaults to `state=open`, and
+    a backlog run's PR has usually already merged by the time its lease is
+    released -- so the default returns nothing for exactly the runs worth
+    recording. Verified live on 2026-09-20: with `state=all` this filter returns
+    PR 388; without it, zero results.
+
+    Raises `GitHubError` for anything that is not a `200`, so the caller can tell
+    "there is no PR" (`None`) from "GitHub could not answer" (the raise). The two
+    are opposite conclusions for an operator and must never collapse into one.
+    """
+    if not token or not token.strip():
+        raise GitHubError(
+            "GITHUB_TOKEN is not set; the GitHub inventory cannot be refreshed"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    owner = repo.split("/", 1)[0]
+    params = {"head": f"{owner}:{branch}", "state": "all", "per_page": 1}
+
+    owned = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        response = http.get(
+            f"{GITHUB_API}/repos/{repo}/pulls", params=params, headers=headers
+        )
+    except httpx.HTTPError as exc:
+        raise GitHubError(f"{repo}: GitHub request failed: {exc}") from exc
+    finally:
+        if owned:
+            http.close()
+
+    if response.status_code != 200:
+        remaining = response.headers.get("x-ratelimit-remaining")
+        raise GitHubError(
+            _error_message(repo, response, remaining),
+            status_code=response.status_code,
+            remaining=remaining,
+        )
+
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise GitHubError(
+            f"{repo}: expected a list of pulls, got {type(payload).__name__}"
+        )
+    if not payload:
+        return None
+    item = payload[0]
+    if not isinstance(item, Mapping) or not isinstance(item.get("number"), int):
+        return None
+    return PullRequest(
+        number=item["number"],
+        url=str(item.get("html_url") or ""),
+        merged=item.get("merged_at") is not None,
+    )
 
 
 def add_label(

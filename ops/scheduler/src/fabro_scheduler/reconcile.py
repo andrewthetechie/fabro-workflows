@@ -75,10 +75,11 @@ from .github import (
     GitHubError,
     add_label,
     fetch_in_progress,
+    fetch_pull_for_branch,
     remove_label,
 )
 from .lease import Lease, LeaseStore
-from .store import Store
+from .store import RunOutcome, Store
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +111,13 @@ CANCELLED_REASON = "cancelled"
 # Reasons that requeue whatever the category says. Both are read out of the run
 # projection, so neither costs the extra `GET /runs/{id}/events`.
 REQUEUE_REASONS = frozenset({TERMINATED_REASON, CANCELLED_REASON})
+
+# The ending fabro cannot describe, because it no longer has the run. Not one of
+# fabro's kinds -- `TERMINAL` is exactly `succeeded | failed | dead` -- and
+# deliberately so: this is the scheduler's own word for "the box was held, and
+# fabro cannot say by what".
+LOST_KIND = "lost"
+LOST_REASON = "fabro 404"
 
 # How many times one issue may be requeued before the scheduler stops and hands it
 # to a human. The requeue rule is what carries work across a fabro restart, and it
@@ -191,6 +199,122 @@ def _classify(run: Mapping[str, object]) -> str:
     return "unknown"
 
 
+def _outcome_from_run(
+    run: Mapping[str, object],
+    *,
+    requeue_attempt: int = 0,
+    pr_lookup: str = "none",
+    pr_number: int | None = None,
+    pr_url: str | None = None,
+    merged: bool | None = None,
+) -> RunOutcome:
+    """The `run_history` row's raw facts, read off a terminal run projection.
+
+    Reads only what the reconcile pass already holds. In particular it does NOT
+    fetch the failure category: `_with_category` has already run and has
+    deliberately skipped that call for `terminated` and `cancelled`, whose reason
+    alone decides the requeue. A `None` category here is correct and expected for
+    the two most common failures.
+
+    `finished_at` is left `None` when fabro reports no `completed_at`, because
+    `Store.archive_and_release_lease` owns the fallback to the release time and
+    two sources for one value is how they drift.
+
+    The PR fields default to `pr_lookup="none"` with no number, url or merge
+    state, and are left unset unless the caller supplies them. The terminal
+    release path passes what `_pr_fields` resolved against GitHub; this function
+    itself never calls out.
+    """
+    lifecycle = run.get("lifecycle")
+    status = lifecycle.get("status") if isinstance(lifecycle, Mapping) else None
+    if not isinstance(status, Mapping):
+        status = {}
+
+    kind = status.get("kind")
+    reason = status.get("reason")
+
+    failure = run.get("_last_failure")
+    category = failure.get("category") if isinstance(failure, Mapping) else None
+
+    return RunOutcome(
+        kind=str(kind) if kind else "unknown",
+        reason=str(reason) if reason else None,
+        category=str(category) if category else None,
+        finished_at=_completed_at(run),
+        requeue_attempt=requeue_attempt,
+        pr_lookup=pr_lookup,
+        pr_number=pr_number,
+        pr_url=pr_url,
+        merged=merged,
+    )
+
+
+def _completed_at(run: Mapping[str, object]) -> datetime | None:
+    """`timestamps.completed_at` as a datetime, or `None` when fabro has none.
+
+    Optional in fabro's own type (`RunTimestamps.completed_at:
+    Option<DateTime<Utc>>`), so absent, null and unparseable all mean the same
+    thing here: the caller's release time is the better answer.
+    """
+    timestamps = run.get("timestamps")
+    if not isinstance(timestamps, Mapping):
+        return None
+    raw = timestamps.get("completed_at")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+# The branch fabro's checkpoint publishes for every run, and the only thing
+# needed to find that run's PR. `open_pr`'s own push is always
+# `Everything up-to-date`.
+RUN_BRANCH_PREFIX = "fabro/run/"
+
+
+def _pr_fields(lease: Lease, github_token: str) -> dict[str, object]:
+    """The PR half of a `RunOutcome`, resolved from the run branch. Never raises.
+
+    Returns the keyword arguments `RunOutcome` takes, so the caller splices it in
+    with `**`. Three answers, and the caller must be able to tell them apart:
+
+    * `pr_lookup="found"` -- there is a PR, and `merged` says whether it had
+      merged at this instant;
+    * `pr_lookup="none"` -- GitHub answered, and there is no PR on that branch.
+      A run that failed before `open_pr` is the normal case;
+    * `pr_lookup="failed"` -- GitHub could not answer. NOT the same as "none",
+      and collapsing the two would tell the operator a run opened no PR when it
+      opened one we failed to see.
+
+    A GitHub miss must never block a lease release: the coder instance is the
+    scarcest thing here, and holding one because api.github.com had a bad minute
+    would be a self-inflicted outage. So every failure is caught, logged and
+    turned into `"failed"`.
+    """
+    try:
+        found = fetch_pull_for_branch(
+            lease.repo, f"{RUN_BRANCH_PREFIX}{lease.run_id}", github_token
+        )
+    except GitHubError as exc:
+        log.error(
+            "reconcile: %s#%s run %s: could not resolve the PR, recording it as "
+            "unknown: %s",
+            lease.repo, lease.issue_number, lease.run_id, exc,
+        )
+        return {"pr_lookup": "failed"}
+
+    if found is None:
+        return {"pr_lookup": "none"}
+    return {
+        "pr_lookup": "found",
+        "pr_number": found.number,
+        "pr_url": found.url,
+        "merged": found.merged,
+    }
+
+
 # --- the fabro pass -------------------------------------------------------------
 
 
@@ -229,7 +353,19 @@ def reconcile_leases(
             run = fabro_client.get_run(lease.run_id)
         except FabroError as exc:
             if exc.status_code == 404:
-                _requeue(store, leases, lease, github_token)
+                # No run projection exists -- fabro has no such run -- so the row
+                # is built from the lease alone. `finished_at` is left to the
+                # store's release-time fallback, which is the only answer there is.
+                _requeue(
+                    store, leases, lease, github_token,
+                    outcome=RunOutcome(
+                        kind=LOST_KIND,
+                        reason=LOST_REASON,
+                        requeue_attempt=store.requeue_count(
+                            lease.repo, lease.issue_number
+                        ),
+                    ),
+                )
                 actions.append(
                     ReleaseAction(
                         lease, "released+requeued", "fabro has no such run (404)"
@@ -271,10 +407,18 @@ def reconcile_leases(
             actions.append(ReleaseAction(lease, "failed", str(exc)))
             continue
 
-        spent = store.requeue_count(lease.repo, lease.issue_number) >= MAX_REQUEUES
+        attempts = store.requeue_count(lease.repo, lease.issue_number)
+        spent = attempts >= MAX_REQUEUES
+        # One lookup per release, shared by whichever branch is taken below.
+        pr = _pr_fields(lease, github_token)
         if should_requeue(classified) and not spent:
-            _requeue(store, leases, lease, github_token)
+            # Bumped BEFORE the release so the stored attempt number is the one
+            # this run became, not the one it started as.
             attempt = store.bump_requeue_count(lease.repo, lease.issue_number)
+            _requeue(
+                store, leases, lease, github_token,
+                outcome=_outcome_from_run(classified, requeue_attempt=attempt, **pr),
+            )
             actions.append(
                 ReleaseAction(lease, "released+requeued", _classify(run))
             )
@@ -289,7 +433,10 @@ def reconcile_leases(
             # issue — so it stops taking a coder box and starts waiting for a human,
             # which is what decision 10 does with every failure it cannot fix.
             store.forget_issue(lease.repo, lease.issue_number)
-            leases.release(lease.run_id)
+            leases.archive_and_release(
+                lease.run_id,
+                _outcome_from_run(classified, requeue_attempt=attempts, **pr),
+            )
             actions.append(
                 ReleaseAction(lease, "released", f"{_classify(run)}, requeue budget spent")
             )
@@ -311,8 +458,14 @@ def reconcile_leases(
             # must not come back, and this is what makes that true rather than
             # merely likely.
             store.forget_issue(lease.repo, lease.issue_number)
+            # Read the attempt count BEFORE clearing it: the row records how many
+            # requeues this issue took to get here, and `clear_requeue_count` is
+            # the issue leaving the queue on its own terms.
+            leases.archive_and_release(
+                lease.run_id,
+                _outcome_from_run(classified, requeue_attempt=attempts, **pr),
+            )
             store.clear_requeue_count(lease.repo, lease.issue_number)
-            leases.release(lease.run_id)
             actions.append(ReleaseAction(lease, "released", _classify(run)))
             log.info(
                 "reconcile: %s#%s run %s terminal (%s); released, not requeued",
@@ -343,6 +496,8 @@ def _requeue(
     leases: LeaseStore,
     lease: Lease,
     github_token: str,
+    *,
+    outcome: RunOutcome | None = None,
 ) -> None:
     """Requeue = remove the receipt, restore the queue label, restore the item with
     its original wait, then free the box.
@@ -352,6 +507,12 @@ def _requeue(
     start's GitHub pass repairs it. The one ordering that matters is that the issue
     is back in the cache *before* the box is freed, so the dispatch loop cannot see
     a free box with no eligible work on it for a tick.
+
+    `outcome` is what the run turned out to be, when the caller knows. With one
+    the release is archived into `run_history`; without one it is a plain
+    release. The default is `None` because one caller genuinely has nothing to
+    record: the GitHub orphan pass synthesises a lease with an empty `run_id`
+    and no run behind it at all.
     """
     for label, action in (
         (IN_PROGRESS_LABEL, _remove_label),
@@ -365,7 +526,10 @@ def _requeue(
                 lease.repo, lease.issue_number, action.__name__, label, exc,
             )
     store.requeue(lease.repo, lease.issue_number, first_seen=lease.queued_since)
-    leases.release(lease.run_id)
+    if outcome is None:
+        leases.release(lease.run_id)
+    else:
+        leases.archive_and_release(lease.run_id, outcome)
 
 
 def _remove_label(repo: str, number: int, label: str, token: str) -> None:
@@ -491,6 +655,12 @@ def _github_pass(
                     repo.name, number,
                 )
                 continue
+            # No `outcome`, and that is the point: this path has no run, no box
+            # and no dispatch time. `_orphan_lease` synthesises `run_id=""`, and
+            # `run_id` is `run_history`'s primary key -- archiving here would
+            # write a row keyed on the empty string, with an empty coder pool and
+            # a "dispatched_at" that is really the repair time, and the second
+            # orphan would collide with the first. ADR 0008's release-paths table.
             _requeue(store, leases, _orphan_lease(repo.name, number), github_token)
             orphaned.append(key)
             log.info(
