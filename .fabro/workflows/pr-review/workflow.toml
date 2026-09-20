@@ -106,10 +106,11 @@ id = "discord-merged"
 # been written when the hook fires. stage_complete races that write — the same race
 # `discord-complete` in backlog was moved here to avoid.
 event = "checkpoint_saved"
-# Anchored. Matchers are unanchored regexes tested against node_id, handler_type,
-# edge_to, edge_from and tool_name; `report_merged` does not prefix one today, but
-# `report_blocked` shares seven characters with it.
-matcher = "^report_merged$"
+# Anchored at the end, with the import's `.` prefix allowed: the running id for this
+# node is `review_merge.report_merged` (imports prefix node ids), so a bare
+# `^report_merged$` matches nothing and the hook is silent. Matchers are tested against
+# node_id, handler_type, edge_to, edge_from and tool_name.
+matcher = "(^|[.])report_merged$"
 # A Discord outage must not stall a run, and by the time this fires the merge has
 # already happened, so blocking would achieve nothing.
 blocking = false
@@ -118,3 +119,20 @@ blocking = false
 # checkout. See task 07.
 sandbox = false
 script = "/storage/scripts/discord-notify.sh merged"
+
+# Model escalation: alert when a rebase leaves the local coder box for a hosted
+# model. Two stages qualify: `rebase_agent_t2` (the rebase ladder's glm-5.3 tier)
+# and `ci_fix_t2` (the imported review-merge CI-fix ladder's glm-5.3 tier, which
+# arrives as `review_merge.ci_fix_t2`). `rebase_agent_t1` stays on a box and does
+# not alert.
+#
+# The matcher is `(^|[.])...$`, not `^...$`, because the imported node keeps its
+# prefix and the hook context carries the prefixed id verbatim. See the same hook
+# in backlog's workflow.toml for the full reasoning.
+[[run.hooks]]
+id = "slack-fallback"
+event = "stage_start"
+matcher = "(^|[.])(rebase_agent_t2|ci_fix_t2)$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/slack-fallback.sh"

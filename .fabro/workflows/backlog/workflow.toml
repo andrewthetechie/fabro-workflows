@@ -121,10 +121,13 @@ script = "/storage/scripts/discord-notify.sh failed"
 # #2601, declined to merge, ended `succeeded`, and produced no notification, no
 # label and no failed-run event.
 #
-# Ids arrive prefixed from the import (`review_merge.report_blocked`). An anchored
-# matcher is still the right form — `pr-review`'s identical `^report_merged$` has
-# been observed firing on the prefixed id, for run 01M2MG7F8Q7DVSBQ52VHGDB9H2 — and
-# anchoring is also what keeps `report_blocked` from matching `report_merged`.
+# Ids arrive prefixed from the import (`review_merge.report_blocked`). Anchor at the
+# end and allow the import's `.` prefix: `(^|[.])report_merged$`. A bare `^report_merged$`
+# matches neither the prefixed id nor anything else, and the runner logs nothing for an
+# event with no matching hook, so a matcher that cannot match is silent. Verified on run
+# 01M2XEP62DVGS9JJT9CZQ7HE2Q: it checkpointed `review_merge.report_blocked` and the
+# anchored hook produced no `Running hooks` line. The `$` still keeps `report_blocked`
+# from matching `report_merged`.
 #
 # `checkpoint_saved`, not `stage_complete`: the report node's context writes
 # (`pr_url`, `review_merge_outcome`) are in the checkpoint envelope by the time the
@@ -134,7 +137,7 @@ script = "/storage/scripts/discord-notify.sh failed"
 [[run.hooks]]
 id = "discord-merged"
 event = "checkpoint_saved"
-matcher = "^report_merged$"
+matcher = "(^|[.])report_merged$"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh merged"
@@ -147,7 +150,7 @@ script = "/storage/scripts/discord-notify.sh merged"
 [[run.hooks]]
 id = "discord-blocked"
 event = "checkpoint_saved"
-matcher = "^report_blocked$"
+matcher = "(^|[.])report_blocked$"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh blocked"
@@ -157,7 +160,36 @@ script = "/storage/scripts/discord-notify.sh blocked"
 [[run.hooks]]
 id = "discord-needs-human"
 event = "checkpoint_saved"
-matcher = "^mark_needs_human$"
+matcher = "(^|[.])mark_needs_human$"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh needs-human"
+
+# Model escalation: alert when a task or a merge-resolution leaves the local
+# coder box for a hosted model. The stages are the coder ladder's hosted tiers
+# (rework_t2 -> glm-4.7, rework_t3 -> kimi-for-coding, rework_t4 -> glm-5.3),
+# the merge resolver (resolve_merge, also glm-5.3), and the imported CI-fix
+# escalation (review_merge.ci_fix_t2, glm-5.3). The alert is informational: the
+# ladder itself is the system working, so nothing blocks.
+#
+# stage_start, not checkpoint_saved: the escalation begins when the stage starts,
+# which is the moment the local box is left.
+#
+# The matcher is `(^|[.])...$`, not `^...$`. Nodes spliced in with `import=` keep
+# a prefixed id (`review_merge.ci_fix_t2`), and the hook context carries that id
+# verbatim (fabro-hooks/src/runner.rs matches against node_id, handler_type,
+# edge_to, edge_from, tool_name). An anchored `^ci_fix_t2$` matches neither the
+# prefixed nor the bare id, and a non-matching hook is silent: the runner skips
+# the whole event with no log line. The `$` still keeps `rework_t2` from matching
+# a hypothetical `rework_t20`, so anchoring is not lost.
+#
+# blocking = false so a Slack outage cannot stall a run; sandbox = false so the
+# script runs in the server container, where the webhook lives. Absolute container
+# path because hook `script` is a shell command, not an `@` file import.
+[[run.hooks]]
+id = "slack-fallback"
+event = "stage_start"
+matcher = "(^|[.])(rework_t[2-4]|resolve_merge|ci_fix_t2)$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/slack-fallback.sh"

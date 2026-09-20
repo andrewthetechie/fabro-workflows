@@ -75,6 +75,10 @@ Checked on 2026-09-18, because the list below had drifted from the host:
   overlooked.
 - Server env: `/storage/server.env` and `/storage/.home/server.json` in the container.
 - Discord webhook URL: `/storage/secrets/discord_webhook_url` in the container volume.
+- Slack webhook URL: `/storage/secrets/slack_webhook_url` in the container volume. Read
+  only by `.fabro/workflows/backlog/scripts/slack-fallback.sh`, which alerts when a
+  stage escalates from the local coder box to a hosted model. The script exits 0
+  silently when the file is absent, so a missing URL disarms the alert, not a run.
 - Compose env: `~/fabro/.env` on the host (ready from `.env.example`).
 - Coder scheduler env: `~/fabro/scheduler.env` on the host (chmod 600), holding
   `GITHUB_TOKEN` and `FABRO_API_TOKEN`. It is a separate file because
@@ -111,7 +115,9 @@ Checked on 2026-09-18, because the list below had drifted from the host:
    write the webhook URL to `/storage/secrets/discord_webhook_url`. It lives under
    `backlog/scripts/` but is called by hooks in **both** workflows by absolute path
    inside the container — do not tidy it into `pr-review/scripts/`; hooks reference
-   the `/storage/scripts/` path.
+   the `/storage/scripts/` path. Deploy `slack-fallback.sh` from the same directory
+   to `/storage/scripts/slack-fallback.sh` the same way, and write the model-escalation
+   webhook to `/storage/secrets/slack_webhook_url` (optional: absent disarms it).
 4. **Sweepers** — `cp fabro-branch-sweep.sh fabro-sandbox-sweep.sh ~/bin/ && chmod +x ~/bin/fabro-branch-sweep.sh ~/bin/fabro-sandbox-sweep.sh`, then install both crons (below).
 5. **Profile images** — `cd profile-images && ./build-images.sh`. It clones each
    target repository, warms that repository's caches from its own lockfiles, and
