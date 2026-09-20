@@ -567,6 +567,10 @@ def test_the_page_offers_a_bump_control_per_queue_item(config, store, client):
     assert "/api/queue/andrewthetechie/writers-app/5/bump" in html
     assert ">Next<" in html
 
+    # The queue row's repo and issue link to GitHub, like the coder-instance rows.
+    assert "https://github.com/andrewthetechie/writers-app" in html
+    assert "https://github.com/andrewthetechie/writers-app/issues/5" in html
+
 
 def test_the_page_offers_drain_and_cancel_for_each_pool(config, store, client):
     LeaseStore(store).acquire(

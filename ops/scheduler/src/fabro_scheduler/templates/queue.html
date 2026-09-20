@@ -143,8 +143,8 @@
     {% for item in items %}
     <tr class="{% if item.override_rank is not none %}overridden{% elif item.waited > ceiling %}starved{% endif %}">
       <td class="num rank">{{ loop.index }}</td>
-      <td>{{ item.issue.repo }}</td>
-      <td class="num">#{{ item.issue.number }}</td>
+      <td><a href="https://github.com/{{ item.issue.repo }}">{{ item.issue.repo }}</a></td>
+      <td class="num"><a href="https://github.com/{{ item.issue.repo }}/issues/{{ item.issue.number }}">#{{ item.issue.number }}</a></td>
       <td class="title" title="{{ item.issue.title }}">{{ item.issue.title }}</td>
       <td class="num">{{ item.repo_priority }}</td>
       <td class="num">{{ item.waited|duration }}</td>
