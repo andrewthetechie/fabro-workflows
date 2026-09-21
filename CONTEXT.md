@@ -162,6 +162,42 @@ and the operator runbook carries the manual disambiguation. Corrected 2026-09-19
 mechanism exists in the script, the signal does not exist in production.
 _Avoid_: healthcheck (the compose container already has one, and it is a different thing)
 
+**Steering**:
+A message injected into a running agent's conversation as a user-role turn, via
+`POST /runs/{id}/steer`; delivered asynchronously before the next LLM call, or immediately
+when sent with `interrupt=true`, which cancels the active round first. Fabro's own term for
+mid-run guidance.
+_Avoid_: correction, feedback, nudge (that is a *kind* of steering, below)
+
+**Nudge**:
+One **Steering** message sent by the **Task nudger** from a fixed template: name the
+observed symptom, give one directive, and invite the agent to say what blocks it. A kind of
+steering, not a synonym for it.
+_Avoid_: steering (the general mechanism), prompt, hint
+
+**Task nudger**:
+The out-of-band service (proposed, not built) that watches running coder stages, detects a
+**Livelock**, and sends a **Nudge**; escalates nudge → interrupt+nudge → Discord alert, and
+never cancels a run or touches labels. ADR 0009.
+_Avoid_: watchdog, steerer, supervisor
+
+**Livelock**:
+A coder stage making tool calls with no net file change for ~15 min (or ~20 read-only
+calls) — the "gathering context then looping" failure. Distinct from a **Stall** (no
+tokens) and an **Oversized task** (real work over the wall clock).
+_Avoid_: loop (overloaded), thrash, spin
+
+**Stall**:
+An active LLM call that produces no first token for ~10 min — a hung round, not slow
+generation. The glm-5.3 hang was a **Stall**. Distinct from a **Livelock**.
+_Avoid_: hang, timeout, wedge
+
+**Oversized task**:
+A task whose real work exceeds a stage's 180m wall clock while the agent is genuinely
+generating — not a **Livelock** or **Stall**, so steering cannot help; the lever is task
+size (`docs/perf/04`).
+_Avoid_: stuck, too-big, runaway
+
 **Canary** *(retired)*:
 Was to be the first repo whose `backlog` schedule is enabled at turn-on — `jelly-swipe`,
 because it has branch protection and no deploy-on-merge. No canary turn-on ever happened:
