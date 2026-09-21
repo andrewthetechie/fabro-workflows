@@ -36,6 +36,13 @@ command -v jq >/dev/null || { echo "ERROR: jq is required" >&2; exit 1; }
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
+# The PATH as it was before any section prepended a stub bin. `next_task` installs
+# an `exit 0` git and never restores it, so every later `SAVED_PATH="$PATH"`
+# captures that stub too -- which silently turns a section that wants the REAL git
+# into one whose repo setup does nothing and whose checks then fail for the wrong
+# reason. A section that needs real tools restores this.
+ORIG_PATH="$PATH"
+
 PASS=0
 FAIL=0
 
@@ -864,6 +871,112 @@ check "behind base is stale"       "stale" "$(jq -r '.context_updates.merge_stat
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
+# open_pr_prep — the empty-diff floor in front of the PR
+# ---------------------------------------------------------------------------
+# Every other gate here stubs `git`. This one must not: what is being checked is
+# whether `git diff --quiet origin/main HEAD` tells the truth about a real branch
+# with real fabro checkpoint commits on it, and a stub would only test the stub.
+# So each case builds an actual repo and clones it over file://, which needs no
+# network. `.fabro/setup.sh` and `.fabro/ci.sh` are repo files rather than PATH
+# commands, so they are written into the clone and log their own invocations --
+# that log is how the "refuses before spending two CI runs" check reads.
+#
+# The hole this covers: `open_pr_prep` derives the PR title and body entirely
+# from issue.json and never looks at the tree, so on a branch where no task
+# landed it produced a well-formed PR asserting the issue was implemented, and
+# its own three `grep -q` assertions passed. womens-fantasy-sports#1236 and
+# writers-app#949, both 0 files changed, both on 2026-09-21.
+echo ""
+echo "open_pr_prep"
+SAVED_PATH="$PATH"
+PATH="$ORIG_PATH"
+T="$WORK/prep"; mkdir -p "$T"; stage open_pr_prep
+
+# A fresh upstream + clone per case. $1 is the run branch's content disposition:
+# "empty" leaves the tree equal to main, "work" puts a real change on it.
+opp_repo() {
+    rm -rf "$T/up" "$T/wt"
+    mkdir -p "$T/up"
+    git -C "$T/up" init -q -b main .
+    git -C "$T/up" config user.email t@t
+    git -C "$T/up" config user.name t
+    mkdir -p "$T/up/.fabro"
+    printf '%s\n' '#!/bin/sh' 'echo setup >> "$OPP_LOG"' > "$T/up/.fabro/setup.sh"
+    printf '%s\n' '#!/bin/sh' 'echo ci >> "$OPP_LOG"' > "$T/up/.fabro/ci.sh"
+    chmod +x "$T/up/.fabro/setup.sh" "$T/up/.fabro/ci.sh"
+    echo base > "$T/up/a.txt"
+    git -C "$T/up" add -A
+    git -C "$T/up" commit -qm init
+    git clone -q "$T/up" "$T/wt"
+    git -C "$T/wt" config user.email t@t
+    git -C "$T/wt" config user.name t
+    git -C "$T/wt" checkout -qb fabro/run/01TEST
+    # What fabro leaves on the branch when nothing lands: one checkpoint commit
+    # per stage, none of them touching a repository file.
+    git -C "$T/wt" commit -q --allow-empty -m 'fabro(01TEST): claim (succeeded)'
+    git -C "$T/wt" commit -q --allow-empty -m 'fabro(01TEST): prep (failed)'
+    if [ "$1" = work ]; then
+        echo implemented >> "$T/wt/a.txt"
+        git -C "$T/wt" commit -qam 'fabro(01TEST): integrate (succeeded)'
+    fi
+    : > "$T/opp.log"
+    rm -f "$T/completed.md" "$T/pr_body.md" "$T/pr_title.txt" "$T/commit_subject.txt"
+    printf '%s' '{"number":1205,"title":"month_played_and_crowned","body":"","labels":[]}' > "$T/issue.json"
+}
+
+opp_run() { ( cd "$T/wt" && OPP_LOG="$T/opp.log" sh "$T/open_pr_prep.sh" 2>&1 ); }
+
+# 1. The regression itself. A branch carrying only checkpoint commits must not
+#    become a PR, and must say so rather than failing obscurely.
+opp_repo empty
+OUT=$(opp_run); RC=$?
+check "empty tree exits nonzero"   "1" "$RC"
+check "empty tree names the cause" "1" \
+    "$(grep -c 'identical to origin/main' <<<"$OUT")"
+check "empty tree says no task landed" "1" \
+    "$(grep -c 'no task ever reached integrate' <<<"$OUT")"
+check "empty tree points at [X]"   "1" "$(grep -c 'X. Abandon' <<<"$OUT")"
+
+# 2. It refuses BEFORE the setup/ci loop -- two full CI runs on a 20m budget
+#    against a tree that equals main is the cost of checking in the wrong order.
+check "empty tree runs no CI"      "0" "$(wc -l < "$T/opp.log" | tr -d ' ')"
+
+# 3. And it publishes nothing a later node could read as a real PR.
+check "empty tree writes no body"  "absent" \
+    "$([ -f "$T/pr_body.md" ] && echo present || echo absent)"
+
+# 4. The happy path is untouched: real work still validates and derives.
+opp_repo work
+OUT=$(opp_run); RC=$?
+check "real work exits 0"          "0" "$RC"
+check "real work runs CI"          "2" "$(wc -l < "$T/opp.log" | tr -d ' ')"
+check "real work writes a body"    "1" "$(grep -c 'fabro:commit-body:start' "$T/pr_body.md")"
+check "real work derives a CC subject" "1" \
+    "$(grep -cE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)(\(.*\))?!?: ' "$T/commit_subject.txt")"
+check "real work resolves the issue" "1" "$(grep -c '^Resolves #1205' "$T/pr_body.md")"
+
+# 5. The case no reviewer would think of: the run's work was already on main, so
+#    after `git merge origin/main` the branch adds nothing. That is still a PR
+#    that would claim to resolve the issue, so the floor has to hold there too --
+#    and it is the case a three-dot diff against the ORIGINAL merge base misses.
+opp_repo empty
+git -C "$T/up" commit -q --allow-empty -m 'someone else shipped it'
+OUT=$(opp_run); RC=$?
+check "no-op after merge exits nonzero" "1" "$RC"
+check "no-op after merge runs no CI"    "0" "$(wc -l < "$T/opp.log" | tr -d ' ')"
+
+# 6. Main moving underneath a branch that DID work is not an empty diff. This is
+#    the false positive that would strand every run whose merge brought in a
+#    change from main, which is most of them.
+opp_repo work
+git -C "$T/up" commit -q --allow-empty -m 'main moves on'
+OUT=$(opp_run); RC=$?
+check "main moved, work kept, exits 0" "0" "$RC"
+check "main moved, work kept, runs CI" "2" "$(wc -l < "$T/opp.log" | tr -d ' ')"
+
+PATH="$SAVED_PATH"
 
 # ---------------------------------------------------------------------------
 echo ""

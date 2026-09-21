@@ -185,7 +185,27 @@ if ! jq -e '.labels | map(.name) | index(\"agent-in-progress\")' /tmp/fabro/issu
   exit 1
 fi"]
 
-    prep [label="Prep workspace and install deps", shape=parallelogram, timeout="20m",
+    // `max_retries=1` because this node's whole job is one network-bound install and a
+    // single transient registry failure otherwise costs the entire run plus its coder
+    // lease. `prep` is the run's first real work, so there is nothing to lose by
+    // repeating it: `setup.sh` is already run again by `validate` and `open_pr_prep`, so
+    // it is idempotent by construction, and the three `echo 0` counters are being
+    // initialised rather than advanced -- rewriting them on a second attempt is correct.
+    //
+    // Run 01M310TQEWFMPHZ3XG5T22X09W (womens-fantasy-sports#1205, 2026-09-21) is the
+    // case: `uv` could not reach pypi.org for `hatchling` -- `Request failed after 3
+    // retries in 48.6s ... operation timed out` -- and the stage ended `failed` with
+    // `category: transient_infra, will_retry: false`. The classification was right and
+    // changed nothing, because a node with no `max_retries` inherits
+    // `default_max_retries=0`; being retry-ELIGIBLE is not the same as being retried.
+    // The proof that one retry was enough: `open_pr_prep` ran the same `./.fabro/setup.sh`
+    // 90 seconds later, on the same sandbox, and it PASSED. The run then walked the
+    // unconditional edge to `human_rescue` and opened an empty PR (#1236) instead.
+    //
+    // The cost is bounded at one extra 20m attempt on a genuinely broken setup, against
+    // a 4h `human_rescue` park holding one of two coder boxes. `uv`/`npm` already retry
+    // internally, so this only fires on an outage that outlasts their own backoff.
+    prep [label="Prep workspace and install deps", shape=parallelogram, timeout="20m", max_retries=1,
         script="set -e
 mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra
 echo 0 > /tmp/fabro/extra_round
@@ -331,7 +351,39 @@ fi"]
     // `rework_t1..t4` (45m, never yet executed) and `resolve_merge` (30m, n=1). Those
     // have real tails or no evidence, and the same arithmetic does not hold for them.
     // See docs/perf/00-overview-and-measurements.md.
-    improve [label="Improve task spec", class="improve", timeout="15m", max_retries=1, prompt="@prompts/improve.md.j2"]
+    //
+    // `improve` IS retimed, to 45m, and every number in the table above is void for it.
+    // All of them were measured while `.improve` resolved to glm-5.3. `9b7f5ff` moved
+    // the class onto `{{ inputs.coder_pool }}` -- a single-slot llama.cpp box -- and
+    // left the timeout sized for the model it no longer runs on. That is what a
+    // measurement-derived timeout costs when the measurement's subject is swapped out
+    // from under it, and it is the rule this comment exists to state: MOVING A CLASS TO
+    // A DIFFERENT MODEL VOIDS EVERY TIMEOUT DERIVED FROM THE OLD ONE.
+    //
+    // What it cost: run 01M321VB0DC4N187GHA88RM0QB (writers-app#929, 2026-09-21) burned
+    // both attempts at exactly 900004ms and 900005ms. Neither stalled -- the last
+    // `agent.llm.started` of attempt 2 returned `first_output` 59s before the wall fell,
+    // with steady tool calls throughout. The run reached `human_rescue` having never run
+    // a coder, and `[P] Accept partial` then opened an empty PR (writers-app#949).
+    //
+    // Why 45m and not a scaled 15m. Measured from the run store over runs
+    // 01M2ZYF5X7F97ARZ4SKXZ9NXBH and 01M305QY4SE7GHXSPNVGCCY1YN, output tok/s per node:
+    //
+    //   improve (glm-5.3)  22.1 tok/s, n=11, max stage 326s
+    //   coder   (coders-a) 11.8 tok/s, n=10      rework_t1 (coders-a) 11.3 tok/s, n=1
+    //
+    // The box is ~1.9x slower on raw output, but run 929 proves the real factor for THIS
+    // node is worse than that: >900s against a hosted max of 326s is >2.8x, because
+    // `improve` re-reads the checkout every turn and the box pays prefill on all of it.
+    // So there is no honest arithmetic here -- scaling 326s by a guessed factor would be
+    // inventing a measurement. 45m is the PEER value instead: `rework_t1..t4` run the
+    // same box at 45m and `coder` at 180m, and `improve` is a smaller job than either.
+    // Re-derive it properly once a local `improve` has completed and can be measured.
+    //
+    // `max_retries=1` stays (the 6h park on 01M2PSA224HXTXJSSVBGTVPYF1 is why it exists),
+    // so the worst case on a genuinely dead box is 90m, up from 30m. That is the price of
+    // not failing every non-trivial issue outright, which is what 15m does today.
+    improve [label="Improve task spec", class="improve", timeout="45m", max_retries=1, prompt="@prompts/improve.md.j2"]
 
     // The `split` disposition, and why the size check lives HERE rather than in
     // `decompose`.
@@ -703,10 +755,62 @@ echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'
     // The subject is truncated so that it plus the appended issue reference fits 72
     // characters, cutting at a word boundary where one exists within the last 12. The
     // reference is appended after the cut and is never truncated away.
+    // THE EMPTY-DIFF FLOOR. Everything below this node derives the PR from
+    // `/tmp/fabro/issue.json` -- the title from the issue title, the body from the first
+    // prose paragraph of the issue body -- and NOTHING in the derivation reads the
+    // working tree. That is correct for its own job and catastrophic without this guard:
+    // fed a branch on which no task ever landed, it produces a perfectly well-formed PR
+    // whose title and body assert that the issue was implemented, and `open_pr` publishes
+    // it. The three `grep -q` assertions at the bottom of this script check the
+    // DERIVATION, never that a change exists, so all of them passed on exactly that PR.
+    //
+    // The path that gets here with nothing is `human_rescue -> [P] Accept partial`. It
+    // was designed for "some tasks landed, ship what we have" and had no floor at zero,
+    // so it reads identically to "no tasks landed, ship it anyway".
+    //
+    // Cost, both on 2026-09-21, from the same two-line hole:
+    //   01M310TQEWFMPHZ3XG5T22X09W  womens-fantasy-sports#1236, 0 files changed. `prep`
+    //     died on a pypi.org timeout, so the run never decomposed. The PR body's summary
+    //     is a sentence lifted verbatim out of issue #1205 -- "ADR-0021 is accepted and
+    //     unimplemented" -- reading as a claim about work delivered. The merge phase's
+    //     `review_fix` then read the reviewers' "this is empty" verdict and implemented
+    //     the issue ITSELF, 396/-101 across 4 files, which is not its job.
+    //   01M321VB0DC4N187GHA88RM0QB  writers-app#949, 0 files changed. `improve` timed out
+    //     twice, so the run never ran a coder. Cancelled and the PR closed by hand.
+    //
+    // Two-dot `git diff --quiet origin/main HEAD` -- does the head TREE equal main's --
+    // rather than three-dot, because it says the thing that matters regardless of how the
+    // branch got there. The merge immediately above makes the two forms equivalent here
+    // anyway, since it moves the merge base onto `origin/main`. `--quiet` exits 1 when a
+    // difference EXISTS, which is why the check is the `if` condition and the failure is
+    // the true branch; `set -e` does not fire on a condition's exit status.
+    //
+    // It runs before the setup/ci loop, not after: there is nothing to validate on a tree
+    // that equals main, and the loop is two full CI runs on a 20m budget.
+    //
+    // `exit 1` takes the unconditional edge back to `human_rescue`, which is deliberate
+    // rather than a route to `mark_stuck`: this node declares no routing schema, and an
+    // operator who answers `[P]` a second time gets the same refusal rather than a PR.
+    // The message names `[X] Abandon` because that is the answer that does the label
+    // cleanup -- `agent-in-progress` off, `agent-stuck` on -- instead of leaving the
+    // issue mid-flight.
     open_pr_prep [label="Final aggregate and PR prep", shape=parallelogram, timeout="20m",
         script="set -e
 git fetch origin main
 git merge --no-edit origin/main
+if git diff --quiet origin/main HEAD; then
+  echo 'refusing to open a PR: the branch tree is identical to origin/main, so this run changed nothing.' >&2
+  echo 'every commit on this branch is a fabro stage checkpoint touching no repository file.' >&2
+  if [ -s /tmp/fabro/completed.md ]; then
+    echo 'tasks recorded as landed (which contradicts the empty tree -- read the run):' >&2
+    cat /tmp/fabro/completed.md >&2
+  else
+    echo 'no task ever reached integrate: /tmp/fabro/completed.md is absent or empty.' >&2
+  fi
+  echo 'a PR from here would carry a title and body derived from the issue, asserting work that does not exist.' >&2
+  echo 'answer [X] Abandon at the rescue gate unless the run can be made to do the work.' >&2
+  exit 1
+fi
 A=1
 while :; do
   if ./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1; then
