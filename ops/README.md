@@ -245,15 +245,19 @@ loudly:
   `2026-09-17T15:31:24Z`, then watching a run pinned to `coders-b` reach its coder
   stage and call the box. The restart paragraph above is about the cap.
 
-**How a run asks for a box.** Both root stylesheets carry the same two rules:
+**How a run asks for a box.** Both root stylesheets carry the same rules:
 
 ```
-.coder  { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
-.rebase { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+.coder   { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+.improve { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+.rebase  { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
 ```
 
-`backlog` has both, `pr-review` only `.rebase` (its `review`/`fix` classes stay on
-`glm-5.3`). The scheduler will pass `args.inputs.coder_pool = "coders-a"` on the intent;
+`backlog` has all three, `pr-review` only `.rebase` (its merge-phase classes stay
+hosted). `.improve` joined them on 2026-09-21 — see `docs/plan/local-inference-tuning.md`
+for the measurement behind it. All three must name the **same** box: the scheduler leases
+exactly one per run, so a rule pointing at the other one would queue behind whoever holds
+it. The scheduler will pass `args.inputs.coder_pool = "coders-a"` on the intent;
 a hand-fired run passes nothing and gets the pinned `coders-a` box (the both-boxes
 `coders` group was retired with the LiteLLM provider, task 04). The `default()` is not
 cosmetic — the stylesheet renders strict at run time, so without it a fire carrying no

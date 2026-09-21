@@ -217,7 +217,7 @@ fi"]
     // `rework_t1..t4` (45m, never yet executed) and `resolve_merge` (30m, n=1). Those
     // have real tails or no evidence, and the same arithmetic does not hold for them.
     // See docs/perf/00-overview-and-measurements.md.
-    standards [label="Standards review", class="review", timeout="15m", max_retries=1, prompt="@prompts/standards.md.j2"]
+    standards [label="Standards review", class="merge-standards", timeout="15m", max_retries=1, prompt="@prompts/standards.md.j2"]
     standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/standards.json
 A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)
@@ -231,7 +231,7 @@ fi
 echo 0 > /tmp/fabro/standards_attempts
 echo '{\"context_updates\":{\"standards_status\":\"'$D'\"}}'"]
 
-    spec [label="Spec review", class="review", timeout="15m", max_retries=1, prompt="@prompts/spec.md.j2"]
+    spec [label="Spec review", class="merge-spec", timeout="15m", max_retries=1, prompt="@prompts/spec.md.j2"]
     spec_gate [label="Validate spec output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/spec.json
 A=$(cat /tmp/fabro/spec_attempts 2>/dev/null || echo 0)
@@ -246,7 +246,7 @@ echo 0 > /tmp/fabro/spec_attempts
 echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
     // ---- Review and fix (one agent, as Sandcastle does) ----
-    review_fix [label="Review and fix", class="review", timeout="15m", max_retries=1, prompt="@prompts/review_fix.md.j2"]
+    review_fix [label="Review and fix", class="merge-fix", timeout="15m", max_retries=1, prompt="@prompts/review_fix.md.j2"]
     // Every error-severity own finding must be accounted for, by its own id, in
     // `fixes_applied` or `not_fixed`. The prompt says the same thing, and merge_gate's
     // check 10 blocks a merge when it is not true -- but merge_gate has no repair turn,

@@ -42,11 +42,21 @@ digraph PrReview {
             // The default is a pinned box (`coders-a`), not the retired both-boxes
             // `coders` group (ADR 0007, task 04 removed it with the LiteLLM provider);
             // the escape hatch fires an explicit `coder_pool` so it never relies on this.
+            //
+            // The three `.merge-*` classes belong to the imported review-merge graph,
+            // which used to put all three reviewers on one `.review` rule. They are
+            // named here explicitly even though `*` already resolves them to the same
+            // model: this graph and `backlog` import the SAME file, so a class added
+            // there and forgotten here would silently inherit `*` instead of the
+            // intended model, and in `backlog` -- whose `*` is a local box -- that is a
+            // silent downgrade of the auto-merge gate rather than a visible error.
         model_stylesheet="
-            *           { model: glm-5.3; }
-            .review     { model: glm-5.3; }
-            .rebase     { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
-            .rebase-t2  { model: glm-5.3; }
+            *                 { model: glm-5.3; }
+            .rebase           { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .rebase-t2        { model: glm-5.3; }
+            .merge-standards  { model: glm-5.3-flash; }
+            .merge-spec       { model: glm-5.3; }
+            .merge-fix        { model: glm-5.3; }
         "
     ]
     rankdir=LR

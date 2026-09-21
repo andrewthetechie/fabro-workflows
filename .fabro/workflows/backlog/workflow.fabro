@@ -58,18 +58,42 @@ digraph Backlog {
             // The default is a pinned box (`coders-a`), not the retired both-boxes
             // `coders` group (ADR 0007, task 04 removed it with the LiteLLM provider);
             // the escape hatch fires an explicit `coder_pool` so it never relies on this.
+            //
+            // `.improve` names the SAME pinned box as `.coder`, deliberately. Measured
+            // over two runs it was 19.1% of all hosted tokens (4.52M of 23.74M) for
+            // per-task spec sharpening on a peak context of 57k -- comfortably inside the
+            // box's 262144 window -- and a weak spec is caught immediately downstream by
+            // `review` and the rework ladder. It must resolve to the SAME box as the
+            // coder, not a second one: the scheduler leases exactly one box per run, so
+            // naming the other here would queue behind a run that holds it.
+            //
+            // The review classes are split one-per-node rather than sharing a `.review`
+            // rule. They used to share it, which meant the three per-task reviewers and
+            // the three merge-phase reviewers -- the gate in front of an unattended
+            // squash into `main` -- could not be tuned apart. `.review-standards` and
+            // `.merge-standards` now take glm-5.3-flash: a standards review reads a
+            // documented rubric rather than exercising judgement, which is the cheapest
+            // kind of check to move down a tier, and flash carries a 262144 window
+            // against full 5.3's 202752. Every model named here must also exist in the
+            // server settings overlay or the run dies at its first node; `fabro validate`
+            // does not check the catalog.
         model_stylesheet="
-            *                { model: coders-a; }
-            .decomp          { model: glm-5.3; }
-            .improve         { model: glm-5.3; }
-            .coder           { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
-            .coder-t2        { model: glm-4.7; }
-            .coder-t3        { model: kimi-for-coding; }
-            .coder-t4        { model: glm-5.3; }
-            .rebase          { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
-            .rebase-t2       { model: glm-5.3; }
-            .review          { model: glm-5.3; }
-            .review-frontier { model: kimi-k3; }
+            *                 { model: coders-a; }
+            .decomp           { model: glm-5.3; }
+            .improve          { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .coder            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .coder-t2         { model: glm-4.7; }
+            .coder-t3         { model: kimi-for-coding; }
+            .coder-t4         { model: glm-5.3; }
+            .rebase           { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .rebase-t2        { model: glm-5.3; }
+            .review-task      { model: glm-5.3; }
+            .review-standards { model: glm-5.3-flash; }
+            .review-quality   { model: glm-5.3; }
+            .review-frontier  { model: kimi-k3; }
+            .merge-standards  { model: glm-5.3-flash; }
+            .merge-spec       { model: glm-5.3; }
+            .merge-fix        { model: glm-5.3; }
         "
     ]
     rankdir=LR
@@ -517,7 +541,7 @@ if [ $RC -ne 0 ]; then
   exit 1
 fi"]
 
-    review [label="Review task", class="review", timeout="15m", max_retries=1, prompt="@prompts/reviewer.md.j2"]
+    review [label="Review task", class="review-task", timeout="15m", max_retries=1, prompt="@prompts/reviewer.md.j2"]
 
     review_gate [label="Validate verdict", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/verdict.json
@@ -570,7 +594,7 @@ git diff --stat origin/main...HEAD > /tmp/fabro/extra/diffstat.txt
 git diff --name-only origin/main...HEAD > /tmp/fabro/extra/changed_files.txt
 echo '{\"context_updates\":{\"extra_done\":false,\"standards_status\":\"none\",\"spec_status\":\"none\",\"quality_status\":\"none\",\"new_tasks\":0,\"followup_status\":\"none\"}}'"]
 
-    standards [label="Standards review", class="review", timeout="15m", max_retries=1, prompt="@prompts/standards.md.j2"]
+    standards [label="Standards review", class="review-standards", timeout="15m", max_retries=1, prompt="@prompts/standards.md.j2"]
     standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/standards.json
 A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)
@@ -598,7 +622,7 @@ fi
 echo 0 > /tmp/fabro/spec_attempts
 echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
-    quality [label="Code quality review", class="review", timeout="15m", max_retries=1, prompt="@prompts/quality.md.j2"]
+    quality [label="Code quality review", class="review-quality", timeout="15m", max_retries=1, prompt="@prompts/quality.md.j2"]
     quality_gate [label="Validate quality output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/quality.json
 A=$(cat /tmp/fabro/quality_attempts 2>/dev/null || echo 0)

@@ -10,6 +10,9 @@ graph = "workflow.fabro"
 # nested table and the automation fire returns 422.
 [run.model.fallbacks]
 "glm-5.3" = ["kimi:kimi-k3"]
+# The mechanical-check tier (.merge-standards in the imported review-merge
+# graph). Escalates UP to full glm-5.3, never sideways.
+"glm-5.3-flash" = ["zai:glm-5.3"]
 # The scheduler pins a run to one box by naming `coders-a` or `coders-b` in the
 # run's `coder_pool` input (see the stylesheet). Fallbacks are keyed on the
 # REQUESTED model name, so each pinned group needs its own entry or a pinned run

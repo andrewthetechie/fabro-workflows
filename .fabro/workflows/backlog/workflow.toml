@@ -26,6 +26,10 @@ graph = "workflow.fabro"
 "glm-4.7" = ["kimi:kimi-for-coding"]
 kimi-for-coding = ["zai:glm-5.3"]
 "glm-5.3" = ["kimi:kimi-k3"]
+# The mechanical-check tier (.review-standards, .merge-standards). It escalates
+# UP to full glm-5.3 rather than sideways, so a flash outage degrades into a
+# better review and never into a worse one.
+"glm-5.3-flash" = ["zai:glm-5.3"]
 kimi-k3 = ["zai:glm-5.3"]
 long-context = ["kimi:kimi-k3"]
 
