@@ -29,8 +29,8 @@ digraph PrReview {
             // `medium` is the closest fabro can get to "no parameter"; `low` undershoots
             // the model's own default.
             //
-            // The hosted tiers (glm-4.7, kimi-for-coding, glm-5.3, kimi-k3) are left at
-            // the default. The measurement above is specific to this local GGUF endpoint
+            // The hosted tiers (glm-5.3-flash, kimi-for-coding, glm-5.3, kimi-k3) are left
+            // at the default. The measurement above is specific to this local GGUF endpoint
             // and says nothing about z.ai or kimi, and the review classes are where the
             // thinking is the product rather than the overhead.
             //

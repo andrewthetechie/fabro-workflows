@@ -72,10 +72,37 @@ digraph Backlog {
             // `medium` is the closest fabro can get to "no parameter"; `low` undershoots
             // the model's own default.
             //
-            // The hosted tiers (glm-4.7, kimi-for-coding, glm-5.3, kimi-k3) are left at
-            // the default. The measurement above is specific to this local GGUF endpoint
+            // The hosted tiers (glm-5.3-flash, kimi-for-coding, glm-5.3, kimi-k3) are left
+            // at the default. The measurement above is specific to this local GGUF endpoint
             // and says nothing about z.ai or kimi, and the review classes are where the
             // thinking is the product rather than the overhead.
+            //
+            // NO CLASS MAY NAME glm-4.7, and nothing may fall back to it. It is the only
+            // model in this server's catalog whose record carries
+            // `features.reasoning: false` (`fabro model list --json`); every other model
+            // named here is `true`. The z.ai endpoint nonetheless RETURNS a reasoning
+            // block sometimes, and on the next turn fabro has to replay that assistant
+            // message against its own capability record and refuses locally -- 3ms, no
+            // request leaves the host:
+            //     LLM error: model zai/glm-4.7 does not support reasoning
+            // It classifies `api_deterministic|zai|invalid_request`, and that category
+            // both bypasses the retry budget (`max_retries=1` never engages) and skips
+            // `[run.model.fallbacks]`, which only covers errors and rate limits. So the
+            // stage dies outright and takes its unconditional edge to `human_rescue`.
+            // Nondeterministic by nature: it fires only when the model happens to emit
+            // reasoning, so `.coder-t2` passed for weeks before run
+            // 01M33SDMZF55NAEV8JV29A8EA4 lost `rework_t2` to it on 2026-09-22 with six
+            // of seven tasks already landed. `fabro validate` cannot see this -- the
+            // graph is valid and the class resolves.
+            //
+            // glm-5.3-flash replaces it on `.coder-t2`: reasoning-capable, on the same
+            // z.ai coding plan (unmetered), and a 262144 window against glm-4.7's 202752,
+            // so the rung is strictly wider than the one it replaces. The ladder keeps
+            // four distinct rungs -- box, flash, kimi-for-coding, full 5.3. The shared
+            // `timeout="45m"` on all four rework tiers is a house number covering the
+            // local box AND three hosted models rather than a glm-4.7 measurement, so
+            // moving this class does not void it; flash is the faster of the two 5.3s
+            // and t4 already runs full 5.3 inside the same budget.
             //
             // coder_pool: the root stylesheet is the ONLY per-run model-routing lever
             // fabro offers. Node-level `model` attributes are literal text (not
@@ -117,7 +144,7 @@ digraph Backlog {
             .decomp           { model: glm-5.3; }
             .improve          { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .coder            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
-            .coder-t2         { model: glm-4.7; }
+            .coder-t2         { model: glm-5.3-flash; }
             .coder-t3         { model: kimi-for-coding; }
             .coder-t4         { model: glm-5.3; }
             .rebase           { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
@@ -540,7 +567,7 @@ echo '{\"context_updates\":{\"task_disposition\":\"'$D'\",\"task_count\":'$TC'}}
     // 03:11:26, 03:21:26) and the 200 finally landed 20 minutes late. Nothing in
     // fabro recovers from that on its own: a stream that stalls without erroring is
     // not a provider error, so neither the LLM retry (3x, transient errors only) nor
-    // the model fallback chain (`coders` -> `glm-4.7`) can fire. The node timeout is
+    // the model fallback chain (`coders-a` -> `glm-5.3-flash`) can fire. The node timeout is
     // the only backstop, and it classifies as `transient_infra` -- which IS
     // retry-eligible, but `default_max_retries` is 0, so the stage reported
     // `will_retry: false` and the run walked its unconditional edge to human_rescue
@@ -666,7 +693,7 @@ echo $R > /tmp/fabro/round
 echo '{\"context_updates\":{\"round\":'$R'}}'"]
 
     rework_t1 [label="Rework (tier 1: coders)", class="coder", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
-    rework_t2 [label="Rework (tier 2: glm-4.7)", class="coder-t2", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
+    rework_t2 [label="Rework (tier 2: glm-5.3-flash)", class="coder-t2", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
     rework_t3 [label="Rework (tier 3: kimi-for-coding)", class="coder-t3", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
     rework_t4 [label="Rework (tier 4: glm-5.3)", class="coder-t4", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
 
@@ -829,6 +856,39 @@ echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'
     // The message names `[X] Abandon` because that is the answer that does the label
     // cleanup -- `agent-in-progress` off, `agent-stuck` on -- instead of leaving the
     // issue mid-flight.
+    //
+    // The SECOND floor is `.github/workflows/`. An agent that edits one poisons the whole
+    // branch: the sandbox pushes over HTTPS with an OAuth App token (`gho_`), and GitHub
+    // refuses any push whose new commits create or update a workflow file unless that
+    // token carries the `workflow` scope. The host token does not -- its scopes are
+    // `admin:public_key, gist, read:org, repo` -- and `repo` does not imply it.
+    //
+    // Everything about that failure is quiet until it is terminal. The checkpoint push
+    // after every stage only WARNS (`Failed to push run branch ... [git_push_failed]`),
+    // so the run keeps going with the remote branch frozen; `open_pr` is the first node
+    // that cares, and it dies on `git push -u origin HEAD` under `set -e` in ~1s with
+    // no routing schema and therefore `unknown error`. It then takes its unconditional
+    // edge to `human_rescue`, whose `[P] Accept partial` leads straight back to THIS
+    // node -- an unbounded loop through 2.8m of aggregate and CI, ending in the same
+    // deterministic rejection every pass.
+    //
+    // Cost, run 01M33SDMZF55NAEV8JV29A8EA4 on 2026-09-22, womens-fantasy-sports#1201:
+    // the `coder` stage on task 7 of 7 deleted one clause from a five-line YAML COMMENT
+    // in `.github/workflows/test-backend.yml` -- seven lines, zero workflow semantics,
+    // and the task's own reviewer flagged it as a nit to revert. That one commit
+    // (7e0503d) rejected 17 of the run's 96 checkpoint pushes, froze the remote branch
+    // 3.5 hours behind the sandbox, and cost two `[P] Accept partial` answers before the
+    // loop was recognised. 98 commits and 71 files of real work sat only in the sandbox.
+    //
+    // The check is `git log origin/main..HEAD -- .github/workflows/`, not a two-dot
+    // `git diff`: the rejection is evaluated against the COMMITS in the push, so a
+    // branch that edits a workflow file and reverts it later still fails, and a net-diff
+    // test would call that branch clean. Path-limited log also skips the merge commit
+    // this node just made, so a workflow change arriving FROM main never trips it.
+    //
+    // It runs before the setup/ci loop for the same reason the empty-tree floor does:
+    // there is nothing to validate on a branch that cannot be pushed, and this makes the
+    // Accept-partial loop cost ~1s instead of 2.8m.
     open_pr_prep [label="Final aggregate and PR prep", shape=parallelogram, timeout="20m",
         script="set -e
 git fetch origin main
@@ -844,6 +904,27 @@ if git diff --quiet origin/main HEAD; then
   fi
   echo 'a PR from here would carry a title and body derived from the issue, asserting work that does not exist.' >&2
   echo 'answer [X] Abandon at the rescue gate unless the run can be made to do the work.' >&2
+  exit 1
+fi
+if [ -n \"$(git log --format=%H origin/main..HEAD -- .github/workflows/ | head -1)\" ]; then
+  echo 'refusing to open a PR: a commit on this branch changes a file under .github/workflows/.' >&2
+  echo 'the sandbox pushes over HTTPS with an OAuth App token. GitHub rejects any push whose' >&2
+  echo 'new commits create or update a workflow file unless that token carries the `workflow`' >&2
+  echo 'scope, and this one does not -- the push fails with:' >&2
+  echo '  ! [remote rejected] (refusing to allow an OAuth App to create or update workflow' >&2
+  echo '    `.github/workflows/...` without `workflow` scope)' >&2
+  echo 'commits that touch it:' >&2
+  git log --oneline origin/main..HEAD -- .github/workflows/ | sed 's/^/  /' >&2
+  echo 'files:' >&2
+  git diff --name-only origin/main HEAD -- .github/workflows/ | sed 's/^/  /' >&2
+  echo 'this is NOT recoverable by answering [P] Accept partial again: the rejection is' >&2
+  echo 'deterministic and every later checkpoint push on this branch fails the same way.' >&2
+  echo 'the operator fixes it one of two ways, both outside this run:' >&2
+  echo '  1. grant the scope -- gh auth refresh -h github.com -s workflow, then reset the' >&2
+  echo '     server GITHUB_TOKEN secret. Fixes the whole class for every repo.' >&2
+  echo '  2. land the branch on the remote over SSH, which has no such restriction. Once' >&2
+  echo '     the offending commits are on the remote, later pushes carry only new commits' >&2
+  echo '     and are accepted.' >&2
   exit 1
 fi
 A=1

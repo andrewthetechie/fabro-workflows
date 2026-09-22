@@ -21,14 +21,24 @@ graph = "workflow.fabro"
 # task 04 retired that id with the LiteLLM provider (ADR 0007) and an unpinned
 # run resolves to `coders-a`; pinning changes only which box answers, never the
 # escalation ladder.
-"coders-a" = ["zai:glm-4.7"]
-"coders-b" = ["zai:glm-4.7"]
-"glm-4.7" = ["kimi:kimi-for-coding"]
+#
+# Nothing falls back to glm-4.7 and no stylesheet class may name it: it is the
+# only model in the server catalog with `features.reasoning: false`, the z.ai
+# endpoint returns reasoning blocks from it anyway, and replaying one costs the
+# stage outright (`LLM error: model zai/glm-4.7 does not support reasoning`).
+# The graph comment above `model_stylesheet` carries the full reasoning. It is
+# worth knowing that a fallback would not have saved the stage even if the
+# target were sound -- the failure classifies `api_deterministic|...|
+# invalid_request`, and this table only covers errors and rate limits.
+"coders-a" = ["zai:glm-5.3-flash"]
+"coders-b" = ["zai:glm-5.3-flash"]
 kimi-for-coding = ["zai:glm-5.3"]
 "glm-5.3" = ["kimi:kimi-k3"]
-# The mechanical-check tier (.review-standards, .merge-standards). It escalates
-# UP to full glm-5.3 rather than sideways, so a flash outage degrades into a
-# better review and never into a worse one.
+# The mechanical-check tier (.review-standards, .merge-standards) and, since
+# glm-4.7 was removed, the first hosted rung of the coder ladder (.coder-t2) and
+# the landing spot for a failed local box. It escalates UP to full glm-5.3 rather
+# than sideways, so a flash outage degrades into a better model and never a worse
+# one -- which also gives `coders-a` a two-step chain, flash then full 5.3.
 "glm-5.3-flash" = ["zai:glm-5.3"]
 kimi-k3 = ["zai:glm-5.3"]
 long-context = ["kimi:kimi-k3"]
@@ -171,7 +181,7 @@ script = "/storage/scripts/discord-notify.sh needs-human"
 
 # Model escalation: alert when a task or a merge-resolution leaves the local
 # coder box for a hosted model. The stages are the coder ladder's hosted tiers
-# (rework_t2 -> glm-4.7, rework_t3 -> kimi-for-coding, rework_t4 -> glm-5.3),
+# (rework_t2 -> glm-5.3-flash, rework_t3 -> kimi-for-coding, rework_t4 -> glm-5.3),
 # the merge resolver (resolve_merge, also glm-5.3), and the imported CI-fix
 # escalation (review_merge.ci_fix_t2, glm-5.3). The alert is informational: the
 # ladder itself is the system working, so nothing blocks.

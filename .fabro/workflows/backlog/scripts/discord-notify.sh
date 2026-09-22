@@ -53,7 +53,7 @@ if [ "$kind" = "fallback" ]; then
   node_id=$(printf '%s' "$ctx" | grep -o '"node_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
   node_short="${node_id##*.}"
   case "$node_short" in
-    rework_t2)       model="glm-4.7" ;;
+    rework_t2)       model="glm-5.3-flash" ;;
     rework_t3)       model="kimi-for-coding" ;;
     rework_t4)       model="glm-5.3" ;;
     rebase_agent_t2) model="glm-5.3" ;;

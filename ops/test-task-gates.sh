@@ -873,7 +873,7 @@ PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
 # ---------------------------------------------------------------------------
-# open_pr_prep — the empty-diff floor in front of the PR
+# open_pr_prep — the two floors in front of the PR (empty diff, workflow files)
 # ---------------------------------------------------------------------------
 # Every other gate here stubs `git`. This one must not: what is being checked is
 # whether `git diff --quiet origin/main HEAD` tells the truth about a real branch
@@ -917,9 +917,28 @@ opp_repo() {
     # per stage, none of them touching a repository file.
     git -C "$T/wt" commit -q --allow-empty -m 'fabro(01TEST): claim (succeeded)'
     git -C "$T/wt" commit -q --allow-empty -m 'fabro(01TEST): prep (failed)'
-    if [ "$1" = work ]; then
+    case "$1" in
+    work|workflow|wfrevert)
         echo implemented >> "$T/wt/a.txt"
         git -C "$T/wt" commit -qam 'fabro(01TEST): integrate (succeeded)'
+        ;;
+    esac
+    # A coder that edited a CI workflow file. Real work landed first, so this is
+    # the poisoned-branch case and not the empty-tree one.
+    case "$1" in
+    workflow|wfrevert)
+        mkdir -p "$T/wt/.github/workflows"
+        printf '%s\n' 'name: t' 'on: push' 'jobs: {}' > "$T/wt/.github/workflows/test-backend.yml"
+        git -C "$T/wt" add -A
+        git -C "$T/wt" commit -qm 'fabro(01TEST): coder (succeeded)'
+        ;;
+    esac
+    # ...and then took it back out again. The net diff against main is now clean
+    # while the COMMITS still carry it, which is the whole reason the gate reads
+    # `git log` and not `git diff`.
+    if [ "$1" = wfrevert ]; then
+        git -C "$T/wt" rm -q .github/workflows/test-backend.yml
+        git -C "$T/wt" commit -qm 'fabro(01TEST): rework_t1 (succeeded)'
     fi
     : > "$T/opp.log"
     rm -f "$T/completed.md" "$T/pr_body.md" "$T/pr_title.txt" "$T/commit_subject.txt"
@@ -975,6 +994,49 @@ git -C "$T/up" commit -q --allow-empty -m 'main moves on'
 OUT=$(opp_run); RC=$?
 check "main moved, work kept, exits 0" "0" "$RC"
 check "main moved, work kept, runs CI" "2" "$(wc -l < "$T/opp.log" | tr -d ' ')"
+
+# 7. The `.github/workflows/` floor. The branch is pushed with an OAuth App token
+#    that has no `workflow` scope, so one commit touching a workflow file makes the
+#    whole branch unpushable -- 17 rejected checkpoint pushes and a 1s `unknown
+#    error` at `open_pr`, on run 01M33SDMZF55NAEV8JV29A8EA4 (2026-09-22) for a
+#    seven-line YAML COMMENT edit. Refusing here turns that into one readable
+#    message before the CI loop instead of after every task has been thrown away.
+opp_repo workflow
+OUT=$(opp_run); RC=$?
+check "workflow file exits nonzero" "1" "$RC"
+check "workflow file names the path" "1" \
+    "$(grep -c 'changes a file under .github/workflows/' <<<"$OUT")"
+check "workflow file names the scope" "1" "$(grep -c 'workflow. scope' <<<"$OUT")"
+check "workflow file lists the commit" "1" \
+    "$(grep -c 'coder (succeeded)' <<<"$OUT")"
+check "workflow file lists the file" "1" \
+    "$(grep -c '  .github/workflows/test-backend.yml' <<<"$OUT")"
+check "workflow file says [P] will not help" "1" \
+    "$(grep -c 'NOT recoverable by answering' <<<"$OUT")"
+check "workflow file runs no CI" "0" "$(wc -l < "$T/opp.log" | tr -d ' ')"
+check "workflow file writes no body" "absent" \
+    "$([ -f "$T/pr_body.md" ] && echo present || echo absent)"
+
+# 8. Edited and then reverted. `git diff origin/main HEAD` is clean for that path,
+#    so a net-diff test would pass this branch -- and the push would still be
+#    rejected, because GitHub judges the commits in the push, not the end state.
+opp_repo wfrevert
+OUT=$(opp_run); RC=$?
+check "reverted workflow edit still refused" "1" "$RC"
+check "reverted workflow edit names the commit" "1" \
+    "$(grep -c 'coder (succeeded)' <<<"$OUT")"
+
+# 9. The false positive that would strand every run merging a main that touched
+#    its own CI. The change is reachable from origin/main, so it is not in the
+#    push and must not trip the floor.
+opp_repo work
+mkdir -p "$T/up/.github/workflows"
+printf '%s\n' 'name: t' 'on: push' 'jobs: {}' > "$T/up/.github/workflows/test-backend.yml"
+git -C "$T/up" add -A
+git -C "$T/up" commit -qm 'main changes its own CI'
+OUT=$(opp_run); RC=$?
+check "workflow change from main is not ours" "0" "$RC"
+check "workflow change from main still runs CI" "2" "$(wc -l < "$T/opp.log" | tr -d ' ')"
 
 PATH="$SAVED_PATH"
 

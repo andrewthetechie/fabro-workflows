@@ -63,6 +63,18 @@ A file is OUT of scope if:
 
 When in doubt: don't edit it.
 
+## Never edit `.github/workflows/`
+
+Treat every file under `.github/workflows/` as read-only, always, even when a
+task, a finding, or a reviewer's nit points straight at one — and even for a
+comment or a whitespace change. Nothing in this repository's automation can
+publish such a change: the branch is pushed with a token that lacks GitHub's
+`workflow` scope, so a single commit touching one of those files makes the
+branch unpushable and throws away every task the run has already landed.
+
+If the correct fix genuinely requires a workflow change, leave the file alone
+and say so in your completion note instead. A human will make that edit.
+
 ## Anti-patterns — do NOT do these
 
 - Hand-write types or schemas when a generated client exists. Import from the
