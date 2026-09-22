@@ -1,6 +1,41 @@
 digraph Backlog {
     graph [
         goal="Backlog: decompose the next agent-labeled issue, implement each task with review, and open a PR",
+        // The graph stall watchdog, raised from its 30-minute default because
+        // `watch_checks` sits silent for longer than that, and of the two bounds the
+        // SMALLER one silently wins.
+        //
+        // A command node emits exactly two events, CommandStarted and CommandCompleted
+        // (handler/command.rs:94 and :155). Command output is streamed to a log recorder
+        // and finalised into a blob, never into the event stream, so a node that polls
+        // with `sleep 30` is invisible to the watchdog -- which re-arms only from
+        // Emitter::last_activity() (pipeline/execute.rs:85-116) and parks only while the
+        // run is blocked on a human. `watch_checks` is exactly that shape.
+        //
+        // At the 30m default (graph.rs:687) the node's own timeout was unreachable and
+        // the watchdog CANCELLED the run rather than failing the stage: no
+        // report_blocked, no PR comment, no ai-review-needs-human label, and the
+        // 60-minute merge_deadline unspendable. Seven runs died this way between
+        // 2026-09-20 and 2026-09-22, each at exactly 1800s in review_merge.watch_checks,
+        // each leaving an open unmerged PR and its issue parked on `Review`:
+        // 01M30HAD24GGT0G0SA7269RA88, 01M310TMY1B32BMD4GKRY6FRGF,
+        // 01M317TAHWW6HFMZ6WMVVZ87W9, 01M31GMNY3YE8DYTF7C20BKVFQ,
+        // 01M325W5B6FNMFM5NTWYSXG4NM, 01M33KG46HYJ9DXB34FB0Z479C and
+        // 01M33KW2F4A89VDFJHXC73GD25. It is item 2 of
+        // docs/research_improvements/01-tier-1-single-attribute-fixes.md, written up on
+        // 2026-09-20 and applied here.
+        //
+        // 60m keeps EVERY node timeout strictly below it, which is the property that
+        // matters: a node timeout routes -- watch_checks to mark_needs_human -- and a
+        // watchdog cancel does not. The tallest command node is `watch_checks` at 50m.
+        // `coder` at 180m is the only node of any kind above this, and an agent emits an
+        // event per stream delta, so the watchdog only ever sees one that has genuinely
+        // gone silent.
+        //
+        // The cost is 30 more minutes before a hung provider is caught on a long agent
+        // stage. That backstop cancels the run either way, and every agent node here
+        // already carries its own measured timeout.
+        stall_timeout="60m",
         // Bound the preamble. `compact` (the default) prepends EVERY completed stage to
         // every agent prompt, with up to 25 lines of command output each
         // (handler/llm/preamble.rs:391, COMPACT_OUTPUT_MAX_LINES=25), plus the whole

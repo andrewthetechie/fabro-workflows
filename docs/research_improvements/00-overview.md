@@ -52,7 +52,8 @@ operator observations. Gap documents end by naming the tier that carries their f
    Identical deterministic command failures are capped at 3 per run; the rework ladder
    permits 6. Tier 1. See `01`.
 2. **The stall watchdog fires before `watch_checks` can finish.** Its 35-minute timeout is
-   unreachable behind a 30-minute default. Tier 1. See `01`.
+   unreachable behind a 30-minute default. Tier 1. See `01`. **Applied 2026-09-22**,
+   after it cost seven runs; it is the only item in this directory that has shipped.
 3. **`[R] Retry with guidance` never renders on the rescue gate.** Fabro drops labelled
    freeform edges from the option list. Tier 1 and gap `11`.
 4. **Agents receive an unbounded preamble** — every completed stage, with 25 lines of

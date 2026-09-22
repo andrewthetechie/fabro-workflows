@@ -461,7 +461,25 @@ fi"]
     // tier's result -- it reported `ci_fix_ok=true` twice for a tier that never produced
     // one, which is what fed the loop above. Same rule prep_review applies to the review
     // contracts, and the invariant AGENTS.md states.
-    watch_checks [label="Watch GitHub checks", shape=parallelogram, timeout="35m", output_schema="routing",
+    // `timeout` is sized from measured CI wall clock, not from the merge budget. On
+    // 2026-09-22 the slowest settle observed was writers-app at 47m55s from the
+    // checkpoint push to the last check completing (run 01M33KG46HYJ9DXB34FB0Z479C):
+    // about 17m of real execution -- the tauri-pilot UI end-to-end job -- sitting behind
+    // 8 to 22m of queue for that repository's four self-hosted runners. 35m could not
+    // cover it, so every writers-app run from 2026-09-20 on reached this node and never
+    // left it.
+    //
+    // 50m covers that measurement with headroom and still sits inside the 60-minute
+    // merge_deadline `merge_gate` writes, so the budget rather than this number is what
+    // bounds a repository whose CI is merely slow. It also stays under the graph's 60m
+    // stall_timeout, which is what makes THIS timeout the one that fires -- and a node
+    // timeout routes to mark_needs_human, where the watchdog cancel reported nothing.
+    //
+    // The wait costs a held coder lease, so this is a ceiling and not a target. The
+    // durable fix belongs in the repository: a concurrency group on the CI workflow
+    // collapses the queue that produced the 48 minutes, since fabro checkpoints after
+    // every stage and each push had been starting a full CI run of its own.
+    watch_checks [label="Watch GitHub checks", shape=parallelogram, timeout="50m", output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 A=$(cat /tmp/fabro/gh_fix_attempts 2>/dev/null || echo 0)
 DL=$(cat /tmp/fabro/merge_deadline 2>/dev/null || echo 0)

@@ -101,6 +101,13 @@ cheap proxies:
 
 ## 2. The stall watchdog fires before `watch_checks` can finish
 
+**Applied 2026-09-22** (`stall_timeout="60m"` on both root graphs, `watch_checks`
+re-timed to 50m). It had cost seven runs by then, all of writers-app and
+lawncare-saas, each cancelled at exactly 1800s in `review_merge.watch_checks`. The
+diagnosis below is what it was before the fix; the sizing that shipped is wider
+than the 45m proposed here, because writers-app's CI was measured at 47m55s of
+wall clock and 45m would still have left the node timeout unreachable in practice.
+
 ### What happens
 
 `watch_checks` (`.fabro/workflows/pr-review/workflow.fabro:521`) carries `timeout="35m"`

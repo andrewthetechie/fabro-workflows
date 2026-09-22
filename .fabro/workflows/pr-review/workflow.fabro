@@ -1,6 +1,13 @@
 digraph PrReview {
     graph [
         goal="Rebase a pull request onto the tip of its base branch, review it on three axes, apply one round of fixes, verify CI, and squash-merge it when the review, the risk rating and CI all allow",
+        // Raised from the 30-minute default: `watch_checks` polls silently for up to
+        // 50m, and a command node emits no output events, so the watchdog cancelled the
+        // whole run before the node's own timeout could route it. Every node timeout in
+        // this graph stays strictly below this number, which is what makes the node
+        // timeout the one that fires. See backlog's graph block for the full reasoning
+        // and the seven runs it cost.
+        stall_timeout="60m",
         // Bound the preamble: `compact` (the default) prepends every completed stage,
         // with up to 25 lines of command output each, to every agent prompt. Every
         // prompt here names its inputs by path, so the preamble carries no signal this
