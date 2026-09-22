@@ -710,8 +710,9 @@ class Store:
         **not** requeue. Dispatch removes `agent` from the issue, so from that
         moment the cached row is stale by construction — but only the 60-second
         inventory poll notices, and the dispatch loop ticks every 5 seconds. While
-        the lease is held that gap is harmless (one in-flight run per repo keeps
-        the repo out of `choose_next`), and at the instant the lease is released it
+        the lease is held that gap is harmless (`choose_next`'s running-keys guard
+        excludes the leased repo#issue from its saturation pass), and at the
+        instant the lease is released it
         is exactly wrong: a run that ended agent-shaped would be dispatched again
         off a row describing a queue membership GitHub no longer has. So the row
         goes when the box does.

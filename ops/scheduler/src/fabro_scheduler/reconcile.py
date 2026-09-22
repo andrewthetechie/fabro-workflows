@@ -451,11 +451,12 @@ def reconcile_leases(
         else:
             # The cache row goes with the box. Dispatch removed `agent` from this
             # issue, so the row has been stale since then; while the lease was
-            # held that was harmless (one in-flight run per repo kept the repo out
-            # of `choose_next`), and at this instant it is the whole bug — the
-            # 5-second dispatch tick would start a second run off it, up to a
-            # minute before the inventory poll cleared it. An agent-shaped ending
-            # must not come back, and this is what makes that true rather than
+            # held that was harmless (`choose_next`'s running-keys guard excludes
+            # the leased repo#issue from its saturation pass), and at this instant
+            # it is the whole bug — the 5-second dispatch tick would start a
+            # second run off it, up to a minute before the inventory poll cleared
+            # it. An agent-shaped ending must not come back, and this is what
+            # makes that true rather than
             # merely likely.
             store.forget_issue(lease.repo, lease.issue_number)
             # Read the attempt count BEFORE clearing it: the row records how many

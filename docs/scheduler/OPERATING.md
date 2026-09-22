@@ -14,8 +14,10 @@ control and the failure modes; `00-overview-and-contracts.md` has the 19 decisio
 
 Every 60 seconds it asks GitHub for the open `agent`-labelled issues in the four repos
 (conditionally — a `304` costs no rate-limit quota). Every 5 seconds it checks whether a
-coder box is free and, if one is, starts exactly one `backlog` run: **one run per repo, one
-run per box, two boxes.** It labels the issue `agent-in-progress` *before* creating the run,
+coder box is free and, if one is, fills it with a `backlog` run: **one run per repo, one
+run per box, two boxes** &mdash; and where the queue is not diverse enough for that, a second
+run from the same repo so a box never idles hungry (decision 6, *prefer diversity, never
+idle a box*). It labels the issue `agent-in-progress` *before* creating the run,
 because that label is the receipt a restart rebuilds from. It holds the box for the whole
 run — including while the run sits on a human gate — and releases it when the run reaches
 `succeeded`, `failed` or `dead`.

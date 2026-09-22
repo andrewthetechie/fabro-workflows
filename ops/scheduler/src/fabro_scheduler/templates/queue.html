@@ -60,19 +60,14 @@
 
 {% if blocked_idle %}
 <div class="mb-6 rounded-md border border-amber-700/60 bg-amber-950 px-4 py-3 text-sm text-amber-100">
-  <p><strong class="text-amber-200">Idle worker but the queue is blocked</strong> &mdash;
+  <p><strong class="text-amber-200">Idle worker, queue momentarily blocked</strong> &mdash;
      {{ idle_pools|join(', ') }} is free, but every queued issue is from a repo that already
-     has a run in flight ({{ busy_queued_repos|join(', ') }}). The one-in-flight-per-repo guard
-     keeps the dispatch loop from filling a free box with a second run from a busy repo, so this
-     only corrects itself when an in-flight run finishes.</p>
-  <p class="mt-2">To fill the idle worker now, trigger a run by hand with
-     <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">POST /api/dispatch-once</code> &mdash;
-     the operator override deliberately bypasses the per-repo guard:</p>
-  {% if suggested_dispatch %}
-  <pre class="mt-2 overflow-x-auto rounded-md bg-black/40 px-3 py-2 font-mono text-xs leading-5 text-amber-100">{{ suggested_dispatch }}</pre>
-  {% endif %}
-  <p class="mt-2 text-amber-200/80"><strong>Next</strong> (bump) does <em>not</em> help here &mdash; it only
-     re-ranks, and a repo with a run in flight is still skipped by the dispatch loop.</p>
+     has a run in flight. The dispatch loop fills a free box with a second same-repo run rather
+     than idling it, so this is a brief, self-resolving transient: the box clears on the next
+     dispatch tick once a non-running issue is available, or on the ~{{ poll_seconds }}s GitHub
+     poll once the cached running issues drop out of the queue. No action needed.</p>
+  <p class="mt-2 text-amber-200/80">If it persists past a poll, the inventory is likely stale &mdash;
+     check the <strong class="text-amber-200">Repos</strong> table below.</p>
 </div>
 {% endif %}
 

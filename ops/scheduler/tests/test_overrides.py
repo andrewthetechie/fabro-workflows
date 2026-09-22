@@ -179,9 +179,10 @@ def test_repeated_bumps_put_the_newest_first(store):
 
 
 def test_a_bump_does_not_pre_empt_a_running_lease(store):
-    # "Next" is ordering only, and one in-flight run per repo still applies. The
-    # loop's response to that is in the dispatch section below; this is the ranking
-    # half, which is what makes the skip necessary rather than merely correct.
+    # "Next" is ordering only: it never touches a running lease. Under decision 6
+    # saturation a bumped busy-repo issue still dispatches once a box frees, but
+    # that is the dispatch half; this is the ranking half, which is where the bump
+    # puts the item first for that same-repo next-dispatch.
     store.upsert_issue(issue("o/normal", 2))
     store.upsert_issue(issue("o/urgent", 1))
     store.bump_override("o/normal", 2)

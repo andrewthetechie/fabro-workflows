@@ -139,13 +139,16 @@ also why it must not be left running unattended.
   live `environment_id` values and their repos are in `repos.toml` (draft 04).
 
 - Behavior rules:
-  - Loop every **5s**. Cheap: it only reads local SQLite and dispatches when all
-    three preconditions hold.
-  - Preconditions, all required: a free undrained pool; a non-empty queue; the
-    candidate's repo has no active lease.
-  - **One in-flight run per repo.** If the top-ranked item's repo is already
-    leased, skip to the next-ranked item from a different repo. Do **not** idle
-    the box.
+  - Loop every **5s**. Cheap: it only reads local SQLite and dispatches when
+    there is a free undrained pool and a non-empty queue.
+  - Preconditions: a free undrained pool; a non-empty queue.
+  - **Prefer one in-flight run per repo, never idle a box** (decision 6). Take the
+    highest-ranked item whose repo has no active lease (diversity). Only when
+    every queued repo already has an active lease, fall through and take the
+    highest-ranked item that is not itself the one already running (saturation),
+    so a single-repo workload fills every box. Exclude the running keys
+    explicitly: a label write does not evict the local cache row until the GitHub
+    poll, so without it the loop would re-dispatch the issue already on a box.
   - **Soft affinity:** among free pools, prefer `last_pool_for_repo(repo)` when it
     is free. Never wait for it — affinity is a tiebreak only.
   - Dispatch order, and it matters: label **first**, then create, then start, then

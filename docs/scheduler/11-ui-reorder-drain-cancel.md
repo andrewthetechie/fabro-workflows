@@ -89,9 +89,9 @@ the run on a box is a second, explicitly-labelled button. `CONTEXT.md` defines
     recent bump wins. It affects ordering only; it never pre-empts a running lease.
   - An override is **cleared when the item is dispatched**. It means "next", not a
     permanent priority.
-  - Bumping an issue whose repo already has an in-flight run still only changes
-    ordering — one-run-per-repo (decision 6) still applies, so it goes next *for
-    that repo*.
+  - Bumping an issue whose repo already has an in-flight run changes ordering and,
+    once a free box comes up, the item is dispatched under decision 6's saturation
+    pass (a second same-repo run) rather than held back for repo diversity.
   - **Drain** sets `drained=1`; the dispatch loop excludes that pool via
     `free_pools`. The current lease is untouched and runs to completion.
   - **Cancel** calls `POST /runs/{id}/cancel` for the lease on that pool, then

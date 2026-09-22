@@ -40,7 +40,6 @@ missing, and the page is the surface where that is visible at a glance.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sqlite3
@@ -531,8 +530,9 @@ def build_app(
 
         Takes `MIN(override_rank) - 1`, so the most recent bump wins and the newest
         mark sorts above every earlier one. It changes ordering **only**: it never
-        pre-empts a running lease, and one in-flight run per repo (decision 6) still
-        applies, so a bumped issue whose repo is busy goes next *for that repo*.
+        pre-empts a running lease. Under decision 6 saturation a bumped issue whose
+        repo already has a run in flight is still dispatched once a box frees (a
+        second same-repo run), so the bump makes it the next same-repo run to go.
 
         The mark is cleared when the item is dispatched. It is deliberately not a
         permanent priority and deliberately not editable beyond "next": repo
@@ -684,16 +684,16 @@ def build_app(
         statuses = repo_statuses(config.schedulable_repos(), store)
         active = leases.active()
 
-        # The "idle worker, queue blocked" condition: a free (undrained, unleased)
-        # coder instance, a non-empty queue, and every queued item belonging to a
-        # repo that already has a run in flight. The dispatch loop skips any item
-        # whose repo is in `busy_repos` (decision 6, one in-flight run per repo),
-        # so in this state `choose_next` returns None and the free box idles even
-        # though the queue is full. It is not the wedged condition draft 12 alerts
-        # on (every pool idle, none drained) and not an error — it is queue
-        # diversity running out, and it corrects itself once an in-flight run
-        # finishes. The operator can fill the idle box immediately with
-        # `POST /api/dispatch-once`, which deliberately bypasses the per-repo guard.
+        # The "idle worker, queue momentarily blocked" condition: a free
+        # (undrained, unleased) coder instance, a non-empty queue, and every queued
+        # item belonging to a repo that already has a run in flight. The dispatch
+        # loop fills a free box with a second same-repo run rather than idling it
+        # (decision 6 as "prefer diversity, never idle a box"), so this is a brief,
+        # self-resolving transient: the box waits for the next dispatch tick, or for
+        # the GitHub poll to de-list the cached running issues (~60s). It is not the
+        # wedged condition draft 12 alerts on (every pool idle, none drained). A
+        # banner that lingers past a poll is read as stale inventory, not as a queue
+        # the operator must force.
         pools = pool_states()
         idle_pools = [
             p.coder_pool for p in pools if not p.drained and p.lease is None
@@ -702,24 +702,6 @@ def build_app(
         blocked_idle = bool(idle_pools) and bool(items) and all(
             item.issue.repo in busy_repos for item in items
         )
-        busy_queued_repos = sorted({item.issue.repo for item in items} & busy_repos)
-        base_url = str(request.base_url)
-        first_item = items[0] if items else None
-        first_free_pool = idle_pools[0] if idle_pools else None
-        suggested_dispatch = None
-        if first_item is not None and first_free_pool is not None:
-            suggested_dispatch = (
-                f"curl -s -X POST {base_url}api/dispatch-once "
-                "-H 'Content-Type: application/json' -d '"
-                + json.dumps(
-                    {
-                        "repo": first_item.issue.repo,
-                        "issue_number": first_item.issue.number,
-                        "coder_pool": first_free_pool,
-                    }
-                )
-                + "'"
-            )
         return templates.TemplateResponse(
             request,
             "queue.html",
@@ -744,15 +726,13 @@ def build_app(
                 # `Starvation` in the CONTEXT.md sense — zero queue items across
                 # every schedulable repo — which is not the starvation *ceiling*.
                 "starvation": not items,
-                # The "idle worker, queue blocked" indicator: whether a free box
-                # is idle solely because every queued item's repo has a run in
-                # flight, plus the facts the banner renders (which workers are
-                # free, which busy repos are blocking the queue) and a ready-made
-                # `POST /api/dispatch-once` command that fills one idle worker.
+                # The "idle worker, queue momentarily blocked" indicator: a free box
+                # idle only because every queued item is from a repo already running.
+                # Under decision-6 saturation this self-resolves, so the banner names
+                # the idle worker and tells the operator it is transient (or stale
+                # inventory if it lingers) rather than urging a manual dispatch.
                 "blocked_idle": blocked_idle,
                 "idle_pools": idle_pools,
-                "busy_queued_repos": busy_queued_repos,
-                "suggested_dispatch": suggested_dispatch,
                 # The fabro web UI root for the run link, derived from the API base
                 # by stripping `/api/v1`. Rendered only into the server-side HTML
                 # page the operator views, never into a JSON payload.

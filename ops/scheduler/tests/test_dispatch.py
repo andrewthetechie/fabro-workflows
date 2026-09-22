@@ -2,10 +2,11 @@
 
 `choose_next` is pure and asserted directly; `DispatchLoop.tick` is driven by hand,
 so no thread is involved and the HTTP layer is `respx`. The cases worth having are
-the ones whose failure is silent in production: a second run on a busy repo, a
-second run on a busy box, and a dispatch that fails after it has already written a
-label. The order of the requests is asserted, not just their effect, because
-"label first, then create, then start" is the contract draft 09's recovery reads.
+the ones whose failure is silent in production: a saturated same-repo run (the
+saturation pass of a single busy repo), a second run on a busy box, and a dispatch
+that fails after it has already written a label. The order of the requests is
+asserted, not just their effect, because "label first, then create, then start" is
+the contract draft 09's recovery reads.
 """
 
 from __future__ import annotations
@@ -226,8 +227,35 @@ def receipts(recorder: Recorder, repo: str, number: int) -> list[tuple[str, str,
 # --- choose_next, pure -------------------------------------------------------------
 
 
-def test_one_run_per_repo_leaves_the_second_box_free():
+def test_a_single_busy_repo_saturates_the_second_box():
+    # Decision 6 as "prefer diversity, never idle a box": the same repo already has
+    # a run in flight, but the free box is filled from that repo's next issue rather
+    # than idled. This is the single-repo-workload case the box must never sit idle
+    # for.
     q = [qi("o/a", 1, priority=0), qi("o/a", 2, priority=0)]  # same repo
+    leases = [Lease("coders-a", "o/a", 1, "R1", NOW)]
+    assert choose_next(
+        q, leases, free_pools=["coders-b"], last_pool_for_repo=lambda r: None
+    ) == (q[1], "coders-b")
+
+
+def test_saturation_never_re_dispatches_the_running_issue():
+    # The cache still holds the running issue too (a label write does not evict the
+    # row until the 60s poll), so saturation must skip that exact repo#issue and
+    # take the next one. Without the running-keys guard the very next tick would
+    # start a duplicate run of #1.
+    q = [qi("o/a", 1, priority=0), qi("o/a", 2, priority=0)]
+    leases = [Lease("coders-a", "o/a", 1, "R1", NOW)]
+    assert choose_next(
+        q, leases, free_pools=["coders-b"], last_pool_for_repo=lambda r: None
+    )[0].issue.number == 2
+
+
+def test_when_every_queued_item_is_already_running_the_box_stays_free():
+    # The only item left is itself the one in flight: saturation has nothing safe to
+    # take, so it correctly does not double-dispatch #1, and the loop waits for the
+    # 60s poll to refresh the label instead.
+    q = [qi("o/a", 1, priority=0)]
     leases = [Lease("coders-a", "o/a", 1, "R1", NOW)]
     assert (
         choose_next(
@@ -447,7 +475,7 @@ def test_two_repos_are_dispatched_one_per_box(loop, store, leases):
 
 
 @respx.mock
-def test_two_boxes_and_one_repo_start_exactly_one_run(loop, store, leases):
+def test_two_boxes_and_one_repo_fill_both_boxes(loop, store, leases):
     recorder = Recorder()
     install_labels(recorder)
     install_fabro(recorder)
@@ -456,18 +484,22 @@ def test_two_boxes_and_one_repo_start_exactly_one_run(loop, store, leases):
 
     attempts = loop.tick()
 
-    assert len(attempts) == 1
+    # A single repo saturates both boxes rather than idling one: the first item is
+    # top-ranked, the second fills the remaining box via the saturation pass.
+    assert len(attempts) == 2
     assert attempts[0].issue_number == 1  # the top-ranked one, not just any
-    assert len(recorder.made("POST", "/api/v1/runs")) == 1
-    assert len(leases.active()) == 1
-    # The second box is left free rather than filled from the same repo.
-    assert leases.free_pools(("coders-a", "coders-b"), frozenset()) == [
-        "coders-b"
-    ]
+    assert {attempt.issue_number for attempt in attempts} == {1, 2}
+    assert len(recorder.made("POST", "/api/v1/runs")) == 2
+    assert {lease.coder_pool for lease in leases.active()} == {"coders-a", "coders-b"}
+    assert leases.free_pools(("coders-a", "coders-b"), frozenset()) == []
 
 
 @respx.mock
-def test_a_repo_with_a_lease_is_skipped_on_the_next_tick(loop, store, leases):
+def test_a_single_repo_fills_both_boxes_then_the_box_parks(loop, store, leases):
+    # The cache still holds both issues on the second tick (a label write does not
+    # evict the local copy until the 60s poll), but both issues are now running, so
+    # the saturation pass has nothing safe to take and the loop parks — it does not
+    # double-dispatch. This is the same-repo case of `choose_next` returning None.
     recorder = Recorder()
     install_labels(recorder)
     install_fabro(recorder)
@@ -475,15 +507,13 @@ def test_a_repo_with_a_lease_is_skipped_on_the_next_tick(loop, store, leases):
     seed(store, JELLY, 2)
 
     first = loop.tick()
-    # The cache still holds both issues: `agent-in-progress` was written to GitHub,
-    # but the local copy is only refreshed by the 60s inventory poll. The lease is
-    # what stops the second one being started in the meantime.
     second = loop.tick()
 
-    assert len(first) == 1
+    assert len(first) == 2
+    assert {a.issue_number for a in first} == {1, 2}
     assert second == []
-    assert len(recorder.made("POST", "/api/v1/runs")) == 1
-    assert len(leases.active()) == 1
+    assert len(recorder.made("POST", "/api/v1/runs")) == 2
+    assert {lease.coder_pool for lease in leases.active()} == {"coders-a", "coders-b"}
 
 
 @respx.mock

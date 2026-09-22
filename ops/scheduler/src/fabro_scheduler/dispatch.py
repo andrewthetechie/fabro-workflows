@@ -1,18 +1,18 @@
 """The dispatch loop: the ranked queue, the free boxes, and the lease that joins them.
 
-This is the centre of the scheduler. Every 5 seconds it asks three questions and,
-if all three answer yes, starts exactly one real `backlog` run:
+This is the centre of the scheduler. Every 5 seconds it asks two questions and,
+if both answer yes, starts one real `backlog` run on every free box that has
+dispatchable work:
 
 1. is a coder instance free and not drained?
 2. is the queue non-empty?
-3. does the highest-ranked eligible item's repo have no run in flight?
 
-**One in-flight run per repo** (decision 6) is the reason question 3 exists, and
-the reason the loop *skips* rather than waits: if the top-ranked item's repo is
-busy, the next-ranked item from a different repo is dispatched instead. Idling a
-free box because the best item happened to be a second one from a busy repo would
-give up the throughput the whole service exists to protect. Skipping is only safe
-because of the next rule.
+**A free box is never left idle while any dispatchable item exists** (decision 6 as
+"prefer diversity, never idle a box"): `choose_next` first takes the highest-ranked
+item whose repo has no run in flight, so concurrent runs spread across repos; only
+when every queued repo already has a run in flight does it fall through to a second
+concurrent run from a busy repo, which is what keeps a single-repo workload
+saturating all the boxes rather than idling the ones a lean queue cannot diversify.
 
 **Dispatch leaves its receipt first.** In order: add `agent-in-progress`, remove
 `agent`, then create the run, then start it, then record the lease. The label write
@@ -111,6 +111,32 @@ class DispatchAttempt:
         return self.failed_stage is None and self.run_id is not None
 
 
+def _pick_one(
+    queue: Sequence[QueueItem],
+    predicate: Callable[[QueueItem], bool],
+    free_pools: Sequence[str],
+    last_pool_for_repo: Callable[[str], str | None],
+) -> tuple[QueueItem, str] | None:
+    """The highest-ranked item passing `predicate`, paired with a free box.
+
+    Box choice is **soft affinity** (decision 11), which is the last tiebreak and
+    only a tiebreak: among the free boxes, the one this repo last ran on wins; if
+    it is busy, any free box will do and the loop never waits for the preferred
+    one. Non-determinism is the thing being avoided — with no affinity the choice
+    would be `free_pools[0]`, which is right but means two repos alternately
+    jumping between boxes and re-warming neither.
+    """
+    for item in queue:
+        if not predicate(item):
+            continue
+        preferred = last_pool_for_repo(item.issue.repo)
+        if preferred is not None and preferred in free_pools:
+            return item, preferred
+        # `free_pools` is in `coder_pools` order, so this is deterministic.
+        return item, free_pools[0]
+    return None
+
+
 def choose_next(
     queue: Sequence[QueueItem],
     leases: Sequence[Lease],
@@ -121,29 +147,44 @@ def choose_next(
 
     `queue` is already in dispatch order — this never re-ranks, so there remains
     exactly one definition of "next" in the system (`queue.rank`). `None` means
-    "do not dispatch": no free box, or every item's repo already has a run in
-    flight.
+    "do not dispatch": no free box, an empty queue, or every queued item is
+    itself already running.
 
-    **Soft affinity** (decision 11) is the last tiebreak and only a tiebreak: among
-    the free boxes, the one this repo last ran on wins; if it is busy, any free box
-    will do and the loop never waits for the preferred one. Non-determinism is the
-    thing being avoided — with no affinity the choice would be `free_pools[0]`,
-    which is right but means two repos alternately jumping between boxes and
-    re-warming neither.
+    Two passes, so a free box is **never left idle while any dispatchable item
+    exists** (decision 6 as "prefer diversity, never idle a box"):
+
+    1. **Diversity.** Take the highest-ranked item whose repo has no run in
+       flight, so concurrent runs spread across repos rather than stacking on one.
+    2. **Saturation.** If that finds nothing — every queued repo already has a
+       run in flight — take the highest-ranked item that is not itself the one
+       already running, even from a busy repo. Idling a box because the best item
+       happened to be a second one from a busy repo would give up the throughput
+       the whole service exists to protect, at the cost of at most two concurrent
+       runs in one repo. The running-keys check matters: a label write does not
+       evict the local cache row until the 60s inventory poll, so without it the
+       very next tick could re-dispatch the exact issue that is already on a box.
     """
-    if not free_pools:
+    if not free_pools or not queue:
         return None
 
     busy_repos = {lease.repo for lease in leases}
-    for item in queue:
-        if item.issue.repo in busy_repos:
-            continue
-        preferred = last_pool_for_repo(item.issue.repo)
-        if preferred is not None and preferred in free_pools:
-            return item, preferred
-        # `free_pools` is in `coder_pools` order, so this is deterministic.
-        return item, free_pools[0]
-    return None
+    running = {(lease.repo, lease.issue_number) for lease in leases}
+
+    chosen = _pick_one(
+        queue,
+        lambda item: item.issue.repo not in busy_repos,
+        free_pools,
+        last_pool_for_repo,
+    )
+    if chosen is not None:
+        return chosen
+
+    return _pick_one(
+        queue,
+        lambda item: (item.issue.repo, item.issue.number) not in running,
+        free_pools,
+        last_pool_for_repo,
+    )
 
 
 class DispatchLoop:

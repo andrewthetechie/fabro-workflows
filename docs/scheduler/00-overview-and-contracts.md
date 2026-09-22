@@ -34,7 +34,7 @@ of four uncoordinated schedules; it will faithfully park a box on a run that sta
 | 3 | **The scheduler picks the issue** and passes `issue_number` as a run input. `acquire`'s selection and `claim`'s ULID arbitration are deleted, not refined. |
 | 4 | **Priority is a signed integer; smallest wins.** `-99` beats `0` beats `7`. Repo defaults live in `ops/scheduler/repos.toml`; a per-issue override lives in the scheduler's database and is ephemeral by design. |
 | 5 | **Strict priority with a starvation ceiling.** Anything queued longer than `T` (default 4h) jumps the front. Not a continuous aging score — "nothing waits more than T" is a claim you can verify by looking. |
-| 6 | **One in-flight run per repo.** Matches Sandcastle. With four repos and two boxes a box only idles when three of four repos are simultaneously out of work. |
+| 6 | **Prefer one in-flight run per repo, never idle a box.** Diversity first: take the highest-ranked item whose repo has no run in flight, so concurrent runs spread across repos. If every queued repo already has a run in flight, fall through and take a second concurrent run from a busy repo, so a single-repo workload still saturates every box instead of idling the ones a lean queue cannot diversify. Changed 2026-09-22 from a hard one-per-repo cap, after a writers-app-only queue idled `coders-a`. |
 | 7 | **The queue lives entirely in the scheduler.** Nothing is created in fabro until a box is free. Runs are never parked in fabro as `submitted`. |
 | 8 | **The scheduler polls fabro every 15s** for terminal states, and GitHub every 60s with conditional requests. No push, no SSE, no webhook. |
 | 9 | **The scheduler sets `agent-in-progress` at dispatch.** The label is the durable handoff receipt a restart rebuilds from. |
@@ -296,11 +296,18 @@ and produces one PR.
 
 ### Dispatch
 
-The scheduler dispatches when **all** hold:
+The scheduler dispatches when **both** hold, and fills every free box that has
+eligible work rather than one per tick:
 
 1. a coder instance is free and not drained;
-2. the queue is non-empty;
-3. the highest-ranked eligible item's repo has no in-flight run (decision 6).
+2. the queue is non-empty.
+
+Per free box (decision 6, in `choose_next`): prefer the highest-ranked item whose
+repo has no run in flight (diversity); only when every queued repo already has a
+run in flight, fall through to the highest-ranked item that is not itself already
+running (saturation), so a single-repo workload fills all the boxes. It must not
+re-dispatch an issue already on a box: a label write does not evict the local cache
+row until the GitHub poll, so the running keys are excluded explicitly.
 
 Ranking is: any item queued longer than `T` first (oldest first), then by repo priority
 ascending, then by issue number ascending.
