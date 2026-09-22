@@ -39,8 +39,8 @@ from fabro_scheduler.workflow_version import WorkflowVersionError
 
 TRACKED_REPOS = Path(__file__).resolve().parents[1] / "repos.toml"
 
-JELLY = "andrewthetechie/jelly-swipe"  # priority 0, environment_id "python"
-LAWN = "andrewthetechie/lawncare-saas"  # priority 1, environment_id "python-node"
+JELLY = "andrewthetechie/jelly-swipe"  # priority 99, environment_id "python"
+LAWN = "andrewthetechie/lawncare-saas"  # priority 30, environment_id "python-node" — ranks above JELLY
 
 FABRO_API = "http://10.10.0.32:32276/api/v1"
 GITHUB_API = "https://api.github.com"
@@ -462,13 +462,14 @@ def test_two_repos_are_dispatched_one_per_box(loop, store, leases):
     assert {attempt.repo for attempt in attempts} == {JELLY, LAWN}
     assert {
         lease.coder_pool: lease.repo for lease in leases.active()
-    } == {"coders-a": JELLY, "coders-b": LAWN}
+    } == {"coders-a": LAWN, "coders-b": JELLY}
     assert leases.free_pools(("coders-a", "coders-b"), frozenset()) == []
 
     # `environment_id` is never a parameter of the dispatch: it is the repo's row.
+    # LAWN (priority 30) ranks above JELLY (priority 99), so it goes first.
     creates = recorder.bodies("POST", "/api/v1/runs")
-    assert [body["environment_id"] for body in creates] == ["python", "python-node"]
-    assert [body["target"]["repo"] for body in creates] == [JELLY, LAWN]
+    assert [body["environment_id"] for body in creates] == ["python-node", "python"]
+    assert [body["target"]["repo"] for body in creates] == [LAWN, JELLY]
     assert [
         body["args"]["inputs"]["coder_pool"] for body in creates
     ] == ["coders-a", "coders-b"]
@@ -547,9 +548,11 @@ def test_a_drained_box_takes_no_new_work(loop, store):
 
     attempts = loop.tick()
 
+    # LAWN (priority 30) ranks above JELLY (99), so it is the one dispatched to the
+    # one free box.
     assert [attempt.coder_pool for attempt in attempts] == ["coders-b"]
     assert [body["target"]["repo"] for body in recorder.bodies("POST", "/api/v1/runs")] == [
-        JELLY
+        LAWN
     ]
 
     # Undraining needs no restart: the flag is read on every tick.
@@ -558,7 +561,7 @@ def test_a_drained_box_takes_no_new_work(loop, store):
 
     assert [attempt.coder_pool for attempt in attempts] == ["coders-a"]
     assert [body["target"]["repo"] for body in recorder.bodies("POST", "/api/v1/runs")][-1] == (
-        LAWN
+        JELLY
     )
 
 
@@ -692,58 +695,64 @@ def test_a_label_write_that_fails_creates_no_run_and_no_lease(loop, store, lease
 
 @respx.mock
 def test_a_failed_repo_is_backed_off_for_one_tick(loop, store):
+    # LAWN (priority 30) is the top-ranked repo here, so it is the one whose label
+    # write fails; a failing top-ranked repo must back off for this tick without
+    # idling the box (JELLY, priority 99, still goes) and be retried next tick.
     recorder = Recorder()
 
     def fail(request: httpx.Request) -> httpx.Response | None:
-        if request.method == "POST" and JELLY in request.url.path:
+        if request.method == "POST" and LAWN in request.url.path:
             return httpx.Response(403, json={"message": "Resource not accessible"})
         return None
 
     install_labels(recorder, fail=fail)
     install_fabro(recorder)
-    seed(store, JELLY, 1)  # priority 0, and the one whose labels fail
-    seed(store, LAWN, 2)
+    seed(store, LAWN, 2)  # the one whose labels fail
+    seed(store, JELLY, 1)
 
     attempts = loop.tick()
 
     # The free box is not left idle: the next-ranked item from another repo goes.
     assert [(a.repo, a.failed_stage) for a in attempts] == [
-        (JELLY, "labels"),
-        (LAWN, None),
+        (LAWN, "labels"),
+        (JELLY, None),
     ]
     assert [body["target"]["repo"] for body in recorder.bodies("POST", "/api/v1/runs")] == [
-        LAWN
+        JELLY
     ]
     # Attempted once this tick, not in a tight loop. Counted by the receipt write
     # specifically: the rollback restores `agent` through the same POST route.
-    assert len(receipts(recorder, JELLY, 1)) == 1
+    assert len(receipts(recorder, LAWN, 2)) == 1
 
     loop.tick()
     # ...and tried again on the next tick, 5 seconds later.
-    assert len(receipts(recorder, JELLY, 1)) == 2
+    assert len(receipts(recorder, LAWN, 2)) == 2
 
 
 @respx.mock
 def test_a_failing_repo_in_every_tick_cannot_starve_the_others(loop, store):
+    # writers-app (priority 20) is the top-ranked repo, so it is the always-failing
+    # one: it must be attempted first, back off, and still not starve the lower-
+    # priority repos (LAWN 30, JELLY 99), which fill the two boxes anyway.
     recorder = Recorder()
 
     def fail(request: httpx.Request) -> httpx.Response | None:
-        if JELLY in request.url.path:
+        if "andrewthetechie/writers-app" in request.url.path:
             return httpx.Response(403, json={"message": "Resource not accessible"})
         return None
 
     install_labels(recorder, fail=fail)
     install_fabro(recorder)
-    seed(store, JELLY, 1)
-    seed(store, LAWN, 2)
     seed(store, "andrewthetechie/writers-app", 3)
+    seed(store, LAWN, 2)
+    seed(store, JELLY, 1)
 
     attempts = loop.tick()
 
     assert [(a.repo, a.failed_stage) for a in attempts] == [
-        (JELLY, "labels"),
+        ("andrewthetechie/writers-app", "labels"),
         (LAWN, None),
-        ("andrewthetechie/writers-app", None),
+        (JELLY, None),
     ]
 
 

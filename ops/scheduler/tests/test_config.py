@@ -355,10 +355,10 @@ def test_the_tracked_repos_toml_parses(tmp_path):
     # crash-loops, so it is asserted here rather than only on the host.
     cfg = load_config(TRACKED_REPOS, env={})
     assert [r.name for r in cfg.ordered_repos()] == [
-        "andrewthetechie/jelly-swipe",  # priority 0
-        "andrewthetechie/lawncare-saas",  # priority 1, 'l' < 'w'
-        "andrewthetechie/womens-fantasy-sports",  # priority 1
-        "andrewthetechie/writers-app",  # priority 2
+        "andrewthetechie/womens-fantasy-sports",  # priority 10
+        "andrewthetechie/writers-app",  # priority 20
+        "andrewthetechie/lawncare-saas",  # priority 30
+        "andrewthetechie/jelly-swipe",  # priority 99
     ]
     assert {(r.name, r.environment_id) for r in cfg.repos} == {
         ("andrewthetechie/jelly-swipe", "python"),

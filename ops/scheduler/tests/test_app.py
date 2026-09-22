@@ -75,19 +75,19 @@ def test_health_is_ok_and_lists_the_four_repos_in_scheduling_order(client):
     body = response.json()
     assert body["status"] == "ok"
     assert [r["name"] for r in body["repos"]] == [
-        "andrewthetechie/jelly-swipe",
-        "andrewthetechie/lawncare-saas",
         "andrewthetechie/womens-fantasy-sports",
         "andrewthetechie/writers-app",
+        "andrewthetechie/lawncare-saas",
+        "andrewthetechie/jelly-swipe",
     ]
 
 
 def test_health_repo_rows_carry_the_documented_keys(client):
     row = client.get("/health").json()["repos"][0]
     assert row == {
-        "name": "andrewthetechie/jelly-swipe",
-        "priority": 0,
-        "environment_id": "python",
+        "name": "andrewthetechie/womens-fantasy-sports",
+        "priority": 10,
+        "environment_id": "ts",
         "enabled": True,
     }
 
@@ -197,30 +197,30 @@ def test_health_reports_the_starvation_ceiling(config, store):
 
 
 def test_api_queue_is_a_ranked_list(config, store, client):
-    store.upsert_issue(issue("andrewthetechie/writers-app", 5))  # priority 2
-    store.upsert_issue(issue("andrewthetechie/jelly-swipe", 9))  # priority 0
+    store.upsert_issue(issue("andrewthetechie/writers-app", 5))  # priority 20
+    store.upsert_issue(issue("andrewthetechie/jelly-swipe", 9))  # priority 99
     store.upsert_issue(issue("andrewthetechie/jelly-swipe", 2))
 
     body = client.get("/api/queue").json()
 
     assert [(row["repo"], row["number"]) for row in body] == [
+        ("andrewthetechie/writers-app", 5),
         ("andrewthetechie/jelly-swipe", 2),
         ("andrewthetechie/jelly-swipe", 9),
-        ("andrewthetechie/writers-app", 5),
     ]
-    assert body[0]["repo_priority"] == 0
+    assert body[0]["repo_priority"] == 20
     assert body[0]["override_rank"] is None
     assert body[0]["labels"] == ["agent"]
     assert "waited_seconds" in body[0]
 
 
 def test_the_page_renders_the_ranked_queue(config, store, client):
-    store.upsert_issue(issue("andrewthetechie/writers-app", 5))  # priority 2
-    store.upsert_issue(issue("andrewthetechie/jelly-swipe", 9))  # priority 0
+    store.upsert_issue(issue("andrewthetechie/writers-app", 5))  # priority 20
+    store.upsert_issue(issue("andrewthetechie/jelly-swipe", 9))  # priority 99
 
     html = client.get("/").text
 
-    assert html.index("jelly-swipe") < html.index("writers-app")
+    assert html.index("writers-app") < html.index("jelly-swipe")
     assert "#9" in html
     assert "issue 5" in html
     assert "Starvation ceiling" in html
