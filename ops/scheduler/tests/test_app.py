@@ -558,6 +558,63 @@ def test_the_page_shows_the_active_leases(config, store, client):
     assert "accepting" in html
 
 
+def test_the_page_flags_an_idle_worker_blocked_by_the_per_repo_guard(config, store, client):
+    # A worker is free and the queue is non-empty, but every queued item belongs
+    # to the one repo that already has a run in flight: the dispatch loop skips
+    # all of them (decision 6), so the free box idles even though work is queued.
+    # The page must say so and give the operator the dispatch-once command that
+    # fills the idle worker immediately.
+    store.upsert_issue(issue("andrewthetechie/writers-app", 934))
+    store.upsert_issue(issue("andrewthetechie/writers-app", 935))
+    LeaseStore(store).acquire(
+        Lease(
+            coder_pool="coders-b",
+            repo="andrewthetechie/writers-app",
+            issue_number=933,
+            run_id="01MRUN",
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+
+    html = client.get("/").text
+
+    assert "Idle worker but the queue is blocked" in html
+    # The free box and the busy repo that blocks it are named.
+    assert "coders-a is free" in html
+    assert "andrewthetechie/writers-app" in html
+    # The ready-made dispatch-once command fills the free box with the top-ranked
+    # item, bypassing the per-repo guard. The JSON double quotes are Jinja2-escaped
+    # to &#34; in the HTML source but render back to " in the browser.
+    assert "POST /api/dispatch-once" in html
+    assert "&#34;issue_number&#34;: 934" in html
+    assert "&#34;coder_pool&#34;: &#34;coders-a&#34;" in html
+    # The bump control is present in the queue, but the banner says it is not the
+    # fix, so an operator is not misled into pressing Next.
+    assert "does <em>not</em> help here" in html
+
+
+def test_the_page_stays_silent_when_an_idle_worker_can_take_a_non_busy_repo(
+    config, store, client
+):
+    # A queued item from a repo with no run in flight means the loop can fill the
+    # free box, so there is no idle-worker condition to warn about.
+    store.upsert_issue(issue("andrewthetechie/writers-app", 934))
+    store.upsert_issue(issue("andrewthetechie/jelly-swipe", 9))
+    LeaseStore(store).acquire(
+        Lease(
+            coder_pool="coders-b",
+            repo="andrewthetechie/writers-app",
+            issue_number=933,
+            run_id="01MRUN",
+            dispatched_at=datetime.now(UTC),
+        )
+    )
+
+    html = client.get("/").text
+
+    assert "Idle worker but the queue is blocked" not in html
+
+
 def test_the_page_offers_a_bump_control_per_queue_item(config, store, client):
     store.upsert_issue(issue("andrewthetechie/writers-app", 5))
 
