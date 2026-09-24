@@ -38,9 +38,9 @@ digraph PrReview {
             // fabro offers -- node `model` attributes are literal text and `args.model`
             // loses to any explicit stylesheet assignment, but this template receives
             // `inputs`. The scheduler fires a run with `args.inputs.coder_pool =
-            // "coders-a"` to lease one llama.cpp box for the whole run. `.rebase` also
-            // covers the imported review-merge graph's `ci_fix_t1`, which carries
-            // class="rebase" and has no stylesheet of its own.
+            // "coders-a"` to lease one llama.cpp box for the whole run. The imported
+            // review-merge graph's `ci_fix_t1` used to share `.rebase`; since ADR 0011 D3
+            // it carries class="ci-fix" and runs on glm-5.3-flash in both graphs.
             //
             // The `default('coders-a')` filter is LOAD-BEARING, and single quotes are
             // mandatory: the stylesheet renders in strict mode, so an unbound input
@@ -64,6 +64,7 @@ digraph PrReview {
             .merge-standards  { model: glm-5.3-flash; }
             .merge-spec       { model: glm-5.3; }
             .merge-fix        { model: glm-5.3; }
+            .ci-fix           { model: glm-5.3-flash; }
         "
     ]
     rankdir=LR

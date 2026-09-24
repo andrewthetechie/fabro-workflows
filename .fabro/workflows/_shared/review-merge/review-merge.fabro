@@ -575,7 +575,13 @@ exit 0"]
     //
     // Routing is unaffected: a failed tier still takes its UNCONDITIONAL edge to
     // ci_fix_gate, which finds no result file, reports ci_fix_ok=false, and blocks.
-    ci_fix_t1 [label="Fix failing CI (tier 1: coders)", class="rebase", timeout="20m", prompt="@prompts/ci_fix.md.j2"]
+    // ci_fix_t1 runs on the hosted `glm-5.3-flash` through class `ci-fix` (ADR 0011 D3).
+    // On the run's local coder box it had a p50 of 14 minutes, and 3 of 12 visits died at
+    // this 20m timeout, leaving no ci_fix_result.json, so the merge was refused. The 20m
+    // is now UNMEASURED for flash: it is kept only because the 60-minute merge budget
+    // assumes one 20m attempt per tier. Re-time it from the first ten flash visits.
+    // Both importing stylesheets (backlog, pr-review) must carry a `.ci-fix` rule.
+    ci_fix_t1 [label="Fix failing CI (tier 1: glm-5.3-flash)", class="ci-fix", timeout="20m", prompt="@prompts/ci_fix.md.j2"]
     ci_fix_t2 [label="Fix failing CI (tier 2: glm-5.3)", class="rebase-t2", timeout="20m", prompt="@prompts/ci_fix.md.j2"]
     ci_fix_gate [label="Verify CI fix", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)

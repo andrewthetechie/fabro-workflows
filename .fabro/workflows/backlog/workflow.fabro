@@ -156,6 +156,7 @@ digraph Backlog {
             .merge-standards  { model: glm-5.3-flash; }
             .merge-spec       { model: glm-5.3; }
             .merge-fix        { model: glm-5.3; }
+            .ci-fix           { model: glm-5.3-flash; }
         "
     ]
     rankdir=LR
