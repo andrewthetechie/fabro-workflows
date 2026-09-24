@@ -6,6 +6,13 @@ control. The retry path is missing.
 **Conclusion: a Fabro bug. A labelled `freeform=true` edge is dropped from the option
 list.** The routing works; only the label is lost. Workaround is one string.
 
+**Status 2026-09-24: worked around.** The node label from "The fix" shipped in `1218167`,
+together with the file-backed `record_guidance` from 01 item 4a. ADR 0010 builds on this:
+Tier 1 makes every edge label describe itself, and Tier 2 splits the gate by rescue class.
+In the 38 runs sampled on 2026-09-24, no operator used the freeform exit. Six of seven
+raises were answered `[P]`, and one timed out. So the text box is still not the exit
+operators reach for. The upstream bug is still worth filing.
+
 ---
 
 ## The bug

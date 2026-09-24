@@ -8,6 +8,8 @@ nothing else here is done.
 
 ## 1. `issue-triage` still creates a run branch
 
+**Status 2026-09-24: open, low.** Still `push = false` only (`issue-triage/workflow.toml:23-24`). Nothing has broken, and the change is still correct and cheap.
+
 `.fabro/workflows/issue-triage/workflow.toml:21` sets:
 
 ```toml
@@ -42,6 +44,8 @@ PR head branch and `deliver` does the pushing.
 
 ## 2. Give bridge-fired `pr-review` runs a useful title
 
+**Status 2026-09-24: drop.** The run store holds 2 `pr-review` runs in the whole period. The merge phase now runs inside `backlog` (the shared `review_merge` import), so there is no bridge-fired run to title. Scheduler-dispatched `backlog` runs carry `labels.issue`, and the scheduler's `/history` page maps an issue to its run (gap 10).
+
 See `10-gap-run-issue-mapping.md` for why automation-fired runs cannot be fixed. Bridge-
 fired runs can, because `fire-pr-review.sh` builds the `RunIntent` itself.
 
@@ -70,6 +74,8 @@ deployment has enough LLM-shaped surprises already.
 ---
 
 ## 3. `[run.artifacts]` is unused and the review evidence dies with the sandbox
+
+**Status 2026-09-24: open, low.** Unchanged. The 2026-09-24 review found the evidence it needed in the PR comments and in the stage-failure messages in `GET /runs/{id}/events` (a failed command node's `failure.message` includes the tail of its output). That is enough for diagnosis, as long as the fabro store keeps it.
 
 Every contract file, diff, verdict and rendered report lives under `/tmp/fabro/`. Artifact
 globs are **workspace-relative and reject absolute patterns**
@@ -111,6 +117,8 @@ bounded, and its reports are the ones worth reading a week later. Leave `backlog
 
 ## 4. `[run.meta_branch]` is retired upstream — an upgrade trap
 
+**Status 2026-09-24: open, doc only.** The server is still 0.354.0-nightly.0 (`fabro --version` in the container, and `FABRO_VERSION` in `~/fabro/.env`, both checked 2026-09-24). Note: ADR 0011 D1 sets `backlog`'s `[run.run_branch] push = false`. That table is **not** retired, and it stays load-bearing after the upgrade. Only `[run.meta_branch]` becomes inert.
+
 All three `workflow.toml`s set `[run.meta_branch] push = false` with a comment explaining
 that nothing reads the pushed metadata branch and it would otherwise accumulate one dead
 branch per run forever.
@@ -137,6 +145,8 @@ can be deleted"* — and delete the tables as part of that upgrade, not before.
 ---
 
 ## 5. There is no CI in this repository
+
+**Status 2026-09-24: open, medium.** The operator plans to use the workflow to burn down several backlogs. That raises the cost of a broken push to `main`, because every automation reads `main` on its next fire. ADR 0011 also adds shell (`autofix`, the task budget in `next_task`, the rerun in `watch_checks`) that `ops/test-task-gates.sh` covers. Add that script to the pre-push hook with the TOML parse and `sh -n`. It is offline, it runs its checks in seconds, and it needs only `jq` and `python3`.
 
 `AGENTS.md` opens with *"Pushing to `main` deploys"* and *"Those runs open pull requests
 and force-push branches in four real repositories. There is no staging branch, no review

@@ -3,6 +3,8 @@
 **Status:** proposed (2026-09-22)
 NOT YET IMPLEMENTED. The constraints below are measured against 0.354.0-nightly.0; the
 staging is not committed. Nothing in `backlog` changes until it is.
+Re-assessed 2026-09-24 against 38 scheduler-dispatched runs: the gate fires less often
+than it did, but the class split needs one correction. See "Findings, 2026-09-24" at the end.
 
 `backlog` has one rescue gate. **27 edges enter `human_rescue` and three leave it** —
 `[P] Accept partial`, `[X] Abandon`, and a freeform field. The gate was raised 18 times in the ten days to
@@ -217,3 +219,60 @@ What is and is not reachable offline:
 - Until Tier 2 lands, `[P] Accept partial` on an early failure remains possible and is
   contained only by `open_pr_prep`'s empty-tree floor — which refuses *after* the operator
   has already chosen wrongly.
+
+## Findings, 2026-09-24
+
+Measured across the 38 `backlog` runs the scheduler dispatched between 2026-09-19 and
+2026-09-24, from `GET /runs/{id}/stages`: which node ran just before `human_rescue`,
+which node ran after it, and how long the gate held.
+
+| Run | Arrived from | Answer | Held |
+|---|---|---|---|
+| `01M310TMY1B32BMD4GKRY6FRGF` | `improve` | `[P]` | 8m |
+| `01M310TQEWFMPHZ3XG5T22X09W` | `prep` | `[P]` → womens-fantasy-sports#1236, the empty PR | under 1m |
+| `01M31B3J9BK4AX6FJMDTXFY8BX` | `decompose_gate` | none; the 4h timeout chose `mark_stuck` | 240m |
+| `01M321VB0DC4N187GHA88RM0QB` | `improve` | `[P]` → writers-app#949, the second empty PR | 12m |
+| `01M33SDMZF55NAEV8JV29A8EA4` | `rework_t2` | `[P]` | 162m |
+| `01M33SDMZF55NAEV8JV29A8EA4` | `open_pr` | `[P]` | 20m |
+| `01M33SDMZF55NAEV8JV29A8EA4` | `open_pr` | `[P]` | 33m |
+
+**Seven raises in five runs, and none since 2026-09-22.** The last gate belongs to run
+`01M33SDMZF55NAEV8JV29A8EA4` (the `.github/workflows/` push rejection). None of the 13
+runs dispatched after that run started has raised one. The empty-tree floor in `open_pr_prep` and the
+`.github/workflows/` gate have removed the two failures that drove most of the raises.
+
+**Six of the seven raises ended in `[P]`,** including both arrivals from `improve` and
+the arrival from `prep`. The operator picks accept-partial almost by reflex. Every row of
+the "three exits" table predicted that, and it is the strongest argument left for
+Tier 1: the label is the only thing between that reflex and an empty PR, and the
+empty-tree floor is now the backstop behind it.
+
+**The gate costs a coder box, not only a human's attention.** The seven raises held 8.0
+hours of lease in total. The coder lease runs from dispatch to terminal state (ADR 0006),
+so the box sat idle for all of it. The one unanswered raise held a box for the full 4
+hours and then did what an immediate `mark_stuck` would have done. That makes the
+per-class `timeout` and `human.default_choice` in Tier 2 a throughput change as well as
+a safety one: a "nothing built" gate could default to `mark_stuck` after a short timeout,
+and lose nothing.
+
+**Correction to the rescue classes: `improve` belongs to no class, and it can be in
+either of two.** The Decision section lists `claim`, `prep`, `decompose`,
+`decompose_gate` as **Nothing built** and "the coder, review, rework and per-task gate
+nodes" as **Work in progress**. `improve` is in neither list, and both `improve` raises
+in this sample were on a run where no task had landed yet. There, `[P]` was harmful, and
+one of them is writers-app#949. On a later task, `improve` is work in progress. The same
+is true of `coder` on task 1. So **the class depends on whether any task has landed, not
+on which node failed**, and a gate split by entry edge cannot express it. The fix fits
+the mechanism this ADR already relies on: a command node ahead of the gates routes on
+`git diff --quiet origin/main HEAD`, the same test `open_pr_prep`'s floor uses, and sends
+an empty branch to the **Nothing built** gate from any node. Tier 3's diagnose node can be
+that node.
+
+**ADR 0011 adds entry edges.** It adds a node after `open_pr` that files a remainder
+issue, and an `autofix` node in the task loop. Both are new ways into `human_rescue`
+through their unconditional edges. The first is **Publishing**. The second is **Work in
+progress**, or **Nothing built** on task 1, which is the same correction as above.
+
+**Not yet verified, still.** How `context_display` is chosen, whether the UI truncates
+long option labels, and `review_target` on a hexagon. Nobody has run the experiment
+"What must be verified before Tier 3" asks for.

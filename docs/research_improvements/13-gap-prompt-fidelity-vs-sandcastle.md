@@ -6,6 +6,11 @@ Sandcastle-loop originals (`~/Documents/code/Sandcastle-loop`).
 **Conclusion: they did not lose content — they are consistently larger. Two structural
 things were lost, and one of them is the real regression.**
 
+**Status 2026-09-24: nothing further to apply.** The remedy for loss 1 was the preamble
+cut in gap 12, and it shipped at `truncate`, so the role prompt now follows the system
+message directly. Loss 2, the MCP-enforced contract, is parked with 02: gates bounced a
+contract about 2 times in about 750 visits across 38 runs.
+
 ---
 
 ## The content is all there

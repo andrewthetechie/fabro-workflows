@@ -5,6 +5,16 @@ was that Fabro's `output_schema` restores the Sandcastle structured-result MCP c
 That framing was wrong. This document records what is actually available, what it buys,
 and why the faithful port is blocked.
 
+**Status 2026-09-24: open. Park it.** The failure this pilot targets (an agent that exits
+`succeeded` with no usable contract, followed by a cold re-visit) is now rare. Across the
+38 scheduler-dispatched runs, the gates saw about 750 visits. Two of them bounced a
+contract: `improve_gate` once in 204 visits, and `review_gate` once in 214. The merge-phase
+`standards_gate`, `spec_gate` and `fix_gate` never bounced in 34 visits each. The pilot
+node named below, `standards`, now runs mainly as `review_merge.standards` inside
+`backlog`. Its two failures in the sample were **15-minute timeouts** on a 23-file and a
+72-file PR, not bad contracts, and a repair turn cannot fix a timeout. If the bounce rate
+rises, the analysis below still holds. Until then, the counters cost almost nothing.
+
 ---
 
 ## The shape of the thing we hand-rolled

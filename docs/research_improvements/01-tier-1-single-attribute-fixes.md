@@ -10,6 +10,17 @@ Order within the tier does not matter. All four can ship in one commit.
 
 ## 1. `backlog` can be killed mid-run by the failure-signature circuit breaker
 
+**Status 2026-09-24: open, low priority.** Across the 38 scheduler-dispatched runs, no run
+ended with `deterministic failure cycle detected`. The worst case is run
+`01M358C6G3BFF0KD1NCDC58AR9` (writers-app#963), where `validate` failed **21 times** in
+one run and did not trip the breaker. Its failures were `cargo fmt` diffs, several
+different clippy lints and compile errors, so the last 4096 bytes differed each time, and
+so did the 240-character normalised signature. The exposure described below is real but
+narrower in practice: the signature must repeat byte for byte after masking, and real CI
+output seldom does. ADR 0011's D5 (`autofix` before `validate`) removes most of those
+writers-app failures, which lowers the exposure further. Keep this as a one-line insurance
+change. Nothing measured makes it urgent.
+
 ### What happens
 
 `CircuitBreakerLifecycle::after_node` (`lib/components/fabro-workflow/src/lifecycle/circuit_breaker.rs:93-103`)
@@ -173,6 +184,10 @@ post the "60-minute merge budget is exhausted" comment the script already writes
 
 ## 3. `[R] Retry with guidance` never renders on the rescue gate
 
+**Status 2026-09-24: applied** in `1218167`, with the post-4a text: `"Agent stuck. Type
+guidance to retry, or choose an option."` ADR 0010 Tier 1 replaces it with self-describing
+edge labels.
+
 Full diagnosis in `11-gap-human-gate-options.md`. The fix:
 
 ```dot
@@ -190,6 +205,23 @@ No edge changes. No routing changes. One string.
 ---
 
 ## 4. Agents receive an unbounded preamble
+
+**Status 2026-09-24: applied, with one gap still open.**
+
+- 4b shipped as `default_fidelity="truncate"` on all three graphs (`c3b14ca`), which goes
+  further than the `summary:low` proposed below. AGENTS.md's invariants table records why:
+  at `summary:low` the preamble was still 23% of every prompt.
+- 4a shipped in `1218167`: `record_guidance` writes `/tmp/fabro/feedback/rescue.md`, and
+  `rework.md.j2` reads it as its priority-1 input.
+- **The per-task reset did not ship.** Nothing deletes `rescue.md`. `record_guidance`
+  (`backlog/workflow.fabro:1317`) is the only line in the tree that names it. After an
+  operator types guidance on task *k*, every later rework stage in the run (tasks *k*+1
+  onward, every tier) still reads that guidance, and the prompt tells it the guidance
+  **overrides everything else**, including that task's findings. The fix is the one this
+  section always asked for: `rm -f /tmp/fabro/feedback/rescue.md` in `next_task`, with the
+  other per-task resets. In `ops/test-task-gates.sh`, assert that `next_task` removes a
+  `rescue.md` staged before it. In the 38 sampled runs no operator typed guidance
+  (every answered gate was `[P]`), which is why this has not shown yet.
 
 Full diagnosis in `12-gap-agent-context-preamble.md`. The short version: the default
 `compact` fidelity enumerates **every** completed stage with 25 lines of command output

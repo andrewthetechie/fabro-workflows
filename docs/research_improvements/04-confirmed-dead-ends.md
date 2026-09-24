@@ -1,7 +1,7 @@
 # Confirmed dead ends
 
-Nine things that look like Fabro features we should be using instead of shell, and are
-not. Each carries the evidence that settles it, so the question does not get re-derived.
+Ten things that look like Fabro features we should be using instead of shell, and are
+not. The tenth was added on 2026-09-24. Each carries the evidence that settles it, so the question does not get re-derived.
 
 Checked against `context/fabro` at 0.357.0-nightly.0.
 
@@ -127,6 +127,13 @@ different and also correct reason (parse-time merge, no runtime boundary).
 **Verdict:** not expressible. The prompts are genuinely different too — see
 `13-gap-prompt-fidelity-vs-sandcastle.md`.
 
+**Superseded in part (noted 2026-09-24).** `import=` is now in use, one level up.
+`_shared/review-merge/` is the **whole** merge phase, spliced into `backlog` and
+`pr-review` as one unit. At that level the import contract holds: `review_merge` has one
+entry and one exit, and the conditioned exits live inside the phase. The verdict above is
+still right for the thing it examined, which is sharing the individual reviewer + gate
+pairs.
+
 ---
 
 ## 7. `FABRO_RUN_ID` in `trigger_review` instead of deriving it from the branch name
@@ -190,6 +197,26 @@ An LLM-written body satisfies none of the machine contracts downstream of it. En
 which `backlog`'s branch-hygiene note wants to keep available.
 
 **Verdict:** stays off. Permanently.
+
+---
+
+## 10. A setting that skips the checkpoint commit when nothing changed
+
+**Looks like:** an empty stage (every command node that writes only under `/tmp/fabro`)
+should produce no commit. Then `backlog`'s per-stage push would stop starting CI on the
+PR branch.
+
+**Is not.** `git_checkpoint` sets `options.allow_empty = true` unconditionally
+(`lib/components/fabro-workflow/src/sandbox_git.rs:105`). Neither `[run.checkpoint]` nor
+any graph attribute exposes it. The commit subject is fixed as
+`fabro(<run>): <node> (<status>)` (`sandbox_git.rs:89`). The only other text is a fixed
+footer (`lib/components/fabro-checkpoint/src/author.rs:41-51`), in which only the author
+name and email can be set. So a `[skip ci]` marker cannot be added either. Measured cost: womens-fantasy-sports#1247 carries 80 commits and 78 Actions
+runs, 53 of them cancelled. The `watch_checks` checkpoint `4e5e751` changes 0 files.
+
+**Verdict:** not configurable at 0.357. The lever that exists is to stop *pushing* the
+commits: `[run.run_branch] push = false`, adopted as ADR 0011 D1. Worth filing upstream as
+"skip the checkpoint when the tree is unchanged".
 
 ---
 

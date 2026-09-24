@@ -7,6 +7,21 @@ claimed, so mapping issue → run means reading the Discord message or scraping
 **Conclusion: there is no in-run lever. This is a genuine product gap, not something we
 have failed to configure.** The workaround is to invert the mapping.
 
+**Status 2026-09-24: mostly solved from outside the run, and one premise is out of date.**
+The table below says `backlog` is "fired by automation schedule" with no inputs. Since
+scheduler draft 10 that is false. The scheduler creates every `backlog` run with
+`args.inputs = {issue_number, coder_pool}` and `labels = {source: "scheduler", issue}`.
+Its `/history` page (ADR 0008) maps each issue to its run, PR and outcome, which is the
+mapping this gap asked for. The run title is still the generic goal: every scheduler run
+in the store is titled "Backlog: decompose the next agent-labeled issue, …", even though
+`issue_number` is present at create time. Either the LLM title generator described below
+(read from the 0.357 source) does not run on the deployed 0.354, or it does not use the
+inputs. This is not verified. Either way, the scheduler builds the `RunIntent` itself, so
+the cheap fix is now the deterministic one 03 item 2 proposed for `pr-review`: set
+`title` in the scheduler's dispatch, for example
+`backlog <repo>#<issue>: <issue title>`. The issue number no longer depends on `claim`,
+so the argument in "What this means per workflow" no longer applies to `backlog`.
+
 ---
 
 ## How a run gets its title

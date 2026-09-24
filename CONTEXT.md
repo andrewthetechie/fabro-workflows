@@ -198,6 +198,28 @@ generating — not a **Livelock** or **Stall**, so steering cannot help; the lev
 size (`docs/perf/04`).
 _Avoid_: stuck, too-big, runaway
 
+**Task budget**:
+The most tasks one **Run** implements, from any source: the decomposition, a split, or a
+follow-up from the extra review. Work beyond it becomes a **Remainder issue**. It limits
+the size of a run's PR. An **Oversized task** is a different problem: one task that is too
+large (ADR 0011).
+_Avoid_: task cap, max tasks
+
+**Remainder issue**:
+The issue a **Run** files for the tasks it did not start because its **Task budget** was
+spent. It continues the parent issue. It becomes a **Queue item** only after the run's PR
+merges.
+_Avoid_: follow-up issue, child issue, overflow
+
+**Priority label**:
+The `priority` issue label. The **Scheduler** ranks a **Queue item** carrying it ahead of
+every other item except an **Override**. The scheduler adds it to a **Remainder issue**
+when that issue's parent PR merges, and the operator can add it to any issue that should
+be worked next. It does not make an issue eligible for the queue. Only `agent` does that.
+Not repo priority, the `repos.toml` integer that orders repositories. "Priority" alone
+still means repo priority. The label is always "the `priority` label".
+_Avoid_: urgent, do-next (an unrelated label already in some repositories)
+
 **Canary** *(retired)*:
 Was to be the first repo whose `backlog` schedule is enabled at turn-on — `jelly-swipe`,
 because it has branch protection and no deploy-on-merge. No canary turn-on ever happened:

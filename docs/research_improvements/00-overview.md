@@ -19,7 +19,33 @@ findings depend on that gap and say so explicitly.
 Citations are `path:line` into `context/fabro`. Public-doc citations are
 `docs/public/...`. Where a doc contradicts the source, the source line is given.
 
-Nothing in this folder has been applied. It is a plan, not a changelog.
+This folder is a plan, not a changelog. Items that have since shipped are marked where they
+are described, and the table below records the status of every item as of 2026-09-24.
+
+## Status and priority, 2026-09-24
+
+Re-assessed against the 38 `backlog` runs the scheduler dispatched from 2026-09-19 to
+2026-09-24 (the run store, the scheduler's `run_history`, and GitHub). The main result of
+that review is not in this folder. It is ADR 0011: why the merge phase merged 4 of 34 PRs,
+and the six changes chosen for it.
+
+| Item | Status | Priority now | Why |
+|---|---|---|---|
+| 01.1 circuit-breaker limit | open | low | Never fired. One run failed `validate` 21 times without tripping it, because the normalised signatures differ. It is still a one-line insurance change. |
+| 01.2 stall watchdog | **applied** 2026-09-22 | — | 8 of the 38 sampled runs ended this way before the fix. The scheduler classed all 8 `deterministic` and requeued none. |
+| 01.3 rescue gate label | **applied** (`1218167`) | — | Carries the post-4a text. ADR 0010 Tier 1 replaces it. |
+| 01.4 preamble | **applied**, but at `truncate`, not `summary:low` (`c3b14ca`) | **one gap open** | `record_guidance` shipped. The `next_task` reset of `rescue.md` did not, so guidance from one task still steers every later rework. See 01. |
+| 02 `output_schema` pilot | open | park | A gate bounced a contract about 2 times in about 750 gate visits. The problem it fixes barely occurs. |
+| 03.1 issue-triage `run_branch.enabled` | open | low | Correct and cheap. Nothing is broken today. |
+| 03.2 bridge-fired `pr-review` titles | open | drop | `pr-review` ran twice in the period. The merge phase now runs inside `backlog`, and scheduler runs carry `labels.issue`. |
+| 03.3 artifacts | open | low | Unchanged. |
+| 03.4 `meta_branch` upgrade trap | open | low (doc) | Unchanged. The server is still 0.354. |
+| 03.5 pre-push hook | open | medium | The burn-down makes a bad push to `main` more expensive. See 03. |
+| 04 dead ends | — | — | One added: no setting makes the checkpoint commit skip when empty (item 10). |
+| gap 10 run ↔ issue | **mostly solved** | low | The scheduler sets `labels.issue`, and its `/history` page maps an issue to a run. |
+| gap 11 gate options | **worked around** (01.3) | — | The upstream bug is still worth filing. |
+| gap 12 preamble | **applied** (01.4) | — | Same `rescue.md` gap. |
+| gap 13 prompt fidelity | nothing to apply | — | Its remedy was gap 12, which shipped. |
 
 ## How the series is organised
 
@@ -53,7 +79,7 @@ operator observations. Gap documents end by naming the tier that carries their f
    permits 6. Tier 1. See `01`.
 2. **The stall watchdog fires before `watch_checks` can finish.** Its 35-minute timeout is
    unreachable behind a 30-minute default. Tier 1. See `01`. **Applied 2026-09-22**,
-   after it cost seven runs; it is the only item in this directory that has shipped.
+   after it cost seven runs. Eight of the 38 runs sampled on 2026-09-24 ended this way.
 3. **`[R] Retry with guidance` never renders on the rescue gate.** Fabro drops labelled
    freeform edges from the option list. Tier 1 and gap `11`.
 4. **Agents receive an unbounded preamble** — every completed stage, with 25 lines of

@@ -7,6 +7,11 @@ information about other stages.
 receives a summary of *every* completed stage, with up to 25 lines of command output each,
 plus the whole context table — prepended to the prompt.
 
+**Status 2026-09-24: applied, further than proposed.** All three graphs run at
+`default_fidelity="truncate"` (`c3b14ca`), not `summary:low`, and the rescue guidance is
+file-backed (`1218167`). One piece of "The fix" is still open: nothing deletes
+`/tmp/fabro/feedback/rescue.md` between tasks. See 01 item 4.
+
 ---
 
 ## The mechanism

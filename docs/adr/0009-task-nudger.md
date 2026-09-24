@@ -2,6 +2,9 @@
 
 **Status:** proposed (2026-09-20, revised the same day against the fabro source)
 THIS IS NOT YET IMPLEMENTED. Holding it in case we run into tasks stalling again but we seem to be in better shape now
+Re-assessed 2026-09-24 against 38 scheduler-dispatched runs: still deferred, at lower priority.
+See "Findings, 2026-09-24" at the end. It answers open question 3, partly answers questions
+2 and 4, and shows that the identical-call loop this ADR rejects as a detector does occur.
 
 A coder stage can spend its whole wall clock on read-class tool calls and write nothing.
 Context grows until `timeout="180m"` fires. Sandcastle guarded that with a livelock
@@ -306,3 +309,53 @@ Each of these needs a measurement, not a decision.
 4. Has a read-without-write livelock happened here? A run id and its event window would
    turn this ADR's premise from anticipation into measurement, and it is what releases
    rungs 1 and 2.
+
+## Findings, 2026-09-24
+
+Measured across the 38 `backlog` runs the scheduler dispatched between 2026-09-19 and
+2026-09-24, from `GET /runs/{id}/stages` and the events of 8 of those runs.
+
+**No coder stage came near the bound this ADR protects.** `coder` ran 188 visits: p50 19.3
+min, p90 51.6 min, max 138 min. None reached `timeout="180m"`, and none failed. The
+`rework_t*` stages have p50s of 1–4 minutes. `improve`'s longest visit was 42 min. The
+cost this ADR anticipates (a whole 180-minute stage spent reading) did not occur once.
+
+**Open question 2, partly answered: `agent.loop.detected` fires, and often.** It appears
+121 times in 7 of the 8 runs whose events were read: 105 in `coder`, 15 in `improve`, 1 in
+`rework_t1`. The event carries only `{"visit": N}`. Its emitter is not in the
+`context/fabro` checkout. The type exists only as the `CodingEvent::LoopDetected` variant
+(`lib/foundation/fabro-types/src/run_event/agent.rs:77`), so the rule has to be inferred
+from what it fires on. One burst, examined in full:
+
+- Run `01M2ZYF5X7F97ARZ4SKXZ9NXBH`, `coder` visit 9, 21:39–21:45 on 2026-09-20. The agent
+  called `read_file /tmp/fabro/current_task.json` again and again. The event fired 13
+  times, once per repeated call after the first few.
+- Fabro only reported it. It did not stop the stage or steer it. The loop ended by itself
+  after about 6 minutes, and the stage succeeded at 15 minutes with 9549 output tokens.
+
+That is the **identical-call** loop, the class the "Identity-based detection" alternative
+above rejects on the grounds that "the failure we expect is a read loop over different
+files". Identical-call loops do happen here. In the one burst examined, it cost minutes
+and not the stage. We have not measured how long bursts last in general. That is the
+measurement to take before this ADR is revived. If it is revived, `agent.loop.detected`
+is a free, deterministic trigger that needs no tool classification and no `/files`
+polling. It should be the first candidate for rung 1.
+
+**Open question 3, answered: a `stall_timeout` cancel classifies `deterministic`.** Eight
+runs were cancelled by the stall watchdog in `review_merge.watch_checks` before the
+2026-09-22 fix. Each one ended `failed` / `workflow_error`, and the scheduler's
+`run_history` recorded `category: deterministic` for each one and did not requeue it.
+So the watchdog is not a way back into the queue. A run it cancels has to be picked up by
+a human.
+
+**Open question 4, partly answered.** The sample shows no read-without-write streak of 15
+minutes or more. Only the identical-call loop above appeared, and it ended by itself.
+Rungs 1 and 2 stay off.
+
+**The stall detector was not measured.** Nobody read `agent.llm.started` to
+`agent.llm.first_output` gaps across the sample. Open question 1 is unchanged.
+
+**Priority.** Lower than when this ADR was written. The long-stage cost in this sample is
+explained by task size and by the box, not by livelock. Six runs with 9 or more tasks held
+42% of all lease hours (ADR 0011, D6). Task sizing is still the lever, as `CONTEXT.md`'s
+**Oversized task** says.
