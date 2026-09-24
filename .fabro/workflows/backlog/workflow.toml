@@ -47,9 +47,23 @@ long-context = ["kimi:kimi-k3"]
 # target repository on every run and never deletes it; nothing reads the pushed
 # copy (run metadata is served from the fabro API and the run store). Leaving
 # this on accumulates one dead branch per run forever. See task 12.
-# run_branch.push stays at its default (true) so in-progress work survives a
-# server crash; task 12's sweeper reaps the run branches instead.
 [run.meta_branch]
+push = false
+
+# Checkpoints still COMMIT after every stage, but fabro no longer PUSHES them
+# (ADR 0011 D1). Every checkpoint is an allow-empty commit, and once the PR exists
+# each push started a full CI run: womens-fantasy-sports#1247 carried 80 commits
+# and 78 Actions runs. The push after `watch_checks` also moved the head CI had
+# just passed, so `merge` timed out waiting for CI to start over.
+#   enabled = true  -> checkpoints still commit between stages
+#   push    = false -> only open_pr, deliver, ci_fix_gate and remerge_base push
+# open_pr widens the fetch refspec for the run branch; without that, every later
+# `--force-with-lease` push is rejected as `stale info` on this single-branch clone.
+# Nothing resumes from a pushed run branch (a server restart fails the run and any
+# retry starts from a fresh clone), so the old "survives a crash" reason is void.
+# Legal only because there is no [run.pull_request] block in this workflow.
+[run.run_branch]
+enabled = true
 push = false
 
 # The run needs a GitHub token for the gh CLI in acquire/claim/validate/open_pr

@@ -1041,6 +1041,91 @@ check "workflow change from main still runs CI" "2" "$(wc -l < "$T/opp.log" | tr
 PATH="$SAVED_PATH"
 
 # ---------------------------------------------------------------------------
+# open_pr + deliver — the lease push once checkpoints stop pushing (ADR 0011 D1)
+#
+# REAL git, against a real bare remote, because what is under test is git's own
+# --force-with-lease rule: with no remote-tracking ref for the branch it refuses
+# as `stale info`. The sandbox clone is single-branch, so that ref only exists
+# if open_pr creates it. Case 3 is the control: it proves this section can see
+# the failure, so a green case 1 means something.
+# ---------------------------------------------------------------------------
+echo ""
+echo "open_pr + deliver (real git)"
+SAVED_PATH="$PATH"
+T="$WORK/lease"; mkdir -p "$T/bin"; stage open_pr
+extract_from "$SHARED" deliver | sed "s#/tmp/fabro#$T#g" > "$T/deliver.sh"
+if ! sh -n "$T/deliver.sh" 2>"$T/deliver.syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL deliver is not valid POSIX sh\n'; sed 's/^/       /' "$T/deliver.syntax"
+fi
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr view") echo "https://github.com/o/r/pull/7"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+PATH="$T/bin:$ORIG_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+
+BR="fabro/run/01TEST"
+lease_repo() {
+    rm -rf "$T/up.git" "$T/seed" "$T/wt"
+    git init -q --bare -b main "$T/up.git"
+    git clone -q "$T/up.git" "$T/seed" 2>/dev/null
+    git -C "$T/seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    git -C "$T/seed" push -q origin HEAD:main
+    git clone -q --single-branch --branch main "$T/up.git" "$T/wt"
+    git -C "$T/wt" config user.email t@t
+    git -C "$T/wt" config user.name t
+    git -C "$T/wt" checkout -qb "$BR"
+    echo work > "$T/wt/a.txt"
+    git -C "$T/wt" add -A
+    git -C "$T/wt" commit -qm 'fabro(01TEST): coder (succeeded)'
+    printf '%s' '{"number":350,"title":"t"}' > "$T/issue.json"
+    printf '%s' 'fix: a title' > "$T/pr_title.txt"
+    : > "$T/pr_body.md"
+    echo "$BR" > "$T/head_ref"
+    echo main > "$T/base_ref"
+    : > "$T/gh.log"
+}
+REFSPEC="+refs/heads/$BR:refs/remotes/origin/$BR"
+
+# 1. open_pr pushes and creates the tracking ref; deliver then pushes a new commit.
+lease_repo
+OUT=$( cd "$T/wt" && sh "$T/open_pr.sh" 2>&1 ); RC=$?
+check "open_pr exits 0 on a single-branch clone" "0" "$RC"
+check "open_pr creates the tracking ref" \
+    "$(git -C "$T/wt" rev-parse HEAD)" \
+    "$(git -C "$T/wt" rev-parse -q --verify "refs/remotes/origin/$BR")"
+echo more >> "$T/wt/a.txt"
+git -C "$T/wt" commit -qam 'fabro(01TEST): review_merge.review_fix (succeeded)'
+OUT=$( cd "$T/wt" && sh "$T/deliver.sh" 2>&1 )
+check "deliver reports delivered=true" "true" \
+    "$(jq -r '.context_updates.delivered' <<<"$(lastjson "$OUT")")"
+check "deliver moved the remote branch" \
+    "$(git -C "$T/wt" rev-parse HEAD)" "$(git -C "$T/up.git" rev-parse "$BR")"
+
+# 2. A second open_pr (human_rescue -> [P]) adds no duplicate refspec.
+( cd "$T/wt" && sh "$T/open_pr.sh" >/dev/null 2>&1 )
+check "second open_pr keeps one refspec line" "1" \
+    "$(git -C "$T/wt" config --get-all remote.origin.fetch | grep -cxF "$REFSPEC")"
+
+# 3. Control: push WITHOUT the widening, as the old open_pr did; deliver is refused.
+lease_repo
+( cd "$T/wt" && git push -q -u origin HEAD 2>/dev/null )
+echo more >> "$T/wt/a.txt"
+git -C "$T/wt" commit -qam 'more'
+OUT=$( cd "$T/wt" && sh "$T/deliver.sh" 2>&1 )
+check "control: no tracking ref, deliver refused" "false" \
+    "$(jq -r '.context_updates.delivered' <<<"$(lastjson "$OUT")")"
+check "control: git says stale info" "1" "$(grep -c 'stale info' <<<"$OUT")"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
 echo ""
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: $PASS checks"

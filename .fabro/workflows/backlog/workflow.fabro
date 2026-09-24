@@ -1041,26 +1041,35 @@ grep -q 'fabro:commit-body:start' /tmp/fabro/pr_body.md"]
     // exactly HEAD the whole time. That cost run 01M2VHAGXNM9JNEY71085HV82Y its
     // PR on jelly-swipe#350, after 41 minutes of completed work.
     //
-    // fabro's checkpoint pushes the run branch after every stage, so this node's
-    // own push is always `Everything up-to-date` -- a no-op does no ref work, so
-    // the push can never repair the missing ref either.
+    // Since ADR 0011 D1 fabro no longer pushes checkpoints, so `deliver`,
+    // `ci_fix_gate` and `remerge_base` push for real. Their bare
+    // `--force-with-lease` needs a remote-tracking ref, which the single-branch
+    // clone does not have, so this node creates one after its own push.
     //
     // `pr-review`'s claim node hits the same clone property and solves it the
-    // other way, widening the refspec and fetching (`git config
+    // other way, widening the refspec to all branches (`git config
     // remote.origin.fetch \"+refs/heads/*:refs/remotes/origin/*\"`). That is the
     // right fix THERE, because `gh pr checkout` genuinely needs a local tracking
-    // branch. Here nothing needs one, so removing the dependency beats satisfying
-    // it: no extra fetch, and no way for the ref to go missing again.
+    // branch. Here the run branch is the only one that needs it, so this node
+    // maps just that ref.
     //
     // The existence check also moved AHEAD of the create. The old form was
     // `gh pr create ... || gh pr view --json url > /dev/null`, which reads as
     // \"tolerate an already-open PR\" but swallows every real gh error into a
     // discarded fallback, and then dies at the next line under `set -e` with the
     // cause buried. Asking first is the same idempotency with the error intact.
+    // The three lines after `git push -u origin HEAD` give this single-branch clone a
+    // remote-tracking ref for the run branch. Checkpoints no longer push (ADR 0011 D1),
+    // so `deliver`, `ci_fix_gate` and `remerge_base` push for real, and a bare
+    // `--force-with-lease` with no tracking ref is rejected as `stale info`. The guard
+    // keeps a second visit (human_rescue -> [P]) from adding the refspec twice.
     open_pr [label="Push and open PR", shape=parallelogram, output_schema="routing",
         script="set -e
 B=$(git rev-parse --abbrev-ref HEAD)
 git push -u origin HEAD
+R=\"+refs/heads/$B:refs/remotes/origin/$B\"
+git config --get-all remote.origin.fetch | grep -qxF \"$R\" || git config --add remote.origin.fetch \"$R\"
+git fetch origin \"$R\"
 N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(cat /tmp/fabro/pr_title.txt)
 PR_URL=$(gh pr view \"$B\" --json url --jq .url 2>/dev/null || true)

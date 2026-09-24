@@ -658,9 +658,14 @@ exit 0"]
     // by the more general match.
     //
     // The fix is structural rather than a longer retry: the wait for checks has to be
-    // INSIDE this node. A node boundary is a checkpoint is a new head, so `watch_checks`
-    // -- being a separate node -- can never be the last word before a merge, no matter
-    // what it observes. `settle` below is that in-node wait; it polls the CURRENT head
+    // INSIDE this node. A node boundary is a checkpoint commit, and it used to be a
+    // PUSH too, so `watch_checks` -- being a separate node -- could never be the last
+    // word before a merge. Since ADR 0011 D1 neither backlog nor pr-review pushes
+    // checkpoints, so the remote head normally stays where `watch_checks` saw it;
+    // `settle` stays as the guard for a push by ci_fix_gate or remerge_base.
+    // timeout="50m": `settle` is bounded by merge_deadline, and fabro's 10m command
+    // default fired first on womens-fantasy-sports#1247 and writers-app#963. 50m stays
+    // under the root graphs' stall_timeout="60m". `settle` below is that in-node wait; it polls the CURRENT head
     // and is bounded by the same `merge_deadline` the rest of the phase uses, with a
     // short grace for the case where no check ever appears. The retry loop re-settles
     // once if protection refuses anyway, so a check that starts late still merges.
@@ -672,7 +677,7 @@ exit 0"]
     // and before the review was delivered\", a placeholder `validate` had written on its
     // SUCCESS path, while the real reason sat unread. Writing both is what keeps the
     // comment true no matter which renderer sees it.
-    merge [label="Squash merge", shape=parallelogram, output_schema="routing",
+    merge [label="Squash merge", shape=parallelogram, output_schema="routing", timeout="50m",
         script="PR=$(cat /tmp/fabro/pr_number)
 DL=$(cat /tmp/fabro/merge_deadline 2>/dev/null || echo 0)
 block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
