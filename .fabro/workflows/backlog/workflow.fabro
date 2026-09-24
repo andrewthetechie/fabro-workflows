@@ -630,6 +630,28 @@ echo '{\"context_updates\":{\"task_disposition\":\"'$D'\",\"task_count\":'$TC'}}
     // whatever the agent produced gets reviewed, and escalation follows.
     coder [label="Implement task (tier 1)", class="coder", timeout="180m", max_retries=1, allow_partial=true, prompt="@prompts/coder.md.j2"]
 
+    // autofix: formatters and machine-applicable lint fixes between every coder or rework
+    // stage and its review (ADR 0011 D5). It runs the target repository's optional
+    // `.fabro/fix.sh` and ALWAYS succeeds: `validate` is the gate, not this node. Its
+    // edits are committed by the checkpoint after this stage, before prep_review computes
+    // the diff, so the reviewer reviews the formatted code. 31 of writers-app's 154
+    // validate visits failed, mostly on `cargo fmt` diffs and clippy lints, and each one
+    // cost a rework_t1 stage plus a second validate.
+    //
+    // No output_schema: this node publishes no context key. The `outcome=failed` edge
+    // sends a timeout on to prep_review as well, so a hung formatter costs at most 15m
+    // and never parks the run on human_rescue; the unconditional edge to human_rescue
+    // exists only because every command node must have one.
+    autofix [label="Autofix (formatters and lint --fix)", shape=parallelogram, timeout="15m",
+        script="if [ ! -f ./.fabro/fix.sh ]; then
+  echo 'autofix: no .fabro/fix.sh in this repository; nothing to do'
+  exit 0
+fi
+if [ -x ./.fabro/fix.sh ]; then ./.fabro/fix.sh; RC=$?; else bash ./.fabro/fix.sh; RC=$?; fi
+echo 'autofix: .fabro/fix.sh exited '$RC'; validate is the gate, so this stage succeeds either way'
+git status --short 2>/dev/null || true
+exit 0"]
+
     prep_review [label="Prepare review inputs", shape=parallelogram, output_schema="routing",
         script="set -e
 BASE=$(cat /tmp/fabro/task_base_sha)
@@ -1236,12 +1258,16 @@ echo done"]
     improve_gate -> coder           [condition="context.task_disposition=ready"]
     improve_gate -> human_rescue
 
-    coder -> prep_review            [condition="outcome=succeeded"]
+    coder -> autofix                [condition="outcome=succeeded"]
     // Retries exhausted on a coder that was still working. allow_partial makes
     // that partially_succeeded rather than failed; this edge is what stops it
     // falling through to the unconditional human_rescue and skipping the ladder.
-    coder -> prep_review            [condition="outcome=partially_succeeded"]
+    coder -> autofix                [condition="outcome=partially_succeeded"]
     coder -> human_rescue
+
+    autofix -> prep_review          [condition="outcome=succeeded"]
+    autofix -> prep_review          [condition="outcome=failed"]
+    autofix -> human_rescue
 
     prep_review -> rework_router    [condition="context.diff_too_large=true"]
     prep_review -> validate
@@ -1264,13 +1290,13 @@ echo done"]
     rework_router -> rework_t4      [condition="context.round=5"]
     rework_router -> human_rescue
 
-    rework_t1 -> prep_review        [condition="outcome=succeeded"]
+    rework_t1 -> autofix            [condition="outcome=succeeded"]
     rework_t1 -> human_rescue
-    rework_t2 -> prep_review        [condition="outcome=succeeded"]
+    rework_t2 -> autofix            [condition="outcome=succeeded"]
     rework_t2 -> human_rescue
-    rework_t3 -> prep_review        [condition="outcome=succeeded"]
+    rework_t3 -> autofix            [condition="outcome=succeeded"]
     rework_t3 -> human_rescue
-    rework_t4 -> prep_review        [condition="outcome=succeeded"]
+    rework_t4 -> autofix            [condition="outcome=succeeded"]
     rework_t4 -> human_rescue
 
     extra_prep -> open_pr_prep      [condition="context.extra_done=true"]

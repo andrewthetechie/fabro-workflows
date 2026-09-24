@@ -1243,6 +1243,56 @@ PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
 # ---------------------------------------------------------------------------
+# autofix — the optional per-repository .fabro/fix.sh, always fail-open (ADR 0011 D5)
+# ---------------------------------------------------------------------------
+echo ""
+echo "autofix"
+SAVED_PATH="$PATH"
+PATH="$ORIG_PATH"
+T="$WORK/autofix"; mkdir -p "$T"; stage autofix
+af_repo() {
+    rm -rf "$T/wt"; mkdir -p "$T/wt"
+    git -C "$T/wt" init -q -b main .
+    printf 'unformatted\n' > "$T/wt/a.txt"
+}
+af_run() { ( cd "$T/wt" && sh "$T/autofix.sh" 2>&1 ); }
+
+# 1. No fix.sh: nothing happens, and the stage still succeeds.
+af_repo
+OUT=$(af_run); RC=$?
+check "no fix.sh: exit 0"          "0" "$RC"
+check "no fix.sh: says so"         "1" "$(grep -c 'no .fabro/fix.sh' <<<"$OUT")"
+
+# 2. An executable fix.sh that reformats a file: the edit is left in the tree.
+af_repo
+mkdir -p "$T/wt/.fabro"
+printf '%s\n' '#!/bin/sh' 'printf "formatted\n" > a.txt' > "$T/wt/.fabro/fix.sh"
+chmod +x "$T/wt/.fabro/fix.sh"
+OUT=$(af_run); RC=$?
+check "fix.sh ran: exit 0"         "0" "$RC"
+check "fix.sh ran: file changed"   "formatted" "$(cat "$T/wt/a.txt")"
+
+# 3. A fix.sh that fails: output kept, stage still succeeds.
+af_repo
+mkdir -p "$T/wt/.fabro"
+printf '%s\n' '#!/bin/sh' 'echo clippy blew up' 'exit 3' > "$T/wt/.fabro/fix.sh"
+chmod +x "$T/wt/.fabro/fix.sh"
+OUT=$(af_run); RC=$?
+check "failing fix.sh: exit 0"     "0" "$RC"
+check "failing fix.sh: rc reported" "1" "$(grep -c 'fix.sh exited 3' <<<"$OUT")"
+check "failing fix.sh: output kept" "1" "$(grep -c 'clippy blew up' <<<"$OUT")"
+
+# 4. A fix.sh without the executable bit still runs, under bash.
+af_repo
+mkdir -p "$T/wt/.fabro"
+printf '%s\n' 'printf "formatted\n" > a.txt' > "$T/wt/.fabro/fix.sh"
+OUT=$(af_run); RC=$?
+check "non-executable fix.sh: exit 0" "0" "$RC"
+check "non-executable fix.sh: ran"  "formatted" "$(cat "$T/wt/a.txt")"
+
+PATH="$SAVED_PATH"
+
+# ---------------------------------------------------------------------------
 echo ""
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: $PASS checks"

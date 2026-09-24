@@ -140,7 +140,10 @@ Checked on 2026-09-18, because the list below had drifted from the host:
    every `backlog` run — see the Secrets section — so do it before step 10, and before
    any `backlog` automation fires.
 10. **Contract scripts** (`.fabro/setup.sh`, `.fabro/ci.sh`) live in each target repo,
-   not this repo. Every target repo must have both or every run fails at `prep`.
+   not this repo. Every target repo must have both or every run fails at `prep`. A third,
+   `.fabro/fix.sh`, is optional: `backlog`'s `autofix` node runs it after every coder or
+   rework stage, and it may hold only formatters and machine-applicable lint fixes
+   (ADR 0011 D5). Its exit status is ignored.
 11. **Coder scheduler** — `rsync -a --delete ops/scheduler/ andrew@<HOST>:~/fabro/scheduler/`
    then `cd ~/fabro && docker compose up -d --build scheduler`. It builds
    `fabro-scheduler:local` from `./scheduler`, resolved relative to the compose file, which
