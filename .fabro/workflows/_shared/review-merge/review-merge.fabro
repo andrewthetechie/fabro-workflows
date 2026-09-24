@@ -430,6 +430,7 @@ if [ \"$E\" = true ]; then
   gh pr view \"$PR\" --json title --jq .title > /tmp/fabro/commit_subject.txt
   git diff --name-only origin/\"$(cat /tmp/fabro/base_ref)\"...HEAD > /tmp/fabro/review/merge_base_files.txt 2>/dev/null || : > /tmp/fabro/review/merge_base_files.txt
   echo 0 > /tmp/fabro/gh_fix_attempts
+  rm -f /tmp/fabro/ci_rerun_done
   echo 0 > /tmp/fabro/strict_retry
   echo $(( $(date +%s) + 3600 )) > /tmp/fabro/merge_deadline
   echo '{\"context_updates\":{\"merge_eligible\":true}}'
@@ -479,34 +480,59 @@ fi"]
     // durable fix belongs in the repository: a concurrency group on the CI workflow
     // collapses the queue that produced the 48 minutes, since fabro checkpoints after
     // every stage and each push had been starting a full CI run of its own.
+    //
+    // One rerun before ci_fix (ADR 0011 D2). When the checks settle red, the failed jobs
+    // of each failing Actions run are rerun ONCE per merge phase (`ci_rerun_done`,
+    // cleared by merge_gate), and only while >= 30 min of merge_deadline remain and this
+    // node has run < 20 min -- so a real failure still leaves ci_fix its budget, and the
+    // second wait cannot reach this node's 50m timeout, which routes to mark_needs_human.
+    // 4 of 7 "CI-fix could not fix" blocks in the 2026-09-24 review were flakes that
+    // passed on a plain rerun (writers-app#966, womens-fantasy-sports#1245/#1246,
+    // lawncare-saas#2608).
     watch_checks [label="Watch GitHub checks", shape=parallelogram, timeout="50m", output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 A=$(cat /tmp/fabro/gh_fix_attempts 2>/dev/null || echo 0)
 DL=$(cat /tmp/fabro/merge_deadline 2>/dev/null || echo 0)
+T0=$(date +%s)
 blocked() {
   printf '%s' \"$1\" > /tmp/fabro/merge_block_reason
   echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":true,\"gh_fix_attempts\":'$A'}}'
   exit 0
 }
-GRACE=$(( $(date +%s) + 300 ))
 while : ; do
-  NOW=$(date +%s)
-  if [ \"$NOW\" -ge \"$DL\" ]; then blocked 'The 60-minute merge budget is exhausted; the merge phase was abandoned before CI settled.'; fi
-  gh pr checks \"$PR\" --json name,state,bucket,link > /tmp/fabro/checks.json 2>/dev/null || echo '[]' > /tmp/fabro/checks.json
-  TOTAL=$(jq length /tmp/fabro/checks.json 2>/dev/null || echo 0)
-  PEND=$(jq '[.[] | select(.bucket == \"pending\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
-  if [ \"$TOTAL\" = 0 ]; then
-    if [ \"$NOW\" -ge \"$GRACE\" ]; then blocked 'No CI checks were reported on the PR head within five minutes; a merge with no evidence is refused.'; fi
-  elif [ \"$PEND\" = 0 ]; then
-    break
+  GRACE=$(( $(date +%s) + 300 ))
+  while : ; do
+    NOW=$(date +%s)
+    if [ \"$NOW\" -ge \"$DL\" ]; then blocked 'The 60-minute merge budget is exhausted; the merge phase was abandoned before CI settled.'; fi
+    gh pr checks \"$PR\" --json name,state,bucket,link > /tmp/fabro/checks.json 2>/dev/null || echo '[]' > /tmp/fabro/checks.json
+    TOTAL=$(jq length /tmp/fabro/checks.json 2>/dev/null || echo 0)
+    PEND=$(jq '[.[] | select(.bucket == \"pending\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
+    if [ \"$TOTAL\" = 0 ]; then
+      if [ \"$NOW\" -ge \"$GRACE\" ]; then blocked 'No CI checks were reported on the PR head within five minutes; a merge with no evidence is refused.'; fi
+    elif [ \"$PEND\" = 0 ]; then
+      break
+    fi
+    sleep 30
+  done
+  BAD=$(jq '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
+  if [ \"$BAD\" = 0 ]; then
+    echo '{\"context_updates\":{\"checks_ok\":true,\"checks_blocked\":false,\"gh_fix_attempts\":'$A'}}'
+    exit 0
   fi
-  sleep 30
+  NOW=$(date +%s)
+  if [ -f /tmp/fabro/ci_rerun_done ]; then break; fi
+  if [ $((DL - NOW)) -lt 1800 ]; then echo 'not rerunning: under 30 minutes of the merge budget left'; break; fi
+  if [ $((NOW - T0)) -ge 1200 ]; then echo 'not rerunning: this node has already waited 20 minutes'; break; fi
+  : > /tmp/fabro/ci_rerun_done
+  RERAN=0
+  for RID in $(jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link] | .[]' /tmp/fabro/checks.json 2>/dev/null | sed 's|.*/actions/runs/||; s|/.*||' | sort -u); do
+    case \"$RID\" in '' | *[!0-9]*) continue ;; esac
+    if gh run rerun \"$RID\" --failed; then RERAN=$((RERAN+1)); fi
+  done
+  if [ \"$RERAN\" = 0 ]; then echo 'nothing to rerun: no failing check is a GitHub Actions run'; break; fi
+  echo 'reran the failed jobs of '$RERAN' Actions run(s) once; waiting for them before calling ci_fix'
+  sleep 60
 done
-BAD=$(jq '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
-if [ \"$BAD\" = 0 ]; then
-  echo '{\"context_updates\":{\"checks_ok\":true,\"checks_blocked\":false,\"gh_fix_attempts\":'$A'}}'
-  exit 0
-fi
 NAMES=$(jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .name] | join(\", \")' /tmp/fabro/checks.json 2>/dev/null || echo unknown)
 if [ \"$A\" -ge 2 ]; then
   blocked 'CI is still failing after two fix attempts ('\"$NAMES\"'); a human must merge this PR.'

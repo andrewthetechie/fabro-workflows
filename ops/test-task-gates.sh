@@ -1126,6 +1126,123 @@ PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
 # ---------------------------------------------------------------------------
+# review-merge `watch_checks` — one rerun of the failed jobs before ci_fix (ADR 0011 D2)
+#
+# Four of the seven "CI-fix could not fix" blocks in the 2026-09-24 review were
+# flakes or CI infrastructure faults that passed on a plain rerun. The node now
+# reruns the failed Actions jobs once per merge phase, and only while at least
+# 30 minutes of merge_deadline remain and the node has run under 20 minutes.
+# `date` is stubbed with a controllable clock so the 20-minute guard can be
+# reached without waiting; with no clock file it defers to the real `date`.
+# ---------------------------------------------------------------------------
+echo ""
+echo "review-merge watch_checks"
+SAVED_PATH="$PATH"
+T="$WORK/wchecks"; mkdir -p "$T/bin" "$T/review" "$T/feedback"
+extract_from "$SHARED" watch_checks | sed "s#/tmp/fabro#$T#g" > "$T/watch_checks.sh"
+if ! sh -n "$T/watch_checks.sh" 2>"$T/watch_checks.syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL watch_checks is not valid POSIX sh\n'; sed 's/^/       /' "$T/watch_checks.syntax"
+fi
+REAL_DATE=$(command -v date)
+cat > "$T/bin/sleep" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+cat > "$T/bin/date" <<STUB
+#!/bin/sh
+if [ "\$1" = "+%s" ] && [ -f "\$GH_STATE/clock" ]; then
+    now=\$(cat "\$GH_STATE/clock"); echo "\$now"
+    echo \$((now + \$(cat "\$GH_STATE/clock_step"))) > "\$GH_STATE/clock"
+    exit 0
+fi
+exec $REAL_DATE "\$@"
+STUB
+# `gh pr checks` answers from checks_<n>.json for the n-th poll, repeating the last
+# file once the sequence runs out.
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr checks")
+      n=0; [ -f "$GH_STATE/polls" ] && n=$(cat "$GH_STATE/polls")
+      n=$((n + 1)); echo "$n" > "$GH_STATE/polls"
+      while [ "$n" -gt 1 ] && [ ! -f "$GH_STATE/checks_$n.json" ]; do n=$((n - 1)); done
+      cat "$GH_STATE/checks_$n.json"; exit 0 ;;
+  "run rerun") exit 0 ;;
+  "run view")  echo "the failing log"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/sleep" "$T/bin/date" "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+
+FAILING='[{"name":"test","state":"FAILURE","bucket":"fail","link":"https://github.com/o/r/actions/runs/111/job/9"}]'
+PASSING='[{"name":"test","state":"SUCCESS","bucket":"pass","link":"https://github.com/o/r/actions/runs/111/job/10"}]'
+wc_setup() {
+    rm -f "$T"/gh.log "$T"/polls "$T"/checks_*.json "$T"/ci_rerun_done "$T"/clock "$T"/clock_step \
+          "$T"/gh_fix_attempts "$T"/merge_block_reason "$T"/feedback/ci_fix.md
+    : > "$T/gh.log"
+    echo 7 > "$T/pr_number"
+    echo $(( $("$REAL_DATE" +%s) + 3600 )) > "$T/merge_deadline"
+}
+wc_run() { sh "$T/watch_checks.sh" 2>&1; }
+
+# 1. A flake: fails, is rerun once, passes. Merges without ci_fix.
+wc_setup
+printf '%s' "$FAILING" > "$T/checks_1.json"; printf '%s' "$PASSING" > "$T/checks_2.json"
+OUT=$(wc_run)
+check "flake: checks_ok after the rerun" "true" "$(jq -r '.context_updates.checks_ok' <<<"$(lastjson "$OUT")")"
+check "flake: exactly one rerun, of run 111" "1" "$(grep -c '^run rerun 111 --failed$' "$T/gh.log")"
+check "flake: no ci_fix attempt spent" "absent" "$([ -f "$T/gh_fix_attempts" ] && echo present || echo absent)"
+
+# 2. A real failure: fails, is rerun once, fails again. Goes to ci_fix tier 1.
+wc_setup
+printf '%s' "$FAILING" > "$T/checks_1.json"
+OUT=$(wc_run)
+check "real failure: routes to ci_fix" "false:1" \
+    "$(jq -r '"\(.context_updates.checks_ok):\(.context_updates.gh_fix_attempts)"' <<<"$(lastjson "$OUT")")"
+check "real failure: still only one rerun" "1" "$(grep -c '^run rerun' "$T/gh.log")"
+check "real failure: ci_fix.md carries the log" "1" "$(grep -c 'the failing log' "$T/feedback/ci_fix.md")"
+
+# 3. Second visit in the same merge phase (after a ci_fix push): no second rerun.
+wc_setup
+: > "$T/ci_rerun_done"; echo 1 > "$T/gh_fix_attempts"
+printf '%s' "$FAILING" > "$T/checks_1.json"
+OUT=$(wc_run)
+check "second visit: no rerun" "0" "$(grep -c '^run rerun' "$T/gh.log")"
+check "second visit: ci_fix tier 2" "2" "$(jq -r '.context_updates.gh_fix_attempts' <<<"$(lastjson "$OUT")")"
+
+# 4. Under 30 minutes of budget left: no rerun, straight to ci_fix.
+wc_setup
+echo $(( $("$REAL_DATE" +%s) + 1000 )) > "$T/merge_deadline"
+printf '%s' "$FAILING" > "$T/checks_1.json"
+OUT=$(wc_run)
+check "low budget: no rerun" "0" "$(grep -c '^run rerun' "$T/gh.log")"
+check "low budget: says why" "1" "$(grep -c 'under 30 minutes' <<<"$OUT")"
+
+# 5. The node has already waited 20 minutes: no rerun. The clock advances 700s per
+#    `date +%s` call, so by the post-poll check 2100s have passed since T0.
+wc_setup
+echo 1000000 > "$T/clock"; echo 700 > "$T/clock_step"
+echo 1010000 > "$T/merge_deadline"
+printf '%s' "$FAILING" > "$T/checks_1.json"
+OUT=$(wc_run)
+check "20 minutes in node: no rerun" "0" "$(grep -c '^run rerun' "$T/gh.log")"
+check "20 minutes in node: says why" "1" "$(grep -c 'already waited 20 minutes' <<<"$OUT")"
+
+# 6. A failing check that is not an Actions run (no /actions/runs/ link): nothing to
+#    rerun, so it goes to ci_fix at once instead of waiting for nothing.
+wc_setup
+printf '%s' '[{"name":"codeql","state":"FAILURE","bucket":"fail","link":"https://github.com/o/r/runs/5"}]' > "$T/checks_1.json"
+OUT=$(wc_run)
+check "non-Actions failure: no rerun" "0" "$(grep -c '^run rerun' "$T/gh.log")"
+check "non-Actions failure: routes to ci_fix" "1" "$(jq -r '.context_updates.gh_fix_attempts' <<<"$(lastjson "$OUT")")"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
 echo ""
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: $PASS checks"
