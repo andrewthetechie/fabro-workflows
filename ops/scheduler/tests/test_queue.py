@@ -312,3 +312,54 @@ def test_repo_statuses_walk_pending_then_ok_then_stale(store):
     [stale] = repo_statuses(config, store)
     assert (stale.pending, stale.stale, stale.item_count) == (False, True, 1)
     assert stale.last_error == "boom"
+
+
+# --- ranking: the `priority` label tier (ADR 0011) ------------------------------------
+
+
+def labelled(
+    repo: str,
+    number: int,
+    labels: tuple[str, ...],
+    *,
+    priority: int = 0,
+    waited: timedelta = timedelta(0),
+    override: int | None = None,
+) -> QueueItem:
+    return QueueItem(
+        issue=issue(repo, number, labels=labels, first_seen=NOW - waited),
+        repo_priority=priority,
+        override_rank=override,
+        waited=waited,
+    )
+
+
+def test_the_priority_label_outranks_the_ceiling_and_repo_priority():
+    flagged = labelled("o/b", 5, ("agent", "priority"), priority=7, waited=timedelta(minutes=1))
+    starved = item("o/c", 3, priority=-99, waited=timedelta(hours=9))
+    waiting = item("o/a", 1, priority=-99, waited=timedelta(minutes=1))
+    assert [i.issue.number for i in rank([starved, waiting, flagged], CEILING)] == [5, 3, 1]
+
+
+def test_an_override_outranks_the_priority_label():
+    flagged = labelled("o/a", 1, ("agent", "priority"), waited=timedelta(hours=1))
+    bumped = item("o/b", 2, override=-1)
+    assert [i.issue.number for i in rank([flagged, bumped], CEILING)] == [2, 1]
+
+
+def test_two_priority_items_go_oldest_first_not_by_repo_priority_or_number():
+    older = labelled("o/a", 9, ("agent", "priority"), priority=50, waited=timedelta(hours=2))
+    newer = labelled("o/b", 1, ("agent", "priority"), priority=-99, waited=timedelta(hours=1))
+    assert [i.issue.number for i in rank([newer, older], CEILING)] == [9, 1]
+
+
+def test_an_overridden_priority_item_appears_once():
+    both = labelled("o/a", 1, ("agent", "priority"), override=-1)
+    assert [i.issue.number for i in rank([both], CEILING)] == [1]
+
+
+def test_build_queue_reads_the_priority_label_from_the_cache(store):
+    store.upsert_issue(issue("o/a", 1, first_seen=NOW - timedelta(minutes=5)))
+    store.upsert_issue(issue("o/b", 2, labels=("agent", "priority"), first_seen=NOW))
+    items = build_queue([repo("o/a", -99), repo("o/b", 50)], store, NOW, CEILING)
+    assert [i.issue.number for i in items] == [2, 1]

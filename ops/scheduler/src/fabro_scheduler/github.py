@@ -73,6 +73,12 @@ REQUIRED_LABEL = "agent"
 # is neither (CONTEXT.md, **Queue item**).
 IN_PROGRESS_LABEL = "agent-in-progress"
 STUCK_LABEL = "agent-stuck"
+
+# An issue the operator (or the remainder promoter) wants dispatched next. Ranks
+# after an Override and before every other tier (queue.py). It is NOT repo
+# priority, the `repos.toml` integer; and it does not make an issue a queue item
+# -- only REQUIRED_LABEL does that. ADR 0011.
+PRIORITY_LABEL = "priority"
 EXCLUDED_LABELS = frozenset({IN_PROGRESS_LABEL, STUCK_LABEL})
 
 

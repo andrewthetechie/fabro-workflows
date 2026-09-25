@@ -10,6 +10,10 @@ The order, from overview decisions 4 and 5:
    rank, so repeated bumps put the newest first. Read from the `overrides` table,
    which is the operator's click and not repo policy: it lives in the scheduler's
    database, is one issue wide, and is cleared when the item is dispatched.
+1b. **`priority` label** — an item carrying the GitHub label `priority`, oldest
+   `first_seen` first (ADR 0011). Unlike an Override it lives on the issue, so it is
+   visible on GitHub, survives a scheduler rebuild, and can be set by the remainder
+   promoter as well as by the operator. It is not repo priority.
 2. **Starvation ceiling** — anything that has waited longer than `T` (default 4h)
    jumps ahead of everything that has not, oldest first. Deliberately a cliff and
    not an aging score: the claim the operator can check by looking is "nothing
@@ -31,7 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from .config import RepoConfig
-from .github import Issue
+from .github import PRIORITY_LABEL, Issue
 from .store import Store
 
 
@@ -107,23 +111,21 @@ def rank(items: Sequence[QueueItem], ceiling: timedelta) -> list[QueueItem]:
         (item for item in items if item.override_rank is not None),
         key=lambda item: (item.override_rank, item.issue.number),
     )
+    rest = [item for item in items if item.override_rank is None]
+    prioritized = sorted(
+        (item for item in rest if PRIORITY_LABEL in item.issue.labels),
+        key=lambda item: (item.issue.first_seen, item.issue.number),
+    )
+    rest = [item for item in rest if PRIORITY_LABEL not in item.issue.labels]
     starved = sorted(
-        (
-            item
-            for item in items
-            if item.override_rank is None and item.waited > ceiling
-        ),
+        (item for item in rest if item.waited > ceiling),
         key=lambda item: (item.issue.first_seen, item.issue.number),
     )
     waiting = sorted(
-        (
-            item
-            for item in items
-            if item.override_rank is None and item.waited <= ceiling
-        ),
+        (item for item in rest if item.waited <= ceiling),
         key=lambda item: (item.repo_priority, item.issue.number),
     )
-    return overridden + starved + waiting
+    return overridden + prioritized + starved + waiting
 
 
 def build_queue(
