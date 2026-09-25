@@ -464,6 +464,15 @@ check "create failure fails stage" "1" "$RC"
 check "gh's own error survives"    "1" "$(grep -c 'you must first push the current branch' <<<"$OUT")"
 check "no pr_url on failure"       "" "$(lastjson "$OUT" | jq -r '.context_updates.pr_url // ""' 2>/dev/null)"
 
+# 4. An Architecture issue's PR gets the label (ADR 0012 D8); a plain one does not.
+op_setup
+printf '%s' '{"number":350,"title":"t","labels":[{"name":"architecture"}]}' > "$T/issue.json"
+sh "$T/open_pr.sh" >/dev/null 2>&1
+check "architecture PR: labelled"  "1" "$(grep -c "^pr edit $BR --add-label architecture" "$T/gh.log")"
+op_setup
+sh "$T/open_pr.sh" >/dev/null 2>&1
+check "plain PR: not labelled"     "0" "$(grep -c 'add-label architecture' "$T/gh.log")"
+
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
@@ -1483,6 +1492,12 @@ check "create fails: still exit 0"     "0" "$RC"
 check "create fails: tasks on the PR"  "1" "$(grep -c '^- T10$' "$T/pr_comment.txt")"
 check "create fails: nothing recorded" "absent" "$([ -e "$T/remainder_issue" ] && echo present || echo absent)"
 
+# 10. An Architecture issue's remainder keeps the label (ADR 0012 D8).
+rm -f "$T/remainder_issue" "$T/create_fails"; : > "$T/gh.log"
+printf '%s' '{"number":350,"title":"Big issue","labels":[{"name":"architecture"}]}' > "$T/issue.json"
+sh "$T/file_remainder.sh" >/dev/null 2>&1
+check "architecture remainder: labelled" "1" "$(grep '^issue create' "$T/gh.log" | grep -c -- '--label architecture')"
+
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
@@ -1787,6 +1802,53 @@ echo 2 > "$T/arch/deferred"
 check "summary: full line" \
     "jelly-swipe: 3 filed (#401 #402 #403); 13 triaged: 10 agent, 1 needs-info, 1 not actionable, 1 released; 2 left for the next review" \
     "$(jq -r '.context_updates.arch_summary' <<<"$(lastjson "$(sh "$T/summarize.sh" 2>&1)")")"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
+# review-merge merge_gate — an Architecture PR is never auto-merged (ADR 0012 D8)
+# ---------------------------------------------------------------------------
+echo ""
+echo "review-merge merge_gate architecture"
+PATH="$ORIG_PATH"
+SAVED_PATH="$PATH"
+T="$WORK/mgate"; mkdir -p "$T/bin" "$T/review"
+extract_from "$SHARED" merge_gate | sed "s#/tmp/fabro#$T#g" > "$T/merge_gate.sh"
+if ! sh -n "$T/merge_gate.sh" 2>"$T/merge_gate.syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL merge_gate is not valid POSIX sh\n'
+fi
+# `gh pr view ... --jq <expr>` is emulated by running jq on the fixture, so each
+# check sees exactly what it would see from GitHub for that PR.
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+if [ "$1 $2" = "pr view" ]; then
+  J=""; P=""
+  for a in "$@"; do [ "$P" = "--jq" ] && J="$a"; P="$a"; done
+  if [ -n "$J" ]; then jq -r "$J" "$GH_STATE/pr.fixture.json"; else cat "$GH_STATE/pr.fixture.json"; fi
+  exit 0
+fi
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+echo 1 > "$T/auto_merge"; echo 5 > "$T/pr_number"
+
+# 1. agent-authored and architecture: blocked, with the reason.
+echo '{"labels":[{"name":"agent-authored"},{"name":"architecture"}],"state":"OPEN","isDraft":false}' > "$T/pr.fixture.json"
+rm -f "$T/merge_block_reason"
+OUT=$(sh "$T/merge_gate.sh" 2>&1); RC=$?
+check "arch PR: exit 0"                "0"     "$RC"
+check "arch PR: not eligible"          "false" "$(jq -r '.context_updates.merge_eligible' <<<"$(lastjson "$OUT")")"
+check "arch PR: reason names it"       "1"     "$(grep -c 'Architecture issue' "$T/merge_block_reason")"
+
+# 2. No architecture label: this check passes, and a later one decides.
+echo '{"labels":[{"name":"agent-authored"}],"state":"CLOSED","isDraft":false}' > "$T/pr.fixture.json"
+rm -f "$T/merge_block_reason"
+sh "$T/merge_gate.sh" >/dev/null 2>&1
+check "plain PR: not blocked by 2b"    "0"     "$(grep -c 'Architecture issue' "$T/merge_block_reason")"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE

@@ -342,7 +342,7 @@ else
 fi"]
 
     // ---- Auto-merge: decide, watch CI, fix CI, merge ----
-    // The twelve checks are marked inline, one line each, next to the code that runs
+    // The thirteen checks (1 to 12, and 2b) are marked inline, one line each, next to the code that runs
     // them. Two need more room than that:
     //
     // Check 10 -- every own error finding accounted for by its own id in `fixes_applied`.
@@ -369,6 +369,11 @@ if [ \"$(cat /tmp/fabro/auto_merge 2>/dev/null || echo 0)\" != 1 ]; then fail \"
 if [ \"$E\" = true ]; then
   L=$(gh pr view \"$PR\" --json labels --jq '[.labels[].name] | index(\"agent-authored\") != null' 2>/dev/null || echo bad)
   if [ \"$L\" != true ]; then fail 'The PR does not carry the agent-authored label, so it is not eligible for automatic merge.'; fi
+fi
+# 2b. architecture label: a human merges it (ADR 0012 D8)
+if [ \"$E\" = true ]; then
+  AR=$(gh pr view \"$PR\" --json labels --jq '[.labels[].name] | index(\"architecture\") != null' 2>/dev/null || echo bad)
+  if [ \"$AR\" != false ]; then fail 'This PR implements an Architecture issue (label architecture). ADR 0012 requires a human to merge it.'; fi
 fi
 # 3. open and not draft
 if [ \"$E\" = true ]; then

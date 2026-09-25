@@ -1146,6 +1146,10 @@ if [ -z \"$PR_URL\" ]; then
   echo 'no PR is visible for head branch '\"$B\"' after create; refusing to report an empty pr_url' >&2
   exit 1
 fi
+if jq -e '[.labels[]?.name] | index(\"architecture\") != null' /tmp/fabro/issue.json > /dev/null 2>&1; then
+  gh label create architecture --color 0E8A16 --description 'Architecture review: a deepening candidate (ADR 0012)' 2>/dev/null || true
+  gh pr edit \"$B\" --add-label architecture
+fi
 echo $PR_URL | sed 's|.*/||' > /tmp/fabro/pr_number
 gh issue edit $N --remove-label agent-in-progress --add-label Review || true
 gh issue comment $N --body 'Agent run complete. PR: '$PR_URL || true
@@ -1190,7 +1194,12 @@ gh label create priority --color B60205 2>/dev/null || true
   echo
   jq -r '.[] | \"### \" + .title + ([10]|implode) + ([10]|implode) + .body + ([10]|implode)' $R
 } > /tmp/fabro/remainder_body.md
-URL=$(gh issue create --title \"Remainder of #$N: $T\" --body-file /tmp/fabro/remainder_body.md --label agent-remainder --label ai-generated 2>/dev/null) || URL=''
+AR=''
+if jq -e '[.labels[]?.name] | index(\"architecture\") != null' /tmp/fabro/issue.json > /dev/null 2>&1; then
+  gh label create architecture --color 0E8A16 --description 'Architecture review: a deepening candidate (ADR 0012)' 2>/dev/null || true
+  AR='--label architecture'
+fi
+URL=$(gh issue create --title \"Remainder of #$N: $T\" --body-file /tmp/fabro/remainder_body.md --label agent-remainder --label ai-generated $AR 2>/dev/null) || URL=''
 M=$(printf '%s' \"$URL\" | sed 's|.*/||')
 case \"$M\" in
   '' | *[!0-9]*)
