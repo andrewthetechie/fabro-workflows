@@ -38,3 +38,22 @@ event = "run_failed"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh failed"
+
+# The triage phase is imported as `triage_phase`, so its node ids are prefixed
+# (`triage_phase.post_questions`). A bare `^post_questions$` matches nothing.
+# One message per issue that needs a human, with the issue link (ADR 0012 D3).
+[[run.hooks]]
+id = "discord-triage-question"
+event = "stage_start"
+matcher = "(^|[.])post_questions$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh triage-question"
+
+[[run.hooks]]
+id = "discord-triage-failed"
+event = "stage_start"
+matcher = "(^|[.])release$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh triage-failed"

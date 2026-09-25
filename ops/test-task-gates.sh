@@ -1709,10 +1709,83 @@ check "file: filed_count"              "8" "$(jq -r '.context_updates.filed_coun
 
 # 5. summarize: the two shapes of the line.
 echo ok > "$T/arch/scan_status"; echo '[401,402]' > "$T/arch/filed.json"
-check "summary: filed"                 "jelly-swipe: 2 filed (#401 #402)" \
+check "summary: filed"                 "jelly-swipe: 2 filed (#401 #402); 0 triaged: 0 agent, 0 needs-info, 0 not actionable" \
     "$(jq -r '.context_updates.arch_summary' <<<"$(lastjson "$(sh "$T/summarize.sh" 2>&1)")")"
 echo failed > "$T/arch/scan_status"; echo '[]' > "$T/arch/filed.json"
-check "summary: scan failed"           "jelly-swipe: scan failed, 0 filed" \
+check "summary: scan failed"           "jelly-swipe: scan failed, 0 filed; 0 triaged: 0 agent, 0 needs-info, 0 not actionable" \
+    "$(jq -r '.context_updates.arch_summary' <<<"$(lastjson "$(sh "$T/summarize.sh" 2>&1)")")"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
+# arch-review — the triage queue: build_queue, next_issue, summarize (ADR 0012)
+# ---------------------------------------------------------------------------
+echo ""
+echo "arch-review triage queue"
+PATH="$ORIG_PATH"
+SAVED_PATH="$PATH"
+T="$WORK/archq"; mkdir -p "$T/bin" "$T/arch"
+for n in build_queue next_issue summarize; do
+    extract_from "$ARCH" "$n" | sed "s#/tmp/fabro#$T#g" > "$T/$n.sh"
+    if ! sh -n "$T/$n.sh" 2>"$T/$n.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$n"
+    fi
+done
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$*" in
+  "issue list --label needs-info"*)   cat "$GH_STATE/info.json"; exit 0 ;;
+  "issue list --label needs-triage"*) cat "$GH_STATE/triage.json"; exit 0 ;;
+  "repo view"*)                       echo "jelly-swipe"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+
+# 1. build_queue: this run's issues first, answered needs-info next, then
+#    needs-triage oldest first, at most 10 others, no duplicates.
+echo '[401,402]' > "$T/arch/filed.json"
+echo '[{"number":6,"comments":[{"body":"<!-- fabro:triage-questions -->"}]},{"number":5,"comments":[{"body":"the answer is yes"}]}]' > "$T/info.json"
+echo '[{"number":401},{"number":19},{"number":3},{"number":7},{"number":8},{"number":11},{"number":12},{"number":13},{"number":14},{"number":15},{"number":16},{"number":17},{"number":18}]' > "$T/triage.json"
+OUT=$(sh "$T/build_queue.sh" 2>&1); RC=$?
+check "queue: exit 0"                  "0" "$RC"
+check "queue: order and cap"           "401 402 5 3 7 8 11 12 13 14 15 16" "$(jq -r 'map(tostring) | join(" ")' "$T/queue.json")"
+check "queue: unanswered not queued"   "0" "$(jq '[.[] | select(. == 6)] | length' "$T/queue.json")"
+check "queue: length published"        "12" "$(jq -r '.context_updates.queue_length' <<<"$(lastjson "$OUT")")"
+
+# 2. next_issue walks the queue and counts each outcome.
+echo '[11,12]' > "$T/queue.json"; echo 0 > "$T/queue_index"; date +%s > "$T/run_started"
+echo '{"ready":0,"needs_info":0,"not_actionable":0,"skipped":0,"released":0}' > "$T/tally.json"
+echo 0 > "$T/arch/deferred"; rm -f "$T/arch/in_flight"
+OUT=$(sh "$T/next_issue.sh" 2>&1)
+check "next: first issue"              "11"    "$(cat "$T/issue_number")"
+check "next: not done"                 "false" "$(jq -r '.context_updates.queue_done' <<<"$(lastjson "$OUT")")"
+echo ready > "$T/triage_outcome"
+sh "$T/next_issue.sh" >/dev/null 2>&1
+check "next: counts ready"             "1"     "$(jq -r .ready "$T/tally.json")"
+check "next: second issue"             "12"    "$(cat "$T/issue_number")"
+echo needs_info > "$T/triage_outcome"
+OUT=$(sh "$T/next_issue.sh" 2>&1)
+check "next: counts needs_info"        "1"     "$(jq -r .needs_info "$T/tally.json")"
+check "next: done at the end"          "true"  "$(jq -r '.context_updates.queue_done' <<<"$(lastjson "$OUT")")"
+
+# 3. The 6-hour budget stops new triages and records what is left.
+echo '[21,22,23]' > "$T/queue.json"; echo 1 > "$T/queue_index"; rm -f "$T/arch/in_flight"
+echo $(( $(date +%s) - 21601 )) > "$T/run_started"
+OUT=$(sh "$T/next_issue.sh" 2>&1)
+check "budget: done"                   "true"  "$(jq -r '.context_updates.queue_done' <<<"$(lastjson "$OUT")")"
+check "budget: deferred"               "2"     "$(cat "$T/arch/deferred")"
+
+# 4. summarize: the full line.
+echo ok > "$T/arch/scan_status"; echo '[401,402,403]' > "$T/arch/filed.json"
+echo '{"ready":10,"needs_info":1,"not_actionable":1,"skipped":0,"released":1}' > "$T/tally.json"
+echo 2 > "$T/arch/deferred"
+check "summary: full line" \
+    "jelly-swipe: 3 filed (#401 #402 #403); 13 triaged: 10 agent, 1 needs-info, 1 not actionable, 1 released; 2 left for the next review" \
     "$(jq -r '.context_updates.arch_summary' <<<"$(lastjson "$(sh "$T/summarize.sh" 2>&1)")")"
 
 PATH="$SAVED_PATH"

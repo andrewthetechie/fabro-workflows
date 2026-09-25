@@ -1,6 +1,6 @@
 digraph ArchReview {
     graph [
-        goal="Architecture review: scan the repository for deepening candidates, file the strongest as issues, and report",
+        goal="Architecture review: scan the repository for deepening candidates, file the strongest as issues, triage the waiting issues toward the agent label, and report",
         default_fidelity="truncate",
         // Above every node timeout: `scan` is 50m.
         stall_timeout="60m",
@@ -110,15 +110,89 @@ while [ $I -lt $K ]; do
 done
 jq -c '{context_updates:{filed_count:length}}' /tmp/fabro/arch/filed.json"]
 
+    // ---- Triage (ADR 0012 D5) ----
+    // Budget 1 is every issue this run filed. Budget 2 is at most 10 others: answered
+    // needs-info issues (the newest comment carries no fabro:triage- marker, so a human
+    // replied), then needs-triage issues, oldest first in each group. Issues this run
+    // filed are never counted twice. A failed list read counts as empty.
+    build_queue [label="Build the triage queue", shape=parallelogram, output_schema="routing",
+        script="set -e
+mkdir -p /tmp/fabro/arch
+gh issue list --label needs-info --state open --json number,comments --limit 100 > /tmp/fabro/arch/q_info.json || echo '[]' > /tmp/fabro/arch/q_info.json
+gh issue list --label needs-triage --state open --json number --limit 100 > /tmp/fabro/arch/q_triage.json || echo '[]' > /tmp/fabro/arch/q_triage.json
+for f in q_info q_triage; do
+  jq -e 'type == \"array\"' /tmp/fabro/arch/$f.json > /dev/null 2>&1 || echo '[]' > /tmp/fabro/arch/$f.json
+done
+test -s /tmp/fabro/arch/filed.json || echo '[]' > /tmp/fabro/arch/filed.json
+jq -n --slurpfile i /tmp/fabro/arch/q_info.json --slurpfile t /tmp/fabro/arch/q_triage.json --slurpfile f /tmp/fabro/arch/filed.json '
+  ($f[0]) as $filed
+  | ([$i[0][] | select((.comments | length) > 0) | select((.comments[-1].body | test(\"fabro:triage-\")) | not) | .number] | sort) as $a
+  | ([$t[0][].number] | sort) as $n
+  | $filed + ((($a + ($n - $a)) - $filed) | .[0:10])' > /tmp/fabro/queue.json
+echo 0 > /tmp/fabro/queue_index
+echo '{\"ready\":0,\"needs_info\":0,\"not_actionable\":0,\"skipped\":0,\"released\":0}' > /tmp/fabro/tally.json
+echo 0 > /tmp/fabro/arch/deferred
+rm -f /tmp/fabro/arch/in_flight
+jq -c '{context_updates:{queue_length:length}}' /tmp/fabro/queue.json"]
+
+    // Counts the outcome of the issue that just left the triage phase, then picks the
+    // next one. `in_flight` marks that an issue was handed to the phase, so the first
+    // visit counts nothing. After 6 hours (ADR 0012 D8) no new triage starts; the rest
+    // wait for the next review and are counted as deferred. The phase reads only
+    // /tmp/fabro/issue_number (contract C1).
+    next_issue [label="Next issue", shape=parallelogram, output_schema="routing",
+        script="set -e
+if [ -f /tmp/fabro/arch/in_flight ]; then
+  O=$(cat /tmp/fabro/triage_outcome 2>/dev/null || echo released)
+  case \"$O\" in ready|needs_info|not_actionable|skipped|released) ;; *) O=released ;; esac
+  jq --arg o \"$O\" '.[$o] += 1' /tmp/fabro/tally.json > /tmp/fabro/tally.next
+  mv /tmp/fabro/tally.next /tmp/fabro/tally.json
+  rm -f /tmp/fabro/arch/in_flight
+fi
+I=$(cat /tmp/fabro/queue_index)
+K=$(jq length /tmp/fabro/queue.json)
+if [ $I -ge $K ]; then
+  jq -nc '{context_updates:{queue_done:\"true\"}}'
+  exit 0
+fi
+ST=$(cat /tmp/fabro/run_started 2>/dev/null || date +%s)
+if [ $(( $(date +%s) - ST )) -ge 21600 ]; then
+  echo $((K - I)) > /tmp/fabro/arch/deferred
+  echo 'time budget of 6 hours spent; '$((K - I))' issues left for the next review'
+  jq -nc '{context_updates:{queue_done:\"true\"}}'
+  exit 0
+fi
+jq -r --argjson i $I '.[$i]' /tmp/fabro/queue.json > /tmp/fabro/issue_number
+echo $((I + 1)) > /tmp/fabro/queue_index
+rm -f /tmp/fabro/triage_outcome
+: > /tmp/fabro/arch/in_flight
+echo 'triaging #'$(cat /tmp/fabro/issue_number)
+jq -nc '{context_updates:{queue_done:\"false\"}}'"]
+
+    triage_phase [import="../_shared/triage/triage.fabro"]
+
     // One line for Discord (ADR 0012 D9). `\"` is stripped: the hook reads the value
-    // with a grep that stops at the first quote.
+    // with a grep that stops at the first quote. Missing files count as zero, so a
+    // review that failed early still reports.
     summarize [label="Summarize the review", shape=parallelogram, output_schema="routing",
         script="S=$(cat /tmp/fabro/arch/scan_status 2>/dev/null || echo failed)
 F=$(jq length /tmp/fabro/arch/filed.json 2>/dev/null || echo 0)
 L=$(jq -r 'map(\"#\" + tostring) | join(\" \")' /tmp/fabro/arch/filed.json 2>/dev/null || echo '')
 REPO=$(gh repo view --json name --jq .name 2>/dev/null || echo repository)
+TL=/tmp/fabro/tally.json
+RD=$(jq -r '.ready // 0' $TL 2>/dev/null || echo 0)
+NI=$(jq -r '.needs_info // 0' $TL 2>/dev/null || echo 0)
+NA=$(jq -r '.not_actionable // 0' $TL 2>/dev/null || echo 0)
+SK=$(jq -r '.skipped // 0' $TL 2>/dev/null || echo 0)
+RL=$(jq -r '.released // 0' $TL 2>/dev/null || echo 0)
+TR=$((RD + NI + NA + SK + RL))
+DF=$(cat /tmp/fabro/arch/deferred 2>/dev/null || echo 0)
 if [ \"$S\" = ok ]; then M=\"$REPO: $F filed\"; else M=\"$REPO: scan failed, 0 filed\"; fi
 if [ -n \"$L\" ]; then M=\"$M ($L)\"; fi
+M=\"$M; $TR triaged: $RD agent, $NI needs-info, $NA not actionable\"
+if [ \"$SK\" != 0 ]; then M=\"$M, $SK skipped\"; fi
+if [ \"$RL\" != 0 ]; then M=\"$M, $RL released\"; fi
+if [ \"$DF\" != 0 ]; then M=\"$M; $DF left for the next review\"; fi
 M=$(printf '%s' \"$M\" | tr -d '\"')
 echo \"$M\"
 jq -nc --arg m \"$M\" '{context_updates:{arch_summary:$m}}'"]
@@ -128,21 +202,28 @@ jq -nc --arg m \"$M\" '{context_updates:{arch_summary:$m}}'"]
     finish [label="Finish", shape=parallelogram, script="echo done"]
 
     // ---- Edges ----
-    // `summarize` is the failure sink: every earlier node's unconditional edge lands on
-    // it, so a failed review still reports.
+    // A failed scan still triages (ADR 0012 D5): every scan-side failure lands on
+    // `build_queue`. `summarize` is the failure sink for the triage side, so a failed
+    // review still reports.
     start -> prep
     prep -> history                 [condition="outcome=succeeded"]
     prep -> summarize
     history -> scan                 [condition="outcome=succeeded"]
-    history -> summarize
+    history -> build_queue
     scan -> scan_gate               [condition="outcome=succeeded"]
-    scan -> summarize
+    scan -> build_queue
     scan_gate -> scan               [condition="outcome=failed"]
     scan_gate -> file_issues        [condition="outcome=succeeded && context.scan_status=ok"]
-    scan_gate -> summarize          [condition="outcome=succeeded && context.scan_status=failed"]
-    scan_gate -> summarize
-    file_issues -> summarize        [condition="outcome=succeeded"]
-    file_issues -> summarize
+    scan_gate -> build_queue        [condition="outcome=succeeded && context.scan_status=failed"]
+    scan_gate -> build_queue
+    file_issues -> build_queue      [condition="outcome=succeeded"]
+    file_issues -> build_queue
+    build_queue -> next_issue       [condition="outcome=succeeded"]
+    build_queue -> summarize
+    next_issue -> triage_phase      [condition="outcome=succeeded && context.queue_done=false"]
+    next_issue -> summarize         [condition="outcome=succeeded && context.queue_done=true"]
+    next_issue -> summarize
+    triage_phase -> next_issue
     summarize -> finish             [condition="outcome=succeeded"]
     summarize -> finish
     finish -> exit
