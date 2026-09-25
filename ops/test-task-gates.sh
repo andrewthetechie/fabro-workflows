@@ -1293,6 +1293,135 @@ check "non-executable fix.sh: ran"  "formatted" "$(cat "$T/wt/a.txt")"
 PATH="$SAVED_PATH"
 
 # ---------------------------------------------------------------------------
+# task budget and remainder (ADR 0011 D6)
+#
+# A run implements at most 8 tasks -- counted as tasks improve_gate routes to the
+# coder -- and next_task moves the rest to remainder.json, from any source:
+# decompose, splits, or extra-review follow-ups appended later. file_remainder
+# then files them as ONE issue the scheduler holds until the PR merges.
+# ---------------------------------------------------------------------------
+echo ""
+echo "task budget and remainder"
+SAVED_PATH="$PATH"
+T="$WORK/budget"; mkdir -p "$T/bin" "$T/feedback" "$T/extra"
+stage next_task; stage improve_gate; stage extra_prep; stage file_remainder
+cat > "$T/bin/git" <<'STUB'
+#!/bin/sh
+case "$1 $2" in
+  "rev-parse --abbrev-ref") echo "fabro/run/01TESTRUN" ;;
+esac
+exit 0
+STUB
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue create")
+      [ -f "$GH_STATE/create_fails" ] && { echo "HTTP 422" >&2; exit 1; }
+      echo "https://github.com/o/r/issues/77"; exit 0 ;;
+  "pr comment")
+      # keep the body so the checks can read it
+      shift 2; while [ $# -gt 0 ]; do [ "$1" = "--body-file" ] && cp "$2" "$GH_STATE/pr_comment.txt"; shift; done
+      exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/git" "$T/bin/gh"
+PATH="$T/bin:$ORIG_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+
+tasks_json() { # tasks_json 1 10 -> ids t1..t10
+    i=$1; out=""
+    while [ "$i" -le "$2" ]; do
+        out="$out{\"id\":\"t$i\",\"title\":\"T$i\",\"body\":\"do t$i\",\"files\":[],\"covers\":[],\"source\":\"decompose\"},"
+        i=$((i + 1))
+    done
+    printf '[%s]' "${out%,}"
+}
+bd_setup() { # bd_setup <tasks_coded> <task_index> <last task id>
+    rm -f "$T"/remainder*.json "$T"/remainder_issue "$T"/remainder_body.md "$T"/pr_comment.txt \
+          "$T"/create_fails "$T"/improve_result.json "$T"/extra_round
+    : > "$T/gh.log"
+    tasks_json 1 "$3" > "$T/tasks.json"
+    echo "$1" > "$T/tasks_coded"
+    echo "$2" > "$T/task_index"
+}
+
+# 1. improve_gate counts a task routed to the coder, and only that.
+bd_setup 3 1 2
+printf '%s' '{"id":"t1","title":"T1","body":"b","files":[],"covers":[],"source":"decompose"}' > "$T/current_task.json"
+printf '%s' '{"disposition":"ready","task":{"title":"T1","body":"sharpened"}}' > "$T/improve_result.json"
+sh "$T/improve_gate.sh" >/dev/null 2>&1
+check "ready counts toward the budget" "4" "$(cat "$T/tasks_coded")"
+printf '%s' '{"disposition":"redundant","reason":"already done"}' > "$T/improve_result.json"
+sh "$T/improve_gate.sh" >/dev/null 2>&1
+check "redundant does not count"       "4" "$(cat "$T/tasks_coded")"
+
+# 2. Under budget, next_task selects as before.
+bd_setup 7 7 10
+OUT=$(sh "$T/next_task.sh" 2>/dev/null)
+check "under budget: selects t8"       "t8" "$(jq -r .id "$T/current_task.json")"
+check "under budget: no remainder"     "absent" "$([ -e "$T/remainder.json" ] && echo present || echo absent)"
+
+# 3. Budget spent with two tasks left: both go to the remainder, the run moves on.
+bd_setup 8 8 10
+OUT=$(sh "$T/next_task.sh" 2>/dev/null)
+check "spent: tasks_done"              "true" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
+check "spent: remainder holds t9 t10"  "t9 t10" "$(jq -r '[.[].id]|join(" ")' "$T/remainder.json")"
+check "spent: queue trimmed to 8"      "8" "$(jq length "$T/tasks.json")"
+check "spent: says so"                 "1" "$(grep -c 'task budget of 8 spent' <<<"$OUT")"
+
+# 4. Follow-ups appended later (as extra_gate does) join the remainder, without
+#    duplicating an id that is already there.
+jq '. + [{"id":"t11","title":"T11","body":"b","files":[],"covers":[],"source":"extra-review"},
+         {"id":"t9","title":"T9 again","body":"b","files":[],"covers":[],"source":"extra-review"}]' \
+    "$T/tasks.json" > "$T/tasks.tmp" && mv "$T/tasks.tmp" "$T/tasks.json"
+OUT=$(sh "$T/next_task.sh" 2>/dev/null)
+check "growth: remainder t9 t10 t11"   "t9 t10 t11" "$(jq -r '[.[].id]|join(" ")' "$T/remainder.json")"
+check "growth: still done"             "true" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
+
+# 5. extra_prep: the first round still runs; a later one does not once the budget is spent.
+echo 0 > "$T/extra_round"
+OUT=$(sh "$T/extra_prep.sh" 2>/dev/null)
+check "first extra round still runs"   "false" "$(jq -r '.context_updates.extra_done' <<<"$(lastjson "$OUT")")"
+OUT=$(sh "$T/extra_prep.sh" 2>/dev/null)
+check "no second round after budget"   "true" "$(jq -r '.context_updates.extra_done' <<<"$(lastjson "$OUT")")"
+
+# 6. file_remainder with nothing to file: no gh call at all.
+bd_setup 3 3 3
+printf '%s' '{"number":350,"title":"Big issue"}' > "$T/issue.json"; echo 7 > "$T/pr_number"
+OUT=$(sh "$T/file_remainder.sh" 2>&1); RC=$?
+check "no remainder: exit 0"           "0" "$RC"
+check "no remainder: no gh call"       "0" "$(wc -l < "$T/gh.log" | tr -d ' ')"
+
+# 7. file_remainder files one held issue, with the marker first, and says so on the PR.
+tasks_json 9 10 > "$T/remainder.json"
+OUT=$(sh "$T/file_remainder.sh" 2>&1); RC=$?
+check "files: exit 0"                  "0" "$RC"
+check "files: one issue create"        "1" "$(grep -c '^issue create' "$T/gh.log")"
+check "files: held, not queued"        "1" "$(grep '^issue create' "$T/gh.log" | grep -c -- '--label agent-remainder --label ai-generated')"
+check "files: never labels agent"      "0" "$(grep '^issue create' "$T/gh.log" | grep -c -- '--label agent ')"
+check "files: marker is the first line" "<!-- fabro:remainder parent=350 pr=7 -->" "$(head -1 "$T/remainder_body.md")"
+check "files: lists the tasks"         "2" "$(grep -c '^### T' "$T/remainder_body.md")"
+check "files: records the number"      "77" "$(cat "$T/remainder_issue")"
+check "files: PR comment names it"     "yes" "$(grep -q '#77' "$T/pr_comment.txt" && echo yes || echo no)"
+
+# 8. A second visit (human_rescue -> [P] -> open_pr) files nothing new.
+: > "$T/gh.log"
+sh "$T/file_remainder.sh" >/dev/null 2>&1
+check "second visit: no new issue"     "0" "$(grep -c '^issue create' "$T/gh.log")"
+
+# 9. If the issue cannot be filed, the tasks are listed on the PR instead.
+rm -f "$T/remainder_issue" "$T/pr_comment.txt"; : > "$T/create_fails"; : > "$T/gh.log"
+OUT=$(sh "$T/file_remainder.sh" 2>&1); RC=$?
+check "create fails: still exit 0"     "0" "$RC"
+check "create fails: tasks on the PR"  "1" "$(grep -c '^- T10$' "$T/pr_comment.txt")"
+check "create fails: nothing recorded" "absent" "$([ -e "$T/remainder_issue" ] && echo present || echo absent)"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
 echo ""
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: $PASS checks"

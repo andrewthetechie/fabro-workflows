@@ -273,6 +273,8 @@ fi"]
 mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra
 echo 0 > /tmp/fabro/extra_round
 echo 0 > /tmp/fabro/split_rounds
+echo 0 > /tmp/fabro/tasks_coded
+rm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue
 ./.fabro/setup.sh"]
 
     // ---- Decomposition (agent writes file; gate validates) ----
@@ -332,6 +334,18 @@ echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT',\"o
         script="IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 0)
 COUNT=$(jq length /tmp/fabro/tasks.json)
 if [ $IDX -ge $COUNT ]; then echo '{\"context_updates\":{\"tasks_done\":true}}'; exit 0; fi
+TCD=$(cat /tmp/fabro/tasks_coded 2>/dev/null || echo 0)
+case \"$TCD\" in ''|*[!0-9]*) TCD=0 ;; esac
+if [ $TCD -ge 8 ]; then
+  jq --argjson i $IDX '.[$i:]' /tmp/fabro/tasks.json > /tmp/fabro/remainder.new.json
+  if [ -s /tmp/fabro/remainder.json ]; then cp /tmp/fabro/remainder.json /tmp/fabro/remainder.old.json; else echo '[]' > /tmp/fabro/remainder.old.json; fi
+  jq -s '(.[0] + .[1]) | reduce .[] as $t ([]; if any(.[]; .id == $t.id) then . else . + [$t] end)' /tmp/fabro/remainder.old.json /tmp/fabro/remainder.new.json > /tmp/fabro/remainder.json
+  jq --argjson i $IDX '.[0:$i]' /tmp/fabro/tasks.json > /tmp/fabro/tasks.trim.json
+  mv /tmp/fabro/tasks.trim.json /tmp/fabro/tasks.json
+  echo 'task budget of 8 spent: '$((COUNT-IDX))' task(s) moved to the remainder, which file_remainder files as one issue after open_pr'
+  echo '{\"context_updates\":{\"tasks_done\":true}}'
+  exit 0
+fi
 jq '.['$IDX']' /tmp/fabro/tasks.json > /tmp/fabro/current_task.json
 echo $((IDX+1)) > /tmp/fabro/task_index
 echo 0 > /tmp/fabro/round
@@ -542,6 +556,11 @@ if [ \"$D\" = split ]; then
   echo $POS > /tmp/fabro/task_index
   echo $((SR+1)) > /tmp/fabro/split_rounds
 fi
+if [ \"$D\" = ready ]; then
+  TCD=$(cat /tmp/fabro/tasks_coded 2>/dev/null || echo 0)
+  case \"$TCD\" in ''|*[!0-9]*) TCD=0 ;; esac
+  echo $((TCD+1)) > /tmp/fabro/tasks_coded
+fi
 TC=$(jq length /tmp/fabro/tasks.json 2>/dev/null || echo 0)
 echo '{\"context_updates\":{\"task_disposition\":\"'$D'\",\"task_count\":'$TC'}}'"]
 
@@ -724,6 +743,7 @@ echo '{\"context_updates\":{\"round\":'$R'}}'"]
     extra_prep [label="Prepare extra review", shape=parallelogram, output_schema="routing",
         script="ER=$(cat /tmp/fabro/extra_round 2>/dev/null || echo 0)
 if [ $ER -ge 2 ]; then echo '{\"context_updates\":{\"extra_done\":true}}'; exit 0; fi
+if [ $ER -ge 1 ] && [ -s /tmp/fabro/remainder.json ]; then echo 'task budget spent: no further extra-review round; its follow-ups would only join the remainder'; echo '{\"context_updates\":{\"extra_done\":true}}'; exit 0; fi
 echo $((ER+1)) > /tmp/fabro/extra_round
 git fetch origin main
 git diff origin/main...HEAD > /tmp/fabro/extra/diff.patch
@@ -1109,6 +1129,67 @@ gh issue edit $N --remove-label agent-in-progress --add-label Review || true
 gh issue comment $N --body 'Agent run complete. PR: '$PR_URL || true
 echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\"}}'"]
 
+    // file_remainder: the tasks this run did not start because its task budget of 8
+    // was spent (ADR 0011 D6; `next_task` moved them to /tmp/fabro/remainder.json)
+    // become ONE issue, labelled `agent-remainder` and `ai-generated` -- NOT `agent`.
+    // The scheduler's remainder promoter adds `agent` and `priority` once this PR
+    // merges (automatically or by hand), so the remainder is worked next and never
+    // starts from a `main` that lacks this PR. The first body line is the marker the
+    // promoter parses: `<!-- fabro:remainder parent=<N> pr=<P> -->`.
+    //
+    // Always exits 0: the PR is already open, and a failure here must not park the run
+    // on human_rescue. If the issue cannot be filed, the unstarted tasks are listed on
+    // the PR instead, so they are never lost silently. /tmp/fabro/remainder_issue makes
+    // a second visit (human_rescue -> [P] -> open_pr -> here) a no-op.
+    //
+    // No output_schema: this node publishes no context key.
+    file_remainder [label="File the remainder issue", shape=parallelogram,
+        script="R=/tmp/fabro/remainder.json
+if [ ! -s $R ] || [ \"$(jq length $R 2>/dev/null || echo 0)\" = 0 ]; then echo 'no remainder: every task fit the task budget'; exit 0; fi
+if [ -s /tmp/fabro/remainder_issue ]; then echo 'remainder already filed as #'$(cat /tmp/fabro/remainder_issue); exit 0; fi
+N=$(jq -r .number /tmp/fabro/issue.json)
+T=$(jq -r .title /tmp/fabro/issue.json)
+PR=$(cat /tmp/fabro/pr_number)
+K=$(jq length $R)
+RUN=$(basename \"$(git rev-parse --abbrev-ref HEAD)\")
+gh label create agent-remainder --color C5DEF5 2>/dev/null || true
+gh label create ai-generated --color EDEDED 2>/dev/null || true
+gh label create priority --color B60205 2>/dev/null || true
+{
+  echo '<!-- fabro:remainder parent='$N' pr='$PR' -->'
+  echo
+  echo 'This issue continues #'$N'. fabro run `'$RUN'` implemented the first 8 tasks in PR #'$PR' and stopped at its task budget (fabro-workflows ADR 0011). The '$K' task(s) below were not started.'
+  echo
+  echo 'It is held with `agent-remainder`. The scheduler adds `agent` and `priority` as soon as PR #'$PR' merges, so it is worked next. If PR #'$PR' is closed without merging, the scheduler labels it `agent-stuck` instead. Do not add `agent` by hand before the PR merges.'
+  echo
+  echo 'These tasks were decomposed against an older `main`. Decompose again against the current `main`; treat them as a starting point, not a plan.'
+  echo
+  echo '## Remaining tasks'
+  echo
+  jq -r '.[] | \"### \" + .title + ([10]|implode) + ([10]|implode) + .body + ([10]|implode)' $R
+} > /tmp/fabro/remainder_body.md
+URL=$(gh issue create --title \"Remainder of #$N: $T\" --body-file /tmp/fabro/remainder_body.md --label agent-remainder --label ai-generated 2>/dev/null) || URL=''
+M=$(printf '%s' \"$URL\" | sed 's|.*/||')
+case \"$M\" in
+  '' | *[!0-9]*)
+    echo 'WARNING: could not file the remainder issue; listing the unstarted tasks on the PR instead' >&2
+    {
+      echo 'fabro could not file a remainder issue for this PR. These tasks from #'$N' were NOT implemented:'
+      echo
+      jq -r '.[] | \"- \" + .title' $R
+    } > /tmp/fabro/remainder_comment.md
+    gh pr comment \"$PR\" --body-file /tmp/fabro/remainder_comment.md || true
+    exit 0 ;;
+esac
+echo $M > /tmp/fabro/remainder_issue
+{
+  echo 'This PR implements the first 8 tasks of #'$N'. The other '$K' are in #'$M'.'
+  echo
+  echo 'The scheduler queues #'$M' with `priority` as soon as this PR merges, whether it is merged automatically or by hand.'
+} > /tmp/fabro/remainder_comment.md
+gh pr comment \"$PR\" --body-file /tmp/fabro/remainder_comment.md || true
+echo 'remainder filed as #'$M"]
+
     // ---- Review and merge, in this run ----
     // The bridge is gone. It fired a separate durable `pr-review` run, which then
     // queued behind every other run on a two-slot scheduler: an 11-minute review
@@ -1329,8 +1410,10 @@ echo done"]
 
     open_pr_prep -> open_pr         [condition="outcome=succeeded"]
     open_pr_prep -> human_rescue
-    open_pr -> pr_handoff           [condition="outcome=succeeded"]
+    open_pr -> file_remainder       [condition="outcome=succeeded"]
     open_pr -> human_rescue
+    file_remainder -> pr_handoff    [condition="outcome=succeeded"]
+    file_remainder -> human_rescue
     pr_handoff -> review_merge      [condition="outcome=succeeded"]
     pr_handoff -> human_rescue
     // The import reports both outcomes on the PR itself before it exits, so a
