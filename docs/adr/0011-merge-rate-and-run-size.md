@@ -1,8 +1,10 @@
 # Backlog pushes on purpose, reruns flaky CI once, and bounds each run to eight tasks
 
-**Status:** proposed (2026-09-24)
-NOT YET IMPLEMENTED. Every number below is from the run store, the scheduler's
-`run_history` table and GitHub, measured on 2026-09-24. Nothing in the graphs has changed.
+**Status:** accepted and implemented (2026-09-24; series `docs/merge-rate/`). D4 and
+D5's target-repository halves are PRs in those repositories. D6 was amended after
+implementation: see *Amendment: extra-review follow-ups are exempt* below.
+Every number below is from the run store, the scheduler's `run_history` table and
+GitHub, measured on 2026-09-24, before any of this changed.
 
 The auto-merge stage is live on all four repositories, and in practice it does not merge.
 Of the 34 PRs that scheduler-dispatched `backlog` runs opened between 2026-09-19 and
@@ -262,6 +264,20 @@ own code, not new scope. Past the budget, that correction lands in the remainder
 instead of this PR. The merge phase's `standards`, `spec` and `review_fix` still review
 the PR and fix findings in the diff before any merge, so a deferred follow-up does not
 mean an unreviewed defect.
+
+**Amendment: extra-review follow-ups are exempt (operator decision, 2026-09-24).** The
+budget now bounds only the **decomposed** scope of a run: tasks from `decompose`, and
+slices `improve` splits out of one. Extra-review follow-ups, and slices split from one
+(stamped `from_extra: true`, because a slice's `source` is `split`), do not count toward
+`tasks_coded` and are never moved to the remainder. They are worked in this run even with
+the budget spent, bounded only by `extra_prep`'s existing cap of two rounds. The
+`extra_prep` rule above ("starts no new extra-review round once the budget is spent") is
+withdrawn. The reason is the quality trade just described: a follow-up that corrects this
+PR's own code belongs in this PR, and deferring it merged code the extra review had
+already flagged. A remainder issue now exists only when the decomposed scope alone
+exceeds 8 tasks. This gives up part of the evidence above: follow-ups were most of the
+growth in the six large runs, so the budget no longer bounds that growth; the round cap
+does. Watch coder visits per run in the next 30 runs.
 
 **8 is a first value, not a measurement of the right one.** It sits at the top of the
 bucket that still auto-merged. The sample is small (26 runs of 8 tasks or fewer, 4 merges).

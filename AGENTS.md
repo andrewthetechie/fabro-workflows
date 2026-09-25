@@ -27,7 +27,7 @@ actually lives.
 | `ops/` | Host replication: compose, the coder scheduler, profile images, provisioning, branch sweeper. Start at `ops/README.md`. No automation reads this tree. |
 | `docs/pr-review-bridge/` | The task series for the third stage: `backlog` triggers a `pr-review` run on the PR it just opened. `00-overview-and-contracts.md` first. |
 | `docs/auto-merge/` | A cross-cutting series for the fourth stage (the squash-merge), spanning `backlog` and `pr-review`: kill switches, Conventional-Commits titles, the merge graph, `ci_fix`. `00-overview-and-contracts.md` first. |
-| `docs/merge-rate/` | The implementation plan for ADR 0011: stop per-stage checkpoint pushes, rerun flaky CI once, `ci_fix_t1` on `glm-5.3-flash`, CI parity in two target repos, an `autofix` stage, and an 8-task budget whose remainder the scheduler queues with a new `priority` label once the parent PR merges. `00-overview-and-contracts.md` first. Tasks 05–07 run in other repositories and task 11 needs the host. **Not yet implemented.** |
+| `docs/merge-rate/` | The implementation plan for ADR 0011: stop per-stage checkpoint pushes, rerun flaky CI once, `ci_fix_t1` on `glm-5.3-flash`, CI parity in two target repos, an `autofix` stage, and an 8-task budget whose remainder the scheduler queues with a new `priority` label once the parent PR merges. `00-overview-and-contracts.md` first. Tasks 05–07 run in other repositories and task 11 needs the host. **Applied 2026-09-24** in this repository; the target-repository halves of tasks 05 and 06 are PRs there. The budget was then amended so that extra-review follow-ups are exempt (ADR 0011 D6 amendment). |
 | `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
 | `ops/check-routing-schemas.py` | Catches command-node routing-schema mismatches that `fabro validate` accepts and fabro only reports at runtime. Reads the parsed AST, not the DOT text. |
@@ -103,7 +103,7 @@ the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them 
 fixtures:
 
 ```sh
-./ops/test-task-gates.sh      # 240 checks, offline — no host, container or network
+./ops/test-task-gates.sh      # 255 checks, offline — no host, container or network
 ```
 
 It needs only `jq` and `python3`, so it belongs in the same pre-push hook. It covers
@@ -196,7 +196,7 @@ them, except where a rule names one by id.
 | Commit-body markers are `:start` / `:end`, never `<!-- /fabro:commit-body -->` | A closing marker with a slash forces `\/` into the extraction pattern, and `\"` is the only backslash a `.fabro` file may contain. |
 | The subject is the live PR title; the body comes from the marker block | `release-please` turns an agent's `feat:`/`fix:` subject into a release on `jelly-swipe`/`lawncare-saas`, and the derivation never emits `!` or `BREAKING CHANGE:`. |
 | A `settings.toml` value that is read at startup is verified by the container's start time, never by `GET /settings` | fabro polls the overlay every 5s and republishes the *reported* settings, but `max_concurrent_runs` is copied out once at startup and read only by the admission loop — so after an in-place edit `/settings` answers the new value while the server keeps enforcing the old one, and the endpoint you would check with is the one endpoint that cannot tell you. Check that `docker inspect -f '{{.State.StartedAt}}' fabro-fabro-1` is later than the overlay's mtime; `ops/README.md` carries the command. |
-| A `backlog` run implements at most 8 tasks (`tasks_coded`, counted in `improve_gate` on `ready`), and never labels its remainder issue `agent` | `next_task` moves every task past the budget, from any source, to `remainder.json`, and `file_remainder` files them as one issue labelled `agent-remainder`. The scheduler adds `agent` + `priority` only once the parent PR merges (ADR 0011 D6, `ops/scheduler/src/fabro_scheduler/remainder.py`). Labelling it `agent` at filing time would let the scheduler's same-repo saturation pass start it on the other box, from a `main` without its parent's work. Covered by `ops/test-task-gates.sh`. |
+| A `backlog` run implements at most 8 **decomposed** tasks (`tasks_coded`, counted in `improve_gate` on `ready`), and never labels its remainder issue `agent` | Extra-review follow-ups, and slices split from one (`from_extra: true`), are exempt: they never count, are never moved, and are worked in this run, bounded by `extra_prep`'s two-round cap. `next_task` moves every decomposed task past the budget, `decompose` tasks and their split slices, to `remainder.json`, and `file_remainder` files them as one issue labelled `agent-remainder`. The scheduler adds `agent` + `priority` only once the parent PR merges (ADR 0011 D6, `ops/scheduler/src/fabro_scheduler/remainder.py`). Labelling it `agent` at filing time would let the scheduler's same-repo saturation pass start it on the other box, from a `main` without its parent's work. Covered by `ops/test-task-gates.sh`. |
 
 ## Deploying to the server after a merge to `main`
 

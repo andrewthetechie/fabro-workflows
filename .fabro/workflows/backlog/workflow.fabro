@@ -330,6 +330,20 @@ fi
 echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT',\"oversized_tasks\":'$OVER'}}'"]
 
     // ---- Sequential task loop ----
+    // The task budget (ADR 0011 D6, amended 2026-09-24) bounds the DECOMPOSED scope
+    // of one run: at most 8 tasks from `decompose`, or slices `improve` split out of
+    // one, reach a coder. `improve_gate` counts them in `tasks_coded`. Once the budget
+    // is spent, every decomposed task still queued moves to remainder.json, which
+    // `file_remainder` files as one held issue after open_pr.
+    //
+    // Extra-review follow-ups are EXEMPT, and so are slices split from one (stamped
+    // `from_extra` by improve_gate). They fix the branch this run is about to merge,
+    // so deferring them would merge work the extra review had already said needs
+    // fixing. They neither count toward the budget nor move to the remainder, and
+    // the extra-review round cap in extra_prep bounds them instead. Only decomposed
+    // tasks can sit ahead of them in the queue -- extra_gate appends after every
+    // task has run -- so moving the decomposed ones out leaves the exempt ones in
+    // order.
     next_task [label="Next task + mainline refresh", shape=parallelogram, output_schema="routing",
         script="IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 0)
 COUNT=$(jq length /tmp/fabro/tasks.json)
@@ -337,14 +351,17 @@ if [ $IDX -ge $COUNT ]; then echo '{\"context_updates\":{\"tasks_done\":true}}';
 TCD=$(cat /tmp/fabro/tasks_coded 2>/dev/null || echo 0)
 case \"$TCD\" in ''|*[!0-9]*) TCD=0 ;; esac
 if [ $TCD -ge 8 ]; then
-  jq --argjson i $IDX '.[$i:]' /tmp/fabro/tasks.json > /tmp/fabro/remainder.new.json
-  if [ -s /tmp/fabro/remainder.json ]; then cp /tmp/fabro/remainder.json /tmp/fabro/remainder.old.json; else echo '[]' > /tmp/fabro/remainder.old.json; fi
-  jq -s '(.[0] + .[1]) | reduce .[] as $t ([]; if any(.[]; .id == $t.id) then . else . + [$t] end)' /tmp/fabro/remainder.old.json /tmp/fabro/remainder.new.json > /tmp/fabro/remainder.json
-  jq --argjson i $IDX '.[0:$i]' /tmp/fabro/tasks.json > /tmp/fabro/tasks.trim.json
-  mv /tmp/fabro/tasks.trim.json /tmp/fabro/tasks.json
-  echo 'task budget of 8 spent: '$((COUNT-IDX))' task(s) moved to the remainder, which file_remainder files as one issue after open_pr'
-  echo '{\"context_updates\":{\"tasks_done\":true}}'
-  exit 0
+  jq --argjson i $IDX '[.[$i:][] | select(((.source == \"extra-review\") or (.from_extra == true)) | not)]' /tmp/fabro/tasks.json > /tmp/fabro/remainder.new.json
+  MOVED=$(jq length /tmp/fabro/remainder.new.json 2>/dev/null || echo 0)
+  if [ \"$MOVED\" != 0 ]; then
+    if [ -s /tmp/fabro/remainder.json ]; then cp /tmp/fabro/remainder.json /tmp/fabro/remainder.old.json; else echo '[]' > /tmp/fabro/remainder.old.json; fi
+    jq -s '(.[0] + .[1]) | reduce .[] as $t ([]; if any(.[]; .id == $t.id) then . else . + [$t] end)' /tmp/fabro/remainder.old.json /tmp/fabro/remainder.new.json > /tmp/fabro/remainder.json
+    jq --argjson i $IDX '.[0:$i] + [.[$i:][] | select((.source == \"extra-review\") or (.from_extra == true))]' /tmp/fabro/tasks.json > /tmp/fabro/tasks.trim.json
+    mv /tmp/fabro/tasks.trim.json /tmp/fabro/tasks.json
+    COUNT=$(jq length /tmp/fabro/tasks.json)
+    echo 'task budget of 8 decomposed tasks spent: '$MOVED' task(s) moved to the remainder, which file_remainder files as one issue after open_pr'
+  fi
+  if [ $IDX -ge $COUNT ]; then echo '{\"context_updates\":{\"tasks_done\":true}}'; exit 0; fi
 fi
 jq '.['$IDX']' /tmp/fabro/tasks.json > /tmp/fabro/current_task.json
 echo $((IDX+1)) > /tmp/fabro/task_index
@@ -508,6 +525,12 @@ fi"]
     // `task_index` to it, rather than appending the way `extra_gate` does. Slices
     // are prerequisites of each other and of nothing else, so appending them
     // after every remaining task would run them out of order.
+    //
+    // `tasks_coded` counts a `ready` task toward the task budget (see next_task) only
+    // when it is decomposed scope. EXT is read before a `ready` result overwrites
+    // current_task.json, and a split of an extra-review follow-up stamps its slices
+    // `from_extra: true`, because `source` becomes `split` and would otherwise lose
+    // the exemption.
     improve_gate [label="Validate improved task", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/improve_result.json
 A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
@@ -517,6 +540,8 @@ KEEP=0
 SR=$(cat /tmp/fabro/split_rounds 2>/dev/null || echo 0)
 case \"$SR\" in ''|*[!0-9]*) SR=0 ;; esac
 SRC=$(jq -r '.source // \"\"' /tmp/fabro/current_task.json 2>/dev/null || echo '')
+EXT=$(jq -r 'if (.source == \"extra-review\") or (.from_extra == true) then 1 else 0 end' /tmp/fabro/current_task.json 2>/dev/null || echo 0)
+case \"$EXT\" in 1) ;; *) EXT=0 ;; esac
 if [ \"$D\" = split ] && [ \"$SRC\" = split ]; then
   echo 'split refused: this task is already a slice of an earlier split; implementing it as-is.'
   D=ready; KEEP=1
@@ -551,12 +576,12 @@ if [ \"$D\" = split ]; then
   IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 1)
   POS=$((IDX-1))
   if [ $POS -lt 0 ]; then POS=0; fi
-  jq --slurpfile new $F --argjson pos $POS '.[0:$pos] + [$new[0].tasks[] | . + {source: \"split\", covers: (if (.covers | type) == \"array\" then .covers else [] end)}] + .[($pos+1):]' /tmp/fabro/tasks.json > /tmp/fabro/tasks.split.json
+  jq --slurpfile new $F --argjson pos $POS --argjson ext $EXT '.[0:$pos] + [$new[0].tasks[] | . + {source: \"split\", from_extra: ($ext == 1), covers: (if (.covers | type) == \"array\" then .covers else [] end)}] + .[($pos+1):]' /tmp/fabro/tasks.json > /tmp/fabro/tasks.split.json
   mv /tmp/fabro/tasks.split.json /tmp/fabro/tasks.json
   echo $POS > /tmp/fabro/task_index
   echo $((SR+1)) > /tmp/fabro/split_rounds
 fi
-if [ \"$D\" = ready ]; then
+if [ \"$D\" = ready ] && [ $EXT = 0 ]; then
   TCD=$(cat /tmp/fabro/tasks_coded 2>/dev/null || echo 0)
   case \"$TCD\" in ''|*[!0-9]*) TCD=0 ;; esac
   echo $((TCD+1)) > /tmp/fabro/tasks_coded
@@ -743,7 +768,6 @@ echo '{\"context_updates\":{\"round\":'$R'}}'"]
     extra_prep [label="Prepare extra review", shape=parallelogram, output_schema="routing",
         script="ER=$(cat /tmp/fabro/extra_round 2>/dev/null || echo 0)
 if [ $ER -ge 2 ]; then echo '{\"context_updates\":{\"extra_done\":true}}'; exit 0; fi
-if [ $ER -ge 1 ] && [ -s /tmp/fabro/remainder.json ]; then echo 'task budget spent: no further extra-review round; its follow-ups would only join the remainder'; echo '{\"context_updates\":{\"extra_done\":true}}'; exit 0; fi
 echo $((ER+1)) > /tmp/fabro/extra_round
 git fetch origin main
 git diff origin/main...HEAD > /tmp/fabro/extra/diff.patch
@@ -1127,8 +1151,8 @@ gh issue edit $N --remove-label agent-in-progress --add-label Review || true
 gh issue comment $N --body 'Agent run complete. PR: '$PR_URL || true
 echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\"}}'"]
 
-    // file_remainder: the tasks this run did not start because its task budget of 8
-    // was spent (ADR 0011 D6; `next_task` moved them to /tmp/fabro/remainder.json)
+    // file_remainder: the decomposed tasks this run did not start because its task
+    // budget of 8 was spent (ADR 0011 D6; `next_task` moved them to /tmp/fabro/remainder.json)
     // become ONE issue, labelled `agent-remainder` and `ai-generated` -- NOT `agent`.
     // The scheduler's remainder promoter adds `agent` and `priority` once this PR
     // merges (automatically or by hand), so the remainder is worked next and never
@@ -1156,7 +1180,7 @@ gh label create priority --color B60205 2>/dev/null || true
 {
   echo '<!-- fabro:remainder parent='$N' pr='$PR' -->'
   echo
-  echo 'This issue continues #'$N'. fabro run `'$RUN'` implemented the first 8 tasks in PR #'$PR' and stopped at its task budget (fabro-workflows ADR 0011). The '$K' task(s) below were not started.'
+  echo 'This issue continues #'$N'. fabro run `'$RUN'` implemented the first 8 decomposed tasks in PR #'$PR' and stopped at its task budget (fabro-workflows ADR 0011). The '$K' task(s) below were not started.'
   echo
   echo 'It is held with `agent-remainder`. The scheduler adds `agent` and `priority` as soon as PR #'$PR' merges, so it is worked next. If PR #'$PR' is closed without merging, the scheduler labels it `agent-stuck` instead. Do not add `agent` by hand before the PR merges.'
   echo
@@ -1181,7 +1205,7 @@ case \"$M\" in
 esac
 echo $M > /tmp/fabro/remainder_issue
 {
-  echo 'This PR implements the first 8 tasks of #'$N'. The other '$K' are in #'$M'.'
+  echo 'This PR implements the first 8 decomposed tasks of #'$N', plus any extra-review follow-ups. The other '$K' are in #'$M'.'
   echo
   echo 'The scheduler queues #'$M' with `priority` as soon as this PR merges, whether it is merged automatically or by hand.'
 } > /tmp/fabro/remainder_comment.md

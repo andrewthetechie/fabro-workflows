@@ -1309,10 +1309,12 @@ PATH="$SAVED_PATH"
 # ---------------------------------------------------------------------------
 # task budget and remainder (ADR 0011 D6)
 #
-# A run implements at most 8 tasks -- counted as tasks improve_gate routes to the
-# coder -- and next_task moves the rest to remainder.json, from any source:
-# decompose, splits, or extra-review follow-ups appended later. file_remainder
-# then files them as ONE issue the scheduler holds until the PR merges.
+# A run implements at most 8 DECOMPOSED tasks -- counted as tasks improve_gate
+# routes to the coder, decompose tasks and their split slices -- and next_task moves
+# the decomposed tasks past that to remainder.json. file_remainder then files them
+# as ONE issue the scheduler holds until the PR merges. Extra-review follow-ups, and
+# slices split from one (`from_extra`), are exempt: they never count and are never
+# moved, so they are worked in this run even with the budget spent.
 # ---------------------------------------------------------------------------
 echo ""
 echo "task budget and remainder"
@@ -1370,6 +1372,32 @@ check "ready counts toward the budget" "4" "$(cat "$T/tasks_coded")"
 printf '%s' '{"disposition":"redundant","reason":"already done"}' > "$T/improve_result.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "redundant does not count"       "4" "$(cat "$T/tasks_coded")"
+printf '%s' '{"id":"x1","title":"X1","body":"b","files":[],"covers":[],"source":"extra-review"}' > "$T/current_task.json"
+printf '%s' '{"disposition":"ready","task":{"title":"X1","body":"sharpened"}}' > "$T/improve_result.json"
+sh "$T/improve_gate.sh" >/dev/null 2>&1
+check "extra-review ready does not count" "4" "$(cat "$T/tasks_coded")"
+
+# 1b. A split of an extra-review follow-up stamps its slices from_extra, and a slice
+#     that is then routed to the coder does not count either.
+bd_setup 4 9 8
+jq '. + [{"id":"x1","title":"X1","body":"b","files":[],"covers":[],"source":"extra-review"}]' \
+    "$T/tasks.json" > "$T/tasks.tmp" && mv "$T/tasks.tmp" "$T/tasks.json"
+jq '.[8]' "$T/tasks.json" > "$T/current_task.json"
+rm -f "$T/split_rounds"
+printf '%s' '{"disposition":"split","tasks":[{"id":"x1a","title":"X1a","body":"b"},{"id":"x1b","title":"X1b","body":"b"}]}' > "$T/improve_result.json"
+sh "$T/improve_gate.sh" >/dev/null 2>&1
+check "extra split: slices carry from_extra" "true true" "$(jq -r '[.[8:][] | .from_extra | tostring] | join(" ")' "$T/tasks.json")"
+check "extra split: nothing counted"   "4" "$(cat "$T/tasks_coded")"
+jq '.[8]' "$T/tasks.json" > "$T/current_task.json"
+printf '%s' '{"disposition":"ready","task":{"title":"X1a","body":"sharpened"}}' > "$T/improve_result.json"
+sh "$T/improve_gate.sh" >/dev/null 2>&1
+check "extra slice ready does not count" "4" "$(cat "$T/tasks_coded")"
+bd_setup 4 1 2
+printf '%s' '{"disposition":"split","tasks":[{"id":"t1a","title":"T1a","body":"b"},{"id":"t1b","title":"T1b","body":"b"}]}' > "$T/improve_result.json"
+jq '.[0]' "$T/tasks.json" > "$T/current_task.json"
+sh "$T/improve_gate.sh" >/dev/null 2>&1
+check "decompose split: slices not exempt" "false false" "$(jq -r '[.[0:2][] | .from_extra | tostring] | join(" ")' "$T/tasks.json")"
+rm -f "$T/split_rounds"
 
 # 2. Under budget, next_task selects as before.
 bd_setup 7 7 10
@@ -1383,23 +1411,42 @@ OUT=$(sh "$T/next_task.sh" 2>/dev/null)
 check "spent: tasks_done"              "true" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
 check "spent: remainder holds t9 t10"  "t9 t10" "$(jq -r '[.[].id]|join(" ")' "$T/remainder.json")"
 check "spent: queue trimmed to 8"      "8" "$(jq length "$T/tasks.json")"
-check "spent: says so"                 "1" "$(grep -c 'task budget of 8 spent' <<<"$OUT")"
+check "spent: says so"                 "1" "$(grep -c 'task budget of 8 decomposed tasks spent' <<<"$OUT")"
 
-# 4. Follow-ups appended later (as extra_gate does) join the remainder, without
-#    duplicating an id that is already there.
-jq '. + [{"id":"t11","title":"T11","body":"b","files":[],"covers":[],"source":"extra-review"},
-         {"id":"t9","title":"T9 again","body":"b","files":[],"covers":[],"source":"extra-review"}]' \
+# 4. Extra-review follow-ups appended after the budget is spent (as extra_gate does,
+#    including a slice split from one) are worked in this run, not moved.
+jq '. + [{"id":"x1","title":"X1","body":"b","files":[],"covers":[],"source":"extra-review"},
+         {"id":"x2a","title":"X2a","body":"b","files":[],"covers":[],"source":"split","from_extra":true}]' \
     "$T/tasks.json" > "$T/tasks.tmp" && mv "$T/tasks.tmp" "$T/tasks.json"
 OUT=$(sh "$T/next_task.sh" 2>/dev/null)
-check "growth: remainder t9 t10 t11"   "t9 t10 t11" "$(jq -r '[.[].id]|join(" ")' "$T/remainder.json")"
-check "growth: still done"             "true" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
+check "extras: not done"               "false" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
+check "extras: selects x1"             "x1" "$(jq -r .id "$T/current_task.json")"
+check "extras: remainder unchanged"    "t9 t10" "$(jq -r '[.[].id]|join(" ")' "$T/remainder.json")"
+OUT=$(sh "$T/next_task.sh" 2>/dev/null)
+check "extras: then selects x2a"       "x2a" "$(jq -r .id "$T/current_task.json")"
+OUT=$(sh "$T/next_task.sh" 2>/dev/null)
+check "extras: then done"              "true" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
 
-# 5. extra_prep: the first round still runs; a later one does not once the budget is spent.
+# 4b. A decomposed task behind the budget still moves, and joins the remainder
+#     without duplicating an id already there; an extra-review task beside it stays.
+bd_setup 8 8 10
+tasks_json 9 9 > "$T/remainder.json"
+jq '. + [{"id":"x1","title":"X1","body":"b","files":[],"covers":[],"source":"extra-review"}]' \
+    "$T/tasks.json" > "$T/tasks.tmp" && mv "$T/tasks.tmp" "$T/tasks.json"
+OUT=$(sh "$T/next_task.sh" 2>/dev/null)
+check "mixed: remainder t9 t10"        "t9 t10" "$(jq -r '[.[].id]|join(" ")' "$T/remainder.json")"
+check "mixed: queue keeps x1 at slot 9" "x1" "$(jq -r '.[8].id' "$T/tasks.json")"
+check "mixed: selects x1"              "x1" "$(jq -r .id "$T/current_task.json")"
+
+# 5. extra_prep: a remainder does not stop the second extra-review round; the
+#    round cap of 2 still does.
 echo 0 > "$T/extra_round"
 OUT=$(sh "$T/extra_prep.sh" 2>/dev/null)
-check "first extra round still runs"   "false" "$(jq -r '.context_updates.extra_done' <<<"$(lastjson "$OUT")")"
+check "first extra round runs"         "false" "$(jq -r '.context_updates.extra_done' <<<"$(lastjson "$OUT")")"
 OUT=$(sh "$T/extra_prep.sh" 2>/dev/null)
-check "no second round after budget"   "true" "$(jq -r '.context_updates.extra_done' <<<"$(lastjson "$OUT")")"
+check "second round runs with a remainder" "false" "$(jq -r '.context_updates.extra_done' <<<"$(lastjson "$OUT")")"
+OUT=$(sh "$T/extra_prep.sh" 2>/dev/null)
+check "round cap still ends it"        "true" "$(jq -r '.context_updates.extra_done' <<<"$(lastjson "$OUT")")"
 
 # 6. file_remainder with nothing to file: no gh call at all.
 bd_setup 3 3 3

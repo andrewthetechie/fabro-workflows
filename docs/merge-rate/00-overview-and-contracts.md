@@ -53,8 +53,8 @@ This series fixes those causes and adds two changes that make runs shorter.
 | 7 | womens-fantasy-sports gets an issue, not a code change, for its backend suite. |
 | 8 | An optional per-repository file `.fabro/fix.sh` holds formatters and machine-applicable lint fixes only. A new `backlog` node, `autofix`, runs it after every coder or rework stage. `autofix` **always exits 0**. |
 | 9 | writers-app gets the first `.fabro/fix.sh`. |
-| 10 | Task budget = **8**, counted as tasks routed to `coder`. `next_task` enforces it. |
-| 11 | Tasks over budget go to `/tmp/fabro/remainder.json`. A new node `file_remainder`, placed between `open_pr` and `pr_handoff`, files them as **one** remainder issue labelled `agent-remainder` + `ai-generated` (**not** `agent`), and posts one PR comment naming it. |
+| 10 | Task budget = **8**, counted as **decomposed** tasks routed to `coder` (`decompose` tasks and their split slices). `next_task` enforces it. Extra-review follow-ups and their slices are exempt: they never count and are never moved to the remainder (amended 2026-09-24, after implementation; ADR 0011 D6 amendment). |
+| 11 | Decomposed tasks over budget go to `/tmp/fabro/remainder.json`. A new node `file_remainder`, placed between `open_pr` and `pr_handoff`, files them as **one** remainder issue labelled `agent-remainder` + `ai-generated` (**not** `agent`), and posts one PR comment naming it. |
 | 12 | The scheduler **promotes** remainder issues. When the parent PR has merged, it adds `agent` + `priority` and removes `agent-remainder`. When the parent PR closed unmerged, it adds `agent-stuck` and removes `agent-remainder`. While the PR is open, it does nothing. |
 | 13 | The scheduler ranks a queue item with the `priority` label after Overrides and before everything else, oldest first. |
 | 14 | `render.jq` and the merge-phase report comments are **not** changed. |
@@ -106,7 +106,7 @@ read it and do not reuse it.
 |---|---|---|---|
 | `/tmp/fabro/tasks.json` | `decompose_gate`, `improve_gate` (split), `extra_gate` | `next_task` | JSON array of task objects `{id, title, body, files, covers, source}` |
 | `/tmp/fabro/task_index` | `next_task`, `improve_gate` | `next_task` | integer: index of the next task to select |
-| `/tmp/fabro/tasks_coded` | `prep` (reset to 0), `improve_gate` (+1 on `ready`) | `next_task` | integer |
+| `/tmp/fabro/tasks_coded` | `prep` (reset to 0), `improve_gate` (+1 on `ready`, unless the task is `source: "extra-review"` or `from_extra: true`) | `next_task` | integer |
 | `/tmp/fabro/remainder.json` | `prep` (deleted), `next_task` (append) | `extra_prep`, `file_remainder` | JSON array of task objects, same shape as `tasks.json`, no duplicate `id` |
 | `/tmp/fabro/remainder_issue` | `file_remainder` | `file_remainder` (idempotency) | the remainder issue number, digits only |
 | `/tmp/fabro/ci_rerun_done` | `watch_checks` | `watch_checks` | empty marker file |
