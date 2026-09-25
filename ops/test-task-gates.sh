@@ -32,6 +32,8 @@ SHARED="$REPO_ROOT/.fabro/workflows/_shared/review-merge/review-merge.fabro"
 [ -f "$SHARED" ] || { echo "ERROR: $SHARED not found" >&2; exit 1; }
 SHARED_TRIAGE="$REPO_ROOT/.fabro/workflows/_shared/triage/triage.fabro"
 [ -f "$SHARED_TRIAGE" ] || { echo "ERROR: $SHARED_TRIAGE not found" >&2; exit 1; }
+ARCH="$REPO_ROOT/.fabro/workflows/arch-review/workflow.fabro"
+[ -f "$ARCH" ] || { echo "ERROR: $ARCH not found" >&2; exit 1; }
 
 command -v jq >/dev/null || { echo "ERROR: jq is required" >&2; exit 1; }
 
@@ -1627,6 +1629,91 @@ echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[]}' > "$T/
 : > "$T/gh.log"
 sh "$T/apply_ready.sh" >/dev/null 2>&1
 check "no decisions: no body edit"     "0" "$(grep -c 'decided_body' "$T/gh.log")"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
+# arch-review — scan_gate, file_issues, summarize (ADR 0012)
+# ---------------------------------------------------------------------------
+echo ""
+echo "arch-review scan and file"
+PATH="$ORIG_PATH"
+SAVED_PATH="$PATH"
+T="$WORK/arch"; mkdir -p "$T/bin" "$T/arch"
+for n in scan_gate file_issues summarize; do
+    extract_from "$ARCH" "$n" | sed "s#/tmp/fabro#$T#g" > "$T/$n.sh"
+    if ! sh -n "$T/$n.sh" 2>"$T/$n.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$n"
+    fi
+done
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue list")   cat "$GH_STATE/live.json"; exit 0 ;;
+  "issue create") C=$(cat "$GH_STATE/counter" 2>/dev/null || echo 400); C=$((C+1)); echo $C > "$GH_STATE/counter"
+                  echo "https://github.com/o/r/issues/$C"; exit 0 ;;
+  "repo view")    echo "jelly-swipe"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+
+cand() { # cand <slug> <strength>
+    printf '{"slug":"%s","title":"refactor: %s","strength":"%s","files":["a.py"],"problem":"p","solution":"s","benefits":"b","diagram":""}' "$1" "$1" "$2"
+}
+
+# 1. A valid file.
+echo 0 > "$T/arch/scan_attempts"
+printf '{"candidates":[%s,%s]}' "$(cand one-a Strong)" "$(cand two-b 'Worth exploring')" > "$T/arch/candidates.json"
+OUT=$(sh "$T/scan_gate.sh" 2>&1); RC=$?
+check "scan_gate valid: exit 0"        "0"  "$RC"
+check "scan_gate valid: ok"            "ok" "$(jq -r '.context_updates.scan_status' <<<"$(lastjson "$OUT")")"
+check "scan_gate valid: count"         "2"  "$(jq -r '.context_updates.candidate_count' <<<"$(lastjson "$OUT")")"
+
+# 2. A duplicate slug: one repair turn, then failed.
+echo 0 > "$T/arch/scan_attempts"
+printf '{"candidates":[%s,%s]}' "$(cand one-a Strong)" "$(cand one-a Strong)" > "$T/arch/candidates.json"
+sh "$T/scan_gate.sh" >/dev/null 2>&1; RC=$?
+check "scan_gate dup: first retries"   "1" "$RC"
+OUT=$(sh "$T/scan_gate.sh" 2>&1); RC=$?
+check "scan_gate dup: second exit 0"   "0" "$RC"
+check "scan_gate dup: failed"          "failed" "$(cat "$T/arch/scan_status")"
+
+# 3. An unknown strength.
+echo 0 > "$T/arch/scan_attempts"
+printf '{"candidates":[%s]}' "$(cand one-a Maybe)" > "$T/arch/candidates.json"
+sh "$T/scan_gate.sh" >/dev/null 2>&1; RC=$?
+check "scan_gate bad strength: retry"  "1" "$RC"
+
+# 4. file_issues: 5 Strong, 5 Worth exploring, 1 Speculative; c0 already filed.
+{
+  printf '{"candidates":['
+  for i in 0 1 2 3 4; do printf '%s,' "$(cand c$i Strong)"; done
+  for i in 5 6 7 8 9; do printf '%s,' "$(cand c$i 'Worth exploring')"; done
+  printf '%s]}' "$(cand spec-one Speculative)"
+} > "$T/arch/candidates.json"
+printf '[{"body":"<!-- fabro:arch-candidate slug=c0 -->\\nold"}]' > "$T/live.json"
+rm -f "$T/counter"; : > "$T/gh.log"
+OUT=$(sh "$T/file_issues.sh" 2>&1)
+check "file: caps at 8"                "8" "$(grep -c '^issue create' "$T/gh.log")"
+check "file: skips an existing slug"   "0" "$(grep -c 'refactor: c0 --body-file' "$T/gh.log")"
+check "file: never Speculative"        "0" "$(grep -c 'refactor: spec-one --body-file' "$T/gh.log")"
+check "file: stops after the cap"      "0" "$(grep -c 'refactor: c9 --body-file' "$T/gh.log")"
+check "file: all three labels"         "8" "$(grep -c -- '--label architecture --label needs-triage --label ai-generated' "$T/gh.log")"
+check "file: marker is line one"       "<!-- fabro:arch-candidate slug=c8 -->" "$(head -1 "$T/arch/body.md")"
+check "file: filed_count"              "8" "$(jq -r '.context_updates.filed_count' <<<"$(lastjson "$OUT")")"
+
+# 5. summarize: the two shapes of the line.
+echo ok > "$T/arch/scan_status"; echo '[401,402]' > "$T/arch/filed.json"
+check "summary: filed"                 "jelly-swipe: 2 filed (#401 #402)" \
+    "$(jq -r '.context_updates.arch_summary' <<<"$(lastjson "$(sh "$T/summarize.sh" 2>&1)")")"
+echo failed > "$T/arch/scan_status"; echo '[]' > "$T/arch/filed.json"
+check "summary: scan failed"           "jelly-swipe: scan failed, 0 filed" \
+    "$(jq -r '.context_updates.arch_summary' <<<"$(lastjson "$(sh "$T/summarize.sh" 2>&1)")")"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE

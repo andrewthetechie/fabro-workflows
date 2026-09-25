@@ -1,0 +1,149 @@
+digraph ArchReview {
+    graph [
+        goal="Architecture review: scan the repository for deepening candidates, file the strongest as issues, and report",
+        default_fidelity="truncate",
+        // Above every node timeout: `scan` is 50m.
+        stall_timeout="60m",
+        model_stylesheet="
+            *         { model: high-reasoning; }
+            .scan     { model: high-reasoning; }
+            .improve  { model: high-reasoning; }
+            .triage   { model: high-reasoning; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // Resets every run-local file. scan_status starts as `failed` and only scan_gate
+    // sets it to `ok`, so any path that skips the scan reports it as failed.
+    prep [label="Prepare the workspace", shape=parallelogram,
+        script="set -e
+mkdir -p /tmp/fabro/arch
+rm -f /tmp/fabro/arch/candidates.json /tmp/fabro/arch/existing.json /tmp/fabro/arch/hotspots.txt
+echo 0 > /tmp/fabro/arch/scan_attempts
+echo '[]' > /tmp/fabro/arch/filed.json
+echo failed > /tmp/fabro/arch/scan_status
+date +%s > /tmp/fabro/run_started
+echo ready"]
+
+    // 90 days of history for the hot spots (ADR 0012 D1), and the architecture issues
+    // that already exist, open and closed, so the scan does not propose them again.
+    history [label="Read history and existing issues", shape=parallelogram,
+        script="set -e
+git fetch --shallow-since=\"90 days ago\" origin main || true
+git log --since=\"90 days ago\" --name-only --format= HEAD 2>/dev/null | grep -v '^$' | sort | uniq -c | sort -rn | head -60 > /tmp/fabro/arch/hotspots.txt || true
+gh issue list --label architecture --state all --limit 500 --json number,title,state,stateReason,body > /tmp/fabro/arch/existing_raw.json
+jq '[.[] | {number, title, state, stateReason, slug: ([(.body // \"\") | capture(\"fabro:arch-candidate slug=(?<s>[a-z0-9-]+)\")? | .s][0])}]' /tmp/fabro/arch/existing_raw.json > /tmp/fabro/arch/existing.json
+echo 'history: '$(wc -l < /tmp/fabro/arch/hotspots.txt)' hot files, '$(jq length /tmp/fabro/arch/existing.json)' existing architecture issues'"]
+
+    scan [label="Scan for deepening candidates", class="scan", prompt="@prompts/scan.md.j2", timeout="50m", max_retries=1]
+
+    // Validates the candidates contract. One repair turn; a second invalid file sets
+    // scan_status=failed and exits ZERO, so the run still reports (ADR 0012 D5).
+    scan_gate [label="Validate the candidates", shape=parallelogram, output_schema="routing",
+        script="F=/tmp/fabro/arch/candidates.json
+A=$(cat /tmp/fabro/arch/scan_attempts 2>/dev/null || echo 0)
+OK=$(jq -r 'if (.candidates | type) != \"array\" then \"no\"
+  elif (.candidates | length) > 20 then \"no\"
+  elif ([.candidates[] | select(
+      ((.slug // \"\") | tostring | test(\"^[a-z0-9][a-z0-9-]{2,59}$\") | not)
+      or ((.title // \"\") | tostring | test(\"^refactor([(][a-z0-9 ./_-]+[)])?: .+\") | not)
+      or (((.strength // \"\") as $s | $s == \"Strong\" or $s == \"Worth exploring\" or $s == \"Speculative\") | not)
+      or ((.files | type) != \"array\") or ((.files | length) == 0)
+      or ((.problem // \"\") == \"\") or ((.solution // \"\") == \"\") or ((.benefits // \"\") == \"\")
+    )] | length) > 0 then \"no\"
+  elif ([.candidates[].slug] | length) != ([.candidates[].slug] | unique | length) then \"no\"
+  else \"yes\" end' $F 2>/dev/null || echo no)
+if [ \"$OK\" != yes ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/arch/scan_attempts
+  if [ $A -lt 2 ]; then echo 'candidates.json is missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  echo failed > /tmp/fabro/arch/scan_status
+  jq -nc '{context_updates:{scan_status:\"failed\",candidate_count:0}}'
+  exit 0
+fi
+echo ok > /tmp/fabro/arch/scan_status
+jq -c '{context_updates:{scan_status:\"ok\",candidate_count:(.candidates | length)}}' $F"]
+
+    // Files at most 8 Strong / Worth exploring candidates. The architecture issues are
+    // read again before every create, so a slug filed by a second review running at the
+    // same time is still skipped (ADR 0012 D5). A create that fails is skipped, not
+    // fatal. Labels are created first because `gh issue create` rejects an unknown one.
+    file_issues [label="File Architecture issues", shape=parallelogram, output_schema="routing",
+        script="set -e
+F=/tmp/fabro/arch/candidates.json
+gh label create architecture --color 0E8A16 --description 'Architecture review: a deepening candidate (ADR 0012)' 2>/dev/null || true
+gh label create needs-triage --color D4C5F9 --description 'Waiting for triage' 2>/dev/null || true
+gh label create ai-generated --color EDEDED --description 'Written by an agent' 2>/dev/null || true
+jq -c '[.candidates[] | select(.strength == \"Strong\" or .strength == \"Worth exploring\")] | sort_by(if .strength == \"Strong\" then 0 else 1 end)' $F > /tmp/fabro/arch/eligible.json
+echo '[]' > /tmp/fabro/arch/filed.json
+K=$(jq length /tmp/fabro/arch/eligible.json)
+I=0
+while [ $I -lt $K ]; do
+  if [ \"$(jq length /tmp/fabro/arch/filed.json)\" -ge 8 ]; then break; fi
+  jq --argjson i $I '.[$i]' /tmp/fabro/arch/eligible.json > /tmp/fabro/arch/cand.json
+  I=$((I+1))
+  S=$(jq -r .slug /tmp/fabro/arch/cand.json)
+  gh issue list --label architecture --state all --limit 500 --json body > /tmp/fabro/arch/live.json
+  if jq -e --arg s \"$S\" '[.[] | (.body // \"\") | capture(\"fabro:arch-candidate slug=(?<s>[a-z0-9-]+)\")? | .s] | index($s) != null' /tmp/fabro/arch/live.json > /dev/null; then
+    echo 'skip '$S': an architecture issue already has this slug'
+    continue
+  fi
+  jq -r '([10]|implode) as $nl | \"<!-- fabro:arch-candidate slug=\" + .slug + \" -->\" + $nl + $nl
+    + \"> Filed by an automated architecture review (fabro-workflows ADR 0012). Strength: **\" + .strength + \"**.\" + $nl + $nl
+    + \"## Files\" + $nl + $nl + ([.files[] | \"- `\" + . + \"`\"] | join($nl)) + $nl + $nl
+    + \"## Problem\" + $nl + $nl + .problem + $nl + $nl
+    + \"## Solution\" + $nl + $nl + .solution + $nl + $nl
+    + \"## Benefits\" + $nl + $nl + .benefits + $nl
+    + (if (.diagram // \"\") == \"\" then \"\" else $nl + \"## Before and after\" + $nl + $nl + \"```mermaid\" + $nl + .diagram + $nl + \"```\" + $nl end)' /tmp/fabro/arch/cand.json > /tmp/fabro/arch/body.md
+  T=$(jq -r .title /tmp/fabro/arch/cand.json)
+  URL=$(gh issue create --title \"$T\" --body-file /tmp/fabro/arch/body.md --label architecture --label needs-triage --label ai-generated) || URL=''
+  M=$(printf '%s' \"$URL\" | sed 's|.*/||')
+  case \"$M\" in
+    '' | *[!0-9]*) echo 'WARNING: could not file '$S >&2; continue ;;
+  esac
+  jq --argjson m \"$M\" '. + [$m]' /tmp/fabro/arch/filed.json > /tmp/fabro/arch/filed.next
+  mv /tmp/fabro/arch/filed.next /tmp/fabro/arch/filed.json
+  echo 'filed '$S' as #'$M
+done
+jq -c '{context_updates:{filed_count:length}}' /tmp/fabro/arch/filed.json"]
+
+    // One line for Discord (ADR 0012 D9). `\"` is stripped: the hook reads the value
+    // with a grep that stops at the first quote.
+    summarize [label="Summarize the review", shape=parallelogram, output_schema="routing",
+        script="S=$(cat /tmp/fabro/arch/scan_status 2>/dev/null || echo failed)
+F=$(jq length /tmp/fabro/arch/filed.json 2>/dev/null || echo 0)
+L=$(jq -r 'map(\"#\" + tostring) | join(\" \")' /tmp/fabro/arch/filed.json 2>/dev/null || echo '')
+REPO=$(gh repo view --json name --jq .name 2>/dev/null || echo repository)
+if [ \"$S\" = ok ]; then M=\"$REPO: $F filed\"; else M=\"$REPO: scan failed, 0 filed\"; fi
+if [ -n \"$L\" ]; then M=\"$M ($L)\"; fi
+M=$(printf '%s' \"$M\" | tr -d '\"')
+echo \"$M\"
+jq -nc --arg m \"$M\" '{context_updates:{arch_summary:$m}}'"]
+
+    // A no-op whose stage_start fires the `discord-arch-summary` hook, after
+    // `summarize` has published `arch_summary`.
+    finish [label="Finish", shape=parallelogram, script="echo done"]
+
+    // ---- Edges ----
+    // `summarize` is the failure sink: every earlier node's unconditional edge lands on
+    // it, so a failed review still reports.
+    start -> prep
+    prep -> history                 [condition="outcome=succeeded"]
+    prep -> summarize
+    history -> scan                 [condition="outcome=succeeded"]
+    history -> summarize
+    scan -> scan_gate               [condition="outcome=succeeded"]
+    scan -> summarize
+    scan_gate -> scan               [condition="outcome=failed"]
+    scan_gate -> file_issues        [condition="outcome=succeeded && context.scan_status=ok"]
+    scan_gate -> summarize          [condition="outcome=succeeded && context.scan_status=failed"]
+    scan_gate -> summarize
+    file_issues -> summarize        [condition="outcome=succeeded"]
+    file_issues -> summarize
+    summarize -> finish             [condition="outcome=succeeded"]
+    summarize -> finish
+    finish -> exit
+}

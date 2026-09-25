@@ -1,7 +1,7 @@
 #!/bin/sh
 # discord-notify.sh — best-effort Discord notification for fabro runs.
 #
-# Usage: discord-notify.sh <rescue|complete|failed|merged|blocked|needs-human|fallback|triage-question|triage-failed>
+# Usage: discord-notify.sh <rescue|complete|failed|merged|blocked|needs-human|fallback|triage-question|triage-failed|arch-summary>
 #
 # Runs as a hook with sandbox = false, i.e. inside the fabro server container
 # (Alpine: /bin/sh + wget, no bash, no curl, no jq). The event context JSON is
@@ -78,6 +78,7 @@ issue=""
 pr_url=""
 triage_questions=""
 issue_url=""
+arch_summary=""
 if [ -r "$token_file" ]; then
   auth="Authorization: Bearer $(cat "$token_file")"
   repo_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id" 2>/dev/null \
@@ -103,6 +104,9 @@ if [ -r "$token_file" ]; then
     | grep -o '"triage_questions":"[^"]*"' | tail -1 | cut -d'"' -f4)
   issue_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"issue_url":"[^"]*"' | tail -1 | cut -d'"' -f4)
+  arch_summary=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"arch_summary":"[^"]*"' | tail -1 | cut -d'"' -f4)
+  arch_summary=$(printf '%s' "$arch_summary" | sed 's/[\\"]//g' | cut -c1-800)
   # `[^"]*` stops at the first `\"` in the serialized state, which silently dropped
   # the rest of the batch. triage_gate now strips `"` from the value before publishing
   # it, so no escape can appear here. This sed stays as defence in depth for a
@@ -117,6 +121,8 @@ fi
 case "$kind" in
   triage-question|triage-failed)
     if [ -n "$issue_url" ]; then issue="${issue_url##*/}"; fi ;;
+  arch-summary)
+    issue="" ;;
 esac
 
 # repo "owner/name" for display, derived from the origin URL
@@ -165,6 +171,9 @@ case "$kind" in
     ;;
   triage-failed)
     msg="🟠 fabro issue triage released a claim without finishing${subject}"
+    ;;
+  arch-summary)
+    msg="🧭 fabro architecture review${subject}\\n${arch_summary}"
     ;;
   *)        msg="ℹ️ fabro run ${run_id} notification ($kind)" ;;
 esac

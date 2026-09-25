@@ -1,0 +1,40 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+# high-reasoning is a role alias on zai:glm-5.3 (ADR 0003). When z.ai is rate-limited
+# or errors, the stage falls back to Kimi's kimi-k3. No stage uses a coder box, so the
+# coder scheduler does not admit this workflow (ADR 0012 D7).
+[run.model.fallbacks]
+high-reasoning = ["kimi:kimi-k3"]
+
+# The review reads code and writes issues. It never writes code.
+[run.integrations.github.permissions]
+contents = "read"
+issues = "write"
+
+# Nothing is committed and nothing is pushed.
+[run.run_branch]
+push = false
+
+[run.meta_branch]
+push = false
+
+# Discord. Hooks run with sandbox = false, inside the fabro server container, and read
+# the webhook URL from /storage/secrets/discord_webhook_url. `finish` runs after
+# `summarize` has published `arch_summary`, so the hook can read it.
+[[run.hooks]]
+id = "discord-arch-summary"
+event = "stage_start"
+matcher = "^finish$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh arch-summary"
+
+[[run.hooks]]
+id = "discord-failed"
+event = "run_failed"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh failed"
