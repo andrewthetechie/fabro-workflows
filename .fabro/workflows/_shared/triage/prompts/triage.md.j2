@@ -37,6 +37,28 @@ Read these before deciding:
 - Never emit partial findings or multiple rounds of questions during one run. Ask no
   questions. This stage's questions are final.
 
+## Decide what the repository can decide
+
+Before you write a question, try to decide it yourself. Put each decision in
+`decisions`, not in `questions`. The workflow writes your decisions into the issue
+body, where a human can reverse them.
+
+- **Architecture issue** — `.labels` contains `architecture`. An automated
+  architecture review wrote it. Decide every question that has a recommended answer
+  and whose choice is internal to the code and reversible: where a seam goes, the
+  shape of an adapter, a module or function name, which file code moves to, the order
+  of the steps.
+- **Any other issue** — a human wrote it. Decide a question only when the repository
+  supports the recommended answer: existing code that already does it that way, a
+  term in `CONTEXT.md`, or a decision in `docs/adr/`. Write that path in `basis`. An
+  internal choice in a human's issue can carry intent that they did not write down,
+  so without that support it stays a question.
+
+Never decide, for any issue: product behaviour that a user sees, an external
+contract (an API, a file format, a CLI flag that another system calls), data
+(migrations, deletion, retention), security or permissions, or a fact that only a
+human knows. Those stay questions.
+
 ## Classification
 
 - `bug` when documented or intended behaviour is wrong, regressed or errors
@@ -80,6 +102,9 @@ Write **two** files:
   "questions": [
     { "id": "Q1", "question": "one concrete decision", "why": "what it blocks", "recommended": "an evidence-backed default, or empty" }
   ],
+  "decisions": [
+    { "question": "one choice you made", "decision": "what you chose", "basis": "the file, CONTEXT.md term or ADR that supports it" }
+  ],
   "summary": "one sentence for the operator"
 }
 ```
@@ -95,6 +120,11 @@ Rules — `triage_gate` enforces these:
 - `questions` is non-empty **if and only if** `readiness` is `needs_info`.
 - For `ready`, write `None — this issue is workable as written` under the questions
   heading and state that implementation can begin.
+- `decisions` is an array. Each entry has a non-empty `question` and `decision`.
+  For an issue without the `architecture` label, `basis` is non-empty too. Use `[]`
+  when you decided nothing.
+- A decided question is not in `questions`. A question you could not decide is not
+  in `decisions`.
 
 `/tmp/fabro/triage.md` — the issue-ready Markdown artifact posted verbatim as a
 comment:
@@ -109,6 +139,7 @@ comment:
 ### What I established
 ### Validation and diagnosis | Implementation outline
 ### Acceptance boundary
+### Decisions made during triage
 ### Questions that must be answered
 ### Recommended next action
 ```

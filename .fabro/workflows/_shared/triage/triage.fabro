@@ -125,6 +125,14 @@ Q=$(jq '.questions | length' $F 2>/dev/null || echo 0)
 if [ \"$R\" = needs_info ] && [ \"$Q\" = 0 ]; then R=invalid; fi
 if [ \"$R\" = ready ] && [ \"$Q\" != 0 ]; then R=invalid; fi
 if [ \"$R\" = not_actionable ] && [ \"$Q\" != 0 ]; then R=invalid; fi
+DT=$(jq -r '(.decisions // []) | type' $F 2>/dev/null || echo bad)
+if [ \"$DT\" != array ]; then R=invalid; fi
+DB=$(jq '[(.decisions // [])[]? | select(((.question // \"\") | tostring) == \"\" or ((.decision // \"\") | tostring) == \"\")] | length' $F 2>/dev/null || echo 99)
+if [ \"$DB\" != 0 ]; then R=invalid; fi
+if ! jq -e '[.labels[].name] | index(\"architecture\") != null' /tmp/fabro/issue.json > /dev/null 2>&1; then
+  NB=$(jq '[(.decisions // [])[]? | select(((.basis // \"\") | tostring) == \"\")] | length' $F 2>/dev/null || echo 99)
+  if [ \"$NB\" != 0 ]; then R=invalid; fi
+fi
 if [ \"$R\" = invalid ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/triage_attempts
@@ -148,6 +156,16 @@ for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
 done
 L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
 R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
+D=$(jq '[.decisions[]?] | length' /tmp/fabro/triage.json 2>/dev/null || echo 0)
+if [ \"$D\" != 0 ]; then
+  { jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Decisions made during triage$/{exit} {print}'
+    echo '## Decisions made during triage'
+    echo
+    echo 'Triage made these choices without asking. Edit this section to reverse one before the issue is worked.'
+    echo
+    jq -r '.decisions[] | \"- **\" + .question + \"** \" + .decision + (if (.basis // \"\") == \"\" then \"\" else \" (basis: \" + .basis + \")\" end)' /tmp/fabro/triage.json ; } > /tmp/fabro/decided_body.md
+  gh issue edit $N --body-file /tmp/fabro/decided_body.md
+fi
 { echo '<!-- fabro:triage-questions -->'
   cat /tmp/fabro/triage.md
   echo
@@ -159,6 +177,8 @@ jq -nc '{context_updates:{triage_outcome:\"needs_info\"}}'"]
 
     // Unquoted word-splitting of $L is safe: triage_gate refuses any label outside
     // ^[a-z0-9:._-]+$, so none can contain a space.
+    // Decisions (ADR 0012 D4) are appended to the issue body, replacing any section an
+    // earlier triage wrote, so a human can reverse one before `backlog` works it.
     apply_ready [label="Promote to the backlog queue", shape=parallelogram, output_schema="routing",
         script="set -e
 N=$(jq -r .number /tmp/fabro/issue.json)
@@ -168,6 +188,16 @@ for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
 done
 L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
 R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
+D=$(jq '[.decisions[]?] | length' /tmp/fabro/triage.json 2>/dev/null || echo 0)
+if [ \"$D\" != 0 ]; then
+  { jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Decisions made during triage$/{exit} {print}'
+    echo '## Decisions made during triage'
+    echo
+    echo 'Triage made these choices without asking. Edit this section to reverse one before the issue is worked.'
+    echo
+    jq -r '.decisions[] | \"- **\" + .question + \"** \" + .decision + (if (.basis // \"\") == \"\" then \"\" else \" (basis: \" + .basis + \")\" end)' /tmp/fabro/triage.json ; } > /tmp/fabro/decided_body.md
+  gh issue edit $N --body-file /tmp/fabro/decided_body.md
+fi
 { echo '<!-- fabro:triage-report -->' ; cat /tmp/fabro/triage.md ; } > /tmp/fabro/report.md
 gh issue comment $N --body-file /tmp/fabro/report.md
 gh issue edit $N --title \"$T\" --add-label agent $L $R

@@ -1492,7 +1492,7 @@ echo "triage phase"
 PATH="$ORIG_PATH"
 SAVED_PATH="$PATH"
 T="$WORK/triage"; mkdir -p "$T/bin"
-for n in claim triage_gate post_questions release done; do
+for n in claim triage_gate post_questions release done apply_ready; do
     extract_from "$SHARED_TRIAGE" "$n" | sed "s#/tmp/fabro#$T#g" > "$T/$n.sh"
     if ! sh -n "$T/$n.sh" 2>"$T/$n.syntax"; then
         FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$n"
@@ -1588,6 +1588,45 @@ echo '{"readiness":"needs_info","title":"feat: x","labels":["bug"],"questions":[
 sh "$T/post_questions.sh" >/dev/null 2>&1
 check "post_questions: outcome file"  "needs_info" "$(cat "$T/triage_outcome")"
 check "post_questions: needs-info"    "1" "$(grep -c -- '--add-label needs-info' "$T/gh.log")"
+
+# 10. An Architecture issue may decide without a basis.
+printf '{"number":7,"body":"b","labels":[{"name":"architecture"}]}' > "$T/issue.json"
+echo 0 > "$T/triage_attempts"
+echo '{"readiness":"ready","title":"refactor: x","labels":[],"questions":[],"decisions":[{"question":"q","decision":"d"}]}' > "$T/triage.json"
+OUT=$(sh "$T/triage_gate.sh" 2>&1); RC=$?
+check "decide arch: exit 0"            "0" "$RC"
+check "decide arch: ready"             "ready" "$(jq -r '.context_updates.triage_readiness' <<<"$(lastjson "$OUT")")"
+
+# 11. A human-filed issue needs a basis.
+printf '{"number":7,"body":"b","labels":[]}' > "$T/issue.json"
+echo 0 > "$T/triage_attempts"
+sh "$T/triage_gate.sh" >/dev/null 2>&1; RC=$?
+check "decide human, no basis: retry"  "1" "$RC"
+
+# 12. decisions must be an array.
+echo 0 > "$T/triage_attempts"
+echo '{"readiness":"ready","title":"refactor: x","labels":[],"questions":[],"decisions":"x"}' > "$T/triage.json"
+sh "$T/triage_gate.sh" >/dev/null 2>&1; RC=$?
+check "decisions not array: retry"     "1" "$RC"
+
+# 13. apply_ready appends one section, and replaces an old one.
+printf '{"number":7,"body":"first line","labels":[]}' > "$T/issue.json"
+echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[],"decisions":[{"question":"Where?","decision":"Here.","basis":"CONTEXT.md"}]}' > "$T/triage.json"
+echo 'report' > "$T/triage.md"; : > "$T/gh.log"; rm -f "$T/decided_body.md"
+sh "$T/apply_ready.sh" >/dev/null 2>&1
+check "decided: one heading"           "1" "$(grep -c '^## Decisions made during triage$' "$T/decided_body.md")"
+check "decided: keeps the body"        "1" "$(grep -c '^first line$' "$T/decided_body.md")"
+check "decided: lists the decision"    "1" "$(grep -c '^- \*\*Where?\*\* Here. (basis: CONTEXT.md)$' "$T/decided_body.md")"
+jq -n --rawfile b "$T/decided_body.md" '{number:7,body:$b,labels:[]}' > "$T/issue.json"
+sh "$T/apply_ready.sh" >/dev/null 2>&1
+check "decided again: still one"       "1" "$(grep -c '^## Decisions made during triage$' "$T/decided_body.md")"
+
+# 14. No decisions: the body is not edited.
+printf '{"number":7,"body":"b","labels":[]}' > "$T/issue.json"
+echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[]}' > "$T/triage.json"
+: > "$T/gh.log"
+sh "$T/apply_ready.sh" >/dev/null 2>&1
+check "no decisions: no body edit"     "0" "$(grep -c 'decided_body' "$T/gh.log")"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
