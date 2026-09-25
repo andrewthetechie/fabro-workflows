@@ -10,6 +10,9 @@ nothing else here is done.
 
 **Status 2026-09-24: open, low.** Still `push = false` only (`issue-triage/workflow.toml:23-24`). Nothing has broken, and the change is still correct and cheap.
 
+**Update 2026-09-25:** unchanged, and `arch-review` (same shape, no commits) sets
+`[run.run_branch] push = false` only too. Now tracked in `docs/factory-roadmap/H-housekeeping.md`.
+
 `.fabro/workflows/issue-triage/workflow.toml:21` sets:
 
 ```toml
@@ -119,6 +122,10 @@ bounded, and its reports are the ones worth reading a week later. Leave `backlog
 
 **Status 2026-09-24: open, doc only.** The server is still 0.354.0-nightly.0 (`fabro --version` in the container, and `FABRO_VERSION` in `~/fabro/.env`, both checked 2026-09-24). Note: ADR 0011 D1 sets `backlog`'s `[run.run_branch] push = false`. That table is **not** retired, and it stays load-bearing after the upgrade. Only `[run.meta_branch]` becomes inert.
 
+**Update 2026-09-25: due now.** The upgrade target is 0.362.0-nightly.0, which is after
+0.355, so the table becomes dead config on that upgrade. `docs/fabro-upgrade/` deletes the
+tables and adds the runbook line as one of its tasks.
+
 All three `workflow.toml`s set `[run.meta_branch] push = false` with a comment explaining
 that nothing reads the pushed metadata branch and it would otherwise accumulate one dead
 branch per run forever.
@@ -147,6 +154,10 @@ can be deleted"* — and delete the tables as part of that upgrade, not before.
 ## 5. There is no CI in this repository
 
 **Status 2026-09-24: open, medium.** The operator plans to use the workflow to burn down several backlogs. That raises the cost of a broken push to `main`, because every automation reads `main` on its next fire. ADR 0011 also adds shell (`autofix`, the task budget in `next_task`, the rerun in `watch_checks`) that `ops/test-task-gates.sh` covers. Add that script to the pre-push hook with the TOML parse and `sh -n`. It is offline, it runs its checks in seconds, and it needs only `jq` and `python3`.
+
+**Update 2026-09-25: still open.** Now tracked in `docs/factory-roadmap/H-housekeeping.md`.
+The Fabro upgrade (`docs/fabro-upgrade/`) raises its value: after the upgrade, the offline
+gates are the first thing to show whether the graphs still behave.
 
 `AGENTS.md` opens with *"Pushing to `main` deploys"* and *"Those runs open pull requests
 and force-push branches in four real repositories. There is no staging branch, no review

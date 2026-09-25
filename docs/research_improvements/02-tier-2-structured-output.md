@@ -15,6 +15,15 @@ node named below, `standards`, now runs mainly as `review_merge.standards` insid
 72-file PR, not bad contracts, and a repair turn cannot fix a timeout. If the bounce rate
 rises, the analysis below still holds. Until then, the counters cost almost nothing.
 
+**Update 2026-09-25: superseded by `docs/factory-roadmap/B3-structured-io-submit-tool.md`.**
+The operator's goal is now a principle rather than a bounce rate: an LLM should not own a
+data format. The replacement keeps property 2 below (one validating writer) without an MCP
+transport. A `fabro-submit` CLI is baked into the profile images. The agent calls it through
+fabro's `shell` tool with fields as flags, and the CLI builds, validates and writes the
+canonical file, returning field-level errors in the same session. Re-checked on upstream
+`main` 2026-09-25: the `sandbox` MCP transport still requires Daytona preview URLs, so the
+transport blocker below is unchanged.
+
 ---
 
 ## The shape of the thing we hand-rolled

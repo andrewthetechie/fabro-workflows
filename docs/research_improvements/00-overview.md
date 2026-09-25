@@ -47,6 +47,27 @@ and the six changes chosen for it.
 | gap 12 preamble | **applied** (01.4) | — | Same `rescue.md` gap. |
 | gap 13 prompt fidelity | nothing to apply | — | Its remedy was gap 12, which shipped. |
 
+### Update 2026-09-25: where the open items went
+
+Everything still open above has moved into one of two newer plans. This folder stays as the
+evidence behind them. It is no longer where the work is tracked.
+
+- **`docs/factory-roadmap/`** is the ranked improvement plan for the whole factory: the
+  items A1–C4 and H, one design record each.
+- **`docs/fabro-upgrade/`** is the task series that moves the host from 0.354.0-nightly.0 to
+  **0.362.0-nightly.0**.
+
+| Item | Status 2026-09-25 | Now tracked in |
+|---|---|---|
+| 01.1 circuit-breaker limit | open, low. `backlog` still has no `loop_restart_signature_limit` (`arch-review` has 20) | `factory-roadmap/H-housekeeping.md` |
+| 01.4 `rescue.md` reset | **still open**. `record_guidance` (`backlog/workflow.fabro:1467`) is still the only line that names the file | `factory-roadmap/H-housekeeping.md` |
+| 02 `output_schema` pilot | **superseded**. The replacement is a validating submit tool baked into the profile images, so the agent passes fields and code writes the JSON. On upstream `main` (checked 2026-09-25), the `sandbox` MCP transport still needs Daytona, so an MCP writer is still blocked | `factory-roadmap/B3-structured-io-submit-tool.md` |
+| 03.1 issue-triage `run_branch.enabled` | open, low. Unchanged | `factory-roadmap/H-housekeeping.md` |
+| 03.3 artifacts | open, low. The scorecard reads the run store rather than artifacts | `factory-roadmap/B1-factory-scorecard.md` (note) |
+| 03.4 `meta_branch` upgrade trap | **applied** (task 05, 2026-09-25): 0.362 accepts and ignores the table, so the upgrade deleted it from all four `workflow.toml`s | `fabro-upgrade/` |
+| 03.5 no CI / pre-push hook | open, medium. More urgent once the upgrade changes the gates | `factory-roadmap/H-housekeeping.md` |
+| 04 dead ends | **re-checked** against 0.362 (task 06, 2026-09-25): all ten still hold, each heading now carries the 0.362 file:line | `docs/fabro-upgrade/` |
+
 ## How the series is organised
 
 Two axes: **tiers** are the ordered work plan, **gaps** are the diagnoses behind four

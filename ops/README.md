@@ -1053,10 +1053,27 @@ leave the restored database inconsistent. Pin to a **versioned** tag on the way 
 never a locally retagged `nightly` — a retag is invisible and the next pull silently
 undoes it.
 
-Known bad: nightly **0.357.x** applies migration `2026091101`, then crash-loops on
+Known bad: nightly **0.357.x** applied migration `2026091101`, then crash-looped on
 run-history activation with `stored run summary <id> has inconsistent field
-summary_json`. Attempted and rolled back 2026-09-15; the host is pinned to
-`0.354.0-nightly.0`.
+summary_json`. Attempted and rolled back 2026-09-15.
+
+The host reached **0.362.0-nightly.0** on 2026-09-25 by dropping fabro's run history
+(0.362's run-history activation rejects every stored 0.354 run) and rewriting the
+four direct providers to `codecs = [...]` — `docs/fabro-upgrade/` holds the series.
+
+**Before any upgrade**, do these in order:
+1. **Rehearse on a copy.** Start a throwaway container+volume on today's database and
+   overlay (`docs/fabro-upgrade/02-rehearsal.md` is the template). This is the gate:
+   it is where a migration or catalog rejection surfaces without stopping production.
+2. **Take a stopped-state volume tarball** (`docker compose stop fabro`, then tar the
+   `fabro_fabro-storage` volume) — the reversal point, `docs/fabro-upgrade/04-step 4`.
+3. **Diff the catalog schema** (`codec` vs `codecs`, the protocol adapter ids) and fix
+   the overlay before the new binary boots.
+4. **Confirm the new version's startup run-history activation passes on the copy** with
+   `source_runs=0`, so the production boot is a repeat of something that already worked.
+
+The rollback block above is still correct; `~/fabro-archive/0354/REVERSAL.md` on the
+host is the worked example from the 0.362 upgrade.
 
 ## Cron — sweepers
 

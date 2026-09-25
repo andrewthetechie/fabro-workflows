@@ -21,6 +21,10 @@ output seldom does. ADR 0011's D5 (`autofix` before `validate`) removes most of 
 writers-app failures, which lowers the exposure further. Keep this as a one-line insurance
 change. Nothing measured makes it urgent.
 
+**Update 2026-09-25: still open.** ADR 0012 set `loop_restart_signature_limit=20` on
+`arch-review` for the same reason, so a precedent now exists. `backlog` still has no
+setting. Now tracked in `docs/factory-roadmap/H-housekeeping.md`.
+
 ### What happens
 
 `CircuitBreakerLifecycle::after_node` (`lib/components/fabro-workflow/src/lifecycle/circuit_breaker.rs:93-103`)
@@ -222,6 +226,9 @@ No edge changes. No routing changes. One string.
   other per-task resets. In `ops/test-task-gates.sh`, assert that `next_task` removes a
   `rescue.md` staged before it. In the 38 sampled runs no operator typed guidance
   (every answered gate was `[P]`), which is why this has not shown yet.
+- **Update 2026-09-25: still open.** `record_guidance` is now at `backlog/workflow.fabro:1467`,
+  and it is still the only line that names the file. Now tracked in
+  `docs/factory-roadmap/H-housekeeping.md`.
 
 Full diagnosis in `12-gap-agent-context-preamble.md`. The short version: the default
 `compact` fidelity enumerates **every** completed stage with 25 lines of command output

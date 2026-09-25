@@ -3,11 +3,21 @@
 Ten things that look like Fabro features we should be using instead of shell, and are
 not. The tenth was added on 2026-09-24. Each carries the evidence that settles it, so the question does not get re-derived.
 
-Checked against `context/fabro` at 0.357.0-nightly.0.
+Checked against `context/fabro` at 0.357.0-nightly.0, then re-checked at
+v0.362.0-nightly.0 on 2026-09-25 (task 06 of `docs/fabro-upgrade/`).
+
+**Update 2026-09-25.** The host moved to 0.362.0-nightly.0 (`docs/fabro-upgrade/`). The
+series re-checked each entry against the 0.362 source; all ten still hold. Each heading
+now carries a `**0.362 (2026-09-25):** still holds` line with the 0.362 file:line.
 
 ---
 
 ## 1. Discord notifications as an HTTP hook
+
+**0.362 (2026-09-25):** still holds — the HTTP hook still POSTs the `HookContext` JSON
+verbatim (`client.post(...).json(context)`, `lib/components/fabro-hooks/src/executor.rs:
+540`) with no body template, and `{{ secrets.* }}` is still unavailable in hooks (a
+`secrets` token still surfaces as an error, `executor.rs:1105`).
 
 **Looks like:** `[[run.hooks]] type = "http"` with the webhook URL would replace
 `discord-notify.sh` and its out-of-band deploy to `/storage/scripts/`.
@@ -33,6 +43,10 @@ either.
 
 ## 2. `[run.notifications]` for Discord
 
+**0.362 (2026-09-25):** still holds — the notifications settings type still has exactly
+one provider, `pub slack: Option<NotificationProviderSettings>`
+(`lib/foundation/fabro-types/src/settings/run.rs:1449`). No Discord path.
+
 **Looks like:** a first-class notification route replaces the hooks entirely.
 
 **Is not:** the settings type has exactly one provider sub-table, `slack`
@@ -46,6 +60,13 @@ names *"may be parsed but are not delivered by the server yet"*. Slack additiona
 ---
 
 ## 3. `fabro_tools` / `fabro_run_create` for the `trigger_review` bridge
+
+**0.362 (2026-09-25):** still holds — `fabro_run_create` is still an **agent** tool
+(`docs/public/execution/child-runs.mdx:36`), not a command-node facility, and parent-
+created children still *"may enter `pending` with `approval_required`"*
+(`child-runs.mdx:120`). The run-tools rebuild onto workflow versions in this range
+(`c67c60eeb`, `d5dec0fff`) added no deterministic command-node route, so the three-POST
+script stays the right shape.
 
 **Looks like:** `[run.agent] fabro_tools = true` gives a native "create a child run" call,
 replacing the 437-line `fire-pr-review.sh` and its three POSTs.
@@ -72,6 +93,10 @@ register a workflow version and create the run itself.
 
 ## 4. The automation `description` hack for the per-repo auto-merge switch
 
+**0.362 (2026-09-25):** still holds — `struct Automation`
+(`lib/components/fabro-automation/src/model.rs:36`) still has no `inputs`, `args` or
+`labels`; `description` remains the only free-form writable field.
+
 **Looks like:** by 0.357 there must be a proper field for per-automation inputs or labels.
 
 **Is not.** `struct Automation` (`lib/components/fabro-automation/src/model.rs:36-52`) is:
@@ -93,6 +118,10 @@ field, exactly as `ops/fabro-auto-merge-switch.sh` documents.
 
 ## 5. An `insulator` (wait) node instead of the `watch_checks` poll loop
 
+**0.362 (2026-09-25):** still holds — `lib/components/fabro-workflow/src/handler/wait.rs:
+35-36` is still a bare `sleep(duration).await` returning `Ok(Outcome::success())`, with no
+early exit. Polling is right.
+
 **Looks like:** Fabro has a wait node; polling with `sleep 30` is re-implementing it.
 
 **Is not.** `lib/components/fabro-workflow/src/handler/wait.rs` is a bare
@@ -109,6 +138,11 @@ thing that *is* wrong about `watch_checks` — its interaction with the stall wa
 ---
 
 ## 6. `import=` to share the reviewer + gate pairs across `backlog` and `pr-review`
+
+**0.362 (2026-09-25):** still holds — the import contract is unchanged, and each reviewer
++ gate pair still has three conditioned exits, so sharing them individually is still not
+expressible. The `_shared/review-merge/` whole-phase splicing (noted 2026-09-24) is
+unaffected by the version bump.
 
 **Looks like:** `standards_gate` / `spec_gate` / `quality_gate` are near-identical scripts;
 a shared imported subgraph would deduplicate them.
@@ -138,6 +172,11 @@ pairs.
 
 ## 7. `FABRO_RUN_ID` in `trigger_review` instead of deriving it from the branch name
 
+**0.362 (2026-09-25):** still holds — `FABRO_EVENT`/`FABRO_RUN_ID`/`FABRO_WORKFLOW`/
+`FABRO_HOOK_CONTEXT` are still injected into hooks only
+(`lib/components/fabro-hooks/src/executor.rs:161-177`); command stages still get only
+`[run.environment.env]`. Branch-name derivation stays the only route.
+
 **Looks like:** the run id must be in the stage environment somewhere, making
 `basename $(git rev-parse --abbrev-ref HEAD)` unnecessary.
 
@@ -152,6 +191,11 @@ pairs.
 ---
 
 ## 8. `[[run.prepare.steps]]` instead of `prep`'s `./.fabro/setup.sh`
+
+**0.362 (2026-09-25):** still holds — run creation gains a settings *precedence* table
+(`docs/public/execution/run-configuration.mdx:609`), but prepare steps still run
+*"before the workflow starts"* and a failure still aborts before start (`:230`), on every
+run including the quiet-exit ones (~384/day). Setup stays a graph node after `claim`.
 
 **Looks like:** dependency install is exactly what prepare steps are for, and it would
 move setup out of the graph.
@@ -170,6 +214,12 @@ cleanup.
 ---
 
 ## 9. Fabro's built-in pull-request creation
+
+**0.362 (2026-09-25):** still holds — `[run.pull_request]`
+(`lib/components/fabro-workflow/src/pipeline/pull_request.rs`) still generates an LLM
+title and body (`PR_BODY_SYSTEM_PROMPT`, `PR_TITLE_MAX_CHARS = 72`) with no labels, so
+none of the downstream machine contracts (Conventional-Commits subject, `:start`/`:end`
+body block, `agent-authored`) are satisfied. It stays off.
 
 **Looks like:** `[run.pull_request] enabled = true` does what `open_pr` does by hand with
 `git push` and `gh pr create`.
@@ -201,6 +251,12 @@ which `backlog`'s branch-hygiene note wants to keep available.
 ---
 
 ## 10. A setting that skips the checkpoint commit when nothing changed
+
+**0.362 (2026-09-25):** still holds — `git_checkpoint` still sets `options.allow_empty =
+true` unconditionally (`lib/components/fabro-workflow/src/sandbox_git.rs:105`) with the
+fixed subject `fabro(<run>): <node> (<status>)` (`:89`). The checkpoint rework in this
+range changed behaviour — a failed commit now stops the run — not this knob; the lever
+that exists (stop pushing) is ADR 0011 D1.
 
 **Looks like:** an empty stage (every command node that writes only under `/tmp/fabro`)
 should produce no commit. Then `backlog`'s per-stage push would stop starting CI on the
