@@ -25,7 +25,7 @@ locations instead.
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. |
 | `scheduler/` | The **coder scheduler**: a FastAPI service that owns admission to the two coder instances, so four uncoordinated automations stop fighting over two single-slot boxes. Reads `repos.toml`, inventories `agent`-labelled issues from GitHub with ETag caching, ranks them, serves the queue on `/`, and leases a coder instance to the highest-ranked issue whose repo has no run in flight and starts that run by itself. The coder-instances table also shows each leased run's decomposed-task count and current stage (a 30s background probe reads the sandbox's `tasks.json` over the mounted docker socket and the stage from `/runs/{id}/stages`). `POST /api/dispatch-once` remains as the manual override. Deploy and verify under *The coder scheduler* below. |
 | `profile-images/` | The four sandbox profile-image Dockerfiles, `build-images.sh` (clone, warm from real lockfiles, build, verify), `fabro-pg-ensure.sh` (in-sandbox PostgreSQL, because fabro cannot start a service beside a sandbox) and `warm-build-backend.sh`. Start at its `README.md`. |
-| `provision-server-state.sh` | Recreates the twelve **automations** (three per repo: `backlog`, `pr-review`, `issue-triage`) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
+| `provision-server-state.sh` | Recreates the sixteen **automations** (four per repo: `backlog`, `pr-review`, `issue-triage`, `arch-review`) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
 | `provision-litellm-models.sh` | Creates the `high-reasoning` model group and its `kimi-k3` fallback in LiteLLM. Scoped to that one group; the other model rows predate this workflow and are reported, never corrected. The `coders` pool's concurrency tuning is recorded under *Server-side state*, not managed here. |
 | `provision-coder-groups.sh` | Creates the per-box `coders-a` and `coders-b` model groups that the coder scheduler pins a run to, and adds both names to the fabro key's model allowlist. Leaves the load-balanced `coders` rows alone. Idempotent, `DRY_RUN=1` by default. |
 | `fabro-fire-backlog.sh` | The manual escape hatch for the coder scheduler: fire exactly one issue through the `backlog` workflow by hand (three-POST sequence, `args.inputs = {issue_number, coder_pool: "coders-a"}`, environment looked up from the repo's `backlog-<repo>` automation row). Since draft 10 a `backlog` run works only the issued `issue_number`, so this is the only way to move an issue when the scheduler is down. It pins a single box because the both-boxes `coders` group was retired with the LiteLLM provider (task 04). `DRY_RUN=1` by default; see `docs/scheduler/10-collapse-acquire-claim.md`. |
@@ -456,10 +456,16 @@ below, which makes the state deliberate rather than a leftover. The four schedul
 fleet never fires four runs
 in the same minute. The `pr-review` automations carry no schedule at
 all by design: they are fired against a named PR, so there is nothing to poll.
-Nothing in this deployment fires on a cron. The four `issue-triage` schedules are
-disabled as well, and were before draft 13 — it touched only `backlog`. Decision 13 has
-`issue-triage` staying on its own schedule and never queued, so those four are still the
-operator's to enable; nothing in the coder-scheduler series turns them on.
+The four `arch-review` schedules are the only enabled schedules in this deployment
+(ADR 0012). Each repository runs twice a week on two fixed weekdays, 3 or 4 days
+apart, and no two repositories fire in the same hour of the same day: jelly-swipe
+`0 4 * * 1,4`, lawncare-saas `0 4 * * 2,5`, womens-fantasy-sports `0 4 * * 3,6`,
+writers-app `0 5 * * 0,3`. `arch-review` uses only hosted models, so the coder
+scheduler does not admit it. `fabro-monitor.sh` excludes these schedules from C3 and
+gives an `arch-review` run 9 hours under C4 (`ARCH_STUCK_HOURS`). The four
+`issue-triage` schedules stay disabled: `arch-review` triages each repository's
+waiting issues, and `issue-triage` is the one-issue manual fire. Turn a review off
+with `ops/fabro-automation-schedule.sh arch-review-<repo> off`.
 
 A run that reaches the merge phase keeps its coder lease and its fabro slot until CI
 settles, bounded by the 60-minute merge budget. Because admission queues rather than

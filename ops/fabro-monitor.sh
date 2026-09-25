@@ -14,7 +14,9 @@
 #   C1 container-down   container not running, or healthcheck not healthy   🔴 4h
 #   C2 api-unreachable  system/info fails, times out (10s), or 401s         🔴 4h
 #   C3 dead-scheduler   any schedule enabled AND newest run > IDLE_HOURS old 🔴 4h
+#                       (arch-review schedules excluded, ADR 0012)
 #   C4 stuck-run        non-terminal run older than STUCK_HOURS             🔴 4h
+#                       (ARCH_STUCK_HOURS for an arch-review run)
 #   C5 starvation       zero open agent-labeled issues across the repos     🟡 7d
 #   C6 disk-pressure    df / use >= DISK_PCT                                🟠 24h
 #   C7 scheduler-down   GET SCHEDULER_URL/health does not answer 200 in 5s   🔴 4h
@@ -96,6 +98,9 @@
 #   IDLE_HOURS=2                  C3: newest run older than this with a
 #                                 schedule enabled  -> dead scheduler
 #   STUCK_HOURS=3                 C4: non-terminal run older than this
+#   ARCH_STUCK_HOURS=9            C4: the same limit for an arch-review run, which
+#                                 triages up to 18 issues and stops starting new
+#                                 ones at 6h (ADR 0012)
 #   DISK_PCT=85                   C6: df / use at or above this
 #   FABRO_HOST=10.10.0.32
 #   FABRO_PORT=32276
@@ -119,6 +124,7 @@ set -u
 DRY_RUN="${DRY_RUN:-1}"
 IDLE_HOURS="${IDLE_HOURS:-2}"
 STUCK_HOURS="${STUCK_HOURS:-3}"
+ARCH_STUCK_HOURS="${ARCH_STUCK_HOURS:-9}"
 DISK_PCT="${DISK_PCT:-85}"
 FABRO_HOST="${FABRO_HOST:-10.10.0.32}"
 FABRO_PORT="${FABRO_PORT:-32276}"
@@ -334,7 +340,9 @@ if [ "$api_ok" = 1 ]; then
     warn "GET automations returned HTTP $http — C3 unevaluable"
     eval_failed=1
   else
-    enabled_schedules="$(jq '[.data[].triggers[]? | select(.type == "schedule" and .enabled == true)] | length' "$tmp/autos.json" 2>/dev/null)"
+    # arch-review runs twice a week per repo (ADR 0012), so its enabled schedules
+    # must not arm a 2-hour idle alarm meant for the backlog cadence.
+    enabled_schedules="$(jq '[.data[] | select(.workflow != "arch-review") | .triggers[]? | select(.type == "schedule" and .enabled == true)] | length' "$tmp/autos.json" 2>/dev/null)"
     if ! printf '%s' "$enabled_schedules" | grep -Eq '^[0-9]+$'; then
       warn "automations response unparseable — C3 unevaluable"
       eval_failed=1
@@ -351,7 +359,7 @@ if [ "$api_ok" = 1 ]; then
     warn "GET runs failed or was unparseable (HTTP $http) — C3/C4 unevaluable"
     eval_failed=1
   else
-    jq -r '.data[] | [(.id // ""), (.timestamps.created_at // ""), (.lifecycle.status.kind // "")] | @tsv' \
+    jq -r '.data[] | [(.id // ""), (.timestamps.created_at // ""), (.lifecycle.status.kind // ""), (.workflow.slug // "")] | @tsv' \
       "$tmp/runs.json" > "$tmp/runs.tsv" 2>/dev/null || {
       warn "could not extract run rows — C3/C4 unevaluable"; eval_failed=1; }
 
@@ -366,7 +374,7 @@ if [ "$api_ok" = 1 ]; then
         mark_evaluated C3
         newest=0
         newest_id=""
-        while IFS="$(printf '\t')" read -r rid created kind; do
+        while IFS="$(printf '\t')" read -r rid created kind slug; do
           [ -n "$rid" ] || continue
           e="$(run_epoch "$created" "$rid")"
           [ -n "$e" ] || { warn "run $rid has no usable timestamp; row skipped"; continue; }
@@ -395,7 +403,8 @@ if [ "$api_ok" = 1 ]; then
       stuck_rid=""
       stuck_kind=""
       stuck_age=0
-      while IFS="$(printf '\t')" read -r rid created kind; do
+      stuck_lim="$STUCK_HOURS"
+      while IFS="$(printf '\t')" read -r rid created kind slug; do
         [ -n "$rid" ] || continue
         case "$TERMINAL" in
           *" $kind "*) continue ;;
@@ -403,17 +412,19 @@ if [ "$api_ok" = 1 ]; then
         e="$(run_epoch "$created" "$rid")"
         [ -n "$e" ] || continue
         age=$(( now - e ))
-        if [ "$age" -gt $(( STUCK_HOURS * 3600 )) ]; then
+        lim="$STUCK_HOURS"
+        [ "$slug" = arch-review ] && lim="$ARCH_STUCK_HOURS"
+        if [ "$age" -gt $(( lim * 3600 )) ]; then
           stuck_n=$(( stuck_n + 1 ))
           if [ "$stuck_oldest_e" = 0 ] || [ "$e" -lt "$stuck_oldest_e" ]; then
-            stuck_oldest_e="$e"; stuck_rid="$rid"; stuck_kind="$kind"; stuck_age="$age"
+            stuck_oldest_e="$e"; stuck_rid="$rid"; stuck_kind="$kind"; stuck_age="$age"; stuck_lim="$lim"
           fi
         fi
       done < "$tmp/runs.tsv"
       if [ "$stuck_n" -gt 0 ]; then
         if [ "$stuck_n" -eq 1 ]; then
           fire C4 "$ALERT_SECONDS" "🔴" \
-            "stuck-run — run $stuck_rid status='${stuck_kind:-unknown}' age $(( stuck_age / 3600 ))h (limit ${STUCK_HOURS}h)"
+            "stuck-run — run $stuck_rid status='${stuck_kind:-unknown}' age $(( stuck_age / 3600 ))h (limit ${stuck_lim}h)"
         else
           fire C4 "$ALERT_SECONDS" "🔴" \
             "stuck-run — $stuck_n runs older than ${STUCK_HOURS}h, oldest $stuck_rid status='${stuck_kind:-unknown}' age $(( stuck_age / 3600 ))h"

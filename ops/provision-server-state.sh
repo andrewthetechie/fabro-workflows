@@ -81,7 +81,9 @@ fi
 #
 # The schedule's `enabled` flag is deliberately NOT compared. Schedules are
 # created disabled and turned on by the operator, so comparing it would report
-# drift on every correctly-running host. The api trigger's `enabled` IS compared:
+# drift on every correctly-running host. (The arch-review rows are created
+# ENABLED, ADR 0012, and their flag stays the operator's too.) The api trigger's
+# `enabled` IS compared:
 # a disabled one is exactly as dead as a missing one. The schedule's `expression`
 # IS compared: the staggering offsets are this script's state to guard.
 check_triggers() {
@@ -203,14 +205,18 @@ provision_variable() {
   esac
 }
 
-# provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty> [schedule_expr] [auto_merge]
-#   - workflow is "backlog" or "pr-review"; both live in
+# provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty> [schedule_expr] [auto_merge] [schedule_enabled]
+#   - workflow is "backlog", "pr-review", "issue-triage" or "arch-review"; all live in
 #     andrewthetechie/fabro-workflows@main.
 #   - schedule_id, when non-empty, adds a DISABLED schedule row for operator
 #     convenience, using schedule_expr. The four backlog schedules are staggered
 #     three minutes apart (ADR 0001) so all four never fire in the same minute.
 #     pr-review gets none: it is fired manually against a named PR, so there is
 #     nothing for a cron to poll.
+#   - schedule_enabled defaults to false. Only the arch-review rows pass true (ADR
+#     0012 D7): theirs are the one set of schedules this deployment runs on. Like
+#     every other schedule flag it is set only when the row is created; an existing
+#     row's flag is the operator's and is never compared or rewritten.
 #   - auto_merge defaults to true and is written into a pr-review row's description
 #     only. It is the provisioned value of decision 10, which is why the default is
 #     `true` here and why an existing row that disagrees is reported, never rewritten:
@@ -223,10 +229,15 @@ provision_automation() {
   schedule_id="$5"
   schedule_expr="${6:-}"
   auto_merge="${7:-true}"
+  schedule_enabled="${8:-false}"
 
   case "$auto_merge" in
     true | false) ;;
     *) echo "FAILED: $id auto_merge must be true or false, got '$auto_merge'" >&2; return 1 ;;
+  esac
+  case "$schedule_enabled" in
+    true | false) ;;
+    *) echo "FAILED: $id schedule_enabled must be true or false, got '$schedule_enabled'" >&2; return 1 ;;
   esac
 
   existing_env=$(jq -r --arg id "$id" \
@@ -260,8 +271,8 @@ provision_automation() {
     # `set -e` that aborted the whole script, so creating a *new* backlog automation
     # had been impossible since the schedules were staggered — invisible on the live
     # host, where those rows already exist and take the drift path.
-    schedule_json=",$(jq -nc --arg sid "$schedule_id" --arg expr "$schedule_expr" \
-      '{type:"schedule",id:$sid,enabled:false,expression:$expr}')"
+    schedule_json=",$(jq -nc --arg sid "$schedule_id" --arg expr "$schedule_expr" --argjson en "$schedule_enabled" \
+      '{type:"schedule",id:$sid,enabled:$en,expression:$expr}')"
   else
     schedule_json=""
   fi
@@ -329,6 +340,15 @@ provision_automation issue-triage-lawncare-saas python-node andrewthetechie/lawn
 provision_automation issue-triage-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports issue-triage hourly "40 * * * *" || FAILED=$((FAILED+1))
 provision_automation issue-triage-writers-app rust-node andrewthetechie/writers-app issue-triage hourly "45 * * * *" || FAILED=$((FAILED+1))
 
+# arch-review (ADR 0012 D7): created with the schedule ENABLED, the only rows that are.
+# Two fixed weekdays per repo, 3 or 4 days apart, and never two repos in the same hour
+# of the same day. The `true` before it is auto_merge, which only pr-review rows read.
+echo "Provisioning arch-review automations..."
+provision_automation arch-review-jelly-swipe python andrewthetechie/jelly-swipe arch-review twice-weekly "0 4 * * 1,4" true true || FAILED=$((FAILED+1))
+provision_automation arch-review-lawncare-saas python-node andrewthetechie/lawncare-saas arch-review twice-weekly "0 4 * * 2,5" true true || FAILED=$((FAILED+1))
+provision_automation arch-review-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports arch-review twice-weekly "0 4 * * 3,6" true true || FAILED=$((FAILED+1))
+provision_automation arch-review-writers-app rust-node andrewthetechie/writers-app arch-review twice-weekly "0 5 * * 0,3" true true || FAILED=$((FAILED+1))
+
 if [ "$FAILED" -ne 0 ]; then
   echo "$FAILED automation(s) could not be created; see the errors above." >&2
   exit 1
@@ -339,4 +359,4 @@ if [ "$DRIFT_FOUND" -ne 0 ]; then
   exit 2
 fi
 
-echo "Done. Backlog and issue-triage schedules are created disabled; enable them if this was a rebuild."
+echo "Done. Backlog and issue-triage schedules are created disabled; enable them if this was a rebuild. arch-review schedules are created enabled (ADR 0012)."

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Three production Fabro workflows and the ops tooling for the host that runs them.
+Four production Fabro workflows and the ops tooling for the host that runs them.
 
 ## Pushing to `main` deploys
 
@@ -23,12 +23,13 @@ actually lives.
 
 | Path | What it is |
 |---|---|
-| `.fabro/workflows/<name>/` | **The only tree the automations read.** Three runnable packages — `backlog`, `pr-review`, `issue-triage` — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog` and `pr-review` splice in, and `_shared/triage/`, which `issue-triage` splices in. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
+| `.fabro/workflows/<name>/` | **The only tree the automations read.** Four runnable packages — `backlog`, `pr-review`, `issue-triage`, `arch-review` — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog` and `pr-review` splice in, and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
 | `ops/` | Host replication: compose, the coder scheduler, profile images, provisioning, branch sweeper. Start at `ops/README.md`. No automation reads this tree. |
 | `docs/pr-review-bridge/` | The task series for the third stage: `backlog` triggers a `pr-review` run on the PR it just opened. `00-overview-and-contracts.md` first. |
 | `docs/auto-merge/` | A cross-cutting series for the fourth stage (the squash-merge), spanning `backlog` and `pr-review`: kill switches, Conventional-Commits titles, the merge graph, `ci_fix`. `00-overview-and-contracts.md` first. |
 | `docs/merge-rate/` | The implementation plan for ADR 0011: stop per-stage checkpoint pushes, rerun flaky CI once, `ci_fix_t1` on `glm-5.3-flash`, CI parity in two target repos, an `autofix` stage, and an 8-task budget whose remainder the scheduler queues with a new `priority` label once the parent PR merges. `00-overview-and-contracts.md` first. Tasks 05–07 run in other repositories and task 11 needs the host. **Applied 2026-09-24** in this repository; the target-repository halves of tasks 05 and 06 are PRs there. The budget was then amended so that extra-review follow-ups are exempt (ADR 0011 D6 amendment). |
 | `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
+| `docs/architecture-review/` | The task series for ADR 0012: `arch-review` scans a repository for deepening candidates twice a week, files the strongest as `architecture` issues, and triages the waiting issues toward `agent` through the shared `_shared/triage/` phase. `00-overview-and-contracts.md` first. An `architecture` PR is never auto-merged. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
 | `ops/check-routing-schemas.py` | Catches command-node routing-schema mismatches that `fabro validate` accepts and fabro only reports at runtime. Reads the parsed AST, not the DOT text. |
 | `ops/test-task-gates.sh` | Runs `backlog`'s `claim`, `mark_stuck`, `open_pr`, `open_pr_prep` and task-queue nodes (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. The only gate that executes a node's shell. Offline; no host or container. |
@@ -70,7 +71,7 @@ Baselines as of 2026-09-24 (review+merge shared and imported; ADR 0011 added
 `Backlog (61 nodes, 143 edges)` with exactly one warning — `issue_number` unbound in
 `claim` (draft 10's deliberate fail-closed input, the same shape as `pr_number`) — and
 `PrReview (30 nodes, 65 edges)` with exactly one warning — `pr_number` unbound in
-`validate_input` — and `IssueTriage (14 nodes, 32 edges)` clean. Backlog and PrReview both include the ~21
+`validate_input` — and `IssueTriage (13 nodes, 26 edges)` clean, and `ArchReview (21 nodes, 44 edges)` clean. Both include the 10 nodes of `_shared/triage/`. Backlog and PrReview both include the ~21
 nodes of `_shared/review-merge/`, which `fabro validate` splices in; `fabro parse`
 shows the unexpanded placeholder instead, so node counts only match after validate. That warning is deliberate. Binding
 `[run.inputs] pr_number` would silence it and let a run fired with no input review PR

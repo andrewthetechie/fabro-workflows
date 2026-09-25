@@ -1,6 +1,6 @@
 # Fabro Workflows
 
-Three production Fabro workflow packages (`backlog`, `pr-review`, `issue-triage`) and
+Four production Fabro workflow packages (`backlog`, `pr-review`, `issue-triage`, `arch-review`) and
 the ops tooling for the single-tenant host that runs them against four target
 repositories.
 
@@ -50,8 +50,8 @@ _Avoid_: manually, by hand (the adverb, not the noun)
 
 **Automation**:
 A server-side row binding a workflow package to a target repo and environment, with
-triggers (`api:manual`, `schedule:every-15m`, `schedule:hourly`). Three per repo,
-twelve total.
+triggers (`api:manual`, `schedule:every-15m`, `schedule:hourly`, `schedule:twice-weekly`). Four per repo,
+sixteen total. The `arch-review` schedules are the only enabled ones (ADR 0012).
 _Avoid_: schedule, cron, job
 
 **Bridge** *(retired)*:
@@ -219,6 +219,26 @@ be worked next. It does not make an issue eligible for the queue. Only `agent` d
 Not repo priority, the `repos.toml` integer that orders repositories. "Priority" alone
 still means repo priority. The label is always "the `priority` label".
 _Avoid_: urgent, do-next (an unrelated label already in some repositories)
+
+**Architecture review**:
+One run of the `arch-review` workflow against one target repository. It scans the
+codebase for **Deepening candidates**, files the strongest as **Architecture issues**,
+then triages the repository's waiting issues toward the `agent` label. Runs on a fixed
+schedule, twice a week per repository, or when the operator fires it. ADR 0012.
+_Avoid_: project improvement, improve (the `improve` nodes in `issue-triage` and
+`backlog` are unrelated), audit
+
+**Deepening candidate**:
+One refactor an **Architecture review** proposes: a shallow module that would become a
+deep one. Each carries a strength of `Strong`, `Worth exploring` or `Speculative`. Only the
+first two are ever filed. A candidate is not an issue until it is filed.
+_Avoid_: finding, suggestion, recommendation
+
+**Architecture issue**:
+A **Deepening candidate** filed as an issue, labelled `architecture`. The label is
+permanent: it is how later reviews recognise a candidate as already filed, and a closed
+"not planned" one as rejected so it is never filed again.
+_Avoid_: refactor issue, improvement issue
 
 **Canary** *(retired)*:
 Was to be the first repo whose `backlog` schedule is enabled at turn-on — `jelly-swipe`,
