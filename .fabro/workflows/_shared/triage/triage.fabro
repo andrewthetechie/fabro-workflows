@@ -1,0 +1,242 @@
+digraph Triage {
+    // Shared triage phase. IMPORTED, never run on its own.
+    //
+    // `issue-triage` imports it once and `arch-review` imports it inside a loop, both as
+    // `triage_phase [import="../_shared/triage/triage.fabro"]`. Node ids arrive
+    // prefixed (`triage_phase.post_questions`), so hook matchers are written
+    // `(^|[.])post_questions$`.
+    //
+    // ## Entry contract (the importing graph MUST do both)
+    //
+    //   /tmp/fabro/                  exists
+    //   /tmp/fabro/issue_number      the issue to triage, digits only
+    //
+    // ## Exit contract
+    //
+    //   /tmp/fabro/triage_outcome and context.triage_outcome =
+    //     ready | needs_info | not_actionable | skipped | released
+    //
+    // There is no human gate (ADR 0012 D3). Questions go on the issue as a comment, the
+    // issue gets `needs-info`, and the `(^|[.])post_questions$` stage_start hook sends
+    // one Discord message. A human answers in a new comment, and the next triage of the
+    // issue reads that comment from issue.json.
+    //
+    // The phase can run many times in one run. A context key from the previous issue is
+    // still set when this one starts, so every conditional edge also tests
+    // `outcome=succeeded`, and `claim` resets `triage_readiness`.
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // Claims, fetches, archives the reporter's original body once, and resets every
+    // per-issue file. A claim held by another run is respected for 24 hours, measured
+    // from the newest `labeled` event for `triage-in-progress`; after that it is
+    // abandoned and taken over (ADR 0012 D6). An unreadable event list counts as a
+    // fresh claim, because skipping changes nothing on the issue.
+    // issue.json is fetched to a temporary file and moved, because `>` truncates first.
+    claim [label="Claim issue and fetch it", shape=parallelogram, output_schema="routing",
+        script="set -e
+mkdir -p /tmp/fabro
+N=$(cat /tmp/fabro/issue_number)
+rm -f /tmp/fabro/triage_outcome /tmp/fabro/issue.json /tmp/fabro/improve.json /tmp/fabro/triage.json /tmp/fabro/triage.md
+echo 0 > /tmp/fabro/improve_attempts
+echo 0 > /tmp/fabro/triage_attempts
+gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.next.json
+mv /tmp/fabro/issue.next.json /tmp/fabro/issue.json
+U=$(jq -r .url /tmp/fabro/issue.json)
+if jq -e '[.labels[].name] | index(\"triage-in-progress\") != null' /tmp/fabro/issue.json > /dev/null; then
+  L=$(gh api \"repos/{owner}/{repo}/issues/$N/events\" --paginate 2>/dev/null | jq -s '[add[]? | select(.event == \"labeled\" and .label.name == \"triage-in-progress\") | .created_at | fromdateiso8601] | max // empty' 2>/dev/null || true)
+  case \"$L\" in
+    '' | *[!0-9]*) S=skipped ;;
+    *) if [ $(( $(date +%s) - $L )) -lt 86400 ]; then S=skipped; else S=stale; fi ;;
+  esac
+  if [ \"$S\" = skipped ]; then
+    echo skipped > /tmp/fabro/triage_outcome
+    jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_url:$u,claim_state:\"skipped\",triage_readiness:\"none\"}}'
+    exit 0
+  fi
+fi
+gh label create needs-info --color FEF2C0 --description 'Waiting on a human for triage answers' 2>/dev/null || true
+gh label create triage-in-progress --color FBCA04 --description 'Owned by the fabro issue-triage loop' 2>/dev/null || true
+gh label create agent --color 5319E7 --description 'Handled by fabro backlog automation' 2>/dev/null || true
+gh issue edit $N --add-label triage-in-progress
+if ! jq -e '[.comments[].body] | any(test(\"fabro:triage-original\"))' /tmp/fabro/issue.json > /dev/null; then
+  { echo '<!-- fabro:triage-original -->'
+    echo 'Original report, captured before automated improvement.'
+    echo
+    jq -r .body /tmp/fabro/issue.json ; } > /tmp/fabro/original.md
+  gh issue comment $N --body-file /tmp/fabro/original.md
+fi
+jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_url:$u,claim_state:\"claimed\",triage_readiness:\"none\"}}'"]
+
+    // ---- Improve ----
+    // `max_retries=1`: a stalled provider stream is invisible to the LLM retry and the
+    // fallback chain, so the node timeout is the only backstop.
+    improve [label="Improve the issue body", class="improve", prompt="@prompts/improve.md.j2", timeout="30m", max_retries=1]
+
+    // Applies the body only. A second invalid improve.json exits ZERO on purpose and
+    // takes the succeeded edge to `triage`: improving the body is best effort, the
+    // triage verdict is the value.
+    improve_gate [label="Validate and apply the improved body", shape=parallelogram, output_schema="routing",
+        script="F=/tmp/fabro/improve.json
+A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
+N=$(jq -r .number /tmp/fabro/issue.json)
+S=$(jq -r '.status // \"invalid\"' $F 2>/dev/null || echo invalid)
+if [ \"$S\" != improved ] && [ \"$S\" != unchanged ]; then S=invalid; fi
+if [ \"$S\" = improved ]; then
+  B=$(jq -r '.body // \"\"' $F 2>/dev/null || echo '')
+  if [ -z \"$B\" ]; then S=invalid; fi
+fi
+if [ \"$S\" = invalid ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/improve_attempts
+  if [ $A -lt 2 ]; then echo 'improve.json is missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  jq -nc '{context_updates:{improve_status:\"invalid\"}}'
+  exit 0
+fi
+echo 0 > /tmp/fabro/improve_attempts
+if [ \"$S\" = improved ]; then
+  jq -r .body $F > /tmp/fabro/improved_body.md
+  gh issue edit $N --body-file /tmp/fabro/improved_body.md
+  gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.next.json && mv /tmp/fabro/issue.next.json /tmp/fabro/issue.json
+fi
+jq -nc --arg s \"$S\" '{context_updates:{improve_status:$s}}'"]
+
+    // ---- Triage ----
+    triage [label="Triage the issue", class="triage", prompt="@prompts/triage.md.j2", timeout="30m", max_retries=1]
+
+    // Validates readiness, the Conventional Commits title, the label shapes and the
+    // artifact, then publishes the questions so the Discord hook can carry them. `"` is
+    // stripped from the questions because the hook reads them with a grep that stops
+    // at the first quote.
+    triage_gate [label="Validate the triage", shape=parallelogram, output_schema="routing",
+        script="F=/tmp/fabro/triage.json
+A=$(cat /tmp/fabro/triage_attempts 2>/dev/null || echo 0)
+R=$(jq -r '.readiness // \"invalid\"' $F 2>/dev/null || echo invalid)
+case \"$R\" in ready|needs_info|not_actionable) ;; *) R=invalid ;; esac
+T=$(jq -r '.title // \"\"' $F 2>/dev/null || echo '')
+if ! echo \"$T\" | grep -Eq '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ./_-]+[)])?: .+'; then R=invalid; fi
+if echo \"$T\" | grep -Eq '^[a-z]+([(][^)]*[)])?!'; then R=invalid; fi
+if echo \"$T\" | grep -q 'BREAKING CHANGE'; then R=invalid; fi
+if [ ! -s /tmp/fabro/triage.md ]; then R=invalid; fi
+BAD=$(jq '[.labels[]? | select(test(\"^[a-z0-9:._-]+$\") | not)] | length' $F 2>/dev/null || echo 99)
+if [ \"$BAD\" != 0 ]; then R=invalid; fi
+Q=$(jq '.questions | length' $F 2>/dev/null || echo 0)
+if [ \"$R\" = needs_info ] && [ \"$Q\" = 0 ]; then R=invalid; fi
+if [ \"$R\" = ready ] && [ \"$Q\" != 0 ]; then R=invalid; fi
+if [ \"$R\" = not_actionable ] && [ \"$Q\" != 0 ]; then R=invalid; fi
+if [ \"$R\" = invalid ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/triage_attempts
+  if [ $A -lt 2 ]; then echo 'triage.json or triage.md is missing or invalid; rewrite both exactly per the contract' >&2; exit 1; fi
+fi
+echo 0 > /tmp/fabro/triage_attempts
+QT=$(jq -r '[.questions[]? | \"- \" + (.question // \"\") + (if (.recommended // \"\") == \"\" then \"\" else \"  (suggested: \" + .recommended + \")\" end)] | join(\"  \")' $F 2>/dev/null | tr -d '\"' | cut -c1-1200)
+jq -nc --arg r \"$R\" --arg q \"$Q\" --arg qt \"$QT\" '{context_updates:{triage_readiness:$r,question_count:$q,triage_questions:$qt}}'"]
+
+    // ---- Terminal applications ----
+    // set -e, and every agent-authored label created first: `gh issue edit` resolves
+    // label names before it sends anything, so ONE missing label applies nothing.
+    // Each writes its outcome word to /tmp/fabro/triage_outcome as its last step before
+    // the routing object; `done` publishes it.
+    post_questions [label="Post the questions", shape=parallelogram, output_schema="routing",
+        script="set -e
+N=$(jq -r .number /tmp/fabro/issue.json)
+T=$(jq -r .title /tmp/fabro/triage.json)
+for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
+  gh label create \"$x\" --color EDEDED --description 'Created by fabro issue triage' 2>/dev/null || true
+done
+L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
+R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
+{ echo '<!-- fabro:triage-questions -->'
+  cat /tmp/fabro/triage.md
+  echo
+  echo 'Answer by replying in a new comment. Editing this comment is not detected.' ; } > /tmp/fabro/questions.md
+gh issue comment $N --body-file /tmp/fabro/questions.md
+gh issue edit $N --title \"$T\" --add-label needs-info $L $R
+echo needs_info > /tmp/fabro/triage_outcome
+jq -nc '{context_updates:{triage_outcome:\"needs_info\"}}'"]
+
+    // Unquoted word-splitting of $L is safe: triage_gate refuses any label outside
+    // ^[a-z0-9:._-]+$, so none can contain a space.
+    apply_ready [label="Promote to the backlog queue", shape=parallelogram, output_schema="routing",
+        script="set -e
+N=$(jq -r .number /tmp/fabro/issue.json)
+T=$(jq -r .title /tmp/fabro/triage.json)
+for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
+  gh label create \"$x\" --color EDEDED --description 'Created by fabro issue triage' 2>/dev/null || true
+done
+L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
+R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
+{ echo '<!-- fabro:triage-report -->' ; cat /tmp/fabro/triage.md ; } > /tmp/fabro/report.md
+gh issue comment $N --body-file /tmp/fabro/report.md
+gh issue edit $N --title \"$T\" --add-label agent $L $R
+echo ready > /tmp/fabro/triage_outcome
+jq -nc '{context_updates:{triage_outcome:\"ready\"}}'"]
+
+    // Labels and comments. Never closes the issue.
+    apply_not_actionable [label="Record not actionable", shape=parallelogram, output_schema="routing",
+        script="set -e
+N=$(jq -r .number /tmp/fabro/issue.json)
+T=$(jq -r .title /tmp/fabro/triage.json)
+for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
+  gh label create \"$x\" --color EDEDED --description 'Created by fabro issue triage' 2>/dev/null || true
+done
+L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
+R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
+{ echo '<!-- fabro:triage-report -->' ; cat /tmp/fabro/triage.md ; } > /tmp/fabro/report.md
+gh issue comment $N --body-file /tmp/fabro/report.md
+gh issue edit $N --title \"$T\" $L $R
+echo not_actionable > /tmp/fabro/triage_outcome
+jq -nc '{context_updates:{triage_outcome:\"not_actionable\"}}'"]
+
+    // The phase's failure node. Removes this run's claim, records `released`, and
+    // routes to `done`. The `(^|[.])release$` stage_start hook notifies. It removes the
+    // claim only when issue.json names an issue, which `claim` writes only after it has
+    // decided the claim is not someone else's.
+    release [label="Release the claim", shape=parallelogram,
+        script="echo released > /tmp/fabro/triage_outcome
+N=$(jq -r '.number // 0' /tmp/fabro/issue.json 2>/dev/null || echo 0)
+if [ \"$N\" != 0 ]; then
+  gh issue edit $N --remove-label triage-in-progress || true
+fi
+echo done"]
+
+    // The single exit (import contract). Publishes the outcome word from the file, and
+    // turns anything unexpected into `released`.
+    done [label="Triage phase complete", shape=parallelogram, output_schema="routing",
+        script="O=$(cat /tmp/fabro/triage_outcome 2>/dev/null || echo released)
+case \"$O\" in ready|needs_info|not_actionable|skipped|released) ;; *) O=released ;; esac
+jq -nc --arg o \"$O\" '{context_updates:{triage_outcome:$o}}'"]
+
+    // ---- Edges ----
+    start -> claim
+
+    claim -> done                   [condition="outcome=succeeded && context.claim_state=skipped"]
+    claim -> improve                [condition="outcome=succeeded && context.claim_state=claimed"]
+    claim -> release
+
+    improve -> improve_gate         [condition="outcome=succeeded"]
+    improve -> release
+    improve_gate -> improve         [condition="outcome=failed"]
+    improve_gate -> triage          [condition="outcome=succeeded"]
+    improve_gate -> release
+
+    triage -> triage_gate           [condition="outcome=succeeded"]
+    triage -> release
+    triage_gate -> triage           [condition="outcome=failed"]
+    triage_gate -> apply_ready      [condition="outcome=succeeded && context.triage_readiness=ready"]
+    triage_gate -> apply_not_actionable [condition="outcome=succeeded && context.triage_readiness=not_actionable"]
+    triage_gate -> post_questions   [condition="outcome=succeeded && context.triage_readiness=needs_info"]
+    triage_gate -> release
+
+    post_questions -> done          [condition="outcome=succeeded"]
+    post_questions -> release
+    apply_ready -> done             [condition="outcome=succeeded"]
+    apply_ready -> release
+    apply_not_actionable -> done    [condition="outcome=succeeded"]
+    apply_not_actionable -> release
+
+    release -> done
+    done -> exit
+}

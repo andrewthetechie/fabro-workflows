@@ -30,6 +30,8 @@ GRAPH="$REPO_ROOT/.fabro/workflows/backlog/workflow.fabro"
 SHARED="$REPO_ROOT/.fabro/workflows/_shared/review-merge/review-merge.fabro"
 [ -f "$GRAPH" ] || { echo "ERROR: $GRAPH not found" >&2; exit 1; }
 [ -f "$SHARED" ] || { echo "ERROR: $SHARED not found" >&2; exit 1; }
+SHARED_TRIAGE="$REPO_ROOT/.fabro/workflows/_shared/triage/triage.fabro"
+[ -f "$SHARED_TRIAGE" ] || { echo "ERROR: $SHARED_TRIAGE not found" >&2; exit 1; }
 
 command -v jq >/dev/null || { echo "ERROR: jq is required" >&2; exit 1; }
 
@@ -1478,6 +1480,114 @@ OUT=$(sh "$T/file_remainder.sh" 2>&1); RC=$?
 check "create fails: still exit 0"     "0" "$RC"
 check "create fails: tasks on the PR"  "1" "$(grep -c '^- T10$' "$T/pr_comment.txt")"
 check "create fails: nothing recorded" "absent" "$([ -e "$T/remainder_issue" ] && echo present || echo absent)"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
+# triage phase (_shared/triage) — claim, triage_gate, terminal outcome (ADR 0012)
+# ---------------------------------------------------------------------------
+echo ""
+echo "triage phase"
+PATH="$ORIG_PATH"
+SAVED_PATH="$PATH"
+T="$WORK/triage"; mkdir -p "$T/bin"
+for n in claim triage_gate post_questions release done; do
+    extract_from "$SHARED_TRIAGE" "$n" | sed "s#/tmp/fabro#$T#g" > "$T/$n.sh"
+    if ! sh -n "$T/$n.sh" 2>"$T/$n.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$n"
+    fi
+done
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue view") cat "$GH_STATE/issue_fixture.json"; exit 0 ;;
+esac
+if [ "$1" = api ]; then
+  [ -f "$GH_STATE/events_fail" ] && exit 1
+  cat "$GH_STATE/events.json"; exit 0
+fi
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+
+tp_setup() { # tp_setup <labels json array> <labeled created_at or empty>
+    rm -f "$T"/gh.log "$T"/triage_outcome "$T"/events_fail "$T"/issue.json
+    echo 7 > "$T/issue_number"
+    printf '{"number":7,"title":"t","body":"b","labels":%s,"comments":[],"url":"https://github.com/o/r/issues/7"}' "$1" > "$T/issue_fixture.json"
+    if [ -n "${2:-}" ]; then
+        printf '[{"event":"labeled","label":{"name":"triage-in-progress"},"created_at":"%s"}]' "$2" > "$T/events.json"
+    else
+        echo '[]' > "$T/events.json"
+    fi
+}
+
+# 1. No claim on the issue: claim it.
+tp_setup '[]'
+OUT=$(sh "$T/claim.sh" 2>&1); RC=$?
+check "claim: exit 0"                 "0" "$RC"
+check "claim: claimed"                "claimed" "$(jq -r '.context_updates.claim_state' <<<"$(lastjson "$OUT")")"
+check "claim: issue_url published"    "https://github.com/o/r/issues/7" "$(jq -r '.context_updates.issue_url' <<<"$(lastjson "$OUT")")"
+check "claim: adds the claim label"   "1" "$(grep -c '^issue edit 7 --add-label triage-in-progress' "$T/gh.log")"
+
+# 2. Another run claimed it less than 24h ago (a future date is always fresh).
+tp_setup '[{"name":"triage-in-progress"}]' '2099-01-01T00:00:00Z'
+OUT=$(sh "$T/claim.sh" 2>&1)
+check "fresh claim: skipped"          "skipped" "$(jq -r '.context_updates.claim_state' <<<"$(lastjson "$OUT")")"
+check "fresh claim: outcome file"     "skipped" "$(cat "$T/triage_outcome")"
+check "fresh claim: no edit"          "0" "$(grep -c '^issue edit' "$T/gh.log")"
+
+# 3. The claim is older than 24h: take it over.
+tp_setup '[{"name":"triage-in-progress"}]' '2020-01-01T00:00:00Z'
+OUT=$(sh "$T/claim.sh" 2>&1)
+check "stale claim: claimed"          "claimed" "$(jq -r '.context_updates.claim_state' <<<"$(lastjson "$OUT")")"
+check "stale claim: edits"            "1" "$(grep -c '^issue edit 7 --add-label triage-in-progress' "$T/gh.log")"
+
+# 4. The event list cannot be read: fail closed to skipped.
+tp_setup '[{"name":"triage-in-progress"}]' '2020-01-01T00:00:00Z'; : > "$T/events_fail"
+OUT=$(sh "$T/claim.sh" 2>&1)
+check "events unreadable: skipped"    "skipped" "$(jq -r '.context_updates.claim_state' <<<"$(lastjson "$OUT")")"
+
+# 5. done publishes the file, and anything else as released.
+echo skipped > "$T/triage_outcome"
+check "done: publishes the word"      "skipped"  "$(jq -r '.context_updates.triage_outcome' <<<"$(lastjson "$(sh "$T/done.sh" 2>&1)")")"
+rm -f "$T/triage_outcome"
+check "done: no file is released"     "released" "$(jq -r '.context_updates.triage_outcome' <<<"$(lastjson "$(sh "$T/done.sh" 2>&1)")")"
+echo garbage > "$T/triage_outcome"
+check "done: garbage is released"     "released" "$(jq -r '.context_updates.triage_outcome' <<<"$(lastjson "$(sh "$T/done.sh" 2>&1)")")"
+
+# 6. triage_gate: needs_info with one question.
+tp_setup '[]'
+echo 0 > "$T/triage_attempts"
+echo '{"readiness":"needs_info","title":"feat: x","labels":["bug"],"questions":[{"id":"Q1","question":"Which endpoint?","why":"w","recommended":"/v2"}]}' > "$T/triage.json"
+echo 'report' > "$T/triage.md"
+OUT=$(sh "$T/triage_gate.sh" 2>&1); RC=$?
+check "gate needs_info: exit 0"       "0" "$RC"
+check "gate needs_info: readiness"    "needs_info" "$(jq -r '.context_updates.triage_readiness' <<<"$(lastjson "$OUT")")"
+check "gate: no answered key"         "false" "$(jq -r '.context_updates | has("answered")' <<<"$(lastjson "$OUT")")"
+
+# 7. triage_gate: ready with a question is invalid; the first attempt fails.
+echo 0 > "$T/triage_attempts"
+echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[{"id":"Q1","question":"q"}]}' > "$T/triage.json"
+sh "$T/triage_gate.sh" >/dev/null 2>&1; RC=$?
+check "gate ready+question: retries"  "1" "$RC"
+
+# 8. release removes the claim and records released.
+printf '{"number":7}' > "$T/issue.json"; : > "$T/gh.log"
+sh "$T/release.sh" >/dev/null 2>&1
+check "release: outcome file"         "released" "$(cat "$T/triage_outcome")"
+check "release: removes the claim"    "1" "$(grep -c '^issue edit 7 --remove-label triage-in-progress' "$T/gh.log")"
+
+# 9. post_questions labels needs-info and records needs_info.
+printf '{"number":7,"labels":[{"name":"needs-triage"},{"name":"triage-in-progress"}]}' > "$T/issue.json"
+echo '{"readiness":"needs_info","title":"feat: x","labels":["bug"],"questions":[{"id":"Q1","question":"q"}]}' > "$T/triage.json"
+: > "$T/gh.log"
+sh "$T/post_questions.sh" >/dev/null 2>&1
+check "post_questions: outcome file"  "needs_info" "$(cat "$T/triage_outcome")"
+check "post_questions: needs-info"    "1" "$(grep -c -- '--add-label needs-info' "$T/gh.log")"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE

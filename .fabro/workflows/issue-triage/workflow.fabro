@@ -1,11 +1,10 @@
 digraph IssueTriage {
     graph [
-        goal="Issue triage: improve, triage and retitle one needs-triage issue, and ask the human only what the repository cannot answer",
-        // Bound the preamble: `compact` (the default) prepends every completed stage,
-        // with up to 25 lines of command output each, to every agent prompt. Every
-        // prompt here names its inputs by path, so the preamble carries no signal this
-        // graph relies on. See backlog's graph block for the full reasoning.
+        goal="Issue triage: improve, triage and retitle one waiting issue, and ask the human only what the repository cannot answer",
+        // Bound the preamble: every prompt names its inputs by path.
         default_fidelity="truncate",
+        // Above every node timeout, including the imported phase's 30m agents.
+        stall_timeout="60m",
         model_stylesheet="
             *         { model: high-reasoning; }
             .improve  { model: high-reasoning; }
@@ -17,22 +16,12 @@ digraph IssueTriage {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    // ---- No capacity gate ----
-    // There used to be a capacity gate here that stood down when
-    // `scheduler_slots_used > 1`. It was correct while the run cap was 2 and a triage
-    // run held one of those slots; under the scheduler the cap is 4 and triage holds a
-    // slot nobody contends for — every stage here resolves to `high-reasoning` (hosted
-    // z.ai), never to a coder instance. The same check therefore declined work whenever
-    // any two runs existed, and got more timid the more headroom we added. Deleted, not
-    // retuned: overview decision 13, ADR 0005. Deleting it also removed the graph's only
-    // call to the fabro API, and with it triage's dependency on FABRO_API_URL and
-    // FABRO_API_TOKEN (see workflow.toml).
-
-    // ---- Acquisition (no LLM) ----
-    // Two queues: fresh needs-triage, and needs-info whose newest comment carries none
-    // of our markers, which means a human replied since we asked (finding 1 — author
-    // comparison is useless, the bot posts as the repository owner).
-    // Failing when nothing matches is the quiet-exit, exactly as backlog's acquire does.
+    // One issue per run, chosen here; the triage itself is the shared phase
+    // (.fabro/workflows/_shared/triage/triage.fabro, ADR 0012 D2). Two queues:
+    // fresh needs-triage, and needs-info whose newest comment carries none of our
+    // markers, which means a human replied since we asked. Failing when nothing
+    // matches ends the run quietly. A fresh claim on the chosen issue makes the phase
+    // report `skipped`; this package is fired by hand, so that is acceptable.
     acquire [label="Acquire issue", shape=parallelogram,
         script="mkdir -p /tmp/fabro
 gh issue list --label needs-triage --state open --json number,title --limit 50 > /tmp/fabro/cand_triage.json || true
@@ -43,243 +32,12 @@ done
 jq '[.[] | {number, title, reason: \"needs-triage\"}]' /tmp/fabro/cand_triage.json > /tmp/fabro/elig_triage.json
 jq '[.[] | select((.comments | length) > 0) | select((.comments[-1].body | test(\"fabro:triage-\")) | not) | {number, title, reason: \"answered\"}]' /tmp/fabro/cand_info.json > /tmp/fabro/elig_info.json
 jq -s 'add | sort_by(.number) | .[0:1]' /tmp/fabro/elig_triage.json /tmp/fabro/elig_info.json > /tmp/fabro/acquire.json
-test \"$(jq length /tmp/fabro/acquire.json 2>/dev/null || echo 0)\" != \"0\""]
+test \"$(jq length /tmp/fabro/acquire.json 2>/dev/null || echo 0)\" != \"0\" && jq -r '.[0].number' /tmp/fabro/acquire.json > /tmp/fabro/issue_number"]
 
-    // Claims, fetches, archives the reporter's original body once, and resets every
-    // per-run file. The contract files are deleted here because an agent that exits
-    // succeeded without writing would otherwise hand its gate a previous run's result.
-    claim [label="Claim issue and fetch it", shape=parallelogram, output_schema="routing",
-        script="set -e
-N=$(jq -r '.[0].number' /tmp/fabro/acquire.json)
-gh label create needs-info --color FEF2C0 --description 'Waiting on a human for triage answers' 2>/dev/null || true
-gh label create triage-in-progress --color FBCA04 --description 'Owned by the fabro issue-triage loop' 2>/dev/null || true
-gh label create agent --color 5319E7 --description 'Handled by fabro backlog automation' 2>/dev/null || true
-gh issue edit $N --add-label triage-in-progress
-gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.json
-gh api user --jq .login > /tmp/fabro/bot_login 2>/dev/null || echo unknown > /tmp/fabro/bot_login
-if ! jq -e '[.comments[].body] | any(test(\"fabro:triage-original\"))' /tmp/fabro/issue.json > /dev/null; then
-  { echo '<!-- fabro:triage-original -->'
-    echo 'Original report, captured before automated improvement.'
-    echo
-    jq -r .body /tmp/fabro/issue.json ; } > /tmp/fabro/original.md
-  gh issue comment $N --body-file /tmp/fabro/original.md
-fi
-rm -f /tmp/fabro/improve.json /tmp/fabro/triage.json /tmp/fabro/triage.md /tmp/fabro/human_answer.md
-echo 0 > /tmp/fabro/improve_attempts
-echo 0 > /tmp/fabro/triage_attempts
-echo false > /tmp/fabro/answered
-U=$(jq -r .url /tmp/fabro/issue.json)
-jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_url:$u,answered:\"false\"}}'"]
+    triage_phase [import="../_shared/triage/triage.fabro"]
 
-    // ---- Improve ----
-    // `max_retries=1`: a stalled provider stream is invisible to the LLM retry and the
-    // fallback chain, so the node timeout is the only backstop and it needs a retry
-    // budget to be worth anything. Both nodes here route to `release`, which drops the
-    // claim and ends the run, so a single stall costs the whole triage.
-    improve [label="Improve the issue body", class="improve", prompt="@prompts/improve.md.j2", timeout="30m", max_retries=1]
-
-    // Applies the body only. The title is written once, by the terminal nodes, from
-    // triage.json — two title writes per run is churn in every watcher's inbox and a
-    // second chance to write a non-conforming one.
-    // A second invalid improve.json exits ZERO on purpose: it publishes
-    // improve_status=invalid and takes the succeeded edge to `triage`. Improving the
-    // body is best effort; the triage verdict is the run's value, and throwing it away
-    // because the improve agent misformatted its JSON is the worse trade. No edge reads
-    // improve_status — it exists so the run log says which of the two happened.
-    improve_gate [label="Validate and apply the improved body", shape=parallelogram, output_schema="routing",
-        script="F=/tmp/fabro/improve.json
-A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
-N=$(jq -r .number /tmp/fabro/issue.json)
-S=$(jq -r '.status // \"invalid\"' $F 2>/dev/null || echo invalid)
-if [ \"$S\" != improved ] && [ \"$S\" != unchanged ]; then S=invalid; fi
-if [ \"$S\" = improved ]; then
-  B=$(jq -r '.body // \"\"' $F 2>/dev/null || echo '')
-  if [ -z \"$B\" ]; then S=invalid; fi
-fi
-if [ \"$S\" = invalid ]; then
-  A=$((A+1))
-  echo $A > /tmp/fabro/improve_attempts
-  if [ $A -lt 2 ]; then echo 'improve.json is missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
-  jq -nc '{context_updates:{improve_status:\"invalid\"}}'
-  exit 0
-fi
-echo 0 > /tmp/fabro/improve_attempts
-if [ \"$S\" = improved ]; then
-  jq -r .body $F > /tmp/fabro/improved_body.md
-  gh issue edit $N --body-file /tmp/fabro/improved_body.md
-  gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.next.json && mv /tmp/fabro/issue.next.json /tmp/fabro/issue.json
-fi
-jq -nc --arg s \"$S\" '{context_updates:{improve_status:$s}}'"]
-
-    // ---- Triage ----
-    triage [label="Triage the issue", class="triage", prompt="@prompts/triage.md.j2", timeout="30m", max_retries=1]
-
-    // Validates readiness, the Conventional Commits title, the label shapes and the
-    // artifact, then publishes the questions as context so the Discord hook can carry
-    // them. `answered` is read from a FILE and re-emitted as context: a command node
-    // cannot read context (finding 2), and the edge needs the value.
-    triage_gate [label="Validate the triage", shape=parallelogram, output_schema="routing",
-        script="F=/tmp/fabro/triage.json
-A=$(cat /tmp/fabro/triage_attempts 2>/dev/null || echo 0)
-ANS=$(cat /tmp/fabro/answered 2>/dev/null || echo false)
-R=$(jq -r '.readiness // \"invalid\"' $F 2>/dev/null || echo invalid)
-case \"$R\" in ready|needs_info|not_actionable) ;; *) R=invalid ;; esac
-T=$(jq -r '.title // \"\"' $F 2>/dev/null || echo '')
-if ! echo \"$T\" | grep -Eq '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ./_-]+[)])?: .+'; then R=invalid; fi
-if echo \"$T\" | grep -Eq '^[a-z]+([(][^)]*[)])?!'; then R=invalid; fi
-if echo \"$T\" | grep -q 'BREAKING CHANGE'; then R=invalid; fi
-if [ ! -s /tmp/fabro/triage.md ]; then R=invalid; fi
-BAD=$(jq '[.labels[]? | select(test(\"^[a-z0-9:._-]+$\") | not)] | length' $F 2>/dev/null || echo 99)
-if [ \"$BAD\" != 0 ]; then R=invalid; fi
-Q=$(jq '.questions | length' $F 2>/dev/null || echo 0)
-if [ \"$R\" = needs_info ] && [ \"$Q\" = 0 ]; then R=invalid; fi
-if [ \"$R\" = ready ] && [ \"$Q\" != 0 ]; then R=invalid; fi
-if [ \"$R\" = not_actionable ] && [ \"$Q\" != 0 ]; then R=invalid; fi
-if [ \"$R\" = invalid ]; then
-  A=$((A+1))
-  echo $A > /tmp/fabro/triage_attempts
-  if [ $A -lt 2 ]; then echo 'triage.json or triage.md is missing or invalid; rewrite both exactly per the contract' >&2; exit 1; fi
-fi
-echo 0 > /tmp/fabro/triage_attempts
-QT=$(jq -r '[.questions[]? | \"- \" + (.question // \"\") + (if (.recommended // \"\") == \"\" then \"\" else \"  (suggested: \" + .recommended + \")\" end)] | join(\"  \")' $F 2>/dev/null | tr -d '\"' | cut -c1-1200)
-jq -nc --arg r \"$R\" --arg q \"$Q\" --arg qt \"$QT\" --arg a \"$ANS\" '{context_updates:{triage_readiness:$r,question_count:$q,triage_questions:$qt,answered:$a}}'"]
-
-    // ---- The gate ----
-    // timeout AND human.default_choice, and the default choice is also an edge target.
-    // Fabro validates neither pairing. See docs/adr/0002-bounded-human-gates.md.
-    ask_human [shape=hexagon, label="Triage questions need a human answer",
-        timeout="30m", human.default_choice="post_questions"]
-
-    // The only channel from the gate's answer into a file (finding 2). The comment it
-    // posts carries NO marker, deliberately: if this run then dies, the issue must
-    // still look answered to the next acquire.
-    // The refresh goes to a temporary file and is moved into place, because `>` truncates
-    // before gh runs: a failed refresh used to leave an empty issue.json and hand it to
-    // `triage`, which would then triage nothing and fail its gate twice. Under set -e the
-    // node now fails instead, and `release` still finds the previous good copy and can
-    // remove the claim. Posting the answer keeps its `|| true`: the text is already on
-    // disk and this run can finish without the mirror comment.
-    record_answer [label="Record the human answer", shape=parallelogram, output_schema="routing",
-        stdin_source="human.gate.text",
-        script="set -e
-cat > /tmp/fabro/human_answer.md
-N=$(jq -r .number /tmp/fabro/issue.json)
-if [ -s /tmp/fabro/human_answer.md ]; then
-  gh issue comment $N --body-file /tmp/fabro/human_answer.md || true
-fi
-echo true > /tmp/fabro/answered
-gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.next.json
-mv /tmp/fabro/issue.next.json /tmp/fabro/issue.json
-rm -f /tmp/fabro/triage.json /tmp/fabro/triage.md
-jq -nc '{context_updates:{answered:\"true\"}}'"]
-
-    // ---- Terminal applications ----
-    // set -e, and every agent-authored label created first. `gh issue edit` resolves
-    // label names before it sends anything, so ONE label the repository does not have
-    // makes the whole call fail and applies nothing — not the title, not the other
-    // labels, not the removals. Without set -e that failure was swallowed, because the
-    // node's last command is the jq that prints context_updates and always exits 0.
-    post_questions [label="Post the questions and stand down", shape=parallelogram, output_schema="routing",
-        script="set -e
-N=$(jq -r .number /tmp/fabro/issue.json)
-T=$(jq -r .title /tmp/fabro/triage.json)
-for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
-  gh label create \"$x\" --color EDEDED --description 'Created by fabro issue triage' 2>/dev/null || true
-done
-L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
-R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
-{ echo '<!-- fabro:triage-questions -->'
-  cat /tmp/fabro/triage.md
-  echo
-  echo 'Answer by replying in a new comment. Editing this comment is not detected.' ; } > /tmp/fabro/questions.md
-gh issue comment $N --body-file /tmp/fabro/questions.md
-gh issue edit $N --title \"$T\" --add-label needs-info $L $R
-jq -nc '{context_updates:{triage_outcome:\"needs_info\"}}'"]
-
-    // Unquoted word-splitting of $L is safe: triage_gate refuses any label outside
-    // ^[a-z0-9:._-]+$, so none can contain a space. See post_questions for set -e.
-    apply_ready [label="Promote to the backlog queue", shape=parallelogram, output_schema="routing",
-        script="set -e
-N=$(jq -r .number /tmp/fabro/issue.json)
-T=$(jq -r .title /tmp/fabro/triage.json)
-for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
-  gh label create \"$x\" --color EDEDED --description 'Created by fabro issue triage' 2>/dev/null || true
-done
-L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
-R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
-{ echo '<!-- fabro:triage-report -->' ; cat /tmp/fabro/triage.md ; } > /tmp/fabro/report.md
-gh issue comment $N --body-file /tmp/fabro/report.md
-gh issue edit $N --title \"$T\" --add-label agent $L $R
-jq -nc '{context_updates:{triage_outcome:\"ready\"}}'"]
-
-    // Labels and comments. Never closes: decision 5.
-    apply_not_actionable [label="Record not actionable", shape=parallelogram, output_schema="routing",
-        script="set -e
-N=$(jq -r .number /tmp/fabro/issue.json)
-T=$(jq -r .title /tmp/fabro/triage.json)
-for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
-  gh label create \"$x\" --color EDEDED --description 'Created by fabro issue triage' 2>/dev/null || true
-done
-L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
-R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
-{ echo '<!-- fabro:triage-report -->' ; cat /tmp/fabro/triage.md ; } > /tmp/fabro/report.md
-gh issue comment $N --body-file /tmp/fabro/report.md
-gh issue edit $N --title \"$T\" $L $R
-jq -nc '{context_updates:{triage_outcome:\"not_actionable\"}}'"]
-
-    // The terminal-failure node. Mirrors backlog's mark_stuck: cleans up, exits zero,
-    // routes to exit. Notification is the `^release$` stage_start hook in task 06, not
-    // run_failed, so it fires whatever status the run ends with.
-    release [label="Release the claim", shape=parallelogram,
-        script="N=$(jq -r '.number // 0' /tmp/fabro/issue.json 2>/dev/null || echo 0)
-if [ \"$N\" != 0 ]; then
-  gh issue edit $N --remove-label triage-in-progress || true
-fi
-echo done"]
-
-    // ---- Edges ----
     start -> acquire
-
-    acquire -> exit                 [condition="outcome=failed"]
-    acquire -> claim                [condition="outcome=succeeded"]
-    acquire -> release
-
-    claim -> improve                [condition="outcome=succeeded"]
-    claim -> release
-
-    improve -> improve_gate         [condition="outcome=succeeded"]
-    improve -> release
-    improve_gate -> improve         [condition="outcome=failed"]
-    improve_gate -> triage          [condition="outcome=succeeded"]
-    improve_gate -> release
-
-    triage -> triage_gate           [condition="outcome=succeeded"]
-    triage -> release
-    triage_gate -> triage           [condition="outcome=failed"]
-    triage_gate -> apply_ready      [condition="context.triage_readiness=ready"]
-    triage_gate -> apply_not_actionable [condition="context.triage_readiness=not_actionable"]
-    // Declaration order is load bearing: the answered edge must be tried before the
-    // unanswered one, or a re-triage that is still short of answers blocks twice in
-    // one run.
-    triage_gate -> post_questions   [condition="context.triage_readiness=needs_info && context.answered=true"]
-    triage_gate -> ask_human        [condition="context.triage_readiness=needs_info"]
-    triage_gate -> release
-
-    ask_human -> record_answer      [freeform=true]
-    ask_human -> post_questions     [label="[D] Defer — post the questions"]
-    ask_human -> apply_not_actionable [label="[X] Not actionable"]
-    // A failed gate never falls through an unconditional edge; route it explicitly.
-    ask_human -> post_questions     [condition="outcome=failed"]
-
-    record_answer -> triage         [condition="outcome=succeeded"]
-    record_answer -> release
-
-    post_questions -> exit          [condition="outcome=succeeded"]
-    post_questions -> release
-    apply_ready -> exit             [condition="outcome=succeeded"]
-    apply_ready -> release
-    apply_not_actionable -> exit    [condition="outcome=succeeded"]
-    apply_not_actionable -> release
-
-    release -> exit
+    acquire -> triage_phase         [condition="outcome=succeeded"]
+    acquire -> exit
+    triage_phase -> exit
 }

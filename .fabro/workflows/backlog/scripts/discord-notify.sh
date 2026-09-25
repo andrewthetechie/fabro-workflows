@@ -77,12 +77,13 @@ repo_url=""
 issue=""
 pr_url=""
 triage_questions=""
+issue_url=""
 if [ -r "$token_file" ]; then
   auth="Authorization: Bearer $(cat "$token_file")"
   repo_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id" 2>/dev/null \
     | grep -o '"origin_url":"[^"]*"' | head -1 | cut -d'"' -f4)
   # One pass over the (large) state stream for each field we want. Each grep is
-  # cut short by head -1, so neither reads the whole body.
+  # cut short by head -1 or tail -1, so neither reads the whole body.
   # Both spellings, deliberately. `backlog` publishes issue_number as a NUMBER
   # (2599); `issue-triage`'s claim builds it with `jq --arg`, so it arrives as a
   # STRING ("1195") and the old `:[0-9]*` pattern matched zero digits — every triage
@@ -95,8 +96,13 @@ if [ -r "$token_file" ]; then
   # every run that did not get that far.
   pr_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"pr_url":"[^"]*"' | head -1 | cut -d'"' -f4)
+  # tail -1, not head -1: `checkpoints` in the state is an ascending array, so the
+  # LAST match is the newest value. A run that triages many issues publishes these
+  # keys once per issue, and head -1 would name the first issue every time.
   triage_questions=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
-    | grep -o '"triage_questions":"[^"]*"' | head -1 | cut -d'"' -f4)
+    | grep -o '"triage_questions":"[^"]*"' | tail -1 | cut -d'"' -f4)
+  issue_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"issue_url":"[^"]*"' | tail -1 | cut -d'"' -f4)
   # `[^"]*` stops at the first `\"` in the serialized state, which silently dropped
   # the rest of the batch. triage_gate now strips `"` from the value before publishing
   # it, so no escape can appear here. This sed stays as defence in depth for a
@@ -104,6 +110,14 @@ if [ -r "$token_file" ]; then
   # characters total).
   triage_questions=$(printf '%s' "$triage_questions" | sed 's/[\\"]//g' | cut -c1-800)
 fi
+
+# The triage kinds name the issue from issue_url (newest), never from issue_number:
+# issue_number is read with head -1 above, which is the first issue a looping run
+# triaged.
+case "$kind" in
+  triage-question|triage-failed)
+    if [ -n "$issue_url" ]; then issue="${issue_url##*/}"; fi ;;
+esac
 
 # repo "owner/name" for display, derived from the origin URL
 repo_name=""
@@ -146,12 +160,8 @@ case "$kind" in
   # below carries the rest.
   fallback)  msg="🔼 fabro model fallback: escalated to ${model} (${node_short})${subject}" ;;
   triage-question)
-    # A literal newline here (rather than the \\n every other multi-part message in
-    # this file uses) would land as a raw, unescaped control character inside the
-    # JSON string payload="{\"content\": \"${msg}...\"}" builds below — invalid
-    # JSON that Discord silently rejects while the script still exits 0 via the
-    # `|| true` on the wget/curl call.
-    msg="❓ fabro issue triage needs answers${subject}\\n${triage_questions}\\nAnswer within 30 minutes at ${base_url}/runs/${run_id}, or it will post them on the issue."
+    # \\n, never a literal newline: see the payload line below.
+    msg="❓ fabro triage needs a human${subject}\\n${triage_questions}\\nAnswer in a new comment on the issue. The next triage reads it."
     ;;
   triage-failed)
     msg="🟠 fabro issue triage released a claim without finishing${subject}"

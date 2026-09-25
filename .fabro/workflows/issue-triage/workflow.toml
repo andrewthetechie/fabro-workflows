@@ -38,26 +38,22 @@ push = false
 # /storage/secrets/discord_webhook_url. The script is referenced by absolute container
 # path because hook `script` is a shell command, not an `@` file import.
 #
-# stage_start on the gate fires just BEFORE it blocks, which is what makes the ping
-# useful: it lands as the question opens. There is no hook event for run.blocked —
-# HookEvent has sixteen variants and none of them is blocked, unblocked or interview.
-#
-# Anchored matchers: they are unanchored regexes tested against node_id, handler_type,
-# edge_to, edge_from and tool_name. `^human$` would match every gate by handler_type.
+# The triage phase is imported, so its node ids are prefixed (`triage_phase.release`).
+# A bare `^release$` matches nothing, and a hook that matches nothing is silent.
 [[run.hooks]]
 id = "discord-triage-question"
 event = "stage_start"
-matcher = "^ask_human$"
+matcher = "(^|[.])post_questions$"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh triage-question"
 
-# The terminal-failure path. Not run_failed: `release` exits zero and routes to exit,
-# mirroring backlog's mark_stuck, so the run ends succeeded and run_failed never fires.
+# The phase's failure path. `release` exits zero and routes to `done`, so the run ends
+# succeeded and run_failed never fires for it.
 [[run.hooks]]
 id = "discord-triage-failed"
 event = "stage_start"
-matcher = "^release$"
+matcher = "(^|[.])release$"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh triage-failed"
