@@ -79,6 +79,10 @@ STUCK_LABEL = "agent-stuck"
 # priority, the `repos.toml` integer; and it does not make an issue a queue item
 # -- only REQUIRED_LABEL does that. ADR 0011.
 PRIORITY_LABEL = "priority"
+
+# A remainder issue that a `backlog` run filed for the tasks past its task budget,
+# held out of the queue until its parent PR merges. `remainder.py` promotes it.
+REMAINDER_LABEL = "agent-remainder"
 EXCLUDED_LABELS = frozenset({IN_PROGRESS_LABEL, STUCK_LABEL})
 
 
@@ -396,6 +400,144 @@ def fetch_pull_for_branch(
         url=str(item.get("html_url") or ""),
         merged=item.get("merged_at") is not None,
     )
+
+
+@dataclass(frozen=True)
+class RemainderIssue:
+    """One open issue carrying `agent-remainder`, as the promoter needs it.
+
+    `body` is the raw issue body (`""` when GitHub sends `null`); the promoter, not
+    this module, parses the marker out of it.
+    """
+
+    number: int
+    labels: frozenset[str]
+    body: str
+
+
+def fetch_remainders(
+    repo: str,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> list[RemainderIssue]:
+    """Open issues in `repo` carrying `agent-remainder` (ADR 0011 D6).
+
+    Unconditional, like `fetch_in_progress`: it asks for a different label
+    collection than the ETag-cached inventory, and it runs once a minute per repo,
+    which is 240 requests an hour for four repos -- well inside the 5,000/hour
+    budget. Pull requests are dropped (`GET /issues` returns them too), and so is
+    any object that does not actually carry the label.
+
+    Raises `GitHubError` for anything that is not a `200`.
+    """
+    if not token or not token.strip():
+        raise GitHubError(
+            "GITHUB_TOKEN is not set; the GitHub inventory cannot be refreshed"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    params = {"labels": REMAINDER_LABEL, "state": "open", "per_page": PAGE_SIZE}
+
+    owned = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        response = http.get(
+            f"{GITHUB_API}/repos/{repo}/issues", params=params, headers=headers
+        )
+    except httpx.HTTPError as exc:
+        raise GitHubError(f"{repo}: GitHub request failed: {exc}") from exc
+    finally:
+        if owned:
+            http.close()
+
+    if response.status_code != 200:
+        remaining = response.headers.get("x-ratelimit-remaining")
+        raise GitHubError(
+            _error_message(repo, response, remaining),
+            status_code=response.status_code,
+            remaining=remaining,
+        )
+
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise GitHubError(
+            f"{repo}: expected a list of issues, got {type(payload).__name__}"
+        )
+    found = []
+    for item in payload:
+        if not isinstance(item, Mapping) or "pull_request" in item:
+            continue
+        number = item.get("number")
+        if not isinstance(number, int) or isinstance(number, bool):
+            continue
+        labels = _label_names(item)
+        if REMAINDER_LABEL not in labels:
+            continue
+        body = item.get("body")
+        found.append(
+            RemainderIssue(
+                number=number, labels=labels, body=body if isinstance(body, str) else ""
+            )
+        )
+    return found
+
+
+def fetch_pull_state(
+    repo: str,
+    number: int,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = PR_LOOKUP_TIMEOUT_SECONDS,
+) -> str:
+    """`"merged"`, `"closed"` (closed without merging) or `"open"` for one PR.
+
+    `GET /repos/{owner}/{repo}/pulls/{number}`. `merged_at` decides merged, because a
+    merged PR's `state` is also `"closed"`. Raises `GitHubError` for anything that
+    is not a `200` -- including a `404` for a number that is not a PR -- so the caller
+    can tell "not merged yet" from "GitHub could not answer".
+    """
+    if not token or not token.strip():
+        raise GitHubError(
+            "GITHUB_TOKEN is not set; the GitHub inventory cannot be refreshed"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    owned = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        response = http.get(
+            f"{GITHUB_API}/repos/{repo}/pulls/{number}", headers=headers
+        )
+    except httpx.HTTPError as exc:
+        raise GitHubError(f"{repo}: GitHub request failed: {exc}") from exc
+    finally:
+        if owned:
+            http.close()
+
+    if response.status_code != 200:
+        remaining = response.headers.get("x-ratelimit-remaining")
+        raise GitHubError(
+            _error_message(repo, response, remaining),
+            status_code=response.status_code,
+            remaining=remaining,
+        )
+    payload = response.json()
+    if not isinstance(payload, Mapping):
+        raise GitHubError(f"{repo}: expected a pull object, got {type(payload).__name__}")
+    if payload.get("merged_at") is not None:
+        return "merged"
+    return "closed" if payload.get("state") == "closed" else "open"
 
 
 def add_label(

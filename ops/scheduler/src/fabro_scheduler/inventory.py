@@ -26,6 +26,7 @@ import httpx
 
 from .config import RepoConfig
 from .github import REQUEST_TIMEOUT_SECONDS, GitHubError, fetch_issues
+from .remainder import promote_remainders
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -106,6 +107,22 @@ class InventoryPoller:
         except Exception as exc:  # noqa: BLE001 - see the docstring
             log.exception("inventory: %s: unexpected failure", repo.name)
             self._note_failure(repo.name, f"unexpected error: {exc}")
+        self._promote(repo)
+
+    def _promote(self, repo: RepoConfig) -> None:
+        """Promote held remainder issues (ADR 0011 D6). **Never raises.**
+
+        Deliberately outside `_poll`'s error handling: a promoter failure is logged,
+        and it must not mark the repo's inventory stale, because the inventory itself
+        is fine. The promotion is retried on the next pass anyway.
+        """
+        try:
+            for number, action in promote_remainders(
+                repo.name, self._token, client=self._client
+            ):
+                log.info("inventory: %s#%s remainder %s", repo.name, number, action)
+        except Exception:  # noqa: BLE001 - see the docstring
+            log.exception("inventory: %s: remainder promotion failed", repo.name)
 
     def _poll(self, repo: RepoConfig) -> None:
         state = self._store.fetch_state(repo.name)
