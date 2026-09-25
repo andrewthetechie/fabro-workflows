@@ -1,6 +1,6 @@
 # Human gates hold a scheduler slot, so every gate is bounded and degrades to the issue
 
-**Status:** accepted (2026-09-16)
+**Status:** accepted (2026-09-16). ADR 0012 replaces it for `issue-triage`. It still applies to `backlog`'s `human_rescue` gate.
 
 The `issue-triage` workflow asks a human the questions the repository cannot answer.
 Fabro's mechanism for that is a `shape=hexagon` human gate, and the naive spelling —

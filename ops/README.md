@@ -314,6 +314,10 @@ from the live server 2026-09-16:
 | `pr-review-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `true` | `api:manual` enabled — **configuration only, never fired** |
 | `pr-review-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `true` | `api:manual` enabled — **configuration only, never fired** |
 | `pr-review-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `true` | `api:manual` enabled — **configuration only, never fired** |
+| `arch-review-jelly-swipe` | `andrewthetechie/jelly-swipe` | `python` | `true` | `api:manual` enabled, `schedule:twice-weekly` enabled (`0 4 * * 1,4`) |
+| `arch-review-lawncare-saas` | `andrewthetechie/lawncare-saas` | `python-node` | `true` | `api:manual` enabled, `schedule:twice-weekly` enabled (`0 4 * * 2,5`) |
+| `arch-review-womens-fantasy-sports` | `andrewthetechie/womens-fantasy-sports` | `ts` | `true` | `api:manual` enabled, `schedule:twice-weekly` enabled (`0 4 * * 3,6`) |
+| `arch-review-writers-app` | `andrewthetechie/writers-app` | `rust-node` | `true` | `api:manual` enabled, `schedule:twice-weekly` enabled (`0 5 * * 0,3`) |
 
 The `pr-review-*` rows are **not dead**, but nothing fires them: they are read, never
 fired. Two readers remain, and both find the row by `target.repo` rather than a hardcoded
