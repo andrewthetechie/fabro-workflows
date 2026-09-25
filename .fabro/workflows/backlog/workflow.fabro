@@ -1087,7 +1087,10 @@ grep -q 'fabro:commit-body:start' /tmp/fabro/pr_body.md"]
     // Since ADR 0011 D1 fabro no longer pushes checkpoints, so `deliver`,
     // `ci_fix_gate` and `remerge_base` push for real. Their bare
     // `--force-with-lease` needs a remote-tracking ref, which the single-branch
-    // clone does not have, so this node creates one after its own push.
+    // clone does not have, and is otherwise rejected as `stale info`. So the three
+    // lines after `git push -u origin HEAD` map just the run branch and fetch it.
+    // The `grep -qxF` guard keeps a second visit (human_rescue -> [P]) from adding
+    // the refspec twice.
     //
     // `pr-review`'s claim node hits the same clone property and solves it the
     // other way, widening the refspec to all branches (`git config
@@ -1101,11 +1104,6 @@ grep -q 'fabro:commit-body:start' /tmp/fabro/pr_body.md"]
     // \"tolerate an already-open PR\" but swallows every real gh error into a
     // discarded fallback, and then dies at the next line under `set -e` with the
     // cause buried. Asking first is the same idempotency with the error intact.
-    // The three lines after `git push -u origin HEAD` give this single-branch clone a
-    // remote-tracking ref for the run branch. Checkpoints no longer push (ADR 0011 D1),
-    // so `deliver`, `ci_fix_gate` and `remerge_base` push for real, and a bare
-    // `--force-with-lease` with no tracking ref is rejected as `stale info`. The guard
-    // keeps a second visit (human_rescue -> [P]) from adding the refspec twice.
     open_pr [label="Push and open PR", shape=parallelogram, output_schema="routing",
         script="set -e
 B=$(git rev-parse --abbrev-ref HEAD)

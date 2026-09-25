@@ -478,14 +478,22 @@ fi"]
     //
     // The wait costs a held coder lease, so this is a ceiling and not a target. The
     // durable fix belongs in the repository: a concurrency group on the CI workflow
-    // collapses the queue that produced the 48 minutes, since fabro checkpoints after
-    // every stage and each push had been starting a full CI run of its own.
+    // collapses the queue that produced the 48 minutes, since fabro then pushed a
+    // checkpoint after every stage and each push started a full CI run of its own
+    // (backlog stopped that in ADR 0011 D1).
     //
     // One rerun before ci_fix (ADR 0011 D2). When the checks settle red, the failed jobs
     // of each failing Actions run are rerun ONCE per merge phase (`ci_rerun_done`,
     // cleared by merge_gate), and only while >= 30 min of merge_deadline remain and this
-    // node has run < 20 min -- so a real failure still leaves ci_fix its budget, and the
-    // second wait cannot reach this node's 50m timeout, which routes to mark_needs_human.
+    // node has run < 20 min, so a real failure still leaves ci_fix its budget. On a
+    // first visit merge_gate has just set the deadline 60 min out, so only the 20-min
+    // guard can bind there; the 30-min guard matters on the visit after a ci_fix push.
+    //
+    // The wait itself is capped at 47 min inside the node (the `T0 + 2820` check). On a
+    // first visit the 60-min deadline is always later than this node's 50m timeout, so
+    // before the cap a CI that had not settled -- a slow rerun started at minute 19, or a
+    // slow first run -- ended in the timeout, which routes to mark_needs_human with a
+    // generic reason. The cap reports it as blocked, with a reason that names the cause.
     // 4 of 7 "CI-fix could not fix" blocks in the 2026-09-24 review were flakes that
     // passed on a plain rerun (writers-app#966, womens-fantasy-sports#1245/#1246,
     // lawncare-saas#2608).
@@ -504,6 +512,7 @@ while : ; do
   while : ; do
     NOW=$(date +%s)
     if [ \"$NOW\" -ge \"$DL\" ]; then blocked 'The 60-minute merge budget is exhausted; the merge phase was abandoned before CI settled.'; fi
+    if [ $((NOW - T0)) -ge 2820 ]; then blocked 'CI had not settled after 47 minutes of waiting for checks; the merge phase stopped before its watch timeout. A human can merge this PR once its checks are green.'; fi
     gh pr checks \"$PR\" --json name,state,bucket,link > /tmp/fabro/checks.json 2>/dev/null || echo '[]' > /tmp/fabro/checks.json
     TOTAL=$(jq length /tmp/fabro/checks.json 2>/dev/null || echo 0)
     PEND=$(jq '[.[] | select(.bucket == \"pending\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
@@ -697,8 +706,9 @@ exit 0"]
     // `settle` stays as the guard for a push by ci_fix_gate or remerge_base.
     // timeout="50m": `settle` is bounded by merge_deadline, and fabro's 10m command
     // default fired first on womens-fantasy-sports#1247 and writers-app#963. 50m stays
-    // under the root graphs' stall_timeout="60m". `settle` below is that in-node wait; it polls the CURRENT head
-    // and is bounded by the same `merge_deadline` the rest of the phase uses, with a
+    // under the root graphs' stall_timeout="60m".
+    //
+    // `settle` below is that in-node wait; it polls the CURRENT head and is bounded by the same `merge_deadline` the rest of the phase uses, with a
     // short grace for the case where no check ever appears. The retry loop re-settles
     // once if protection refuses anyway, so a check that starts late still merges.
     //
@@ -727,7 +737,7 @@ settle() {
     elif [ \"$P\" = 0 ]; then
       return 0
     fi
-    echo 'waiting for CI on the head the checkpoint push created ('$P' pending of '$T')'
+    echo 'waiting for CI on the current head ('$P' pending of '$T')'
     sleep 15
   done
 }
@@ -741,7 +751,7 @@ W=0
 while [ $W -lt 6 ]; do
   M=$(gh pr view \"$PR\" --json mergeable --jq .mergeable 2>/dev/null || echo UNKNOWN)
   if [ \"$M\" != UNKNOWN ]; then break; fi
-  echo 'mergeability is UNKNOWN; waiting for GitHub to recompute the merge ref after the checkpoint push'
+  echo 'mergeability is UNKNOWN; waiting for GitHub to recompute the merge ref after the last push'
   W=$((W + 1))
   sleep 5
 done
@@ -768,7 +778,7 @@ while :; do
     continue
   fi
   if grep -q 'not mergeable' /tmp/fabro/merge_attempt.log; then
-    echo 'attempt '$A' was told the PR is not mergeable moments after a checkpoint push; letting GitHub catch up and retrying'
+    echo 'attempt '$A' was told the PR is not mergeable moments after a push; letting GitHub catch up and retrying'
     A=$((A + 1))
     sleep 10
     continue
@@ -784,11 +794,11 @@ SR=$(cat /tmp/fabro/strict_retry 2>/dev/null || echo 0)
 git fetch origin \"$B\" 2>/dev/null || true
 if git merge-base --is-ancestor origin/\"$B\" HEAD 2>/dev/null; then
   if grep -q 'branch was modified' /tmp/fabro/merge_attempt.log; then
-    block 'GitHub rejected the squash merge three times with a branch-moved error, while this branch is NOT behind its base. That is the checkpoint-push race, not a problem with the change: the PR is very likely mergeable as it stands, and a human can merge it directly.'
+    block 'GitHub rejected the squash merge three times with a branch-moved error, while this branch is NOT behind its base. That is the head-push race, not a problem with the change: the PR is very likely mergeable as it stands, and a human can merge it directly.'
   elif grep -q 'policy prohibits' /tmp/fabro/merge_attempt.log; then
-    block 'Branch protection on the base refused the merge: a required status check was not successful on the head commit at merge time. Fabro pushes a checkpoint commit after every stage, so the head moved after CI was confirmed and the required checks had to start over; this node waited for them and still ran out of attempts. The change itself was approved and CI passed on the reviewed head, so a human can merge this PR once the checks on the current head are green.'
+    block 'Branch protection on the base refused the merge: a required status check was not successful on the head commit at merge time. The head moved after CI was confirmed (a push by ci_fix or the base re-merge, or by someone outside this run), so the required checks had to start over; this node waited for them and still ran out of attempts. The change itself was approved and CI passed on the reviewed head, so a human can merge this PR once the checks on the current head are green.'
   elif grep -q 'not mergeable' /tmp/fabro/merge_attempt.log; then
-    block 'GitHub refused the squash merge three times as not mergeable, while this branch is NOT behind its base. It cannot be a conflict: the base is an ancestor of this branch, so there is nothing to conflict with. This is the checkpoint-push race seen through the GitHub mergeability cache, which can report the PREVIOUS head as mergeable while the mutation evaluates the new one. The PR is very likely mergeable as it stands, and a human can merge it directly.'
+    block 'GitHub refused the squash merge three times as not mergeable, while this branch is NOT behind its base. It cannot be a conflict: the base is an ancestor of this branch, so there is nothing to conflict with. This is the head-push race seen through the GitHub mergeability cache, which can report the PREVIOUS head as mergeable while the mutation evaluates the new one. The PR is very likely mergeable as it stands, and a human can merge it directly.'
   else
     R=$(grep -v '^$' /tmp/fabro/merge_attempt.log | tail -3)
     block 'The squash merge was rejected and this run could not complete it; a human must merge this PR. GitHub said: '\"$R\"

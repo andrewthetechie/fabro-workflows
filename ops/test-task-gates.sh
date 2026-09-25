@@ -760,7 +760,7 @@ echo 9 > "$T/merge_fails_until"
 OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
 check "persistent race fails"      "1" "$RC"
 check "bounded at three attempts"  "3" "$(cat "$T/merge_calls")"
-check "names the race, not perms"  "1" "$(grep -c 'checkpoint-push race' "$T/merge_block_reason")"
+check "names the race, not perms"  "1" "$(grep -c 'head-push race' "$T/merge_block_reason")"
 check "says the PR is mergeable"   "1" "$(grep -c 'mergeable as it stands' "$T/merge_block_reason")"
 
 # THE OTHER HALF OF #386: mark_needs_human renders `needs-human`, which reads
@@ -781,7 +781,7 @@ OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
 check "non-race fails"             "1" "$RC"
 check "non-race is not retried"    "1" "$(cat "$T/merge_calls")"
 check "non-race quotes GitHub"     "1" "$(grep -c 'Resource not accessible' "$T/merge_block_reason")"
-check "non-race is not the race"   "0" "$(grep -c 'checkpoint-push race' "$T/merge_block_reason")"
+check "non-race is not the race"   "0" "$(grep -c 'head-push race' "$T/merge_block_reason")"
 check "non-race sets both files"   "1" "$([ -s "$T/needs_human_reason" ] && echo 1 || echo 0)"
 
 # 4b. THE #389 FAILURE: branch protection refuses because the checkpoint push reset
@@ -831,7 +831,7 @@ printf 'GraphQL: Pull Request is not mergeable (mergePullRequest)\n' > "$T/merge
 OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
 check "stale-mergeable fails"       "1" "$RC"
 check "stale-mergeable bounded"     "3" "$(cat "$T/merge_calls")"
-check "names the race not conflict" "1" "$(grep -c 'checkpoint-push race' "$T/merge_block_reason")"
+check "names the race not conflict" "1" "$(grep -c 'head-push race' "$T/merge_block_reason")"
 check "rules out a conflict"        "1" "$(grep -c 'cannot be a conflict' "$T/merge_block_reason")"
 check "no stray doubled quote"      "0" "$(grep -c 'GitHubs' "$T/merge_block_reason")"
 
@@ -843,7 +843,7 @@ printf 'X Pull request andrewthetechie/jelly-swipe#389 is not mergeable: the bas
     > "$T/merge_error"
 OUT=$(sh "$T/merge.sh" 2>&1); RC=$?
 check "protection wins the match"   "1" "$(grep -c 'Branch protection on the base' "$T/merge_block_reason")"
-check "not reported as the race"    "0" "$(grep -c 'checkpoint-push race' "$T/merge_block_reason")"
+check "not reported as the race"    "0" "$(grep -c 'head-push race' "$T/merge_block_reason")"
 
 # 5. Mergeability is UNKNOWN right after the checkpoint push; wait for it.
 rm_setup
@@ -1238,6 +1238,20 @@ printf '%s' '[{"name":"codeql","state":"FAILURE","bucket":"fail","link":"https:/
 OUT=$(wc_run)
 check "non-Actions failure: no rerun" "0" "$(grep -c '^run rerun' "$T/gh.log")"
 check "non-Actions failure: routes to ci_fix" "1" "$(jq -r '.context_updates.gh_fix_attempts' <<<"$(lastjson "$OUT")")"
+
+# 7. The rerun never settles: the node reports blocked at its own 47-minute cap
+#    instead of running into its 50m timeout (which routes to mark_needs_human with a
+#    generic reason). 300s per `date +%s` call: the rerun starts 900s in, and the
+#    pending polls after it reach T0 + 2820 well before merge_deadline.
+wc_setup
+echo 1000000 > "$T/clock"; echo 300 > "$T/clock_step"
+echo 1010000 > "$T/merge_deadline"
+printf '%s' "$FAILING" > "$T/checks_1.json"
+printf '%s' '[{"name":"test","state":"QUEUED","bucket":"pending","link":"https://github.com/o/r/actions/runs/111/job/11"}]' > "$T/checks_2.json"
+OUT=$(wc_run)
+check "rerun never settles: one rerun" "1" "$(grep -c '^run rerun' "$T/gh.log")"
+check "rerun never settles: blocked" "true" "$(jq -r '.context_updates.checks_blocked' <<<"$(lastjson "$OUT")")"
+check "rerun never settles: names the cap" "1" "$(grep -c 'after 47 minutes' "$T/merge_block_reason")"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE

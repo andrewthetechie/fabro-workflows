@@ -268,9 +268,9 @@ def _completed_at(run: Mapping[str, object]) -> datetime | None:
         return None
 
 
-# The branch fabro's checkpoint publishes for every run, and the only thing
-# needed to find that run's PR. `open_pr`'s own push is always
-# `Everything up-to-date`.
+# The run branch, and the only thing needed to find that run's PR. Since ADR
+# 0011 D1 fabro no longer pushes checkpoints, so the branch reaches GitHub only
+# at `open_pr`: a run that failed before it has no remote branch, and so no PR.
 RUN_BRANCH_PREFIX = "fabro/run/"
 
 
