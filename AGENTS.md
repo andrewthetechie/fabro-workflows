@@ -65,8 +65,9 @@ ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp 
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
 ```
 
-Baselines as of 2026-09-19 (review+merge shared and imported):
-`Backlog (59 nodes, 138 edges)` with exactly one warning — `issue_number` unbound in
+Baselines as of 2026-09-24 (review+merge shared and imported; ADR 0011 added
+`autofix` and `file_remainder`):
+`Backlog (61 nodes, 143 edges)` with exactly one warning — `issue_number` unbound in
 `claim` (draft 10's deliberate fail-closed input, the same shape as `pr_number`) — and
 `PrReview (30 nodes, 65 edges)` with exactly one warning — `pr_number` unbound in
 `validate_input` — and `IssueTriage (14 nodes, 32 edges)` clean. Backlog and PrReview both include the ~21
@@ -102,7 +103,7 @@ the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them 
 fixtures:
 
 ```sh
-./ops/test-task-gates.sh      # 184 checks, offline — no host, container or network
+./ops/test-task-gates.sh      # 240 checks, offline — no host, container or network
 ```
 
 It needs only `jq` and `python3`, so it belongs in the same pre-push hook. It covers
