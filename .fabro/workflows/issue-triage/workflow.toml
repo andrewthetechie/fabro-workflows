@@ -17,14 +17,9 @@ high-reasoning = ["kimi:kimi-k3"]
 contents = "read"
 issues = "write"
 
-# Nothing is committed and nothing is pushed. Leaving either push on leaks one dead
-# branch per run into the target repository, and a push would fail anyway under a
-# contents: read token.
+# Nothing in this package commits. No run branch and no checkpoint commits (0.362: enabled = false also skips checkpoint commits).
 [run.run_branch]
-push = false
-
-[run.meta_branch]
-push = false
+enabled = false
 
 # No [run.environment.env]. The only consumer was the deleted capacity gate, which
 # called the fabro API; nothing else in this package reads the environment.

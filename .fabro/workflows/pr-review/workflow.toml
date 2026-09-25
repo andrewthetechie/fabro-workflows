@@ -32,10 +32,6 @@ kimi-k3 = ["zai:glm-5.3"]
 enabled = true
 push = false
 
-# Nothing reads a pushed metadata branch; leaving it on leaks one branch per run.
-[run.meta_branch]
-push = false
-
 # Full history. `depth` defaults to 100 (RunCloneSettings::DEFAULT_DEPTH) and `depth = 0`
 # means unlimited. A shallow clone breaks every git operation this workflow is built
 # on: `git diff origin/<base>...HEAD` dies with `fatal: no merge base` when the branch

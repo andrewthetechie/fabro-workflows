@@ -1,9 +1,10 @@
 #!/bin/sh
 # fabro-branch-sweep.sh — delete leaked fabro/run/* and fabro/meta/* branches.
 #
-# Fabro pushes fabro/run/<run_id> and fabro/meta/<run_id> to every repository it
-# works on and never deletes them. This reaps them. Deterministic: every skip is
-# a mechanical test, there is no judgment and no model involved.
+# Fabro pushes fabro/run/<run_id> to every repository it works on and never
+# deletes them. 0.362 no longer creates fabro/meta/* branches; this still sweeps
+# the ones earlier versions left. Deterministic: every skip is a mechanical
+# test, there is no judgment and no model involved.
 #
 # Skip rules, in order:
 #   1. the branch is the head of an OPEN pull request      -> never delete

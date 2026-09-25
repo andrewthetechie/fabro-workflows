@@ -43,13 +43,6 @@ kimi-for-coding = ["zai:glm-5.3"]
 kimi-k3 = ["zai:glm-5.3"]
 long-context = ["kimi:kimi-k3"]
 
-# Do not push the run metadata branch. Fabro pushes fabro/meta/<run_id> to the
-# target repository on every run and never deletes it; nothing reads the pushed
-# copy (run metadata is served from the fabro API and the run store). Leaving
-# this on accumulates one dead branch per run forever. See task 12.
-[run.meta_branch]
-push = false
-
 # Checkpoints still COMMIT after every stage, but fabro no longer PUSHES them
 # (ADR 0011 D1). Every checkpoint is an allow-empty commit, and once the PR exists
 # each push started a full CI run: womens-fantasy-sports#1247 carried 80 commits
