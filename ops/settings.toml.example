@@ -62,6 +62,10 @@ enabled = true
 url = "http://<HOST>:<FABRO_PORT>"
 
 # --- LLM catalog overlay ---
+# 0.362+: `codec` and the protocol adapter ids (`openai-compatible`, `anthropic`,
+# `gemini`, `openai`) are rejected; a cold start refuses to boot. Use
+# `codecs = [...]`, which defaults to `["openai-chat"]`.
+#
 # Provider credentials live in the fabro vault, not here. There is no litellm
 # provider and no `coders` model row (ADR 0007, docs/direct-providers/
 # 04-retire-the-litellm-rows.md): the coders pool crossed the LiteLLM ingress
@@ -94,8 +98,6 @@ url = "http://<HOST>:<FABRO_PORT>"
 [llm.providers.box-a]
 display_name = "Local coder A (10.10.0.29)"
 base_url = "http://<IP>:8000/v1"
-adapter = "openai-compatible"
-codec = "openai-chat"
 auth = { type = "none" }
 
 [llm.providers.box-a.models."coders-a"]
@@ -107,8 +109,6 @@ capabilities = { text = true, tools = true, reasoning = true }
 [llm.providers.box-b]
 display_name = "Local coder B (10.10.0.56)"
 base_url = "http://<IP>:8000/v1"
-adapter = "openai-compatible"
-codec = "openai-chat"
 auth = { type = "none" }
 
 [llm.providers.box-b.models."coders-b"]
@@ -120,8 +120,6 @@ capabilities = { text = true, tools = true, reasoning = true }
 [llm.providers.spark]
 display_name = "Local long-context (10.10.0.30)"
 base_url = "http://<IP>:8888/v1"
-adapter = "openai-compatible"
-codec = "openai-chat"
 auth = { type = "none" }
 default_model = "long-context"
 
@@ -165,14 +163,13 @@ api_model = "glm-5.3-flash"
 limits = { context_tokens = 262144, max_output_tokens = 16384 }
 capabilities = { text = true, tools = true, reasoning = true }
 
-# Kimi is Anthropic-shaped (adapter = anthropic, codec = anthropic-messages) and
-# has no built-in provider pointing at the coding plan, so it is defined fully.
+# Kimi is Anthropic-shaped (codecs = ["anthropic-messages"]) and has no built-in
+# provider pointing at the coding plan, so it is defined fully.
 [llm.providers.kimi]
 display_name = "Kimi (coding plan)"
 base_url = "https://api.kimi.com/coding"
 enabled = true
-adapter = "anthropic"
-codec = "anthropic-messages"
+codecs = ["anthropic-messages"]
 auth = { type = "bearer" }
 
 [llm.providers.kimi.models."kimi-for-coding"]
@@ -204,3 +201,10 @@ capabilities = { text = true, tools = true, reasoning = true }
 # `configured = false`, so it never competes.
 [llm.providers.moonshot]
 enabled = false
+
+# 0.362 derives one git identity per run; without this it looks the author up from
+# the GitHub token user and fails the run at setup if it cannot. Setting both fields
+# skips that lookup, and makes every factory commit attributable.
+[run.git.author]
+name  = "andrews-ai-agent"
+email = "andrews-ai-agent@users.noreply.github.com"
