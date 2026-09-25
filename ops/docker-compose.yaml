@@ -37,13 +37,6 @@ services:
       - "${SCHEDULER_PORT:-32280}:${SCHEDULER_PORT:-32280}"
     volumes:
       - scheduler-data:/data  # SQLite, from draft 06 onward; mounted now so compose never changes again
-      # Read-only: the scheduler only runs one read command inside a fabro sandbox
-      # (the decomposed-task count). This is the one place the scheduler is given
-      # host-root-equivalent access; it is deliberately absent otherwise, because a
-      # run must not be able to see this service's lease table. See modules
-      # `fabro_scheduler.docker` and `fabro_scheduler.probe`. Keeping it ro means a
-      # bug can exec a read into a sandbox but cannot mutate the daemon.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       # Resolved here rather than only read from env_file, so the container cannot
       # bind one port while compose publishes another when the value is set in the

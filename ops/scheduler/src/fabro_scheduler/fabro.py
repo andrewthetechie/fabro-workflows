@@ -39,6 +39,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 import httpx
+from urllib.parse import quote
 
 from .workflow_version import (
     BACKLOG_ENTRYPOINT,
@@ -234,6 +235,67 @@ def get_stages(
             f"GET /runs/{run_id}/stages returned no `data` array: {_summarise(body)}"
         )
     return data
+
+
+def read_sandbox_file(
+    api: str,
+    token: str,
+    run_id: str,
+    path: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> str | None:
+    """`GET /runs/{id}/sandbox/file?path=<path>` → the file body, or `None`.
+
+    The scheduler reads the decomposed-task count this way instead of `docker
+    exec` over a mounted socket (H6, docs/fabro-upgrade/03): the file lives only
+    on the sandbox filesystem, and the fabro API is the one channel that is
+    version-agnostic — the endpoint is identical in 0.354 and 0.362. `path` is
+    **absolute** (`/tmp/fabro/tasks.json`); that form was verified live against
+    0.354, while a relative path resolves under the sandbox working directory
+    (`/workspace/<repo>/…`) and 404s. It is URL-encoded here.
+
+    Returns the body on `200`. Returns `None` on `404` (run or file not found)
+    and on `409` (the run has no active sandbox): both are "cannot read right
+    now", which the probe maps to a `—` on the page. Any other status raises
+    `FabroError`, the same as every other call in this module.
+    """
+    if not token or not token.strip():
+        raise FabroError(
+            "FABRO_API_TOKEN is not set; the scheduler cannot call the fabro API"
+        )
+    encoded = quote(path, safe="")
+    owned = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        # The path is URL-encoded here (verified against 0.354: `%2Ftmp%2F...`
+        # decodes to `/tmp/...`). It goes into the URL string directly — passing
+        # it through httpx `params` would encode the `%` again and the server
+        # would read a literal `%2Ftmp` filename and 404.
+        response = http.request(
+            "GET",
+            f"{api.rstrip('/')}/runs/{run_id}/sandbox/file?path={encoded}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:
+        raise FabroError(
+            f"GET /runs/{run_id}/sandbox/file failed: {exc}"
+        ) from exc
+    finally:
+        if owned:
+            http.close()
+    if response.status_code in (404, 409):
+        return None  # run/file not found, or no active sandbox: unreadable right now
+    if not 200 <= response.status_code < 300:
+        detail = _error_detail(response)
+        raise FabroError(
+            f"GET /runs/{run_id}/sandbox/file -> HTTP {response.status_code}: {detail}",
+            status_code=response.status_code,
+            detail=detail,
+        )
+    return response.text
 
 
 def cancel_run(
@@ -663,6 +725,19 @@ class FabroClient:
         whole page's probe.
         """
         return get_stages(self._api, self._token, run_id, timeout=5.0)
+
+    def read_sandbox_file(self, run_id: str, path: str) -> str | None:
+        """The sandbox file body for the probe's task count; `None` if unreadable.
+
+        Migrated from the Docker socket in the fabro-upgrade series, task 03
+        (H6): the probe addresses the file by absolute path through the fabro API
+        instead of `docker exec`, so the scheduler no longer needs the socket.
+        Uses the same short timeout as `get_stages`: this powers a 30-second beat,
+        and a slow owner must not stall the page's probe.
+        """
+        return read_sandbox_file(
+            self._api, self._token, run_id, path, timeout=5.0
+        )
 
     def cancel_run(self, run_id: str) -> None:
         """Ask fabro to cancel a run. Draft 11's Cancel control.

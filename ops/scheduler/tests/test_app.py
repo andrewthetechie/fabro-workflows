@@ -655,14 +655,11 @@ def test_the_page_shows_tasks_and_stage_columns(config, store):
                 {"node_id": "review_merge.validate", "visit": 2, "status": "running", "started_at": "t2"},
             ]
 
-        def get_run(self, run_id):
-            return {"sandbox": {"instance": {"runtime": {"id": "cid1"}}}}
+        def read_sandbox_file(self, run_id, path):
+            # total 4, index 3 → 2 completed, exactly the old docker exec fixture.
+            return {"/tmp/fabro/tasks.json": "[{},{},{},{}]", "/tmp/fabro/task_index": "3"}.get(path)
 
-    class _FakeDocker:
-        def exec(self, container_id, command, *, timeout=10.0):
-            return "4\n3\n"  # total 4, index 3 → 2 completed
-
-    probe = RunProbe(_FakeFabro(), LeaseStore(store), _FakeDocker())
+    probe = RunProbe(_FakeFabro(), LeaseStore(store))
     probe.tick()
     app = build_app(config, store, run_probe=probe)
 

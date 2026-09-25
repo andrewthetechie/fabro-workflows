@@ -26,6 +26,7 @@ from fabro_scheduler.fabro import (
     get_run,
     issue_claim,
     list_active_runs,
+    read_sandbox_file,
     register_version,
     start_run,
     status_kind,
@@ -432,3 +433,53 @@ def test_issue_claim_is_none_when_the_run_names_no_issue():
     assert issue_claim({"repository": {"name": "o/a"}}) is None
     assert issue_claim({"labels": {"issue": "1"}}) is None
     assert issue_claim({"repository": {"name": "o/a"}, "labels": {"issue": "x"}}) is None
+
+
+# --- read_sandbox_file -----------------------------------------------------------
+
+
+@respx.mock
+def test_read_sandbox_file_returns_the_body_on_200():
+    route = respx.get(re.compile(rf"{re.escape(API)}/runs/R1/sandbox/file\?path=.*"))
+    route.mock(return_value=httpx.Response(200, text="[{},{}]", headers={"content-type": "application/octet-stream"}))
+
+    assert read_sandbox_file(API, TOKEN, "R1", "/tmp/fabro/tasks.json") == "[{},{}]"
+
+
+@respx.mock
+def test_read_sandbox_file_encodes_the_path_once_not_twice():
+    # Regression: encoding with `quote` and then handing the value to httpx
+    # `params` re-encoded the `%`, so the server received `%252Ftmp…` — a literal
+    # filename that 404'd, and the page showed "—" for every leased run (H6,
+    # task 03). The encoded value must sit in the URL directly.
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(str(request.url))
+        return httpx.Response(200, text="[{},{}]")
+
+    respx.get(re.compile(rf"{re.escape(API)}/runs/R1/sandbox/file\?path=.*")).mock(
+        side_effect=handler
+    )
+
+    assert read_sandbox_file(API, TOKEN, "R1", "/tmp/fabro/tasks.json") == "[{},{}]"
+    assert "?path=%2Ftmp%2Ffabro%2Ftasks.json" in captured[0]
+    assert "%252F" not in captured[0]
+
+
+@respx.mock
+def test_read_sandbox_file_returns_none_on_404_and_409():
+    for status in (404, 409):
+        respx.get(re.compile(rf"{re.escape(API)}/runs/R1/sandbox/file\?path=.*")).mock(
+            return_value=httpx.Response(status, text="nope")
+        )
+        assert read_sandbox_file(API, TOKEN, "R1", "/tmp/fabro/tasks.json") is None
+
+
+@respx.mock
+def test_read_sandbox_file_raises_on_any_other_status():
+    respx.get(re.compile(rf"{re.escape(API)}/runs/R1/sandbox/file\?path=.*")).mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+    with pytest.raises(FabroError):
+        read_sandbox_file(API, TOKEN, "R1", "/tmp/fabro/tasks.json")

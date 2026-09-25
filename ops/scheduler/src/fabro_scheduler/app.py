@@ -61,7 +61,6 @@ from starlette.staticfiles import StaticFiles
 from . import __version__
 from .config import ConfigError, SchedulerConfig, load_config
 from .dispatch import DispatchLoop
-from .docker import DockerClient
 from .fabro import FabroClient, FabroError, RunNotStarted
 from .inventory import InventoryPoller
 from .lease import Lease, LeaseConflict, LeaseStore
@@ -159,7 +158,6 @@ def build_app(
         probe = RunProbe(
             client,
             leases,
-            DockerClient(),
             interval_seconds=config.run_probe_seconds,
         )
 
