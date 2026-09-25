@@ -1509,7 +1509,7 @@ echo "triage phase"
 PATH="$ORIG_PATH"
 SAVED_PATH="$PATH"
 T="$WORK/triage"; mkdir -p "$T/bin"
-for n in claim triage_gate post_questions release done apply_ready; do
+for n in claim triage_gate post_questions release done apply_ready improve_gate; do
     extract_from "$SHARED_TRIAGE" "$n" | sed "s#/tmp/fabro#$T#g" > "$T/$n.sh"
     if ! sh -n "$T/$n.sh" 2>"$T/$n.syntax"; then
         FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$n"
@@ -1645,6 +1645,34 @@ echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[]}' > "$T/
 sh "$T/apply_ready.sh" >/dev/null 2>&1
 check "no decisions: no body edit"     "0" "$(grep -c 'decided_body' "$T/gh.log")"
 
+# 15. The decisions rewrite drops only the old section; text below it is kept.
+jq -n '{number:7,labels:[],body:"intro\n## Decisions made during triage\n\n- old\n## Notes\nkeep me"}' > "$T/issue.json"
+echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[],"decisions":[{"question":"Q","decision":"D","basis":"b"}]}' > "$T/triage.json"
+sh "$T/apply_ready.sh" >/dev/null 2>&1
+check "decided: keeps text below"      "1" "$(grep -c '^keep me$' "$T/decided_body.md")"
+check "decided: drops the old entry"   "0" "$(grep -c '^- old$' "$T/decided_body.md")"
+
+# 16. improve_gate restores an Architecture issue's slug marker (contract C2).
+MKR='<!-- fabro:arch-candidate slug=room-deck -->'
+ig_run() { # ig_run <improved body>
+    jq -n --arg m "$MKR" '{number:7,labels:[],body:($m + "\n\nold body")}' > "$T/issue.json"
+    jq -n --arg b "$1" '{status:"improved",body:$b}' > "$T/improve.json"
+    echo 0 > "$T/improve_attempts"; : > "$T/gh.log"; rm -f "$T/improved_body.md"
+    sh "$T/improve_gate.sh" >/dev/null 2>&1
+}
+printf '{"number":7,"title":"t","body":"b","labels":[],"comments":[],"url":"u"}' > "$T/issue_fixture.json"
+ig_run 'new body, marker dropped'
+check "marker dropped: restored"       "$MKR" "$(head -1 "$T/improved_body.md")"
+check "marker dropped: body kept"      "1" "$(grep -c '^new body, marker dropped$' "$T/improved_body.md")"
+ig_run "$(printf 'top\n%s\nrest' "$MKR")"
+check "marker moved: back on line 1"   "$MKR" "$(head -1 "$T/improved_body.md")"
+check "marker moved: only once"        "1" "$(grep -cF "$MKR" "$T/improved_body.md")"
+jq -n '{number:7,labels:[],body:"a human report"}' > "$T/issue.json"
+jq -n '{status:"improved",body:"better report"}' > "$T/improve.json"
+echo 0 > "$T/improve_attempts"; rm -f "$T/improved_body.md"
+sh "$T/improve_gate.sh" >/dev/null 2>&1
+check "no marker: body untouched"      "better report" "$(cat "$T/improved_body.md")"
+
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
@@ -1703,6 +1731,15 @@ echo 0 > "$T/arch/scan_attempts"
 printf '{"candidates":[%s]}' "$(cand one-a Maybe)" > "$T/arch/candidates.json"
 sh "$T/scan_gate.sh" >/dev/null 2>&1; RC=$?
 check "scan_gate bad strength: retry"  "1" "$RC"
+
+# 3b. Fields file_issues concatenates must be strings: a number passes an emptiness
+#     test and then stops file_issues partway through the list.
+for bad in '.files = [1]' '.problem = 5' '.slug = 123' '.diagram = 7'; do
+    echo 0 > "$T/arch/scan_attempts"
+    jq -c "{candidates: [($(cand one-a Strong)) | $bad]}" <<<'null' > "$T/arch/candidates.json"
+    sh "$T/scan_gate.sh" >/dev/null 2>&1; RC=$?
+    check "scan_gate $bad: retry"      "1" "$RC"
+done
 
 # 4. file_issues: 5 Strong, 5 Worth exploring, 1 Speculative; c0 already filed.
 {
@@ -1771,6 +1808,9 @@ check "queue: exit 0"                  "0" "$RC"
 check "queue: order and cap"           "401 402 5 3 7 8 11 12 13 14 15 16" "$(jq -r 'map(tostring) | join(" ")' "$T/queue.json")"
 check "queue: unanswered not queued"   "0" "$(jq '[.[] | select(. == 6)] | length' "$T/queue.json")"
 check "queue: length published"        "12" "$(jq -r '.context_updates.queue_length' <<<"$(lastjson "$OUT")")"
+check "queue: lists past 100 issues"   "2" "$(grep -c -- '--limit 1000' "$T/gh.log")"
+check "graph: signature limit covers the loop" "1" \
+    "$(grep -c '^        loop_restart_signature_limit=20,$' "$ARCH")"
 
 # 2. next_issue walks the queue and counts each outcome.
 echo '[11,12]' > "$T/queue.json"; echo 0 > "$T/queue_index"; date +%s > "$T/run_started"
@@ -1778,6 +1818,7 @@ echo '{"ready":0,"needs_info":0,"not_actionable":0,"skipped":0,"released":0}' > 
 echo 0 > "$T/arch/deferred"; rm -f "$T/arch/in_flight"
 OUT=$(sh "$T/next_issue.sh" 2>&1)
 check "next: first issue"              "11"    "$(cat "$T/issue_number")"
+check "next: publishes issue_number"   "11"    "$(jq -r '.context_updates.issue_number' <<<"$(lastjson "$OUT")")"
 check "next: not done"                 "false" "$(jq -r '.context_updates.queue_done' <<<"$(lastjson "$OUT")")"
 echo ready > "$T/triage_outcome"
 sh "$T/next_issue.sh" >/dev/null 2>&1

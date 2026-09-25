@@ -77,6 +77,10 @@ jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_ur
     // Applies the body only. A second invalid improve.json exits ZERO on purpose and
     // takes the succeeded edge to `triage`: improving the body is best effort, the
     // triage verdict is the value.
+    // The body is written over the issue verbatim, so the gate restores an
+    // Architecture issue's first-line slug marker (contract C2) when the agent dropped
+    // or moved it: deduplication reads only that marker, and without it the next review
+    // files the same candidate again.
     improve_gate [label="Validate and apply the improved body", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/improve.json
 A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
@@ -97,6 +101,11 @@ fi
 echo 0 > /tmp/fabro/improve_attempts
 if [ \"$S\" = improved ]; then
   jq -r .body $F > /tmp/fabro/improved_body.md
+  MK=$(jq -r '.body // \"\"' /tmp/fabro/issue.json | head -1 | grep -E '^<!-- fabro:arch-candidate slug=[a-z0-9-]+ -->$' || true)
+  if [ -n \"$MK\" ] && [ \"$(head -1 /tmp/fabro/improved_body.md)\" != \"$MK\" ]; then
+    { echo \"$MK\"; echo; grep -vF \"$MK\" /tmp/fabro/improved_body.md; } > /tmp/fabro/improved_body.next
+    mv /tmp/fabro/improved_body.next /tmp/fabro/improved_body.md
+  fi
   gh issue edit $N --body-file /tmp/fabro/improved_body.md
   gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.next.json && mv /tmp/fabro/issue.next.json /tmp/fabro/issue.json
 fi
@@ -158,7 +167,7 @@ L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/tr
 R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
 D=$(jq '[.decisions[]?] | length' /tmp/fabro/triage.json 2>/dev/null || echo 0)
 if [ \"$D\" != 0 ]; then
-  { jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Decisions made during triage$/{exit} {print}'
+  { jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Decisions made during triage$/{s=1; next} s && /^## /{s=0} !s{print}'
     echo '## Decisions made during triage'
     echo
     echo 'Triage made these choices without asking. Edit this section to reverse one before the issue is worked.'
@@ -178,7 +187,8 @@ jq -nc '{context_updates:{triage_outcome:\"needs_info\"}}'"]
     // Unquoted word-splitting of $L is safe: triage_gate refuses any label outside
     // ^[a-z0-9:._-]+$, so none can contain a space.
     // Decisions (ADR 0012 D4) are appended to the issue body, replacing any section an
-    // earlier triage wrote, so a human can reverse one before `backlog` works it.
+    // earlier triage wrote, so a human can reverse one before `backlog` works it. Only
+    // that section is dropped, up to the next `## ` heading; text below it is kept.
     apply_ready [label="Promote to the backlog queue", shape=parallelogram, output_schema="routing",
         script="set -e
 N=$(jq -r .number /tmp/fabro/issue.json)
@@ -190,7 +200,7 @@ L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/tr
 R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
 D=$(jq '[.decisions[]?] | length' /tmp/fabro/triage.json 2>/dev/null || echo 0)
 if [ \"$D\" != 0 ]; then
-  { jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Decisions made during triage$/{exit} {print}'
+  { jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Decisions made during triage$/{s=1; next} s && /^## /{s=0} !s{print}'
     echo '## Decisions made during triage'
     echo
     echo 'Triage made these choices without asking. Edit this section to reverse one before the issue is worked.'

@@ -150,7 +150,8 @@ that loops must use `tail -1`.
 
 | Key | Published by | Kind that reads it |
 |---|---|---|
-| `issue_url` | triage phase `claim` | `triage-question`, `triage-failed` (tail -1) |
+| `issue_number` | triage phase `claim`; `arch-review` `next_issue` (before the phase starts) | `triage-question`, `triage-failed` (tail -1). Amended 2026-09-25: these kinds read `issue_url` until then, which `claim` publishes only on success, so a failed claim named the previous issue. |
+| `issue_url` | triage phase `claim` | nothing since 2026-09-25 |
 | `triage_questions` | triage phase `triage_gate` | `triage-question` (tail -1) |
 | `arch_summary` | `arch-review` `summarize` | `arch-summary` (tail -1) |
 

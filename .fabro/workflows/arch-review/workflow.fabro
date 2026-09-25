@@ -4,6 +4,14 @@ digraph ArchReview {
         default_fidelity="truncate",
         // Above every node timeout: `scan` is 50m.
         stall_timeout="60m",
+        // Fabro stops a run when one failure signature repeats this many times, and it
+        // counts run-wide, never resetting on success. The imported gates print one fixed
+        // line on a bad contract, so their signatures are identical across issues, and
+        // the phase runs up to 18 times: at the default of 3, three issues with one
+        // repair turn each would stop the review mid-queue with no summary. 20 covers one
+        // failure per gate per issue; every loop here is bounded, so nothing needs the
+        // breaker to end it.
+        loop_restart_signature_limit=20,
         model_stylesheet="
             *         { model: high-reasoning; }
             .scan     { model: high-reasoning; }
@@ -42,17 +50,22 @@ echo 'history: '$(wc -l < /tmp/fabro/arch/hotspots.txt)' hot files, '$(jq length
 
     // Validates the candidates contract. One repair turn; a second invalid file sets
     // scan_status=failed and exits ZERO, so the run still reports (ADR 0012 D5).
+    // Every field `file_issues` concatenates is checked to be a string here: a number
+    // passes an emptiness test, then stops `file_issues`' jq under `set -e`
+    // partway through the list.
     scan_gate [label="Validate the candidates", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/arch/candidates.json
 A=$(cat /tmp/fabro/arch/scan_attempts 2>/dev/null || echo 0)
 OK=$(jq -r 'if (.candidates | type) != \"array\" then \"no\"
   elif (.candidates | length) > 20 then \"no\"
   elif ([.candidates[] | select(
-      ((.slug // \"\") | tostring | test(\"^[a-z0-9][a-z0-9-]{2,59}$\") | not)
-      or ((.title // \"\") | tostring | test(\"^refactor([(][a-z0-9 ./_-]+[)])?: .+\") | not)
+      ((.slug | type) != \"string\") or (.slug | test(\"^[a-z0-9][a-z0-9-]{2,59}$\") | not)
+      or ((.title | type) != \"string\") or (.title | test(\"^refactor([(][a-z0-9 ./_-]+[)])?: .+\") | not)
       or (((.strength // \"\") as $s | $s == \"Strong\" or $s == \"Worth exploring\" or $s == \"Speculative\") | not)
       or ((.files | type) != \"array\") or ((.files | length) == 0)
-      or ((.problem // \"\") == \"\") or ((.solution // \"\") == \"\") or ((.benefits // \"\") == \"\")
+      or ([.files[] | select((type != \"string\") or (. == \"\"))] | length > 0)
+      or ([.problem, .solution, .benefits] | any((type != \"string\") or (. == \"\")))
+      or (((.diagram // \"\") | type) != \"string\")
     )] | length) > 0 then \"no\"
   elif ([.candidates[].slug] | length) != ([.candidates[].slug] | unique | length) then \"no\"
   else \"yes\" end' $F 2>/dev/null || echo no)
@@ -114,12 +127,14 @@ jq -c '{context_updates:{filed_count:length}}' /tmp/fabro/arch/filed.json"]
     // Budget 1 is every issue this run filed. Budget 2 is at most 10 others: answered
     // needs-info issues (the newest comment carries no fabro:triage- marker, so a human
     // replied), then needs-triage issues, oldest first in each group. Issues this run
-    // filed are never counted twice. A failed list read counts as empty.
+    // filed are never counted twice. A failed list read counts as empty. `gh issue
+    // list` returns the newest first, so the limit is set well above any real queue:
+    // a lower one would cut the oldest issues, which are the ones this queue takes first.
     build_queue [label="Build the triage queue", shape=parallelogram, output_schema="routing",
         script="set -e
 mkdir -p /tmp/fabro/arch
-gh issue list --label needs-info --state open --json number,comments --limit 100 > /tmp/fabro/arch/q_info.json || echo '[]' > /tmp/fabro/arch/q_info.json
-gh issue list --label needs-triage --state open --json number --limit 100 > /tmp/fabro/arch/q_triage.json || echo '[]' > /tmp/fabro/arch/q_triage.json
+gh issue list --label needs-info --state open --json number,comments --limit 1000 > /tmp/fabro/arch/q_info.json || echo '[]' > /tmp/fabro/arch/q_info.json
+gh issue list --label needs-triage --state open --json number --limit 1000 > /tmp/fabro/arch/q_triage.json || echo '[]' > /tmp/fabro/arch/q_triage.json
 for f in q_info q_triage; do
   jq -e 'type == \"array\"' /tmp/fabro/arch/$f.json > /dev/null 2>&1 || echo '[]' > /tmp/fabro/arch/$f.json
 done
@@ -139,7 +154,9 @@ jq -c '{context_updates:{queue_length:length}}' /tmp/fabro/queue.json"]
     // next one. `in_flight` marks that an issue was handed to the phase, so the first
     // visit counts nothing. After 6 hours (ADR 0012 D8) no new triage starts; the rest
     // wait for the next review and are counted as deferred. The phase reads only
-    // /tmp/fabro/issue_number (contract C1).
+    // /tmp/fabro/issue_number (contract C1). `issue_number` is also published here,
+    // before `claim` runs, so a `release` hook for an issue whose claim failed names that
+    // issue and not the one before it.
     next_issue [label="Next issue", shape=parallelogram, output_schema="routing",
         script="set -e
 if [ -f /tmp/fabro/arch/in_flight ]; then
@@ -167,7 +184,7 @@ echo $((I + 1)) > /tmp/fabro/queue_index
 rm -f /tmp/fabro/triage_outcome
 : > /tmp/fabro/arch/in_flight
 echo 'triaging #'$(cat /tmp/fabro/issue_number)
-jq -nc '{context_updates:{queue_done:\"false\"}}'"]
+jq -nc --arg n \"$(cat /tmp/fabro/issue_number)\" '{context_updates:{queue_done:\"false\",issue_number:$n}}'"]
 
     triage_phase [import="../_shared/triage/triage.fabro"]
 

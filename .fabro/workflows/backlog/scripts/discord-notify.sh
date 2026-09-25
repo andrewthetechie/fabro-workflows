@@ -77,7 +77,7 @@ repo_url=""
 issue=""
 pr_url=""
 triage_questions=""
-issue_url=""
+issue_newest=""
 arch_summary=""
 if [ -r "$token_file" ]; then
   auth="Authorization: Bearer $(cat "$token_file")"
@@ -102,8 +102,11 @@ if [ -r "$token_file" ]; then
   # keys once per issue, and head -1 would name the first issue every time.
   triage_questions=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"triage_questions":"[^"]*"' | tail -1 | cut -d'"' -f4)
-  issue_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
-    | grep -o '"issue_url":"[^"]*"' | tail -1 | cut -d'"' -f4)
+  # The newest issue_number, not issue_url: triage `claim` publishes issue_url only
+  # when it succeeds, so a `release` after a failed claim would name the previous
+  # issue. arch-review's `next_issue` publishes issue_number before the phase starts.
+  issue_newest=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"issue_number":"\{0,1\}[0-9]\{1,\}' | tail -1 | tr -dc '0-9')
   arch_summary=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"arch_summary":"[^"]*"' | tail -1 | cut -d'"' -f4)
   arch_summary=$(printf '%s' "$arch_summary" | sed 's/[\\"]//g' | cut -c1-800)
@@ -115,12 +118,11 @@ if [ -r "$token_file" ]; then
   triage_questions=$(printf '%s' "$triage_questions" | sed 's/[\\"]//g' | cut -c1-800)
 fi
 
-# The triage kinds name the issue from issue_url (newest), never from issue_number:
-# issue_number is read with head -1 above, which is the first issue a looping run
-# triaged.
+# The triage kinds name the newest issue_number, never the head -1 read above, which
+# is the first issue a looping run triaged. Empty means no link, never a wrong one.
 case "$kind" in
   triage-question|triage-failed)
-    if [ -n "$issue_url" ]; then issue="${issue_url##*/}"; fi ;;
+    issue="$issue_newest" ;;
   arch-summary)
     issue="" ;;
 esac
