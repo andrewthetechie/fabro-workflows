@@ -225,12 +225,6 @@ scp .fabro/workflows/backlog/scripts/discord-notify.sh andrew@10.10.0.32:/tmp/
 ssh andrew@10.10.0.32 'docker cp /tmp/discord-notify.sh \
   fabro-fabro-1:/storage/scripts/discord-notify.sh && rm /tmp/discord-notify.sh'
 
-# the operator's manual-fire tool is a read-only wrapper; there is exactly one copy
-# of fire-pr-review.sh, on main. Install the wrapper once; it is not re-deployed.
-scp docs/auto-merge/fabro-fire-pr-review-wrapper.sh \
-  andrew@10.10.0.32:~/bin/fabro-fire-pr-review.sh
-ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-fire-pr-review.sh'
-
 # the sandbox profile images. Not a file copy: build-images.sh clones each target
 # repo on the host, warms that repo's caches from its own lockfiles, and gates the
 # result on an offline cache check plus a live run of the repo's .fabro/setup.sh.
@@ -311,8 +305,6 @@ ssh andrew@10.10.0.32 'cat ~/fabro/docker-compose.yaml'  | diff - ops/docker-com
 ssh andrew@10.10.0.32 'cat ~/fabro/scheduler/repos.toml' | diff - ops/scheduler/repos.toml
 ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/scripts/discord-notify.sh' \
   | diff - .fabro/workflows/backlog/scripts/discord-notify.sh
-ssh andrew@10.10.0.32 'cat ~/bin/fabro-fire-pr-review.sh' \
-  | diff - docs/auto-merge/fabro-fire-pr-review-wrapper.sh
 ```
 
 A compose change needs `cd ~/fabro && docker compose up -d` to take effect — or

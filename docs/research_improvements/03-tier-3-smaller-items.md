@@ -10,8 +10,9 @@ nothing else here is done.
 
 **Status 2026-09-24: open, low.** Still `push = false` only (`issue-triage/workflow.toml:23-24`). Nothing has broken, and the change is still correct and cheap.
 
-**Update 2026-09-25:** unchanged, and `arch-review` (same shape, no commits) sets
-`[run.run_branch] push = false` only too. Now tracked in `docs/factory-roadmap/H-housekeeping.md`.
+**Update 2026-09-25: applied.** `docs/fabro-upgrade/` task 05 set `[run.run_branch]
+enabled = false` on both `issue-triage` and `arch-review` (same shape, no commits), which is
+`docs/factory-roadmap/H-housekeeping.md` H5. The text below is the original diagnosis.
 
 `.fabro/workflows/issue-triage/workflow.toml:21` sets:
 
@@ -122,9 +123,9 @@ bounded, and its reports are the ones worth reading a week later. Leave `backlog
 
 **Status 2026-09-24: open, doc only.** The server is still 0.354.0-nightly.0 (`fabro --version` in the container, and `FABRO_VERSION` in `~/fabro/.env`, both checked 2026-09-24). Note: ADR 0011 D1 sets `backlog`'s `[run.run_branch] push = false`. That table is **not** retired, and it stays load-bearing after the upgrade. Only `[run.meta_branch]` becomes inert.
 
-**Update 2026-09-25: due now.** The upgrade target is 0.362.0-nightly.0, which is after
-0.355, so the table becomes dead config on that upgrade. `docs/fabro-upgrade/` deletes the
-tables and adds the runbook line as one of its tasks.
+**Update 2026-09-25: applied.** The host now runs 0.362.0-nightly.0, which is after 0.355,
+so the table was dead config. `docs/fabro-upgrade/` task 05 deleted it from all four
+`workflow.toml`s once the host was on 0.362.
 
 All three `workflow.toml`s set `[run.meta_branch] push = false` with a comment explaining
 that nothing reads the pushed metadata branch and it would otherwise accumulate one dead

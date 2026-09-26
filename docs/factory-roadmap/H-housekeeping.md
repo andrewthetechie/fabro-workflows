@@ -1,7 +1,8 @@
 # H · Housekeeping
 
-**Status:** proposed. **Axis:** repeatability. **Effort:** S each. **Feasibility:** high.
-Each item is independent. Items H2–H5 carry open items from `docs/research_improvements/`.
+**Status:** H5 and H6 applied 2026-09-25 (`docs/fabro-upgrade/`); H1–H4 and H7 proposed.
+**Axis:** repeatability. **Effort:** S each. **Feasibility:** high.
+Each item is independent. Items H2–H4 carry open items from `docs/research_improvements/`.
 
 ## H1 · `AGENTS.md` points at deleted docs
 
@@ -41,8 +42,7 @@ seconds.
 ## H6 · The scheduler reads the sandbox through the Docker socket
 
 **Applied (2026-09-25, `docs/fabro-upgrade/` task 03).** `probe.py` now reads
-`tasks.json` through `GET /api/v1/runs/{id}/sandbox/file` and the socket mount is gone. The
-original diagnosis is below, kept for the record.
+`tasks.json` through `GET /api/v1/runs/{id}/sandbox/file` and the socket mount is gone.
 
 ## H7 · Anchor the `discord-rescue` hook matcher
 

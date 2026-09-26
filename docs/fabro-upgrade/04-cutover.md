@@ -103,7 +103,9 @@ reloaded"` prints `0`.
 With the token: `GET /api/v1/automations` (16 rows, and the four `arch-review-*` rows'
 schedule triggers `enabled`, the rest as before), `GET /api/v1/environments` (5),
 `docker compose exec -T fabro fabro variable get FABRO_AUTO_MERGE` (present, unchanged value),
-and `GET /api/v1/settings` (shows `run.git.author` from C2).
+and the overlay itself (`grep -A2 '^\[run.git.author\]' /storage/.home/settings.toml`).
+`GET /api/v1/settings` cannot confirm C2: on 0.362 it returns only the `server.*` layer.
+The readback is on the first run, in step 11.
 
 ### 9. Graph gates (`AGENTS.md`, "Validating")
 From the Mac: `rsync -a --delete .fabro/ andrew@10.10.0.32:/tmp/check/`, then on the host
@@ -136,6 +138,9 @@ gone (the history was dropped) and releases it. The receipt scan finds the
 `GET /api/pools` shows new leases, with new run ids, on both boxes. Confirm one new run is
 visible in fabro (`GET /api/v1/runs/<id>`) and advancing past `claim` and `prep`
 (`ops/fabro-run-status.sh <id>` from the Mac).
+Confirm C2 on that run: `GET /api/v1/runs/<id>/settings` contains
+`"author":{"name":"andrews-ai-agent","email":"andrews-ai-agent@users.noreply.github.com"}`,
+and `fabro events <id> -p` prints `Git identity: andrews-ai-agent <…> explicit`.
 
 ### 12. Ops tooling spot-check on 0.362
 - `ops/fabro-run-status.sh <new run id>` prints stage and progress (it uses `fabro events -p`

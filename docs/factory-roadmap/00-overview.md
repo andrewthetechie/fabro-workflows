@@ -59,9 +59,8 @@ Items are ranked by impact on **repeatability** (no silent loss of work, no loop
 
 **Why this order.** A1 and A2 take a few hours each and stop losses that happen today. B1
 comes early because A3, A4, A5 and B2 each need a before/after number, and a baseline can be
-taken only once. **B8's first step, the move to 0.362.0-nightly.0, is already scheduled as
-`docs/fabro-upgrade/`**, and it runs before any item here that changes a `.fabro` file, so
-new work is written against the new version.
+taken only once. **B8's first step, the move to 0.362.0-nightly.0, was applied on
+2026-09-25 (`docs/fabro-upgrade/`)**, so new work is written against 0.362.
 
 ## The factory today (verified 2026-09-25)
 

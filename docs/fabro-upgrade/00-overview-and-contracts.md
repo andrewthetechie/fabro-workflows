@@ -1,5 +1,8 @@
 # Fabro upgrade 0.354 → 0.362: overview and contracts
 
+**Status: applied 2026-09-25.** Tasks 01–05 are done. Task 06's documentation parts are done,
+and its canary watch (Part E) is in progress. The host runs `0.362.0-nightly.0`.
+
 **Read this file first.** Every task in this folder assumes the decisions, facts and rules in
 this file. Each task repeats what it needs. If a task and this file disagree, this file is
 correct: stop and report the conflict. Do not guess.
@@ -63,6 +66,9 @@ live database (recorded below as findings R1–R6). The roadmap entry is
    explicitly, which also skips the lookup.
 5. **Usage replaces billing** in the API, the web UI tab and the event payloads
    (`usage.tokens.{input,output,reasoning,cache_read,cache_write}`).
+6. **`GET /api/v1/settings` returns only the `server.*` layer.** It cannot show a `run.*`
+   value such as `run.git.author`. Read a run's resolved settings with
+   `GET /api/v1/runs/{id}/settings` instead.
 
 ## Canonical contracts
 
@@ -121,6 +127,9 @@ Appended to the overlay, and mirrored in `ops/settings.toml.example`:
 name  = "andrews-ai-agent"
 email = "andrews-ai-agent@users.noreply.github.com"
 ```
+
+Read it back on a run, not on the server: `GET /api/v1/runs/{id}/settings` shows the author
+(behaviour change 6), and `fabro events <id> -p` prints `Git identity: … explicit`.
 
 ### C3. Run-history drop (decision 2, finding R1)
 

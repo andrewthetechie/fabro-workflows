@@ -62,7 +62,7 @@ evidence behind them. It is no longer where the work is tracked.
 | 01.1 circuit-breaker limit | open, low. `backlog` still has no `loop_restart_signature_limit` (`arch-review` has 20) | `factory-roadmap/H-housekeeping.md` |
 | 01.4 `rescue.md` reset | **still open**. `record_guidance` (`backlog/workflow.fabro:1467`) is still the only line that names the file | `factory-roadmap/H-housekeeping.md` |
 | 02 `output_schema` pilot | **superseded**. The replacement is a validating submit tool baked into the profile images, so the agent passes fields and code writes the JSON. On upstream `main` (checked 2026-09-25), the `sandbox` MCP transport still needs Daytona, so an MCP writer is still blocked | `factory-roadmap/B3-structured-io-submit-tool.md` |
-| 03.1 issue-triage `run_branch.enabled` | open, low. Unchanged | `factory-roadmap/H-housekeeping.md` |
+| 03.1 issue-triage `run_branch.enabled` | **applied** (task 05, 2026-09-25): `issue-triage` and `arch-review` set `[run.run_branch] enabled = false` | `factory-roadmap/H-housekeeping.md` (H5) |
 | 03.3 artifacts | open, low. The scorecard reads the run store rather than artifacts | `factory-roadmap/B1-factory-scorecard.md` (note) |
 | 03.4 `meta_branch` upgrade trap | **applied** (task 05, 2026-09-25): 0.362 accepts and ignores the table, so the upgrade deleted it from all four `workflow.toml`s | `fabro-upgrade/` |
 | 03.5 no CI / pre-push hook | open, medium. More urgent once the upgrade changes the gates | `factory-roadmap/H-housekeeping.md` |

@@ -89,8 +89,16 @@ that already worked.
    exactly finding R5's mapping. Every other provider listing those ids must be
    `configured: false`.
 
-8. **Settings readback.** `GET http://127.0.0.1:32299/api/v1/settings` (with the same token)
-   must show `run.git.author` with the C2 values.
+8. **Settings readback.** Do **not** use `GET /api/v1/settings`: on 0.362 it returns only the
+   `server.*` layer (its top-level keys are `["server"]`), so it never shows `run.git.author`.
+   The copy has no runs and no Docker socket, so `run.*` cannot be read back through a run
+   here either. On the copy, the check is that step 4's startup log shows no overlay
+   rejection with the C2 block present:
+   ```sh
+   docker exec fabro-rehearsal-0362 grep -A2 '^\[run.git.author\]' /storage/.home/settings.toml
+   docker logs fabro-rehearsal-0362 2>&1 | grep -ci 'rejected\|invalid' # expect 0
+   ```
+   The real readback happens on the first production run (task 04, step 11).
 
 9. **Tear down.**
    ```sh
@@ -101,7 +109,7 @@ that already worked.
 - The copy started, with activation reporting zero runs and the API listening.
 - The four validation results match R4. `parse` works.
 - Model resolution matches R5.
-- `run.git.author` is accepted and read back.
+- The overlay carries `run.git.author` and the copy started with no overlay rejection.
 - The container and volume are removed, and production's `fabro-fabro-1` `StartedAt` is
   unchanged.
 
@@ -114,4 +122,4 @@ config change gets the copy to start.
 
 ## Report
 The `VACUUM` duration and the resulting database size, the startup log excerpt, the four
-validation outputs, the resolution table, and the settings readback of `run.git.author`.
+validation outputs, the resolution table, and the step 8 output.
