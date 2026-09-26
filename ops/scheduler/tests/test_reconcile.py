@@ -1152,3 +1152,69 @@ def test_the_lost_run_path_makes_no_pr_request(config, store, leases, fabro):
     (row,) = _history(store)
     assert row["kind"] == "lost"
     assert row["pr_lookup"] == "none"
+
+
+# --- usage captured at release (feature: hosted vs local billing) ----------------
+
+
+def _usage_body() -> dict:
+    return {
+        "by_model": [
+            {
+                "model": {"provider": "box-a", "model_id": "coders"},
+                "stages": 1,
+                "usage": {
+                    "tokens": {"input": 1000, "output": 500, "reasoning": 0,
+                               "cache_read": 0, "cache_write": 0},
+                    "cost": {"usd_micros": 42_000, "source": "catalog"},
+                },
+            },
+            {
+                "model": {"provider": "zai", "model_id": "glm-5.3"},
+                "stages": 1,
+                "usage": {
+                    "tokens": {"input": 2000, "output": 500, "reasoning": 0,
+                               "cache_read": 0, "cache_write": 0},
+                    "cost": {"usd_micros": 90_000, "source": "catalog"},
+                },
+            },
+        ]
+    }
+
+
+@respx.mock
+def test_usage_is_split_into_hosted_and_local_at_release(config, store, leases, fabro):
+    leases.acquire(_lease())
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(200, json={
+        "id": "R1", "lifecycle": {"status": {"kind": "succeeded"}},
+    }))
+    respx.get(f"{FABRO_API}/runs/R1/usage").mock(
+        return_value=httpx.Response(200, json=_usage_body())
+    )
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
+
+    reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    (row,) = _history(store)
+    assert row["local_tokens"] == 1500          # box-a: 1000 in + 500 out
+    assert row["hosted_tokens"] == 2500         # zai:   2000 in + 500 out
+    assert row["local_cost_usd_micros"] == 42_000
+    assert row["hosted_cost_usd_micros"] == 90_000
+
+
+@respx.mock
+def test_an_unreadable_usage_records_none_and_still_releases(config, store, leases, fabro):
+    leases.acquire(_lease())
+    respx.get(url__regex=RUNS).mock(return_value=httpx.Response(200, json={
+        "id": "R1", "lifecycle": {"status": {"kind": "succeeded"}},
+    }))
+    respx.get(f"{FABRO_API}/runs/R1/usage").mock(return_value=httpx.Response(500, json={}))
+    respx.get(url__regex=PULLS).mock(return_value=httpx.Response(200, json=[]))
+
+    reconcile_leases(config, store, leases, fabro, GH_TOKEN)
+
+    (row,) = _history(store)
+    # A metered endpoint's bad minute must not hold a coder box.
+    assert row["local_tokens"] is None
+    assert row["hosted_tokens"] is None
+    assert leases.active() == []

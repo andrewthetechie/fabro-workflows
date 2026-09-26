@@ -101,6 +101,30 @@ class DispatchOnceRequest(BaseModel):
     coder_pool: str
 
 
+class QueueRef(BaseModel):
+    """One queue item by `(repo, number)`, for a drag-and-drop reorder."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str
+    # Same strict rules as `DispatchOnceRequest.issue_number`: it must arrive as a
+    # number, and `true`/`"123"` must not become an issue #1 / #123.
+    issue_number: int = Field(gt=0, strict=True)
+
+
+class ReorderRequest(BaseModel):
+    """The body of `POST /api/queue/reorder`: the queue in the order to persist.
+
+    The whole desired order is sent (not a diff), so the server is stateless
+    about what the drag changed and has nothing to reconcile. `extra="forbid"`
+    for the same hand-typed reason as `DispatchOnceRequest`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[QueueRef]
+
+
 @dataclass(frozen=True)
 class PoolState:
     """One coder instance's current state, for `GET /api/pools` and the page.
@@ -203,6 +227,8 @@ def build_app(
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["duration"] = humanise_duration
     templates.env.filters["compact_ts"] = compact_timestamp
+    templates.env.filters["tokens"] = format_tokens
+    templates.env.filters["usd"] = format_usd
     # A global rather than a filter: it takes the page's whole sort state, not a
     # value being formatted.
     templates.env.globals["sort_link"] = _sort_link
@@ -284,11 +310,59 @@ def build_app(
             for pool in config.coder_pools
         ]
 
+    def displayed_order() -> list[tuple[str, int]]:
+        """The queue's `(repo, number)` in dispatch order, as currently shown.
+
+        The reorder controls all start from here, so the order they persist is the
+        order the operator sees — not a rank list they have to visualise. No
+        argument is taken because the queue is already the `build_queue` output
+        over the whole schedulable set; an operator drags what the page shows.
+        """
+        items, _ = current_queue()
+        return [(item.issue.repo, item.issue.number) for item in items]
+
+    def resolve_queued(repo: str, issue_number: int) -> tuple[str, int]:
+        """Canonicalise a `(repo, issue)` the operator named, or refuse it.
+
+        Shared by the reorder controls so they cannot rewrite a repo's spelling
+        (see `bump_issue`) or address an item the page is not showing. Raises the
+        same 404s `bump_issue` does, for the same reasons.
+        """
+        scheduled = config.repo_named(repo)
+        if scheduled is None or not scheduled.enabled:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{repo} is not a schedulable [[repo]] in repos.toml",
+            )
+        repo = scheduled.name
+        if store.get_issue(repo, issue_number) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{repo}#{issue_number} is not in the queue",
+            )
+        return repo, issue_number
+
+    def reorder_and_persist(
+        order: list[tuple[str, int]], what: str
+    ) -> dict[str, object]:
+        """Write one explicit queue order and return it as the response.
+
+        Everything `displayed_order()` returned is persisted with ranks 0..N-1, so
+        the visible order *is* the order `rank()` reproduces. Returning the order
+        lets a test (and the page's JSON view) assert the exact result without
+        re-reading the store. `what` is the human phrase logged for the audit.
+        """
+        store.set_queue_order(order)
+        payload = [
+            {"repo": repo, "issue_number": number} for repo, number in order
+        ]
+        log.info("override: %s", what)
+        return {"queue": payload}
+
     def require_pool(coder_pool: str) -> None:
         """Refuse an unknown coder instance before it can be written to `pool_state`.
 
-        A 404 rather than creating a row: a `pool_state` row for a name that is not
-        in `repos.toml` would never be read (the dispatch loop only walks the
+        A 404 rather than creating a row: a `pool_state` row for a name that is not        in `repos.toml` would never be read (the dispatch loop only walks the
         configured pools), so accepting it would report a drain that does nothing.
         """
         if coder_pool not in config.coder_pools:
@@ -568,6 +642,75 @@ def build_app(
         )
         return {"override_rank": rank}
 
+    @app.post("/api/queue/{repo:path}/{issue_number}/top")
+    def move_to_top(repo: str, issue_number: int) -> dict[str, object]:
+        """Move one queued item to the very front of the queue (the old "Next").
+
+        Same ordering-only guarantee as `bump_issue`: it never pre-empts a running
+        lease, just sets where the item sits among waiting work. This is the
+        full-reorder spelling of "to top", so the whole visible queue is persisted
+        as an explicit order with the target first (the operator is taking manual
+        control of the front; see `reorder_and_persist`).
+        """
+        repo, issue_number = resolve_queued(repo, issue_number)
+        order = displayed_order()
+        key = (repo, issue_number)
+        order = [key] + [k for k in order if k != key]
+        return reorder_and_persist(order, f"{repo}#{issue_number} to top")
+
+    @app.post("/api/queue/{repo:path}/{issue_number}/up")
+    def move_up(repo: str, issue_number: int) -> dict[str, object]:
+        """Move one queued item one position earlier in the displayed order.
+
+        No-op when it is already first. The rest of the visible queue keeps its
+        order (re-persisted), so the operator sees a clean one-place swap.
+        """
+        repo, issue_number = resolve_queued(repo, issue_number)
+        order = displayed_order()
+        key = (repo, issue_number)
+        i = order.index(key)
+        if i > 0:
+            order[i], order[i - 1] = order[i - 1], order[i]
+        return reorder_and_persist(order, f"{repo}#{issue_number} up one")
+
+    @app.post("/api/queue/{repo:path}/{issue_number}/down")
+    def move_down(repo: str, issue_number: int) -> dict[str, object]:
+        """Move one queued item one position later in the displayed order.
+
+        No-op when it is already last.
+        """
+        repo, issue_number = resolve_queued(repo, issue_number)
+        order = displayed_order()
+        key = (repo, issue_number)
+        i = order.index(key)
+        if i < len(order) - 1:
+            order[i], order[i + 1] = order[i + 1], order[i]
+        return reorder_and_persist(order, f"{repo}#{issue_number} down one")
+
+    @app.post("/api/queue/reorder")
+    def reorder_queue(body: ReorderRequest) -> dict[str, object]:
+        """Persist an operator-dragged queue order.
+
+        The body is the whole queue in the dragged order. Every item is validated
+        as a schedulable, queued item (an unknown one is a 404, not a silent skip),
+        so a stale drag can never write a partial order with a missing row.
+        """
+        order: list[tuple[str, int]] = []
+        seen: set[tuple[str, int]] = set()
+        for ref in body.items:
+            repo, number = resolve_queued(ref.repo, ref.issue_number)
+            key = (repo, number)
+            if key in seen:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"duplicate item in reorder: {repo}#{number}",
+                )
+            seen.add(key)
+            order.append(key)
+        payload = reorder_and_persist(order, "drag reorder")
+        log.info("override: queue reordered to %d items by drag", len(order))
+        return payload
+
     @app.post("/api/pools/{coder_pool}/drain")
     def drain_pool(coder_pool: str) -> dict[str, object]:
         """Stop new dispatch to one coder instance, leaving its current run alone.
@@ -700,6 +843,28 @@ def build_app(
         blocked_idle = bool(idle_pools) and bool(items) and all(
             item.issue.repo in busy_repos for item in items
         )
+
+        # Time-left estimate per leased run (feature: ETA). Most-specific wins: the
+        # sandbox subtask rate when decomposition has made progress, else the repo's
+        # own historical average netted against elapsed time. One `avg_run_duration`
+        # per repo with a running item — a handful of rows, same order as the rest
+        # of the page's reads.
+        snapshots = {lease.run_id: probe.snapshot(lease.run_id) for lease in active}
+        avg_by_repo = {lease.repo for lease in active}
+        avg_duration = {
+            repo: store.avg_run_duration(repo) for repo in avg_by_repo
+        }
+        eta: dict[str, timedelta | None] = {}
+        for lease in active:
+            prog = snapshots.get(lease.run_id)
+            elapsed = now - lease.dispatched_at
+            eta[lease.run_id] = estimate_remaining(
+                elapsed,
+                prog.tasks_completed if prog else None,
+                prog.tasks_total if prog else None,
+                avg_duration.get(lease.repo),
+            )
+
         return templates.TemplateResponse(
             request,
             "queue.html",
@@ -717,9 +882,10 @@ def build_app(
                 "dispatching": dispatcher is not None,
                 # The live task/stage view for each leased run, read from the
                 # probe's cache so a page load does no API or socket work.
-                "run_progress": {
-                    lease.run_id: probe.snapshot(lease.run_id) for lease in active
-                },
+                "run_progress": snapshots,
+                # Estimated wall time left for each leased run, `None` when there
+                # is nothing to extrapolate from (render "—").
+                "eta": eta,
                 "run_probe_seconds": config.run_probe_seconds,
                 # `Starvation` in the CONTEXT.md sense — zero queue items across
                 # every schedulable repo — which is not the starvation *ceiling*.
@@ -767,6 +933,49 @@ def build_app(
         )
 
     return app
+
+
+def estimate_remaining(
+    elapsed: timedelta,
+    tasks_completed: int | None,
+    tasks_total: int | None,
+    repo_avg: timedelta | None,
+) -> timedelta | None:
+    """How much longer a running run is likely to take, or `None` unknown.
+
+    Two estimates, most-specific wins. When the sandbox has decomposed the issue
+    and at least one task is done, the rate so far (elapsed per completed task)
+    is projected over the tasks still to go — "how long they've taken so far",
+    per the feature. Before decomposition, or with zero completed, the repo's own
+    historical average run (from `run_history`) nets out against the time already
+    spent. Both return `None` when there is nothing to extrapolate from; the page
+    renders "—", never a made-up number.
+    """
+    if tasks_total is not None and tasks_completed and tasks_completed > 0:
+        if tasks_total <= 0 or tasks_completed > tasks_total:
+            return None
+        per_task = elapsed / tasks_completed
+        return per_task * (tasks_total - tasks_completed)
+    if repo_avg is not None:
+        remaining = repo_avg - elapsed
+        return remaining if remaining > timedelta(0) else timedelta(0)
+    return None
+
+
+def format_tokens(count: int | None, short: bool = True) -> str:
+    """`12345` → `12.3k`, else a plain number. `None` is `` (unknown)."""
+    if count is None:
+        return ""
+    if short and count >= 1000:
+        return f"{count / 1000:.1f}k"
+    return str(count)
+
+
+def format_usd(micros: int | None) -> str:
+    """USD micros (1e-6 $) → `$0.0241`, else `` when unknown."""
+    if micros is None:
+        return ""
+    return f"${micros / 1_000_000:.4f}"
 
 
 def humanise_duration(delta: timedelta) -> str:
@@ -967,6 +1176,10 @@ def _history_payload(row: sqlite3.Row) -> dict[str, object]:
         "pr_number": row["pr_number"],
         "pr_url": row["pr_url"],
         "merged": None if merged is None else bool(merged),
+        "local_tokens": row["local_tokens"],
+        "hosted_tokens": row["hosted_tokens"],
+        "local_cost_usd_micros": row["local_cost_usd_micros"],
+        "hosted_cost_usd_micros": row["hosted_cost_usd_micros"],
     }
 
 

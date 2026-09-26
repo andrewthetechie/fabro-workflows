@@ -21,6 +21,8 @@ def test_run_history_table_has_every_column(store):
         "run_id", "coder_pool", "repo", "issue_number", "dispatched_at",
         "finished_at", "kind", "reason", "category", "requeue_attempt",
         "pr_lookup", "pr_number", "pr_url", "merged",
+        "local_tokens", "hosted_tokens",
+        "local_cost_usd_micros", "hosted_cost_usd_micros",
     ]
     not_null = {r["name"] for r in rows if r["notnull"]}
     # `requeue_attempt` is `NOT NULL DEFAULT 0` in the canonical schema block, so
@@ -187,3 +189,92 @@ def test_the_sort_whitelist_is_a_subset_of_the_table(store):
     }
     assert HISTORY_SORT_COLUMNS <= columns
     assert DEFAULT_HISTORY_LIMIT == 200
+
+
+def test_the_migration_adds_the_usage_columns_to_an_existing_table(tmp_path):
+    """A host DB that predates the feature has no token columns, and `__init__`
+    must ALTER them in on open rather than lose the usage the page now shows."""
+    import sqlite3
+
+    path = tmp_path / "scheduler.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE run_history (
+          run_id TEXT PRIMARY KEY, coder_pool TEXT NOT NULL,
+          repo TEXT NOT NULL, issue_number INTEGER NOT NULL,
+          dispatched_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+          kind TEXT NOT NULL, reason TEXT, category TEXT,
+          requeue_attempt INTEGER NOT NULL DEFAULT 0,
+          pr_lookup TEXT NOT NULL, pr_number INTEGER, pr_url TEXT, merged INTEGER
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = Store(path)
+    try:
+        columns = {
+            r["name"]
+            for r in reopened._conn.execute("PRAGMA table_info(run_history)").fetchall()
+        }
+        assert {"local_tokens", "hosted_tokens", "local_cost_usd_micros",
+                "hosted_cost_usd_micros"} <= columns
+    finally:
+        reopened.close()
+
+
+def test_a_usage_outcome_round_trips_through_the_history_row(tmp_path):
+    store = Store(tmp_path / "scheduler.db")
+    try:
+        _acquire(store, run_id="R1")
+        from fabro_scheduler.store import RunOutcome as O
+        store.archive_and_release_lease(
+            "R1",
+            O(
+                kind="succeeded",
+                local_tokens=12000,
+                hosted_tokens=8000,
+                local_cost_usd_micros=100_000,
+                hosted_cost_usd_micros=200_000,
+            ),
+        )
+        row = store.history_rows(sort="finished_at")[0]
+        assert row["local_tokens"] == 12000
+        assert row["hosted_tokens"] == 8000
+        assert row["local_cost_usd_micros"] == 100_000
+        assert row["hosted_cost_usd_micros"] == 200_000
+    finally:
+        store.close()
+
+
+def test_avg_run_duration_is_none_with_no_history(store):
+    assert store.avg_run_duration(FF) is None
+
+
+def test_avg_run_duration_is_the_mean_of_released_runs(store):
+    _acquire(store, run_id="A")
+    _acquire(store, run_id="B")
+    _acquire(store, run_id="C")
+    # A took 4h, B took 2h, C took 6h from the DISPATCHED/FINISHED constants below.
+    store.archive_and_release_lease("A", RunOutcome(kind="succeeded"))
+    store.archive_and_release_lease("B", RunOutcome(kind="succeeded"))
+    store.archive_and_release_lease("C", RunOutcome(kind="succeeded"))
+
+    # _archive (below) writes finished_at = FINISHED for every run, so they all
+    # share one duration; use explicit varied finishes for a real mean.
+    for run_id, finished in (
+        ("A", "2026-09-20T16:00:00+00:00"),
+        ("B", "2026-09-20T14:00:00+00:00"),  # 2h after DISPATCHED
+        ("C", "2026-09-20T18:00:00+00:00"),  # 6h  after DISPATCHED
+    ):
+        store._conn.execute(
+            "UPDATE run_history SET finished_at = ? WHERE run_id = ?",
+            (finished, run_id),
+        )
+    store._conn.commit()
+
+    # DISPATCHED is 2026-09-20T12:00:00Z. A:4h, B:2h, C:6h -> mean 4h.
+    from datetime import timedelta as _td
+    assert store.avg_run_duration(FF) == _td(hours=4)

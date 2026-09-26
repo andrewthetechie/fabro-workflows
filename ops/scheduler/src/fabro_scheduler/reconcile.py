@@ -80,6 +80,7 @@ from .github import (
 )
 from .lease import Lease, LeaseStore
 from .store import RunOutcome, Store
+from .usage import split_by_model
 
 log = logging.getLogger(__name__)
 
@@ -207,6 +208,10 @@ def _outcome_from_run(
     pr_number: int | None = None,
     pr_url: str | None = None,
     merged: bool | None = None,
+    local_tokens: int | None = None,
+    hosted_tokens: int | None = None,
+    local_cost_usd_micros: int | None = None,
+    hosted_cost_usd_micros: int | None = None,
 ) -> RunOutcome:
     """The `run_history` row's raw facts, read off a terminal run projection.
 
@@ -246,6 +251,10 @@ def _outcome_from_run(
         pr_number=pr_number,
         pr_url=pr_url,
         merged=merged,
+        local_tokens=local_tokens,
+        hosted_tokens=hosted_tokens,
+        local_cost_usd_micros=local_cost_usd_micros,
+        hosted_cost_usd_micros=hosted_cost_usd_micros,
     )
 
 
@@ -313,6 +322,55 @@ def _pr_fields(lease: Lease, github_token: str) -> dict[str, object]:
         "pr_url": found.url,
         "merged": found.merged,
     }
+
+
+def _usage_fields(lease: Lease, fabro: FabroClient) -> dict[str, object]:
+    """The usage half of a `RunOutcome`, read from fabro at release. Never raises.
+
+    Slices the run's `/runs/{id}/usage` into local-vs-hosted tokens and cost (the
+    history page's billing column). Returns the keyword arguments `RunOutcome`
+    takes, so the caller splices it in with `**`.
+
+    A usage miss must never block a lease release — the coder instance is the
+    scarcest thing here — exactly like `_pr_fields`. Every failure (a fabro non-2xx,
+    a malformed payload, or anything unexpected) is caught, logged and turned into
+    a row with no usage data (`None` split): the page renders "—" rather than a
+    made-up zero. The catch is broad on purpose: this is the one call in the
+    release path whose only job is to enrich a history row, and there is nothing it
+    can fail that should ever hold a coder box.
+    """
+    try:
+        body = fabro.run_usage(lease.run_id)
+        by_model = body.get("by_model") if isinstance(body, Mapping) else None
+        split = split_by_model(by_model)
+        if not split.known:
+            log.error(
+                "reconcile: %s#%s run %s: fabro reported no usage; recording none",
+                lease.repo, lease.issue_number, lease.run_id,
+            )
+            return _unknown_usage()
+        return {
+            "local_tokens": split.local_tokens,
+            "hosted_tokens": split.hosted_tokens,
+            "local_cost_usd_micros": split.local_cost_usd_micros,
+            "hosted_cost_usd_micros": split.hosted_cost_usd_micros,
+        }
+    except Exception as exc:  # noqa: BLE001 - must never block a release
+        log.error(
+            "reconcile: %s#%s run %s: could not read usage, recording none: %s",
+            lease.repo, lease.issue_number, lease.run_id, exc,
+        )
+        return _unknown_usage()
+
+
+def _unknown_usage() -> dict[str, object]:
+    return {
+        "local_tokens": None,
+        "hosted_tokens": None,
+        "local_cost_usd_micros": None,
+        "hosted_cost_usd_micros": None,
+    }
+
 
 
 # --- the fabro pass -------------------------------------------------------------
@@ -411,13 +469,16 @@ def reconcile_leases(
         spent = attempts >= MAX_REQUEUES
         # One lookup per release, shared by whichever branch is taken below.
         pr = _pr_fields(lease, github_token)
+        # Usage too: the history billing column. Failed lookups return "no usage"
+        # fields, never raise, so a metered endpoint's bad minute cannot hold a box.
+        usage = _usage_fields(lease, fabro_client)
         if should_requeue(classified) and not spent:
             # Bumped BEFORE the release so the stored attempt number is the one
             # this run became, not the one it started as.
             attempt = store.bump_requeue_count(lease.repo, lease.issue_number)
             _requeue(
                 store, leases, lease, github_token,
-                outcome=_outcome_from_run(classified, requeue_attempt=attempt, **pr),
+                outcome=_outcome_from_run(classified, requeue_attempt=attempt, **pr, **usage),
             )
             actions.append(
                 ReleaseAction(lease, "released+requeued", _classify(run))
@@ -435,7 +496,7 @@ def reconcile_leases(
             store.forget_issue(lease.repo, lease.issue_number)
             leases.archive_and_release(
                 lease.run_id,
-                _outcome_from_run(classified, requeue_attempt=attempts, **pr),
+                _outcome_from_run(classified, requeue_attempt=attempts, **pr, **usage),
             )
             actions.append(
                 ReleaseAction(lease, "released", f"{_classify(run)}, requeue budget spent")
@@ -464,7 +525,7 @@ def reconcile_leases(
             # the issue leaving the queue on its own terms.
             leases.archive_and_release(
                 lease.run_id,
-                _outcome_from_run(classified, requeue_attempt=attempts, **pr),
+                _outcome_from_run(classified, requeue_attempt=attempts, **pr, **usage),
             )
             store.clear_requeue_count(lease.repo, lease.issue_number)
             actions.append(ReleaseAction(lease, "released", _classify(run)))

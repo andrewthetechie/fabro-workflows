@@ -619,10 +619,12 @@ def test_the_page_offers_a_bump_control_per_queue_item(config, store, client):
 
     html = client.get("/").text
 
-    # The control posts to the route that exists, with the repo urlencoded so a
-    # name can never break out of the action attribute.
-    assert "/api/queue/andrewthetechie/writers-app/5/bump" in html
-    assert ">Next<" in html
+    # The reorder controls post to the routes that exist, with the repo urlencoded
+    # so a name can never break out of the action attribute.
+    for suffix in ("top", "up", "down"):
+        assert f"/api/queue/andrewthetechie/writers-app/5/{suffix}" in html
+    # A draggable handle is rendered per row.
+    assert 'class="drag-handle' in html
 
     # The queue row's repo and issue link to GitHub, like the coder-instance rows.
     assert "https://github.com/andrewthetechie/writers-app" in html
@@ -944,6 +946,8 @@ def test_history_is_newest_finished_first(client, store):
         "run_id", "coder_pool", "repo", "issue_number", "dispatched_at",
         "finished_at", "kind", "reason", "category", "requeue_attempt",
         "pr_lookup", "pr_number", "pr_url", "merged",
+        "local_tokens", "hosted_tokens",
+        "local_cost_usd_micros", "hosted_cost_usd_micros",
     }
 
 

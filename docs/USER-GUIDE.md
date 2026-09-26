@@ -32,9 +32,13 @@ marks that issue `agent-in-progress` at the moment it starts the run. There is n
 left on a timer — the schedules that used to fire `backlog` are off, deliberately, so
 there is exactly one thing deciding what gets worked next. The scheduler's own page —
 **`http://10.10.0.32:32280/`**, on the LAN, no login — shows the ranked queue, which box
-is busy with what, and the three operator controls (bump an issue to the front, pause a
-box, cancel the run on one); `ops/README.md` has the calls behind each one and when to
-reach for them.
+which box is busy with what and an estimate of how long each run has left, and the
+operator controls: **reorder** the queue (drag a row, or its up/down/to-top buttons),
+pause a box, or cancel the run on one. An item you reorder keeps exactly the position
+you set; untouched issues still auto-order (anything waiting longer than four hours,
+then repo priority, then issue number) at the back. The history page adds a per-run
+**local-vs-hosted token and cost** split, so you can see what each run spent on the LAN
+boxes versus the metered hosted models; `ops/README.md` has the calls behind each
 
 Auto-merge is **armed**. A well-specified issue can travel from label to merged
 with no human touching anything. That is the fact that shapes every section

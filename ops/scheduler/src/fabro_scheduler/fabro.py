@@ -783,6 +783,23 @@ class FabroClient:
             self._api, self._token, run_id, timeout=self._call_timeout
         )
 
+    def run_usage(self, run_id: str) -> object:
+        """The raw `GET /runs/{id}/usage` body; opaque `object` to this client.
+
+        The history page's token/billing split is derived from it by
+        `usage.split_by_model`, which owns the shape — a client returning the raw
+        body keeps the parsing in one place and leaves this a thin transport.
+        Raises `FabroError` on a non-2xx, which release-time callers catch and
+        turn into a "no usage data" history row rather than a release failure.
+        """
+        return _request(
+            "GET",
+            self._api,
+            f"/runs/{run_id}/usage",
+            self._token,
+            timeout=self._call_timeout,
+        )
+
 
 def _request(
     method: str,

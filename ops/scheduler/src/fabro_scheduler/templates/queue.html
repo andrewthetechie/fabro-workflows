@@ -31,6 +31,15 @@
   Buttons here write immediately; there is no authentication, so anyone on the LAN
   can press them.
 </p>
+<p class="mt-1 mb-6 max-w-prose text-sm leading-6 text-slate-400">
+  <strong class="font-medium text-slate-200">Order</strong> &mdash; drag a row (&#9776;) or use the
+  <span class="text-slate-200">&#8593; / &#8595;</span> buttons to move an item one place, or
+  <span class="text-slate-200">&#8649;</span> to jump it to the very top. Reordering keeps the exact
+  order you set: items you place sort ahead of ones you have not touched, and a newly
+  arrived issue lands at the bottom in auto order until you move it.
+  <strong class="font-medium text-slate-200">ETA</strong> on a running instance is a guess from the
+  subtask rate, or the repo's own average run; it is not a promise.
+</p>
 
 {% if not token_configured %}
 <div class="mb-6 rounded-md border border-red-900/70 bg-red-950 px-4 py-3 text-sm text-red-200">
@@ -97,7 +106,8 @@
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Issue</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide" title="Sub-tasks completed / decomposed total">Sub Tasks</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Run / Stage</th>
-      <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide" title="When the run was created and the box taken">Dispatched</th>
+      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide" title="Time since the box took the run">Dispatched</th>
+      <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide" title="Estimated time left, from the subtask rate or the repo's average run">ETA</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Controls</th>
     </tr>
   </thead>
@@ -123,10 +133,12 @@
           <span class="block whitespace-nowrap font-mono text-xs text-slate-500"><a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ pool.lease.run_id }}">{{ pool.lease.run_id }}</a></span>
         </td>
         <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums text-slate-400">{{ (now - pool.lease.dispatched_at)|duration }} ago</td>
+        <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums text-slate-400">{%- if eta[pool.lease.run_id] is not none and eta[pool.lease.run_id].total_seconds() > 0 -%}~{{ eta[pool.lease.run_id]|duration }} left{%- elif eta[pool.lease.run_id] is not none -%}<span title="at or past the estimate">due</span>{%- else -%}<span class="text-slate-500">&mdash;</span>{%- endif -%}</td>
       {% else %}
         <td class="px-4 py-3 text-slate-500">&mdash;</td>
         <td class="px-4 py-3 text-right text-slate-500">&mdash;</td>
         <td class="px-4 py-3 text-slate-500">&mdash;</td>
+        <td class="px-4 py-3 text-right text-slate-500">&mdash;</td>
         <td class="px-4 py-3 text-right text-slate-500">&mdash;</td>
       {% endif %}
       <td class="whitespace-nowrap px-4 py-3 align-top">
@@ -159,6 +171,7 @@
 <table class="w-full text-sm">
   <thead class="bg-slate-900/60 text-slate-400">
     <tr>
+      <th class="whitespace-nowrap px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wide" title="Drag to reorder"></th>
       <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">#</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Issue</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Title</th>
@@ -168,9 +181,10 @@
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Order</th>
     </tr>
   </thead>
-  <tbody class="divide-y divide-slate-800">
+  <tbody class="divide-y divide-slate-800" id="queue-body">
     {% for item in items %}
-    <tr class="hover:bg-slate-800/60 {% if item.override_rank is not none %}overridden{% elif item.waited > ceiling %}starved{% endif %}">
+    <tr class="queue-row hover:bg-slate-800/60 {% if item.override_rank is not none %}overridden{% elif item.waited > ceiling %}starved{% endif %}" data-ref="{{ item.issue.repo|urlencode }}/{{ item.issue.number }}">
+      <td class="cursor-grab whitespace-nowrap px-3 py-3 text-center align-top text-slate-500" title="Drag to reorder" draggable="true">&#9776;</td>
       <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums text-slate-500">{{ loop.index }}</td>
       <td class="px-4 py-3 align-top">
         <span class="block whitespace-nowrap"><a class="text-sky-400 hover:underline" href="https://github.com/{{ item.issue.repo }}">{{ item.issue.repo }}</a></span>
@@ -181,10 +195,18 @@
       <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums">{{ item.waited|duration }}</td>
       <td class="max-w-[24ch] truncate px-4 py-3 align-top text-xs text-slate-500" title="{{ item.issue.labels|sort|join(' ') }}">{{ item.issue.labels|sort|join(' ') }}</td>
       <td class="whitespace-nowrap px-4 py-3 align-top">
-        <form class="control inline" method="post"
-              action="/api/queue/{{ item.issue.repo|urlencode }}/{{ item.issue.number }}/bump">
-          <button type="submit" class="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-700">Next</button>
-        </form>
+        <div class="flex items-center gap-1">
+          <span class="drag-handle cursor-grab select-none text-slate-500" title="Drag to reorder" draggable="true">&#9776;</span>
+          <form class="control inline" method="post" action="/api/queue/{{ item.issue.repo|urlencode }}/{{ item.issue.number }}/top">
+            <button type="submit" title="Move to the top of the queue (Next)" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:border-sky-600 hover:bg-slate-700">&#8649;</button>
+          </form>
+          <form class="control inline" method="post" action="/api/queue/{{ item.issue.repo|urlencode }}/{{ item.issue.number }}/up">
+            <button type="submit" title="Move up one position" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-700">&#8593;</button>
+          </form>
+          <form class="control inline" method="post" action="/api/queue/{{ item.issue.repo|urlencode }}/{{ item.issue.number }}/down">
+            <button type="submit" title="Move down one position" class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-700">&#8595;</button>
+          </form>
+        </div>
       </td>
     </tr>
     {% endfor %}
@@ -293,6 +315,93 @@
       });
     }
   );
+})();
+</script>
+
+<script>
+// Drag-and-drop reordering. Plain HTML5 DnD over the queue rows: dragging a row's
+// handle (&#9776;) moves it in the DOM, and on drop the resulting order is POSTed
+// to /api/queue/reorder and the page reloads (same fetch+reload the buttons use,
+// so scripting-off still works via the buttons and this is an enhancement). Only
+// the handle is draggable, so a click on a link or button inside the row is not
+// stolen by a drag.
+(function () {
+  var body = document.getElementById("queue-body");
+  if (!body) { return; }
+  var note = document.getElementById("note");
+  var dragged = null;
+
+  function show(text) {
+    if (!note) { return; }
+    note.textContent = text;
+    note.hidden = false;
+  }
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll(".drag-handle"),
+    function (handle) {
+      handle.addEventListener("dragstart", function (event) {
+        dragged = handle.closest(".queue-row");
+        if (!dragged) { return; }
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", dragged.dataset.ref);
+        dragged.classList.add("opacity-40");
+      });
+      handle.addEventListener("dragend", function () {
+        if (dragged) { dragged.classList.remove("opacity-40"); }
+        commit();
+      });
+    }
+  );
+
+  Array.prototype.forEach.call(
+    body.querySelectorAll(".queue-row"),
+    function (target) {
+      target.addEventListener("dragover", function (event) {
+        if (!dragged || dragged === target) { return; }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        var rect = target.getBoundingClientRect();
+        var before = event.clientY < rect.top + rect.height / 2;
+        body.insertBefore(dragged, before ? target : target.nextSibling);
+      });
+      target.addEventListener("drop", function (event) {
+        event.preventDefault();
+      });
+    }
+  );
+
+  function commit() {
+    if (!dragged) { return; }
+    var order = [];
+    Array.prototype.forEach.call(
+      body.querySelectorAll(".queue-row"),
+      function (row) {
+        var ref = row.dataset.ref;
+        if (!ref) { return; }
+        var parts = ref.split("/");
+        var repo = decodeURIComponent(parts[0]);
+        var number = parseInt(parts[1], 10);
+        order.push({ repo: repo, issue_number: number });
+      }
+    );
+    dragged = null;
+    if (!order.length) { return; }
+    fetch("/api/queue/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      redirect: "manual",
+      body: JSON.stringify({ items: order })
+    }).then(function (response) {
+      if (response.ok) { window.location.reload(); return; }
+      return response.json().then(
+        function (body) { show("reorder: HTTP " + response.status + (body && body.detail ? " — " + body.detail : "")); },
+        function () { show("reorder: HTTP " + response.status); }
+      );
+    }).catch(function (error) {
+      show("reorder: " + error);
+    });
+  }
 })();
 </script>
 

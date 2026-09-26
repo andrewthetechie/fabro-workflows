@@ -39,7 +39,7 @@ import sqlite3
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .github import Issue
@@ -165,6 +165,13 @@ CREATE TABLE IF NOT EXISTS requeue_counts (
 -- `run_id` is the key because it is already UNIQUE on `leases` and one dispatch
 -- produces exactly one run. A requeued issue comes back under a NEW run id, so a
 -- second attempt is a second row rather than a collision.
+--
+-- The four usage columns are token counts and costs at release time, split by
+-- where the tokens were spent: `local` (the LAN box providers `box-a`/`box-b`/
+-- `spark`) versus `hosted` (zai/kimi/moonshot etc.). They are NULL when fabro
+-- could not answer `/runs/{id}/usage` at release (— on the page, like a PR
+-- lookup that failed). Cost is in US dollars × 1e6 (micros) so it stays an
+-- integer and never drifts through a float.
 CREATE TABLE IF NOT EXISTS run_history (
   run_id          TEXT PRIMARY KEY,
   coder_pool      TEXT NOT NULL,
@@ -179,9 +186,25 @@ CREATE TABLE IF NOT EXISTS run_history (
   pr_lookup       TEXT NOT NULL,  -- "found" | "none" | "failed"
   pr_number       INTEGER,
   pr_url          TEXT,
-  merged          INTEGER         -- 0 | 1 | NULL
+  merged          INTEGER,        -- 0 | 1 | NULL
+  local_tokens    INTEGER,        -- token counts at release; NULL = no usage data
+  hosted_tokens   INTEGER,
+  local_cost_usd_micros  INTEGER,
+  hosted_cost_usd_micros INTEGER
 );
 """
+
+# Columns added to `run_history` after the table already exists. `CREATE TABLE IF
+# NOT EXISTS` will not add a column, and the table ships on the host's volume, so
+# `_apply_migrations` ALTERs these in on open. Keeping the DDL here (rather than
+# inline in the migration) means the fresh-table shape and the migrated shape
+# cannot diverge.
+RUN_HISTORY_COLUMNS = {
+    "local_tokens": "local_tokens INTEGER",
+    "hosted_tokens": "hosted_tokens INTEGER",
+    "local_cost_usd_micros": "local_cost_usd_micros INTEGER",
+    "hosted_cost_usd_micros": "hosted_cost_usd_micros INTEGER",
+}
 
 
 # The columns `/history` may be sorted by. This is a WHITELIST, not documentation:
@@ -222,6 +245,12 @@ class RunOutcome:
     pr_number: int | None = None
     pr_url: str | None = None
     merged: bool | None = None
+    # Usage at release, split local (LAN boxes) vs hosted. None = fabro had no
+    # usage answer, rendered as "—" on the history page.
+    local_tokens: int | None = None
+    hosted_tokens: int | None = None
+    local_cost_usd_micros: int | None = None
+    hosted_cost_usd_micros: int | None = None
 
 
 @dataclass(frozen=True)
@@ -268,7 +297,28 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(SCHEMA)
+        self._apply_migrations()
         self._conn.commit()
+
+    def _apply_migrations(self) -> None:
+        """Add `run_history` columns introduced after the table first shipped.
+
+        `CREATE TABLE IF NOT EXISTS` never alters an existing table, and the real
+        database lives on the `scheduler-data` volume, so every added column has
+        to be `ALTER TABLE ... ADD COLUMN`ed here. A missing column is the only
+        case that runs, and `ADD COLUMN` is idempotent per column under the
+        `table_info` guard. String interpolation is safe: the keys come from the
+        static `RUN_HISTORY_COLUMNS`, never from a caller.
+        """
+        with self._lock:
+            present = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(run_history)")
+            }
+            for name, ddl in RUN_HISTORY_COLUMNS.items():
+                if name not in present:
+                    self._conn.execute(f"ALTER TABLE run_history ADD COLUMN {ddl}")
+
 
     # --- reads ------------------------------------------------------------------
 
@@ -463,6 +513,54 @@ class Store:
         """
         with self._lock, self._conn:
             self._upsert_override(repo, number, override_rank, _stamp(created_at))
+
+    def set_queue_order(self, ordered: Sequence[tuple[str, int]]) -> None:
+        """Persist an explicit queue order for the given items, in one transaction.
+
+        `ordered` is `(repo, number)` in the order they should appear; each gets
+        `override_rank` equal to its index (0, 1, 2, …, so the front sorts first,
+        the same ascending rule every override tier already uses). `rank()` puts
+        everything with a rank before everything without one, so this is how an
+        operator takes manual control of the queue's front: the items listed here
+        become the ranked prefix in exactly this order, and anything not listed
+        (a freshly arrived issue) stays unranked and sorts after them by the
+        computed tiers.
+
+        One write under one lock so a drag and a dispatch-facing clear cannot
+        interleave and leave a half-applied order.
+        """
+        stamp = _stamp(datetime.now(UTC))
+        with self._lock, self._conn:
+            for rank, (repo, number) in enumerate(ordered):
+                self._upsert_override(repo, number, rank, stamp)
+
+    def avg_run_duration(self, repo: str) -> timedelta | None:
+        """Mean wall duration of released runs for one repo, or `None` with none.
+
+        Feeds the queue page's time-left estimate (feature: ETA). An average over
+        the repo's own history is more predictive than a global one — waste-tool
+        and womens-fantasy-sports do not run in the same time. Returns `None`,
+        not an error, when the repo has no released runs yet, so the caller can
+        fall back to its next-best estimate (see `queue_page`).
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT finished_at, dispatched_at FROM run_history "
+                "WHERE repo = ? AND finished_at IS NOT NULL AND dispatched_at IS NOT NULL",
+                (repo,),
+            ).fetchall()
+        total = timedelta(0)
+        count = 0
+        for row in rows:
+            try:
+                started = datetime.fromisoformat(row["dispatched_at"])
+                ended = datetime.fromisoformat(row["finished_at"])
+            except (TypeError, ValueError):
+                continue
+            total += ended - started
+            count += 1
+        return total / count if count else None
+
 
     def clear_override_on_dispatch(self, repo: str, number: int) -> bool:
         """Drop an issue's override, returning whether one was there.
@@ -676,8 +774,9 @@ class Store:
                 "INSERT INTO run_history ("
                 "  run_id, coder_pool, repo, issue_number, dispatched_at, finished_at,"
                 "  kind, reason, category, requeue_attempt, pr_lookup, pr_number,"
-                "  pr_url, merged"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "  pr_url, merged, local_tokens, hosted_tokens,"
+                "  local_cost_usd_micros, hosted_cost_usd_micros"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO NOTHING",
                 (
                     row["run_id"],
@@ -698,6 +797,10 @@ class Store:
                     outcome.pr_number,
                     outcome.pr_url,
                     outcome.merged,
+                    outcome.local_tokens,
+                    outcome.hosted_tokens,
+                    outcome.local_cost_usd_micros,
+                    outcome.hosted_cost_usd_micros,
                 ),
             )
             self._conn.execute("DELETE FROM leases WHERE run_id = ?", (run_id,))

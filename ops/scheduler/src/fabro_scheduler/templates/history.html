@@ -43,6 +43,7 @@
           ('kind',            'Ending',         false),
           ('requeue_attempt', 'Req',            true),
           ('merged',          'PR',             false),
+          (none,              'Tokens',         false),
       ] %}
       <th class="whitespace-nowrap px-4 py-2.5 text-xs font-medium uppercase tracking-wide {% if numeric %}text-right{% else %}text-left{% endif %}">
         {% if column %}
@@ -79,6 +80,17 @@
           {% if row.merged %}<span class="text-slate-500">merged</span>{% endif %}
         {% elif row.pr_lookup == 'failed' %}
           <span class="text-slate-500" title="GitHub could not be reached at release">unknown</span>
+        {% else %}
+          <span class="text-slate-500">&mdash;</span>
+        {% endif %}
+      </td>
+      <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums text-xs" title="{% if row.local_tokens is not none %}local {{ row.local_tokens }} tokens / hosted {{ row.hosted_tokens }} tokens{% endif %}">
+        {% if row.local_tokens is not none %}
+          <span class="block">{{ row.local_tokens|tokens }} <span class="text-slate-600">local</span></span>
+          <span class="block">{{ row.hosted_tokens|tokens }} <span class="text-slate-600">hosted</span></span>
+          {% if row.local_cost_usd_micros is not none %}
+            <span class="block text-slate-500">{{ row.local_cost_usd_micros|usd }} + {{ row.hosted_cost_usd_micros|usd }}</span>
+          {% endif %}
         {% else %}
           <span class="text-slate-500">&mdash;</span>
         {% endif %}

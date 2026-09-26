@@ -636,4 +636,7 @@ def test_the_page_shows_the_override_marker_and_a_bump_control(client, store):
     html = client.get("/").text
 
     assert "overridden" in html
-    assert "/api/queue/o/normal/2/bump" in html
+    # The to-top control is the old "Next" in the new three-control layout.
+    assert "/api/queue/o/normal/2/top" in html
+    assert "/api/queue/o/normal/2/up" in html
+    assert "/api/queue/o/normal/2/down" in html
