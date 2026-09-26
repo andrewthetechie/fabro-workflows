@@ -30,15 +30,25 @@ graph = "workflow.fabro"
 # worth knowing that a fallback would not have saved the stage even if the
 # target were sound -- the failure classifies `api_deterministic|...|
 # invalid_request`, and this table only covers errors and rate limits.
-"coders-a" = ["zai:glm-5.3-flash"]
-"coders-b" = ["zai:glm-5.3-flash"]
+# The implementer (.coder, plus .improve/.rebase which share the box) escalates on the
+# REQUESTED box's own chain: the local box -> zai:glm-5.3-flash -> the openai
+# escalation gpt-6-luna. Fallbacks are non-recursive (one lookup from the original
+# request; a target's own row is never consulted), so glm-5.3-flash's row below does
+# NOT extend this chain -- every rung must be listed here.
+"coders-a" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
+"coders-b" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
 kimi-for-coding = ["zai:glm-5.3"]
 "glm-5.3" = ["kimi:kimi-k3"]
+# The adversarial reviewer (.refute). Non-GLM, and its fallback is likewise non-GLM:
+# a refute outage degrades to the sibling openai model, and the merge gate keeps its
+# adversarial independence either way.
+"gpt-6-sol" = ["openai:gpt-6-luna"]
 # The mechanical-check tier (.review-standards, .merge-standards) and, since
 # glm-4.7 was removed, the first hosted rung of the coder ladder (.coder-t2) and
 # the landing spot for a failed local box. It escalates UP to full glm-5.3 rather
 # than sideways, so a flash outage degrades into a better model and never a worse
-# one -- which also gives `coders-a` a two-step chain, flash then full 5.3.
+# one. This row applies only to classes that REQUEST flash; the implementer's chain
+# lives in the coders-a/coders-b rows (fallbacks are non-recursive).
 "glm-5.3-flash" = ["zai:glm-5.3"]
 kimi-k3 = ["zai:glm-5.3"]
 long-context = ["kimi:kimi-k3"]

@@ -10,6 +10,10 @@ graph = "workflow.fabro"
 # nested table and the automation fire returns 422.
 [run.model.fallbacks]
 "glm-5.3" = ["kimi:kimi-k3"]
+# The adversarial reviewer (.refute) in the imported review-merge graph. Non-GLM,
+# and its fallback is likewise non-GLM (the sibling openai model), so a refute
+# outage degrades to gpt-6-luna rather than back into the reviewer family.
+"gpt-6-sol" = ["openai:gpt-6-luna"]
 # The mechanical-check tier (.merge-standards in the imported review-merge
 # graph). Escalates UP to full glm-5.3, never sideways.
 "glm-5.3-flash" = ["zai:glm-5.3"]

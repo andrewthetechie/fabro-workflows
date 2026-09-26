@@ -140,10 +140,11 @@ digraph Backlog {
             // server settings overlay or the run dies at its first node; `fabro validate`
             // does not check the catalog.
             //
-            // `.refute` is the Refuter in the imported merge phase (ADR 0013 D6). It is on
-            // glm-5.3 only until a non-GLM provider is added: its purpose is a model family
-            // unlike the coder's and the reviewers'. Change it here AND in the other
-            // importing graph, and give any fallback for its new model a non-GLM target.
+            // `.refute` is the Refuter in the imported merge phase (ADR 0013 D6). It runs on
+            // gpt-6-sol (openai), moved here from glm-5.3 so its model family is unlike the
+            // coder's AND the reviewers' -- the adversarial value it exists for. Its fallback
+            // is `openai:gpt-6-luna`, likewise non-GLM. Change the rule here AND in the other
+            // importing graph; the `"gpt-6-sol"` fallback row lives in both workflow.tomls.
         model_stylesheet="
             *                 { model: coders-a; }
             .decomp           { model: glm-5.3; }
@@ -162,7 +163,7 @@ digraph Backlog {
             .merge-spec       { model: glm-5.3; }
             .merge-fix        { model: glm-5.3; }
             .ci-fix           { model: glm-5.3-flash; }
-            .refute           { model: glm-5.3; }
+            .refute           { model: gpt-6-sol; }
         "
     ]
     rankdir=LR
