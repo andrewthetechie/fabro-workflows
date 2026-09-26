@@ -250,3 +250,62 @@ def test_a_reorder_survives_a_reopen(tmp_path):
         assert [i for i, _ in _order(reopened)] == [3, 1, 2]
     finally:
         reopened.close()
+
+
+# --- the drag payload shape (regression: the 422) ---------------------------------
+#
+# The page renders each row's ref as JSON (Jinja |tojson), and the drag JS POSTs
+# exactly that. A repo like "o/urgent" contains a slash, so the OLD `urlencode`
+# ref, split on "/", turned the second segment into a non-integer issue_number and
+# every drag 422'd. This pins the new shape: the rendered data-ref is JSON, parses
+# back to the real repo (slash intact) and number, and that exact payload posts
+# cleanly.
+
+
+def test_the_page_renders_a_json_data_ref_that_round_trips(tmp_path):
+    import json as _json
+
+    client, store = _client(tmp_path)
+    _seed(store)
+
+    html = client.get("/").text
+    # The JSON ref is a data attribute on the row: single-quoted, with the repo
+    # slash left literal (Jinja urlencode would have escaped it — the old bug).
+    assert "data-ref='{\"repo\": \"o/urgent\", \"number\": 1}'" in html or \
+           "data-ref='{\"number\": 1, \"repo\": \"o/urgent\"}'" in html
+
+    # Simulate the drag JS: harvest every ref, parse it, and POST the parse result.
+    import re
+    refs = re.findall(r"data-ref='([^']+)'", html)
+    payload = {
+        "items": [
+            {"repo": o["repo"], "issue_number": o["number"]}
+            for o in (_json.loads(r.replace("&quot;", '"')) for r in refs)
+        ]
+    }
+    assert {"repo": "o/urgent", "issue_number": 1} in payload["items"]
+    r = client.post("/api/queue/reorder", json=payload)
+    assert r.status_code == 200, r.text
+    # The parsed order is exactly what the server persisted.
+    returned = [{"repo": i["repo"], "issue_number": i["issue_number"]} for i in r.json()["queue"]]
+    assert returned == payload["items"]
+
+
+def test_reorder_with_a_wrong_documented_ref_shape_is_still_accepted_if_valid(tmp_path):
+    # Belt-and-braces: the endpoint itself accepts the documented QueueRef body;
+    # the regression was purely the client shaping issue_number as text (from the
+    # bad split). A correctly-typed int body succeeds; a text number does not.
+    client, store = _client(tmp_path)
+    _seed(store)
+
+    ok = client.post(
+        "/api/queue/reorder",
+        json={"items": [{"repo": "o/urgent", "issue_number": 1}]},
+    )
+    assert ok.status_code == 200
+
+    bad = client.post(
+        "/api/queue/reorder",
+        json={"items": [{"repo": "o/urgent", "issue_number": "1"}]},
+    )
+    assert bad.status_code == 422

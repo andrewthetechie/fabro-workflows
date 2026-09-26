@@ -183,7 +183,7 @@
   </thead>
   <tbody class="divide-y divide-slate-800" id="queue-body">
     {% for item in items %}
-    <tr class="queue-row hover:bg-slate-800/60 {% if item.override_rank is not none %}overridden{% elif item.waited > ceiling %}starved{% endif %}" data-ref="{{ item.issue.repo|urlencode }}/{{ item.issue.number }}">
+    <tr class="queue-row hover:bg-slate-800/60 {% if item.override_rank is not none %}overridden{% elif item.waited > ceiling %}starved{% endif %}" data-ref='{{ {"repo": item.issue.repo, "number": item.issue.number}|tojson }}'>
       <td class="cursor-grab whitespace-nowrap px-3 py-3 text-center align-top text-slate-500" title="Drag to reorder" draggable="true">&#9776;</td>
       <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums text-slate-500">{{ loop.index }}</td>
       <td class="px-4 py-3 align-top">
@@ -319,72 +319,103 @@
 </script>
 
 <script>
-// Drag-and-drop reordering. Plain HTML5 DnD over the queue rows: dragging a row's
-// handle (&#9776;) moves it in the DOM, and on drop the resulting order is POSTed
-// to /api/queue/reorder and the page reloads (same fetch+reload the buttons use,
-// so scripting-off still works via the buttons and this is an enhancement). Only
-// the handle is draggable, so a click on a link or button inside the row is not
-// stolen by a drag.
+// Drag-and-drop reordering. Dragging anywhere on a row (except its links and
+// buttons) moves it, paints an insertion line, and on drop POSTs the new order to
+// /api/queue/reorder then reloads. The up/down/to-top buttons stay plain form
+// POSTs, so this block is pure enhancement over a no-JS page.
 (function () {
   var body = document.getElementById("queue-body");
   if (!body) { return; }
   var note = document.getElementById("note");
   var dragged = null;
+  var indicator = null;
 
-  function show(text) {
-    if (!note) { return; }
-    note.textContent = text;
-    note.hidden = false;
+  function show(text) { if (note) { note.textContent = text; note.hidden = false; } }
+
+  // The whole row is the drag surface. Links and the control buttons inside it ask
+  // to stay clickable, so they are excluded in dragstart rather than the row being
+  // inert away from a tiny handle.
+  Array.prototype.forEach.call(body.querySelectorAll(".queue-row"), function (row) {
+    row.setAttribute("draggable", "true");
+  });
+
+  function clearIndicator() {
+    if (indicator) { indicator.style.boxShadow = ""; indicator = null; }
+    if (dragged) { dragged.style.opacity = ""; }
   }
 
-  Array.prototype.forEach.call(
-    document.querySelectorAll(".drag-handle"),
-    function (handle) {
-      handle.addEventListener("dragstart", function (event) {
-        dragged = handle.closest(".queue-row");
-        if (!dragged) { return; }
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/plain", dragged.dataset.ref);
-        dragged.classList.add("opacity-40");
-      });
-      handle.addEventListener("dragend", function () {
-        if (dragged) { dragged.classList.remove("opacity-40"); }
-        commit();
-      });
-    }
-  );
+  Array.prototype.forEach.call(body.querySelectorAll(".queue-row"), function (row) {
+    row.addEventListener("dragstart", function (event) {
+      if (event.target.closest("a,button,input,select,textarea,form")) {
+        event.preventDefault();
+        return;
+      }
+      var payload = parseRef(row.dataset.ref);
+      if (!payload) { event.preventDefault(); return; }
+      dragged = row;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", payload.repo + "/" + payload.number);
+      // A clear ghost of the row itself instead of the default tiny thumbnail, so
+      // the operator can see exactly what is moving.
+      try {
+        var ghost = row.cloneNode(true);
+        ghost.style.background = "#1e293b";
+        ghost.style.border = "1px solid #38bdf8";
+        ghost.style.width = row.offsetWidth + "px";
+        ghost.style.position = "fixed";
+        ghost.style.opacity = "0.95";
+        ghost.style.pointerEvents = "none";
+        ghost.classList.add("ghost-hidden");
+        document.body.appendChild(ghost);
+        event.dataTransfer.setDragImage(ghost, 40, 20);
+        setTimeout(function () { ghost.remove(); }, 0);
+      } catch (e) { /* old browsers: fall back to the native ghost */ }
+      row.style.opacity = "0.4";
+    });
 
-  Array.prototype.forEach.call(
-    body.querySelectorAll(".queue-row"),
-    function (target) {
-      target.addEventListener("dragover", function (event) {
-        if (!dragged || dragged === target) { return; }
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        var rect = target.getBoundingClientRect();
-        var before = event.clientY < rect.top + rect.height / 2;
-        body.insertBefore(dragged, before ? target : target.nextSibling);
-      });
-      target.addEventListener("drop", function (event) {
-        event.preventDefault();
-      });
-    }
-  );
+    row.addEventListener("dragover", function (event) {
+      if (!dragged || dragged === row) { return; }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      var rect = row.getBoundingClientRect();
+      var before = event.clientY < rect.top + rect.height / 2;
+      setIndicator(row, before);
+      body.insertBefore(dragged, before ? row : row.nextSibling);
+    });
+
+    row.addEventListener("dragleave", function (event) {
+      if (indicator === row && !row.contains(event.relatedTarget)) { clearIndicator(); }
+    });
+
+    row.addEventListener("drop", function (event) { event.preventDefault(); });
+  });
+
+  body.addEventListener("dragend", function () { clearIndicator(); commit(); });
+  body.addEventListener("drop", function (event) { event.preventDefault(); });
+
+  function setIndicator(row, before) {
+    clearIndicator();
+    // A 2px sky line above/below the hovered row: the exact insertion point.
+    row.style.boxShadow = "0 " + (before ? "-2px" : "2px") + " 0 0 #38bdf8";
+    indicator = row;
+  }
+
+  function parseRef(ref) {
+    if (!ref) { return null; }
+    try {
+      var o = JSON.parse(ref);
+      if (o && typeof o.repo === "string" && typeof o.number === "number" && o.number > 0) { return o; }
+    } catch (e) { /* not JSON: treat as unparseable and skip */ }
+    return null;
+  }
 
   function commit() {
     if (!dragged) { return; }
     var order = [];
-    Array.prototype.forEach.call(
-      body.querySelectorAll(".queue-row"),
-      function (row) {
-        var ref = row.dataset.ref;
-        if (!ref) { return; }
-        var parts = ref.split("/");
-        var repo = decodeURIComponent(parts[0]);
-        var number = parseInt(parts[1], 10);
-        order.push({ repo: repo, issue_number: number });
-      }
-    );
+    Array.prototype.forEach.call(body.querySelectorAll(".queue-row"), function (row) {
+      var p = parseRef(row.dataset.ref);
+      if (p) { order.push({ repo: p.repo, issue_number: p.number }); }
+    });
     dragged = null;
     if (!order.length) { return; }
     fetch("/api/queue/reorder", {
@@ -395,12 +426,20 @@
     }).then(function (response) {
       if (response.ok) { window.location.reload(); return; }
       return response.json().then(
-        function (body) { show("reorder: HTTP " + response.status + (body && body.detail ? " — " + body.detail : "")); },
+        function (body) { show("reorder: HTTP " + response.status + " — " + detailText(body)); },
         function () { show("reorder: HTTP " + response.status); }
       );
-    }).catch(function (error) {
-      show("reorder: " + error);
-    });
+    }).catch(function (error) { show("reorder: " + error); });
+  }
+
+  function detailText(body) {
+    if (!body || !body.detail) { return ""; }
+    // A pydantic 422 detail is an array of {loc, msg, type}; join the messages so
+    // the operator sees a real reason instead of "[object Object]".
+    if (Array.isArray(body.detail)) {
+      return body.detail.map(function (d) { return d.msg || JSON.stringify(d); }).join("; ");
+    }
+    return body.detail;
   }
 })();
 </script>
