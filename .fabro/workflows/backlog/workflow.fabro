@@ -275,6 +275,12 @@ fi"]
     // The cost is bounded at one extra 20m attempt on a genuinely broken setup, against
     // a 4h `human_rescue` park holding one of two coder boxes. `uv`/`npm` already retry
     // internally, so this only fires on an outage that outlasts their own backoff.
+    // Build the code index after .fabro/setup.sh (docs/code-context C2/C4), which can
+    // create or remove files the index should see. The `command -v` guard keeps an
+    // image built before task 02 working: prep runs `set -e`, and without it a missing
+    // fabro-code would exit 127 and fail every run. `fabro-code index` never exits
+    // non-zero and `map` has `|| true`, so an index failure cannot fail prep (ADR 0014
+    // D3) -- the index makes agents faster; correctness does not depend on it.
     prep [label="Prep workspace and install deps", shape=parallelogram, timeout="20m", max_retries=1,
         script="set -e
 mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra
@@ -282,7 +288,9 @@ echo 0 > /tmp/fabro/extra_round
 echo 0 > /tmp/fabro/split_rounds
 echo 0 > /tmp/fabro/tasks_coded
 rm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue
-./.fabro/setup.sh"]
+./.fabro/setup.sh
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index; fabro-code map || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi"]
 
     // ---- Decomposition (agent writes file; gate validates) ----
     // `max_retries=1` on every agent node in this graph, for the reason spelled out on
@@ -351,6 +359,13 @@ echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT',\"o
     // tasks can sit ahead of them in the queue -- extra_gate appends after every
     // task has run -- so moving the decomposed ones out leaves the exempt ones in
     // order.
+    // The map is re-rendered after the mainline refresh so it matches the tree the
+    // next task's improve starts from, and the task dossier is deleted at the start of
+    // each task (docs/code-context C1/C3, task 04/07). `fabro-code map` is stubbed out
+    // (nothing to do on an old image) and must not print to stdout -- this node's
+    // stdout is scanned for `context_updates`. On the merge-failed branch the tree is
+    // clean at the pre-merge state, so that map is correct for the tree resolve_merge
+    // starts from.
     next_task [label="Next task + mainline refresh", shape=parallelogram, output_schema="routing",
         script="IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 0)
 COUNT=$(jq length /tmp/fabro/tasks.json)
@@ -377,14 +392,17 @@ echo 0 > /tmp/fabro/review_attempts
 echo 0 > /tmp/fabro/improve_attempts
 echo 0 > /tmp/fabro/merge_attempts
 rm -f /tmp/fabro/improve_result.json
+rm -f /tmp/fabro/task-context.md
 git rev-parse HEAD > /tmp/fabro/pre_merge_sha
 if git fetch origin main && git merge --no-edit origin/main; then
   git rev-parse HEAD > /tmp/fabro/task_base_sha
+  fabro-code map >/dev/null 2>&1 || true
   echo '{\"context_updates\":{\"tasks_done\":false,\"rebase_failed\":false,\"review_decision\":\"none\",\"task_disposition\":\"none\",\"diff_too_large\":false}}'
 else
   git merge --abort || true
   git rev-parse HEAD > /tmp/fabro/task_base_sha
   echo 'The mainline merge was attempted and aborted: leaving it in the tree would let the next checkpoint commit conflict markers. A dedicated resolve_merge stage redoes the merge and resolves it, so no rework agent should touch git.' > /tmp/fabro/feedback/rework.md
+  fabro-code map >/dev/null 2>&1 || true
   echo '{\"context_updates\":{\"tasks_done\":false,\"rebase_failed\":true,\"review_decision\":\"none\",\"task_disposition\":\"none\",\"diff_too_large\":false}}'
 fi"]
 

@@ -123,6 +123,10 @@ echo 0 > /tmp/fabro/fix_attempts
 echo 0 > /tmp/fabro/recheck_done
 echo '{\"context_updates\":{\"pr_number\":'$PR'}}'"]
 
+    // Build the code index here, after `gh pr checkout`, so the index covers the PR
+    // branch, not main (docs/code-context task 05). claim declares
+    // `output_schema="routing"`, so the fragment prints nothing to stdout. Every query
+    // syncs first, so rebase_check and the rebase agent need no second build.
     claim [label="Fetch and check out the PR", shape=parallelogram, output_schema="routing",
         script="set -e
 PR=$(cat /tmp/fabro/pr_number)
@@ -157,6 +161,8 @@ if ! gh pr checkout $PR; then
   exit 1
 fi
 git rev-parse HEAD > /tmp/fabro/run_base_sha
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index >/dev/null 2>&1; fabro-code map >/dev/null 2>&1 || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi
 B=$(cat /tmp/fabro/base_ref)
 echo '{\"context_updates\":{\"base_ref\":\"'$B'\"}}'"]
 

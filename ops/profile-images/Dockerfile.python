@@ -48,7 +48,7 @@ ENV LANG=C.UTF-8 \
 ARG NODE_VERSION=20.19.5
 ARG GH_VERSION=2.100.0
 
-RUN apt-get update && apt-get install -y --no-install-recommends git jq curl xz-utils \
+RUN apt-get update && apt-get install -y --no-install-recommends git jq curl xz-utils sqlite3 \
   && rm -rf /var/lib/apt/lists/* \
   && curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
   && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
@@ -58,6 +58,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends git jq curl xz-
   && rm /tmp/node.tar.xz \
   && pip install --no-cache-dir uv \
   && gh --version && node -v && npm -v && uv --version
+
+# ---------------------------------------------------------------------------
+# Codegraph -- the code index backend (ADR 0014 / docs/code-context C5)
+# ---------------------------------------------------------------------------
+# Pinned by version and sha256; `codegraph upgrade` and the upstream install.sh
+# (which resolves "latest" at build time) are never used. The tarball is
+# codegraph-linux-x64/bin/codegraph after stripping one top-level directory.
+# The environment keeps it quiet and offline -- no telemetry, no update check,
+# no `codegraph install` writes into a repository's AGENTS.md.
+ARG CODEGRAPH_VERSION=1.6.0
+ARG CODEGRAPH_SHA256=de3391f79ed42622d937e6cd5b7642a7ea8bb7d1473607e80b879ba73ef216b0
+ENV CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1 CODEGRAPH_NO_UPDATE_CHECK=1
+RUN curl -fsSL -o /tmp/cg.tgz "https://github.com/colbymchenry/codegraph/releases/download/v${CODEGRAPH_VERSION}/codegraph-linux-x64.tar.gz" \
+ && echo "${CODEGRAPH_SHA256}  /tmp/cg.tgz" | sha256sum -c - \
+ && mkdir -p /opt/codegraph && tar -xzf /tmp/cg.tgz -C /opt/codegraph --strip-components=1 \
+ && rm /tmp/cg.tgz && ln -s /opt/codegraph/bin/codegraph /usr/local/bin/codegraph \
+ && codegraph --version
 
 # ---------------------------------------------------------------------------
 # Cache layout -- see common.env.md
@@ -109,3 +126,7 @@ RUN cd /tmp/warm/repo \
   && rm -rf node_modules \
   && rm -rf /tmp/warm /tmp/buildreqs \
   && du -sh /opt/cache/*
+
+# The wrapper agents call instead of codegraph directly (docs/code-context C2).
+COPY fabro-code /usr/local/bin/fabro-code
+RUN chmod +x /usr/local/bin/fabro-code

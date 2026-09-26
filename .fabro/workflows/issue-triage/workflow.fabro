@@ -21,9 +21,13 @@ digraph IssueTriage {
     // fresh needs-triage, and needs-info whose newest comment carries none of our
     // markers, which means a human replied since we asked. Failing when nothing
     // matches ends the run quietly. A fresh claim on the chosen issue makes the phase
-    // report `skipped`; this package is fired by hand, so that is acceptable.
+    // report `skipped`; this package is fired by hand, so that is acceptable. acquire
+    // also builds the code index before the triage agents run (docs/code-context task
+    // 05). It does not run under set -e, so the fragment absorbs its own failures.
     acquire [label="Acquire issue", shape=parallelogram,
         script="mkdir -p /tmp/fabro
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index >/dev/null 2>&1; fabro-code map >/dev/null 2>&1 || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi
 gh issue list --label needs-triage --state open --json number,title --limit 50 > /tmp/fabro/cand_triage.json || true
 gh issue list --label needs-info --state open --json number,title,comments --limit 50 > /tmp/fabro/cand_info.json || true
 for f in cand_triage cand_info; do

@@ -94,6 +94,9 @@ assemble_context() {
   # Sits at the context root, not under warm/, because the Dockerfiles COPY it to
   # /usr/local/bin rather than running it during the warm step.
   cp "$HERE/fabro-pg-ensure.sh" "$ctx/fabro-pg-ensure.sh"
+  # The fabro-code wrapper (docs/code-context C2) also lands at the context root
+  # so every Dockerfile can `COPY fabro-code /usr/local/bin/fabro-code`.
+  cp "$HERE/fabro-code" "$ctx/fabro-code"
   log "context $profile: $n manifest file(s)"
   printf '%s' "$ctx"
 }
@@ -195,6 +198,38 @@ verify_image() {
     fi
   else
     log "verify $tag: $repo has no .fabro/setup.sh to check"
+  fi
+
+  # INDEX (offline): does codegraph build an index of this repository in a 2 CPU
+  # / 4 GB sandbox, and does the build stay out of git (ADR 0014 D5)? This is the
+  # check that would catch a codegraph version or schema regression the moment it
+  # hit the image, before a run's prep builds an empty or broken index. It runs
+  # against the REAL repository (not the manifest-only context), in a throwaway
+  # copy, with the same resource cap the bench used.
+  #
+  # The last test proves the only new path is `.codegraph/` -- git status sees
+  # exactly one porcelain line naming codegraph. Nothing may write into AGENTS.md
+  # or anywhere else.
+  log "verify $tag: index check, offline"
+  t0=$(date +%s)
+  if docker run --rm --network=none --cpus=2 -m 4g -v "$src":/src:ro \
+      --entrypoint bash "$tag" -c '
+        set -eu
+        cp -a /src /verify && cd /verify
+        # The verify container runs as root and /src is an andrew-owned clone, so
+        # after `cp -a` the copy is also uid 1000 -- git refuses it as "dubious
+        # ownership" unless told it is safe. The real sandbox runs the repo owned
+        # by its own user, so this is a build-time artifact only.
+        git config --global --add safe.directory "*"
+        codegraph init --yes </dev/null \
+          && codegraph status | grep -q "up to date" \
+          && [ "$(git status --porcelain | grep -c codegraph)" = 1 ]
+      ' >"$WORK/verify-index-$repo.log" 2>&1; then
+    log "verify $tag: index OK in $(( $(date +%s) - t0 ))s (only .codegraph/ is new)"
+  else
+    log "verify $tag: INDEX CHECK FAILED -- codegraph cannot index this tree cleanly"
+    tail -20 "$WORK/verify-index-$repo.log" >&2
+    ok=1
   fi
 
   return $ok

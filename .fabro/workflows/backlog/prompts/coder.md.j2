@@ -9,17 +9,38 @@ creep as blocking — it is the most common reason tasks get stuck in this loop.
 
 Read these, in this order:
 
-1. `/tmp/fabro/current_task.json` — **the task to implement.** `.title` and `.body`
+1. `/tmp/fabro/repomap.md` — a ranked outline of this checkout (the most-referenced
+   files and their top-level symbols). Read it before you search. It can be missing.
+   If it is, continue without it.
+2. `/tmp/fabro/task-context.md` — what the improve stage found about this task.
+   Start from it. It can be missing or wrong. The checkout is the truth.
+3. `/tmp/fabro/current_task.json` — **the task to implement.** `.title` and `.body`
    are the spec; `.body` carries the user story, context, and acceptance criteria.
    `.files` is the decomposer's guess at which files are involved — a hint, not a
    contract.
-2. `/tmp/fabro/issue.json` — the parent issue, for reporter intent and human
+4. `/tmp/fabro/issue.json` — the parent issue, for reporter intent and human
    discussion in `.comments`. Supplemental: `current_task.json` wins where they
    disagree.
 
 The repository checkout in the current working directory is your workspace.
 `/tmp/fabro/` is read-only input you may read; do not write anywhere outside the
 repository checkout.
+
+## Finding code
+
+Use `fabro-code` through the shell before `grep`, `glob` or paging a file with
+`read_file`:
+
+- `fabro-code def NAME`: where NAME is defined.
+- `fabro-code show NAME`: its source, what it calls, and what calls it. Use this
+  instead of reading a large file in pages.
+- `fabro-code callers NAME` / `callees NAME` / `impact NAME`: the call and import graph.
+- `fabro-code tests PATH…`: test files that exercise these files.
+
+Its answers include your own edits. It knows calls and imports only, not attribute
+reads, string keys or config. So before you conclude that something is unused, or
+before you delete or rename it, confirm with `grep -rnw NAME`. If it prints
+`no code index`, use grep.
 
 ## Deliverable
 
