@@ -88,9 +88,6 @@
         {% if row.local_tokens is not none %}
           <span class="block">{{ row.local_tokens|tokens }} <span class="text-slate-600">local</span></span>
           <span class="block">{{ row.hosted_tokens|tokens }} <span class="text-slate-600">hosted</span></span>
-          {% if row.local_cost_usd_micros is not none %}
-            <span class="block text-slate-500">{{ row.local_cost_usd_micros|usd }} + {{ row.hosted_cost_usd_micros|usd }}</span>
-          {% endif %}
         {% else %}
           <span class="text-slate-500">&mdash;</span>
         {% endif %}

@@ -228,7 +228,6 @@ def build_app(
     templates.env.filters["duration"] = humanise_duration
     templates.env.filters["compact_ts"] = compact_timestamp
     templates.env.filters["tokens"] = format_tokens
-    templates.env.filters["usd"] = format_usd
     # A global rather than a filter: it takes the page's whole sort state, not a
     # value being formatted.
     templates.env.globals["sort_link"] = _sort_link
@@ -963,19 +962,19 @@ def estimate_remaining(
 
 
 def format_tokens(count: int | None, short: bool = True) -> str:
-    """`12345` → `12.3k`, else a plain number. `None` is `` (unknown)."""
+    """`12345` → `12.3k`, `1_234_567` → `1.2m`, else a plain number.
+
+    `None` is `` (unknown). Runs here are in the millions of tokens, so the
+    high end of the scale matters most; thousands still render as `k` so a
+    short run does not read as a tenth of a million.
+    """
     if count is None:
         return ""
+    if short and count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}m"
     if short and count >= 1000:
         return f"{count / 1000:.1f}k"
     return str(count)
-
-
-def format_usd(micros: int | None) -> str:
-    """USD micros (1e-6 $) → `$0.0241`, else `` when unknown."""
-    if micros is None:
-        return ""
-    return f"${micros / 1_000_000:.4f}"
 
 
 def humanise_duration(delta: timedelta) -> str:
