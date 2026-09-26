@@ -15,7 +15,9 @@
 # unescapes it the way the DOT parser does, rebases `/tmp/fabro` onto a scratch
 # directory, and runs it against fixtures. It needs no host, no container, no
 # sandbox and no network, which makes it cheap enough for a pre-push hook
-# alongside `check-routing-schemas.py`.
+# alongside `check-routing-schemas.py`. It needs only jq, awk and git -- the
+# extractor is awk, not python3, so the suite also runs inside every sandbox
+# profile image, against the mawk and jq the nodes really run under.
 #
 # It tests the QUEUE mechanics -- selection, splicing, cursor, guards. It says
 # nothing about whether an agent fills the contract correctly; that is what the
@@ -59,21 +61,21 @@ extract() { extract_from "$GRAPH" "$1"; }
 # both backlog and pr-review at parse time, so its nodes are not in either package's
 # own .fabro file and have to be read from the shared one.
 extract_from() {
-    python3 - "$1" "$2" <<'PY'
-import sys
-src = open(sys.argv[1]).read()
-i = src.index("\n    %s [" % sys.argv[2])
-k = src.index('script="', i) + len('script="')
-out = []
-while True:
-    c = src[k]
-    if c == '\\' and src[k + 1] == '"':
-        out.append('"'); k += 2; continue
-    if c == '"':
-        break
-    out.append(c); k += 1
-sys.stdout.write(''.join(out))
-PY
+    awk -v pfx="    $2 [" '
+function scan(s,  i, c) {
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\" && substr(s, i + 1, 1) == "\"") { printf "\""; i++; continue }
+        if (c == "\"") return 1
+        printf "%s", c
+    }
+    return 0
+}
+st == 0 && substr($0, 1, length(pfx)) == pfx { st = 1 }
+st == 1 && (k = index($0, "script=\"")) { st = 2; if (scan(substr($0, k + 8))) { done = 1; exit } next }
+st == 2 { printf "\n"; if (scan($0)) { done = 1; exit } }
+END { if (!done) exit 1 }
+' "$1"
 }
 
 # Stage a gate with /tmp/fabro rebased onto $T, and hold it to AGENTS.md's

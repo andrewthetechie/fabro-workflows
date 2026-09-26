@@ -110,7 +110,7 @@ fixtures:
 ./ops/test-task-gates.sh      # 415 checks, offline — no host, container or network
 ```
 
-It needs only `jq` and `python3`, so it belongs in the same pre-push hook. It covers
+It needs only `jq`, `awk` and `git` — no `python3`, which `fabro-ts` and `fabro-python-node` do not ship — so it belongs in the same pre-push hook and also runs inside every profile image, the one way to test the counters against the sandbox's own mawk and jq (`jq 1.6` in `fabro-python-node`). It covers
 the task-queue gates, `open_pr`, and — since 2026-09-19 — `claim`, `mark_stuck` and the
 shared review-merge graph's `merge`. Since 2026-09-21 it also covers `open_pr_prep`'s
 empty-diff floor, and that section is the one place here that uses the REAL `git`: it

@@ -225,7 +225,7 @@ Run these from the root of the `fabro-workflows` checkout:
 ./ops/test-task-gates.sh      # before this series: "PASS: 335 checks"
 ```
 
-It needs `jq`, `python3` and `git`. Each task that adds checks raises the `PASS` number:
+It needs `jq`, `awk` and `git` (no `python3`), so it also runs inside any profile image. Each task that adds checks raises the `PASS` number:
 
 | After task | `PASS` |
 |---|---|
