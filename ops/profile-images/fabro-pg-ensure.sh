@@ -54,7 +54,7 @@ if [ ! -s "$PGDATA/PG_VERSION" ]; then
   mkdir -p "$PGDATA"
   chown postgres:postgres "$PGDATA"
   chmod 0700 "$PGDATA"
-  as_pg "initdb -D '$PGDATA' -U postgres --auth=trust --auth-host=trust"
+  as_pg "initdb -D '$PGDATA' -U postgres --auth=trust --auth-host=trust --encoding=UTF8 --locale=C.UTF-8"
 fi
 
 if ! as_pg "pg_ctl -D '$PGDATA' status" >/dev/null 2>&1; then

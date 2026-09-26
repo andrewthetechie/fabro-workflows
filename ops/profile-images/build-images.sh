@@ -155,6 +155,30 @@ verify_image() {
     ok=1
   fi
 
+  # LOCALE (offline): the sandbox runs in UTF-8, and a baked cluster is UTF8.
+  # Without it psycopg 3 reads an SQL_ASCII cluster's text as bytes, and every
+  # task's validate fails on a fault no code change can fix (see common.env.md).
+  log "verify $tag: locale check, offline"
+  if docker run --rm --network=none --entrypoint bash "$tag" -c '
+        set -eu
+        [ "${LANG:-}" = C.UTF-8 ] && [ "${LC_ALL:-}" = C.UTF-8 ] || { echo "LANG=${LANG:-} LC_ALL=${LC_ALL:-}"; exit 1; }
+        [ "${PGCLIENTENCODING:-}" = UTF8 ] || { echo "PGCLIENTENCODING=${PGCLIENTENCODING:-}"; exit 1; }
+        if command -v fabro-pg-ensure >/dev/null 2>&1; then
+          fabro-pg-ensure >/dev/null
+          enc=$(su postgres -s /bin/sh -c "psql -p ${PGPORT:-5432} -d test -tAc \"SHOW server_encoding\"")
+          echo "server_encoding=$enc"
+          [ "$enc" = UTF8 ]
+        else
+          echo "no postgres in this image"
+        fi
+      ' >"$WORK/verify-locale-$repo.log" 2>&1; then
+    log "verify $tag: locale OK ($(tail -1 "$WORK/verify-locale-$repo.log"))"
+  else
+    log "verify $tag: LOCALE CHECK FAILED"
+    tail -20 "$WORK/verify-locale-$repo.log" >&2
+    ok=1
+  fi
+
   if [ -x "$src/.fabro/setup.sh" ]; then
     log "verify $tag: contract check, running $repo/.fabro/setup.sh"
     t0=$(date +%s)

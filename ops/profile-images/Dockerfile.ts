@@ -5,6 +5,17 @@
 
 FROM oven/bun:1.4.2
 
+# ---------------------------------------------------------------------------
+# Locale -- see common.env.md
+# ---------------------------------------------------------------------------
+# The base images set no locale, so every sandbox ran under POSIX/C: initdb baked
+# an SQL_ASCII cluster, and psycopg 3 on it returns raw bytes for text and fails
+# its first version query. womens-fantasy-sports' backend suite failed Validate
+# that way on 2026-09-25. C.UTF-8 ships with glibc; no locales package needed.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PGCLIENTENCODING=UTF8
+
 ARG GH_VERSION=2.100.0
 # backend/pyproject.toml: requires-python >=3.14,<4.0. compose.yml's `db` service
 # is postgres:18, and backup-bats.yml pins the same fixture image.
@@ -48,7 +59,7 @@ RUN chmod +x /usr/local/bin/fabro-pg-ensure
 
 ENV PGDATA=/var/lib/postgresql/fabro
 RUN mkdir -p "$PGDATA" && chown postgres:postgres "$PGDATA" && chmod 0700 "$PGDATA" \
-  && su postgres -s /bin/sh -c "/usr/lib/postgresql/${PG_MAJOR}/bin/initdb -D '$PGDATA' -U postgres --auth=trust --auth-host=trust" >/dev/null \
+  && su postgres -s /bin/sh -c "/usr/lib/postgresql/${PG_MAJOR}/bin/initdb -D '$PGDATA' -U postgres --auth=trust --auth-host=trust --encoding=UTF8 --locale=C.UTF-8" >/dev/null \
   && echo "postgres ${PG_MAJOR} cluster initialised at $PGDATA"
 
 # ---------------------------------------------------------------------------

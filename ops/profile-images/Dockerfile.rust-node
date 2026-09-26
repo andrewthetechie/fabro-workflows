@@ -15,6 +15,17 @@ RUN cd /src/src-tauri && cargo fetch && du -sh /usr/local/cargo/registry
 
 FROM rust:1.98.1-trixie
 
+# ---------------------------------------------------------------------------
+# Locale -- see common.env.md
+# ---------------------------------------------------------------------------
+# The base images set no locale, so every sandbox ran under POSIX/C: initdb baked
+# an SQL_ASCII cluster, and psycopg 3 on it returns raw bytes for text and fails
+# its first version query. womens-fantasy-sports' backend suite failed Validate
+# that way on 2026-09-25. C.UTF-8 ships with glibc; no locales package needed.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PGCLIENTENCODING=UTF8
+
 ARG GH_VERSION=2.100.0
 # .github/workflows/ci.yml sets up node-version: 22 in every job that touches the
 # frontend, and release.yml does the same.

@@ -10,6 +10,17 @@
 FROM python:3.13.15-trixie
 
 # ---------------------------------------------------------------------------
+# Locale -- see common.env.md
+# ---------------------------------------------------------------------------
+# The base images set no locale, so every sandbox ran under POSIX/C: initdb baked
+# an SQL_ASCII cluster, and psycopg 3 on it returns raw bytes for text and fails
+# its first version query. womens-fantasy-sports' backend suite failed Validate
+# that way on 2026-09-25. C.UTF-8 ships with glibc; no locales package needed.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PGCLIENTENCODING=UTF8
+
+# ---------------------------------------------------------------------------
 # Toolchain
 # ---------------------------------------------------------------------------
 # git   -- the clone stage

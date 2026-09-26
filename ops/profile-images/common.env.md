@@ -30,3 +30,21 @@ the delta over the network. Staleness degrades speed, never correctness, and
 `ENV` is the only way to set these. Fabro evaluates sandbox commands with a
 **non-login** `bash`, so `/etc/profile.d/*.sh` and `~/.bashrc` are never sourced
 (`docs/public/execution/environments.mdx`, Docker section).
+
+## Locale
+
+Every image also sets, right after `FROM`:
+
+| Variable | Value | Why |
+|---|---|---|
+| `LANG` | `C.UTF-8` | The base images set no locale, so every sandbox ran under POSIX/C. |
+| `LC_ALL` | `C.UTF-8` | Pins every `LC_*` category, so no tool falls back to ASCII. |
+| `PGCLIENTENCODING` | `UTF8` | libpq clients (psycopg 3, `psql`) ask for UTF-8 on any cluster. |
+
+The build-time `initdb` also passes `--encoding=UTF8 --locale=C.UTF-8`, and so does
+`fabro-pg-ensure`'s fallback. Until 2026-09-25 the cluster was `initdb`'d under the C
+locale, so it was `SQL_ASCII`. On that cluster psycopg 3 returns raw bytes for text and
+the first `SELECT version()` fails, and womens-fantasy-sports' backend suite then failed
+every `validate` on 0.362. `C.UTF-8` ships with glibc, so no `locales` package is
+needed. `build-images.sh` checks all three variables and, where the image has Postgres,
+that `SHOW server_encoding` prints `UTF8`.
