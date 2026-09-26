@@ -240,6 +240,27 @@ permanent: it is how later reviews recognise a candidate as already filed, and a
 "not planned" one as rejected so it is never filed again.
 _Avoid_: refactor issue, improvement issue
 
+**Tamper counter**:
+A count, made by code and not by a model, of a change in a PR's diff that makes the tests
+test less: a deleted test file, an added skip, a removed assertion, an assertion that
+cannot fail. Any non-zero tamper counter stops the PR from being auto-merged (ADR 0013).
+_Avoid_: test smell, lint finding
+
+**Erosion counter**:
+A count, made by code, of a change in a PR's diff that makes the code harder to maintain
+without making the tests weaker: a broad exception handler, an escape from the type
+checker, a disabled lint rule, an unlinked TODO. A repository chooses whether erosion
+counters only report or also block (ADR 0013).
+_Avoid_: code smell, tech debt
+
+**Refuter**:
+The reviewer that runs last before a PR is delivered. It sees only the issue, the diff and
+the counters, never the coder's or the other reviewers' work, and it is told to prove the
+work is **not** done. Its result is a checklist, one line per acceptance criterion plus
+the blocking defects, and never a score. It is not one of the merge-phase reviewers
+(standards, spec), and it never fixes anything (ADR 0013).
+_Avoid_: verifier, judge, second reviewer
+
 **Canary** *(retired)*:
 Was to be the first repo whose `backlog` schedule is enabled at turn-on — `jelly-swipe`,
 because it has branch protection and no deploy-on-merge. No canary turn-on ever happened:

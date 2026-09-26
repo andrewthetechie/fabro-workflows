@@ -1,6 +1,6 @@
 # A5 · A cross-family adversarial refuter in front of the squash-merge
 
-**Status:** proposed. **Axis:** quality. **Effort:** M. **Feasibility:** high.
+**Status:** applied 2026-09-26 as ADR 0013 (`docs/merge-gate/`), on `glm-5.3` until a non-GLM provider is added. The seeded-defect suite was not built. **Axis:** quality. **Effort:** M. **Feasibility:** high.
 **Depends on:** a new provider key (Anthropic recommended). **Better with:** A4 (the refuter
 reads `hygiene.json`), B3 (the checklist goes through the submit tool), B1 (catch-rate
 measurement).

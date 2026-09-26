@@ -139,6 +139,11 @@ digraph Backlog {
             // against full 5.3's 202752. Every model named here must also exist in the
             // server settings overlay or the run dies at its first node; `fabro validate`
             // does not check the catalog.
+            //
+            // `.refute` is the Refuter in the imported merge phase (ADR 0013 D6). It is on
+            // glm-5.3 only until a non-GLM provider is added: its purpose is a model family
+            // unlike the coder's and the reviewers'. Change it here AND in the other
+            // importing graph, and give any fallback for its new model a non-GLM target.
         model_stylesheet="
             *                 { model: coders-a; }
             .decomp           { model: glm-5.3; }
@@ -157,6 +162,7 @@ digraph Backlog {
             .merge-spec       { model: glm-5.3; }
             .merge-fix        { model: glm-5.3; }
             .ci-fix           { model: glm-5.3-flash; }
+            .refute           { model: glm-5.3; }
         "
     ]
     rankdir=LR

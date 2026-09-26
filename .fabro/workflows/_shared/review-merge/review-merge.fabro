@@ -78,7 +78,7 @@ def one($axis):
   + \"[\" + sev + \"] \" + (.message // .description // \"(no description)\")
   + (if (.suggestion // \"\") != \"\" then NL + \"  - _Suggested:_ \" + .suggestion else \"\" end);
 
-($std[0] // {}) as $S | ($spc[0] // {}) as $P | ($fix[0] // {}) as $F | nz($cm[0]) as $C | ($cfix[0] // {}) as $X
+($std[0] // {}) as $S | ($spc[0] // {}) as $P | ($fix[0] // {}) as $F | nz($cm[0]) as $C | ($cfix[0] // {}) as $X | ($ref[0] // {}) as $RF | ($hyg[0] // {}) as $HG
 | ( (nz($S.findings) | map(. + {_a:\"standards\"}))
   + (nz($P.findings) | map(. + {_a:\"spec\"}))
   + (nz($F.own_findings) | map(. + {_a:\"correctness\"})) ) as $all
@@ -101,6 +101,8 @@ def one($axis):
   \"| Standards | \" + ($S.decision // \"_did not run_\") + \" |\",
   \"| Spec | \" + ($P.decision // \"_did not run_\") + \" |\",
   \"| Review and fix | \" + ($F.outcome // \"_did not run_\") + \" |\",
+  \"| Refuter | \" + (if $rverdict == \"\" then \"_did not run_\" else $rverdict end) + \" |\",
+  \"| Diff hygiene | \" + (if ($HG.blocking | type) != \"array\" then \"_did not run_\" elif ($HG.blocking | length) == 0 then \"clear\" else \"blocked: \" + ($HG.blocking | join(\", \")) end) + \" |\",
   \"\",
   \"### Findings\", \"\",
   ( $all | if length == 0 then \"_None recorded._\" else [ .[] | one(._a) ] | join(NL) end ),
@@ -115,6 +117,19 @@ def one($axis):
     | if length == 0 then \"_None recorded._\"
       else [ .[] | \"- **\" + (if .finding_id then .finding_id + \": \" else \"\" end)
                  + .original_finding + \"** - \" + .reason ] | join(NL) end ),
+  \"\",
+  \"### Refuter\", \"\",
+  ( if ($RF.criteria | type) != \"array\" then \"_The refuter did not return a result._\"
+    else ( [ $RF.criteria[] | \"- **\" + .status + \"** - \" + .criterion + \" - \" + .evidence ]
+         + [ (nz($RF.defects) | .[]) | \"- **defect** - \" + .file + (if (.line | type) == \"number\" then \":\" + (.line | tostring) else \"\" end) + \" - \" + .scenario ] )
+         | join(NL) end ),
+  \"\",
+  \"### Diff hygiene\", \"\",
+  ( if ($HG.tamper | type) != \"object\" then \"_The counters did not run._\"
+    else [ ($HG.tamper + ($HG.erosion // {})) | to_entries[] | select(.value > 0) | .key + \" \" + (.value | tostring) ] as $nz
+      | (if ($nz | length) == 0 then \"No counter fired.\" else \"Counters: \" + ($nz | join(\", \")) + \". Erosion mode: \" + ($HG.erosion_mode // \"report\") + \".\" end)
+        + ( nz($HG.samples) | if length == 0 then \"\"
+            else NL + NL + ([ .[] | \"- `\" + .file + (if .line then \":\" + (.line | tostring) else \"\" end) + \"` \" + .counter + \" - `\" + .text + \"`\" ] | join(NL)) end ) end ),
   \"\",
   \"### Commits with changes\", \"\",
   ( $C | if length == 0 then \"_This review made no file changes._\"
@@ -151,7 +166,7 @@ K=\"${1:-complete}\"
 R=/tmp/fabro/review
 T=/tmp/fabro/_render
 rm -rf $T && mkdir -p $T
-for f in standards spec fix_result ci_fix_result; do
+for f in standards spec fix_result ci_fix_result refute hygiene; do
   if [ -s \"$R/$f.json\" ] && jq -e 'type == \"object\"' \"$R/$f.json\" >/dev/null 2>&1; then cp \"$R/$f.json\" \"$T/$f.json\"; else echo '{}' > \"$T/$f.json\"; fi
 done
 PR_URL=$(cat /tmp/fabro/pr_url 2>/dev/null || echo '')
@@ -167,7 +182,7 @@ if [ -n \"$BASE\" ]; then
   done
 fi
 jq -s . $T/cm.ndjson > $T/cm.json
-jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\"
+jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\"
 RENDER_SH
 echo '{\"context_updates\":{\"review_merge_outcome\":\"needs_human\"}}'"]
 
@@ -328,6 +343,262 @@ else
   echo '{\"context_updates\":{\"ci_ok\":true,\"fix_attempts\":'$A'}}'
 fi"]
 
+    // ---- Diff hygiene (ADR 0013 D1 to D3) ----
+    // Counts test tampering and code erosion over the lines this PR added, and writes
+    // review/hygiene.json. merge_gate check 13 blocks on its `blocking` list.
+    //
+    // The counter program is written to /tmp/fabro/hygiene.sh and then run, rather than
+    // run inline, because ci_fix_gate runs the SAME program again after a CI fix. Two
+    // copies of it would drift.
+    //
+    // It reads .fabro/hygiene.json from the BASE branch, never the PR head, and a PR that
+    // touches that file trips `config_changed`: a PR cannot loosen the rules that judge
+    // it. The patterns are written with bracket expressions ([.], [(], [[]) because the
+    // escaped quote is the only backslash a .fabro file may hold. The fixtures in
+    // ops/test-task-gates.sh are the contract for what each counter matches
+    // (docs/merge-gate/00-overview-and-contracts.md, C5). The sandbox awk is mawk.
+    //
+    // It prints no routing object and never chooses a route. A failure to COUNT is
+    // written into hygiene.json as `hygiene_error`, which blocks the merge; only a failure
+    // of the node itself (it cannot write the program) takes the edge to mark_needs_human.
+    hygiene [label="Diff hygiene counters", shape=parallelogram, timeout="5m",
+        script="set -e
+mkdir -p /tmp/fabro/review
+cat > /tmp/fabro/hygiene.sh <<'HYGIENE_SH'
+B=$(cat /tmp/fabro/base_ref)
+R=/tmp/fabro/review
+W=/tmp/fabro/_hygiene
+O=$R/hygiene.json
+rm -rf $W && mkdir -p $W $R
+rm -f $O $R/hygiene_reason.txt
+herr() {
+  jq -n --arg why \"$1\" '{version:1, config:\"default\", error:$why, tamper:{}, erosion:{}, blocking:[\"hygiene_error\"], samples:[]}' > $O
+  echo 'The diff-hygiene counters could not be computed ('\"$1\"'), so the merge is refused.' > $R/hygiene_reason.txt
+  exit 0
+}
+jq -n '{erosion_mode:\"report\", erosion_threshold:3, erosion_thresholds:{},
+  test_paths:[\"(^|/)(tests?|__tests__|spec)/\", \"_test[.][a-z]+$\", \"[.](test|spec)[.][a-z]+$\", \"(^|/)test_[^/]*[.]py$\"],
+  exclude_paths:[\"(^|/)(package-lock[.]json|yarn[.]lock|pnpm-lock[.]yaml|bun[.]lockb?|Cargo[.]lock|poetry[.]lock|uv[.]lock)$\", \"[.]min[.](js|css)$\", \"(^|/)(dist|build|vendor|node_modules)/\"]}' > $W/default.json
+CFG=default
+cp $W/default.json $W/cfg.json
+if git cat-file -e \"origin/$B:.fabro/hygiene.json\" 2>/dev/null; then
+  CFG=repo
+  if ! git show \"origin/$B:.fabro/hygiene.json\" > $W/repo.json 2>/dev/null || ! jq -s '.[0] + .[1]' $W/default.json $W/repo.json > $W/cfg.json 2>/dev/null || [ \"$(jq -r '(.erosion_mode == \"report\" or .erosion_mode == \"block\")
+        and ((.erosion_threshold | type) == \"number\")
+        and ((.erosion_thresholds | type) == \"object\")
+        and ((.test_paths | type) == \"array\") and ((.test_paths | length) > 0)
+        and all(.test_paths[]; type == \"string\")
+        and ((.exclude_paths | type) == \"array\") and all(.exclude_paths[]; type == \"string\")' $W/cfg.json 2>/dev/null)\" != true ]; then
+    CFG=invalid
+    cp $W/default.json $W/cfg.json
+  fi
+fi
+TP=$(jq -r '.test_paths | map(\"(\" + . + \")\") | join(\"|\")' $W/cfg.json)
+EX=$(jq -r '.exclude_paths | map(\"(\" + . + \")\") | join(\"|\")' $W/cfg.json)
+git diff -U0 --no-color --no-ext-diff \"origin/$B...HEAD\" > $W/diff 2>/dev/null || herr 'git diff against the base failed'
+CC=$(git diff --name-only \"origin/$B...HEAD\" 2>/dev/null | grep -cxF .fabro/hygiene.json || true)
+awk -v tp=\"$TP\" -v ex=\"$EX\" '
+function istest(f) { return tp != \"\" && f ~ tp }
+function skipped(f) { return ex != \"\" && f ~ ex }
+function assertish(f) { return istest(f) || f ~ /[.]rs$/ }
+function emit(c, f, n, t) { print c S f S n S substr(t, 1, 160) }
+function trim(s) { gsub(/^ +| +$/, \"\", s); return s }
+function flush(  i, d) {
+  d = ra - aa
+  for (i = 1; i <= d; i++) emit(\"asserts_removed\", file, rl[i], rt[i])
+  ra = 0; aa = 0
+}
+function same(t,  s, a, b, p) {
+  if (match(t, /expect[(][^()]*[)][.]to(Be|Equal|StrictEqual)[(][^()]*[)]/)) {
+    s = substr(t, RSTART, RLENGTH)
+    a = substr(s, 8); a = substr(a, 1, index(a, \")\") - 1)
+    p = index(s, \").to\"); b = substr(s, p + 4); b = substr(b, index(b, \"(\") + 1); b = substr(b, 1, length(b) - 1)
+    if (trim(a) == trim(b)) return 1
+  }
+  if (match(t, /(assert_eq!|assertEqual|assertEquals)[(][^(),]*,[^(),]*[)]/)) {
+    s = substr(t, RSTART, RLENGTH)
+    s = substr(s, index(s, \"(\") + 1); s = substr(s, 1, length(s) - 1)
+    p = index(s, \",\")
+    if (trim(substr(s, 1, p - 1)) == trim(substr(s, p + 1))) return 1
+  }
+  if (match(t, /assert +[a-zA-Z0-9_.]+ *== *[a-zA-Z0-9_.]+ *($|,|#)/)) {
+    s = substr(t, RSTART + 6, RLENGTH - 6); sub(/ *($|,|#)$/, \"\", s)
+    p = index(s, \"==\")
+    if (trim(substr(s, 1, p - 1)) == trim(substr(s, p + 2))) return 1
+  }
+  return 0
+}
+BEGIN {
+  S = sprintf(\"%c\", 31); ra = 0; aa = 0; del = 0; head = 0
+  SKIP_ANY = \"#[[]ignore[]]|@pytest[.]mark[.](skip|xfail)|pytest[.](skip|xfail)[(]|@unittest[.]skip|@(Disabled|Ignore)([^a-zA-Z]|$)\"
+  SKIP_TEST = \"(^|[^a-zA-Z0-9_])(it|describe|test|context|suite)[.](skip|only|todo)[(]|(^|[^a-zA-Z0-9_.])x(it|describe|test)[(]\"
+  ASSERT = \"(^|[^a-zA-Z0-9_])(assert[a-zA-Z_]*[ .(!]|expect[(])\"
+  TAUT = \"expect[(] *(true|false|null|undefined|[0-9]+) *[)]|(^|[^a-zA-Z0-9_])assert +(True|1 *== *1) *($|,|#)|assert![(] *true *[)]\"
+  BROAD = \"except +(Exception|BaseException)( |:|$)|except *:|catch *([(][^)]*[)])? *[{] *[}]\"
+  TYPE = \"#[ ]*type: *ignore|[ (]as any([^a-zA-Z0-9_]|$)|as unknown as|@ts-ignore|@ts-expect-error|cast[(] *Any\"
+  LINT = \"eslint-disable|noqa|#!?[[]allow[(]|pylint: *disable|biome-ignore\"
+  UNWRAP = \"[.]unwrap[(][)]|[.]expect[(]\"
+  TODO = \"(^|[^a-zA-Z0-9_])(TODO|FIXME|XXX)([^a-zA-Z0-9_]|$)\"
+  LINKED = \"#[0-9]+|/issues/[0-9]+\"
+}
+/^diff --git / { flush(); head = 1; del = 0; file = \"\"; oldf = \"\"; next }
+head && /^--- / { oldf = substr($0, 7); next }
+head && /^[+][+][+] / {
+  if ($0 == \"+++ /dev/null\") { file = oldf; del = 1; if (istest(oldf) && !skipped(oldf)) emit(\"tests_deleted\", oldf, \"\", \"file deleted\") }
+  else file = substr($0, 7)
+  next
+}
+/^@@ / {
+  flush(); head = 0
+  split($0, p, \" \")
+  split(substr(p[2], 2), q, \",\"); ol = q[1] + 0
+  split(substr(p[3], 2), q, \",\"); nl = q[1] + 0
+  next
+}
+head { next }
+/^[+]/ {
+  t = substr($0, 2)
+  if (!skipped(file)) {
+    if (t ~ SKIP_ANY || (istest(file) && t ~ SKIP_TEST)) emit(\"skips_added\", file, nl, t)
+    if (assertish(file) && t ~ ASSERT) aa++
+    if (assertish(file) && (t ~ TAUT || same(t))) emit(\"tautologies_added\", file, nl, t)
+    if (t ~ BROAD) emit(\"broad_except\", file, nl, t)
+    if (t ~ TYPE) emit(\"type_escape\", file, nl, t)
+    if (t ~ LINT) emit(\"lint_disable\", file, nl, t)
+    if (file ~ /[.]rs$/ && !istest(file) && t ~ UNWRAP) emit(\"rust_unwrap\", file, nl, t)
+    if (t ~ TODO && t !~ LINKED) emit(\"todo_unlinked\", file, nl, t)
+  }
+  nl++
+  next
+}
+/^-/ {
+  t = substr($0, 2)
+  if (!del && !skipped(file) && assertish(file) && t ~ ASSERT) { ra++; rl[ra] = ol; rt[ra] = t }
+  ol++
+  next
+}
+END { flush() }
+' $W/diff > $W/hits || herr 'the counter program failed'
+jq -Rn --slurpfile cfg $W/cfg.json --arg config \"$CFG\" --argjson cc \"${CC:-0}\" --arg base \"$(git rev-parse \"origin/$B\" 2>/dev/null)\" --arg head \"$(git rev-parse HEAD 2>/dev/null)\" '
+  ([31] | implode) as $S
+  | $cfg[0] as $c
+  | [\"tests_deleted\", \"skips_added\", \"asserts_removed\", \"tautologies_added\"] as $TK
+  | [\"broad_except\", \"type_escape\", \"lint_disable\", \"rust_unwrap\", \"todo_unlinked\"] as $EK
+  | [inputs | split($S) | {counter: .[0], file: .[1], line: (.[2] | tonumber? // null), text: .[3]}] as $h
+  | (reduce $TK[] as $k ({}; .[$k] = ([$h[] | select(.counter == $k)] | length)) | .config_changed = $cc) as $tamper
+  | (reduce $EK[] as $k ({}; .[$k] = ([$h[] | select(.counter == $k)] | length))) as $erosion
+  | ( [$tamper | to_entries[] | select(.value > 0) | .key]
+      + (if $c.erosion_mode == \"block\"
+         then [$erosion | to_entries[] | select(.value > ($c.erosion_thresholds[.key] // $c.erosion_threshold)) | .key]
+         else [] end)
+      + (if $config == \"invalid\" then [\"config_invalid\"] else [] end) ) as $blocking
+  | {version: 1, base: $base, head: $head, config: $config,
+     erosion_mode: $c.erosion_mode, erosion_threshold: $c.erosion_threshold,
+     tamper: $tamper, erosion: $erosion, blocking: $blocking,
+     samples: ($h | map(. + {o: (if (.counter | IN($TK[])) then 0 else 1 end)}) | sort_by(.o) | map(del(.o)) | .[:20])}
+' $W/hits > $W/out.json 2>/dev/null || herr 'the counters could not be summarised'
+mv $W/out.json $O
+jq -r '. as $r | (.blocking | length) as $n | if $n == 0 then empty else
+  \"Diff hygiene blocks the merge: \"
+  + ([.blocking[] | . as $k | $k + (if $k == \"config_invalid\" then \"\" else \"=\" + ((($r.tamper + $r.erosion)[$k]) | tostring) end)] | join(\", \"))
+  + (if .config == \"invalid\" then \". The base branch .fabro/hygiene.json is not valid, so the defaults were used\" else \"\" end)
+  + \". Samples: \"
+  + ([.samples[] | select(.counter as $c | $r.blocking | index($c) != null) | .file + (if .line then \":\" + (.line | tostring) else \"\" end) + \" \" + .counter + \" `\" + .text + \"`\"] | .[:5] | join(\"; \"))
+  end' $O > $R/hygiene_reason.txt 2>/dev/null || true
+[ -s $R/hygiene_reason.txt ] || rm -f $R/hygiene_reason.txt
+exit 0
+HYGIENE_SH
+sh /tmp/fabro/hygiene.sh
+jq -r '\"diff hygiene: config \" + .config + \", blocking [\" + (.blocking | join(\", \")) + \"]\"' /tmp/fabro/review/hygiene.json"]
+
+    // ---- Refuter (ADR 0013 D4 to D6) ----
+    // An agent that sees the requirement and the code and nothing the other agents
+    // wrote, told to prove the work is NOT done. It runs once per green `validate`, never
+    // inside the validate -> review_fix loop, where it would pay to review diffs CI is
+    // about to reject.
+    //
+    // refute_prep builds its inputs. `linked_issues.json` comes from
+    // closingIssuesReferences, which carries only id, number, repository and url -- no
+    // title, no body -- so the issue text is fetched here with `gh issue view`, at most
+    // three issues. The diff is re-taken (review_fix may have changed it since
+    // prep_review), smallest files first, and cut at 300000 bytes; the files that did not
+    // fit are listed by name and changed-line count, and the agent can read them in the
+    // checkout. It also clears every contract file the Refuter and its gate write, so a
+    // stale verdict from an earlier pass can never be read as this one.
+    refute_prep [label="Prepare refuter inputs", shape=parallelogram, timeout="5m",
+        script="set -e
+B=$(cat /tmp/fabro/base_ref)
+R=/tmp/fabro/review
+mkdir -p $R
+rm -f $R/refute.json $R/refute_verdict $R/refute_reason.txt $R/refute_issues.ndjson $R/refute_diff.patch $R/refute_omitted.txt /tmp/fabro/refute_attempts
+: > $R/refute_issues.ndjson
+for N in $(jq -r '.[]?.number // empty' /tmp/fabro/linked_issues.json 2>/dev/null | head -3); do
+  case \"$N\" in '' | *[!0-9]*) continue ;; esac
+  gh issue view \"$N\" --json number,title,body > $R/refute_issue.json 2>/dev/null && jq -c . $R/refute_issue.json >> $R/refute_issues.ndjson || jq -nc --argjson n \"$N\" '{number:$n, title:null, body:null, error:\"could not be read\"}' >> $R/refute_issues.ndjson
+done
+rm -f $R/refute_issue.json
+jq -s . $R/refute_issues.ndjson > $R/refute_issues.json
+rm -f $R/refute_issues.ndjson
+git diff --numstat --no-renames \"origin/$B...HEAD\" | awk 'BEGIN { FS = sprintf(\"%c\", 9) } { n = ($1 == \"-\" ? 0 : $1) + ($2 == \"-\" ? 0 : $2); print n \" \" $3 }' | sort -n > $R/refute_files.txt
+: > $R/refute_diff.patch
+: > $R/refute_omitted.txt
+SIZE=0
+while read -r N P; do
+  git diff --no-renames \"origin/$B...HEAD\" -- \"$P\" > $R/refute_one.patch
+  S=$(wc -c < $R/refute_one.patch | tr -d ' ')
+  if [ $((SIZE + S)) -le 300000 ]; then
+    cat $R/refute_one.patch >> $R/refute_diff.patch
+    SIZE=$((SIZE + S))
+  else
+    echo \"$P ($N lines changed)\" >> $R/refute_omitted.txt
+  fi
+done < $R/refute_files.txt
+rm -f $R/refute_one.patch $R/refute_files.txt
+echo 'refuter inputs: '$(jq length $R/refute_issues.json)' linked issue(s), '$SIZE' diff bytes, '$(wc -l < $R/refute_omitted.txt | tr -d ' ')' file(s) omitted'"]
+
+    // .refute runs on glm-5.3 for now (ADR 0013 D6): the same family as the reviewers,
+    // chosen to get the gate working before a second provider is added. Both importing
+    // stylesheets must carry the rule. timeout and max_retries match the other merge-phase
+    // agents; the tallest of them measured 384s.
+    //
+    // A failed refute (timeout, provider error) goes straight to `deliver` with no
+    // verdict file, and merge_gate check 14 blocks on the missing verdict. It never reaches
+    // refute_gate, so a timed-out agent is not sent round again for a "repair".
+    refute [label="Refute", class="refute", timeout="15m", max_retries=1, prompt="@prompts/refute.md.j2"]
+
+    // Validates refute.json with one repair turn, the same pattern as standards_gate, and
+    // then COMPUTES the verdict: `pass` only when every criterion is `met` and there are no
+    // defects. The agent writes no verdict of its own. Twice-invalid output is `invalid`,
+    // which blocks like `fail`. Neither routes back to review_fix: the model whose work was
+    // refuted does not get to argue with the refutation.
+    refute_gate [label="Validate refuter output", shape=parallelogram, output_schema="routing",
+        script="F=/tmp/fabro/review/refute.json
+R=/tmp/fabro/review
+A=$(cat /tmp/fabro/refute_attempts 2>/dev/null || echo 0)
+OK=$(jq -r 'if type == \"object\"
+  and ((.summary | type) == \"string\")
+  and ((.criteria | type) == \"array\") and ((.criteria | length) > 0)
+  and all(.criteria[]; ((.criterion | type) == \"string\") and ((.criterion | length) > 0) and (.status == \"met\" or .status == \"not_met\" or .status == \"unverifiable\") and ((.evidence | type) == \"string\") and ((.evidence | length) > 0))
+  and ((.defects | type) == \"array\")
+  and all(.defects[]; ((.file | type) == \"string\") and ((.scenario | type) == \"string\") and ((.scenario | length) > 0))
+  then \"ok\" else \"bad\" end' $F 2>/dev/null || echo bad)
+if [ \"$OK\" != ok ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/refute_attempts
+  if [ $A -lt 2 ]; then echo 'refute.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  echo invalid > $R/refute_verdict
+  echo 'The refuter wrote an invalid result twice, so it has no verdict and the merge is refused.' > $R/refute_reason.txt
+  echo '{\"context_updates\":{\"refute_verdict\":\"invalid\"}}'
+  exit 0
+fi
+echo 0 > /tmp/fabro/refute_attempts
+V=$(jq -r 'if ([.criteria[] | select(.status != \"met\")] | length) == 0 and (.defects | length) == 0 then \"pass\" else \"fail\" end' $F)
+echo $V > $R/refute_verdict
+if [ \"$V\" = fail ]; then
+  jq -r '\"The refuter could not confirm the work is done: \" + ([.criteria[] | select(.status != \"met\") | .status + \": \" + .criterion] + [.defects[] | \"defect at \" + .file + (if (.line | type) == \"number\" then \":\" + (.line | tostring) else \"\" end) + \": \" + .scenario] | .[:5] | join(\"; \")) + \".\"' $F > $R/refute_reason.txt
+fi
+echo '{\"context_updates\":{\"refute_verdict\":\"'$V'\"}}'"]
+
     deliver [label="Push and label", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 H=$(cat /tmp/fabro/head_ref)
@@ -342,7 +613,7 @@ else
 fi"]
 
     // ---- Auto-merge: decide, watch CI, fix CI, merge ----
-    // The thirteen checks (1 to 12, and 2b) are marked inline, one line each, next to the code that runs
+    // The fifteen checks (1 to 14, and 2b) are marked inline, one line each, next to the code that runs
     // them. Two need more room than that:
     //
     // Check 10 -- every own error finding accounted for by its own id in `fixes_applied`.
@@ -430,6 +701,16 @@ if [ \"$E\" = true ]; then
   gh pr view \"$PR\" --json body --jq .body > /tmp/fabro/pr_body_live.md 2>/dev/null || echo > /tmp/fabro/pr_body_live.md
   awk '/fabro:commit-body:start/{f=1;next} /fabro:commit-body:end/{f=0} f' /tmp/fabro/pr_body_live.md > /tmp/fabro/commit_body.md
   if [ ! -s /tmp/fabro/commit_body.md ] || ! grep -q '^Resolves #' /tmp/fabro/commit_body.md; then fail 'The PR description has no valid fabro commit-body block; a human must merge this PR.'; fi
+fi
+# 13. diff hygiene: no tamper counter, and no erosion counter over its threshold in block mode (ADR 0013 D1)
+if [ \"$E\" = true ]; then
+  HB=$(jq -r 'if (.blocking | type) == \"array\" then (.blocking | length) else \"bad\" end' /tmp/fabro/review/hygiene.json 2>/dev/null || echo bad)
+  if [ \"$HB\" != 0 ]; then fail \"$(cat /tmp/fabro/review/hygiene_reason.txt 2>/dev/null || echo 'The diff-hygiene result is missing or invalid, so the merge is refused.')\"; fi
+fi
+# 14. the refuter could not refute the work (ADR 0013 D5)
+if [ \"$E\" = true ]; then
+  RV=$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || echo missing)
+  if [ \"$RV\" != pass ]; then fail \"$(cat /tmp/fabro/review/refute_reason.txt 2>/dev/null || echo 'The refuter did not return a verdict, so the merge is refused.')\"; fi
 fi
 if [ \"$E\" = true ]; then
   gh pr view \"$PR\" --json title --jq .title > /tmp/fabro/commit_subject.txt
@@ -597,6 +878,10 @@ exit 0"]
     // Both importing stylesheets (backlog, pr-review) must carry a `.ci-fix` rule.
     ci_fix_t1 [label="Fix failing CI (tier 1: glm-5.3-flash)", class="ci-fix", timeout="20m", prompt="@prompts/ci_fix.md.j2"]
     ci_fix_t2 [label="Fix failing CI (tier 2: glm-5.3)", class="rebase-t2", timeout="20m", prompt="@prompts/ci_fix.md.j2"]
+    // Before the push, the diff-hygiene counters run again (ADR 0013 D3). A CI fixer is
+    // the stage most likely to skip a failing test, and it runs after merge_gate has
+    // approved the diff. The program is the one `hygiene` wrote; see that node. A
+    // blocking result refuses the push and reports blocked, like every other refusal here.
     ci_fix_gate [label="Verify CI fix", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 B=$(cat /tmp/fabro/base_ref)
@@ -634,6 +919,13 @@ while IFS= read -r f; do
 done < /tmp/fabro/ci_fix_scan.txt
 if [ $BAD -ne 0 ]; then
   echo 'The CI fix left conflict markers or an in-progress merge; the merge is refused.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
+  exit 0
+fi
+sh /tmp/fabro/hygiene.sh > /dev/null 2>&1 || true
+HB=$(jq -r 'if (.blocking | type) == \"array\" then (.blocking | length) else \"bad\" end' /tmp/fabro/review/hygiene.json 2>/dev/null || echo bad)
+if [ \"$HB\" != 0 ]; then
+  { echo 'The CI fix was not pushed: after it, the diff-hygiene counters block the merge.'; cat /tmp/fabro/review/hygiene_reason.txt 2>/dev/null || echo 'The hygiene result is missing or invalid.'; } > /tmp/fabro/merge_block_reason
   echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
@@ -933,7 +1225,18 @@ echo '{\"context_updates\":{\"review_merge_outcome\":\"'$O'\"}}'"]
 
     validate -> mark_needs_human       [condition="context.ci_ok=false && context.fix_attempts>=2 || outcome=failed", weight=10]
     validate -> review_fix             [condition="context.ci_ok=false"]
-    validate -> deliver
+    validate -> hygiene
+
+    hygiene -> refute_prep             [condition="outcome=succeeded"]
+    hygiene -> mark_needs_human
+
+    refute_prep -> refute              [condition="outcome=succeeded"]
+    refute_prep -> mark_needs_human
+
+    refute -> refute_gate              [condition="outcome=succeeded"]
+    refute -> deliver
+    refute_gate -> refute              [condition="outcome=failed", weight=10]
+    refute_gate -> deliver
 
     deliver -> merge_gate              [condition="context.delivered=true"]
     deliver -> mark_needs_human

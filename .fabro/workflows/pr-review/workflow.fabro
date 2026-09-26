@@ -57,6 +57,11 @@ digraph PrReview {
             // there and forgotten here would silently inherit `*` instead of the
             // intended model, and in `backlog` -- whose `*` is a local box -- that is a
             // silent downgrade of the auto-merge gate rather than a visible error.
+            //
+            // `.refute` is the Refuter in the imported merge phase (ADR 0013 D6). It is on
+            // glm-5.3 only until a non-GLM provider is added: its purpose is a model family
+            // unlike the coder's and the reviewers'. Change it here AND in the other
+            // importing graph, and give any fallback for its new model a non-GLM target.
         model_stylesheet="
             *                 { model: glm-5.3; }
             .rebase           { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
@@ -65,6 +70,7 @@ digraph PrReview {
             .merge-spec       { model: glm-5.3; }
             .merge-fix        { model: glm-5.3; }
             .ci-fix           { model: glm-5.3-flash; }
+            .refute           { model: glm-5.3; }
         "
     ]
     rankdir=LR

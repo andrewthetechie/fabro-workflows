@@ -1,6 +1,6 @@
 # A4 · Deterministic diff-hygiene gate: tamper and erosion counters
 
-**Status:** proposed. **Axis:** quality. **Effort:** S–M. **Feasibility:** high.
+**Status:** applied 2026-09-26 as ADR 0013 (`docs/merge-gate/`). The issue-body override was not adopted. **Axis:** quality. **Effort:** S–M. **Feasibility:** high.
 **Depends on:** nothing. **Pairs with:** A3 layer 2 (same node position), A5 (the refuter
 reads its output).
 

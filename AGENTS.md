@@ -30,6 +30,7 @@ actually lives.
 | `docs/merge-rate/` | The implementation plan for ADR 0011: stop per-stage checkpoint pushes, rerun flaky CI once, `ci_fix_t1` on `glm-5.3-flash`, CI parity in two target repos, an `autofix` stage, and an 8-task budget whose remainder the scheduler queues with a new `priority` label once the parent PR merges. `00-overview-and-contracts.md` first. Tasks 05–07 run in other repositories and task 11 needs the host. **Applied 2026-09-24** in this repository; the target-repository halves of tasks 05 and 06 are PRs there. The budget was then amended so that extra-review follow-ups are exempt (ADR 0011 D6 amendment). |
 | `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
 | `docs/architecture-review/` | The task series for ADR 0012: `arch-review` scans a repository for deepening candidates twice a week, files the strongest as `architecture` issues, and triages the waiting issues toward `agent` through the shared `_shared/triage/` phase. `00-overview-and-contracts.md` first. An `architecture` PR is never auto-merged. **Applied 2026-09-25.** |
+| `docs/merge-gate/` | The task series for ADR 0013: two gates in the shared merge phase between `validate` and `deliver`. `hygiene` counts test tampering (deleted tests, added skips, removed or tautological assertions) and code erosion over the PR's added lines, in shell; any tamper counter blocks the auto-merge. `refute` is an agent that sees only the issue, the diff and the counters and tries to prove the work is not done; `refute_gate` computes its verdict, and anything but `pass` blocks. `00-overview-and-contracts.md` first. |
 | `docs/fabro-upgrade/` | The task series that moved the host from fabro 0.354.0-nightly.0 to **0.362.0-nightly.0**. It was rehearsed on a copy of the live database on 2026-09-25: the upgrade must drop fabro's run history (0.362's run-history activation rejects every run 0.354 stored) and rewrite the catalog to `codecs = [...]` (0.362 refuses `codec` and the protocol adapter ids at startup). `00-overview-and-contracts.md` first. **Applied 2026-09-25.** |
 | `docs/factory-roadmap/` | The ranked improvement plan for the whole factory, one design record per item (A1–C4, H): andon cord, proposal gate, anti-oscillation, diff hygiene, cross-family refuter, scorecard, value-based queue, submit tool, shared code context, elastic fleet, scout, memory, upgrades. `00-overview.md` first. Records, not task series. An item becomes its own `docs/<name>/` series when picked up. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
@@ -68,12 +69,12 @@ ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp 
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
 ```
 
-Baselines as of 2026-09-24, re-confirmed on 2026-09-25 against **fabro 0.362.0-nightly.0** (review+merge shared and imported; ADR 0011 added
+Baselines as of 2026-09-26 (ADR 0013 added four merge-phase nodes), against **fabro 0.362.0-nightly.0** (review+merge shared and imported; ADR 0011 added
 `autofix` and `file_remainder`):
-`Backlog (61 nodes, 143 edges)` with exactly one warning — `issue_number` unbound in
+`Backlog (65 nodes, 151 edges)` with exactly one warning — `issue_number` unbound in
 `claim` (draft 10's deliberate fail-closed input, the same shape as `pr_number`) — and
-`PrReview (30 nodes, 65 edges)` with exactly one warning — `pr_number` unbound in
-`validate_input` — and `IssueTriage (13 nodes, 26 edges)` clean, and `ArchReview (21 nodes, 44 edges)` clean. Both include the 10 nodes of `_shared/triage/`. Backlog and PrReview both include the ~21
+`PrReview (34 nodes, 73 edges)` with exactly one warning — `pr_number` unbound in
+`validate_input` — and `IssueTriage (13 nodes, 26 edges)` clean, and `ArchReview (21 nodes, 44 edges)` clean. Both include the 10 nodes of `_shared/triage/`. Backlog and PrReview both include the ~25
 nodes of `_shared/review-merge/`, which `fabro validate` splices in; `fabro parse`
 shows the unexpanded placeholder instead, so node counts only match after validate. That warning is deliberate. Binding
 `[run.inputs] pr_number` would silence it and let a run fired with no input review PR
@@ -106,7 +107,7 @@ the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them 
 fixtures:
 
 ```sh
-./ops/test-task-gates.sh      # 335 checks, offline — no host, container or network
+./ops/test-task-gates.sh      # 402 checks, offline — no host, container or network
 ```
 
 It needs only `jq` and `python3`, so it belongs in the same pre-push hook. It covers
@@ -117,7 +118,9 @@ builds an actual repo and clones it over `file://`, because what is under test i
 `git diff --quiet origin/main HEAD` tells the truth about a branch carrying nothing but
 checkpoint commits. A stub would only test the stub. It restores `$ORIG_PATH` first —
 `next_task` prepends an `exit 0` `git` and never takes it off, so every later
-`SAVED_PATH="$PATH"` captures that stub too.
+`SAVED_PATH="$PATH"` captures that stub too. Since 2026-09-26 it also covers the merge phase's diff-hygiene
+counters, each with a real-git fixture, and `refute_prep`, `refute_gate`, `merge_gate`
+checks 13 and 14, and the review comment's Refuter and hygiene sections (ADR 0013).
 It says nothing about whether an agent fills a contract correctly.
 
 **`claim` is in there because leaving it out cost the cutover.** Draft 10 deleted
@@ -205,6 +208,9 @@ them, except where a rule names one by id.
 | A `settings.toml` value that is read at startup is verified by the container's start time, never by `GET /settings` | fabro polls the overlay every 5s and republishes the *reported* settings, but `max_concurrent_runs` is copied out once at startup and read only by the admission loop — so after an in-place edit `/settings` answers the new value while the server keeps enforcing the old one, and the endpoint you would check with is the one endpoint that cannot tell you. Check that `docker inspect -f '{{.State.StartedAt}}' fabro-fabro-1` is later than the overlay's mtime; `ops/README.md` carries the command. |
 | A `backlog` run implements at most 8 **decomposed** tasks (`tasks_coded`, counted in `improve_gate` on `ready`), and never labels its remainder issue `agent` | Extra-review follow-ups, and slices split from one (`from_extra: true`), are exempt: they never count, are never moved, and are worked in this run, bounded by `extra_prep`'s two-round cap. `next_task` moves every decomposed task past the budget, `decompose` tasks and their split slices, to `remainder.json`, and `file_remainder` files them as one issue labelled `agent-remainder`. The scheduler adds `agent` + `priority` only once the parent PR merges (ADR 0011 D6, `ops/scheduler/src/fabro_scheduler/remainder.py`). Labelling it `agent` at filing time would let the scheduler's same-repo saturation pass start it on the other box, from a `main` without its parent's work. Covered by `ops/test-task-gates.sh`. |
 | An `architecture`-labelled PR is never auto-merged: `open_pr` copies the label from the issue, `merge_gate` check 2b blocks on it, and `file_remainder` copies it to the Remainder issue | An architecture review (ADR 0012) proposes a refactor, triage promotes it, `backlog` implements it and the merge phase would squash it into `main` with no human anywhere in the chain. On `lawncare-saas` that merge is also a deploy. Check 2b fails closed on a `gh` error. Covered by `ops/test-task-gates.sh`. |
+| The diff-hygiene counters read `.fabro/hygiene.json` from `origin/<base>`, never from the PR head, and `config_changed` counts a PR that touches it | A PR that could edit the rules that judge it would loosen them: raise `erosion_threshold`, drop a test path, and pass its own check. Nothing overrides a hygiene block (ADR 0013 D2): the override is a human merge. The counters' patterns are bracket expressions (`[.]`, `[(]`) because `\"` is the only backslash a `.fabro` file may hold, and they run under **mawk**. The fixtures in `ops/test-task-gates.sh` are their contract. |
+| `ci_fix_gate` runs `/tmp/fabro/hygiene.sh` again before it pushes, and `hygiene` is the only node that writes that file | `ci_fix` changes code after `merge_gate` has approved the diff, and a CI fixer is the stage most likely to skip a failing test. A second copy of the counter program in `ci_fix_gate` would drift from the first (ADR 0013 D3). |
+| `refute` sees no other agent's output, `refute_gate` computes its verdict, and a missing verdict blocks | The Refuter's value is independence: a prompt that hands it `standards.json`, `spec.json` or `fix_result.json` turns it into a fourth reviewer that agrees with the other three. An agent-written `verdict` key is ignored. The verdict is `pass` only when every criterion is `met` and there is no defect. A timed-out Refuter goes straight to `deliver`, and check 14 blocks on the absent `refute_verdict` rather than letting a provider outage through. `.refute` needs a rule in **both** stylesheets, and it is on `glm-5.3` only until a non-GLM provider exists (ADR 0013 D6); a fallback for its later model must not be GLM. |
 
 ## Deploying to the server after a merge to `main`
 

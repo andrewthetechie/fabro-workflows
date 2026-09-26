@@ -1895,6 +1895,409 @@ PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
 # ---------------------------------------------------------------------------
+# review-merge hygiene — tamper and erosion counters (ADR 0013 D1, D2), real git
+# ---------------------------------------------------------------------------
+# The fixtures ARE the counters' contract (docs/merge-gate/00, C5): a pattern
+# change starts here. Real git, because what is under test is what
+# `git diff -U0 origin/main...HEAD` shows for each kind of change.
+echo ""
+echo "review-merge hygiene (real git)"
+PATH="$ORIG_PATH"
+SAVED_PATH="$PATH"
+T="$WORK/hyg"; mkdir -p "$T"
+extract_from "$SHARED" hygiene | sed "s#/tmp/fabro#$T#g" > "$T/hygiene_node.sh"
+if ! sh -n "$T/hygiene_node.sh" 2>"$T/hygiene_node.syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL hygiene is not valid POSIX sh\n'
+fi
+
+# A fresh upstream with a Python test, a module and a Rust file, cloned onto a run
+# branch. $1, when given, is the base branch's .fabro/hygiene.json.
+hy_repo() {
+    rm -rf "$T/up" "$T/wt" "$T/review" "$T/_hygiene"
+    mkdir -p "$T/up/tests" "$T/up/src" "$T/up/.fabro"
+    git -C "$T/up" init -q -b main .
+    git -C "$T/up" config user.email t@t
+    git -C "$T/up" config user.name t
+    printf '%s\n' 'def test_a():' '    assert add(1, 2) == 3' '    assert add(0, 0) == 0' > "$T/up/tests/test_math.py"
+    printf '%s\n' 'def add(a, b):' '    return a + b' > "$T/up/src/math.py"
+    printf '%s\n' 'fn f() -> u8 { 1 }' > "$T/up/src/lib.rs"
+    if [ -n "${1:-}" ]; then printf '%s' "$1" > "$T/up/.fabro/hygiene.json"; fi
+    git -C "$T/up" add -A
+    git -C "$T/up" commit -qm init
+    git clone -q "$T/up" "$T/wt"
+    git -C "$T/wt" config user.email t@t
+    git -C "$T/wt" config user.name t
+    git -C "$T/wt" checkout -qb fabro/run/01TEST
+    echo main > "$T/base_ref"
+}
+hy_commit() { git -C "$T/wt" add -A; git -C "$T/wt" commit -qm change; }
+hy_run() { ( cd "$T/wt" && sh "$T/hygiene_node.sh" >/dev/null 2>&1 ); }
+hy() { jq -r "$1" "$T/review/hygiene.json"; }
+
+# 1. A real change with no test impact is clear, and leaves no reason file.
+hy_repo
+printf '%s\n' 'def add(a, b):' '    """Add."""' '    return a + b' > "$T/wt/src/math.py"; hy_commit; hy_run
+check "hygiene clean: nothing blocks"       "0"       "$(hy '.blocking | length')"
+check "hygiene clean: default config"       "default" "$(hy .config)"
+check "hygiene clean: no reason file"       "absent"  "$([ -f "$T/review/hygiene_reason.txt" ] && echo present || echo absent)"
+
+# 2. Moving a test file is a rename, not a deletion, and must pass.
+hy_repo
+mkdir -p "$T/wt/tests/unit"; git -C "$T/wt" mv tests/test_math.py tests/unit/test_math.py; hy_commit; hy_run
+check "hygiene moved test: nothing blocks"  "0" "$(hy '.blocking | length')"
+
+# 3. tests_deleted, and the deleted file's assertions are not counted twice.
+hy_repo
+git -C "$T/wt" rm -q tests/test_math.py; hy_commit; hy_run
+check "tests_deleted: counted"              "1"             "$(hy .tamper.tests_deleted)"
+check "tests_deleted: blocks alone"         "tests_deleted" "$(hy '.blocking | join(",")')"
+check "tests_deleted: asserts not doubled"  "0"             "$(hy .tamper.asserts_removed)"
+check "tests_deleted: reason names it"      "1"             "$(grep -c 'tests_deleted=1' "$T/review/hygiene_reason.txt")"
+
+# 4. skips_added, with the new-file line number as the sample.
+hy_repo
+printf '%s\n' 'import pytest' '@pytest.mark.skip' 'def test_a():' '    assert add(1, 2) == 3' '    assert add(0, 0) == 0' > "$T/wt/tests/test_math.py"; hy_commit; hy_run
+check "skips_added: pytest mark"            "1" "$(hy .tamper.skips_added)"
+check "skips_added: sample line"            "2" "$(hy '.samples[0].line')"
+
+# 5. A JS skip/only counts in a test file, and `stream.skip(` in source does not.
+hy_repo
+mkdir -p "$T/wt/web"
+printf '%s\n' 'it.skip("x", () => {})' 'describe.only("y", () => {})' > "$T/wt/web/a.test.ts"
+printf '%s\n' 'stream.skip(3)' > "$T/wt/web/a.ts"; hy_commit; hy_run
+check "skips_added: js test file only"      "2" "$(hy .tamper.skips_added)"
+
+# 6. Rust keeps tests beside the code, so #[ignore] counts in any file.
+hy_repo
+printf '%s\n' 'fn f() -> u8 { 1 }' '#[test]' '#[ignore]' 'fn t() {}' > "$T/wt/src/lib.rs"; hy_commit; hy_run
+check "skips_added: rust ignore"            "1" "$(hy .tamper.skips_added)"
+
+# 7. asserts_removed: one assertion gone, nothing added in its hunk.
+hy_repo
+printf '%s\n' 'def test_a():' '    assert add(1, 2) == 3' > "$T/wt/tests/test_math.py"; hy_commit; hy_run
+check "asserts_removed: counted"            "1" "$(hy .tamper.asserts_removed)"
+
+# 8. ...but an assertion rewritten in place is not a removal.
+hy_repo
+printf '%s\n' 'def test_a():' '    assert add(1, 2) == 3' '    assert add(0, 0) == 0 and add(0, 1) == 1' > "$T/wt/tests/test_math.py"; hy_commit; hy_run
+check "asserts_removed: rewrite is not"     "0" "$(hy .tamper.asserts_removed)"
+
+# 9. tautologies_added: a literal subject, a same-argument matcher, `assert True`
+#    and `assert x == x`; `expect(y).toEqual(z)` is not one.
+hy_repo
+mkdir -p "$T/wt/web"
+printf '%s\n' 'expect(true).toBe(true)' 'expect(x).toEqual(x)' 'expect(y).toEqual(z)' > "$T/wt/web/b.spec.ts"
+printf '%s\n' 'def test_a():' '    assert True' '    assert add(1, 2) == 3' '    assert add(0, 0) == 0' '    assert x == x' > "$T/wt/tests/test_math.py"; hy_commit; hy_run
+check "tautologies_added: four"             "4" "$(hy .tamper.tautologies_added)"
+
+# 10. Erosion counters report, and do not block, in the default report mode.
+hy_repo
+printf '%s\n' 'def add(a, b):' '    try:' '        return a + b' '    except Exception:' '        return 0  # type: ignore' '    # TODO fix this' '    # TODO(#12) linked' > "$T/wt/src/math.py"; hy_commit; hy_run
+check "erosion: broad_except"               "1" "$(hy .erosion.broad_except)"
+check "erosion: type_escape"                "1" "$(hy .erosion.type_escape)"
+check "erosion: only the unlinked TODO"     "1" "$(hy .erosion.todo_unlinked)"
+check "erosion: report mode never blocks"   "0" "$(hy '.blocking | length')"
+
+# 11. Four lint disables: over the default threshold of 3. Report mode lets it
+#     through; block mode on the base branch blocks it; a per-counter threshold of 5
+#     lets it through again.
+hy_lint() { printf '%s\n' 'x = 1  # noqa' 'y = 2  # noqa' 'z = 3  # noqa' 'w = 4  # noqa' > "$T/wt/src/math.py"; hy_commit; hy_run; }
+hy_repo; hy_lint
+check "lint_disable: counted"               "4"            "$(hy .erosion.lint_disable)"
+check "lint_disable: report mode passes"    "0"            "$(hy '.blocking | length')"
+hy_repo '{"erosion_mode":"block"}'; hy_lint
+check "lint_disable: block mode blocks"     "lint_disable" "$(hy '.blocking | join(",")')"
+check "block mode: config read from base"   "repo"         "$(hy .config)"
+hy_repo '{"erosion_mode":"block","erosion_thresholds":{"lint_disable":5}}'; hy_lint
+check "per-counter threshold raises it"     "0"            "$(hy '.blocking | length')"
+
+# 12. rust_unwrap in non-test Rust.
+hy_repo
+printf '%s\n' 'fn f() -> u8 { "1".parse().unwrap() }' > "$T/wt/src/lib.rs"; hy_commit; hy_run
+check "rust_unwrap: counted"                "1" "$(hy .erosion.rust_unwrap)"
+
+# 13. A PR that edits .fabro/hygiene.json trips config_changed, and its own
+#     loosened threshold is NOT the one used.
+hy_repo
+mkdir -p "$T/wt/.fabro"; printf '%s' '{"erosion_mode":"report","erosion_threshold":99}' > "$T/wt/.fabro/hygiene.json"; hy_commit; hy_run
+check "config_changed: tamper"              "1" "$(hy .tamper.config_changed)"
+check "config_changed: PR config ignored"   "3" "$(hy .erosion_threshold)"
+
+# 14. An invalid base config blocks rather than falling back silently.
+hy_repo '{"erosion_mode":"loud"}'; hy_lint
+check "invalid config: blocks"              "config_invalid" "$(hy '.blocking | join(",")')"
+
+# 15. Lockfiles are excluded entirely.
+hy_repo
+printf '%s\n' '# TODO nothing' > "$T/wt/Cargo.lock"; hy_commit; hy_run
+check "exclude_paths: lockfile ignored"     "0" "$(hy .erosion.todo_unlinked)"
+
+# 16. A removed SQL comment is `--- ...` in the diff body, not a file header.
+hy_repo
+printf '%s\n' '-- a comment' 'select 1;' > "$T/wt/src/q.sql"; hy_commit
+printf '%s\n' 'select 1;' > "$T/wt/src/q.sql"; hy_commit; hy_run
+check "diff body '---' is not a header"     "0" "$(hy '.blocking | length')"
+
+# 17. A base that cannot be diffed fails closed.
+hy_repo
+echo nosuch > "$T/base_ref"; hy_run
+check "no base: hygiene_error blocks"       "hygiene_error" "$(hy '.blocking | join(",")')"
+
+PATH="$SAVED_PATH"
+
+# ---------------------------------------------------------------------------
+# review-merge merge_gate — hygiene and Refuter checks (ADR 0013 D1, D5)
+# ---------------------------------------------------------------------------
+# The architecture section above stops at check 2b. These cases need a PR that
+# passes checks 1 to 12, so the stub also answers the GraphQL thread count and the
+# fixture carries a Conventional title and a commit-body block.
+echo ""
+echo "review-merge merge_gate hygiene and refuter"
+PATH="$ORIG_PATH"
+SAVED_PATH="$PATH"
+T="$WORK/mgate2"; mkdir -p "$T/bin" "$T/review"
+extract_from "$SHARED" merge_gate | sed "s#/tmp/fabro#$T#g" > "$T/merge_gate.sh"
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+if [ "$1" = api ]; then echo 0; exit 0; fi
+if [ "$1 $2" = "pr view" ]; then
+  J=""; P=""
+  for a in "$@"; do [ "$P" = "--jq" ] && J="$a"; P="$a"; done
+  if [ -n "$J" ]; then jq -r "$J" "$GH_STATE/pr.fixture.json"; else cat "$GH_STATE/pr.fixture.json"; fi
+  exit 0
+fi
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+
+# Everything green: every check from 1 to 14 passes.
+mg_green() {
+    echo 1 > "$T/auto_merge"; echo 5 > "$T/pr_number"; echo main > "$T/base_ref"
+    echo '{"url":"https://github.com/o/r/pull/5"}' > "$T/pr.json"
+    jq -n '{labels:[{name:"agent-authored"}], state:"OPEN", isDraft:false, reviewDecision:"APPROVED",
+            commits:[], title:"fix: a thing",
+            body:(["x","<!-- fabro:commit-body:start -->","Resolves #1","<!-- fabro:commit-body:end -->"] | join("\n"))}' > "$T/pr.fixture.json"
+    echo '{"outcome":"no_changes_needed","risk":1,"not_fixed":[],"own_findings":[],"fixes_applied":[]}' > "$T/review/fix_result.json"
+    echo '{"blocking":[]}' > "$T/review/hygiene.json"
+    echo pass > "$T/review/refute_verdict"
+    rm -f "$T/merge_block_reason" "$T/review/hygiene_reason.txt" "$T/review/refute_reason.txt"
+}
+mg_run() { OUT=$( cd "$T" && sh "$T/merge_gate.sh" 2>&1 ); jq -r '.context_updates.merge_eligible' <<<"$(lastjson "$OUT")"; }
+
+# 1. The all-green fixture really is eligible, so every block below is the new check.
+mg_green
+check "all green: eligible"                 "true"  "$(mg_run)"
+
+# 2. Check 13 blocks on a non-empty `blocking`, with the counters' own reason.
+mg_green
+echo '{"blocking":["skips_added"]}' > "$T/review/hygiene.json"
+echo 'Diff hygiene blocks the merge: skips_added=1.' > "$T/review/hygiene_reason.txt"
+check "hygiene blocking: not eligible"      "false" "$(mg_run)"
+check "hygiene blocking: reason"            "1"     "$(grep -c 'skips_added=1' "$T/merge_block_reason")"
+
+# 3. ...and fails closed on a missing file, or one with no `blocking` array.
+mg_green; rm -f "$T/review/hygiene.json"
+check "hygiene missing: not eligible"       "false" "$(mg_run)"
+check "hygiene missing: reason"             "1"     "$(grep -c 'missing or invalid' "$T/merge_block_reason")"
+mg_green; echo '{}' > "$T/review/hygiene.json"
+check "hygiene without blocking: blocks"    "false" "$(mg_run)"
+
+# 4. Check 14 blocks on a `fail` verdict, with the gate's reason.
+mg_green
+echo fail > "$T/review/refute_verdict"
+echo 'The refuter could not confirm the work is done: not_met: logout works.' > "$T/review/refute_reason.txt"
+check "refute fail: not eligible"           "false" "$(mg_run)"
+check "refute fail: reason"                 "1"     "$(grep -c 'not_met: logout' "$T/merge_block_reason")"
+
+# 5. ...and on NO verdict: the Refuter timed out or its provider was down.
+mg_green; rm -f "$T/review/refute_verdict"
+check "refute missing: not eligible"        "false" "$(mg_run)"
+check "refute missing: reason"              "1"     "$(grep -c 'did not return a verdict' "$T/merge_block_reason")"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
+# review-merge ci_fix_gate — the counters run again before a CI fix is pushed
+# (ADR 0013 D3), real git
+# ---------------------------------------------------------------------------
+echo ""
+echo "review-merge ci_fix_gate hygiene (real git)"
+PATH="$ORIG_PATH"
+SAVED_PATH="$PATH"
+T="$WORK/cfg"; mkdir -p "$T/review"
+extract_from "$SHARED" ci_fix_gate | sed "s#/tmp/fabro#$T#g" > "$T/ci_fix_gate.sh"
+extract_from "$SHARED" hygiene | sed "s#/tmp/fabro#$T#g" > "$T/hygiene_node.sh"
+if ! sh -n "$T/ci_fix_gate.sh" 2>"$T/ci_fix_gate.syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL ci_fix_gate is not valid POSIX sh\n'
+fi
+
+# An upstream whose `feat` branch is the PR head, cloned the way the sandbox is.
+# `hygiene` runs once first, as it does in the graph, to write hygiene.sh.
+cf_repo() {
+    rm -rf "$T/up" "$T/wt"; mkdir -p "$T/up/tests"
+    git -C "$T/up" init -q -b main .
+    git -C "$T/up" config user.email t@t
+    git -C "$T/up" config user.name t
+    git -C "$T/up" config receive.denyCurrentBranch ignore
+    printf '%s\n' 'def test_a():' '    assert 1 == 1 + 0' > "$T/up/tests/test_a.py"
+    echo x > "$T/up/a.py"
+    git -C "$T/up" add -A; git -C "$T/up" commit -qm init
+    git -C "$T/up" checkout -qb feat; echo y >> "$T/up/a.py"; git -C "$T/up" commit -qam work
+    git -C "$T/up" checkout -q main
+    git clone -q "$T/up" "$T/wt"
+    git -C "$T/wt" config user.email t@t
+    git -C "$T/wt" config user.name t
+    git -C "$T/wt" checkout -q -b feat origin/feat
+    echo main > "$T/base_ref"; echo feat > "$T/head_ref"; echo 5 > "$T/pr_number"
+    printf '%s\n' a.py tests/test_a.py > "$T/review/merge_base_files.txt"
+    echo '{"outcome":"fixed","scope":"ci_only","summary":"s"}' > "$T/review/ci_fix_result.json"
+    rm -f "$T/merge_block_reason"
+    ( cd "$T/wt" && sh "$T/hygiene_node.sh" >/dev/null 2>&1 )
+}
+cf_run() { OUT=$( cd "$T/wt" && sh "$T/ci_fix_gate.sh" 2>&1 ); jq -r '.context_updates.ci_fix_ok' <<<"$(lastjson "$OUT")"; }
+
+# 1. A CI fix that touches only code is pushed as before.
+cf_repo
+echo z >> "$T/wt/a.py"; git -C "$T/wt" commit -qam fix
+check "ci fix clean: pushed"                "true"  "$(cf_run)"
+
+# 2. A CI fix that skips the failing test is refused, not pushed, and says why.
+cf_repo
+printf '%s\n' 'import pytest' '@pytest.mark.skip' 'def test_a():' '    assert 1 == 1 + 0' > "$T/wt/tests/test_a.py"
+git -C "$T/wt" commit -qam fix
+check "ci fix skip: refused"                "false" "$(cf_run)"
+check "ci fix skip: reason"                 "1"     "$(grep -c 'skips_added=1' "$T/merge_block_reason")"
+check "ci fix skip: not pushed"             "2"     "$(git -C "$T/up" rev-list --count feat)"
+
+PATH="$SAVED_PATH"
+
+# ---------------------------------------------------------------------------
+# review-merge refute_prep — the Refuter's inputs (ADR 0013 D4), real git
+# ---------------------------------------------------------------------------
+echo ""
+echo "review-merge refute_prep (real git)"
+PATH="$ORIG_PATH"
+SAVED_PATH="$PATH"
+T="$WORK/rprep"; mkdir -p "$T/bin" "$T/review"
+extract_from "$SHARED" refute_prep | sed "s#/tmp/fabro#$T#g" > "$T/refute_prep.sh"
+if ! sh -n "$T/refute_prep.sh" 2>"$T/refute_prep.syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL refute_prep is not valid POSIX sh\n'
+fi
+# Issue 99 cannot be read; any other number returns a body.
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+[ "$3" = 99 ] && exit 1
+printf '{"number":%s,"title":"T","body":"- [ ] it works"}' "$3"
+STUB
+chmod +x "$T/bin/gh"
+rm -rf "$T/up" "$T/wt"; mkdir -p "$T/up"
+git -C "$T/up" init -q -b main .
+git -C "$T/up" config user.email t@t
+git -C "$T/up" config user.name t
+echo a > "$T/up/a.txt"; git -C "$T/up" add -A; git -C "$T/up" commit -qm init
+git clone -q "$T/up" "$T/wt"
+git -C "$T/wt" config user.email t@t
+git -C "$T/wt" config user.name t
+git -C "$T/wt" checkout -qb fabro/run/01TEST
+echo small >> "$T/wt/a.txt"
+mkdir -p "$T/wt/d e"; echo sp > "$T/wt/d e/f g.txt"
+awk 'BEGIN { for (i = 0; i < 40000; i++) print "line number " i }' > "$T/wt/big.txt"
+git -C "$T/wt" add -A; git -C "$T/wt" commit -qm change
+echo main > "$T/base_ref"
+echo '[{"number":5},{"number":99}]' > "$T/linked_issues.json"
+echo stale > "$T/review/refute_verdict"
+OUT=$( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" 2>&1 ); RC=$?
+
+# 1. Issue text is fetched, and an unreadable issue is recorded, not fatal.
+check "refute_prep: exits 0"                "0"                 "$RC"
+check "refute_prep: both issues listed"     "2"                 "$(jq length "$T/review/refute_issues.json")"
+check "refute_prep: body fetched"           "- [ ] it works"    "$(jq -r '.[0].body' "$T/review/refute_issues.json")"
+check "refute_prep: unreadable recorded"    "could not be read" "$(jq -r '.[1].error' "$T/review/refute_issues.json")"
+
+# 2. A stale verdict from an earlier pass is cleared before the agent runs.
+check "refute_prep: stale verdict cleared"  "absent" "$([ -f "$T/review/refute_verdict" ] && echo present || echo absent)"
+
+# 3. The cap: the largest file is listed, not diffed; small files and a path with
+#    spaces are diffed.
+check "refute_prep: big file omitted"       "1" "$(grep -c '^big.txt (40000 lines changed)' "$T/review/refute_omitted.txt")"
+check "refute_prep: small file diffed"      "1" "$(grep -c '^+small' "$T/review/refute_diff.patch")"
+check "refute_prep: spaced path diffed"     "1" "$(grep -c '^+sp$' "$T/review/refute_diff.patch")"
+
+# 4. No linked issue is an empty list, which the prompt handles.
+echo '[]' > "$T/linked_issues.json"
+( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" >/dev/null 2>&1 )
+check "refute_prep: no issues is []"        "[]" "$(jq -c . "$T/review/refute_issues.json")"
+
+PATH="$SAVED_PATH"
+
+# ---------------------------------------------------------------------------
+# review-merge refute_gate — validation, one repair turn, computed verdict (ADR 0013 D5)
+# ---------------------------------------------------------------------------
+echo ""
+echo "review-merge refute_gate"
+T="$WORK/rgate"; mkdir -p "$T/review"
+extract_from "$SHARED" refute_gate | sed "s#/tmp/fabro#$T#g" > "$T/refute_gate.sh"
+if ! sh -n "$T/refute_gate.sh" 2>"$T/refute_gate.syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL refute_gate is not valid POSIX sh\n'
+fi
+rg_put() { printf '%s' "$1" > "$T/review/refute.json"; }
+rg_verdict() { OUT=$(sh "$T/refute_gate.sh" 2>&1); jq -r '.context_updates.refute_verdict' <<<"$(lastjson "$OUT")"; }
+
+# 1. Every criterion met and no defect: pass, published and written to the file.
+rg_put '{"summary":"s","criteria":[{"criterion":"a","status":"met","evidence":"x.py:1"}],"defects":[]}'
+check "refute_gate: all met is pass"        "pass" "$(rg_verdict)"
+check "refute_gate: verdict file"           "pass" "$(cat "$T/review/refute_verdict")"
+
+# 2. One criterion `unverifiable` is a fail, and the reason names it.
+rg_put '{"summary":"s","criteria":[{"criterion":"a","status":"met","evidence":"x"},{"criterion":"b","status":"unverifiable","evidence":"no test"}],"defects":[]}'
+check "refute_gate: unverifiable fails"     "fail" "$(rg_verdict)"
+check "refute_gate: reason names it"        "1"    "$(grep -c 'unverifiable: b' "$T/review/refute_reason.txt")"
+
+# 3. A defect with every criterion met is still a fail.
+rg_put '{"summary":"s","criteria":[{"criterion":"a","status":"met","evidence":"x"}],"defects":[{"file":"a.py","line":3,"scenario":"crashes on empty"}]}'
+check "refute_gate: a defect fails"         "fail" "$(rg_verdict)"
+check "refute_gate: defect reason"          "1"    "$(grep -c 'defect at a.py:3: crashes' "$T/review/refute_reason.txt")"
+
+# 4. An agent-written verdict is ignored, and an empty criteria list is invalid:
+#    first a repair turn (exit 1), then `invalid`, which blocks like a fail.
+rg_put '{"verdict":"pass","summary":"s","criteria":[],"defects":[]}'
+sh "$T/refute_gate.sh" >/dev/null 2>&1; RC=$?
+check "refute_gate: invalid gets a repair"  "1"       "$RC"
+sh "$T/refute_gate.sh" >/dev/null 2>&1; RC=$?
+check "refute_gate: second invalid exits 0" "0"       "$RC"
+check "refute_gate: second invalid"         "invalid" "$(cat "$T/review/refute_verdict")"
+
+# 5. A missing file gets the same repair turn.
+rm -f "$T/review/refute.json"; echo 0 > "$T/refute_attempts"
+sh "$T/refute_gate.sh" >/dev/null 2>&1; RC=$?
+check "refute_gate: missing gets a repair"  "1" "$RC"
+
+# ---------------------------------------------------------------------------
+# review-merge render — the Refuter and hygiene rows and sections (ADR 0013 D5)
+# ---------------------------------------------------------------------------
+echo ""
+echo "review-merge render"
+PATH="$ORIG_PATH"
+T="$WORK/render"; mkdir -p "$T/review"
+extract_from "$SHARED" rm_setup | sed "s#/tmp/fabro#$T#g" > "$T/rm_setup.sh"
+echo 5 > "$T/pr_number"
+for f in base_ref head_ref run_base_sha; do echo x > "$T/$f"; done
+echo '{"url":"https://github.com/o/r/pull/5"}' > "$T/pr.json"
+echo '[]' > "$T/linked_issues.json"
+FABRO_AUTO_MERGE=1 sh "$T/rm_setup.sh" >/dev/null 2>&1
+echo '{"summary":"s","criteria":[{"criterion":"logout works","status":"not_met","evidence":"no handler"}],"defects":[{"file":"a.py","line":9,"scenario":"crashes on empty"}]}' > "$T/review/refute.json"
+echo fail > "$T/review/refute_verdict"
+echo '{"tamper":{"skips_added":1},"erosion":{"lint_disable":0},"erosion_mode":"report","blocking":["skips_added"],"samples":[{"counter":"skips_added","file":"t.py","line":2,"text":"@pytest.mark.skip"}]}' > "$T/review/hygiene.json"
+C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
+check "render: refuter row"                 "1" "$(grep -c '^| Refuter | fail |$' <<<"$C")"
+check "render: refuter defect"              "1" "$(grep -c '^- \*\*defect\*\* - a.py:9 - crashes on empty$' <<<"$C")"
+check "render: hygiene sample"              "1" "$(grep -c 't.py:2. skips_added' <<<"$C")"
+
+# ---------------------------------------------------------------------------
 echo ""
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: $PASS checks"
