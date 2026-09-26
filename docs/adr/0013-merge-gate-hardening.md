@@ -36,7 +36,9 @@ test was obsolete") and a counter cannot. A false positive costs one blocked aut
 and a human merges by hand. That is the cheap direction in which to be wrong.
 
 The counters use heuristics: `asserts_removed` compares removed and added assertion
-lines per hunk. The fixtures in `ops/test-task-gates.sh` are the contract, and a pattern
+lines per hunk, after excusing a removed line whose exact text the PR adds elsewhere (a
+moved test). Per-hunk netting alone blocked every test split across files, and with no
+override that is a false block on an ordinary refactor (review fix, 2026-09-26). The fixtures in `ops/test-task-gates.sh` are the contract, and a pattern
 change starts as a fixture.
 
 ## D2. A repository tunes the counters from its base branch, and nothing overrides a block
@@ -145,7 +147,9 @@ be outside GLM. A fallback back to GLM is the single-vendor problem again.
   and `refute_gate`. The validation baselines in `AGENTS.md` change.
 - Every merge attempt costs one more `glm-5.3` review: up to 300 KB of diff plus the
   issue text, 15 minutes at most, with one retry.
-- `merge_gate` has fifteen checks (1 to 14, and 2b).
+- `merge_gate` has sixteen checks (1 to 14, 2b and 13b). Check 13b compares HEAD's tree
+  with the tree the counters read, so an edit by the Refuter (an agent with write
+  access between `hygiene` and `deliver`) cannot reach `main` uncounted.
 - The spec reviewer in the merge phase (`spec.md.j2`) still reads `linked_issues.json`,
   which has no issue text (D4). That is a separate defect and it is not fixed here.
   `refute_issues.json` is the file it should read.

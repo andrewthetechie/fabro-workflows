@@ -126,8 +126,10 @@ def one($axis):
   \"\",
   \"### Diff hygiene\", \"\",
   ( if ($HG.tamper | type) != \"object\" then \"_The counters did not run._\"
+    elif ($HG.error | type) == \"string\" then \"_The counters could not be computed: \" + $HG.error + \"._\"
     else [ ($HG.tamper + ($HG.erosion // {})) | to_entries[] | select(.value > 0) | .key + \" \" + (.value | tostring) ] as $nz
       | (if ($nz | length) == 0 then \"No counter fired.\" else \"Counters: \" + ($nz | join(\", \")) + \". Erosion mode: \" + ($HG.erosion_mode // \"report\") + \".\" end)
+        + (if $HG.config == \"invalid\" then \" The base branch .fabro/hygiene.json is not valid, so the defaults were used and the merge is refused.\" else \"\" end)
         + ( nz($HG.samples) | if length == 0 then \"\"
             else NL + NL + ([ .[] | \"- `\" + .file + (if .line then \":\" + (.line | tostring) else \"\" end) + \"` \" + .counter + \" - `\" + .text + \"`\" ] | join(NL)) end ) end ),
   \"\",
@@ -383,9 +385,9 @@ CFG=default
 cp $W/default.json $W/cfg.json
 if git cat-file -e \"origin/$B:.fabro/hygiene.json\" 2>/dev/null; then
   CFG=repo
-  if ! git show \"origin/$B:.fabro/hygiene.json\" > $W/repo.json 2>/dev/null || ! jq -s '.[0] + .[1]' $W/default.json $W/repo.json > $W/cfg.json 2>/dev/null || [ \"$(jq -r '(.erosion_mode == \"report\" or .erosion_mode == \"block\")
+  if ! git show \"origin/$B:.fabro/hygiene.json\" > $W/repo.json 2>/dev/null || ! jq -s -e 'length == 1 and (.[0] | type) == \"object\"' $W/repo.json >/dev/null 2>&1 || ! jq -s '.[0] + .[1]' $W/default.json $W/repo.json > $W/cfg.json 2>/dev/null || [ \"$(jq -r '(.erosion_mode == \"report\" or .erosion_mode == \"block\")
         and ((.erosion_threshold | type) == \"number\")
-        and ((.erosion_thresholds | type) == \"object\")
+        and ((.erosion_thresholds | type) == \"object\") and all(.erosion_thresholds[]; type == \"number\")
         and ((.test_paths | type) == \"array\") and ((.test_paths | length) > 0)
         and all(.test_paths[]; type == \"string\")
         and ((.exclude_paths | type) == \"array\") and all(.exclude_paths[]; type == \"string\")' $W/cfg.json 2>/dev/null)\" != true ]; then
@@ -403,10 +405,16 @@ function skipped(f) { return ex != \"\" && f ~ ex }
 function assertish(f) { return istest(f) || f ~ /[.]rs$/ }
 function emit(c, f, n, t) { print c S f S n S substr(t, 1, 160) }
 function trim(s) { gsub(/^ +| +$/, \"\", s); return s }
-function flush(  i, d) {
-  d = ra - aa
-  for (i = 1; i <= d; i++) emit(\"asserts_removed\", file, rl[i], rt[i])
-  ra = 0; aa = 0
+function akey(s) { gsub(WS, \"\", s); return s }
+function flush(  i, k, h) {
+  for (i = 1; i <= rn; i++) {
+    k = rk[i]
+    if (AN[k] > 0) { HA[AH[k, AN[k]]]--; AN[k]--; moved[i] = 1 } else RU[rh[i]]++
+  }
+  for (i = 1; i <= rn; i++) {
+    h = rh[i]
+    if (!moved[i] && EM[h] + HA[h] < RU[h]) { EM[h]++; emit(\"asserts_removed\", rf[i], rl[i], rt[i]) }
+  }
 }
 function same(t,  s, a, b, p) {
   if (match(t, /expect[(][^()]*[)][.]to(Be|Equal|StrictEqual)[(][^()]*[)]/)) {
@@ -429,10 +437,11 @@ function same(t,  s, a, b, p) {
   return 0
 }
 BEGIN {
-  S = sprintf(\"%c\", 31); ra = 0; aa = 0; del = 0; head = 0
+  S = sprintf(\"%c\", 31); rn = 0; hid = 0; del = 0; head = 0
+  WS = \"^[ \" sprintf(\"%c\", 9) \"]+|[ \" sprintf(\"%c\", 9) \"]+$\"
   SKIP_ANY = \"#[[]ignore[]]|@pytest[.]mark[.](skip|xfail)|pytest[.](skip|xfail)[(]|@unittest[.]skip|@(Disabled|Ignore)([^a-zA-Z]|$)\"
   SKIP_TEST = \"(^|[^a-zA-Z0-9_])(it|describe|test|context|suite)[.](skip|only|todo)[(]|(^|[^a-zA-Z0-9_.])x(it|describe|test)[(]\"
-  ASSERT = \"(^|[^a-zA-Z0-9_])(assert[a-zA-Z_]*[ .(!]|expect[(])\"
+  ASSERT = \"(^|[^a-zA-Z0-9_])assert[a-zA-Z_]*[ .(!]|(^|[^a-zA-Z0-9_.])expect[(]\"
   TAUT = \"expect[(] *(true|false|null|undefined|[0-9]+) *[)]|(^|[^a-zA-Z0-9_])assert +(True|1 *== *1) *($|,|#)|assert![(] *true *[)]\"
   BROAD = \"except +(Exception|BaseException)( |:|$)|except *:|catch *([(][^)]*[)])? *[{] *[}]\"
   TYPE = \"#[ ]*type: *ignore|[ (]as any([^a-zA-Z0-9_]|$)|as unknown as|@ts-ignore|@ts-expect-error|cast[(] *Any\"
@@ -441,7 +450,7 @@ BEGIN {
   TODO = \"(^|[^a-zA-Z0-9_])(TODO|FIXME|XXX)([^a-zA-Z0-9_]|$)\"
   LINKED = \"#[0-9]+|/issues/[0-9]+\"
 }
-/^diff --git / { flush(); head = 1; del = 0; file = \"\"; oldf = \"\"; next }
+/^diff --git / { head = 1; del = 0; file = \"\"; oldf = \"\"; next }
 head && /^--- / { oldf = substr($0, 7); next }
 head && /^[+][+][+] / {
   if ($0 == \"+++ /dev/null\") { file = oldf; del = 1; if (istest(oldf) && !skipped(oldf)) emit(\"tests_deleted\", oldf, \"\", \"file deleted\") }
@@ -449,7 +458,7 @@ head && /^[+][+][+] / {
   next
 }
 /^@@ / {
-  flush(); head = 0
+  hid++; head = 0
   split($0, p, \" \")
   split(substr(p[2], 2), q, \",\"); ol = q[1] + 0
   split(substr(p[3], 2), q, \",\"); nl = q[1] + 0
@@ -460,7 +469,7 @@ head { next }
   t = substr($0, 2)
   if (!skipped(file)) {
     if (t ~ SKIP_ANY || (istest(file) && t ~ SKIP_TEST)) emit(\"skips_added\", file, nl, t)
-    if (assertish(file) && t ~ ASSERT) aa++
+    if (assertish(file) && t ~ ASSERT) { HA[hid]++; k = akey(t); AN[k]++; AH[k, AN[k]] = hid }
     if (assertish(file) && (t ~ TAUT || same(t))) emit(\"tautologies_added\", file, nl, t)
     if (t ~ BROAD) emit(\"broad_except\", file, nl, t)
     if (t ~ TYPE) emit(\"type_escape\", file, nl, t)
@@ -473,7 +482,7 @@ head { next }
 }
 /^-/ {
   t = substr($0, 2)
-  if (!del && !skipped(file) && assertish(file) && t ~ ASSERT) { ra++; rl[ra] = ol; rt[ra] = t }
+  if (!del && !skipped(file) && assertish(file) && t ~ ASSERT) { rn++; rf[rn] = file; rl[rn] = ol; rt[rn] = t; rh[rn] = hid; rk[rn] = akey(t) }
   ol++
   next
 }
@@ -613,7 +622,7 @@ else
 fi"]
 
     // ---- Auto-merge: decide, watch CI, fix CI, merge ----
-    // The fifteen checks (1 to 14, and 2b) are marked inline, one line each, next to the code that runs
+    // The sixteen checks (1 to 14, 2b and 13b) are marked inline, one line each, next to the code that runs
     // them. Two need more room than that:
     //
     // Check 10 -- every own error finding accounted for by its own id in `fixes_applied`.
@@ -706,6 +715,11 @@ fi
 if [ \"$E\" = true ]; then
   HB=$(jq -r 'if (.blocking | type) == \"array\" then (.blocking | length) else \"bad\" end' /tmp/fabro/review/hygiene.json 2>/dev/null || echo bad)
   if [ \"$HB\" != 0 ]; then fail \"$(cat /tmp/fabro/review/hygiene_reason.txt 2>/dev/null || echo 'The diff-hygiene result is missing or invalid, so the merge is refused.')\"; fi
+fi
+# 13b. the tree still matches the one the counters read: nothing between hygiene and here (the refuter included) changed the code
+if [ \"$E\" = true ]; then
+  HT=$(git rev-parse \"$(jq -r '.head // empty' /tmp/fabro/review/hygiene.json 2>/dev/null)^{tree}\" 2>/dev/null || echo none)
+  if [ \"$HT\" != \"$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo head)\" ]; then fail 'The code changed after the diff-hygiene counters ran (a later stage, such as the refuter, edited the checkout), so the reviewed diff is not the one on the PR and the merge is refused.'; fi
 fi
 # 14. the refuter could not refute the work (ADR 0013 D5)
 if [ \"$E\" = true ]; then

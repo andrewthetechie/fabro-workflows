@@ -2043,6 +2043,44 @@ hy_repo
 echo nosuch > "$T/base_ref"; hy_run
 check "no base: hygiene_error blocks"       "hygiene_error" "$(hy '.blocking | join(",")')"
 
+# hy_base PATH LINE... : give the base branch PATH with these lines, and restart the
+# run branch from it, for cases whose "before" is not hy_repo's.
+hy_base() {
+    F="$1"; shift
+    mkdir -p "$(dirname "$T/up/$F")"; printf '%s\n' "$@" > "$T/up/$F"
+    git -C "$T/up" add -A; git -C "$T/up" commit -qm base
+    git -C "$T/wt" fetch -q origin; git -C "$T/wt" reset -q --hard origin/main
+}
+
+# 18. Rust's `.expect(` is a Result method, not an assertion: replacing it with `?`
+#     in ordinary code is the fix rust_unwrap asks for, and must not count as a
+#     removed assertion.
+hy_repo
+hy_base src/lib.rs 'fn f() -> u8 {' '    let x = g().expect("g failed");' '    x' '}'
+printf '%s\n' 'fn f() -> Result<u8> {' '    let x = g()?;' '    Ok(x)' '}' > "$T/wt/src/lib.rs"; hy_commit; hy_run
+check "rust .expect( removed: not an assert" "0" "$(hy .tamper.asserts_removed)"
+check "rust .expect( removed: clear"         "0" "$(hy '.blocking | length')"
+
+# 19. A test moved to another file carries its assertion with it: the same text is
+#     added elsewhere in the PR, so it is not a removal.
+hy_repo
+printf '%s\n' 'def test_a():' '    assert add(1, 2) == 3' > "$T/wt/tests/test_math.py"
+printf '%s\n' 'def test_zero():' '    assert add(0, 0) == 0' > "$T/wt/tests/test_zero.py"; hy_commit; hy_run
+check "assert moved across files: not removed" "0" "$(hy .tamper.asserts_removed)"
+
+# 20. ...but an unrelated assertion added in another file does not excuse one removed.
+hy_repo
+printf '%s\n' 'def test_a():' '    assert add(1, 2) == 3' > "$T/wt/tests/test_math.py"
+printf '%s\n' 'def test_two():' '    assert add(2, 2) == 4' > "$T/wt/tests/test_two.py"; hy_commit; hy_run
+check "unrelated assert elsewhere: still removed" "1" "$(hy .tamper.asserts_removed)"
+
+# 21. A base config that is not one JSON object, or whose per-counter threshold is
+#     not a number, is invalid -- not a silent "repo" config that loosens a counter.
+hy_repo 'null'; hy_lint
+check "config null: invalid"                "config_invalid" "$(hy '.blocking | join(",")')"
+hy_repo '{"erosion_mode":"block","erosion_thresholds":{"lint_disable":"9"}}'; hy_lint
+check "config string threshold: invalid"    "invalid"        "$(hy .config)"
+
 PATH="$SAVED_PATH"
 
 # ---------------------------------------------------------------------------
@@ -2073,6 +2111,14 @@ chmod +x "$T/bin/gh"
 PATH="$T/bin:$SAVED_PATH"
 export GH_LOG="$T/gh.log" GH_STATE="$T"
 
+# Check 13b compares the tree the counters read with HEAD's, so the gate runs in a
+# real repository. `code/` is the only tracked path; the sandbox files stay untracked.
+git -C "$T" init -q -b run .
+git -C "$T" config user.email t@t
+git -C "$T" config user.name t
+mkdir -p "$T/code"; echo one > "$T/code/a.txt"
+git -C "$T" add code; git -C "$T" commit -qm init
+
 # Everything green: every check from 1 to 14 passes.
 mg_green() {
     echo 1 > "$T/auto_merge"; echo 5 > "$T/pr_number"; echo main > "$T/base_ref"
@@ -2081,7 +2127,7 @@ mg_green() {
             commits:[], title:"fix: a thing",
             body:(["x","<!-- fabro:commit-body:start -->","Resolves #1","<!-- fabro:commit-body:end -->"] | join("\n"))}' > "$T/pr.fixture.json"
     echo '{"outcome":"no_changes_needed","risk":1,"not_fixed":[],"own_findings":[],"fixes_applied":[]}' > "$T/review/fix_result.json"
-    echo '{"blocking":[]}' > "$T/review/hygiene.json"
+    jq -n --arg h "$(git -C "$T" rev-parse HEAD)" '{blocking:[], head:$h}' > "$T/review/hygiene.json"
     echo pass > "$T/review/refute_verdict"
     rm -f "$T/merge_block_reason" "$T/review/hygiene_reason.txt" "$T/review/refute_reason.txt"
 }
@@ -2116,6 +2162,20 @@ check "refute fail: reason"                 "1"     "$(grep -c 'not_met: logout'
 mg_green; rm -f "$T/review/refute_verdict"
 check "refute missing: not eligible"        "false" "$(mg_run)"
 check "refute missing: reason"              "1"     "$(grep -c 'did not return a verdict' "$T/merge_block_reason")"
+
+# 6. Check 13b: an empty checkpoint commit after the counters ran moves HEAD but not
+# the tree, and must not block...
+mg_green; git -C "$T" commit -q --allow-empty -m checkpoint
+check "13b empty checkpoint: eligible"      "true"  "$(mg_run)"
+
+# 7. ...while a stage that edited the code after them (the refuter) blocks.
+mg_green; echo two > "$T/code/a.txt"; git -C "$T" commit -qam "refute edited"
+check "13b tree changed: not eligible"      "false" "$(mg_run)"
+check "13b tree changed: reason"            "1"     "$(grep -c 'code changed after the diff-hygiene' "$T/merge_block_reason")"
+
+# 8. ...and a hygiene.json with no head fails closed.
+mg_green; echo '{"blocking":[]}' > "$T/review/hygiene.json"
+check "13b no head: not eligible"           "false" "$(mg_run)"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
@@ -2296,6 +2356,13 @@ C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
 check "render: refuter row"                 "1" "$(grep -c '^| Refuter | fail |$' <<<"$C")"
 check "render: refuter defect"              "1" "$(grep -c '^- \*\*defect\*\* - a.py:9 - crashes on empty$' <<<"$C")"
 check "render: hygiene sample"              "1" "$(grep -c 't.py:2. skips_added' <<<"$C")"
+echo '{"version":1,"config":"default","error":"git diff against the base failed","tamper":{},"erosion":{},"blocking":["hygiene_error"],"samples":[]}' > "$T/review/hygiene.json"
+C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
+check "render: hygiene error shown"         "1" "$(grep -c 'could not be computed: git diff against the base failed' <<<"$C")"
+check "render: hygiene error not 'none'"    "0" "$(grep -c 'No counter fired' <<<"$C")"
+echo '{"config":"invalid","tamper":{"skips_added":0},"erosion":{},"erosion_mode":"report","blocking":["config_invalid"],"samples":[]}' > "$T/review/hygiene.json"
+C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
+check "render: invalid config explained"    "1" "$(grep -c 'hygiene.json is not valid' <<<"$C")"
 
 # ---------------------------------------------------------------------------
 echo ""

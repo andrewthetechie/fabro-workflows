@@ -35,7 +35,7 @@ validate ─(green)→ hygiene → refute_prep → refute → refute_gate → de
 - `refute` (agent) tries to prove the work is not done, and writes `refute.json`.
 - `refute_gate` (command) validates `refute.json` and computes the verdict.
 
-`merge_gate` gains check 13 (hygiene) and check 14 (Refuter). `ci_fix_gate` runs the
+`merge_gate` gains check 13 (hygiene), check 13b (the tree is still the one the counters read) and check 14 (Refuter). `ci_fix_gate` runs the
 hygiene counters again before it pushes a CI fix. The review comment gains two table
 rows and two sections.
 
@@ -73,7 +73,7 @@ rows and two sections.
 | Path | Written by | Read by | Shape |
 |---|---|---|---|
 | `hygiene.sh` | `hygiene` | `hygiene`, `ci_fix_gate` | The counter program (task 01). No arguments. Always exits 0 after it writes `review/hygiene.json`. |
-| `review/hygiene.json` | `hygiene.sh` | `merge_gate` check 13, `ci_fix_gate`, `refute`, the renderer | C2 |
+| `review/hygiene.json` | `hygiene.sh` | `merge_gate` checks 13 and 13b, `ci_fix_gate`, `refute`, the renderer | C2 |
 | `review/hygiene_reason.txt` | `hygiene.sh`, only when `blocking` is non-empty | `merge_gate` check 13, `ci_fix_gate` | One line for a human. Deleted at the start of every run of `hygiene.sh`. |
 | `_hygiene/` | `hygiene.sh` | nothing | Scratch directory. |
 | `review/refute_issues.json` | `refute_prep` | `refute` | `[{number,title,body}]`, at most 3. An issue that could not be read is `{number,title:null,body:null,error:"could not be read"}`. May be `[]`. |
@@ -147,9 +147,10 @@ Every key is optional. A key that is present replaces the default (a shallow mer
 The values shown are the defaults. Patterns are POSIX extended regular expressions,
 matched by `awk` against repository-relative paths. They are written with bracket
 expressions (`[.]`) and never with a backslash, because the defaults live in a `.fabro`
-file. The file is **invalid** when it is not a JSON object, when `erosion_mode` is not
+file. The file is **invalid** when it is not exactly one JSON object (empty, `null` or
+two documents are all invalid), when `erosion_mode` is not
 `report` or `block`, when `erosion_threshold` is not a number, when
-`erosion_thresholds` is not an object, when `test_paths` is not a non-empty array of
+`erosion_thresholds` is not an object of numbers, when `test_paths` is not a non-empty array of
 strings, or when `exclude_paths` is not an array of strings.
 
 ### C5. The counters
@@ -163,7 +164,7 @@ tests next to the code.
 |---|---|---|
 | `tests_deleted` | tamper | a deleted test file (a rename is not a deletion) |
 | `skips_added` | tamper | an added line, in any file, matching `#[ignore]`, `@pytest.mark.skip`/`xfail`, `pytest.skip(`/`xfail(`, `@unittest.skip`, `@Disabled`, `@Ignore`; or, in a test file only, `it`/`describe`/`test`/`context`/`suite` `.skip(`/`.only(`/`.todo(`, or `xit(`/`xdescribe(`/`xtest(` |
-| `asserts_removed` | tamper | per hunk of an assertion-bearing file, removed assertion lines minus added assertion lines, when positive. An assertion line matches `assert…` followed by space, `.`, `(` or `!`, or `expect(`. Removed lines of a deleted file are not counted (that is `tests_deleted`). |
+| `asserts_removed` | tamper | removed assertion lines in assertion-bearing files that are not accounted for. A removed line is **moved**, and not counted, when an added assertion line anywhere in the PR has the same text after trimming whitespace (each added line excuses one removal). The rest are netted per hunk: unmoved removed lines minus the hunk's added assertion lines not used to excuse a move, when positive. An assertion line matches `assert…` followed by space, `.`, `(` or `!`, or `expect(` not preceded by `.` (Rust's `Result::expect` is not an assertion). Removed lines of a deleted file are not counted (that is `tests_deleted`). |
 | `tautologies_added` | tamper | in an assertion-bearing file, an added `expect(<literal>)`, `assert True`, `assert 1 == 1`, `assert!(true)`, or a same-argument `expect(x).toBe/toEqual/toStrictEqual(x)`, `assert_eq!(x, x)`, `assertEqual(x, x)`, `assert x == x` |
 | `config_changed` | tamper | the PR touches `.fabro/hygiene.json` |
 | `broad_except` | erosion | `except Exception`, `except BaseException`, bare `except:`, an empty `catch {}` |
@@ -232,6 +233,7 @@ It needs `jq`, `python3` and `git`. Each task that adds checks raises the `PASS`
 | 02 | 376 |
 | 03 | 399 |
 | 04 | 402 |
+| review fixes (2026-09-26) | 415 |
 
 `fabro validate` and `ops/check-routing-schemas.py` need the `fabro` binary, which exists
 only in the container on the fabro host. Task 06 runs them. You cannot see a routing

@@ -19,7 +19,7 @@ locally and not pushed.
 
 ```sh
 cd ~/Documents/code/fabro-workflows
-./ops/test-task-gates.sh                     # PASS: 402 checks
+./ops/test-task-gates.sh                     # PASS: 415 checks
 grep -c '\\[^"]' .fabro/workflows/_shared/review-merge/review-merge.fabro   # 0
 python3.11 -c 'import tomllib,sys; [tomllib.load(open(p,"rb")) for p in sys.argv[1:]]' .fabro/workflows/*/workflow.toml
 ```
