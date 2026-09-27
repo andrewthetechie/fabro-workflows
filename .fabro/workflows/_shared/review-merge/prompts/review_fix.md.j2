@@ -143,49 +143,18 @@ When in doubt, do not edit it. The goal is the smallest diff that resolves the f
 Do not refactor, rename, restructure, or reorganize, and do not fix related issues you
 notice along the way.
 
-## Output — `/tmp/fabro/review/fix_result.json`
+## Output — `fix_result.json`
 
-Write raw JSON to `/tmp/fabro/review/fix_result.json`. The file must contain exactly
-this shape and nothing else — no markdown fence, no commentary, no extra keys:
+Call `submit` with your result. It checks the shape and writes
+`/tmp/fabro/review/fix_result.json`; do not write it yourself. A result `submit`
+did not write is refused.
 
-```json
-{
-  "outcome": "fixed" | "no_changes_needed" | "needs_human",
-  "risk": 2,
-  "summary": "a paragraph, written for the pull request's reviewer",
-  "own_findings": [
-    {
-      "id": "OWN-001",
-      "severity": "info" | "warning" | "error",
-      "message": "the correctness problem and what must change",
-      "files": ["path/to/file.ts"],
-      "line": 42,
-      "suggestion": "the concrete remediation"
-    }
-  ],
-  "fixes_applied": [
-    {
-      "finding_id": "STD-001",
-      "axis": "standards" | "spec" | "correctness",
-      "severity": "info" | "warning" | "error",
-      "files": ["path/to/file.ts"],
-      "line": 42,
-      "message": "what you verified, what you changed, and how you validated it"
-    }
-  ],
-  "not_fixed": [
-    {
-      "finding_id": "STD-003",
-      "original_finding": "the finding, restated well enough to stand alone",
-      "reason": "why it was not fixed and what the maintainer must decide or do"
-    }
-  ],
-  "notes": "optional: environment limits, deliberate omissions, anything a human should know"
-}
-```
+The result has `outcome`, `risk` (a whole number 0-5: how much residual risk a
+human merging this PR is taking on), a paragraph `summary`, `own_findings`,
+`fixes_applied`, `not_fixed` and optional `notes`.
 
-Rules — a validation gate reads this file and rejects it on any violation, which costs
-a full retry round:
+Rules — a validation gate reads this file and rejects it on any violation, which
+costs a full retry round:
 
 - `outcome` is exactly one of the three values above. These are **not** the reviewers'
   `approve` / `findings` / `needs_human_review`.
@@ -228,4 +197,4 @@ a full retry round:
 - Use only the keys above. No `changes`, no `dispositions`, no `confidence`.
 - The file holds raw JSON — no markdown fence, nothing before or after it.
 
-After writing `/tmp/fabro/review/fix_result.json`, stop. Do not print the JSON in chat.
+After `submit` writes your result, stop. Do not print the JSON in chat.
