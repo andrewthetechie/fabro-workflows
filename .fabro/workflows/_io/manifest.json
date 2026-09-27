@@ -913,7 +913,11 @@
             }
           ],
           "sealed": [],
-          "also": []
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/extra/followups.json",
+            "schema": "followups"
+          }
         }
       }
     },
