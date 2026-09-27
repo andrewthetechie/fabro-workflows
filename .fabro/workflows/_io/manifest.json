@@ -400,7 +400,11 @@
             }
           ],
           "sealed": [],
-          "also": []
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/decomposition.json",
+            "schema": "decomposition"
+          }
         },
         "resolve_merge": {
           "live": true,
