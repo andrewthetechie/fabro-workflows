@@ -114,34 +114,14 @@ rather than emitting slices that only make sense together.
 
 ## Output
 
-Write your result as raw JSON to `/tmp/fabro/improve_result.json`. The file must
-contain exactly this shape and nothing else — no markdown fence, no commentary,
-no extra keys:
+Call `submit` with your `disposition`, `reason`, and — when the disposition
+requires it — `task` or `tasks`. It checks the shape and writes
+`/tmp/fabro/improve_result.json`; do not write it yourself. A result `submit`
+did not write is refused.
 
-```json
-{
-  "disposition": "ready" | "redundant" | "needs_human" | "split",
-  "reason": "one or two sentences justifying the disposition",
-  "task": {
-    "id": "unchanged id from current_task.json",
-    "title": "final title",
-    "body": "final self-contained body",
-    "files": ["path/to/file.ts"],
-    "covers": ["the distinct parent requirements this task delivers"],
-    "priority": "high" | "medium" | "low"
-  },
-  "tasks": [
-    {
-      "id": "new-stable-kebab-case-key-for-this-slice",
-      "title": "short slice title",
-      "body": "self-contained body with ## User Story, ## Context, ## Acceptance Criteria",
-      "files": ["path/to/file.ts"],
-      "covers": ["the parent requirements this slice delivers"],
-      "priority": "high" | "medium" | "low"
-    }
-  ]
-}
-```
+`disposition` is `ready` | `redundant` | `needs_human` | `split`; `reason` is one
+or two sentences justifying it. `task` carries `id`, `title`, `body`, `files`,
+`covers` and `priority`; `tasks` is an array of such slice objects.
 
 Rules — a validation gate reads this file and rejects it on any violation, which
 costs a full retry round:
@@ -178,7 +158,6 @@ costs a full retry round:
 - Never invent an assumption. Label unsupported or ambiguous claims as open
   questions inside the proposed body rather than asserting them.
 - Use only the keys above; do not add extra keys.
-- The file must be raw JSON — do not wrap the contents in a ` ```json ` fence.
 
 ## Task dossier — only when `ready`
 
@@ -204,5 +183,5 @@ Fill `## Files and symbols` and `## Tests` from `fabro-code def`, `fabro-code sh
 and `fabro-code tests` (see Finding code above), cite line ranges you have actually
 read, and keep it under the size cap.
 
-After writing `/tmp/fabro/improve_result.json` (and `task-context.md`, when
-`ready`), stop. Do not print the JSON in chat.
+After `submit` writes your result (and you write `task-context.md` with
+`write_file` when `ready`), stop. Do not print the JSON in chat.

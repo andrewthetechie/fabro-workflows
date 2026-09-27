@@ -573,14 +573,9 @@ fi"]
     improve_gate [label="Validate improved task", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/improve_result.json
 A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
-RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
-SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
-ROK=probe
-if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
-if [ \"$ROK\" = probe ]; then
-  ROK=$(jq -r --argjson req '[\"current_task.json\",\"issue.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
-fi
-if [ \"$ROK\" != yes ]; then D=invalid; else D=$(jq -r .disposition $F 2>/dev/null || echo invalid); fi
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then D=invalid; else D=$(jq -r .disposition $F 2>/dev/null || echo invalid); fi
 if [ \"$D\" != ready ] && [ \"$D\" != redundant ] && [ \"$D\" != needs_human ] && [ \"$D\" != split ]; then D=invalid; fi
 KEEP=0
 SR=$(cat /tmp/fabro/split_rounds 2>/dev/null || echo 0)

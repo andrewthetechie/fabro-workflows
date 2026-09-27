@@ -2,20 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "improve_result",
   "title": "improve_result — backlog improve's improved task (task 10)",
-  "description": "The backlog improve agent's output (docs/stage-io, task 10). improve_gate checks the disposition enum and the per-disposition shape; the split/queue logic and per-run budget stay in the gate. _io is stamped by the server.",
+  "description": "The backlog improve agent's output (docs/stage-io, task 10). improve_gate checks the disposition enum and the per-disposition shape; the split/queue logic and per-run budget stay in the gate. `reason` is always written for the human record. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["disposition"],
+  "required": ["disposition", "reason"],
   "properties": {
     "disposition": { "enum": ["ready", "redundant", "needs_human", "split"] },
+    "reason": { "type": "string", "description": "One or two sentences justifying the disposition." },
     "task": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string" },
+        "id": { "type": "string", "minLength": 1 },
         "title": { "type": "string", "minLength": 1 },
         "body": { "type": "string", "minLength": 1 },
-        "files": { "type": "array", "items": { "type": "string" } }
+        "files": { "type": "array", "items": { "type": "string" } },
+        "covers": { "type": "array", "items": { "type": "string" } },
+        "priority": { "enum": ["high", "medium", "low"] }
       }
     },
     "tasks": {
@@ -30,7 +33,9 @@
           "id": { "type": "string", "minLength": 1 },
           "title": { "type": "string", "minLength": 1 },
           "body": { "type": "string", "minLength": 1 },
-          "files": { "type": "array", "items": { "type": "string" } }
+          "files": { "type": "array", "items": { "type": "string" } },
+          "covers": { "type": "array", "items": { "type": "string" } },
+          "priority": { "enum": ["high", "medium", "low"] }
         }
       }
     }

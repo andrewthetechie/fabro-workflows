@@ -211,7 +211,7 @@ ig_setup() { # tasks current result task_index split_rounds
     rm -f "$T"/*.json "$T"/task_index "$T"/split_rounds "$T"/improve_attempts
     printf '%s' "$1" > "$T/tasks.json"
     printf '%s' "$2" > "$T/current_task.json"
-    printf '%s' "$3" > "$T/improve_result.json"
+printf '%s' "$3" > "$T/improve_result.json" && jq --arg v ok1 '._io.visit=$v' "$T/improve_result.json" > /tmp/x && mv /tmp/x "$T/improve_result.json"
     echo "$4" > "$T/task_index"
     echo "$5" > "$T/split_rounds"
 }
@@ -332,7 +332,7 @@ cat > "$T/improve_result.json" <<'EOF'
 {"disposition":"split","reason":"five criteria","tasks":[
  {"id":"big-module","title":"Add module","body":"x","files":[],"covers":["c1"]},
  {"id":"big-migrate","title":"Migrate callers","body":"y","files":[],"covers":["c2","c3"]},
- {"id":"big-adr","title":"Record ADR","body":"z","files":[],"covers":["c4","c5"]}]}
+ {"id":"big-adr","title":"Record ADR","body":"z","files":[],"covers":["c4","c5"]}],"_io":{"visit":"ok1"}}
 EOF
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "queue spliced"               "small big-module big-migrate big-adr" "$(jq -r '[.[].id]|join(" ")' "$T/tasks.json")"
@@ -357,7 +357,7 @@ check "queue reports done"          "true" "$(jq -r '.context_updates.tasks_done
 # result." With `split` in play a stale improve_result.json no longer just
 # mis-improves one task, it can splice the previous task's slices into the queue.
 echo 0 > "$T/task_index"
-printf '%s' '{"disposition":"split","tasks":[]}' > "$T/improve_result.json"
+printf '%s' '{"disposition":"split","tasks":[],"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 sh "$T/next_task.sh" >/dev/null 2>&1
 check "next_task clears improve_result" "absent" \
     "$([ -e "$T/improve_result.json" ] && echo present || echo absent)"
@@ -1515,14 +1515,14 @@ bd_setup() { # bd_setup <tasks_coded> <task_index> <last task id>
 # 1. improve_gate counts a task routed to the coder, and only that.
 bd_setup 3 1 2
 printf '%s' '{"id":"t1","title":"T1","body":"b","files":[],"covers":[],"source":"decompose"}' > "$T/current_task.json"
-printf '%s' '{"disposition":"ready","task":{"title":"T1","body":"sharpened"}}' > "$T/improve_result.json"
+printf '%s' '{"disposition":"ready","task":{"title":"T1","body":"sharpened"},"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "ready counts toward the budget" "4" "$(cat "$T/tasks_coded")"
-printf '%s' '{"disposition":"redundant","reason":"already done"}' > "$T/improve_result.json"
+printf '%s' '{"disposition":"redundant","reason":"already done","_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "redundant does not count"       "4" "$(cat "$T/tasks_coded")"
 printf '%s' '{"id":"x1","title":"X1","body":"b","files":[],"covers":[],"source":"extra-review"}' > "$T/current_task.json"
-printf '%s' '{"disposition":"ready","task":{"title":"X1","body":"sharpened"}}' > "$T/improve_result.json"
+printf '%s' '{"disposition":"ready","task":{"title":"X1","body":"sharpened"},"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "extra-review ready does not count" "4" "$(cat "$T/tasks_coded")"
 
@@ -1533,16 +1533,16 @@ jq '. + [{"id":"x1","title":"X1","body":"b","files":[],"covers":[],"source":"ext
     "$T/tasks.json" > "$T/tasks.tmp" && mv "$T/tasks.tmp" "$T/tasks.json"
 jq '.[8]' "$T/tasks.json" > "$T/current_task.json"
 rm -f "$T/split_rounds"
-printf '%s' '{"disposition":"split","tasks":[{"id":"x1a","title":"X1a","body":"b"},{"id":"x1b","title":"X1b","body":"b"}]}' > "$T/improve_result.json"
+printf '%s' '{"disposition":"split","tasks":[{"id":"x1a","title":"X1a","body":"b"},{"id":"x1b","title":"X1b","body":"b"}],"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "extra split: slices carry from_extra" "true true" "$(jq -r '[.[8:][] | .from_extra | tostring] | join(" ")' "$T/tasks.json")"
 check "extra split: nothing counted"   "4" "$(cat "$T/tasks_coded")"
 jq '.[8]' "$T/tasks.json" > "$T/current_task.json"
-printf '%s' '{"disposition":"ready","task":{"title":"X1a","body":"sharpened"}}' > "$T/improve_result.json"
+printf '%s' '{"disposition":"ready","task":{"title":"X1a","body":"sharpened"},"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "extra slice ready does not count" "4" "$(cat "$T/tasks_coded")"
 bd_setup 4 1 2
-printf '%s' '{"disposition":"split","tasks":[{"id":"t1a","title":"T1a","body":"b"},{"id":"t1b","title":"T1b","body":"b"}]}' > "$T/improve_result.json"
+printf '%s' '{"disposition":"split","tasks":[{"id":"t1a","title":"T1a","body":"b"},{"id":"t1b","title":"T1b","body":"b"}],"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 jq '.[0]' "$T/tasks.json" > "$T/current_task.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "decompose split: slices not exempt" "false false" "$(jq -r '[.[0:2][] | .from_extra | tostring] | join(" ")' "$T/tasks.json")"
