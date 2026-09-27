@@ -167,7 +167,11 @@
           }
         ],
         "sealed": [],
-        "also": []
+        "also": [],
+        "output": {
+          "path": "/tmp/fabro/review/fix_result.json",
+          "schema": "fix_result"
+        }
       },
       "refute": {
         "live": true,

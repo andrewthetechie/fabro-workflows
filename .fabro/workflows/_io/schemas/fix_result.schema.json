@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fix_result",
+  "title": "fix_result — review-merge review_fix's fix report (task 10)",
+  "description": "The review-and-fix agent's output (docs/stage-io, task 10). Encodes fix_gate's shape checks (outcome enum, per-outcome fixes_applied requirement is a gate check; own_findings error accounting is a gate check; risk 0-5 is required here AND still enforced by the gate per AGENTS.md). _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "risk", "summary", "own_findings", "fixes_applied", "not_fixed"],
+  "properties": {
+    "outcome": { "enum": ["fixed", "no_changes_needed", "needs_human"] },
+    "risk": { "type": "integer", "minimum": 0, "maximum": 5 },
+    "summary": { "type": "string", "minLength": 1 },
+    "own_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "message"],
+        "properties": {
+          "id": { "type": "string" },
+          "severity": { "enum": ["info", "warning", "error"] },
+          "message": { "type": "string", "minLength": 1 },
+          "files": { "type": "array", "items": { "type": "string" } },
+          "line": { "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+          "suggestion": { "type": "string" }
+        }
+      }
+    },
+    "fixes_applied": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "axis", "severity", "message"],
+        "properties": {
+          "finding_id": { "type": "string" },
+          "axis": { "enum": ["standards", "spec", "correctness"] },
+          "severity": { "enum": ["info", "warning", "error"] },
+          "files": { "type": "array", "items": { "type": "string" } },
+          "line": { "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "not_fixed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id"],
+        "properties": {
+          "finding_id": { "type": "string" },
+          "original_finding": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}
