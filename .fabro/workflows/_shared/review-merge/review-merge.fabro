@@ -909,14 +909,9 @@ exit 0"]
 B=$(cat /tmp/fabro/base_ref)
 H=$(cat /tmp/fabro/head_ref)
 F=/tmp/fabro/review/ci_fix_result.json
-RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
-SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
-ROK=probe
-if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
-if [ \"$ROK\" = probe ]; then
-  ROK=$(jq -r --argjson req '[\"ci_fix.md\",\"changed_files.txt\",\"diff.patch\",\"diffstat.txt\",\"commits.txt\",\"pr.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
-fi
-if [ \"$ROK\" != yes ]; then O=invalid; else O=$(jq -r .outcome \"$F\" 2>/dev/null || echo invalid); fi
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then O=invalid; else O=$(jq -r .outcome \"$F\" 2>/dev/null || echo invalid); fi
 SC=$(jq -r .scope \"$F\" 2>/dev/null || echo invalid)
 if [ \"$O\" != fixed ] && [ \"$O\" != cannot_fix ]; then O=invalid; fi
 if [ \"$SC\" != ci_only ]; then SC=invalid; fi

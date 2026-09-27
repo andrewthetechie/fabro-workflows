@@ -2,22 +2,27 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ci_fix_result",
   "title": "ci_fix_result — review-merge CI-fix agent's report (task 10)",
-  "description": "The CI-fix agent's output (docs/stage-io, task 10). The gate's shape checks are outcome enum + scope literal ci_only; reason is required when outcome is cannot_fix. `risk` is not part of this contract. _io is stamped by the server.",
+  "description": "The CI-fix agent's output (docs/stage-io, task 10). The gate's shape checks are outcome enum + scope literal ci_only; reason is required when outcome is cannot_fix and the gate publishes it. `risk` is not part of this contract. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["outcome", "scope", "reason"],
+  "required": ["outcome", "scope", "checks", "files", "summary", "reason"],
   "properties": {
-    "outcome": {
-      "enum": ["fixed", "cannot_fix"],
-      "description": "fixed: the failing check was made to pass. cannot_fix is the ask-a-human outcome and is terminal for the merge."
+    "outcome": { "enum": ["fixed", "cannot_fix"] },
+    "scope": { "const": "ci_only" },
+    "checks": { "type": "array", "items": { "type": "string" } },
+    "files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Every entry must already appear in the reviewed changed-files list when outcome is fixed."
     },
-    "scope": {
-      "const": "ci_only",
-      "description": "The only files this report claims are outside the reviewed change set."
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What was failing, what changed, and why that makes the check pass; published verbatim."
     },
     "reason": {
       "type": "string",
-      "description": "Required when outcome is cannot_fix: what a human must decide or do, published verbatim in the PR."
+      "description": "Required when outcome is cannot_fix: what a human must decide or do, published verbatim."
     }
   }
 }

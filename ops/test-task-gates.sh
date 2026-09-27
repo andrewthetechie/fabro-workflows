@@ -2354,7 +2354,7 @@ cf_repo() {
     git -C "$T/wt" checkout -q -b feat origin/feat
     echo main > "$T/base_ref"; echo feat > "$T/head_ref"; echo 5 > "$T/pr_number"
     printf '%s\n' a.py tests/test_a.py > "$T/review/merge_base_files.txt"
-    echo '{"outcome":"fixed","scope":"ci_only","summary":"s"}' > "$T/review/ci_fix_result.json"
+    echo '{"outcome":"fixed","scope":"ci_only","summary":"s","_io":{"visit":"ok1","binary":"0.1.0","stage":"review_merge.ci_fix_t1"}}' > "$T/review/ci_fix_result.json"
     rm -f "$T/merge_block_reason"
     ( cd "$T/wt" && sh "$T/hygiene_node.sh" >/dev/null 2>&1 )
 }
