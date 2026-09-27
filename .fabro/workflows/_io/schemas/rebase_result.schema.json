@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rebase_result",
+  "title": "rebase_result — pr-review rebase agent's report (task 10)",
+  "description": "The rebase agent's output (docs/stage-io, task 10). rebase_gate derives its verdict from git state, not this file's shape, so the schema enforces the prompt's output contract. `diagnostics` is required when outcome is unresolved. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "summary", "conflicted_files", "resolution_summaries", "diagnostics"],
+  "if": {
+    "properties": { "outcome": { "const": "unresolved" } },
+    "required": ["outcome"]
+  },
+  "then": {
+    "properties": {
+      "diagnostics": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+    }
+  },
+  "properties": {
+    "outcome": {
+      "enum": ["resolved", "unresolved"],
+      "description": "resolved: the merge conflict was reconciled. unresolved: it cannot be resolved without a human."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One or two sentences."
+    },
+    "conflicted_files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Repository-relative paths that conflicted."
+    },
+    "resolution_summaries": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Why both intents are preserved in each file."
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Sanitized detail; required when unresolved."
+    }
+  }
+}
