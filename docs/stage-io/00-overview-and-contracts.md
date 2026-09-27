@@ -184,7 +184,7 @@ event = "stage_start"
 matcher = "^agent$"
 blocking = true
 sandbox = true
-timeout_ms = 10000
+timeout = "10s"
 script = "fabro-io stage"
 
 [[run.hooks]]
@@ -193,10 +193,12 @@ event = "pre_tool_use"
 matcher = "(^|[.])refute$"
 blocking = true
 sandbox = true
-timeout_ms = 5000
+timeout = "5s"
 script = "fabro-io guard"
 ```
 
+`timeout` is a duration string (fabro 0.362's hook field; an earlier draft of C6
+wrote `timeout_ms`, which `fabro validate` rejects with `unknown field`).
 `io-guard`'s matcher grows as more stages get Sealed paths. It is tested against the node
 id and the tool name, so it must never match a tool name. Task 06 checks the `startup_timeout`
 value against the spike's measurement.
