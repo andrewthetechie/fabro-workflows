@@ -7,17 +7,23 @@
 use std::fs;
 use std::path::Path;
 
+/// The schemas directory: `FABRO_IO_SCHEMAS_DIR` when set, else the repository layout.
+///
+/// In a checkout the crate root is `ops/fabro-io` and the schemas live two levels up under
+/// `.fabro/workflows`. On the host the crate is synced alone to `~/fabro-io`, so
+/// `build-images.sh` mounts the synced schemas and names them with the variable.
 fn schemas_dir() -> std::path::PathBuf {
-    // crate root is ops/fabro-io; the schemas live two levels up under .fabro/workflows
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.fabro/workflows/_io/schemas")
+    match std::env::var_os("FABRO_IO_SCHEMAS_DIR") {
+        Some(dir) => dir.into(),
+        None => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.fabro/workflows/_io/schemas"),
+    }
 }
 
 #[test]
 fn every_schema_compiles() {
     let dir = schemas_dir();
     let mut files: Vec<std::path::PathBuf> = fs::read_dir(&dir)
-        .expect("schemas dir should exist (run from the repo root checkout)")
+        .unwrap_or_else(|e| panic!("schemas dir {dir:?} (set FABRO_IO_SCHEMAS_DIR outside a checkout): {e}"))
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))

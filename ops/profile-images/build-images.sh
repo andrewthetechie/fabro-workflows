@@ -53,6 +53,12 @@ NEEDS_SOURCE='rust-node'
 CRATE=$(cd "$HERE/.." && pwd)/fabro-io
 FABRO_IO_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$CRATE/Cargo.toml" | head -1)
 FABRO_IO_BIN="$WORK/fabro-io-bin"
+# The Stage-manifest output schemas, which `cargo test` compiles (schema_tests.rs). On
+# the host they are synced beside the crate to ~/fabro-io-schemas; in a repository
+# checkout they are .fabro/workflows/_io/schemas. build_fabro_io fails when neither
+# exists: a skipped schema test would let a schema that does not compile ship.
+SCHEMAS=$(cd "$HERE/.." && pwd)/fabro-io-schemas
+[ -d "$SCHEMAS" ] || SCHEMAS=$(cd "$HERE/../.." && pwd)/.fabro/workflows/_io/schemas
 
 # To stderr, not stdout: sync_repo and assemble_context are read with $(...)
 # and anything they print on stdout becomes part of the sha or the context path.
@@ -275,11 +281,17 @@ want() {
 # runs first -- a failing test stops the build and leaves yesterday's images in use.
 # Named volumes for the registry and the target dir make the nightly build incremental.
 build_fabro_io() {
-  log "build fabro-io $FABRO_IO_VERSION (crate $CRATE)"
+  log "build fabro-io $FABRO_IO_VERSION (crate $CRATE, schemas $SCHEMAS)"
+  if [ ! -d "$SCHEMAS" ]; then
+    log "fatal: no output schemas at $SCHEMAS; sync .fabro/workflows/_io/schemas/ to ~/fabro-io-schemas/"
+    exit 1
+  fi
   docker volume create fabro-io-cargo >/dev/null 2>&1 || true
   docker volume create fabro-io-target >/dev/null 2>&1 || true
   if ! docker run --rm \
       -v "$CRATE":/src:ro \
+      -v "$SCHEMAS":/schemas:ro \
+      -e FABRO_IO_SCHEMAS_DIR=/schemas \
       -v fabro-io-cargo:/cargo \
       -v fabro-io-target:/target \
       -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \

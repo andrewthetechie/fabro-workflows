@@ -267,10 +267,14 @@ ssh andrew@10.10.0.32 'docker cp /tmp/discord-notify.sh \
 # A failed build leaves the previous image tagged and in use. Since ADR 0016 the
 # build also runs `cargo test` and the musl `cargo build` for the fabro-io crate,
 # which must sit beside the build tree at ~/fabro-io (build-images.sh resolves it as
-# $HERE/../fabro-io). Both trees are synced (profile-images first, the crate next,
-# because build-images.sh reads the crate to name the expected fabro-io version).
+# $HERE/../fabro-io). Its `cargo test` also compiles every Stage-manifest output
+# schema, which must sit beside it at ~/fabro-io-schemas; the build fails without
+# them rather than skip the test. All three trees are synced (profile-images first,
+# then the crate, because build-images.sh reads it to name the expected fabro-io
+# version, then the schemas). `--exclude target` keeps the Mac's build dir behind.
 rsync -a --delete ops/profile-images/ andrew@10.10.0.32:~/profile-images-build/
-rsync -a --delete ops/fabro-io/ andrew@10.10.0.32:~/fabro-io/
+rsync -a --delete --exclude target ops/fabro-io/ andrew@10.10.0.32:~/fabro-io/
+rsync -a --delete .fabro/workflows/_io/schemas/ andrew@10.10.0.32:~/fabro-io-schemas/
 ssh andrew@10.10.0.32 'cd ~/profile-images-build && ./build-images.sh'
 
 # the coder scheduler. Its compose service builds from ./scheduler, resolved
