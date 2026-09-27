@@ -1,7 +1,10 @@
 # Shared code context: overview and canonical contracts
 
-**Status:** proposed 2026-09-26. Not started. All operator decisions are made. They are listed in "Decisions" at the end of this
-file.
+**Status:** tasks 01–07 applied 2026-09-26 (`17f2070`), and live on `main`. A review the
+same day ran the wrapper against the four target repositories and rewrote it to read the
+index database directly (C2, ADR 0014 D1 defect 3). Task 08: images built and the change
+pushed; the first-run watch and the measurement are pending. All operator decisions are
+made. They are listed in "Decisions" at the end of this file.
 
 **Read this file first.** Every task in this folder assumes the decisions, contracts and
 rules in this file. Each task repeats what it needs. If a task and this file disagree, this
@@ -53,29 +56,46 @@ The consumer prompts gain an input and a paragraph.
 
 ### C2. `fabro-code` (installed at `/usr/local/bin/fabro-code` in every profile image)
 
-POSIX `sh` and `jq`. Source: `ops/profile-images/fabro-code`. The exit code is 0 on an
-answer, 1 when the answer is "nothing found" or "ambiguous", and 2 when there is no index.
+POSIX `sh`, `jq` and `sqlite3`. Source: `ops/profile-images/fabro-code`. The exit code is 0
+on an answer, 1 when the answer is "nothing found" or "ambiguous", 2 when there is no
+usable index, and 64 on a usage error.
 
-| Verb | Does | codegraph call |
-|---|---|---|
-| `index` | When `.codegraph/` is missing, `codegraph init --yes`. When it exists, `codegraph sync`. Both have a 120 s timeout. Writes `/tmp/fabro/code_index`. Never exits non-zero. Safe to call more than once. | `init` / `sync` |
-| `def <name>` | Every symbol whose name is exactly `<name>`: `path:line  kind  name  signature` | `query --json`, then an exact filter |
-| `show <name\|path:line>` | Source and call trail of one exactly resolved symbol | `node` |
-| `callers <name>` / `callees <name>` | Call edges of one exactly resolved symbol, plus the D1 footer | `callers --json` / `callees --json` |
-| `impact <name>` | Symbols and files reached within depth 2, plus the footer | `impact --json` |
-| `tests <path>...` | Test files that the changed files reach through imports | `affected --json` |
-| `map` | Writes `/tmp/fabro/repomap.md` (C3) | reads `.codegraph/codegraph.db` with `sqlite3` |
+codegraph builds and syncs the index. Every answer is read from
+`.codegraph/codegraph.db` with `sqlite3 -readonly -json`. codegraph's query verbs
+(`query`, `node`, `callers`, `callees`, `impact`, `affected`) are never called: each one
+re-resolves a bare name fuzzily, and each walks guessed edges (ADR 0014 D1, defect 3).
+
+| Verb | Does |
+|---|---|
+| `index` | When `.codegraph/` is missing, `codegraph init --yes`. When it exists, `codegraph sync`. Both have a 120 s timeout. Writes `/tmp/fabro/code_index`: `ok` only when the command succeeded **and** the database exists. Never exits non-zero. Safe to call more than once. |
+| `def <name>` | The symbol whose name is exactly `<name>`: `path:line  kind  name  signature`, on one line |
+| `show <name\|path:line>` | One exactly resolved symbol (or the narrowest symbol holding `path:line`): its source (150 lines at most), then `## calls` and `## called by` (15 each), then the footer |
+| `callers <name>` / `callees <name>` | Trusted `calls` and `instantiates` edges into or out of the resolved node, one `path:line  kind  name` per call site (a module-level call site is the file node), plus the footer |
+| `impact <name>` | Every node that reaches the resolved node through at most 2 trusted incoming edges (`calls`, `instantiates`, `references`, `extends`, `implements`, `imports`), plus the footer |
+| `tests <path>...` | Test files that import the given files, directly or through up to 4 more files (trusted `imports` edges), nearest first. A test file is one that matches `TEST_RE`: `test_*.py`, `*_test.py`, `*.test.*`, `*.spec.*`, `*_test.go`, `__tests__/`, `tests/*.rs` |
+| `map` | Writes `/tmp/fabro/repomap.md` (C3) |
+
+A **definition** is any node except `field`, `property`, `parameter`, `enum_member`,
+`import`, `export` and `file`. A `variable` or `constant` counts only at the top level of a
+file, because TS declares most functions, components and hooks as
+`export const X = () => ...`. Inside a class or a function it is a member or a local.
+
+A **trusted edge** is not `fuzzy` (`metadata.resolvedBy`), and its two ends are in the
+same language family (`typescript`, `tsx`, `javascript` and `jsx` are one), unless it was
+resolved as `framework`.
 
 Rules that every verb follows:
 
 1. Every query verb runs `codegraph sync --quiet` first. The answer covers uncommitted edits.
-2. Name resolution is **exact**. If zero symbols match, print `no symbol named <name> in the
-   index (fields and attributes are not indexed); use grep -rnw` and exit 1. If two or more
-   match, print each one as `path:line kind name` and exit 1. Never choose among them.
-3. `callers`, `callees` and `impact` end with this line:
-   `graph edges are calls and imports only; confirm with grep -rnw before deleting or renaming`.
-4. If `/tmp/fabro/code_index` is not `ok`, every verb prints `no code index; use grep` and
-   exits 2.
+2. Name resolution is **exact**, against definitions only. If zero symbols match, print
+   `no symbol named <name> in the index (fields and attributes are not indexed); use grep -rnw`
+   and exit 1. If two or more match, print each one as `path:line  kind  name` and exit 1.
+   Never choose among them.
+3. `show`, `callers`, `callees` and `impact` end with this line:
+   `graph edges are calls and imports only, and a call is matched by name, so a same-name call on another type can appear; confirm with grep -rnw before deleting or renaming`.
+4. If `/tmp/fabro/code_index` is not `ok`, or the database is missing after the sync, every
+   verb prints `no code index; use grep` and exits 2. An unknown schema version, or a
+   failed query, also exits 2. A broken index never reads as "nothing found".
 5. The output is text. It is capped at 200 lines, and the last line says how many lines were
    cut.
 
@@ -83,10 +103,16 @@ Rules that every verb follows:
 
 Markdown, at most 16,000 bytes (about 4k tokens). The first line is
 `# Repo map (<short HEAD sha>, <file count> files indexed)`. Then one block per file, ranked
-by the count of `calls`, `imports`, `references`, `extends` and `instantiates` edges into
-the file's symbols. Rows where `files.generated = 1` are excluded. Each block is
-`## <path>` followed by up to 8 top-level symbols, as `- <kind> <name><signature>`. Stop
-adding files when the next block would pass the cap.
+by the count of trusted `calls`, `imports`, `references`, `extends` and `instantiates`
+edges into the file's symbols **from other files**. Rows where `files.generated = 1` are
+excluded, and so are test files (`TEST_RE`) and test support: any path under a `test/`,
+`tests/`, `__tests__/`, `__mocks__/` or `fixtures/` directory, and `conftest.py`. Those
+top every ranking without being the code a task changes. Each block is `## <path>`
+followed by up to 8 top-level definitions, ranked the same way, as
+`- <kind> <name><signature>`, on one line each: whitespace in a signature is collapsed and
+a signature is cut at 100 characters. The rows come back from `sqlite3` as JSON, so a
+signature may contain `|` or newlines. Stop adding files when the next block would pass the
+cap.
 
 ### C4. Keeping the index out of git
 

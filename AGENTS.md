@@ -31,6 +31,7 @@ actually lives.
 | `docs/issue-triage/` | The task series for the front of the chain: triage a `needs-triage` issue, ask the human only what the repository cannot answer, and promote it to the `agent` label `backlog` acquires from. |
 | `docs/architecture-review/` | The task series for ADR 0012: `arch-review` scans a repository for deepening candidates twice a week, files the strongest as `architecture` issues, and triages the waiting issues toward `agent` through the shared `_shared/triage/` phase. `00-overview-and-contracts.md` first. An `architecture` PR is never auto-merged. **Applied 2026-09-25.** |
 | `docs/merge-gate/` | The task series for ADR 0013: two gates in the shared merge phase between `validate` and `deliver`. `hygiene` counts test tampering (deleted tests, added skips, removed or tautological assertions) and code erosion over the PR's added lines, in shell; any tamper counter blocks the auto-merge. `refute` is an agent that sees only the issue, the diff and the counters and tries to prove the work is not done; `refute_gate` computes its verdict, and anything but `pass` blocks. `00-overview-and-contracts.md` first. |
+| `docs/code-context/` | The task series for ADR 0014: a **Code index** built by pinned codegraph inside the sandbox at each workflow's entry node, queried by agents through `shell` with the `fabro-code` wrapper (exact names only; every answer is synced to the working tree). The **Repo map** and the **Task dossier** are derived from it. The index is never proof that a name is unused, so grep stays. The wrapper reads `.codegraph/codegraph.db` itself and never calls codegraph's query verbs, which walk guessed edges (ADR 0014 D1 defect 3). `00-overview-and-contracts.md` first. **Applied 2026-09-26** (tasks 01–07); the task 08 measurement is pending. |
 | `docs/fabro-upgrade/` | The task series that moved the host from fabro 0.354.0-nightly.0 to **0.362.0-nightly.0**. It was rehearsed on a copy of the live database on 2026-09-25: the upgrade must drop fabro's run history (0.362's run-history activation rejects every run 0.354 stored) and rewrite the catalog to `codecs = [...]` (0.362 refuses `codec` and the protocol adapter ids at startup). `00-overview-and-contracts.md` first. **Applied 2026-09-25.** |
 | `docs/factory-roadmap/` | The ranked improvement plan for the whole factory, one design record per item (A1–C4, H): andon cord, proposal gate, anti-oscillation, diff hygiene, cross-family refuter, scorecard, value-based queue, submit tool, shared code context, elastic fleet, scout, memory, upgrades. `00-overview.md` first. Records, not task series. An item becomes its own `docs/<name>/` series when picked up. |
 | `docs/<workflow>/` | The numbered task series each workflow was built from — operator decisions, file contracts, and the reasoning behind every non-obvious choice. |
@@ -107,7 +108,7 @@ the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them 
 fixtures:
 
 ```sh
-./ops/test-task-gates.sh      # 415 checks, offline — no host, container or network
+./ops/test-task-gates.sh      # 445 checks on the Mac, 503 in a profile image; offline
 ```
 
 It needs only `jq`, `awk` and `git` — no `python3`, which `fabro-ts` and `fabro-python-node` do not ship — so it belongs in the same pre-push hook and also runs inside every profile image, the one way to test the counters against the sandbox's own mawk and jq (`jq 1.6` in `fabro-python-node`). It covers
@@ -120,7 +121,11 @@ checkpoint commits. A stub would only test the stub. It restores `$ORIG_PATH` fi
 `next_task` prepends an `exit 0` `git` and never takes it off, so every later
 `SAVED_PATH="$PATH"` captures that stub too. Since 2026-09-26 it also covers the merge phase's diff-hygiene
 counters, each with a real-git fixture, and `refute_prep`, `refute_gate`, `merge_gate`
-checks 13, 13b and 14, and the review comment's Refuter and hygiene sections (ADR 0013).
+checks 13, 13b and 14, and the review comment's Refuter and hygiene sections (ADR 0013). It also runs
+the code-index lines of every workflow's entry node (`backlog` `prep`, `pr-review` `claim`,
+`arch-review` `prep`, `issue-triage` `acquire`), each with and without `fabro-code` on
+`PATH`. Inside a profile image, where `codegraph` exists, it also runs the `fabro-code`
+wrapper against a real-git fixture; on the Mac that section prints `SKIP`.
 It says nothing about whether an agent fills a contract correctly.
 
 **`claim` is in there because leaving it out cost the cutover.** Draft 10 deleted

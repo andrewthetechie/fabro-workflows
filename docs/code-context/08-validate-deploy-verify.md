@@ -44,3 +44,13 @@ rate: of the `improve` visits that ended `ready`, the share that wrote `task-con
 Record the result as a dated line in the ADR's status. If the exploration share falls less
 than 5 points, record that and set the ADR to `deprecated`. Do not tune the prompts without
 end.
+
+## First runs (2026-09-27, before the review fixes reached the images)
+
+Two `backlog` runs on lawncare-saas started after `17f2070`: `01M3G2KERR6P…` and
+`01M3G83NFKKH…`. `prep` built the index and `next_task` rendered the map in both. Agents
+called `fabro-code` 4 times in 392 tool calls (`def` and `show`, in `decompose` and
+`review_fix`), so the prompts are read but barely followed yet. `improve` wrote
+`task-context.md` in 2 of 2 `ready` visits. Those runs used the first wrapper, whose map
+was garbled (ADR 0014 D1 defect 3). Count the measurement window from the image rebuild
+that carries the rewritten wrapper, not from `17f2070`.

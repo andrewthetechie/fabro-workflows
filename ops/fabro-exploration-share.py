@@ -149,7 +149,7 @@ def main():
     explore_turn_time = collections.Counter()
     turn_time = collections.Counter()
     reads = collections.Counter()
-    visits = collections.Counter()
+    visits = collections.defaultdict(set)   # node -> {(run file, stage_id)}
     samples = []
     # dossier presence: improve sessions that ended `ready` vs those that also wrote
     # /tmp/fabro/task-context.md
@@ -191,7 +191,7 @@ def main():
                 c = category(t["tool_name"], a)
                 started[t["tool_call_id"]] = (c, a, t["tool_name"])
                 tool_counts[node][c] += 1
-                visits[node] += 1
+                visits[node].add((fn, e.get("stage_id")))
                 if t["tool_name"] == "read_file":
                     reads[(fn, e["stage_id"], a.get("file_path"), node)] += 1
                 if c in ("grep", "glob", "shell:search"):
@@ -307,8 +307,11 @@ def main():
     print(f"ALL explore-turn share: {100*sum(explore_turn_time.values())/tt if tt else 0:.0f}%")
 
     print("\n## 5b. agent visits per stage (for data sufficiency)")
-    for n in sorted(visits, key=lambda n: -visits[n]):
-        print(f"| {n} | {visits[n]} tool calls across visits |")
+    print("| stage | visits | tool calls |")
+    for n in sorted(visits, key=lambda n: -len(visits[n])):
+        print(f"| {n} | {len(visits[n])} | {sum(tool_counts[n].values())} |")
+    ok = len(visits["improve"]) >= 30 and len(visits["coder"]) >= 30
+    print(f"task 08 threshold (30 improve and 30 coder visits): {'met' if ok else 'not met'}")
 
     print("\n## 5c. Task-dossier presence rate (improve sessions, disposition=ready)")
     ready_total = sum(improve_ready.values()); with_doss = sum(improve_with_dossier.values())

@@ -2,6 +2,15 @@
 
 Read `00-overview-and-contracts.md` first. The contracts for this task are C1, C2 and C3.
 
+**Amended 2026-09-26 (review).** The verb notes below describe the first version, which
+called codegraph's `query`, `node`, `callers`, `impact` and `affected`. Run against the four
+target repositories, those verbs returned guessed edges (`callers Select`: 792, one real),
+missed TS `const` functions, stopped at 20 callers, listed unrelated tests, and garbled the
+map. The wrapper now reads the database for every answer. C2 and C3 in the overview are the
+contract; where this file disagrees, they win. The fixture gained a multi-line signature
+holding `|`, 25 callers, a cross-language call, a TS `const` function and a local, a
+root-level test file and a deleted database.
+
 ## Why a wrapper, and not raw `codegraph`
 
 The bench (ADR 0014 D1) found two codegraph behaviours that give a small model a confident

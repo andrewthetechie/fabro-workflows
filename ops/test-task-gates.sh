@@ -366,91 +366,93 @@ check "next_task discards fabro-code stdout" "0" "$(grep -c 'MAP LEAKED' <<<"$OU
 check "next_task still one routing object" "1" "$(grep -c '^{.*}$' <<<"$OUT")"
 
 # ---------------------------------------------------------------------------
-# prep code-index fragment (docs/code-context C4 + task 04) -- the two lines prep
-# adds after .fabro/setup.sh. The whole prep script can't be run here (setup.sh
-# doesn't exist in the fixture), and even if it did, whatever it does is not what
-# this test is about; the fragment compiles additive and is safe under `set -e` by
-# the `command -v` guard alone.
+# Code-index entry fragments (docs/code-context C4, tasks 04 and 05)
+# ---------------------------------------------------------------------------
+# backlog `prep` cannot run whole here (it runs the target repo's setup.sh), so its
+# two index lines are pulled out of the graph's own `prep` script -- never retyped --
+# and run under `set -e`, which is how prep runs them. The other three entry nodes
+# run WHOLE, from their own graphs, in a real git repo with `gh` stubbed:
+# pr-review `claim` (a routing node, so stdout must stay exactly one routing
+# object), arch-review `prep` (set -e, stdout must stay `ready`) and issue-triage
+# `acquire` (no set -e, no stdout). Each runs twice with a `fabro-code` that
+# prints to stdout, and once with no `fabro-code` at all -- an image built before
+# task 02.
 # ---------------------------------------------------------------------------
 echo ""
-echo "prep code-index fragment"
-T="$WORK/prepidx"; mkdir -p "$T"
-PATH="$ORIG_PATH"   # restores real git; the persisting PATH carries the next_task git stub
-git -C "$T" init -q . 2>/dev/null || true   # give the exclude line a real .git/info/exclude
-# The two lines prep adds after .fabro/setup.sh, held to the same /tmp/fabro rebase
-# the harness applies to every staged script.
-cat > "$T/prep_frag.sh" <<'FRAG'
-grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
-if command -v fabro-code >/dev/null; then fabro-code index; fabro-code map || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi
-FRAG
-FRAG=$(sed "s#/tmp/fabro/code_index#$T/code_index#" "$T/prep_frag.sh")
+echo "code-index entry fragments"
+PATH="$ORIG_PATH"   # real git; the task-queue section left an `exit 0` git stub on PATH
 
-# 1. Run it twice (with a fabro-code on PATH) and the exclude line stays singular.
-mkdir -p "$T/bin"
-cat > "$T/bin/fabro-code" <<'STUB'
+# The tools a node needs, minus fabro-code, for the "old image" runs. On the Mac jq
+# is under /opt/homebrew, and in the images fabro-code sits next to gh in
+# /usr/local/bin, so neither PATH can simply be trimmed.
+NOFC_BIN="$WORK/nofc-bin"; mkdir -p "$NOFC_BIN"
+for tool in jq git; do ln -sf "$(command -v "$tool")" "$NOFC_BIN/$tool"; done
+NOFC_PATH="$NOFC_BIN:/usr/bin:/bin"
+
+entry_repo() {   # $1 = dir: a real repo with one commit and a stub bin/
+    rm -rf "$1"; mkdir -p "$1/repo" "$1/bin" "$1/sb"
+    git -C "$1/repo" init -q -b main .
+    git -C "$1/repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    cat > "$1/bin/gh" <<'GH'
 #!/bin/sh
-mkdir -p /tmp/fabro
-case "${1:-}" in index) printf 'ok\n' > "$FABRO_TEST_STATE";; esac
+case "$1 $2" in
+  "pr view")     echo '{"number":7,"title":"t","body":"b","url":"https://x/pull/7","state":"OPEN","isCrossRepository":false,"headRefName":"feat","baseRefName":"main","headRefOid":"abc","labels":[],"closingIssuesReferences":[]}' ;;
+  "issue list")  case "$*" in *needs-triage*) echo '[{"number":5,"title":"x"}]' ;; *) echo '[]' ;; esac ;;
+esac
 exit 0
-STUB
-chmod +x "$T/bin/fabro-code"
-( cd "$T" && PATH="$T/bin:$PATH" FABRO_TEST_STATE="$T/code_index" sh -c "$FRAG" )
-( cd "$T" && PATH="$T/bin:$PATH" FABRO_TEST_STATE="$T/code_index" sh -c "$FRAG" )
-check "prep idx exclude line added once" "1" \
-    "$(grep -c '^\.codegraph/$' "$T/.git/info/exclude")"
-check "prep idx index ran (code_index ok)" "ok" \
-    "$(cat "$T/code_index" 2>/dev/null || echo missing)"
+GH
+    cat > "$1/bin/fabro-code" <<'FC'
+#!/bin/sh
+echo 'FABRO-CODE LEAKED TO STDOUT'
+case "$1" in index) printf 'ok\n' > "$FABRO_TEST_STATE" ;; esac
+exit 0
+FC
+    chmod +x "$1/bin/gh" "$1/bin/fabro-code"
+    ln -sf "$1/bin/gh" "$NOFC_BIN/gh"
+}
 
-# 2. With NO fabro-code on PATH, under `set -e`, the fragment still exits 0 and
-#    records the absence in code_index without failing the run.
-rm -f "$T/code_index"
-( cd "$T" && env PATH=/usr/bin:/bin:/usr/sbin:/sbin sh -c "set -e; $FRAG" )
-EC=$?
-check "prep idx no fabro-code exits 0" "0" "$EC"
-check "prep idx records not-in-image" "1" \
-    "$(grep -c 'failed: fabro-code not in image' "$T/code_index")"
+# backlog prep: the two lines, from the graph.
+ET="$WORK/entry-backlog-prep"; entry_repo "$ET"
+extract prep | sed "s#/tmp/fabro#$ET/sb#g" \
+    | grep -e "grep -qx '.codegraph/'" -e 'command -v fabro-code' > "$ET/frag.sh"
+check "backlog prep carries both index lines" "2" "$(grep -c . "$ET/frag.sh")"
+for i in 1 2; do
+    ( cd "$ET/repo" && PATH="$ET/bin:$PATH" FABRO_TEST_STATE="$ET/sb/code_index" sh -c "set -e; $(cat "$ET/frag.sh")" ) >/dev/null
+done
+check "backlog prep exclude line added once" "1" "$(grep -cx '.codegraph/' "$ET/repo/.git/info/exclude")"
+check "backlog prep index ran" "ok" "$(cat "$ET/sb/code_index" 2>/dev/null || echo missing)"
+rm -f "$ET/sb/code_index"
+( cd "$ET/repo" && PATH="$NOFC_PATH" sh -c "set -e; $(cat "$ET/frag.sh")" ); EC=$?
+check "backlog prep with no fabro-code exits 0" "0" "$EC"
+check "backlog prep records not-in-image" "failed: fabro-code not in image" "$(cat "$ET/sb/code_index" 2>/dev/null)"
 
-# ---------------------------------------------------------------------------
-# Other entry nodes carry the same code-index fragment (docs/code-context task 05):
-#   pr-review claim, arch-review prep, issue-triage acquire. Each fragment is
-#   extracted from its OWN staged node script (not hard-coded), so this proves the
-#   guard is really in each graph. Two guarantees matter: it never leaks to stdout
-#   (claim is a routing node whose stdout is scanned for context_updates), and a
-#   missing fabro-code -- an image built before task 02 -- does not stop the node.
-# ---------------------------------------------------------------------------
-echo ""
-echo "entry-node index fragment (task 05)"
-for entry in "claim:$PR" "prep:$ARCH" "acquire:$INTRIAGE"; do
-    NODE=${entry%%:*}; EGRAPH=${entry#*:}
-    ET="$WORK/entry-$NODE"; mkdir -p "$ET" "$ET/bin"
-    extract_from "$EGRAPH" "$NODE" | sed "s#/tmp/fabro#$ET#g" > "$ET/$NODE.sh"
+# The three whole nodes. Expected stdout: claim one routing object, prep `ready`,
+# acquire nothing.
+for entry in "claim|$PR|{\"context_updates\":{\"base_ref\":\"main\"}}" \
+             "prep|$ARCH|ready" \
+             "acquire|$INTRIAGE|"; do
+    NODE=${entry%%|*}; rest=${entry#*|}; EGRAPH=${rest%%|*}; WANT=${rest#*|}
+    ET="$WORK/entry-$NODE"; entry_repo "$ET"
+    echo 7 > "$ET/sb/pr_number"
+    extract_from "$EGRAPH" "$NODE" | sed "s#/tmp/fabro#$ET/sb#g" > "$ET/$NODE.sh"
     if ! sh -n "$ET/$NODE.sh" 2>"$ET/syntax"; then
         FAIL=$((FAIL + 1)); printf '  FAIL %s entry script not valid POSIX sh\n' "$NODE"
         sed 's/^/       /' "$ET/syntax"
     fi
-    check "$NODE carries the fabro-code guard" "1" "$(grep -c 'command -v fabro-code' "$ET/$NODE.sh")"
-    # The if-fragment in isolation. The node's own line redirects fabro-code's output
-    # to /dev/null, so even a fabro-code that prints to stdout must not leak.
-    grep -F "if command -v fabro-code" "$ET/$NODE.sh" > "$ET/frag.sh"
-    cat > "$ET/bin/fabro-code" <<'FRAGSTUB'
-#!/bin/sh
-echo 'FRAGMENT LEAKED TO STDOUT'
-[ -n "${FABRO_TEST_STATE:-}" ] && printf 'ok\n' > "$FABRO_TEST_STATE"
-exit 0
-FRAGSTUB
-    chmod +x "$ET/bin/fabro-code"
-    # With fabro-code on PATH (prints to stdout): the node's stdout stays clean and
-    # the index step ran.
-    FRAGOUT=$( ( cd "$ET" && PATH="$ET/bin:$PATH" FABRO_TEST_STATE="$ET/code_index" sh -c "$(cat "$ET/frag.sh")" ) 2>&1 )
-    check "$NODE fragment no stdout leak" "0" "$(grep -c 'FRAGMENT LEAKED' <<<"$FRAGOUT")"
-    check "$NODE fragment index ran" "ok" "$(cat "$ET/code_index" 2>/dev/null || echo missing)"
-    # With no fabro-code on PATH: the node continues, recording the absence.
-    rm -f "$ET/code_index"
-    ( cd "$ET" && env PATH=/usr/bin:/bin:/usr/sbin:/sbin sh -c "$(cat "$ET/frag.sh")" )
-    EC=$?
-    check "$NODE no fabro-code exits 0" "0" "$EC"
-    check "$NODE no fabro-code records it" "1" "$(grep -c 'failed: fabro-code not in image' "$ET/code_index" 2>/dev/null || echo 0)"
+    for i in 1 2; do
+        OUT=$( cd "$ET/repo" && PATH="$ET/bin:$PATH" FABRO_TEST_STATE="$ET/sb/code_index" sh "$ET/$NODE.sh" ); EC=$?
+    done
+    check "$NODE exits 0 with fabro-code" "0" "$EC"
+    check "$NODE stdout unchanged with fabro-code" "$WANT" "$OUT"
+    check "$NODE index ran" "ok" "$(cat "$ET/sb/code_index" 2>/dev/null || echo missing)"
+    check "$NODE exclude line added once" "1" "$(grep -cx '.codegraph/' "$ET/repo/.git/info/exclude")"
+    rm -f "$ET/sb/code_index"
+    OUT=$( cd "$ET/repo" && PATH="$NOFC_PATH" sh "$ET/$NODE.sh" ); EC=$?
+    check "$NODE exits 0 with no fabro-code" "0" "$EC"
+    check "$NODE stdout unchanged with no fabro-code" "$WANT" "$OUT"
+    check "$NODE records not-in-image" "failed: fabro-code not in image" "$(cat "$ET/sb/code_index" 2>/dev/null)"
 done
+check "acquire still picks its issue" "5" "$(cat "$WORK/entry-acquire/sb/issue_number" 2>/dev/null)"
 
 # ---------------------------------------------------------------------------
 # extra_gate — follow-up tasks join the same queue under the same size budget
@@ -2492,8 +2494,13 @@ check "render: invalid config explained"    "1" "$(grep -c 'hygiene.json is not 
 #   mod_a.py      def get_thing()  +  class Config: FLAG
 #   mod_b.py      calls get_thing() and reads Config.FLAG
 #   file1.py / file2.py   two different functions both named helper
-#   test_mod_a.py imports mod_a  (so `tests mod_a.py` finds it)
-#   app.ts        a class with a `get` method (cross-language probe)
+#   tests/test_mod_a.py and test_root.py   both import mod_a (`tests` finds both)
+#   mod_u.py      a multi-line signature holding `|` (the map rendered it as garbage)
+#   mod_many.py   25 callers of get_thing (codegraph's callers stopped at 20)
+#   app.ts        a class with a `get` method, and a call to `get_thing` that must
+#                 not count as a caller of the Python function (cross-language)
+#   hooks.ts      `export const useThing = () => ...` (TS declares most functions
+#                 this way) and a local const inside a function
 #
 # Rebase the wrapper's /tmp/fabro state onto $T so the section is hermetic.
 # ---------------------------------------------------------------------------
@@ -2541,21 +2548,51 @@ def helper(a, b):
     return a + b
 EOF
         mkdir -p "$T/up/tests"
-        # The test file lives under tests/ so codegraph's `affected --filter`
-        # (docs/code-context C2 `tests`) detects it: codegraph's default test
-        # patterns miss a relative python path at the repo root.
         cat > "$T/up/tests/test_mod_a.py" <<'EOF'
 from mod_a import get_thing
 
 def test_get_thing():
     assert get_thing() == "on"
 EOF
+        cat > "$T/up/test_root.py" <<'EOF'
+import mod_a
+
+def test_root():
+    assert mod_a.get_thing() == "on"
+EOF
+        cat > "$T/up/mod_u.py" <<'EOF'
+from mod_a import get_thing
+
+def union_thing(
+    a: int | None,
+    b: str | None = None,
+) -> int | None:
+    return get_thing() and a
+EOF
+        {
+            echo 'from mod_a import get_thing'
+            i=1
+            while [ "$i" -le 25 ]; do
+                printf '\ndef many_%s():\n    return get_thing()\n' "$i"
+                i=$((i + 1))
+            done
+        } > "$T/up/mod_many.py"
         cat > "$T/up/frontend/app.ts" <<'EOF'
 export class App {
   get(key: string): string {
     return key;
   }
 }
+
+export function useIt(): unknown {
+  return get_thing();
+}
+EOF
+        cat > "$T/up/frontend/hooks.ts" <<'EOF'
+export const useThing = (key: string): string => {
+  const inner = key.trim();
+  return inner;
+};
 EOF
         git -C "$T/up" add -A
         git -C "$T/up" commit -qm init
@@ -2624,6 +2661,60 @@ EOF
     # 9. C4: the index stays out of every commit (`git add -A` adds nothing).
     ( cd "$T/wt" && git add -A >/dev/null 2>&1 && git status --porcelain ) > "$T/porcelain"
     check "fc: .codegraph not in porcelain" "0" "$(grep -c '\.codegraph' "$T/porcelain")"
+
+    # 5b. No 20-row limit, and a same-name call from another language is not a caller.
+    OUT=$(fc_run callers get_thing)
+    check "fc: callers lists all 25 in mod_many" "25" "$(grep -c 'mod_many.py' <<<"$OUT")"
+    check "fc: callers nothing cut"          "0" "$(grep -c 'lines cut' <<<"$OUT")"
+    check "fc: callers skips the TS call"    "0" "$(grep -c 'app.ts' <<<"$OUT")"
+
+    # 5c. The TS probes: a method named `get`, and a top-level const function
+    #     resolve; a local const inside a function does not.
+    OUT=$(fc_run def get); RC=$?
+    check "fc: def get rc=0"                 "0" "$RC"
+    check "fc: def get is the TS method"     "1" "$(grep -c 'frontend/app.ts' <<<"$OUT")"
+    OUT=$(fc_run def useThing); RC=$?
+    check "fc: def useThing (TS const) rc=0" "0" "$RC"
+    check "fc: def useThing in hooks.ts"     "1" "$(grep -c 'frontend/hooks.ts' <<<"$OUT")"
+    OUT=$(fc_run def inner); RC=$?
+    check "fc: def inner (local) rc=1"       "1" "$RC"
+
+    # 5d. show resolves exactly and prints the source and the call trail.
+    OUT=$(fc_run show get_thing); RC=$?
+    check "fc: show get_thing rc=0"          "0" "$RC"
+    check "fc: show prints the source"       "1" "$(grep -c '^def get_thing' <<<"$OUT")"
+    check "fc: show prints called-by"        "1" "$(grep -c '^## called by' <<<"$OUT")"
+    OUT=$(fc_run show mod_a.py:5); RC=$?
+    check "fc: show path:line rc=0"          "0" "$RC"
+    check "fc: show path:line is get_thing"  "1" "$(grep -c '^# mod_a.py:4-5  function  get_thing' <<<"$OUT")"
+
+    # 7b. tests: a root-level test file is found, and nothing outside the imports is.
+    OUT=$(fc_run tests mod_a.py)
+    check "fc: tests lists test_root"        "1" "$(grep -c '^test_root.py$' <<<"$OUT")"
+    check "fc: tests lists no TS file"       "0" "$(grep -c 'frontend/' <<<"$OUT")"
+
+    # 8b. The map keeps a multi-line signature holding `|` on one line, and leaves
+    #     test files out of the ranking.
+    fc_run map >/dev/null
+    check "fc: map one line for union_thing" "1" "$(grep -c 'union_thing' "$FABRO_CODE_MAP")"
+    check "fc: map keeps the | in the sig"   "1" "$(grep -cF 'union_thing(a: int | None, b: str | None = None) -> int | None' "$FABRO_CODE_MAP")"
+    check "fc: map every line is well formed" "0" "$(grep -cvE '^(# Repo map [(]|## |- |$)' "$FABRO_CODE_MAP")"
+    check "fc: map leaves test files out"    "0" "$(grep -cE '^## (tests/|test_)' "$FABRO_CODE_MAP")"
+    check "fc: map keeps mod_a"              "1" "$(grep -c '^## mod_a.py$' "$FABRO_CODE_MAP")"
+
+    # 9b. Usage errors are 64, never 2 ("no index").
+    fc_run def >/dev/null; RC=$?
+    check "fc: usage rc=64"                  "64" "$RC"
+
+    # 9c. A database removed under a live `ok` state (a `git clean -x`) fails closed
+    #     with exit 2, never prints junk as an answer.
+    mv "$T/wt/.codegraph" "$T/wt/.cg-away"
+    OUT=$(fc_run def get_thing); RC=$?
+    check "fc: deleted db rc=2"              "2" "$RC"
+    check "fc: deleted db says no index"     "1" "$(grep -c 'no code index; use grep' <<<"$OUT")"
+    OUT=$(fc_run callers get_thing); RC=$?
+    check "fc: deleted db callers rc=2"      "2" "$RC"
+    mv "$T/wt/.cg-away" "$T/wt/.codegraph"
 
     # 10. A failed index state fails every query verb closed (exit 2).
     fc_run index

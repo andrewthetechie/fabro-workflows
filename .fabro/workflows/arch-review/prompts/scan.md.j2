@@ -8,8 +8,8 @@ files the strongest candidates as GitHub issues. Nobody reads your chat output.
 ## Inputs
 
 - `/tmp/fabro/repomap.md` — a ranked outline of this checkout (the most-referenced
-  files and their top-level symbols). Read it before you search. It can be missing;
-  if it is, continue without it. It is the direct input to your job: a file with many
+  files and their top-level symbols). Read it before you search. It can be missing.
+  If it is, continue without it. It is the direct input to your job: a file with many
   inbound edges and a thin interface is the shallow-module signal you are looking for.
 - The repository checkout in the current working directory, read-only.
 - `/tmp/fabro/arch/hotspots.txt`: the files changed most often in the last 90 days,
@@ -30,14 +30,15 @@ Use `fabro-code` through the shell before `grep`, `glob` or paging a file with
 - `fabro-code callers NAME` / `callees NAME` / `impact NAME`: the call and import graph.
 - `fabro-code tests PATH…`: test files that exercise these files.
 
+Its answers include your own edits. It knows calls and imports only, not attribute
+reads, string keys or config. It matches a call by name, so a caller it lists can be
+a call to a different function with the same name. Before you conclude that
+something is unused, or before you delete or rename it, confirm with
+`grep -rnw NAME`. If it prints `no code index`, use grep.
+
 Size a deepening candidate's blast radius with `fabro-code impact NAME` before you
 propose it: a candidate whose change reaches a few symbols is a safer refactor than
 one that reaches the whole tree.
-
-Its answers include your own edits. It knows calls and imports only, not attribute
-reads, string keys or config. So before you conclude that something is unused, or
-before you delete or rename it, confirm with `grep -rnw NAME`. If it prints
-`no code index`, use grep.
 
 ## Boundaries
 

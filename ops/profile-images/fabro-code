@@ -3,38 +3,76 @@
 # Installed at /usr/local/bin/fabro-code in every profile image. POSIX sh + jq + sqlite3.
 #
 # Verbs: index, def, show, callers, callees, impact, tests, map.
-# Exit codes: 0 = an answer; 1 = nothing found / ambiguous; 2 = no index.
+# Exit codes: 0 = an answer; 1 = nothing found / ambiguous; 2 = no index; 64 = usage.
 #
-# The wrapper exists because codegraph resolves names fuzzily (wrong answer) and only
-# knows call/import edges (under-counts references). This CLI pins both: names resolve
-# exactly, and every reference answer carries the "confirm with grep" footer (ADR 0014 D1).
+# codegraph builds and syncs the index; every answer is read straight out of
+# .codegraph/codegraph.db with sqlite3. codegraph's own query verbs are never used,
+# because each one re-resolves a bare name fuzzily (`node LIVE_SCORING_ENABLED`
+# returned an unrelated method) and walks every edge it has, including guesses.
+# Here a name resolves exactly to one node id, and every graph answer starts from
+# that id (ADR 0014 D1).
+#
+# Trusted edges. codegraph records how it resolved each edge in
+# `metadata.resolvedBy`. On womens-fantasy-sports 633 `fuzzy` (confidence 0.3)
+# call edges run from Python `select(...)` to the TSX `Select` component, and
+# jelly-swipe's TSX tests "call" a Python `render` method by exact name. So an
+# edge counts only when it is not `fuzzy`, and its two ends are in the same
+# language family (ts/tsx/js/jsx are one) unless it was resolved as `framework`
+# (the Tauri TS -> Rust bindings in writers-app). Same-name calls inside one
+# language still get through, and the footer says so.
 
 set -u
+set -f
 
 CODEGRAPH="${CODEGRAPH:-codegraph}"
 DB=".codegraph/codegraph.db"
 STATE="${FABRO_CODE_STATE:-/tmp/fabro/code_index}"
 MAP="${FABRO_CODE_MAP:-/tmp/fabro/repomap.md}"
 CAP=200
+MAP_BYTES=16000
 KNOWN_SCHEMA=9
-FOOTER='graph edges are calls and imports only; confirm with grep -rnw before deleting or renaming'
+FOOTER='graph edges are calls and imports only, and a call is matched by name, so a same-name call on another type can appear; confirm with grep -rnw before deleting or renaming'
 
-# Value-bearing / structural kinds that are NOT resolvable definitions. The index does
-# not model attribute reads, so `def FLAG` or `show Settings.X` must honestly say "not
-# indexed" rather than hand back a node codegraph could only guess at (ADR 0014 D1,
-# the 1-of-18 settings field). Remaining kinds: function, method, class, struct,
-# interface, trait, protocol, enum, type_alias, namespace, module, union, component.
-ATTR_KINDS='["field","property","parameter","enum_member","variable","constant","import","export","file"]'
+# Kinds that are not resolvable definitions: members, parameters, import and export
+# statements and files. `variable` and `constant` count only at the top level of a
+# file, which is how TS declares most functions, components and hooks
+# (`export const useThing = () => ...`); inside a class or a function they are
+# members or locals.
+NON_DEF_KINDS="'field','property','parameter','enum_member','import','export','file'"
+
+# A test file, by path (ERE). pytest's test_*.py / *_test.py, jest/vitest's
+# *.test.* / *.spec.* and __tests__/, go's *_test.go, and cargo's tests/*.rs.
+TEST_RE='(^|/)(test_[^/]*[.]py|[^/]*_test[.]py|[^/]*[.](test|spec)[.][cm]?[jt]sx?|[^/]*_test[.]go)$|(^|/)__tests__/|(^|/)tests/[^/]*[.]rs$'
+
+# Test support the map leaves out as well: seeds, helpers and fixtures are
+# heavily referenced and top every ranking (lawncare-saas tests/seeds.py,
+# jelly-swipe frontend/test/fixtures.ts) without being the code a task changes.
+MAP_SKIP_RE='(^|/)(tests?|__tests__|__mocks__|fixtures)/|(^|/)conftest[.]py$'
 
 export NO_COLOR=1
 
-no_index() { echo 'no code index; use grep' >&2; exit 2; }
+say_no_index() { echo 'no code index; use grep' >&2; exit 2; }
 
-have_index() { [ -f "$STATE" ] && [ "$(cat "$STATE")" = "ok" ]; }
+# The state file says `ok`, the database exists, and its schema is the one this
+# script was written against. Called after sync, so a database removed under a
+# live state file (a `git clean -x`) is caught here and never read as "nothing
+# found".
+require_index() {
+  [ -f "$STATE" ] && [ "$(cat "$STATE" 2>/dev/null)" = "ok" ] || say_no_index
+  "$CODEGRAPH" sync --quiet </dev/null >/dev/null 2>&1 || true
+  [ -f "$DB" ] || say_no_index
+  v=$(sqlite3 -readonly "$DB" 'SELECT MAX(version) FROM schema_versions;' 2>/dev/null)
+  [ "$v" = "$KNOWN_SCHEMA" ] || { echo "unknown codegraph schema ${v:-none}; use grep" >&2; exit 2; }
+}
 
-# Every query verb syncs first so the answer covers the agent's own uncommitted edits
-# (C2 rule 1). Never fails the query.
-sync_first() { "$CODEGRAPH" sync --quiet >/dev/null 2>&1 || true; }
+# sqlite3 -json, always a JSON array ([] for no rows). Exits 2 on a query error,
+# so a broken index never looks like an empty answer.
+q() {
+  out=$(sqlite3 -readonly -json "$DB" "$1" 2>&1) || { echo "code index query failed ($out); use grep" >&2; exit 2; }
+  printf '%s' "${out:-[]}"
+}
+
+sq() { printf '%s' "$1" | sed "s/'/''/g"; }
 
 # Cap stdin at CAP lines; the last line says how many were cut (C2 rule 5).
 cap_out() {
@@ -50,137 +88,147 @@ cap_out() {
   rm -f "$tmp"
 }
 
-# JSON array of exact-name matches, excluding attribute kinds.
-exact_matches_json() {
-  "$CODEGRAPH" query "$1" --json --limit 50 2>/dev/null \
-    | jq -c --arg n "$1" --argjson a "$ATTR_KINDS" \
-        '[.[] | select(.node.name == $n) | select((.node.kind | IN($a[])) | not)]'
-}
+FAM_S="CASE WHEN s.language IN ('typescript','tsx','javascript','jsx') THEN 'js' ELSE s.language END"
+FAM_T="CASE WHEN t.language IN ('typescript','tsx','javascript','jsx') THEN 'js' ELSE t.language END"
+RB="(CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '\$.resolvedBy') END)"
+TRUST="IFNULL($RB, '') <> 'fuzzy' AND (($FAM_S) = ($FAM_T) OR $RB = 'framework')"
 
-# Resolve a name to exactly one node, or fail per C2 rule 2.
-# On success exports: NODE_FILE, NODE_LINE, NODE_END, NODE_KIND, NODE_NAME, NODE_SIG.
-# Sets NODE_COUNT=0 (not found) / >1 (ambiguous) and prints the diagnostic itself.
+# jq: one row -> "path:line  kind  name[  signature]" on one line.
+ROW_JQ='def one: gsub("\\s+"; " ") | gsub("[(] "; "(") | gsub(",? [)]"; ")") | if length > 160 then .[0:157] + "..." else . end;
+  "\(.file_path):\(.line)  \(.kind)  \(.name)" + (if (.signature // "") != "" then "  " + (.signature | one) else "" end)'
+
+# Exact resolution (C2 rule 2). Sets NODE (a JSON object) on exactly one match;
+# prints the diagnostic and returns 1 on none or several.
 resolve_name() {
-  name=$1
-  NODE_COUNT=0
-  matches=$(exact_matches_json "$name")
-  NODE_COUNT=$(printf '%s' "$matches" | jq 'length')
-  if [ "$NODE_COUNT" -eq 0 ]; then
-    echo "no symbol named $name in the index (fields and attributes are not indexed); use grep -rnw"
+  n=$(sq "$1")
+  rows=$(q "SELECT n.id, n.kind, n.name, n.file_path, n.start_line AS line, n.end_line, n.signature
+    FROM nodes n
+    WHERE n.name = '$n' AND n.kind NOT IN ($NON_DEF_KINDS)
+      AND (n.kind NOT IN ('variable','constant') OR EXISTS (
+        SELECT 1 FROM edges c JOIN nodes p ON p.id = c.source
+        WHERE c.target = n.id AND c.kind = 'contains' AND p.kind = 'file'))
+    ORDER BY n.file_path, n.start_line;") || exit 2
+  count=$(printf '%s' "$rows" | jq 'length')
+  if [ "$count" -eq 0 ]; then
+    echo "no symbol named $1 in the index (fields and attributes are not indexed); use grep -rnw"
     return 1
   fi
-  if [ "$NODE_COUNT" -gt 1 ]; then
-    printf '%s' "$matches" | jq -r '.[] | "\(.node.filePath):\(.node.startLine)  \(.node.kind)  \(.node.name)"'
+  if [ "$count" -gt 1 ]; then
+    printf '%s' "$rows" | jq -r '.[] | "\(.file_path):\(.line)  \(.kind)  \(.name)"' | cap_out
     return 1
   fi
-  NODE_FILE=$(printf '%s' "$matches" | jq -r '.[0].node.filePath')
-  NODE_LINE=$(printf '%s' "$matches" | jq -r '.[0].node.startLine')
-  NODE_END=$(printf '%s' "$matches" | jq -r '.[0].node.endLine')
-  NODE_KIND=$(printf '%s' "$matches" | jq -r '.[0].node.kind')
-  NODE_NAME=$(printf '%s' "$matches" | jq -r '.[0].node.name')
-  NODE_SIG=$(printf '%s' "$matches" | jq -r '.[0].node.signature // ""')
+  NODE=$(printf '%s' "$rows" | jq -c '.[0]')
   return 0
 }
 
-one_sig() { [ -z "$NODE_SIG" ] && return 0; printf '  %s' "$NODE_SIG"; }
+# path:line -> the narrowest symbol whose range holds the line.
+resolve_location() {
+  path=${1#./}; line=$2
+  rows=$(q "SELECT id, kind, name, file_path, start_line AS line, end_line, signature FROM nodes
+    WHERE file_path = '$(sq "$path")' AND kind <> 'file' AND start_line <= $line AND end_line >= $line
+    ORDER BY (end_line - start_line) ASC, start_line ASC LIMIT 1;") || exit 2
+  [ "$(printf '%s' "$rows" | jq 'length')" -eq 1 ] || { echo "no symbol at $1"; return 1; }
+  NODE=$(printf '%s' "$rows" | jq -c '.[0]')
+}
+
+node_field() { printf '%s' "$NODE" | jq -r ".$1 // \"\""; }
+
+# Callers of a node id: the call site (edge line) and the enclosing symbol. A
+# module-level caller is its file node, which is where TS test bodies land.
+callers_rows() {
+  q "SELECT DISTINCT s.file_path, IFNULL(e.line, s.start_line) AS line, s.kind, s.name
+    FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+    WHERE e.target = '$(sq "$1")' AND e.kind IN ('calls','instantiates') AND $TRUST
+    ORDER BY s.file_path, line;"
+}
+
+callees_rows() {
+  q "SELECT DISTINCT t.file_path, t.start_line AS line, t.kind, t.name
+    FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+    WHERE e.source = '$(sq "$1")' AND e.kind IN ('calls','instantiates') AND $TRUST
+    ORDER BY t.file_path, line;"
+}
+
+print_rows() { printf '%s' "$1" | jq -r '.[] | "\(.file_path):\(.line)  \(.kind)  \(.name)"'; }
 
 def_() {
-  have_index || no_index
-  sync_first
+  require_index
   resolve_name "$1" || exit 1
-  printf '%s:%s  %s  %s%s\n' "$NODE_FILE" "$NODE_LINE" "$NODE_KIND" "$NODE_NAME" "$(one_sig)"
+  printf '%s' "$NODE" | jq -r "$ROW_JQ"
   exit 0
 }
 
-# path:line -> sqlite lookup, narrowest containing symbol. Echoes "id|file|start|end|kind|name".
-resolve_location() {
-  path=$1; line=$2
-  p=$(printf '%s' "$path" | sed "s/'/''/g")
-  sqlite3 -readonly "$DB" "SELECT id,file_path,start_line,end_line,kind,name FROM nodes \
-    WHERE file_path='$p' AND start_line<=$line AND end_line>=$line \
-    ORDER BY (end_line-start_line) ASC, start_line ASC LIMIT 1;" 2>/dev/null || return 1
-}
-
 show_() {
-  have_index || no_index
-  sync_first
+  require_index
   arg=$1
-  # path:line form -> resolve from the DB, print the exact source range.
+  line=
   case "$arg" in
-    *:*)
-      line=${arg##*:}
-      rest=${arg%:*}
-      case "$line" in
-        ''|*[!0-9]*) line= ;;
-      esac
-      if [ -n "$line" ]; then
-        row=$(resolve_location "$rest" "$line")
-        if [ -n "$row" ]; then
-          # row = id|file|start|end|kind|name
-          file=$(printf '%s' "$row" | cut -d'|' -f2)
-          start=$(printf '%s' "$row" | cut -d'|' -f3)
-          end=$(printf '%s' "$row" | cut -d'|' -f4)
-          kind=$(printf '%s' "$row" | cut -d'|' -f5)
-          name=$(printf '%s' "$row" | cut -d'|' -f6)
-          [ -f "$file" ] && { echo "# $file:$start-$end  $kind  $name"; sed -n "${start},${end}p" "$file" | cap_out; exit 0; }
-          echo "no source for $file" >&2
-          exit 1
-        fi
-        echo "no symbol at $arg" >&2
-        exit 1
-      fi
-      ;;
+    *:*) line=${arg##*:}; case "$line" in ''|*[!0-9]*) line= ;; esac ;;
   esac
-  # name form.
-  if ! resolve_name "$arg"; then exit 1; fi
-  out=$("$CODEGRAPH" node "$NODE_NAME" 2>/dev/null)
-  if printf '%s' "$out" | grep -Fq "$NODE_FILE:$NODE_LINE"; then
-    printf '%s\n' "$out" | cap_out
+  if [ -n "$line" ]; then
+    resolve_location "${arg%:*}" "$line" || exit 1
   else
-    # codegraph node re-resolves fuzzily and picked a different symbol: show the
-    # exact source range ourselves rather than a confidently-wrong answer (C2).
-    if [ -f "$NODE_FILE" ]; then
-      echo "# $NODE_FILE:$NODE_LINE-$NODE_END  $NODE_KIND  $NODE_NAME"
-      sed -n "${NODE_LINE},${NODE_END}p" "$NODE_FILE" | cap_out
-    else
-      echo "no source for $NODE_FILE" >&2
-      exit 1
-    fi
+    resolve_name "$arg" || exit 1
   fi
+  id=$(node_field id); file=$(node_field file_path)
+  start=$(node_field line); end=$(node_field end_line)
+  [ -f "$file" ] || { echo "no source for $file" >&2; exit 1; }
+  callees=$(callees_rows "$id") || exit 2
+  callers=$(callers_rows "$id") || exit 2
+  {
+    echo "# $file:$start-$end  $(node_field kind)  $(node_field name)"
+    sed -n "${start},${end}p" "$file" | head -n 150
+    [ $(( end - start + 1 )) -gt 150 ] && echo "(source cut at 150 lines; read_file $file from line $(( start + 150 )))"
+    echo "## calls"
+    print_rows "$callees" | head -n 15
+    echo "## called by"
+    print_rows "$callers" | head -n 15
+    nc=$(printf '%s' "$callers" | jq 'length')
+    [ "$nc" -gt 15 ] && echo "($(( nc - 15 )) more: fabro-code callers $(node_field name))"
+  } | cap_out
+  echo "$FOOTER"
   exit 0
 }
 
 ref_() {
-  verb=$1; name=$2; label=$3
-  have_index || no_index
-  sync_first
-  if ! resolve_name "$name"; then
-    exit 1
+  verb=$1; name=$2
+  require_index
+  resolve_name "$name" || exit 1
+  id=$(node_field id)
+  if [ "$verb" = callers ]; then rows=$(callers_rows "$id") || exit 2
+  else rows=$(callees_rows "$id") || exit 2
   fi
-  out=$("$CODEGRAPH" "$verb" "$name" --json 2>/dev/null)
-  c=$(printf '%s' "$out" | jq "[.$label[] | select(.kind != \"file\" and .kind != \"import\" and .kind != \"export\")] | length")
-  if [ "$c" -gt 0 ]; then
-    printf '%s' "$out" | jq -r ".$label[] | select(.kind != \"file\" and .kind != \"import\" and .kind != \"export\") | \"\(.filePath):\(.startLine)  \(.kind)  \(.name)\"" | sort -u | cap_out
+  if [ "$(printf '%s' "$rows" | jq 'length')" -gt 0 ]; then
+    print_rows "$rows" | cap_out
     rc=0
   else
-    echo "no $label of $name found"
+    echo "no $verb of $name found"
     rc=1
   fi
   echo "$FOOTER"
   exit $rc
 }
 
+# Everything that reaches the symbol within two trusted incoming edges.
 impact_() {
-  have_index || no_index
-  sync_first
+  require_index
   name=$1
-  if ! resolve_name "$name"; then
-    exit 1
-  fi
-  out=$("$CODEGRAPH" impact "$name" --json --depth 2 2>/dev/null)
-  c=$(printf '%s' "$out" | jq '[.affected[] | select(.kind != "file" and .kind != "import" and .kind != "export")] | length')
+  resolve_name "$name" || exit 1
+  id=$(sq "$(node_field id)")
+  rows=$(q "WITH RECURSIVE r(id, d) AS (
+      SELECT '$id', 0
+      UNION
+      SELECT e.source, r.d + 1 FROM r
+        JOIN edges e ON e.target = r.id
+        JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+      WHERE r.d < 2 AND e.kind IN ('calls','instantiates','references','extends','implements','imports') AND $TRUST)
+    SELECT DISTINCT n.file_path, n.start_line AS line, n.kind, n.name
+    FROM r JOIN nodes n ON n.id = r.id WHERE r.id <> '$id'
+    ORDER BY n.file_path, line;") || exit 2
+  c=$(printf '%s' "$rows" | jq 'length')
   if [ "$c" -gt 0 ]; then
-    printf '%s' "$out" | jq -r '.affected[] | select(.kind != "file" and .kind != "import" and .kind != "export") | "\(.filePath):\(.startLine)  \(.kind)  \(.name)"' | sort -u | cap_out
+    echo "$c symbols in $(printf '%s' "$rows" | jq '[.[].file_path] | unique | length') files reach $name within 2 edges:"
+    print_rows "$rows" | cap_out
     rc=0
   else
     echo "no affected symbols found for $name"
@@ -190,118 +238,116 @@ impact_() {
   exit $rc
 }
 
+# Test files that import the given files, directly or through up to 4 more
+# files (trusted `imports` edges only), picked out by TEST_RE.
 tests_() {
-  have_index || no_index
-  sync_first
-  [ "$#" -gt 0 ] || { echo 'usage: fabro-code tests <path>...' >&2; exit 1; }
-  out=$("$CODEGRAPH" affected "$@" --filter '**/*test*' --json 2>/dev/null)
-  c=$(printf '%s' "$out" | jq '.affectedTests | length')
-  if [ "$c" -gt 0 ]; then
-    printf '%s' "$out" | jq -r '.affectedTests[]' | cap_out
+  [ "$#" -gt 0 ] || { echo 'usage: fabro-code tests <path>...' >&2; exit 64; }
+  require_index
+  seeds=
+  for p in "$@"; do
+    p=${p#./}
+    seeds="$seeds${seeds:+ UNION }SELECT '$(sq "$p")', 0"
+  done
+  rows=$(q "WITH RECURSIVE f(path, d) AS (
+      $seeds
+      UNION
+      SELECT s.file_path, f.d + 1 FROM f
+        JOIN nodes t ON t.file_path = f.path
+        JOIN edges e ON e.target = t.id AND e.kind = 'imports'
+        JOIN nodes s ON s.id = e.source
+      WHERE f.d < 5 AND $TRUST)
+    SELECT path, MIN(d) AS d FROM f GROUP BY path ORDER BY d, path;") || exit 2
+  found=$(printf '%s' "$rows" | jq -r '.[].path' | grep -E "$TEST_RE")
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found" | cap_out
     exit 0
   fi
-  echo "no test files affected by: $*"
+  echo "no test files import: $*"
   exit 1
 }
 
 index_() {
-  mkdir -p /tmp/fabro
-  err=$(mktemp) || err=/tmp/fabro-code-index-err
-  if [ -d .codegraph ]; then
-    if timeout 120 "$CODEGRAPH" sync </dev/null >/dev/null 2>"$err"; then
-      echo ok > "$STATE"
-    else
-      last=$(tail -1 "$err" 2>/dev/null)
-      printf 'failed: %s\n' "${last:-codegraph sync error}" > "$STATE"
-    fi
+  mkdir -p "$(dirname "$STATE")"
+  err=$(mktemp 2>/dev/null) || err=/tmp/fabro-code-index-err
+  if [ -d .codegraph ]; then verb=sync; else verb=init; fi
+  if [ "$verb" = sync ]; then
+    timeout 120 "$CODEGRAPH" sync </dev/null >/dev/null 2>"$err"; rc=$?
   else
-    if timeout 120 "$CODEGRAPH" init --yes </dev/null >/dev/null 2>"$err"; then
-      echo ok > "$STATE"
-    else
-      last=$(tail -1 "$err" 2>/dev/null)
-      printf 'failed: %s\n' "${last:-codegraph init error}" > "$STATE"
-    fi
+    timeout 120 "$CODEGRAPH" init --yes </dev/null >/dev/null 2>"$err"; rc=$?
+  fi
+  if [ "$rc" -eq 0 ] && [ -f "$DB" ]; then
+    echo ok > "$STATE"
+  else
+    last=$(tail -1 "$err" 2>/dev/null)
+    [ "$rc" -eq 124 ] && last="codegraph $verb timed out after 120s"
+    printf 'failed: %s\n' "${last:-codegraph $verb error}" > "$STATE"
   fi
   rm -f "$err"
   exit 0
 }
 
+# The Repo map (C3). Files ranked by trusted edges into their symbols from OTHER
+# files, test files and test support (MAP_SKIP_RE) left out, then each file's top 8 top-level symbols by the same
+# count. One query; jq renders the blocks and stops before the byte cap. Rows come
+# back as JSON, so a signature may hold `|` or span lines (sqlite3's list mode
+# split both into garbage).
 map_() {
-  have_index || no_index
-  sync_first
-  [ -f "$DB" ] || { echo 'map: no index database' >&2; exit 2; }
-  v=$(sqlite3 -readonly "$DB" "SELECT MAX(version) FROM schema_versions;" 2>/dev/null)
-  [ "$v" = "$KNOWN_SCHEMA" ] || { echo "map: unknown codegraph schema $v" >&2; exit 2; }
+  require_index
   short_sha=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
-  nfiles=$(sqlite3 -readonly "$DB" "SELECT COUNT(*) FROM files WHERE generated=0;" 2>/dev/null)
-  header="# Repo map ($short_sha, $nfiles files indexed)"
-  capbytes=16000
-
-  ranked=$(sqlite3 -readonly "$DB" "
-    SELECT f.path, COUNT(e.id) AS w
-    FROM files f
-    JOIN nodes n ON n.file_path = f.path
-    LEFT JOIN edges e ON e.target = n.id AND e.kind IN ('calls','imports','references','extends','instantiates')
-    WHERE f.generated = 0
-    GROUP BY f.path
-    ORDER BY w DESC, f.path ASC;")
-
-  buf="$header"
-  oldIFS=$IFS; IFS='
-'
-  for row in $ranked; do
-    path=${row%%|*}
-    p=$(printf '%s' "$path" | sed "s/'/''/g")
-    syms=$(sqlite3 -readonly "$DB" "
-      SELECT n.kind, n.name, COALESCE(n.signature,'')
+  nfiles=$(q "SELECT COUNT(*) AS c FROM files WHERE generated = 0;") || exit 2
+  nfiles=$(printf '%s' "$nfiles" | jq '.[0].c')
+  rows=$(q "WITH w AS (
+      SELECT t.id, COUNT(e.id) AS inbound
+      FROM nodes t JOIN edges e ON e.target = t.id JOIN nodes s ON s.id = e.source
+      WHERE e.kind IN ('calls','imports','references','extends','instantiates')
+        AND s.file_path <> t.file_path AND $TRUST
+      GROUP BY t.id),
+    top AS (
+      SELECT n.file_path, n.kind, n.name, n.signature, IFNULL(w.inbound, 0) AS inbound,
+        ROW_NUMBER() OVER (PARTITION BY n.file_path ORDER BY IFNULL(w.inbound, 0) DESC, n.start_line) AS rn
       FROM nodes n
-      LEFT JOIN edges e ON e.target = n.id AND e.kind IN ('calls','imports','references','extends','instantiates')
-      WHERE n.file_path = '$p'
-        AND n.kind IN ('module','class','struct','interface','trait','protocol','function','enum','type_alias','namespace','union','component','constant')
-      GROUP BY n.id
-      ORDER BY COUNT(e.id) DESC, n.name ASC
-      LIMIT 8;")
-    block="## $path"
-    nmatch=0
-    for s in $syms; do
-      k=${s%%|*}; rest=${s#*|}; nm=${rest%%|*}; sig=${rest#*|}
-      # Render name + signature without duplicating the name when the signature
-      # already carries it (codegraph stores the full signature, e.g. "get_thing()").
-      line="- $k $nm"
-      if [ -n "$sig" ]; then
-        if [ "${sig#"$nm"}" != "$sig" ] || [ "$sig" = "$nm" ]; then
-          line="- $k $sig"
-        else
-          line="- $k $nm$sig"
-        fi
-      fi
-      block="$block
-$line"
-      nmatch=$((nmatch+1))
-    done
-    [ "$nmatch" -gt 0 ] || continue
-    cur=$(printf '%s' "$buf" | wc -c)
-    blen=$(printf '%s' "$block" | wc -c)
-    [ $((cur + 2 + blen + 1)) -gt "$capbytes" ] && break
-    buf="$buf
-
-$block"
-  done
-  IFS=$oldIFS
-  printf '%s\n' "$buf" > "$MAP"
+      JOIN edges c ON c.target = n.id AND c.kind = 'contains'
+      JOIN nodes p ON p.id = c.source AND p.kind = 'file'
+      JOIN files f ON f.path = n.file_path AND f.generated = 0
+      LEFT JOIN w ON w.id = n.id
+      WHERE n.kind NOT IN ($NON_DEF_KINDS)),
+    fw AS (SELECT file_path, SUM(inbound) AS weight FROM top GROUP BY file_path)
+    SELECT top.file_path, fw.weight, top.kind, top.name, top.signature
+    FROM top JOIN fw ON fw.file_path = top.file_path
+    WHERE top.rn <= 8
+    ORDER BY fw.weight DESC, top.file_path, top.rn;") || exit 2
+  printf '%s' "$rows" | jq -r --arg header "# Repo map ($short_sha, $nfiles files indexed)" \
+      --arg test_re "$TEST_RE" --arg skip_re "$MAP_SKIP_RE" --argjson cap "$MAP_BYTES" '
+    def one: gsub("\\s+"; " ") | gsub("[(] "; "(") | gsub(",? [)]"; ")") | if length > 100 then .[0:97] + "..." else . end;
+    def sym: .name as $n | (.signature // "" | one) as $s
+      | if $s == "" then "- \(.kind) \($n)"
+        elif ($s | startswith($n)) then "- \(.kind) \($s)"
+        elif ($s | test("^[(<]")) then "- \(.kind) \($n)\($s)"
+        else "- \(.kind) \($n) \($s)" end;
+    [ .[] | select((.file_path | test($test_re)) | not)
+          | select((.file_path | test($skip_re)) | not) ]
+    | reduce group_by(.file_path)[] as $g ([]; . + [{w: $g[0].weight, p: $g[0].file_path,
+        block: ("## \($g[0].file_path)\n" + ($g | map(sym) | join("\n")))}])
+    | sort_by(-.w, .p)
+    | reduce .[] as $b ({out: $header, done: false};
+        if .done then .
+        elif ((.out + "\n\n" + $b.block + "\n") | utf8bytelength) > $cap then .done = true
+        else .out += "\n\n" + $b.block end)
+    | .out' > "$MAP.tmp" || { rm -f "$MAP.tmp"; echo 'map: render failed' >&2; exit 2; }
+  mv "$MAP.tmp" "$MAP"
   exit 0
 }
 
+usage() { echo "usage: fabro-code $1" >&2; exit 64; }
+
 case "${1:-}" in
-  index)  index_ ;;
-  def)    [ "$#" -ge 2 ] || { echo 'usage: fabro-code def <name>' >&2; exit 2; }; def_ "$2" ;;
-  show)   [ "$#" -ge 2 ] || { echo 'usage: fabro-code show <name|path:line>' >&2; exit 2; }; show_ "$2" ;;
-  callers) [ "$#" -ge 2 ] || { echo 'usage: fabro-code callers <name>' >&2; exit 2; }; ref_ callers "$2" callers ;;
-  callees) [ "$#" -ge 2 ] || { echo 'usage: fabro-code callees <name>' >&2; exit 2; }; ref_ callees "$2" callees ;;
-  impact) [ "$#" -ge 2 ] || { echo 'usage: fabro-code impact <name>' >&2; exit 2; }; impact_ "$2" ;;
-  tests)  shift; tests_ "$@" ;;
-  map)    map_ ;;
-  *)
-    echo "usage: fabro-code {index|def|show|callers|callees|impact|tests|map} ..." >&2
-    exit 2 ;;
+  index)   index_ ;;
+  def)     [ "$#" -ge 2 ] || usage 'def <name>'; def_ "$2" ;;
+  show)    [ "$#" -ge 2 ] || usage 'show <name|path:line>'; show_ "$2" ;;
+  callers) [ "$#" -ge 2 ] || usage 'callers <name>'; ref_ callers "$2" ;;
+  callees) [ "$#" -ge 2 ] || usage 'callees <name>'; ref_ callees "$2" ;;
+  impact)  [ "$#" -ge 2 ] || usage 'impact <name>'; impact_ "$2" ;;
+  tests)   shift; tests_ "$@" ;;
+  map)     map_ ;;
+  *)       usage '{index|def|show|callers|callees|impact|tests|map} ...' ;;
 esac

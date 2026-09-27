@@ -37,3 +37,14 @@ does not ssh anywhere.
 
 Run against the 9 runs of 2026-09-25/26, it reproduces the ADR's headline numbers within
 ±1 point: 58% of calls, ~39% of tokens, 52% of turn time, and 53% `coder` re-reads.
+
+## Verified 2026-09-26
+
+Run against the nine `backlog` runs of 2026-09-25 22:31 to 2026-09-26 12:39 UTC
+(`01M3DB3SPA0S…` to `01M3EVMP4NFF…`), it prints 58% of calls, 39% of billed input, 52% of
+turn time, 53% `coder` re-reads and 30 `agent.loop.detected` (3.3 per run): the ADR's
+numbers exactly. Section 5b counted tool calls under a "visits" heading until the review
+fixed it; it now counts stage visits and says whether task 08's threshold is met.
+
+Run it from a directory other than `/tmp` on the host: a stray `/tmp/inspect.py` there
+shadows Python's `inspect` module and breaks `argparse`.

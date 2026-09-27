@@ -32,9 +32,10 @@ Use `fabro-code` through the shell before `grep`, `glob` or paging a file with
 - `fabro-code tests PATH…`: test files that exercise these files.
 
 Its answers include your own edits. It knows calls and imports only, not attribute
-reads, string keys or config. So before you conclude that something is unused, or
-before you delete or rename it, confirm with `grep -rnw NAME`. If it prints
-`no code index`, use grep.
+reads, string keys or config. It matches a call by name, so a caller it lists can be
+a call to a different function with the same name. Before you conclude that
+something is unused, or before you delete or rename it, confirm with
+`grep -rnw NAME`. If it prints `no code index`, use grep.
 
 ## Boundaries
 

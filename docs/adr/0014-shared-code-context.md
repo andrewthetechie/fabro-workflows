@@ -4,7 +4,9 @@
 `docs/factory-roadmap/B4-shared-code-context.md`. Operator decisions of 2026-09-26: codegraph
 accepted (D1). Build the index in every workflow that has a checkout (D3). The prompts adopt it in two phases (D6). The Task dossier is optional permanently (D4).
 Success is measured after 30 `improve` and 30 `coder` visits, against the targets in
-`docs/code-context/08`.
+`docs/code-context/08`. Tasks 01–07 applied 2026-09-26 (`17f2070`). A review the same day
+ran the wrapper against the four target repositories and found defect 3 below; the
+wrapper now reads the index database directly (D1). Task 08's measurement is pending.
 
 Every agent stage in a `backlog` run builds its own picture of the repository with `grep`,
 `glob` and `read_file`. Nothing it learns passes to the next stage. We add a **Code index**
@@ -59,7 +61,21 @@ codegraph has two defects that the benchmark found. The wrapper exists because o
    `fabro-code` answer about references ends with one line: the graph covers calls and
    imports only, so confirm with `grep -rnw` before you delete or rename. The index
    replaces grep for **orientation and definitions**. It does not replace grep as **proof
-   of absence**.
+   of absence**. (Its `callers` also stops at 20 results unless given `--limit`, so the
+   "20 of 50" above is at least partly that default.)
+3. **Its edges include guesses, and every query verb walks them.** Each edge records how
+   it was resolved (`metadata.resolvedBy`). On womens-fantasy-sports 633 `fuzzy`
+   (confidence 0.3) call edges run from Python `select(...)` to the TSX `Select`
+   component, so `codegraph callers Select` answered 792 callers where one is real, and
+   `affected` listed 152 backend Python tests for one frontend file. jelly-swipe's TSX
+   tests "call" a Python `render` method by exact name. So `fabro-code` never uses
+   codegraph's query verbs. It reads `.codegraph/codegraph.db` with `sqlite3`, resolves a
+   name to one node id, and starts every graph answer from that id. It counts an edge only
+   when it is not `fuzzy` and joins one language family (ts, tsx and js are one family),
+   unless it was resolved as `framework` (writers-app's TS types that mirror Rust structs).
+   A same-name call inside one language is still counted (`client.cookies.get` is a
+   "caller" of `TmdbCache.get`), and the footer says so. codegraph only builds and syncs the
+   index, and the gate suite pins the schema version the wrapper reads.
 
 We pin the version and the tarball's sha256 in the profile images. `codegraph upgrade`
 never runs. A version bump is a deliberate change: re-run the bench in

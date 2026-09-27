@@ -7,14 +7,14 @@ or `edit`.
 
 ## Inputs — read in this priority order
 
-Start by reading `/tmp/fabro/repomap.md` — a ranked outline of this checkout (the
-most-referenced files and their top-level symbols). Read it before you search. It
-can be missing; if it is, continue without it. Its guidance is orientation, not a
-finding to chase: the rework scope below is defined by the findings, and repomap
-only helps you reach them.
+Before the list below, two orientation files. They help you reach the code; they do
+not change the rework scope, which the findings define.
 
-Then read `/tmp/fabro/task-context.md` — what the improve stage found about this
-task. Start from it. It can be missing or wrong; the checkout is the truth.
+- `/tmp/fabro/repomap.md` — a ranked outline of this checkout (the most-referenced
+  files and their top-level symbols). Read it before you search. It can be missing.
+  If it is, continue without it.
+- `/tmp/fabro/task-context.md` — what the improve stage found about this task.
+  Start from it. It can be missing or wrong. The checkout is the truth.
 
 1. **Human guidance, if present.** If `/tmp/fabro/feedback/rescue.md` exists and is
    non-empty, it carries human guidance from a rescue gate and it **overrides
@@ -51,9 +51,10 @@ Use `fabro-code` through the shell before `grep`, `glob` or paging a file with
 - `fabro-code tests PATH…`: test files that exercise these files.
 
 Its answers include your own edits. It knows calls and imports only, not attribute
-reads, string keys or config. So before you conclude that something is unused, or
-before you delete or rename it, confirm with `grep -rnw NAME`. If it prints
-`no code index`, use grep.
+reads, string keys or config. It matches a call by name, so a caller it lists can be
+a call to a different function with the same name. Before you conclude that
+something is unused, or before you delete or rename it, confirm with
+`grep -rnw NAME`. If it prints `no code index`, use grep.
 
 ## Scope
 
