@@ -2,21 +2,29 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "triage",
   "title": "triage — triage's verdict (task 10)",
-  "description": "The triage agent's output (docs/stage-io, task 10). Encodes triage_gate's shape checks: readiness enum, conventional title, labels nameset, questions policy per readiness, and decisions with non-empty question/decision. `basis` is required on each decision for non-architecture issues; that is a gate check (it depends on issue.json) and is not expressible here, so it stays in the gate. _io is stamped by the server.",
+  "description": "The triage agent's output (docs/stage-io, task 10). Encodes triage_gate's shape checks: readiness enum, conventional title, labels nameset, questions policy per readiness, non-empty question/decision. `basis` per decision for non-architecture issues is a gate check depending on issue.json and stays in the gate. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["readiness", "title", "labels", "questions", "decisions"],
+  "required": ["readiness", "classification", "confidence", "title", "labels", "questions", "decisions", "summary"],
   "properties": {
     "readiness": { "enum": ["ready", "needs_info", "not_actionable"] },
-    "title": {
-      "type": "string",
-      "pattern": "^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)(\\([a-z0-9 ./_-]+\\))?: .+"
-    },
+    "classification": { "enum": ["bug", "enhancement", "mixed"] },
+    "confidence": { "enum": ["high", "medium", "low"] },
+    "title": { "type": "string", "pattern": "^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)(\\([a-z0-9 ./_-]+\\))?: .+" },
     "labels": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9:._-]+$" } },
     "questions": {
       "type": "array",
-      "items": { "type": "string" },
-      "description": "The gate requires questions to be non-empty for needs_info and empty for ready/not_actionable."
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "question", "why"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "question": { "type": "string", "minLength": 1 },
+          "why": { "type": "string" },
+          "recommended": { "type": "string" }
+        }
+      }
     },
     "decisions": {
       "type": "array",
@@ -29,6 +37,7 @@
           "decision": { "type": "string", "minLength": 1 }
         }
       }
-    }
+    },
+    "summary": { "type": "string", "description": "One sentence for the operator." }
   }
 }

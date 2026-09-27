@@ -63,19 +63,16 @@ something is unused, or before you delete or rename it, confirm with
 
 ## Output
 
-Write `/tmp/fabro/improve.json` and nothing else:
+Call `submit` with your result. It checks the shape and writes
+`/tmp/fabro/improve.json`; do not write it yourself. A result `submit` did not
+write is refused.
 
-```json
-{
-  "status": "improved | unchanged",
-  "title": "a clearer plain-English title, or the original unchanged",
-  "body": "the complete revised issue body in Markdown",
-  "reason": "one or two sentences on what changed and why, or why nothing did"
-}
-```
+- `status` is `improved` or `unchanged`.
+- `title` is a clearer plain-English title, or the original unchanged.
+- `body` is the **whole** revised issue body in Markdown — not a diff or a patch;
+  `improve_gate` writes it verbatim over the issue.
+- `reason` is one or two sentences on what changed and why, or why nothing did.
 
-`body` must be the **whole** body, not a diff or a patch — `improve_gate` writes it
-verbatim over the issue. `title` is recorded but not applied here; the Conventional
-Commits title is written by the terminal nodes from the triage contract.
-
-After writing `/tmp/fabro/improve.json`, stop.
+The Conventional Commits `title` is written by the terminal nodes from the triage
+contract; it is recorded here but not applied. After `submit` writes your result,
+stop.

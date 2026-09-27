@@ -1716,7 +1716,7 @@ check "done: garbage is released"     "released" "$(jq -r '.context_updates.tria
 # 6. triage_gate: needs_info with one question.
 tp_setup '[]'
 echo 0 > "$T/triage_attempts"
-echo '{"readiness":"needs_info","title":"feat: x","labels":["bug"],"questions":[{"id":"Q1","question":"Which endpoint?","why":"w","recommended":"/v2"}]}' > "$T/triage.json"
+echo '{"readiness":"needs_info","title":"feat: x","labels":["bug"],"questions":[{"id":"Q1","question":"Which endpoint?","why":"w","recommended":"/v2"}],"_io":{"visit":"ok1"}}' > "$T/triage.json"
 echo 'report' > "$T/triage.md"
 OUT=$(sh "$T/triage_gate.sh" 2>&1); RC=$?
 check "gate needs_info: exit 0"       "0" "$RC"
@@ -1725,7 +1725,7 @@ check "gate: no answered key"         "false" "$(jq -r '.context_updates | has("
 
 # 7. triage_gate: ready with a question is invalid; the first attempt fails.
 echo 0 > "$T/triage_attempts"
-echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[{"id":"Q1","question":"q"}]}' > "$T/triage.json"
+echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[{"id":"Q1","question":"q"}],"_io":{"visit":"ok1"}}' > "$T/triage.json"
 sh "$T/triage_gate.sh" >/dev/null 2>&1; RC=$?
 check "gate ready+question: retries"  "1" "$RC"
 
@@ -1737,7 +1737,7 @@ check "release: removes the claim"    "1" "$(grep -c '^issue edit 7 --remove-lab
 
 # 9. post_questions labels needs-info and records needs_info.
 printf '{"number":7,"labels":[{"name":"needs-triage"},{"name":"triage-in-progress"}]}' > "$T/issue.json"
-echo '{"readiness":"needs_info","title":"feat: x","labels":["bug"],"questions":[{"id":"Q1","question":"q"}]}' > "$T/triage.json"
+echo '{"readiness":"needs_info","title":"feat: x","labels":["bug"],"questions":[{"id":"Q1","question":"q"}],"_io":{"visit":"ok1"}}' > "$T/triage.json"
 : > "$T/gh.log"
 sh "$T/post_questions.sh" >/dev/null 2>&1
 check "post_questions: outcome file"  "needs_info" "$(cat "$T/triage_outcome")"
@@ -1746,7 +1746,7 @@ check "post_questions: needs-info"    "1" "$(grep -c -- '--add-label needs-info'
 # 10. An Architecture issue may decide without a basis.
 printf '{"number":7,"body":"b","labels":[{"name":"architecture"}]}' > "$T/issue.json"
 echo 0 > "$T/triage_attempts"
-echo '{"readiness":"ready","title":"refactor: x","labels":[],"questions":[],"decisions":[{"question":"q","decision":"d"}]}' > "$T/triage.json"
+echo '{"readiness":"ready","title":"refactor: x","labels":[],"questions":[],"decisions":[{"question":"q","decision":"d"}],"_io":{"visit":"ok1"}}' > "$T/triage.json"
 OUT=$(sh "$T/triage_gate.sh" 2>&1); RC=$?
 check "decide arch: exit 0"            "0" "$RC"
 check "decide arch: ready"             "ready" "$(jq -r '.context_updates.triage_readiness' <<<"$(lastjson "$OUT")")"
@@ -1759,13 +1759,13 @@ check "decide human, no basis: retry"  "1" "$RC"
 
 # 12. decisions must be an array.
 echo 0 > "$T/triage_attempts"
-echo '{"readiness":"ready","title":"refactor: x","labels":[],"questions":[],"decisions":"x"}' > "$T/triage.json"
+echo '{"readiness":"ready","title":"refactor: x","labels":[],"questions":[],"decisions":"x","_io":{"visit":"ok1"}}' > "$T/triage.json"
 sh "$T/triage_gate.sh" >/dev/null 2>&1; RC=$?
 check "decisions not array: retry"     "1" "$RC"
 
 # 13. apply_ready appends one section, and replaces an old one.
 printf '{"number":7,"body":"first line","labels":[]}' > "$T/issue.json"
-echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[],"decisions":[{"question":"Where?","decision":"Here.","basis":"CONTEXT.md"}]}' > "$T/triage.json"
+echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[],"decisions":[{"question":"Where?","decision":"Here.","basis":"CONTEXT.md"}],"_io":{"visit":"ok1"}}' > "$T/triage.json"
 echo 'report' > "$T/triage.md"; : > "$T/gh.log"; rm -f "$T/decided_body.md"
 sh "$T/apply_ready.sh" >/dev/null 2>&1
 check "decided: one heading"           "1" "$(grep -c '^## Decisions made during triage$' "$T/decided_body.md")"
@@ -1777,14 +1777,14 @@ check "decided again: still one"       "1" "$(grep -c '^## Decisions made during
 
 # 14. No decisions: the body is not edited.
 printf '{"number":7,"body":"b","labels":[]}' > "$T/issue.json"
-echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[]}' > "$T/triage.json"
+echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[],"_io":{"visit":"ok1"}}' > "$T/triage.json"
 : > "$T/gh.log"
 sh "$T/apply_ready.sh" >/dev/null 2>&1
 check "no decisions: no body edit"     "0" "$(grep -c 'decided_body' "$T/gh.log")"
 
 # 15. The decisions rewrite drops only the old section; text below it is kept.
 jq -n '{number:7,labels:[],body:"intro\n## Decisions made during triage\n\n- old\n## Notes\nkeep me"}' > "$T/issue.json"
-echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[],"decisions":[{"question":"Q","decision":"D","basis":"b"}]}' > "$T/triage.json"
+echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[],"decisions":[{"question":"Q","decision":"D","basis":"b"}],"_io":{"visit":"ok1"}}' > "$T/triage.json"
 sh "$T/apply_ready.sh" >/dev/null 2>&1
 check "decided: keeps text below"      "1" "$(grep -c '^keep me$' "$T/decided_body.md")"
 check "decided: drops the old entry"   "0" "$(grep -c '^- old$' "$T/decided_body.md")"
@@ -1793,7 +1793,7 @@ check "decided: drops the old entry"   "0" "$(grep -c '^- old$' "$T/decided_body
 MKR='<!-- fabro:arch-candidate slug=room-deck -->'
 ig_run() { # ig_run <improved body>
     jq -n --arg m "$MKR" '{number:7,labels:[],body:($m + "\n\nold body")}' > "$T/issue.json"
-    jq -n --arg b "$1" '{status:"improved",body:$b}' > "$T/improve.json"
+    jq -n --arg b "$1" '{status:"improved",body:$b,_io:{visit:"ok1"}}' > "$T/improve.json"
     echo 0 > "$T/improve_attempts"; : > "$T/gh.log"; rm -f "$T/improved_body.md"
     sh "$T/improve_gate.sh" >/dev/null 2>&1
 }
@@ -1805,7 +1805,7 @@ ig_run "$(printf 'top\n%s\nrest' "$MKR")"
 check "marker moved: back on line 1"   "$MKR" "$(head -1 "$T/improved_body.md")"
 check "marker moved: only once"        "1" "$(grep -cF "$MKR" "$T/improved_body.md")"
 jq -n '{number:7,labels:[],body:"a human report"}' > "$T/issue.json"
-jq -n '{status:"improved",body:"better report"}' > "$T/improve.json"
+jq -n '{status:"improved",body:"better report",_io:{visit:"ok1"}}' > "$T/improve.json"
 echo 0 > "$T/improve_attempts"; rm -f "$T/improved_body.md"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "no marker: body untouched"      "better report" "$(cat "$T/improved_body.md")"
