@@ -2,9 +2,17 @@
 
 **Status:** accepted for the `sandbox` MCP transport (2026-09-27). Task 02's spike on the docker provider passed checks 1, 3, 4 and the 2 s startup budget (`docs/stage-io/spike-result.md`, `RESULT: mcp`), so D9's `shell` fallback is not needed. The static Rust binary
 (D2), `submit` refusing until every page is served (D6), the manifest in the graph (D4) and
-the 48 KB page budget (D5, confirmed by `docs/stage-io/01`) are accepted. Implementation plan: `docs/stage-io/`. Roadmap item
-`docs/factory-roadmap/B3-structured-io-submit-tool.md`, which this ADR replaces as the
-design. Tasks 01 and 02 are done; the rest is not implemented.
+the 48 KB page budget (D5, confirmed by `docs/stage-io/01`) are accepted. Implementation plan: `docs/stage-io/`, which replaces roadmap item
+`docs/factory-roadmap/B3-structured-io-submit-tool.md`.
+
+Tasks 01–10 are implemented and pushed to `main` (2026-09-27). The static Rust
+binary is built into every profile image by `build-images.sh`; the Stage manifest and
+output schemas live under `.fabro/workflows/_io/`, generated into each `workflow.toml`;
+every workflow carries `io-stage` (blocking, sandbox); and the migrated stages — `refute`,
+the reviewers, and every implementer input/output — are served by `inputs` and written by
+`submit`, with the C7 receipt checked at their gates (`io-guard` seals `refute`'s paths).
+The multi-day post-deploy production measurement (task 11 success targets, after ≥20 visits
+per stage) is recorded as pending.
 
 Every agent stage reads its inputs from files under `/tmp/fabro/` and writes a JSON
 contract by hand. The model decides what to read and how much of it, and it also formats
