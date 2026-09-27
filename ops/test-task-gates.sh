@@ -2624,7 +2624,7 @@ check "review_fix stale read is repair"  "1" "$(rorect_run S fix_gate)"
 check "triage_gate stale read is repair" "1" "$(rorect_run T triage_gate)"
 check "resolve_merge stale routes fail"  "0" "$(rorect_run G resolve_merge_gate)"
 check "ci_fix stale routes fail"         "0" "$(rorect_run S ci_fix_gate)"
-check "rebase stale routes fail"         "0" "$(rorect_run P rebase_gate)"
+check "rebase (submit) stale receipt is repair" "1" "$(rorect_run P rebase_gate)"
 
 # ---------------------------------------------------------------------------
 # review-merge render — the Refuter and hygiene rows and sections (ADR 0013 D5)

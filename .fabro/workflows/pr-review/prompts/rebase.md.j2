@@ -85,43 +85,30 @@ overlapping rewrites of the same logic — stop instead of guessing:
 A wrong conflict resolution silently corrupts a pull request that a human will then
 merge.
 
-## Output — `/tmp/fabro/rebase_result.json`
+## Output — `rebase_result.json`
 
-Write your result as raw JSON to `/tmp/fabro/rebase_result.json`. The file must
-contain exactly this shape and nothing else — no markdown fence, no commentary, no
-extra keys:
-
-```json
-{
-  "outcome": "resolved" | "unresolved",
-  "summary": "one or two sentences",
-  "conflicted_files": ["path/to/file.ts"],
-  "resolution_summaries": ["why both intents are preserved in this file"],
-  "diagnostics": ["sanitized detail, required when unresolved"]
-}
-```
-
-Rules:
+Call `submit` with your result. It checks the shape and writes the file; do not
+write it yourself. A result `submit` did not write is refused.
 
 - `outcome` is exactly `resolved` or `unresolved`.
-- `resolved` — `resolution_summaries` must be non-empty, one entry per file whose
-  conflict you resolved.
-- `unresolved` — `diagnostics` must be non-empty and must name the specific
-  ambiguity. Leave `resolution_summaries` empty.
+- `summary` is one or two sentences.
 - `conflicted_files` lists every file that conflicted, as a repository-relative
   path. It may be empty only if no file conflicted.
-- Use only the keys above. No `kind`, no SHA fields, no `validation` array. The
-  gate reads git directly, so echoing SHAs only adds a thing to get wrong.
+- `resolution_summaries` has one entry per file whose conflict you resolved; leave
+  it empty when `unresolved`.
+- `diagnostics` is required and non-empty when `outcome` is `unresolved`, naming
+  the specific ambiguity; leave it empty when `resolved`.
 
 ## Your claims are not the evidence
 
 A separate `rebase_gate` stage runs after you. It independently checks for an
 in-progress rebase, unmerged paths, conflict markers anywhere in the tree, and
 whether the base tip is now an ancestor of HEAD. It does **not** read
-`/tmp/fabro/rebase_result.json` to decide anything, and it will undo your work if
+`rebase_result.json` to decide anything, and it will undo your work if
 git does not agree with you.
 
-Write that file honestly, as an audit record for a human reading the run. Do not
+Write that honestly, as an audit record for a human reading the run. Do not
 describe the rebase as resolved when git does not.
 
-After writing `/tmp/fabro/rebase_result.json`, stop. Do not print the JSON in chat.
+After `submit` writes your result to `/tmp/fabro/rebase_result.json`, stop. Do
+not print the JSON in chat.
