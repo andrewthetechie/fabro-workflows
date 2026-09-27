@@ -1,0 +1,266 @@
+# input-reads baseline, 2026-09-26
+
+Measured with `ops/fabro-exploration-share.py` (docs/stage-io task 01) over the 15
+`backlog` / `arch-review` / `issue-triage` runs that completed since 2026-09-26T00:00Z.
+There is no `pr-review` run in the store since the fabro 0.362 upgrade (run history was
+dropped; docs/fabro-upgrade/). "Completed" = terminal (succeeded or failed). Run ids:
+
+01M3G7M4PNW9CV1J037J804480  issue-triage  succeeded  2026-09-27T01:28:11Z
+01M3G2KERR6P1JVXEYE4A26ZFY  backlog       succeeded  2026-09-27T00:00:26Z
+01M3FHB995S7YAVKBYFZ1P1MJ4  issue-triage  succeeded  2026-09-26T18:58:52Z
+01M3FHAEXK5VSGBXDJ8DTDQVHF  issue-triage  succeeded  2026-09-26T18:58:25Z
+01M3FE4GP8VH3THFDQ15XDCYK7  backlog       succeeded  2026-09-26T18:02:45Z
+01M3FBDX1YDBVRS311KDQHFNRK  backlog       succeeded  2026-09-26T17:15:27Z
+01M3EVMP4NFFGD59HMQS3F38MD  backlog       succeeded  2026-09-26T12:39:32Z
+01M3ESJTMX2MK5H1X5VCJ65050  backlog       succeeded  2026-09-26T12:03:34Z
+01M3EF21YHPZ72D6FDM5330CZR  backlog       succeeded  2026-09-26T08:59:38Z
+01M3E8C56KH2CDR83HTB4073BF  backlog       succeeded  2026-09-26T07:02:49Z
+01M3E2GZ85KG003B2ZRW4Y3217  backlog       succeeded  2026-09-26T05:20:36Z
+01M3E1V5JKTX2TXMKNGCZ9JEN0  arch-review   succeeded  2026-09-26T05:08:41Z
+01M3DZ1GTHVM3PQWGF3X99VNF1  backlog       succeeded  2026-09-26T04:19:44Z
+01M3DXXCK9JJVFZQH98HDFDBZB  arch-review   failed      2026-09-26T04:00:00Z
+01M3DN05H7DNTT0GE8JVAMXB2G  backlog       succeeded  2026-09-26T01:24:13Z
+
+Reproduces the B3 source numbers (docs/factory-roadmap/B3, measured on the three runs
+01M3E2GZ85KG, 01M3EF21YHPZ, 01M3FE4GP8VH): 1001 turns, 97 lead turns (9.7%), 260
+whole-file+partial reads (255+5), 0 capped, 0 sealed reads — the new section agrees to
+within the stricter-definition tolerance. See docs/stage-io/baseline-B3-2026-09-26.txt for
+that reproduction run.
+
+Page-budget evidence (Decision 4, section 6b): the largest `/tmp/fabro` inputs exceed one
+48 KB page and need the paging mechanism:
+- /tmp/fabro/review/diff.patch   p90 = 54842 (> 49152), max = 93431
+- /tmp/fabro/review/refute_diff.patch p90 = 49273 (> 49152), max = 57143
+- /tmp/fabro/extra/diff.patch    p90 = 62318 (> 49152), max = 96791
+
+```text
+runs analysed: 15
+
+## 1. tool calls per stage
+| stage | total | read_file:repo | read_file:contract | grep | glob | shell:fabro-code | shell:search | shell:read | shell:git | shell:test/build | shell:python | shell:other | edit_file | write_file |
+| coder | 1481 | 338 | 181 | 147 | 16 | 0 | 108 | 24 | 82 | 223 | 6 | 22 | 327 | 7 |
+| improve | 1205 | 309 | 89 | 264 | 20 | 4 | 224 | 85 | 70 | 28 | 10 | 51 | 2 | 49 |
+| standards | 725 | 156 | 157 | 66 | 12 | 0 | 189 | 72 | 24 | 15 | 5 | 4 | 1 | 24 |
+| review | 608 | 123 | 201 | 127 | 8 | 0 | 77 | 20 | 1 | 8 | 0 | 5 | 0 | 38 |
+| spec | 579 | 76 | 152 | 77 | 1 | 0 | 115 | 70 | 23 | 3 | 11 | 27 | 0 | 24 |
+| quality | 421 | 101 | 76 | 67 | 5 | 0 | 73 | 34 | 27 | 2 | 5 | 15 | 0 | 16 |
+| review_fix | 403 | 73 | 42 | 49 | 2 | 1 | 62 | 55 | 3 | 54 | 12 | 1 | 38 | 11 |
+| triage | 358 | 141 | 15 | 74 | 5 | 4 | 49 | 21 | 6 | 2 | 2 | 11 | 0 | 28 |
+| decompose | 260 | 100 | 11 | 25 | 1 | 1 | 64 | 27 | 5 | 7 | 9 | 0 | 1 | 9 |
+| extra_decompose | 209 | 33 | 106 | 29 | 0 | 0 | 11 | 1 | 1 | 4 | 9 | 0 | 0 | 15 |
+| rework_t1 | 151 | 20 | 14 | 21 | 0 | 0 | 14 | 12 | 31 | 22 | 1 | 9 | 7 | 0 |
+| scan | 110 | 39 | 2 | 6 | 1 | 0 | 30 | 22 | 2 | 4 | 2 | 0 | 0 | 2 |
+| refute | 98 | 31 | 18 | 8 | 2 | 0 | 22 | 9 | 4 | 0 | 1 | 0 | 0 | 3 |
+| rework_t2 | 35 | 4 | 2 | 1 | 0 | 0 | 3 | 2 | 8 | 12 | 0 | 0 | 3 | 0 |
+| rework_t3 | 35 | 4 | 3 | 1 | 2 | 0 | 6 | 3 | 4 | 1 | 8 | 2 | 1 | 0 |
+| rework_t4 | 6 | 0 | 2 | 0 | 0 | 0 | 1 | 0 | 0 | 3 | 0 | 0 | 0 | 0 |
+| ALL | 6684 | 1548 | 1071 | 962 | 75 | 10 | 1048 | 457 | 291 | 388 | 81 | 147 | 380 | 226 |
+
+exploration = 4090/6684 = 61% of tool calls
+
+## 2. tool-result bytes and exploration share of input tokens
+The resident estimate is: retained result bytes - 4 x the number of later LLM
+calls in the same session, summed; then compare with billed input tokens.
+| stage | LLM calls | input tok (billed) | result KB | explore KB | explore % of result bytes | resident explore tok est | % of billed input |
+| coder | 1329 | 71,482,739 | 4143 | 2494 | 60% | 28,204,972 | 39% |
+| improve | 863 | 21,091,330 | 3667 | 2871 | 78% | 9,859,219 | 47% |
+| standards | 480 | 22,181,301 | 4111 | 2194 | 53% | 7,456,961 | 34% |
+| review | 353 | 8,920,746 | 2280 | 873 | 38% | 1,829,246 | 21% |
+| spec | 401 | 13,792,578 | 4236 | 2187 | 52% | 5,569,218 | 40% |
+| quality | 287 | 12,029,606 | 3016 | 1982 | 66% | 5,305,230 | 44% |
+| review_fix | 292 | 12,363,502 | 2204 | 1438 | 65% | 8,081,313 | 65% |
+| triage | 214 | 6,060,205 | 1283 | 1048 | 82% | 2,815,587 | 46% |
+| decompose | 182 | 5,867,796 | 1194 | 1062 | 89% | 3,131,317 | 53% |
+| extra_decompose | 127 | 1,719,504 | 491 | 191 | 39% | 403,743 | 23% |
+| rework_t1 | 136 | 5,810,417 | 384 | 246 | 64% | 2,028,624 | 35% |
+| scan | 71 | 6,071,039 | 798 | 789 | 99% | 4,899,679 | 81% |
+| refute | 59 | 2,570,158 | 539 | 257 | 48% | 692,878 | 27% |
+| rework_t2 | 30 | 604,747 | 60 | 35 | 58% | 137,525 | 23% |
+| rework_t3 | 21 | 491,065 | 50 | 20 | 39% | 50,507 | 10% |
+| rework_t4 | 6 | 56,378 | 9 | 0 | 6% | 505 | 1% |
+| ALL | 4851 | 191,113,111 | 28465 | 17689 | 62% | 80,466,524 | 42% |
+
+## 3. repeated reads (same path, same stage visit)
+| coder | read_file calls 519 | redundant re-reads 266 (51%) | distinct (visit,path) repeated 93 |
+| improve | read_file calls 398 | redundant re-reads 117 (29%) | distinct (visit,path) repeated 66 |
+| standards | read_file calls 313 | redundant re-reads 53 (17%) | distinct (visit,path) repeated 27 |
+| review_fix | read_file calls 115 | redundant re-reads 40 (35%) | distinct (visit,path) repeated 19 |
+| review | read_file calls 324 | redundant re-reads 37 (11%) | distinct (visit,path) repeated 24 |
+| spec | read_file calls 228 | redundant re-reads 34 (15%) | distinct (visit,path) repeated 19 |
+| triage | read_file calls 156 | redundant re-reads 30 (19%) | distinct (visit,path) repeated 19 |
+| decompose | read_file calls 111 | redundant re-reads 25 (23%) | distinct (visit,path) repeated 16 |
+| quality | read_file calls 177 | redundant re-reads 22 (12%) | distinct (visit,path) repeated 13 |
+| refute | read_file calls 49 | redundant re-reads 18 (37%) | distinct (visit,path) repeated 6 |
+| rework_t1 | read_file calls 34 | redundant re-reads 13 (38%) | distinct (visit,path) repeated 3 |
+| extra_decompose | read_file calls 139 | redundant re-reads 12 (9%) | distinct (visit,path) repeated 5 |
+| rework_t3 | read_file calls 7 | redundant re-reads 1 (14%) | distinct (visit,path) repeated 1 |
+top offenders:
+  26x  coder          coder@3            01M3FBDX1YDB  /workspace/lawncare-saas/tests/test_billing.py
+  15x  coder          coder@1            01M3EF21YHPZ  /workspace/writers-app/src-tauri/src/settings.rs
+  13x  coder          coder@2            01M3DZ1GTHVM  /workspace/writers-app/src-tauri/src/scene.rs
+  13x  coder          coder@2            01M3EF21YHPZ  /workspace/writers-app/src-tauri/src/settings.rs
+  11x  rework_t1      rework_t1@1        01M3DZ1GTHVM  /workspace/writers-app/src-tauri/src/scene.rs
+  10x  coder          coder@5            01M3EVMP4NFF  /tmp/fabro/current_task.json
+  9x  refute         review_merge.refute@1 01M3G2KERR6P  /workspace/lawncare-saas/tests/test_billing.py
+  8x  standards      review_merge.standards@1 01M3DZ1GTHVM  /tmp/fabro/review/diff.patch
+  8x  improve        improve@3          01M3EF21YHPZ  /workspace/writers-app/src-tauri/src/settings.rs
+  8x  coder          coder@1            01M3ESJTMX2M  /tmp/fabro/current_task.json
+  7x  improve        improve@2          01M3DZ1GTHVM  /workspace/writers-app/src-tauri/src/scene.rs
+  7x  improve        improve@3          01M3DZ1GTHVM  /workspace/writers-app/src-tauri/src/scene.rs
+  7x  coder          coder@1            01M3E2GZ85KG  /tmp/fabro/current_task.json
+  7x  extra_decompose extra_decompose@1  01M3EF21YHPZ  /workspace/writers-app/src-tauri/src/settings.rs
+  7x  standards      review_merge.standards@1 01M3EF21YHPZ  /workspace/writers-app/src-tauri/src/settings.rs
+
+## 4. agent.loop.detected per stage
+{'coder': 27, 'improve': 4}
+
+## 5. wall time per stage (agent stages)
+| stage | visits | median wall min | total wall h | inference % | tool % | explore-turn % of turn time |
+| coder | 36 | 18.0 | 13.71 | 96% | 4% | 42% |
+| improve | 51 | 6.1 | 6.45 | 100% | 0% | 52% |
+| standards | 24 | 5.9 | 2.59 | 99% | 1% | 73% |
+| rework_t1 | 4 | 19.5 | 1.64 | 97% | 3% | 40% |
+| review | 38 | 1.8 | 1.28 | 99% | 1% | 66% |
+| spec | 24 | 2.5 | 1.16 | 99% | 1% | 56% |
+| quality | 15 | 4.5 | 1.07 | 99% | 1% | 67% |
+| review_fix | 11 | 5.4 | 0.95 | 89% | 10% | 46% |
+| triage | 14 | 3.8 | 0.88 | 99% | 0% | 60% |
+| decompose | 9 | 4.4 | 0.66 | 99% | 1% | 75% |
+| scan | 2 | 8.5 | 0.28 | 99% | 1% | 75% |
+| extra_decompose | 15 | 0.6 | 0.28 | 98% | 1% | 43% |
+| refute | 3 | 4.7 | 0.18 | 99% | 1% | 79% |
+| rework_t2 | 2 | 2.8 | 0.09 | 98% | 2% | 14% |
+| rework_t3 | 1 | 4.6 | 0.08 | 98% | 2% | 26% |
+| rework_t4 | 1 | 0.7 | 0.01 | 97% | 1% | 26% |
+ALL explore-turn share: 51%
+
+## 5b. agent visits per stage (for data sufficiency)
+| stage | visits | tool calls |
+| improve | 52 | 1205 |
+| review | 38 | 608 |
+| coder | 36 | 1481 |
+| standards | 24 | 725 |
+| spec | 24 | 579 |
+| quality | 15 | 421 |
+| extra_decompose | 15 | 209 |
+| triage | 14 | 358 |
+| review_fix | 11 | 403 |
+| decompose | 10 | 260 |
+| rework_t1 | 4 | 151 |
+| refute | 3 | 98 |
+| rework_t2 | 2 | 35 |
+| scan | 2 | 110 |
+| rework_t3 | 1 | 35 |
+| rework_t4 | 1 | 6 |
+task 08 threshold (30 improve and 30 coder visits): met
+
+## 5c. Task-dossier presence rate (improve sessions, disposition=ready)
+| improve ready sessions: 36 | wrote task-context.md: 1 | rate: 3% |
+
+## 6. input reads (ADR 0016, task 01)
+An input read is a read_file of a /tmp/fabro path, or a shell whose first command
+is one of cat/head/tail/sed/jq/wc/ls naming a /tmp/fabro path. lead_turns is the
+leading run of turns (LLM calls) in which every tool call is an input read.
+| node | sessions | lead_turns med/p90 | lead_secs med/p90 | input_reads med | partial | capped | sealed | io_calls |
+| review | 38 | 1.0/2 | 6/14 | 5.0 | 8 | 2 | 0 | 0 |
+| improve | 37 | 1/1 | 34/39 | 2 | 0 | 0 | 0 | 0 |
+| coder | 36 | 2.0/6 | 64/152 | 4.0 | 13 | 0 | 0 | 0 |
+| standards | 15 | 2/2 | 11/16 | 5 | 11 | 7 | 0 | 0 |
+| spec | 15 | 0/0 | 0/0 | 5 | 16 | 6 | 0 | 0 |
+| quality | 15 | 2/2 | 10/17 | 5 | 4 | 2 | 0 | 0 |
+| extra_decompose | 15 | 0/0 | 0/0 | 7 | 0 | 0 | 0 | 0 |
+| triage_phase.improve | 15 | 1/1 | 5/6 | 1 | 0 | 0 | 0 | 0 |
+| triage_phase.triage | 14 | 1.0/1 | 5/6 | 1.5 | 0 | 0 | 0 | 0 |
+| decompose | 11 | 0/1 | 0/253 | 1 | 0 | 0 | 0 | 0 |
+| review_merge.review_fix | 11 | 2/7 | 14/34 | 8 | 11 | 6 | 0 | 0 |
+| review_merge.standards | 10 | 2.0/5 | 12/35 | 7.0 | 17 | 7 | 0 | 0 |
+| review_merge.spec | 9 | 3/5 | 18/39 | 9 | 10 | 3 | 0 | 0 |
+| rework_t1 | 4 | 1.5/2 | 67/93 | 5.0 | 0 | 0 | 0 | 0 |
+| review_merge.refute | 3 | 3/3 | 15/15 | 6 | 9 | 2 | 0 | 0 |
+| rework_t2 | 2 | 1.0/1 | 6/6 | 2.0 | 0 | 0 | 0 | 0 |
+| scan | 2 | 0.5/0 | 7/0 | 2.0 | 0 | 0 | 0 | 0 |
+| rework_t3 | 1 | 0/0 | 0/0 | 3 | 0 | 0 | 0 | 0 |
+| rework_t4 | 1 | 1/1 | 4/4 | 2 | 0 | 0 | 0 | 0 |
+
+## 6b. input path sizes (bytes of read output; page budget evidence, Decision 4)
+| /tmp/fabro/extra/diff.patch | n=65 | p50=38816 | p90=62318 | max=96791 |
+| /tmp/fabro/review/diff.patch | n=103 | p50=24213 | p90=54842 | max=93431 |
+| /tmp/fabro/review/refute_diff.patch | n=6 | p50=47874 | p90=49273 | max=57143 |
+| /tmp/fabro/issue.json | n=247 | p50=12295 | p90=14475 | max=22981 |
+| /tmp/fabro/repomap.md | n=7 | p50=17934 | p90=17934 | max=17934 |
+| /tmp/fabro/tasks.json | n=1 | p50=14473 | p90=14473 | max=14473 |
+| /tmp/fabro/current_task.json | n=194 | p50=4175 | p90=6539 | max=10169 |
+| /tmp/fabro/review/refute_issues.json | n=3 | p50=5649 | p90=5649 | max=9997 |
+| /tmp/fabro/pr.json | n=25 | p50=4425 | p90=8583 | max=9008 |
+| /tmp/fabro/review/commits.txt | n=21 | p50=4636 | p90=7170 | max=8073 |
+| /tmp/fabro/improve.json | n=1 | p50=7600 | p90=7600 | max=7600 |
+| /tmp/fabro/completed.md | n=60 | p50=3738 | p90=6471 | max=7494 |
+| /tmp/fabro/review/standards.json | n=4 | p50=6217 | p90=6217 | max=6574 |
+| /tmp/fabro/feedback/rework.md | n=7 | p50=6413 | p90=6523 | max=6523 |
+| /tmp/fabro/feedback/fix.md | n=1 | p50=6086 | p90=6086 | max=6086 |
+| /tmp/fabro/extra/quality.json | n=15 | p50=731 | p90=2397 | max=4513 |
+| /tmp/fabro/task-context.md | n=4 | p50=3842 | p90=3842 | max=3842 |
+| /tmp/fabro/review/hygiene.json | n=3 | p50=1849 | p90=1849 | max=3447 |
+| /tmp/fabro/extra/standards.json | n=15 | p50=645 | p90=2298 | max=3148 |
+| /tmp/fabro/arch/hotspots.txt | n=1 | p50=2509 | p90=2509 | max=2509 |
+| /tmp/fabro/pr_body.md | n=1 | p50=2310 | p90=2310 | max=2310 |
+| /tmp/fabro/review/spec.json | n=4 | p50=922 | p90=922 | max=1070 |
+| /tmp/fabro/arch/existing.json | n=1 | p50=962 | p90=962 | max=962 |
+| /tmp/fabro/extra/diffstat.txt | n=60 | p50=392 | p90=949 | max=952 |
+| /tmp/fabro/review/diffstat.txt | n=59 | p50=254 | p90=623 | max=949 |
+| /tmp/fabro/extra/spec.json | n=15 | p50=698 | p90=757 | max=880 |
+| /tmp/fabro/review/changed_files.txt | n=59 | p50=97 | p90=341 | max=562 |
+| /tmp/fabro/extra/changed_files.txt | n=60 | p50=198 | p90=562 | max=562 |
+| /tmp/fabro/review/verdict.json | n=1 | p50=512 | p90=512 | max=512 |
+| /tmp/fabro/linked_issues.json | n=20 | p50=403 | p90=419 | max=419 |
+| /tmp/fabro/commit_body.md | n=1 | p50=215 | p90=215 | max=215 |
+| /tmp/fabro/writers-app/src-tauri/src/scene.rs | n=1 | p50=214 | p90=214 | max=214 |
+| /tmp/fabro/feedback/rescue.md | n=2 | p50=166 | p90=166 | max=166 |
+| /tmp/fabro/rework.md | n=1 | p50=139 | p90=139 | max=139 |
+| /tmp/fabro/review/refute_omitted.txt | n=3 | p50=0 | p90=0 | max=0 |
+
+## 6c. whole run
+total turns 4851, lead turns 430 (8.9%), lead seconds 6601, share of stage wall 4.6%
+
+## 7. sample search args
+  ('review', 'shell', '{"command": "rg -n \\"Session:\\" /workspace/writers-app/src/components/MainScreen.test.tsx | head -30; echo \\"---\\"; rg -n \\"Status:\\" /workspace/writers-app/src/components/MainScreen.test.tsx | head -30; echo \\"---\\"; rg')
+  ('improve', 'shell', '{"command": "ls src/backend/services/ && rg -n \\"allowance|email_sendability\\" src/backend/services/ -l | head -20", "description": "List services and find email allowance/sendability modules"}')
+  ('review', 'grep', '{"path": "/workspace/lawncare-saas/src", "pattern": "InMemoryStripeGateway"}')
+  ('coder', 'grep', '{"path": "/workspace/writers-app/src-tauri/src", "pattern": "pub fn resolve_scene_id_to_path|pub use .*resolve_scene_id_to_path|pub use scene_path_map"}')
+  ('improve', 'shell', '{"command": "cd /workspace/writers-app && grep -n \'mod delegation_tests\\\\|delegation_tests\' src-tauri/src/scene.rs | head -3; grep -c \'_runner_\' src-tauri/src/scene.rs", "description": "Check delegation/runner test struc')
+  ('standards', 'shell', '{"command": "cd /workspace/writers-app && grep -n \\"list_project\\\\|parse_prefix\\" src-tauri/src/scene.rs | head; echo \\"---exit: $?---\\"; grep -n \\"manuscript_structure\\" src-tauri/src/scene.rs | head -5", "description":')
+  ('standards', 'shell', '{"command": "grep -n \\"overwriteAfterConflict\\" -A 30 /workspace/writers-app/src/store/saveOrchestrator.ts | sed -n \'1,60p\'", "description": "Inspect factory-owned overwriteAfterConflict"}')
+  ('rework_t1', 'grep', '{"path": "/workspace/writers-app/src-tauri/src/manuscript_structure.rs", "pattern": "parse_prefix|list_project"}')
+  ('improve', 'shell', '{"command": "grep -rn \\"get_now_utc\\" backend/app --include=*.py | grep -v worker | head; echo ---; grep -c \\"dependency_overrides\\\\[get_now_utc\\\\]\\" backend/tests/api/routes/test_pwhl.py", "description": "Confirm NowDep')
+  ('review', 'grep', '{"glob_filter": "settings.rs", "path": "/workspace/writers-app/src-tauri/src", "pattern": "editor_line_spacing"}')
+  ('triage', 'grep', '{"path": "/workspace/womens-fantasy-sports", "pattern": "from app\\\\.models import \\\\*"}')
+  ('review', 'grep', '{"path": "src-tauri", "pattern": "(delete_scene_inner|move_scene_inner|rename_scene_inner)"}')
+  ('coder', 'shell', '{"command": "cd /workspace/writers-app && grep -rn -E \\"refreshScenes|sceneListError|collectScenes|listProject\\" src/"}')
+  ('standards', 'grep', '{"max_results": 50, "path": "/workspace/lawncare-saas/src/backend", "pattern": "import stripe|stripe\\\\.api_key|stripe\\\\.checkout|stripe\\\\.Webhook|stripe\\\\.PaymentIntent|stripe\\\\.Charge"}')
+  ('coder', 'shell', '{"command": "cd /repos/andrewthetechie/writers-app/src-tauri && grep -n \'pub trait FsSeam\\\\|trait FsSeam\' src/io.rs"}')
+  ('coder', 'shell', '{"command": "ls backend/app/scoring/visibility.py 2>&1; echo \\"---\\"; git -C /workspace/womens-fantasy-sports log --oneline -5", "description": "Check visibility module exists and recent commits"}')
+  ('quality', 'shell', '{"command": "cd /workspace/writers-app && grep -n \\"pub(crate) fn parse_prefix\\\\|fn parse_prefix\\" src-tauri/src/manuscript_structure.rs && sed -n \'/fn parse_prefix/,/^}/p\' src-tauri/src/manuscript_structure.rs", "descri')
+  ('review_fix', 'grep', '{"path": "src/backend/routers", "pattern": "def update_service|def cancel_service|with_for_update|NOWAIT"}')
+  ('review', 'shell', '{"command": "grep -n \'setup_test_project\\\\|write_scene_for_test\\\\|fn create_scene_inner\\\\|list_project\\\\|parse_prefix\' /workspace/writers-app/src-tauri/tests/scene.rs | head -30", "description": "Check helpers and import')
+  ('triage', 'grep', '{"glob_filter": "visit_query.py", "path": "/workspace/lawncare-saas/src/backend/services", "pattern": "def list_visits|-> list\\\\["}')
+  ('standards', 'shell', '{"command": "cd /workspace/writers-app && ls src-tauri/clippy.toml 2>/dev/null; ls src-tauri/.clippy.toml 2>/dev/null; grep -rn \\"allow-unwrap-in-tests\\\\|allow-expect-in-tests\\" src-tauri/clippy.toml 2>/dev/null; echo \\"')
+  ('improve', 'shell', '{"command": "cd /workspace/writers-app && grep -n \'use writers_app_lib::io\\\\|OsIo\\\\|Notifier\\\\|with_fs\\\\|create_scene_inner\' src-tauri/tests/scene.rs | head -30", "description": "check imports in tests/scene.rs"}')
+  ('improve', 'shell', '{"command": "cd /workspace/lawncare-saas && grep -rn \\"checkout_url\\\\|set_checkout_session\\\\|create_checkout_session\\" tests/ | head -50", "description": "Search tests for checkout session usage"}')
+  ('coder', 'grep', '{"path": "/workspace/writers-app/src-tauri/src/error.rs", "pattern": "InvalidValue|ValidationError"}')
+  ('quality', 'grep', '{"glob_filter": "*.md", "max_results": 15, "path": "/workspace/writers-app", "pattern": "StoredSettings|wire view|SettingsWire"}')
+  ('improve', 'shell', '{"command": "cd /workspace/writers-app && rg -n \'test_write_scene|test_create_scene|setup_test_project|write_scene_for_test|create_scene_with_fts\' src-tauri/src/scene.rs src-tauri/tests/scene.rs", "description": "Search ')
+  ('improve', 'shell', '{"command": "cd /workspace/lawncare-saas && grep -rn \\"from backend.main import\\\\|import backend.main\\" src scripts --include=\\"*.py\\" | head && echo \\"=== scripts/generate_openapi ===\\" && grep -n \\"create_app\\" scripts')
+  ('quality', 'shell', '{"command": "grep -n \\"provisional\\" /workspace/womens-fantasy-sports/backend/tests/api/routes/test_leaderboard.py /workspace/womens-fantasy-sports/backend/tests/api/routes/test_leagues.py /workspace/womens-fantasy-sport')
+  ('standards', 'shell', '{"command": "grep -rn \\"stripe\\" --include=\\"*.md\\" docs/ ARCHITECTURE/ ENGINEERING/ CONTEXT.md AGENTS.md 2>/dev/null | grep -iv \\"^\\\\s*$\\" | head -40", "description": "Find stripe mentions in living docs"}')
+  ('improve', 'grep', '{"path": "/workspace/lawncare-saas/src/backend/routers", "pattern": "^from backend\\\\.services"}')
+  ('improve', 'shell', '{"command": "grep -n -E \\"describe|it\\\\(|invalidate|PATCH|onSuccess\\" frontend/src/hooks/useAccountLogo.test.tsx | head -20; echo \'===\'; wc -l frontend/src/hooks/useAccountLogo.test.tsx", "description": "Inspect hook tes')
+  ('improve', 'grep', '{"path": "/workspace/writers-app/src/components/WritingSurface.tsx", "pattern": "interface ContentSurfaceState|saveBody|setWordCount|setWordCountAtOpen"}')
+  ('decompose', 'shell', '{"command": "grep -n \\"monkeypatch\\\\|stripe\\\\.\\" tests/test_billing.py | head -80", "description": "Survey stripe patch sites in test_billing.py"}')
+  ('improve', 'shell', '{"command": "ls src/backend src/backend/services src/backend/routers 2>/dev/null && echo --- && ls tests | head -50", "description": "List backend source layout"}')
+  ('improve', 'grep', '{"path": "/workspace/writers-app/src-tauri/src/settings.rs", "pattern": "SettingsWire|serialize_struct|wire_field"}')
+  ('improve', 'shell', '{"command": "cd /workspace/lawncare-saas && grep -n \\"_is_transient_stripe_error\\" src/backend/routers/billing.py; echo \\"---\\"; sed -n \'140,165p\' src/backend/routers/billing.py"}')
+  ('scan', 'shell', '{"command": "ls src/backend src/backend/routers src/backend/services src/backend/models src/backend/schemas 2>/dev/null", "description": "List backend source layout"}')
+  ('coder', 'shell', '{"command": "grep -rn \'rename_scene_inner\\\\|delete_scene_inner\\\\|move_scene_inner\' /workspace/writers-app/src-tauri/; echo \\"---exit $?\\""}')
+  ('improve', 'shell', '{"command": "cd /workspace/writers-app && rg -n \\"rename_scene_inner|delete_scene_inner|move_scene_inner|_with_fs_preserves|_with_fs_renumbers|_with_fs_cross_chapter\\" src-tauri/ | head -50", "description": "search for i')
+  ('standards', 'grep', '{"max_results": 100, "path": "/workspace/writers-app/src-tauri/src/settings.rs", "pattern": "wire_field"}')
+```

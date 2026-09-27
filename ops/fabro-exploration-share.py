@@ -113,6 +113,56 @@ def norm(n):
     return n.split(".")[-1] if n else n
 
 
+# --- input-reads section (ADR 0016, docs/stage-io task 01) ---
+# An INPUT READ is a tool call that reads a stage input under /tmp/fabro/: a read_file
+# whose arguments name a /tmp/fabro path, or a shell whose first command is one of these
+# read verbs and whose arguments name a /tmp/fabro path. lead_turns / lead_secs columns are
+# counted from agent.llm.started (one LLM call = one turn).
+SREAD = {"cat", "head", "tail", "sed", "jq", "wc", "ls"}
+LINENUM = re.compile(r"^\s*(\d+)\s*\| ")
+# The Refuter's Sealed list, from _shared/review-merge/prompts/refute.md.j2 before task 07
+# (task 07 moves it to the Stage manifest; this list is the baseline source of truth).
+REFUTE_SEALED = [
+    "/tmp/fabro/review/standards.json",
+    "/tmp/fabro/review/spec.json",
+    "/tmp/fabro/review/fix_result.json",
+    "/tmp/fabro/review/ci_fix_result.json",
+    "/tmp/fabro/feedback/",
+]
+
+
+def io_node(n):
+    """Node id for the input-reads section: strip the @visit suffix, keep the import prefix."""
+    return n.split("@")[0] if n else n
+
+
+def is_input_read(name, args):
+    astr = json.dumps(args)
+    if name == "read_file":
+        return "/tmp/fabro/" in astr
+    if name == "shell":
+        cmd = args.get("command", "")
+        f = first_cmd(cmd)
+        tok = f.split()[0].split("/")[-1] if f.split() else ""
+        return tok in SREAD and "/tmp/fabro/" in astr
+    return False
+
+
+def is_sealed(astr):
+    return any(s in astr for s in REFUTE_SEALED)
+
+
+def med(a):
+    return statistics.median(a) if a else 0
+
+
+def p90(a):
+    if not a:
+        return 0
+    s = sorted(a)
+    return s[int(0.90 * (len(s) - 1))]
+
+
 def iter_event_files(paths):
     """Yield event-log filenames from files or directories."""
     for p in paths:
@@ -155,6 +205,19 @@ def main():
     # /tmp/fabro/task-context.md
     improve_ready = collections.Counter()
     improve_with_dossier = collections.Counter()
+    # input-reads state (task 01)
+    io_sess_node = {}
+    io_sess_llm = collections.defaultdict(list)
+    io_sess_tools = collections.defaultdict(list)  # (ts, is_input_read)
+    input_sizes = collections.defaultdict(list)    # /tmp/fabro path -> [bytes of read output]
+    io_partial = collections.Counter()
+    io_capped = collections.Counter()
+    io_sealed = collections.Counter()
+    io_calls_c = collections.Counter()
+    gr_total_turns = 0
+    gr_lead_turns = 0
+    gr_lead_secs = 0.0
+    gr_stage_wall_ms = 0
 
     for fn in iter_event_files(args.paths):
         evs = [json.loads(l) for l in open(fn)]
@@ -216,10 +279,40 @@ def main():
                 cat_bytes[node][c] += b
                 if sid:
                     sess_tools[sid].append((ts(e["ts"]), node, c, b))
+                # input-reads tracking
+                ionode = io_sess_node.get(sid)
+                st = started.get(t["tool_call_id"], ("?", {}, ""))
+                tname = st[2] if len(st) > 2 else ""
+                targs = st[1] if len(st) > 1 else {}
+                if tname in ("mcp__io__inputs", "mcp__io__submit"):
+                    io_calls_c[ionode] += 1
+                out = t.get("output") or ""
+                if is_input_read(tname, targs):
+                    osz = b or len(out.encode())
+                    io_sess_tools[sid].append((ts(e["ts"]), True))
+                    if tname == "read_file":
+                        fp = targs.get("file_path", "")
+                        if fp:
+                            input_sizes[fp].append(osz)
+                        if "limit" in targs or "offset" in targs:
+                            io_partial[ionode] += 1
+                        last = 0
+                        for ln in out.splitlines():
+                            m = LINENUM.match(ln)
+                            if m:
+                                last = int(m.group(1))
+                        if last >= 2000:
+                            io_capped[ionode] += 1
+                        if ionode == "review_merge.refute" and is_sealed(json.dumps(targs)):
+                            io_sealed[ionode] += 1
+                else:
+                    io_sess_tools[sid].append((ts(e["ts"]), False))
             elif ev == "agent.llm.started":
                 sess_llm[sid].append(ts(e["ts"]))
                 llm_calls[node] += 1
                 sess_node[sid] = node
+                io_sess_node[sid] = io_node(e["node_id"])
+                io_sess_llm[sid].append(ts(e["ts"]))
             elif ev == "agent.message":
                 u = p["event"]["AssistantMessage"].get("usage", {}).get("tokens", {})
                 input_tok[node] += (u.get("input") or 0) + (u.get("cache_read") or 0)
@@ -227,6 +320,8 @@ def main():
                 loops[node] += 1
             elif ev == "stage.completed":
                 tm = p.get("timing", {})
+                if tm.get("wall_time_ms"):
+                    gr_stage_wall_ms += tm["wall_time_ms"]
                 if tm.get("inference_time_ms", 0) > 0:
                     wall[node].append(tm["wall_time_ms"])
                     inf[node].append(tm["inference_time_ms"])
@@ -251,6 +346,47 @@ def main():
                 improve_ready[node] += 1
                 if sess_dossier[sid]:
                     improve_with_dossier[node] += 1
+
+    # --- input-reads post-processing (task 01): lead turns per session ---
+    lead_counts = collections.defaultdict(list)
+    lead_secs_list = collections.defaultdict(list)
+    ir_per_sess = collections.defaultdict(list)
+    io_sessions = collections.Counter()
+    for sid0, L in io_sess_llm.items():
+        node0 = io_sess_node.get(sid0)
+        if node0 is None:
+            continue
+        L = sorted(L)
+        tools = sorted(io_sess_tools[sid0])  # (ts, bool)
+        turn_bools = [[] for _ in L]
+        ti = 0
+        tl = len(tools)
+        for j in range(len(L)):
+            lo = L[j]
+            hi = L[j + 1] if j + 1 < len(L) else float("inf")
+            while ti < tl and tools[ti][0] < hi:
+                if tools[ti][0] >= lo:
+                    turn_bools[j].append(tools[ti][1])
+                ti += 1
+        lead = 0
+        for tb in turn_bools:
+            if tb and all(tb):
+                lead += 1
+            else:
+                break
+        io_sessions[node0] += 1
+        lead_counts[node0].append(lead)
+        gr_lead_turns += lead
+        gr_total_turns += len(L)
+        ir_per_sess[node0].append(sum(1 for _, b in tools if b))
+        ls = 0.0
+        if lead:
+            gr_lead_secs_ = (L[lead] - L[0]) if lead < len(L) else (L[-1] - L[0])
+            ls = gr_lead_secs_
+            for i in range(lead):
+                if i + 1 < len(L):
+                    gr_lead_secs += L[i + 1] - L[i]
+        lead_secs_list[node0].append(ls)
 
     print(f"runs analysed: {runs}\n")
 
@@ -317,7 +453,29 @@ def main():
     ready_total = sum(improve_ready.values()); with_doss = sum(improve_with_dossier.values())
     print(f"| improve ready sessions: {ready_total} | wrote task-context.md: {with_doss} | rate: {100*with_doss/ready_total if ready_total else 0:.0f}% |")
 
-    print("\n## 6. sample search args")
+    print("\n## 6. input reads (ADR 0016, task 01)")
+    print("An input read is a read_file of a /tmp/fabro path, or a shell whose first command")
+    print("is one of cat/head/tail/sed/jq/wc/ls naming a /tmp/fabro path. lead_turns is the")
+    print("leading run of turns (LLM calls) in which every tool call is an input read.")
+    print("| node | sessions | lead_turns med/p90 | lead_secs med/p90 | input_reads med | partial | capped | sealed | io_calls |")
+    ir_nodes = sorted(io_sessions, key=lambda n: -io_sessions[n])
+    for n in ir_nodes:
+        lead = lead_counts[n]
+        print(f"| {n} | {io_sessions[n]} | {med(lead)}/{p90(lead)} | {med(lead_secs_list[n]):.0f}/{p90(lead_secs_list[n]):.0f} "
+              f"| {med(ir_per_sess[n])} | {io_partial[n]} | {io_capped[n]} | {io_sealed[n]} | {io_calls_c[n]} |")
+
+    print("\n## 6b. input path sizes (bytes of read output; page budget evidence, Decision 4)")
+    for fp, sizes in sorted(input_sizes.items(), key=lambda kv: -max(kv[1])):
+        s = sorted(sizes)
+        print(f"| {fp} | n={len(s)} | p50={s[len(s)//2]} | p90={s[int(0.90*(len(s)-1))]} | max={max(s)} |")
+
+    print("\n## 6c. whole run")
+    print(f"total turns {gr_total_turns}, lead turns {gr_lead_turns} "
+          f"({100*gr_lead_turns/gr_total_turns if gr_total_turns else 0:.1f}%), "
+          f"lead seconds {gr_lead_secs:.0f}, "
+          f"share of stage wall {100*gr_lead_secs/(gr_stage_wall_ms/1000) if gr_stage_wall_ms else 0:.1f}%")
+
+    print("\n## 7. sample search args")
     random.seed(7)
     for s in random.sample(samples, min(40, len(samples))):
         print(" ", s)

@@ -267,7 +267,12 @@ D10), and task 11's checks are run after each of them, not only at the end.
 3. **The manifest travels with the graph**, generated into `workflow.toml`, and is never
    compiled into the binary (D4). Accepted 2026-09-26.
 4. **Page budget 48 KB** for each `inputs` call (C3). Accepted 2026-09-26, to be confirmed
-   by task 01's measurement of input sizes. Record the confirmed value here.
+   by task 01's measurement of input sizes. **Confirmed 2026-09-26 (task 01):** the largest
+   `/tmp/fabro` inputs exceed one page and need the paging mechanism — `review/diff.patch`
+   p90 = 54842 B (> 49152, max 93431), `review/refute_diff.patch` p90 = 49273 B (> 49152,
+   max 57143), `extra/diff.patch` p90 = 62318 B (max 96791). The budget stays 49152; those
+   diffs spread across parts (C3, `MORE:` paging). Evidence is in
+   `docs/stage-io/baseline-2026-09-26.txt`.
 5. **The guard is a guard against mistakes, not a boundary**, and it proceeds on its own
    errors (D8, C5). Proposed.
 6. **Fallback through `shell`** if task 02 fails (D9). Proposed.
