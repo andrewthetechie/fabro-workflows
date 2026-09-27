@@ -36,6 +36,8 @@ actually lives.
 | *(removed series)* | `d5cd750` (2026-09-24) deleted the finished task series: `docs/backlog/`, `docs/pr-review/`, `docs/pr-review-bridge/`, `docs/auto-merge/`, `docs/issue-triage/`, `docs/scheduler/`, `docs/run-history/`, `docs/direct-providers/`, `docs/perf/`, `docs/plan/` and `docs/turn-it-on/`. The live graphs, the ADRs and this file are the record now. Read an old file with `git show d5cd750^:<path>`, or list one series with `git ls-tree -r --name-only d5cd750^ docs/<series>/`. Two facts from them are still open: direct-providers task 02 is not applied, and nothing yet bounds a hung inference request since the LiteLLM ingress went away (ADR 0007). And `docs/perf/00-overview-and-measurements.md` holds the source-verified list of what fabro's docker provider cannot do (no mounts, no service provisioning). |
 | `ops/check-routing-schemas.py` | Catches command-node routing-schema mismatches that `fabro validate` accepts and fabro only reports at runtime. Reads the parsed AST, not the DOT text. |
 | `ops/test-task-gates.sh` | Runs `backlog`'s `claim`, `mark_stuck`, `open_pr`, `open_pr_prep` and task-queue nodes (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. The only gate that executes a node's shell. Offline; no host or container. |
+| `ops/fabro-io-manifest.py` | The Stage-manifest generator/checker (ADR 0016): reads `.fabro/workflows/_io/manifest.json` and the output schemas, and writes the generated manifest into each workflow's `workflow.toml` `[run.environment.env]` between C2's markers. `check` regenerates in memory and fails on drift or a contract break. Python 3.11+; runs on the Mac and the host, never in a sandbox. |
+| `ops/fabro-io/` | The `fabro-io` Rust MCP binary (ADR 0016): the `stage`/`inputs`/`submit`/`guard`/`serve` tools and CLI. Built into every profile image by `ops/profile-images/build-images.sh`. |
 | `ops/fabro-run-status.sh` | LLM-free health check for an in-flight run: alive, where in the graph, making progress, and whether a compaction says the decomposition was oversized. |
 | `ops/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency (ADR 0005, ADR 0006). Draft 14's 24-hour shakedown window restarts with the container, so its acceptance criteria are pending, not unstarted. Do not trust a start time written here: every `docker compose up -d --build scheduler` re-dates the window. Read it with `docker inspect -f '{{.State.StartedAt}}' fabro-scheduler`. `ops/test-task-gates.sh` covers `claim` and `mark_stuck`, so the shell-level regression that killed the first bring-up (`5fa974d`) now fails offline. The four `backlog-<repo>` schedules are off, so the scheduler is the only producer of `backlog` runs. `ops/fabro-automation-schedule.sh` turns them back on, and `ops/fabro-fire-backlog.sh` is the manual escape hatch. Its LAN page is `http://10.10.0.32:32280/`. The operator quickstart (the page, the three controls, changing repo priority, the two monitor conditions) was `docs/scheduler/OPERATING.md`, removed in `d5cd750`: `git show d5cd750^:docs/scheduler/OPERATING.md`. |
 | `docs/research_improvements/` | An audit of all three packages against the Fabro source: what we hand-roll that Fabro already does, four operator-observed gaps traced to Fabro lines, and nine settled dead ends. A plan, not a changelog. `00-overview.md` first: its status table (2026-09-24) records what shipped (the stall watchdog, the rescue-gate label, the `truncate` preamble), the one gap still open in that work (nothing deletes `rescue.md` between tasks), and the priority of the rest. The merge-rate review of the same date is ADR 0011. |
@@ -97,6 +99,23 @@ non-zero on any mismatch, so it drops into a pre-push hook. A node that declares
 `output_schema="routing"` and prints no routing object fails deterministically with no
 retry — that cost run `01M2R057XAWN8ZG0A7ZV7YPJXK` at `pr_handoff`, with the PR
 already open.
+
+The Stage manifest (ADR 0016) is generated, never hand-edited. `fabro validate`
+is blind to a manifest that has drifted from `_io/manifest.json`, so a pre-push
+check regenerates it in memory and fails on any drift or contract break:
+
+```sh
+python3.11 ops/fabro-io-manifest.py check
+```
+
+It also fails when a stage id is not an agent node, when an `imports` entry names a
+node that is not in the graph, when a live stage's prompt names one of its Sealed
+paths, and when a stage that is not yet live names a `/tmp/fabro/` path outside its
+inputs/output/`also`. Python 3.11+ (macOS ships 3.9, which the `tomllib` check below
+also needs). The schema side is checked in Rust: `cargo test` in `ops/fabro-io/`
+compiles every `_io/schemas/*.schema.json` under draft 2020-12. The manifest is JSON
+inside a TOML literal, so it needs no escaping — `check` also fails if it ever
+contains `'''`.
 
 Neither gate runs the command nodes' shell. `backlog`'s task queue is several hundred
 bytes of `jq` spread across `decompose_gate`, `improve_gate` and `next_task`, and a

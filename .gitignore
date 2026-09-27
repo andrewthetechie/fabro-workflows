@@ -2,3 +2,6 @@
 .DS_Store
 context/
 .pi/
+
+# python bytecode
+__pycache__/
