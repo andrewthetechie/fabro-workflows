@@ -26,7 +26,11 @@ step is B8 (a fabro upgrade that limits [run.agent.mcps.io] to runs where it
 pays off); it is not worked around in the graph.
 
 Deployment state on which this measurement will run:
-  - fabro-io 0.1.0 in every profile image (fabro-python, fabro-python-node,
-    fabro-ts, fabro-rust-node), matching the manifest's min_binary.
+  - fabro-io 0.1.1 in every profile image (fabro-python, fabro-python-node,
+    fabro-ts, fabro-rust-node), rebuilt 2026-09-27T15:53-15:57Z after the
+    review fixes (docs/stage-io/00 Status). The manifest's min_binary stays
+    0.1.0. Receipts stamped "binary": "0.1.0" came from the images before the
+    fixes, whose batch `inputs` could cut a page and hide later inputs: count
+    only "binary": "0.1.1" visits toward the targets.
   - All four workflow graphs and their generated FABRO_IO_MANIFEST blocks are
     on main and thus live at the next fire.
