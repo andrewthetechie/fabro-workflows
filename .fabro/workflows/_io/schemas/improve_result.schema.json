@@ -6,6 +6,19 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["disposition", "reason"],
+  "allOf": [
+    {
+      "if": { "properties": { "disposition": { "const": "ready" } }, "required": ["disposition"] },
+      "then": {
+        "required": ["task"],
+        "properties": { "task": { "required": ["id", "title", "body"] } }
+      }
+    },
+    {
+      "if": { "properties": { "disposition": { "const": "split" } }, "required": ["disposition"] },
+      "then": { "required": ["tasks"] }
+    }
+  ],
   "properties": {
     "disposition": { "enum": ["ready", "redundant", "needs_human", "split"] },
     "reason": { "type": "string", "description": "One or two sentences justifying the disposition." },

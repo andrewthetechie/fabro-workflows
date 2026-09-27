@@ -34,7 +34,8 @@
         "required": ["question", "decision"],
         "properties": {
           "question": { "type": "string", "minLength": 1 },
-          "decision": { "type": "string", "minLength": 1 }
+          "decision": { "type": "string", "minLength": 1 },
+          "basis": { "type": "string", "description": "The repository path that settles the question. triage_gate requires it non-empty unless the issue carries the architecture label, and the renderers print it." }
         }
       }
     },
