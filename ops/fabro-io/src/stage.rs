@@ -1,19 +1,42 @@
-//! The `stage` subcommand (C5) and the task-02 spike's log line.
+//! The `stage` subcommand (C5): write `stage.json` with a fresh 128-bit visit.
 //!
-//! Writes `/tmp/fabro/.io/stage.json` with the workflow, node and a fresh visit so
-//! the MCP server can report the current stage, then appends the spike line.
+//! This is the `io-stage` stage_start hook. It creates `/tmp/fabro/.io/` itself, checks
+//! the binary is not older than the manifest's `min_binary`, and writes a new random
+//! visit on every stage invocation so a retried stage gets a fresh identity (spike
+//! check 6).
 
-use serde_json::json;
 use std::process::ExitCode;
 
-use crate::common;
+use crate::{common, manifest};
 
+/// The `stage` subcommand entry point.
 pub fn run() -> ExitCode {
+    match manifest::load() {
+        Err(manifest::LoadError::InvalidJson(e)) => {
+            eprintln!(
+                "{{\"decision\":\"block\",\"reason\":\"FABRO_IO_MANIFEST is not valid JSON: {e}\"}}"
+            );
+            return ExitCode::from(2);
+        }
+        Err(manifest::LoadError::Missing) => {
+            // No manifest at all: nothing to compare, still write stage.json.
+        }
+        Ok(m) => {
+            if let Some(required) = m.min_binary_above() {
+                eprintln!(
+                    "{{\"decision\":\"block\",\"reason\":\"fabro-io {} is older than the manifest's min_binary {required}; rebuild the profile images\"}}",
+                    env!("CARGO_PKG_VERSION")
+                );
+                return ExitCode::from(2);
+            }
+        }
+    }
+
     let started = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let workflow = std::env::var("FABRO_WORKFLOW").unwrap_or_default();
     let node = std::env::var("FABRO_NODE_ID").unwrap_or_default();
     let visit = common::new_visit();
-    let stage = json!({
+    let stage = serde_json::json!({
         "workflow": workflow,
         "node": node,
         "visit": visit,
@@ -25,6 +48,5 @@ pub fn run() -> ExitCode {
         eprintln!("stage: could not write {}: {e}", path.display());
         return ExitCode::FAILURE;
     }
-    common::spike_log(&node, "stage_start");
     ExitCode::SUCCESS
 }

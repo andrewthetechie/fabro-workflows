@@ -1,7 +1,7 @@
-//! Shared helpers: the sandbox io root, atomic writes and the spike log.
+//! Shared helpers: the sandbox io root and atomic writes.
 //!
 //! Contracts: docs/stage-io/00-overview-and-contracts.md C1. The io root is
-//! `/tmp/fabro` on the host; tests override it with `FABRO_IO_ROOT` (task 03).
+//! `/tmp/fabro` on the host; tests override it with `FABRO_IO_ROOT`.
 
 use std::path::{Path, PathBuf};
 
@@ -35,24 +35,19 @@ pub fn new_visit() -> String {
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Append one line to `.io/spike.log` (task 02 spike only).
-///
-/// The line carries the time, the node id and the manifest-env state, so the seven
-/// spike checks can read them off the log without a sandbox shell after the run.
-pub fn spike_log(node: &str, note: &str) {
-    let t = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let mv = std::env::var("FABRO_IO_MANIFEST");
-    let manifest = match &mv {
-        Ok(v) => format!("yes len={}", v.len()),
-        Err(_) => "no".to_string(),
-    };
-    let line = format!("{t} node={node} manifest={manifest} {note}\n");
-    let path = io_dir().join("spike.log");
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = f.write_all(line.as_bytes());
-    }
+/// The sha256 of `bytes`, lowercase hex (C1, C4).
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(bytes);
+    hex::encode(digest)
+}
+
+/// The current stage identity from `.io/stage.json`: `(node, visit)`. None if the
+/// file is missing or malformed.
+pub fn read_stage() -> Option<(String, String)> {
+    let raw = std::fs::read_to_string(io_dir().join("stage.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let node = v.get("node")?.as_str()?.to_string();
+    let visit = v.get("visit")?.as_str()?.to_string();
+    Some((node, visit))
 }

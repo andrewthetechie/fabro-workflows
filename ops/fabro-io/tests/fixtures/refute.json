@@ -1,0 +1,18 @@
+{
+  "_io": {
+    "binary": "0.1.0",
+    "inputs": {
+      "big": "c189a2584ab44edc1d7ebaa9c684d2da742c2a1a1aa8283911c9f76ae365d941",
+      "issues": "0c5dc2eadb9aa341de44cc261768e88c37aee39b33a2b36b042a8024dfdbeb6d"
+    },
+    "stage": "mystage",
+    "visit": "fac3fac3fac3fac3fac3fac3fac3fac3"
+  },
+  "criteria": [
+    {
+      "criterion": "the bug",
+      "status": "met"
+    }
+  ],
+  "summary": "fixed"
+}
