@@ -1847,10 +1847,11 @@ cand() { # cand <slug> <strength>
 }
 
 mkreadok ok1 hotspots.txt existing.json
+scandump() { jq --arg v ok1 '._io.visit = $v' > "$T/arch/candidates.json"; }
 
 # 1. A valid file.
 echo 0 > "$T/arch/scan_attempts"
-printf '{"candidates":[%s,%s]}' "$(cand one-a Strong)" "$(cand two-b 'Worth exploring')" > "$T/arch/candidates.json"
+printf '{"candidates":[%s,%s]}' "$(cand one-a Strong)" "$(cand two-b 'Worth exploring')" | scandump
 OUT=$(sh "$T/scan_gate.sh" 2>&1); RC=$?
 check "scan_gate valid: exit 0"        "0"  "$RC"
 check "scan_gate valid: ok"            "ok" "$(jq -r '.context_updates.scan_status' <<<"$(lastjson "$OUT")")"
@@ -1858,7 +1859,7 @@ check "scan_gate valid: count"         "2"  "$(jq -r '.context_updates.candidate
 
 # 2. A duplicate slug: one repair turn, then failed.
 echo 0 > "$T/arch/scan_attempts"
-printf '{"candidates":[%s,%s]}' "$(cand one-a Strong)" "$(cand one-a Strong)" > "$T/arch/candidates.json"
+printf '{"candidates":[%s,%s]}' "$(cand one-a Strong)" "$(cand one-a Strong)" | scandump
 sh "$T/scan_gate.sh" >/dev/null 2>&1; RC=$?
 check "scan_gate dup: first retries"   "1" "$RC"
 OUT=$(sh "$T/scan_gate.sh" 2>&1); RC=$?
@@ -1867,7 +1868,7 @@ check "scan_gate dup: failed"          "failed" "$(cat "$T/arch/scan_status")"
 
 # 3. An unknown strength.
 echo 0 > "$T/arch/scan_attempts"
-printf '{"candidates":[%s]}' "$(cand one-a Maybe)" > "$T/arch/candidates.json"
+printf '{"candidates":[%s]}' "$(cand one-a Maybe)" | scandump
 sh "$T/scan_gate.sh" >/dev/null 2>&1; RC=$?
 check "scan_gate bad strength: retry"  "1" "$RC"
 
@@ -1875,7 +1876,7 @@ check "scan_gate bad strength: retry"  "1" "$RC"
 #     test and then stops file_issues partway through the list.
 for bad in '.files = [1]' '.problem = 5' '.slug = 123' '.diagram = 7'; do
     echo 0 > "$T/arch/scan_attempts"
-    jq -c "{candidates: [($(cand one-a Strong)) | $bad]}" <<<'null' > "$T/arch/candidates.json"
+    jq -c "{candidates: [($(cand one-a Strong)) | $bad]}" <<<'null' | scandump
     sh "$T/scan_gate.sh" >/dev/null 2>&1; RC=$?
     check "scan_gate $bad: retry"      "1" "$RC"
 done
@@ -1886,7 +1887,7 @@ done
   for i in 0 1 2 3 4; do printf '%s,' "$(cand c$i Strong)"; done
   for i in 5 6 7 8 9; do printf '%s,' "$(cand c$i 'Worth exploring')"; done
   printf '%s]}' "$(cand spec-one Speculative)"
-} > "$T/arch/candidates.json"
+} | scandump
 printf '[{"body":"<!-- fabro:arch-candidate slug=c0 -->\\nold"}]' > "$T/live.json"
 rm -f "$T/counter"; : > "$T/gh.log"
 OUT=$(sh "$T/file_issues.sh" 2>&1)
