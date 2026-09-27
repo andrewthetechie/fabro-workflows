@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "improve_result",
+  "title": "improve_result — backlog improve's improved task (task 10)",
+  "description": "The backlog improve agent's output (docs/stage-io, task 10). improve_gate checks the disposition enum and the per-disposition shape; the split/queue logic and per-run budget stay in the gate. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["disposition"],
+  "properties": {
+    "disposition": { "enum": ["ready", "redundant", "needs_human", "split"] },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string", "minLength": 1 },
+        "body": { "type": "string", "minLength": 1 },
+        "files": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "body"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "body": { "type": "string", "minLength": 1 },
+          "files": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

@@ -451,7 +451,11 @@
           "sealed": [],
           "also": [
             "/tmp/fabro/task-context.md"
-          ]
+          ],
+          "output": {
+            "path": "/tmp/fabro/improve_result.json",
+            "schema": "improve_result"
+          }
         },
         "coder": {
           "live": true,
