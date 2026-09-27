@@ -752,16 +752,25 @@ fi"]
     review_gate [label="Validate verdict", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/verdict.json
 A=$(cat /tmp/fabro/review_attempts 2>/dev/null || echo 0)
-D=$(jq -r .decision $F 2>/dev/null || echo invalid)
-if [ \"$D\" != approved ] && [ \"$D\" != changes_requested ] && [ \"$D\" != needs_human_review ]; then D=invalid; fi
-if [ \"$D\" = changes_requested ]; then
-  B=$(jq '[.findings[]? | select(.severity == \"blocking\")] | length' $F 2>/dev/null || echo 0)
-  if [ \"$B\" = 0 ]; then D=invalid; fi
-fi
-if [ \"$D\" = invalid ]; then
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/review_attempts
-  if [ $A -lt 2 ]; then echo 'verdict.json is missing, malformed, or requests changes with no blocking finding; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
+  echo '{\"context_updates\":{\"review_decision\":\"invalid\"}}'
+  exit 0
+fi
+echo 0 > /tmp/fabro/review_attempts
+D=$(jq -r .decision $F 2>/dev/null || echo invalid)
+if [ \"$D\" = changes_requested ]; then
+  B=$(jq '[.findings[]? | select(.severity == \"blocking\")] | length' $F 2>/dev/null || echo 0)
+  if [ \"$B\" = 0 ]; then
+    A=$((A+1))
+    echo $A > /tmp/fabro/review_attempts
+    if [ $A -lt 2 ]; then echo 'verdict.json requests changes with no blocking finding; rewrite it exactly per the contract' >&2; exit 1; fi
+    D=invalid
+  fi
 fi
 echo 0 > /tmp/fabro/review_attempts
 if [ \"$D\" = changes_requested ]; then
@@ -804,42 +813,51 @@ echo '{\"context_updates\":{\"extra_done\":false,\"standards_status\":\"none\",\
     standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/standards.json
 A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)
-D=$(jq -r .decision $F 2>/dev/null || echo invalid)
-if [ \"$D\" != approve ] && [ \"$D\" != findings ] && [ \"$D\" != needs_human_review ]; then D=invalid; fi
-if [ \"$D\" = invalid ]; then
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/standards_attempts
-  if [ $A -lt 2 ]; then echo 'standards.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
+  echo '{\"context_updates\":{\"standards_status\":\"invalid\"}}'
+  exit 0
 fi
 echo 0 > /tmp/fabro/standards_attempts
+D=$(jq -r .decision $F 2>/dev/null || echo invalid)
 echo '{\"context_updates\":{\"standards_status\":\"'$D'\"}}'"]
 
     spec [label="Spec review", class="review-frontier", timeout="15m", max_retries=1, prompt="@prompts/spec.md.j2"]
     spec_gate [label="Validate spec output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/spec.json
 A=$(cat /tmp/fabro/spec_attempts 2>/dev/null || echo 0)
-D=$(jq -r .decision $F 2>/dev/null || echo invalid)
-if [ \"$D\" != approve ] && [ \"$D\" != findings ] && [ \"$D\" != needs_human_review ]; then D=invalid; fi
-if [ \"$D\" = invalid ]; then
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/spec_attempts
-  if [ $A -lt 2 ]; then echo 'spec.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
+  echo '{\"context_updates\":{\"spec_status\":\"invalid\"}}'
+  exit 0
 fi
 echo 0 > /tmp/fabro/spec_attempts
+D=$(jq -r .decision $F 2>/dev/null || echo invalid)
 echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
     quality [label="Code quality review", class="review-quality", timeout="15m", max_retries=1, prompt="@prompts/quality.md.j2"]
     quality_gate [label="Validate quality output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/quality.json
 A=$(cat /tmp/fabro/quality_attempts 2>/dev/null || echo 0)
-D=$(jq -r .decision $F 2>/dev/null || echo invalid)
-if [ \"$D\" != approve ] && [ \"$D\" != findings ] && [ \"$D\" != needs_human_review ]; then D=invalid; fi
-if [ \"$D\" = invalid ]; then
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/quality_attempts
-  if [ $A -lt 2 ]; then echo 'quality.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
+  echo '{\"context_updates\":{\"quality_status\":\"invalid\"}}'
+  exit 0
 fi
 echo 0 > /tmp/fabro/quality_attempts
+D=$(jq -r .decision $F 2>/dev/null || echo invalid)
 echo '{\"context_updates\":{\"quality_status\":\"'$D'\"}}'"]
 
     extra_decompose [label="Follow-up decomposer", class="review-frontier", timeout="15m", max_retries=1, prompt="@prompts/extra_decompose.md.j2"]

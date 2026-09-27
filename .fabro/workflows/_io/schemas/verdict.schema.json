@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "verdict",
+  "title": "verdict — the task reviewer's verdict (backlog review)",
+  "description": "The task reviewer's output (docs/stage-io, task 08). Enforces the shape the gate + prompt contract demand. The semantic rule that changes_requested needs at least one blocking finding is NOT expressible as a schema, so it stays in review_gate (AGENTS.md). _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "summary", "findings"],
+  "properties": {
+    "decision": {
+      "enum": ["approved", "changes_requested", "needs_human_review"],
+      "description": "approved: no blocking findings (nits allowed). changes_requested: at least one blocking finding. needs_human_review: the change cannot be judged without a human decision."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One or two sentences stating the verdict and why."
+    },
+    "findings": {
+      "type": "array",
+      "description": "The review findings; may be [].",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "message"],
+        "properties": {
+          "severity": {
+            "enum": ["blocking", "nit"],
+            "description": "blocking: must be fixed for this task to count. nit: a concern not worth blocking on."
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What is wrong, where, and what to change - specific enough to act on without re-deriving it."
+          }
+        }
+      }
+    }
+  }
+}

@@ -2498,6 +2498,79 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# reviewer gates — C7 receipt check on the migrated reviewer stages (ADR 0016
+# task 08): backlog review/standards/spec/quality and review-merge standards/spec.
+# A real submit stamps `_io.visit`; hand-written or stale files are refused.
+# ---------------------------------------------------------------------------
+echo ""
+echo "reviewer gates"
+T="$WORK/rgates"; rm -rf "$T"; mkdir -p "$T/review" "$T/extra" "$T/feedback" "$T/.io"
+extract_from "$GRAPH"  review_gate    | sed "s#/tmp/fabro#$T#g" > "$T/review.sh"
+extract_from "$GRAPH"  standards_gate | sed "s#/tmp/fabro#$T#g" > "$T/standards.sh"
+extract_from "$GRAPH"  spec_gate      | sed "s#/tmp/fabro#$T#g" > "$T/spec.sh"
+extract_from "$GRAPH"  quality_gate   | sed "s#/tmp/fabro#$T#g" > "$T/quality.sh"
+extract_from "$SHARED" standards_gate | sed "s#/tmp/fabro#$T#g" > "$T/phase_standards.sh"
+extract_from "$SHARED" spec_gate      | sed "s#/tmp/fabro#$T#g" > "$T/phase_spec.sh"
+for s in review standards spec quality phase_standards phase_spec; do
+    sh -n "$T/$s.sh" >/dev/null 2>"$T/$s.syntax" || {
+        FAIL=$((FAIL+1)); printf '  FAIL %s gate is not valid POSIX sh\n' "$s"; sed 's/^/       /' "$T/$s.syntax"; }
+done
+FV=fac3fac3fac3fac3fac3fac3fac3fac3
+vg_stage() { printf '%s' "{\"workflow\":\"backlog\",\"node\":\"review\",\"visit\":\"$FV\",\"started\":\"2026-09-27T00:00:00Z\"}" > "$T/.io/stage.json"; }
+vg_stamp() { jq --arg v "$FV" '._io.visit = $v' > "$1"; }
+
+# --- backlog review ---------------------------------------------------------
+vg_stage; printf '%s' '{"decision":"approved","summary":"ok","findings":[]}' | vg_stamp "$T/review/verdict.json"
+OUT=$(sh "$T/review.sh" 2>&1)
+check "review: approved routes approved" "approved" "$(jq -r '.context_updates.review_decision' <<<"$(lastjson "$OUT")")"
+# changes_requested with a blocking finding writes rework.md and routes
+printf '%s' '{"decision":"changes_requested","summary":"fix X","findings":[{"severity":"blocking","message":"a.ts:1 must change"}]}' | vg_stamp "$T/review/verdict.json"
+OUT=$(sh "$T/review.sh" 2>&1)
+check "review: changes_requested routes"   "changes_requested" "$(jq -r '.context_updates.review_decision' <<<"$(lastjson "$OUT")")"
+check "review: rework.md has the finding"  "1" "$(grep -c 'a.ts:1 must change' "$T/feedback/rework.md")"
+# changes_requested with no blocking finding is a repair turn
+printf '%s' '{"decision":"changes_requested","summary":"x","findings":[{"severity":"nit","message":"n"}]}' | vg_stamp "$T/review/verdict.json"
+echo 0 > "$T/review_attempts"
+sh "$T/review.sh" >/dev/null 2>&1; RC=$?
+check "review: changes w/o blocking is repair" "1" "$RC"
+# hand-written (unstamped) is refused, then invalid after two tries
+printf '%s' '{"decision":"approved","summary":"s","findings":[]}' > "$T/review/verdict.json"
+echo 0 > "$T/review_attempts"
+OUT=$(sh "$T/review.sh" 2>&1); RC=$?
+check "review: unstamped gets a repair"  "1" "$RC"
+check "review: repair says submit tool"  "1" "$(grep -c 'submit tool' <<<"$OUT")"
+OUT=$(sh "$T/review.sh" 2>&1)
+check "review: second unstamped is invalid" "invalid" "$(jq -r '.context_updates.review_decision' <<<"$(lastjson "$OUT")")"
+
+# --- the five decision-enum gates -------------------------------------------
+rg_case() { # $1 script $2 key $3 decision $4 output path
+  local s="$1" dec="$3"
+  vg_stage; printf '%s' "{\"decision\":\"$dec\",\"summary\":\"s\",\"findings\":[]}" | vg_stamp "$4"
+  OUT=$(sh "$T/$s.sh" 2>&1)
+  check "$s: $dec routes" "$dec" "$(jq -r ".context_updates.$2" <<<"$(lastjson "$OUT")")"
+}
+rg_case standards standards_status approve "$T/extra/standards.json"
+rg_case spec spec_status findings "$T/extra/spec.json"
+rg_case quality quality_status needs_human_review "$T/extra/quality.json"
+rg_case phase_standards standards_status approve "$T/review/standards.json"
+rg_case phase_spec spec_status findings "$T/review/spec.json"
+# unstamped extra verdict is a repair, then invalid
+printf '%s' '{"decision":"approve","summary":"s","findings":[]}' > "$T/extra/standards.json"
+echo 0 > "$T/standards_attempts"
+OUT=$(sh "$T/standards.sh" 2>&1); RC=$?
+check "standards: unstamped is repair"   "1" "$RC"
+check "standards: repair says submit"     "1" "$(grep -c 'submit tool' <<<"$OUT")"
+OUT=$(sh "$T/standards.sh" 2>&1)
+check "standards: second unstamped invalid" "invalid" "$(jq -r '.context_updates.standards_status' <<<"$(lastjson "$OUT")")"
+# stale receipt (visit mismatch) is a repair, never the decision
+vg_stage; printf '%s' '{"decision":"approve","summary":"s","findings":[]}' | vg_stamp "$T/extra/standards.json"
+printf '%s' '{"workflow":"backlog","node":"review","visit":"ffffffffffffffffffffffffffffffff"}' > "$T/.io/stage.json"
+echo 0 > "$T/standards_attempts"
+sh "$T/standards.sh" >/dev/null 2>&1; RC=$?
+check "standards: stale receipt is repair" "1" "$RC"
+check "standards: stale never routes approve" "0" "$(sh "$T/standards.sh" 2>&1 | grep -c '"standards_status":"approve"')"
+
+# ---------------------------------------------------------------------------
 # review-merge render — the Refuter and hygiene rows and sections (ADR 0013 D5)
 # ---------------------------------------------------------------------------
 echo ""

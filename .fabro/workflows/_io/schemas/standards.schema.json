@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "standards",
+  "title": "standards — the merge-phase standards verdict (review-merge)",
+  "description": "The review-merge standards reviewer's output (docs/stage-io, task 08). Distinct from backlog's extra_verdict: its findings carry id, severity, files, line and suggestion. The gates only check decision; the schema enforces it (approve|findings|needs_human_review). _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "summary", "findings"],
+  "properties": {
+    "decision": {
+      "enum": ["approve", "findings", "needs_human_review"],
+      "description": "approve: nothing worth changing. findings: at least one finding is warranted. needs_human_review: the inputs cannot be judged safely; ends the run at mark_needs_human."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One or two sentences stating the verdict and why."
+    },
+    "findings": {
+      "type": "array",
+      "description": "The findings; [] when none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "message", "files"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "A stable id, e.g. STD-001."
+          },
+          "severity": {
+            "enum": ["info", "warning", "error"],
+            "description": "How seriously this finding blocks merging."
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What is wrong, which rule or smell it violates, and what must change."
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Repository-relative paths; may be empty but must be present."
+          },
+          "line": {
+            "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }],
+            "description": "The line of the finding, or null when it has no single line."
+          },
+          "suggestion": {
+            "type": "string",
+            "description": "The concrete remediation, not a restatement of the problem."
+          }
+        }
+      }
+    }
+  }
+}

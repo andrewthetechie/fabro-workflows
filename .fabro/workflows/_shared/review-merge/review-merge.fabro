@@ -238,28 +238,34 @@ fi"]
     standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/standards.json
 A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)
-D=$(jq -r .decision $F 2>/dev/null || echo invalid)
-if [ \"$D\" != approve ] && [ \"$D\" != findings ] && [ \"$D\" != needs_human_review ]; then D=invalid; fi
-if [ \"$D\" = invalid ]; then
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/standards_attempts
-  if [ $A -lt 2 ]; then echo 'standards.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
+  echo '{\"context_updates\":{\"standards_status\":\"invalid\"}}'
+  exit 0
 fi
 echo 0 > /tmp/fabro/standards_attempts
+D=$(jq -r .decision $F 2>/dev/null || echo invalid)
 echo '{\"context_updates\":{\"standards_status\":\"'$D'\"}}'"]
 
     spec [label="Spec review", class="merge-spec", timeout="15m", max_retries=1, prompt="@prompts/spec.md.j2"]
     spec_gate [label="Validate spec output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/spec.json
 A=$(cat /tmp/fabro/spec_attempts 2>/dev/null || echo 0)
-D=$(jq -r .decision $F 2>/dev/null || echo invalid)
-if [ \"$D\" != approve ] && [ \"$D\" != findings ] && [ \"$D\" != needs_human_review ]; then D=invalid; fi
-if [ \"$D\" = invalid ]; then
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/spec_attempts
-  if [ $A -lt 2 ]; then echo 'spec.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
+  echo '{\"context_updates\":{\"spec_status\":\"invalid\"}}'
+  exit 0
 fi
 echo 0 > /tmp/fabro/spec_attempts
+D=$(jq -r .decision $F 2>/dev/null || echo invalid)
 echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
     // ---- Review and fix (one agent, as Sandcastle does) ----

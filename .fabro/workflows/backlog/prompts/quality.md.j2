@@ -9,18 +9,14 @@ yourself.
 
 ## Inputs
 
-Read all of these before deciding:
+Call `inputs` first. It returns the branch diff and its statistics, the changed-files
+list, the parent issue and the run's per-task completion notes. When it ends with
+`MORE:` lines, request each of those parts before you judge. `submit` refuses until
+you have read every part.
 
-| Path | What it is |
-|---|---|
-| `/tmp/fabro/extra/diff.patch` | `git diff origin/main...HEAD` — everything this run changed |
-| `/tmp/fabro/extra/diffstat.txt` | `git diff --stat origin/main...HEAD` |
-| `/tmp/fabro/extra/changed_files.txt` | `git diff --name-only origin/main...HEAD` |
-| `/tmp/fabro/issue.json` | the parent issue — reporter intent and acceptance criteria |
-| `/tmp/fabro/completed.md` | per-task completion notes appended by `integrate`; what the run believes it did |
-
-The repository checkout is available for read-only inspection. There is no PRD
-document here — the parent issue in `/tmp/fabro/issue.json` plays that role.
+The repository checkout in the current working directory is available for read-only
+inspection. There is no PRD document here — the parent issue the `inputs` tool returns
+plays that role.
 
 ## Operating rules
 
@@ -98,25 +94,18 @@ all its rounds and end in human rescue.
 
 ## Output
 
-Write your verdict as raw JSON to `/tmp/fabro/extra/quality.json`. The file must
-contain exactly this shape and nothing else — no markdown fence, no commentary, no
-extra keys:
+Call `submit` with your `decision`, `summary` and `findings`. It checks the shape and
+tells you what to fix. Do not write the file yourself: a result that `submit` did not
+write is refused.
 
-```json
-{
-  "decision": "approve" | "findings" | "needs_human_review",
-  "summary": "one or two sentences stating the verdict and why",
-  "findings": [
-    {
-      "message": "what is wrong and what the follow-up work must change",
-      "files": ["path/to/file.ts"],
-      "suggestion": "the concrete remediation"
-    }
-  ]
-}
-```
+- `decision` is `approve`, `findings` or `needs_human_review`.
+- `summary` is one or two sentences stating the verdict and why.
+- `findings` has one entry per follow-up. Each entry has `message` (what is wrong and
+  what the follow-up work must change), `files` (an array of repository-relative
+  paths; may be empty but must be present) and `suggestion` (the concrete
+  remediation, not a restatement of the problem).
 
-Rules — a validation gate reads this file and rejects it on any violation, which
+Decision rules — a gate reads what you submit and rejects it on any violation, which
 costs a full retry round:
 
 - `approve` — nothing worth a follow-up task. `findings` is `[]`.
@@ -124,10 +113,6 @@ costs a full retry round:
 - `needs_human_review` — the branch cannot be judged safely. **This routes the whole
   run to the human rescue gate**, so use it only when a human decision is genuinely
   required, not merely when something is uncertain.
-- `files` is an array of repository-relative paths; it may be empty but must be
-  present.
-- `suggestion` is the concrete remediation, not a restatement of the problem.
-- Use only the keys above. No `severity`, no `reviewer`, no `axis`, no `kind`.
-- The file holds raw JSON — no markdown fence, nothing before or after it.
 
-After writing `/tmp/fabro/extra/quality.json`, stop. Do not print the JSON in chat.
+After `submit` writes your result to `/tmp/fabro/extra/quality.json`, stop. Do not
+print the JSON in chat.

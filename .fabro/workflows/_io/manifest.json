@@ -4,32 +4,98 @@
   "phases": {
     "review-merge": {
       "standards": {
-        "live": false,
+        "live": true,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/standards.md.j2",
         "inputs": [
-          {"name": "diff.patch", "path": "/tmp/fabro/review/diff.patch", "required": true, "about": "the full unified diff of everything the pull request changed, origin/<base>...HEAD after the rebase"},
-          {"name": "diffstat.txt", "path": "/tmp/fabro/review/diffstat.txt", "required": true, "about": "the change's file-by-file size summary"},
-          {"name": "changed_files.txt", "path": "/tmp/fabro/review/changed_files.txt", "required": true, "about": "every path the change touches"},
-          {"name": "commits.txt", "path": "/tmp/fabro/review/commits.txt", "required": true, "about": "the commits on the branch"},
-          {"name": "pr.json", "path": "/tmp/fabro/pr.json", "required": true, "about": "PR number, title, body, refs and labels - context only"},
-          {"name": "linked_issues.json", "path": "/tmp/fabro/linked_issues.json", "required": true, "about": "linked issues; may be [] - context only"}
+          {
+            "name": "diff.patch",
+            "path": "/tmp/fabro/review/diff.patch",
+            "required": true,
+            "about": "the full unified diff of everything the pull request changed, origin/<base>...HEAD after the rebase"
+          },
+          {
+            "name": "diffstat.txt",
+            "path": "/tmp/fabro/review/diffstat.txt",
+            "required": true,
+            "about": "the change's file-by-file size summary"
+          },
+          {
+            "name": "changed_files.txt",
+            "path": "/tmp/fabro/review/changed_files.txt",
+            "required": true,
+            "about": "every path the change touches"
+          },
+          {
+            "name": "commits.txt",
+            "path": "/tmp/fabro/review/commits.txt",
+            "required": true,
+            "about": "the commits on the branch"
+          },
+          {
+            "name": "pr.json",
+            "path": "/tmp/fabro/pr.json",
+            "required": true,
+            "about": "PR number, title, body, refs and labels - context only"
+          },
+          {
+            "name": "linked_issues.json",
+            "path": "/tmp/fabro/linked_issues.json",
+            "required": true,
+            "about": "linked issues; may be [] - context only"
+          }
         ],
-        "output": {"path": "/tmp/fabro/review/standards.json", "schema": "standards"},
+        "output": {
+          "path": "/tmp/fabro/review/standards.json",
+          "schema": "standards"
+        },
         "sealed": [],
         "also": []
       },
       "spec": {
-        "live": false,
+        "live": true,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/spec.md.j2",
         "inputs": [
-          {"name": "pr.json", "path": "/tmp/fabro/pr.json", "required": true, "about": "PR number, title, body, refs and labels"},
-          {"name": "linked_issues.json", "path": "/tmp/fabro/linked_issues.json", "required": true, "about": "linked issues; may be []"},
-          {"name": "diff.patch", "path": "/tmp/fabro/review/diff.patch", "required": true, "about": "the full unified diff of everything the pull request changed"},
-          {"name": "diffstat.txt", "path": "/tmp/fabro/review/diffstat.txt", "required": true, "about": "the change's file-by-file size summary"},
-          {"name": "changed_files.txt", "path": "/tmp/fabro/review/changed_files.txt", "required": true, "about": "every path the change touches"},
-          {"name": "commits.txt", "path": "/tmp/fabro/review/commits.txt", "required": true, "about": "the commits on the branch"}
+          {
+            "name": "pr.json",
+            "path": "/tmp/fabro/pr.json",
+            "required": true,
+            "about": "PR number, title, body, refs and labels"
+          },
+          {
+            "name": "linked_issues.json",
+            "path": "/tmp/fabro/linked_issues.json",
+            "required": true,
+            "about": "linked issues; may be []"
+          },
+          {
+            "name": "diff.patch",
+            "path": "/tmp/fabro/review/diff.patch",
+            "required": true,
+            "about": "the full unified diff of everything the pull request changed"
+          },
+          {
+            "name": "diffstat.txt",
+            "path": "/tmp/fabro/review/diffstat.txt",
+            "required": true,
+            "about": "the change's file-by-file size summary"
+          },
+          {
+            "name": "changed_files.txt",
+            "path": "/tmp/fabro/review/changed_files.txt",
+            "required": true,
+            "about": "every path the change touches"
+          },
+          {
+            "name": "commits.txt",
+            "path": "/tmp/fabro/review/commits.txt",
+            "required": true,
+            "about": "the commits on the branch"
+          }
         ],
-        "output": {"path": "/tmp/fabro/review/spec.json", "schema": "spec"},
+        "output": {
+          "path": "/tmp/fabro/review/spec.json",
+          "schema": "spec"
+        },
         "sealed": [],
         "also": []
       },
@@ -37,18 +103,73 @@
         "live": false,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/review_fix.md.j2",
         "inputs": [
-          {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "a ranked outline of this checkout; can be missing, continue without it", "absent": "the repository map is missing; proceed without it"},
-          {"name": "diff.patch", "path": "/tmp/fabro/review/diff.patch", "required": true, "about": "the full unified diff of the pull request, origin/<base>...HEAD"},
-          {"name": "diffstat.txt", "path": "/tmp/fabro/review/diffstat.txt", "required": true, "about": "the change's file-by-file size summary"},
-          {"name": "changed_files.txt", "path": "/tmp/fabro/review/changed_files.txt", "required": true, "about": "every path the pull request touches"},
-          {"name": "commits.txt", "path": "/tmp/fabro/review/commits.txt", "required": true, "about": "the commits on the branch"},
-          {"name": "standards.json", "path": "/tmp/fabro/review/standards.json", "required": true, "about": "the standards reviewer's verdict"},
-          {"name": "spec.json", "path": "/tmp/fabro/review/spec.json", "required": true, "about": "the spec reviewer's verdict"},
-          {"name": "pr.json", "path": "/tmp/fabro/pr.json", "required": true, "about": "PR number, title, body, refs and labels"},
-          {"name": "linked_issues.json", "path": "/tmp/fabro/linked_issues.json", "required": true, "about": "linked issues; may be []"},
-          {"name": "fix.md", "path": "/tmp/fabro/feedback/fix.md", "required": false, "about": "present only on a retry; the tail of the CI failure that followed the previous fix attempt", "absent": "no previous fix attempt"}
+          {
+            "name": "repomap.md",
+            "path": "/tmp/fabro/repomap.md",
+            "required": false,
+            "about": "a ranked outline of this checkout; can be missing, continue without it",
+            "absent": "the repository map is missing; proceed without it"
+          },
+          {
+            "name": "diff.patch",
+            "path": "/tmp/fabro/review/diff.patch",
+            "required": true,
+            "about": "the full unified diff of the pull request, origin/<base>...HEAD"
+          },
+          {
+            "name": "diffstat.txt",
+            "path": "/tmp/fabro/review/diffstat.txt",
+            "required": true,
+            "about": "the change's file-by-file size summary"
+          },
+          {
+            "name": "changed_files.txt",
+            "path": "/tmp/fabro/review/changed_files.txt",
+            "required": true,
+            "about": "every path the pull request touches"
+          },
+          {
+            "name": "commits.txt",
+            "path": "/tmp/fabro/review/commits.txt",
+            "required": true,
+            "about": "the commits on the branch"
+          },
+          {
+            "name": "standards.json",
+            "path": "/tmp/fabro/review/standards.json",
+            "required": true,
+            "about": "the standards reviewer's verdict"
+          },
+          {
+            "name": "spec.json",
+            "path": "/tmp/fabro/review/spec.json",
+            "required": true,
+            "about": "the spec reviewer's verdict"
+          },
+          {
+            "name": "pr.json",
+            "path": "/tmp/fabro/pr.json",
+            "required": true,
+            "about": "PR number, title, body, refs and labels"
+          },
+          {
+            "name": "linked_issues.json",
+            "path": "/tmp/fabro/linked_issues.json",
+            "required": true,
+            "about": "linked issues; may be []"
+          },
+          {
+            "name": "fix.md",
+            "path": "/tmp/fabro/feedback/fix.md",
+            "required": false,
+            "about": "present only on a retry; the tail of the CI failure that followed the previous fix attempt",
+            "absent": "no previous fix attempt"
+          }
         ],
-        "output": {"path": "/tmp/fabro/review/fix_result.json", "schema": "fix_result"},
+        "output": {
+          "path": "/tmp/fabro/review/fix_result.json",
+          "schema": "fix_result"
+        },
         "sealed": [],
         "also": []
       },
@@ -56,13 +177,41 @@
         "live": true,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/refute.md.j2",
         "inputs": [
-          {"name": "issues", "path": "/tmp/fabro/review/refute_issues.json", "required": true, "about": "the issues this PR closes, each with number, title and body; may be []"},
-          {"name": "pr", "path": "/tmp/fabro/pr.json", "required": true, "about": "the PR number, title, body, refs and labels"},
-          {"name": "diff", "path": "/tmp/fabro/review/refute_diff.patch", "required": true, "about": "the diff of the PR against its base, smallest files first, cut off at about 300 KB"},
-          {"name": "omitted", "path": "/tmp/fabro/review/refute_omitted.txt", "required": true, "about": "the changed files that did not fit in the diff, one per line with their changed-line count; may be empty"},
-          {"name": "hygiene", "path": "/tmp/fabro/review/hygiene.json", "required": true, "about": "the diff-hygiene counters; samples lists where each fired"}
+          {
+            "name": "issues",
+            "path": "/tmp/fabro/review/refute_issues.json",
+            "required": true,
+            "about": "the issues this PR closes, each with number, title and body; may be []"
+          },
+          {
+            "name": "pr",
+            "path": "/tmp/fabro/pr.json",
+            "required": true,
+            "about": "the PR number, title, body, refs and labels"
+          },
+          {
+            "name": "diff",
+            "path": "/tmp/fabro/review/refute_diff.patch",
+            "required": true,
+            "about": "the diff of the PR against its base, smallest files first, cut off at about 300 KB"
+          },
+          {
+            "name": "omitted",
+            "path": "/tmp/fabro/review/refute_omitted.txt",
+            "required": true,
+            "about": "the changed files that did not fit in the diff, one per line with their changed-line count; may be empty"
+          },
+          {
+            "name": "hygiene",
+            "path": "/tmp/fabro/review/hygiene.json",
+            "required": true,
+            "about": "the diff-hygiene counters; samples lists where each fired"
+          }
         ],
-        "output": {"path": "/tmp/fabro/review/refute.json", "schema": "refute"},
+        "output": {
+          "path": "/tmp/fabro/review/refute.json",
+          "schema": "refute"
+        },
         "sealed": [
           "/tmp/fabro/review/standards.json",
           "/tmp/fabro/review/spec.json",
@@ -70,20 +219,55 @@
           "/tmp/fabro/review/ci_fix_result.json",
           "/tmp/fabro/feedback/**"
         ],
-        "also": ["/tmp/fabro/feedback/"]
+        "also": [
+          "/tmp/fabro/feedback/"
+        ]
       },
       "ci_fix_t1": {
         "live": false,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/ci_fix.md.j2",
         "inputs": [
-          {"name": "ci_fix.md", "path": "/tmp/fabro/feedback/ci_fix.md", "required": true, "about": "the failing check names and the failing log output from gh run view --log-failed"},
-          {"name": "changed_files.txt", "path": "/tmp/fabro/review/changed_files.txt", "required": true, "about": "every path this PR already touches; a ceiling, not a suggestion"},
-          {"name": "diff.patch", "path": "/tmp/fabro/review/diff.patch", "required": true, "about": "the full unified diff of the PR, origin/<base>...HEAD"},
-          {"name": "diffstat.txt", "path": "/tmp/fabro/review/diffstat.txt", "required": true, "about": "the change's file-by-file size summary"},
-          {"name": "commits.txt", "path": "/tmp/fabro/review/commits.txt", "required": true, "about": "the commits on the branch"},
-          {"name": "pr.json", "path": "/tmp/fabro/pr.json", "required": true, "about": "PR number, title, body, refs and labels"}
+          {
+            "name": "ci_fix.md",
+            "path": "/tmp/fabro/feedback/ci_fix.md",
+            "required": true,
+            "about": "the failing check names and the failing log output from gh run view --log-failed"
+          },
+          {
+            "name": "changed_files.txt",
+            "path": "/tmp/fabro/review/changed_files.txt",
+            "required": true,
+            "about": "every path this PR already touches; a ceiling, not a suggestion"
+          },
+          {
+            "name": "diff.patch",
+            "path": "/tmp/fabro/review/diff.patch",
+            "required": true,
+            "about": "the full unified diff of the PR, origin/<base>...HEAD"
+          },
+          {
+            "name": "diffstat.txt",
+            "path": "/tmp/fabro/review/diffstat.txt",
+            "required": true,
+            "about": "the change's file-by-file size summary"
+          },
+          {
+            "name": "commits.txt",
+            "path": "/tmp/fabro/review/commits.txt",
+            "required": true,
+            "about": "the commits on the branch"
+          },
+          {
+            "name": "pr.json",
+            "path": "/tmp/fabro/pr.json",
+            "required": true,
+            "about": "PR number, title, body, refs and labels"
+          }
         ],
-        "output": {"path": "/tmp/fabro/review/ci_fix_result.json", "schema": "ci_fix_result"},
+        "output": {
+          "path": "/tmp/fabro/review/ci_fix_result.json",
+          "schema": "ci_fix_result"
+        },
         "sealed": [],
         "also": []
       },
@@ -91,14 +275,47 @@
         "live": false,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/ci_fix.md.j2",
         "inputs": [
-          {"name": "ci_fix.md", "path": "/tmp/fabro/feedback/ci_fix.md", "required": true, "about": "the failing check names and the failing log output from gh run view --log-failed"},
-          {"name": "changed_files.txt", "path": "/tmp/fabro/review/changed_files.txt", "required": true, "about": "every path this PR already touches; a ceiling, not a suggestion"},
-          {"name": "diff.patch", "path": "/tmp/fabro/review/diff.patch", "required": true, "about": "the full unified diff of the PR, origin/<base>...HEAD"},
-          {"name": "diffstat.txt", "path": "/tmp/fabro/review/diffstat.txt", "required": true, "about": "the change's file-by-file size summary"},
-          {"name": "commits.txt", "path": "/tmp/fabro/review/commits.txt", "required": true, "about": "the commits on the branch"},
-          {"name": "pr.json", "path": "/tmp/fabro/pr.json", "required": true, "about": "PR number, title, body, refs and labels"}
+          {
+            "name": "ci_fix.md",
+            "path": "/tmp/fabro/feedback/ci_fix.md",
+            "required": true,
+            "about": "the failing check names and the failing log output from gh run view --log-failed"
+          },
+          {
+            "name": "changed_files.txt",
+            "path": "/tmp/fabro/review/changed_files.txt",
+            "required": true,
+            "about": "every path this PR already touches; a ceiling, not a suggestion"
+          },
+          {
+            "name": "diff.patch",
+            "path": "/tmp/fabro/review/diff.patch",
+            "required": true,
+            "about": "the full unified diff of the PR, origin/<base>...HEAD"
+          },
+          {
+            "name": "diffstat.txt",
+            "path": "/tmp/fabro/review/diffstat.txt",
+            "required": true,
+            "about": "the change's file-by-file size summary"
+          },
+          {
+            "name": "commits.txt",
+            "path": "/tmp/fabro/review/commits.txt",
+            "required": true,
+            "about": "the commits on the branch"
+          },
+          {
+            "name": "pr.json",
+            "path": "/tmp/fabro/pr.json",
+            "required": true,
+            "about": "PR number, title, body, refs and labels"
+          }
         ],
-        "output": {"path": "/tmp/fabro/review/ci_fix_result.json", "schema": "ci_fix_result"},
+        "output": {
+          "path": "/tmp/fabro/review/ci_fix_result.json",
+          "schema": "ci_fix_result"
+        },
         "sealed": [],
         "also": []
       }
@@ -108,10 +325,24 @@
         "live": false,
         "prompt": ".fabro/workflows/_shared/triage/prompts/improve.md.j2",
         "inputs": [
-          {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "a ranked outline of this checkout; can be missing, continue without it", "absent": "the repository map is missing; proceed without it"},
-          {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the single issue, with .body as the report, .title the current title, .comments the human discussion, .labels what the repository already believes"}
+          {
+            "name": "repomap.md",
+            "path": "/tmp/fabro/repomap.md",
+            "required": false,
+            "about": "a ranked outline of this checkout; can be missing, continue without it",
+            "absent": "the repository map is missing; proceed without it"
+          },
+          {
+            "name": "issue.json",
+            "path": "/tmp/fabro/issue.json",
+            "required": true,
+            "about": "the single issue, with .body as the report, .title the current title, .comments the human discussion, .labels what the repository already believes"
+          }
         ],
-        "output": {"path": "/tmp/fabro/improve.json", "schema": "improve"},
+        "output": {
+          "path": "/tmp/fabro/improve.json",
+          "schema": "improve"
+        },
         "sealed": [],
         "also": []
       },
@@ -119,27 +350,59 @@
         "live": false,
         "prompt": ".fabro/workflows/_shared/triage/prompts/triage.md.j2",
         "inputs": [
-          {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "a ranked outline of this checkout; can be missing, continue without it", "absent": "the repository map is missing; proceed without it"},
-          {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the single issue refreshed after improve, with .title, .comments and .labels"}
+          {
+            "name": "repomap.md",
+            "path": "/tmp/fabro/repomap.md",
+            "required": false,
+            "about": "a ranked outline of this checkout; can be missing, continue without it",
+            "absent": "the repository map is missing; proceed without it"
+          },
+          {
+            "name": "issue.json",
+            "path": "/tmp/fabro/issue.json",
+            "required": true,
+            "about": "the single issue refreshed after improve, with .title, .comments and .labels"
+          }
         ],
-        "output": {"path": "/tmp/fabro/triage.json", "schema": "triage"},
+        "output": {
+          "path": "/tmp/fabro/triage.json",
+          "schema": "triage"
+        },
         "sealed": [],
-        "also": ["/tmp/fabro/triage.md"]
+        "also": [
+          "/tmp/fabro/triage.md"
+        ]
       }
     }
   },
   "workflows": {
     "backlog": {
-      "imports": {"review_merge": "review-merge"},
+      "imports": {
+        "review_merge": "review-merge"
+      },
       "stages": {
         "decompose": {
           "live": false,
           "prompt": ".fabro/workflows/backlog/prompts/decompose.md.j2",
           "inputs": [
-            {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "ranked outline of the checkout; can be missing, continue without it", "absent": "the repository map is missing; proceed without it"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the full parent issue; .body at body, .title at title, .number at number, human discussion at .comments"}
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "ranked outline of the checkout; can be missing, continue without it",
+              "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the full parent issue; .body at body, .title at title, .number at number, human discussion at .comments"
+            }
           ],
-          "output": {"path": "/tmp/fabro/decomposition.json", "schema": "decomposition"},
+          "output": {
+            "path": "/tmp/fabro/decomposition.json",
+            "schema": "decomposition"
+          },
           "sealed": [],
           "also": []
         },
@@ -147,9 +410,24 @@
           "live": false,
           "prompt": ".fabro/workflows/backlog/prompts/resolve_merge.md.j2",
           "inputs": [
-            {"name": "pre_merge_sha", "path": "/tmp/fabro/pre_merge_sha", "required": true, "about": "the commit the run branch was on before the failed merge; HEAD must be back at this on abort"},
-            {"name": "current_task.json", "path": "/tmp/fabro/current_task.json", "required": true, "about": "the task that starts once the merge lands, for intent"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue the accumulated work belongs to, supplemental"}
+            {
+              "name": "pre_merge_sha",
+              "path": "/tmp/fabro/pre_merge_sha",
+              "required": true,
+              "about": "the commit the run branch was on before the failed merge; HEAD must be back at this on abort"
+            },
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the task that starts once the merge lands, for intent"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue the accumulated work belongs to, supplemental"
+            }
           ],
           "output": null,
           "sealed": [],
@@ -159,40 +437,123 @@
           "live": false,
           "prompt": ".fabro/workflows/backlog/prompts/improve.md.j2",
           "inputs": [
-            {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "ranked outline of the checkout; can be missing, continue without it", "absent": "the repository map is missing; proceed without it"},
-            {"name": "current_task.json", "path": "/tmp/fabro/current_task.json", "required": true, "about": "the single task object being improved"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue, for reporter intent and human discussion"}
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "ranked outline of the checkout; can be missing, continue without it",
+              "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the single task object being improved"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, for reporter intent and human discussion"
+            }
           ],
-          "output": {"path": "/tmp/fabro/improve_result.json", "schema": "improve_result"},
+          "output": {
+            "path": "/tmp/fabro/improve_result.json",
+            "schema": "improve_result"
+          },
           "sealed": [],
-          "also": ["/tmp/fabro/task-context.md"]
+          "also": [
+            "/tmp/fabro/task-context.md"
+          ]
         },
         "coder": {
           "live": false,
           "prompt": ".fabro/workflows/backlog/prompts/coder.md.j2",
           "inputs": [
-            {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "ranked outline of the checkout; can be missing", "absent": "the repository map is missing; proceed without it"},
-            {"name": "task-context.md", "path": "/tmp/fabro/task-context.md", "required": false, "about": "what the improve stage found about this task; the checkout is the truth", "absent": "improve did not write a dossier for this task"},
-            {"name": "current_task.json", "path": "/tmp/fabro/current_task.json", "required": true, "about": "the task to implement; .title and .body are the spec, .files a hint"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue, for reporter intent and human discussion; supplemental"}
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "ranked outline of the checkout; can be missing",
+              "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": false,
+              "about": "what the improve stage found about this task; the checkout is the truth",
+              "absent": "improve did not write a dossier for this task"
+            },
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the task to implement; .title and .body are the spec, .files a hint"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, for reporter intent and human discussion; supplemental"
+            }
           ],
           "output": null,
           "sealed": [],
           "also": []
         },
         "review": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/reviewer.md.j2",
           "inputs": [
-            {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "ranked outline of the checkout; can be missing", "absent": "the repository map is missing; proceed without it"},
-            {"name": "task-context.md", "path": "/tmp/fabro/task-context.md", "required": false, "about": "what the improve stage found about the task under review; can be missing or wrong", "absent": "improve did not write a dossier for this task"},
-            {"name": "diff.patch", "path": "/tmp/fabro/review/diff.patch", "required": true, "about": "git diff <task_base_sha>..HEAD; the change under review, and the only thing being reviewed"},
-            {"name": "diffstat.txt", "path": "/tmp/fabro/review/diffstat.txt", "required": true, "about": "git diff --stat of the same range"},
-            {"name": "changed_files.txt", "path": "/tmp/fabro/review/changed_files.txt", "required": true, "about": "git diff --name-only of the same range"},
-            {"name": "current_task.json", "path": "/tmp/fabro/current_task.json", "required": true, "about": "the task this change was supposed to implement"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue, for reporter intent; supplemental"}
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "ranked outline of the checkout; can be missing",
+              "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": false,
+              "about": "what the improve stage found about the task under review; can be missing or wrong",
+              "absent": "improve did not write a dossier for this task"
+            },
+            {
+              "name": "diff.patch",
+              "path": "/tmp/fabro/review/diff.patch",
+              "required": true,
+              "about": "git diff <task_base_sha>..HEAD; the change under review, and the only thing being reviewed"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/review/diffstat.txt",
+              "required": true,
+              "about": "git diff --stat of the same range"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/review/changed_files.txt",
+              "required": true,
+              "about": "git diff --name-only of the same range"
+            },
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the task this change was supposed to implement"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, for reporter intent; supplemental"
+            }
           ],
-          "output": {"path": "/tmp/fabro/review/verdict.json", "schema": "verdict"},
+          "output": {
+            "path": "/tmp/fabro/review/verdict.json",
+            "schema": "verdict"
+          },
           "sealed": [],
           "also": []
         },
@@ -200,101 +561,325 @@
           "live": false,
           "prompt": ".fabro/workflows/backlog/prompts/rework.md.j2",
           "inputs": [
-            {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "ranked outline of the checkout; can be missing", "absent": "the repository map is missing; proceed without it"},
-            {"name": "task-context.md", "path": "/tmp/fabro/task-context.md", "required": false, "about": "what the improve stage found about this task; can be missing or wrong", "absent": "improve did not write a dossier for this task"},
-            {"name": "rescue.md", "path": "/tmp/fabro/feedback/rescue.md", "required": false, "about": "human guidance from a rescue gate, if present and non-empty; it overrides everything else", "absent": "no rescue guidance was left"},
-            {"name": "rework.md", "path": "/tmp/fabro/feedback/rework.md", "required": true, "about": "the findings; the reviewer's rejection scope, which is the entire scope of this stage"},
-            {"name": "current_task.json", "path": "/tmp/fabro/current_task.json", "required": true, "about": "the task being reworked; if missing, work from issue.json"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue, supplemental (and the fallback task source)"}
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "ranked outline of the checkout; can be missing",
+              "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": false,
+              "about": "what the improve stage found about this task; can be missing or wrong",
+              "absent": "improve did not write a dossier for this task"
+            },
+            {
+              "name": "rescue.md",
+              "path": "/tmp/fabro/feedback/rescue.md",
+              "required": false,
+              "about": "human guidance from a rescue gate, if present and non-empty; it overrides everything else",
+              "absent": "no rescue guidance was left"
+            },
+            {
+              "name": "rework.md",
+              "path": "/tmp/fabro/feedback/rework.md",
+              "required": true,
+              "about": "the findings; the reviewer's rejection scope, which is the entire scope of this stage"
+            },
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the task being reworked; if missing, work from issue.json"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, supplemental (and the fallback task source)"
+            }
           ],
           "output": null,
           "sealed": [],
-          "also": ["/tmp/fabro/feedback/"]
+          "also": [
+            "/tmp/fabro/feedback/"
+          ]
         },
         "rework_t2": {
           "live": false,
           "prompt": ".fabro/workflows/backlog/prompts/rework.md.j2",
           "inputs": [
-            {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "ranked outline of the checkout; can be missing", "absent": "the repository map is missing; proceed without it"},
-            {"name": "task-context.md", "path": "/tmp/fabro/task-context.md", "required": false, "about": "what the improve stage found about this task; can be missing or wrong", "absent": "improve did not write a dossier for this task"},
-            {"name": "rescue.md", "path": "/tmp/fabro/feedback/rescue.md", "required": false, "about": "human guidance from a rescue gate, if present and non-empty; it overrides everything else", "absent": "no rescue guidance was left"},
-            {"name": "rework.md", "path": "/tmp/fabro/feedback/rework.md", "required": true, "about": "the findings; the reviewer's rejection scope, which is the entire scope of this stage"},
-            {"name": "current_task.json", "path": "/tmp/fabro/current_task.json", "required": true, "about": "the task being reworked; if missing, work from issue.json"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue, supplemental (and the fallback task source)"}
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "ranked outline of the checkout; can be missing",
+              "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": false,
+              "about": "what the improve stage found about this task; can be missing or wrong",
+              "absent": "improve did not write a dossier for this task"
+            },
+            {
+              "name": "rescue.md",
+              "path": "/tmp/fabro/feedback/rescue.md",
+              "required": false,
+              "about": "human guidance from a rescue gate, if present and non-empty; it overrides everything else",
+              "absent": "no rescue guidance was left"
+            },
+            {
+              "name": "rework.md",
+              "path": "/tmp/fabro/feedback/rework.md",
+              "required": true,
+              "about": "the findings; the reviewer's rejection scope, which is the entire scope of this stage"
+            },
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the task being reworked; if missing, work from issue.json"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, supplemental (and the fallback task source)"
+            }
           ],
           "output": null,
           "sealed": [],
-          "also": ["/tmp/fabro/feedback/"]
+          "also": [
+            "/tmp/fabro/feedback/"
+          ]
         },
         "rework_t3": {
           "live": false,
           "prompt": ".fabro/workflows/backlog/prompts/rework.md.j2",
           "inputs": [
-            {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "ranked outline of the checkout; can be missing", "absent": "the repository map is missing; proceed without it"},
-            {"name": "task-context.md", "path": "/tmp/fabro/task-context.md", "required": false, "about": "what the improve stage found about this task; can be missing or wrong", "absent": "improve did not write a dossier for this task"},
-            {"name": "rescue.md", "path": "/tmp/fabro/feedback/rescue.md", "required": false, "about": "human guidance from a rescue gate, if present and non-empty; it overrides everything else", "absent": "no rescue guidance was left"},
-            {"name": "rework.md", "path": "/tmp/fabro/feedback/rework.md", "required": true, "about": "the findings; the reviewer's rejection scope, which is the entire scope of this stage"},
-            {"name": "current_task.json", "path": "/tmp/fabro/current_task.json", "required": true, "about": "the task being reworked; if missing, work from issue.json"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue, supplemental (and the fallback task source)"}
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "ranked outline of the checkout; can be missing",
+              "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": false,
+              "about": "what the improve stage found about this task; can be missing or wrong",
+              "absent": "improve did not write a dossier for this task"
+            },
+            {
+              "name": "rescue.md",
+              "path": "/tmp/fabro/feedback/rescue.md",
+              "required": false,
+              "about": "human guidance from a rescue gate, if present and non-empty; it overrides everything else",
+              "absent": "no rescue guidance was left"
+            },
+            {
+              "name": "rework.md",
+              "path": "/tmp/fabro/feedback/rework.md",
+              "required": true,
+              "about": "the findings; the reviewer's rejection scope, which is the entire scope of this stage"
+            },
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the task being reworked; if missing, work from issue.json"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, supplemental (and the fallback task source)"
+            }
           ],
           "output": null,
           "sealed": [],
-          "also": ["/tmp/fabro/feedback/"]
+          "also": [
+            "/tmp/fabro/feedback/"
+          ]
         },
         "rework_t4": {
           "live": false,
           "prompt": ".fabro/workflows/backlog/prompts/rework.md.j2",
           "inputs": [
-            {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "ranked outline of the checkout; can be missing", "absent": "the repository map is missing; proceed without it"},
-            {"name": "task-context.md", "path": "/tmp/fabro/task-context.md", "required": false, "about": "what the improve stage found about this task; can be missing or wrong", "absent": "improve did not write a dossier for this task"},
-            {"name": "rescue.md", "path": "/tmp/fabro/feedback/rescue.md", "required": false, "about": "human guidance from a rescue gate, if present and non-empty; it overrides everything else", "absent": "no rescue guidance was left"},
-            {"name": "rework.md", "path": "/tmp/fabro/feedback/rework.md", "required": true, "about": "the findings; the reviewer's rejection scope, which is the entire scope of this stage"},
-            {"name": "current_task.json", "path": "/tmp/fabro/current_task.json", "required": true, "about": "the task being reworked; if missing, work from issue.json"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue, supplemental (and the fallback task source)"}
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "ranked outline of the checkout; can be missing",
+              "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": false,
+              "about": "what the improve stage found about this task; can be missing or wrong",
+              "absent": "improve did not write a dossier for this task"
+            },
+            {
+              "name": "rescue.md",
+              "path": "/tmp/fabro/feedback/rescue.md",
+              "required": false,
+              "about": "human guidance from a rescue gate, if present and non-empty; it overrides everything else",
+              "absent": "no rescue guidance was left"
+            },
+            {
+              "name": "rework.md",
+              "path": "/tmp/fabro/feedback/rework.md",
+              "required": true,
+              "about": "the findings; the reviewer's rejection scope, which is the entire scope of this stage"
+            },
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the task being reworked; if missing, work from issue.json"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, supplemental (and the fallback task source)"
+            }
           ],
           "output": null,
           "sealed": [],
-          "also": ["/tmp/fabro/feedback/"]
+          "also": [
+            "/tmp/fabro/feedback/"
+          ]
         },
         "standards": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/standards.md.j2",
           "inputs": [
-            {"name": "diff.patch", "path": "/tmp/fabro/extra/diff.patch", "required": true, "about": "git diff origin/main...HEAD; everything this run changed"},
-            {"name": "diffstat.txt", "path": "/tmp/fabro/extra/diffstat.txt", "required": true, "about": "git diff --stat origin/main...HEAD"},
-            {"name": "changed_files.txt", "path": "/tmp/fabro/extra/changed_files.txt", "required": true, "about": "git diff --name-only origin/main...HEAD"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue; reporter intent and acceptance criteria"},
-            {"name": "completed.md", "path": "/tmp/fabro/completed.md", "required": true, "about": "per-task completion notes appended by integrate; what the run believes it did"}
+            {
+              "name": "diff.patch",
+              "path": "/tmp/fabro/extra/diff.patch",
+              "required": true,
+              "about": "git diff origin/main...HEAD; everything this run changed"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/extra/diffstat.txt",
+              "required": true,
+              "about": "git diff --stat origin/main...HEAD"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/extra/changed_files.txt",
+              "required": true,
+              "about": "git diff --name-only origin/main...HEAD"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue; reporter intent and acceptance criteria"
+            },
+            {
+              "name": "completed.md",
+              "path": "/tmp/fabro/completed.md",
+              "required": true,
+              "about": "per-task completion notes appended by integrate; what the run believes it did"
+            }
           ],
-          "output": {"path": "/tmp/fabro/extra/standards.json", "schema": "standards"},
+          "output": {
+            "path": "/tmp/fabro/extra/standards.json",
+            "schema": "extra_verdict"
+          },
           "sealed": [],
           "also": []
         },
         "spec": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/spec.md.j2",
           "inputs": [
-            {"name": "diff.patch", "path": "/tmp/fabro/extra/diff.patch", "required": true, "about": "git diff origin/main...HEAD; everything this run changed"},
-            {"name": "diffstat.txt", "path": "/tmp/fabro/extra/diffstat.txt", "required": true, "about": "git diff --stat origin/main...HEAD"},
-            {"name": "changed_files.txt", "path": "/tmp/fabro/extra/changed_files.txt", "required": true, "about": "git diff --name-only origin/main...HEAD"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue; reporter intent and acceptance criteria"},
-            {"name": "completed.md", "path": "/tmp/fabro/completed.md", "required": true, "about": "per-task completion notes appended by integrate; what the run believes it did"}
+            {
+              "name": "diff.patch",
+              "path": "/tmp/fabro/extra/diff.patch",
+              "required": true,
+              "about": "git diff origin/main...HEAD; everything this run changed"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/extra/diffstat.txt",
+              "required": true,
+              "about": "git diff --stat origin/main...HEAD"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/extra/changed_files.txt",
+              "required": true,
+              "about": "git diff --name-only origin/main...HEAD"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue; reporter intent and acceptance criteria"
+            },
+            {
+              "name": "completed.md",
+              "path": "/tmp/fabro/completed.md",
+              "required": true,
+              "about": "per-task completion notes appended by integrate; what the run believes it did"
+            }
           ],
-          "output": {"path": "/tmp/fabro/extra/spec.json", "schema": "spec"},
+          "output": {
+            "path": "/tmp/fabro/extra/spec.json",
+            "schema": "extra_verdict"
+          },
           "sealed": [],
           "also": []
         },
         "quality": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/quality.md.j2",
           "inputs": [
-            {"name": "diff.patch", "path": "/tmp/fabro/extra/diff.patch", "required": true, "about": "git diff origin/main...HEAD; everything this run changed"},
-            {"name": "diffstat.txt", "path": "/tmp/fabro/extra/diffstat.txt", "required": true, "about": "git diff --stat origin/main...HEAD"},
-            {"name": "changed_files.txt", "path": "/tmp/fabro/extra/changed_files.txt", "required": true, "about": "git diff --name-only origin/main...HEAD"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue; reporter intent and acceptance criteria"},
-            {"name": "completed.md", "path": "/tmp/fabro/completed.md", "required": true, "about": "per-task completion notes appended by integrate; what the run believes it did"}
+            {
+              "name": "diff.patch",
+              "path": "/tmp/fabro/extra/diff.patch",
+              "required": true,
+              "about": "git diff origin/main...HEAD; everything this run changed"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/extra/diffstat.txt",
+              "required": true,
+              "about": "git diff --stat origin/main...HEAD"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/extra/changed_files.txt",
+              "required": true,
+              "about": "git diff --name-only origin/main...HEAD"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue; reporter intent and acceptance criteria"
+            },
+            {
+              "name": "completed.md",
+              "path": "/tmp/fabro/completed.md",
+              "required": true,
+              "about": "per-task completion notes appended by integrate; what the run believes it did"
+            }
           ],
-          "output": {"path": "/tmp/fabro/extra/quality.json", "schema": "quality"},
+          "output": {
+            "path": "/tmp/fabro/extra/quality.json",
+            "schema": "extra_verdict"
+          },
           "sealed": [],
           "also": []
         },
@@ -302,33 +887,96 @@
           "live": false,
           "prompt": ".fabro/workflows/backlog/prompts/extra_decompose.md.j2",
           "inputs": [
-            {"name": "standards.json", "path": "/tmp/fabro/extra/standards.json", "required": true, "about": "the standards-axis verdict from the extra review"},
-            {"name": "spec.json", "path": "/tmp/fabro/extra/spec.json", "required": true, "about": "the spec-axis verdict from the extra review"},
-            {"name": "quality.json", "path": "/tmp/fabro/extra/quality.json", "required": true, "about": "the code-quality verdict from the extra review"},
-            {"name": "changed_files.txt", "path": "/tmp/fabro/extra/changed_files.txt", "required": true, "about": "the branch's changed-files list, for branch scope"},
-            {"name": "diffstat.txt", "path": "/tmp/fabro/extra/diffstat.txt", "required": true, "about": "the branch's diff stat, for branch scope"},
-            {"name": "issue.json", "path": "/tmp/fabro/issue.json", "required": true, "about": "the parent issue, for intent and acceptance criteria"},
-            {"name": "completed.md", "path": "/tmp/fabro/completed.md", "required": true, "about": "what the run believes it did"}
+            {
+              "name": "standards.json",
+              "path": "/tmp/fabro/extra/standards.json",
+              "required": true,
+              "about": "the standards-axis verdict from the extra review"
+            },
+            {
+              "name": "spec.json",
+              "path": "/tmp/fabro/extra/spec.json",
+              "required": true,
+              "about": "the spec-axis verdict from the extra review"
+            },
+            {
+              "name": "quality.json",
+              "path": "/tmp/fabro/extra/quality.json",
+              "required": true,
+              "about": "the code-quality verdict from the extra review"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/extra/changed_files.txt",
+              "required": true,
+              "about": "the branch's changed-files list, for branch scope"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/extra/diffstat.txt",
+              "required": true,
+              "about": "the branch's diff stat, for branch scope"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, for intent and acceptance criteria"
+            },
+            {
+              "name": "completed.md",
+              "path": "/tmp/fabro/completed.md",
+              "required": true,
+              "about": "what the run believes it did"
+            }
           ],
-          "output": {"path": "/tmp/fabro/extra/followups.json", "schema": "followups"},
+          "output": {
+            "path": "/tmp/fabro/extra/followups.json",
+            "schema": "followups"
+          },
           "sealed": [],
           "also": []
         }
       }
     },
     "pr-review": {
-      "imports": {"review_merge": "review-merge"},
+      "imports": {
+        "review_merge": "review-merge"
+      },
       "stages": {
         "rebase_agent_t1": {
           "live": false,
           "prompt": ".fabro/workflows/pr-review/prompts/rebase.md.j2",
           "inputs": [
-            {"name": "pre_rebase_sha", "path": "/tmp/fabro/pre_rebase_sha", "required": true, "about": "the commit this branch was on before the rebase; on abort, HEAD must be back here"},
-            {"name": "target_sha", "path": "/tmp/fabro/target_sha", "required": true, "about": "the base branch tip being rebased onto"},
-            {"name": "base_ref", "path": "/tmp/fabro/base_ref", "required": true, "about": "the base branch name"},
-            {"name": "pr.json", "path": "/tmp/fabro/pr.json", "required": true, "about": "PR metadata, for intent when resolving"}
+            {
+              "name": "pre_rebase_sha",
+              "path": "/tmp/fabro/pre_rebase_sha",
+              "required": true,
+              "about": "the commit this branch was on before the rebase; on abort, HEAD must be back here"
+            },
+            {
+              "name": "target_sha",
+              "path": "/tmp/fabro/target_sha",
+              "required": true,
+              "about": "the base branch tip being rebased onto"
+            },
+            {
+              "name": "base_ref",
+              "path": "/tmp/fabro/base_ref",
+              "required": true,
+              "about": "the base branch name"
+            },
+            {
+              "name": "pr.json",
+              "path": "/tmp/fabro/pr.json",
+              "required": true,
+              "about": "PR metadata, for intent when resolving"
+            }
           ],
-          "output": {"path": "/tmp/fabro/rebase_result.json", "schema": "rebase_result"},
+          "output": {
+            "path": "/tmp/fabro/rebase_result.json",
+            "schema": "rebase_result"
+          },
           "sealed": [],
           "also": []
         },
@@ -336,36 +984,82 @@
           "live": false,
           "prompt": ".fabro/workflows/pr-review/prompts/rebase.md.j2",
           "inputs": [
-            {"name": "pre_rebase_sha", "path": "/tmp/fabro/pre_rebase_sha", "required": true, "about": "the commit this branch was on before the rebase; on abort, HEAD must be back here"},
-            {"name": "target_sha", "path": "/tmp/fabro/target_sha", "required": true, "about": "the base branch tip being rebased onto"},
-            {"name": "base_ref", "path": "/tmp/fabro/base_ref", "required": true, "about": "the base branch name"},
-            {"name": "pr.json", "path": "/tmp/fabro/pr.json", "required": true, "about": "PR metadata, for intent when resolving"}
+            {
+              "name": "pre_rebase_sha",
+              "path": "/tmp/fabro/pre_rebase_sha",
+              "required": true,
+              "about": "the commit this branch was on before the rebase; on abort, HEAD must be back here"
+            },
+            {
+              "name": "target_sha",
+              "path": "/tmp/fabro/target_sha",
+              "required": true,
+              "about": "the base branch tip being rebased onto"
+            },
+            {
+              "name": "base_ref",
+              "path": "/tmp/fabro/base_ref",
+              "required": true,
+              "about": "the base branch name"
+            },
+            {
+              "name": "pr.json",
+              "path": "/tmp/fabro/pr.json",
+              "required": true,
+              "about": "PR metadata, for intent when resolving"
+            }
           ],
-          "output": {"path": "/tmp/fabro/rebase_result.json", "schema": "rebase_result"},
+          "output": {
+            "path": "/tmp/fabro/rebase_result.json",
+            "schema": "rebase_result"
+          },
           "sealed": [],
           "also": []
         }
       }
     },
     "arch-review": {
-      "imports": {"triage_phase": "triage"},
+      "imports": {
+        "triage_phase": "triage"
+      },
       "stages": {
         "scan": {
           "live": false,
           "prompt": ".fabro/workflows/arch-review/prompts/scan.md.j2",
           "inputs": [
-            {"name": "repomap.md", "path": "/tmp/fabro/repomap.md", "required": false, "about": "a ranked outline of this checkout; can be missing, continue without it", "absent": "the repository map is missing; proceed without it"},
-            {"name": "hotspots.txt", "path": "/tmp/fabro/arch/hotspots.txt", "required": true, "about": "the files changed most often in the last 90 days, as 'count path' lines, most changed first"},
-            {"name": "existing.json", "path": "/tmp/fabro/arch/existing.json", "required": true, "about": "the architecture issues that already exist, open and closed, as [{number, title, state, stateReason, slug}]"}
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "a ranked outline of this checkout; can be missing, continue without it",
+              "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "hotspots.txt",
+              "path": "/tmp/fabro/arch/hotspots.txt",
+              "required": true,
+              "about": "the files changed most often in the last 90 days, as 'count path' lines, most changed first"
+            },
+            {
+              "name": "existing.json",
+              "path": "/tmp/fabro/arch/existing.json",
+              "required": true,
+              "about": "the architecture issues that already exist, open and closed, as [{number, title, state, stateReason, slug}]"
+            }
           ],
-          "output": {"path": "/tmp/fabro/arch/candidates.json", "schema": "candidates"},
+          "output": {
+            "path": "/tmp/fabro/arch/candidates.json",
+            "schema": "candidates"
+          },
           "sealed": [],
           "also": []
         }
       }
     },
     "issue-triage": {
-      "imports": {"triage_phase": "triage"},
+      "imports": {
+        "triage_phase": "triage"
+      },
       "stages": {}
     }
   }

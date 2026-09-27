@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "extra_verdict",
+  "title": "extra verdict — the extra-review axis verdicts (backlog standards/spec/quality)",
+  "description": "Shared by backlog's three extra-axis reviewers (standards, spec and quality), whose outputs have an identical shape. Enforces the shape the gate + prompt contract demand; the gates only check decision, which the schema enforces here. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "summary", "findings"],
+  "properties": {
+    "decision": {
+      "enum": ["approve", "findings", "needs_human_review"],
+      "description": "approve: nothing worth a follow-up task. findings: at least one follow-up is warranted. needs_human_review: the branch cannot be judged safely (routes the whole run to the human rescue gate)."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One or two sentences stating the verdict and why."
+    },
+    "findings": {
+      "type": "array",
+      "description": "Follow-up items; [] when none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["message", "files"],
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What is wrong and what the follow-up work must change."
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Repository-relative paths; may be empty but must be present."
+          },
+          "suggestion": {
+            "type": "string",
+            "description": "The concrete remediation, not a restatement of the problem."
+          }
+        }
+      }
+    }
+  }
+}

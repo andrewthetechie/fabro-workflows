@@ -17,28 +17,16 @@ You are deliberately not the model that wrote this code. Review with fresh eyes.
 
 ## Inputs
 
-Read every one of these in full before deciding:
+Call `inputs` first. It returns the repo map, the task context, the diff and its
+statistics, the changed-files list, the task under review and the parent issue. When
+it ends with `MORE:` lines, request each of those parts before you judge. `submit`
+refuses until you have read every part.
 
-- `/tmp/fabro/repomap.md` — a ranked outline of this checkout (the most-referenced
-  files and their top-level symbols). Read it before you search. It can be missing.
-  If it is, continue without it.
-- `/tmp/fabro/task-context.md` — what the improve stage found about the task under
-  review. Start from it. It can be missing or wrong. The checkout is the truth.
-
-| Path | What it is |
-|---|---|
-| `/tmp/fabro/review/diff.patch` | `git diff <task_base_sha>..HEAD` — the change under review, and the only thing being reviewed |
-| `/tmp/fabro/review/diffstat.txt` | `git diff --stat` of the same range |
-| `/tmp/fabro/review/changed_files.txt` | `git diff --name-only` of the same range |
-| `/tmp/fabro/current_task.json` | the task this change was supposed to implement — `.title`, `.body` (acceptance criteria live here), `.files` |
-| `/tmp/fabro/issue.json` | parent issue, for reporter intent; supplemental |
-
-The diff is already computed — do not recompute it and do not run git commands.
-
-The repository checkout is available for **read-only** inspection when the diff alone
-does not settle a question (e.g. to see the surrounding function, or to check whether
-a helper the diff calls actually exists). Never use it to broaden review scope beyond
-the diff.
+The repository checkout in the current working directory is available for **read-only**
+inspection when a part of the diff does not settle a question (e.g. to see the
+surrounding function, or to check whether a helper the diff calls actually exists).
+Never use it to broaden review scope beyond the diff. The diff is already computed;
+do not recompute it and do not run git commands.
 
 Two things you might look for that do **not** exist here: there is no separate PRD
 document, and there is no host-selected review-aspects list. The aspect checks below
@@ -234,39 +222,28 @@ without re-deriving it.
 
 ## Output
 
-Write your verdict as raw JSON to `/tmp/fabro/review/verdict.json`. The file must
-contain exactly this shape and nothing else — no markdown fence, no commentary, no
-extra keys:
+Call `submit` with your `decision`, `summary` and `findings`. It checks the shape and
+tells you what to fix. Do not write the file yourself: a result that `submit` did not
+write is refused.
 
-```json
-{
-  "decision": "approved" | "changes_requested" | "needs_human_review",
-  "summary": "one or two sentences stating the verdict and why",
-  "findings": [
-    {
-      "severity": "blocking" | "nit",
-      "message": "what is wrong, where, and what to change — specific enough to act on without re-deriving it"
-    }
-  ]
-}
-```
+- `decision` is `approved`, `changes_requested` or `needs_human_review`.
+- `summary` is one or two sentences stating the verdict and why.
+- `findings` has one entry per finding. A `blocking` finding must name the file and
+  the concrete change required, because the next stage turns your
+  `findings[].message` strings into the rework agent's entire scope.
 
-Decision rules — a validation gate reads this file and rejects it on any violation,
-which costs a full retry round:
+Decision rules — a gate reads what you submit and rejects it on any violation, which
+costs a full retry round:
 
 - `approved` — no blocking findings. `findings` may still list `nit` entries or be
   `[]`. **Nits do not block.** An approved verdict with nits is a normal, good
   outcome.
-- `changes_requested` — at least one `blocking` finding. `findings` must be non-empty
-  and every `blocking` entry must name the file and the concrete change required,
-  because the next stage turns these bullets into the rework agent's entire scope.
+- `changes_requested` — at least one `blocking` finding. Nits alone are not a reason
+  to request changes; a `blocking` finding must be actionable rework.
 - `needs_human_review` — the change cannot be judged without a human decision (the
   task spec contradicts the parent issue, the change touches something with no safe
   automated verdict, the diff is unreviewable). This routes the run to the human
   rescue gate, so use it only when that is genuinely warranted.
-- `severity` is exactly `blocking` or `nit`. No other values.
-- Use only the keys above. No `kind`, no `aspect`, no `confidence`.
-- The file holds raw JSON — no markdown fence, nothing before or after it.
 
 Aim for 1–3 findings. If you list more than 5, keep only the highest-impact ones.
 
@@ -309,4 +286,4 @@ Needs human review:
 Asymmetry to remember: approving a real bug is worse than requesting changes for a
 concrete, evidenced blocker.
 
-After writing `/tmp/fabro/review/verdict.json`, stop. Do not print the JSON in chat.
+After `submit` writes your result, stop. Do not print the JSON in chat.
