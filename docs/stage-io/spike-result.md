@@ -12,6 +12,8 @@ hosted model glm-5.3):
   (silent-failure check).
 - `01M3GP72Z3Q19SA0V9WQZ1MJTX` — spike6: attempted a deterministic command-node retry to
   observe a live `stage_start` re-fire.
+- `01M3GRYM9YWJ84RSGJ1YP0KHYD` — spike6b: a gate fails once and routes back into an agent;
+  the definitive check-6 observation (see check 6).
 
 Scratch artifacts were deleted after this write-up (image and environment); the crate
 `ops/fabro-io/` was kept for task 03.
@@ -70,10 +72,15 @@ so the client connects and lists tools before the first LLM request.
 ### 3. Hook order — PASS
 
 The `io-stage` hook (`fabro-io stage`, `event=stage_start`, `blocking`, `sandbox`) runs and
-writes `stage.json` before the session starts. When agent_a's `whoami` answered, its tool
-result carried `stage.json` with `"node": "agent_a"` and the stage's start time — the
-identity held the current stage. Evidence: the `whoami` output in check 1 (`stage.json:
-{ "node": "agent_a", ... }`) and the spike.log `stage_start` lines for each node.
+writes `stage.json` before the session starts. When each agent's `whoami` answered, its tool
+result carried `stage.json` with that agent's own node — the identity held the current stage:
+
+```
+agent_a: stage.json = { "node": "agent_a", "started": "2026-09-27T05:34:36Z", ... }  (pid 222)
+agent_b: stage.json = { "node": "agent_b", "started": "2026-09-27T05:40:42Z", ... }  (pid 645)
+```
+
+Evidence: the `whoami` outputs above and the spike.log `stage_start` lines for each node.
 
 ### 4. Process lifetime — PASS (new server pid per stage; documented)
 
@@ -104,21 +111,40 @@ which inherits the same sandbox env: the spike.log `stage_start` lines read
 ### 6. Retries — not observed live; mechanism guarantees a fresh stage identity
 
 The requirement is: on a retried stage, does `stage_start` fire again so the retry gets a
-new visit (and therefore a fresh `stage.json`)? I could not produce a live retry.
-spike6 tried a deterministic command-node retry (`max_retries=3`; first invocation `exit 1`):
-fabro recorded a failure signature
-(`loop_failure_signatures: {"retry_cmd|deterministic|script failed with exit code: <n>": 1}`)
-and routed **onward** through the stage's unconditional edge rather than re-entering the
-node, so no second `stage_start` was observed.
+new visit (and therefore a fresh `stage.json`)? **Observed: yes.**
 
-By mechanism, the answer is still "fires again": the `io-stage` hook subscribes to
-`event=stage_start`, which fabro emits for every stage invocation; a retry is a re-entry of
-the stage, which re-fires the hook, which runs `fabro-io stage`, which writes a **new random
-128-bit visit** and the current node/time into `stage.json`. Combined with check 4 (a fresh
-server per stage), a retried stage starts from a clean `stage.json` and re-reads the manifest.
-**Consequence for task 03:** `inputs` needs **no** `stage_retrying` reset of `served.json` —
-there is no shared per-run server to reset, because each stage has its own process and its own
-`stage.json` identity. This confirms Decision 6 should accept the MCP path as-is.
+spike6b (`01M3GRYM9YWJ84RSGJ1YP0KHYD`) routes a gate's `outcome=failed` back into `agent_a`.
+The event log shows the agent re-entered with a new visit:
+
+```
+stage.prompt agent_a visit=1 -> stage.completed agent_a succeeded
+( gate runs, fails, routes back into agent_a )
+stage.prompt agent_a visit=2 -> stage.completed agent_a succeeded   <- re-entry
+```
+
+and the io-stage hook re-fired, writing a second `stage_start` line and a fresh random visit
+(the spike.log and the last stage.json read back from the run sandbox):
+
+```
+2026-09-27T06:31:03Z node=agent_a ... stage_start
+2026-09-27T06:31:09Z node=-       ... whoami
+2026-09-27T06:31:18Z node=agent_a ... stage_start   <- retry: the hook fires again
+2026-09-27T06:31:24Z node=-       ... whoami
+# stage.json (final) holds the retry's visit, started 06:31:18Z
+```
+
+Consequences, now established by observation:
+
+- A retried stage gets a **fresh random 128-bit visit** in a rewritten `stage.json`. The
+  failed attempt's `served.json` is anchored to the old visit, so `submit` (C4) and the C7
+  receipt check (`_io.visit == stage.json.visit`) both reject it — the stale-contract hazard
+  does not materialize.
+- `inputs` needs **no** `stage_retrying` reset of `served.json`; there is no shared-run state
+  to reset. Task 03 stays as designed.
+
+(An earlier spike6 attempt used a command node with `max_retries`; fabro did **not** re-enter
+it — it recorded a failure signature and routed onward through its unconditional edge. That
+is a command-node retry behavior, not an agent-stage one, and is out of scope here.)
 
 ### 7. Failure is silent — PASS (confirmed)
 
