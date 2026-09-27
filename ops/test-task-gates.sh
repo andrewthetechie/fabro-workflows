@@ -2623,9 +2623,70 @@ check "extra stale read is repair"       "1" "$(rorect_run G extra_gate)"
 check "scan stale read is repair"        "1" "$(rorect_run A scan_gate)"
 check "review_fix stale read is repair"  "1" "$(rorect_run S fix_gate)"
 check "triage_gate stale read is repair" "1" "$(rorect_run T triage_gate)"
-check "resolve_merge stale routes fail"  "0" "$(rorect_run G resolve_merge_gate)"
-check "ci_fix stale routes fail"         "0" "$(rorect_run S ci_fix_gate)"
-check "rebase (submit) stale receipt is repair" "1" "$(rorect_run P rebase_gate)"
+
+# ---------------------------------------------------------------------------
+# receipt routing on the failure-routing gates (real git). resolve_merge_gate,
+# rebase_gate and ci_fix_gate have no repair edge, so a stale or incomplete
+# receipt must ROUTE to the failure path; an exit code alone proves nothing,
+# because the success path exits 0 as well. rebase_gate's counter is the tier
+# ladder: a receipt miss on tier 1 must reach tier 2 (rebase_attempts=1), not
+# exit 1, which would take the unconditional edge to entry_failed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "receipt routing (real git)"
+PATH="$ORIG_PATH"
+T="$WORK/rcroute"
+rc_repo() {
+    rm -rf "$T"; mkdir -p "$T/up" "$T/.io" "$T/review"
+    git -C "$T/up" init -q -b main .
+    git -C "$T/up" config user.email t@t
+    git -C "$T/up" config user.name t
+    echo a > "$T/up/a.txt"; git -C "$T/up" add -A; git -C "$T/up" commit -qm init
+    git clone -q "$T/up" "$T/wt"
+    echo main > "$T/base_ref"
+    git -C "$T/wt" rev-parse HEAD > "$T/pre_rebase_sha"
+    git -C "$T/wt" rev-parse HEAD > "$T/pre_merge_sha"
+    printf '%s' '{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}' > "$T/.io/stage.json"
+}
+rc_gate() { # $1 graph $2 node -> sets J (the routing JSON) and RC
+    extract_from "$1" "$2" | sed "s#/tmp/fabro#$T#g" > "$T/g.sh"
+    OUT=$( cd "$T/wt" && sh "$T/g.sh" 2>&1 ); RC=$?
+    J=$(lastjson "$OUT")
+}
+rc_served() { # $1 visit $2 parts of issue.json $3 served list of issue.json
+    jq -n --arg v "$1" --argjson p "$2" --argjson s "$3" '{visit:$v, inputs:{
+      "pre_merge_sha":{status:"ok",parts:1,served:[1]},
+      "current_task.json":{status:"ok",parts:1,served:[1]},
+      "issue.json":{status:"ok",parts:$p,served:$s}}}' > "$T/.io/served.json"
+}
+
+rc_repo; rc_served fac3fac3fac3fac3fac3fac3fac3fac3 1 '[1]'
+rc_gate "$GRAPH" resolve_merge_gate
+check "resolve_merge: complete read, clean merge" "true"  "$(jq -r .context_updates.merge_ok <<<"$J")"
+rc_repo; rc_served ffffffffffffffffffffffffffffffff 1 '[1]'
+rc_gate "$GRAPH" resolve_merge_gate
+check "resolve_merge: stale served visit fails"   "false" "$(jq -r .context_updates.merge_ok <<<"$J")"
+check "resolve_merge: stale is attempt 1"         "1"     "$(jq -r .context_updates.merge_attempts <<<"$J")"
+rc_repo; rc_served fac3fac3fac3fac3fac3fac3fac3fac3 2 '[1]'
+rc_gate "$GRAPH" resolve_merge_gate
+check "resolve_merge: incomplete input fails"     "false" "$(jq -r .context_updates.merge_ok <<<"$J")"
+
+rc_repo; echo '{"_io":{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}}' > "$T/rebase_result.json"
+rc_gate "$PR" rebase_gate
+check "rebase: valid receipt, clean rebase"       "true"  "$(jq -r .context_updates.rebase_ok <<<"$J")"
+rc_repo; echo '{"_io":{"visit":"ffffffffffffffffffffffffffffffff"}}' > "$T/rebase_result.json"
+rc_gate "$PR" rebase_gate
+check "rebase: stale receipt exits 0 (routes)"    "0"     "$RC"
+check "rebase: stale receipt is not ok"           "false" "$(jq -r .context_updates.rebase_ok <<<"$J")"
+check "rebase: stale receipt escalates to tier 2" "1"     "$(jq -r .context_updates.rebase_attempts <<<"$J")"
+check "rebase: reason names the submit tool"      "1"     "$(grep -c 'submit tool' "$T/needs_human_reason")"
+echo 1 > "$T/rebase_attempts"; rm -f "$T/rebase_result.json"
+rc_gate "$PR" rebase_gate
+check "rebase: tier-2 receipt miss ends the ladder" "2"   "$(jq -r .context_updates.rebase_attempts <<<"$J")"
+
+rc_repo
+rc_gate "$SHARED" ci_fix_gate
+check "ci_fix: no receipt routes not ok"          "false" "$(jq -r .context_updates.ci_fix_ok <<<"$J")"
 
 # ---------------------------------------------------------------------------
 # review-merge render — the Refuter and hygiene rows and sections (ADR 0013 D5)

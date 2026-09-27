@@ -209,19 +209,19 @@ fi"]
     // survive into the next tier and fail it for the previous tier's mistake.
     // `-fd` and never `-fdx`: ignored paths are the build caches
     // (`target/`, `node_modules/`, `.venv/`) that a later `validate` needs.
+    // A missing or stale Input receipt (ADR 0016 C7) is a failed tier like any other:
+    // reset, count it, and let the tier ladder decide. This gate has no
+    // `outcome=failed` repair edge -- `rebase_attempts` is the tier counter, not a
+    // repair counter -- so an `exit 1` here would take the unconditional edge to
+    // `entry_failed` and end the review from tier 1.
     rebase_gate [label="Verify the rebase", shape=parallelogram, output_schema="routing",
         script="B=$(cat /tmp/fabro/base_ref)
 A=$(cat /tmp/fabro/rebase_attempts 2>/dev/null || echo 0)
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' /tmp/fabro/rebase_result.json 2>/dev/null)
-if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
-  A=$((A+1))
-  echo $A > /tmp/fabro/rebase_attempts
-  if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
-  echo '{\"context_updates\":{\"rebase_ok\":false,\"rebase_attempts\":'$A'}}'
-  exit 0
-fi
 BAD=0
+RCPT=ok
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then BAD=1; RCPT=missing; fi
 if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then BAD=1; fi
 if git diff --name-only --diff-filter=U | grep -q . ; then BAD=1; fi
 git diff --name-only origin/\"$B\"...HEAD > /tmp/fabro/rebase_scan.txt 2>/dev/null || true
@@ -237,7 +237,11 @@ if [ $BAD -ne 0 ]; then
   git clean -fd || true
   A=$((A+1))
   echo $A > /tmp/fabro/rebase_attempts
-  echo 'The rebase agent left conflict markers, an in-progress rebase, or a branch still not based on the target.' > /tmp/fabro/needs_human_reason
+  if [ \"$RCPT\" = missing ]; then
+    echo 'The rebase agent did not write its result with the submit tool (no valid Input receipt), so its rebase was discarded.' > /tmp/fabro/needs_human_reason
+  else
+    echo 'The rebase agent left conflict markers, an in-progress rebase, or a branch still not based on the target.' > /tmp/fabro/needs_human_reason
+  fi
   echo '{\"context_updates\":{\"rebase_ok\":false,\"rebase_attempts\":'$A'}}'
 else
   echo '{\"context_updates\":{\"rebase_ok\":true,\"rebase_attempts\":'$A'}}'
