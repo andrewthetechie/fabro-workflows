@@ -108,10 +108,20 @@ which inherits the same sandbox env: the spike.log `stage_start` lines read
 `manifest=yes len=13`). D4's alternative — the hook writing `/tmp/fabro/.io/manifest.json`
 — is **not** needed; the manifest travels in the env as designed.
 
-### 6. Retries — not observed live; mechanism guarantees a fresh stage identity
+### 6. Retries — PASS for re-entry (observed) and for an engine retry (source)
 
 The requirement is: on a retried stage, does `stage_start` fire again so the retry gets a
-new visit (and therefore a fresh `stage.json`)? **Observed: yes.**
+new visit (and therefore a fresh `stage.json`)? There are two ways an agent stage runs
+again, and the spike observed only the first:
+
+- **Re-entry through an edge** (a gate's `outcome=failed` repair edge): **observed**, below.
+- **An engine retry** (`max_retries`, the case the task asked about): **not observed** by the
+  spike, and **established from the fabro source** in the 2026-09-27 review.
+  `fabro-core/src/executor.rs:356-363` (`execute_with_retry`) calls
+  `lifecycle.before_attempt` inside `for attempt in 1..=policy.max_attempts`, and
+  `fabro-workflow/src/lifecycle/hook.rs:57-85` (`HookLifecycle::before_attempt`) runs the
+  `StageStart` hook there, with `hook_ctx.attempt` set. So `io-stage` runs once per
+  attempt, and a `max_retries` retry gets a fresh visit exactly as a re-entry does.
 
 spike6b (`01M3GRYM9YWJ84RSGJ1YP0KHYD`) routes a gate's `outcome=failed` back into `agent_a`.
 The event log shows the agent re-entered with a new visit:
@@ -133,7 +143,7 @@ and the io-stage hook re-fired, writing a second `stage_start` line and a fresh 
 # stage.json (final) holds the retry's visit, started 06:31:18Z
 ```
 
-Consequences, now established by observation:
+Consequences, established by observation (re-entry) and by the source (engine retry):
 
 - A retried stage gets a **fresh random 128-bit visit** in a rewritten `stage.json`. The
   failed attempt's `served.json` is anchored to the old visit, so `submit` (C4) and the C7
@@ -142,9 +152,10 @@ Consequences, now established by observation:
 - `inputs` needs **no** `stage_retrying` reset of `served.json`; there is no shared-run state
   to reset. Task 03 stays as designed.
 
-(An earlier spike6 attempt used a command node with `max_retries`; fabro did **not** re-enter
-it — it recorded a failure signature and routed onward through its unconditional edge. That
-is a command-node retry behavior, not an agent-stage one, and is out of scope here.)
+(An earlier spike6 attempt used a command node with `max_retries` to observe an engine retry
+live; the command did not retry — it recorded a failure signature and routed onward through
+its unconditional edge — so that run observed nothing about retries. The source reading
+above is what settles the engine-retry case.)
 
 ### 7. Failure is silent — PASS (confirmed)
 
@@ -161,7 +172,7 @@ Task 03/06 must keep the guard and the receipt check authoritative.
 `RESULT: mcp`
 
 Checks 1, 3 and 4 pass and check 2 is ~0.3 s (≤ 2 s), so Decision 6 (D9) resolves to the
-`sandbox` MCP transport; no `shell` fallback is needed. Checks 5 and 7 pass; check 6 is
-guaranteed by the process-per-stage identity model above, with no `stage_retrying` reset
-required. One server-side fix (mount the service at the axum router fallback, not at `/mcp`)
+`sandbox` MCP transport; no `shell` fallback is needed. Checks 5 and 7 pass. Check 6 passes:
+`stage_start` fires again on a re-entry (observed) and on every engine retry attempt (fabro
+source, see check 6), so no `stage_retrying` reset is required. One server-side fix (mount the service at the axum router fallback, not at `/mcp`)
 is already committed in the crate.

@@ -219,9 +219,7 @@
           "/tmp/fabro/review/ci_fix_result.json",
           "/tmp/fabro/feedback/**"
         ],
-        "also": [
-          "/tmp/fabro/feedback/"
-        ]
+        "also": []
       },
       "ci_fix_t1": {
         "live": true,

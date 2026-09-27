@@ -1,6 +1,8 @@
 # B3 · Stage I/O: one tool reads a stage's inputs, one tool writes its output
 
-**Status:** decided in ADR 0016 (proposed, 2026-09-26). Task series: `docs/stage-io/`.
+**Status:** decided in ADR 0016 (accepted 2026-09-27) and implemented through task 10 of
+`docs/stage-io/` on 2026-09-27; the post-deploy measurement is pending
+(`docs/stage-io/result-2026-09-27.txt`).
 Supersedes `docs/research_improvements/02-tier-2-structured-output.md` and the first
 version of this record (a `fabro-submit` CLI with flags). That version assumed that no MCP
 server could run in the sandbox on this deployment. The assumption is out of date (see

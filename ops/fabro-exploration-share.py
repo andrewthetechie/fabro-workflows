@@ -7,7 +7,11 @@ are measured with the same code, and so the B1 scorecard can reuse it.
 
 Fetch loop (documented; the script itself never ssh's anywhere):
 
-    ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro run list --json ...'
+    # fabro 0.362 has no run-listing verb (`fabro run list` parses `list` as a workflow
+    # name), so list runs through the API:
+    ssh andrew@10.10.0.32 'T=$(docker exec fabro-fabro-1 cat /storage/server.dev-token); \
+        curl -s -H "Authorization: Bearer $T" "http://127.0.0.1:32276/api/v1/runs?limit=100"'
+    # .data[] | {id, workflow.slug, lifecycle.status.kind, timestamps.created_at}
     # for each completed run id:
     ssh andrew@10.10.0.32 "cd ~/fabro && docker compose exec -T fabro fabro events <RUN> --json" \
         > ev/<RUN>.jsonl
