@@ -20,9 +20,8 @@ prompt paths. The generator (`ops/fabro-io-manifest.py generate`) flattens it pe
 workflow — own live stages use their node id; imported live stages are prefixed with
 the import node id (`review_merge.refute`) — and embeds the compact, sorted-key JSON
 between C2's markers under `[run.environment.env]` in each `workflow.toml`, in the
-`FABRO_IO_MANIFEST` variable. Only **live** stages appear in the generated form; this
-task leaves every stage `live: false`, so all four generated manifests are empty
-until tasks 07–10 turn stages on.
+`FABRO_IO_MANIFEST` variable. Only **live** stages appear in the generated form; tasks
+07–10 turned every agent stage live, so the generated manifests now carry all of them.
 
 ## Inputs that are not files
 
