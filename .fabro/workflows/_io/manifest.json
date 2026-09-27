@@ -1018,7 +1018,11 @@
             }
           ],
           "sealed": [],
-          "also": []
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/arch/candidates.json",
+            "schema": "candidates"
+          }
         }
       }
     },

@@ -120,33 +120,21 @@ Zero candidates is a correct result for a healthy repository.
 
 ## Output
 
-Write `/tmp/fabro/arch/candidates.json`:
+Call `submit` with your `candidates`. It checks the shape and writes the file;
+do not write it yourself. A result `submit` did not write is refused.
 
-    {
-      "candidates": [
-        {
-          "slug": "order-intake-validation",
-          "title": "refactor(orders): deepen the order intake module",
-          "strength": "Strong",
-          "files": ["src/orders/intake.py", "src/orders/validate.py"],
-          "problem": "Why the current shape causes friction. Markdown.",
-          "solution": "What would change, in plain words. Markdown. No interface design yet.",
-          "benefits": "Locality and leverage, and how the tests improve. Markdown.",
-          "diagram": "Mermaid source that shows before and after, or an empty string."
-        }
-      ]
-    }
+Each candidate:
 
-Rules, which `scan_gate` enforces:
-
-- At most 20 candidates, best first.
-- `slug`: lowercase letters, digits and `-`, 3 to 60 characters, starting with a letter
-  or digit, unique in the file. It names the concept, not the files, so that a later
-  review of the same friction produces the same slug.
+- `slug`: lowercase letters, digits and `-`, 3 to 60 characters, starting with a
+  letter or digit, unique in the file. It names the concept, not the files, so
+  that a later review of the same friction produces the same slug.
 - `title`: a Conventional Commit of type `refactor`, for example
   `refactor(orders): deepen the order intake module`. No `!`.
 - `strength`: exactly `Strong`, `Worth exploring` or `Speculative`.
 - `files`: the paths involved, relative to the repository root. At least one.
 - `problem`, `solution`, `benefits`: non-empty.
+- `diagram`: Mermaid source that shows before and after, or an empty string.
 
-After you write the file, stop.
+Rules, which `scan_gate` enforces: at most 20 candidates, best first.
+
+After `submit` writes your result, stop.

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "candidates",
+  "title": "candidates — arch-review scan outputs the deepening candidates (task 10)",
+  "description": "The arch-review scanner's output (docs/stage-io, task 10). The schema encodes scan_gate's shape checks: a candidates array (max 20) whose entries carry slug/title/strength/files/problem/solution/benefits/diagram and unique slugs. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["candidates"],
+  "properties": {
+    "candidates": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slug", "title", "strength", "files", "problem", "solution", "benefits", "diagram"],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{2,59}$"
+          },
+          "title": {
+            "type": "string",
+            "pattern": "^refactor(\\([a-z0-9 ./_-]+\\))?: .+"
+          },
+          "strength": {
+            "enum": ["Strong", "Worth exploring", "Speculative"]
+          },
+          "files": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "problem": { "type": "string", "minLength": 1 },
+          "solution": { "type": "string", "minLength": 1 },
+          "benefits": { "type": "string", "minLength": 1 },
+          "diagram": { "type": "string" }
+        }
+      }
+    }
+  }
+}
