@@ -2623,6 +2623,28 @@ check "extra stale read is repair"       "1" "$(rorect_run G extra_gate)"
 check "scan stale read is repair"        "1" "$(rorect_run A scan_gate)"
 check "review_fix stale read is repair"  "1" "$(rorect_run S fix_gate)"
 check "triage_gate stale read is repair" "1" "$(rorect_run T triage_gate)"
+# The repair hint after a receipt miss is C7's submit-tool message in every gate
+# with a repair turn; a stamped but invalid contract keeps the gate's own message.
+rorect_msg() { # $1 graph $2 node -> the gate's output under a stale receipt
+    local gr
+    case "$1" in
+        G) gr="$GRAPH";; A) gr="$ARCH";; S) gr="$SHARED";; T) gr="$SHARED_TRIAGE";;
+    esac
+    rm -rf "$T"; mkdir -p "$T/.io" "$T/arch" "$T/review" "$T/extra"
+    extract_from "$gr" "$2" | sed "s#/tmp/fabro#$T#g" > "$T/g.sh"
+    printf '%s' '{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}' > "$T/.io/stage.json"
+    sh "$T/g.sh" 2>&1
+}
+for g in G:decompose_gate G:improve_gate G:extra_gate A:scan_gate S:fix_gate T:improve_gate T:triage_gate; do
+    check "${g#*:} receipt miss says submit tool" "1" "$(rorect_msg "${g%%:*}" "${g#*:}" | grep -c 'submit tool')"
+done
+rm -rf "$T"; mkdir -p "$T/.io"
+extract_from "$GRAPH" decompose_gate | sed "s#/tmp/fabro#$T#g" > "$T/g.sh"
+printf '%s' '{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}' > "$T/.io/stage.json"
+printf '%s' '{"status":"bogus","_io":{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}}' > "$T/decomposition.json"
+OUT=$(sh "$T/g.sh" 2>&1)
+check "decompose: stamped but invalid keeps its hint" "1" "$(grep -c 'rewrite it exactly per the contract' <<<"$OUT")"
+check "decompose: stamped but invalid not submit hint" "0" "$(grep -c 'submit tool' <<<"$OUT")"
 
 # ---------------------------------------------------------------------------
 # receipt routing on the failure-routing gates (real git). resolve_merge_gate,

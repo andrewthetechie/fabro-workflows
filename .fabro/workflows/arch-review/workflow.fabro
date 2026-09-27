@@ -62,7 +62,7 @@ echo 'history: '$(wc -l < /tmp/fabro/arch/hotspots.txt)' hot files, '$(jq length
 A=$(cat /tmp/fabro/arch/scan_attempts 2>/dev/null || echo 0)
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
-if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then OK=no; else
+RM=0; if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then RM=1; OK=no; else
 OK=$(jq -r 'if (.candidates | type) != \"array\" then \"no\"
   elif (.candidates | length) > 20 then \"no\"
   elif ([.candidates[] | select(
@@ -80,7 +80,7 @@ fi
 if [ \"$OK\" != yes ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/arch/scan_attempts
-  if [ $A -lt 2 ]; then echo 'candidates.json is missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then if [ $RM = 1 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; else echo 'candidates.json is missing or invalid; rewrite it exactly per the contract' >&2; fi; exit 1; fi
   echo failed > /tmp/fabro/arch/scan_status
   jq -nc '{context_updates:{scan_status:\"failed\",candidate_count:0}}'
   exit 0

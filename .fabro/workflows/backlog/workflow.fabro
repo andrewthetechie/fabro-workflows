@@ -316,7 +316,7 @@ if command -v fabro-code >/dev/null; then fabro-code index; fabro-code map || tr
 A=$(cat /tmp/fabro/decompose_attempts 2>/dev/null || echo 0)
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
-if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then S=invalid; else S=$(jq -r .status $F 2>/dev/null || echo invalid); fi
+RM=0; if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then RM=1; S=invalid; else S=$(jq -r .status $F 2>/dev/null || echo invalid); fi
 if [ \"$S\" != issues ] && [ \"$S\" != no_work ] && [ \"$S\" != needs_human_review ]; then S=invalid; fi
 if [ \"$S\" = issues ]; then
   T=$(jq -r '.issues | type' $F 2>/dev/null || echo none)
@@ -327,7 +327,7 @@ fi
 if [ \"$S\" = invalid ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/decompose_attempts
-  if [ $A -lt 2 ]; then echo 'decomposition.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then if [ $RM = 1 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; else echo 'decomposition.json missing or invalid; rewrite it exactly per the contract' >&2; fi; exit 1; fi
 fi
 echo 0 > /tmp/fabro/decompose_attempts
 if [ \"$S\" = issues ]; then
@@ -570,7 +570,7 @@ fi"]
 A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
-if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then D=invalid; else D=$(jq -r .disposition $F 2>/dev/null || echo invalid); fi
+RM=0; if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then RM=1; D=invalid; else D=$(jq -r .disposition $F 2>/dev/null || echo invalid); fi
 if [ \"$D\" != ready ] && [ \"$D\" != redundant ] && [ \"$D\" != needs_human ] && [ \"$D\" != split ]; then D=invalid; fi
 KEEP=0
 SR=$(cat /tmp/fabro/split_rounds 2>/dev/null || echo 0)
@@ -604,7 +604,7 @@ fi
 if [ \"$D\" = invalid ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/improve_attempts
-  if [ $A -lt 2 ]; then echo 'improve_result.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then if [ $RM = 1 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; else echo 'improve_result.json missing or invalid; rewrite it exactly per the contract' >&2; fi; exit 1; fi
 fi
 echo 0 > /tmp/fabro/improve_attempts
 if [ \"$D\" = ready ] && [ $KEEP = 0 ]; then jq .task $F > /tmp/fabro/current_task.json; fi
@@ -885,7 +885,7 @@ echo '{\"context_updates\":{\"quality_status\":\"'$D'\"}}'"]
 A=$(cat /tmp/fabro/extra_decompose_attempts 2>/dev/null || echo 0)
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
-if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then S=invalid; else S=$(jq -r .status $F 2>/dev/null || echo invalid); fi
+RM=0; if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then RM=1; S=invalid; else S=$(jq -r .status $F 2>/dev/null || echo invalid); fi
 if [ \"$S\" != issues ] && [ \"$S\" != no_work ] && [ \"$S\" != needs_human_review ]; then S=invalid; fi
 NEWCNT=0
 if [ \"$S\" = issues ]; then
@@ -897,7 +897,7 @@ fi
 if [ \"$S\" = invalid ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/extra_decompose_attempts
-  if [ $A -lt 2 ]; then echo 'followups.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then if [ $RM = 1 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; else echo 'followups.json missing or invalid; rewrite it exactly per the contract' >&2; fi; exit 1; fi
 fi
 echo 0 > /tmp/fabro/extra_decompose_attempts
 if [ \"$S\" = issues ]; then

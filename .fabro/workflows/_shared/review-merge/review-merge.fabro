@@ -282,7 +282,7 @@ echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 A=$(cat /tmp/fabro/fix_result_attempts 2>/dev/null || echo 0)
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
-if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then O=invalid; else O=$(jq -r .outcome $F 2>/dev/null || echo invalid); fi
+RM=0; if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then RM=1; O=invalid; else O=$(jq -r .outcome $F 2>/dev/null || echo invalid); fi
 if [ \"$O\" != fixed ] && [ \"$O\" != no_changes_needed ] && [ \"$O\" != needs_human ]; then O=invalid; fi
 if [ \"$O\" = fixed ]; then
   N=$(jq '[.fixes_applied[]?] | length' $F 2>/dev/null || echo 0)
@@ -308,7 +308,7 @@ fi
 if [ \"$O\" = invalid ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/fix_result_attempts
-  if [ $A -lt 2 ]; then echo 'fix_result.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then if [ $RM = 1 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; else echo 'fix_result.json missing or invalid; rewrite it exactly per the contract' >&2; fi; exit 1; fi
 fi
 echo 0 > /tmp/fabro/fix_result_attempts
 if [ \"$O\" = needs_human ]; then

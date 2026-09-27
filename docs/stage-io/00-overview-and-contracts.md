@@ -288,12 +288,11 @@ Four counters are not contract repair counters, and task 10 does not touch them:
 driven by checks read from git (a receipt miss counts as a failed tier; see `rebase_gate`),
 and `fix_attempts` and `gh_fix_attempts` bound the CI-fix loop.
 
-One gap stays open. The repair message after a receipt miss is C7's "write the result with
-the submit tool" only in the gates that check the receipt on its own branch (`refute`,
-`review`, `standards`, `spec`, `quality`, `rebase`). The gates that fold it into their
-`invalid` state (`decompose`, `extra`, both `improve`, `fix`, `scan`, `triage`) say
-"missing or invalid; rewrite it exactly per the contract". The repair still happens; only
-the hint is less exact.
+After a receipt miss, every gate with a repair turn gives C7's hint ("write the result
+with the submit tool, not write_file"). The gates that fold the receipt into their
+`invalid` state (`decompose`, `extra`, both `improve`, `fix`, `scan`, `triage`) set `RM=1`
+on a receipt miss and choose the hint from it, so a stamped but invalid contract still gets
+the gate's own "rewrite it exactly per the contract" message.
 
 ## Tasks
 
