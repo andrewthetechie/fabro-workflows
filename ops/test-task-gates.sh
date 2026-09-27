@@ -108,6 +108,19 @@ stage_into() {
 # Fabro selects the LAST JSON object from merged stdout+stderr.
 lastjson() { grep -o '{.*}' <<<"$1" | tail -1; }
 
+# A valid fabro-io inputs receipt for the current stage (ADR 0016 C7): stage.json
+# carries visit $1 and served.json records every named input as fully served at
+# that visit. Gates that now check the receipt read $T/.io/stage.json + served.json.
+mkreadok() {
+    local v="$1"; shift
+    mkdir -p "$T/.io"
+    printf '%s' "{\"workflow\":\"backlog\",\"node\":\"test\",\"visit\":\"$v\",\"started\":\"2026-01-01T00:00:00Z\"}" > "$T/.io/stage.json"
+    local req
+    req=$(printf '%s\n' "$@" | jq -Rn '[inputs]')
+    jq -n --arg v "$v" --argjson req "$req" \
+      '{visit:$v, inputs:($req | map(. as $n | {key:$n, value:{path:("/tmp/fabro/"+$n),parts:1,served:[1],status:"ok"}}) | from_entries)}' > "$T/.io/served.json"
+}
+
 check() {
     if [ "$2" = "$3" ]; then
         PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"
@@ -127,6 +140,8 @@ dg_setup() {
     rm -f "$T"/*.json "$T"/decompose_attempts "$T"/task_index
     printf '%s' "$1" > "$T/decomposition.json"
 }
+
+mkreadok ok1 issue.json
 
 dg_setup '{"status":"issues","summary":"s","issues":[
   {"id":"a","title":"A","body":"b","files":[],"covers":["c1"]},
@@ -182,6 +197,7 @@ check "invalid entry still retries" "1" "$?"
 echo ""
 echo "improve_gate"
 T="$WORK/ig"; mkdir -p "$T"; stage improve_gate
+mkreadok ok1 current_task.json issue.json
 
 TASKS='[{"id":"a","title":"A","body":"b","files":[],"covers":["c1"],"source":"decompose"},
         {"id":"big","title":"Big","body":"b","files":[],"covers":["c1","c2","c3","c4","c5"],"source":"decompose"},
@@ -283,6 +299,7 @@ check "garbage split_rounds normalised"   "split" "$(jq -r '.context_updates.tas
 # JSON, so an empty value emits `"oversized_tasks":}` -- unparseable, which makes
 # fabro's routing scan go inert with no error anywhere (AGENTS.md invariant 1).
 T="$WORK/dg2"; mkdir -p "$T"; stage decompose_gate
+mkreadok ok1 issue.json
 printf '%s' '{"status":"issues","summary":"s","issues":[{"id":"a","title":"A","body":"b","files":[],"covers":["c1"]}]}' > "$T/decomposition.json"
 OUT=$(sh "$T/decompose_gate.sh" 2>&1)
 check "routing JSON always parses"  "0" "$(jq -e . >/dev/null 2>&1 <<<"$(lastjson "$OUT")"; echo $?)"
@@ -294,6 +311,7 @@ check "oversized_tasks is a number" "number" "$(jq -r '.context_updates.oversize
 echo ""
 echo "next_task <-> improve_gate"
 T="$WORK/loop"; mkdir -p "$T/bin" "$T/feedback"; stage next_task; stage improve_gate
+mkreadok ok1 current_task.json issue.json
 # next_task shells out to git for the mainline refresh; only selection is under test.
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/git"; chmod +x "$T/bin/git"
 PATH="$T/bin:$PATH"
@@ -460,6 +478,7 @@ check "acquire still picks its issue" "5" "$(cat "$WORK/entry-acquire/sb/issue_n
 echo ""
 echo "extra_gate"
 T="$WORK/eg"; mkdir -p "$T/extra"; stage extra_gate
+mkreadok ok1 standards.json spec.json quality.json changed_files.txt diffstat.txt issue.json completed.md
 
 eg_setup() { # tasks followups
     rm -f "$T"/*.json "$T"/extra/*.json "$T"/extra_decompose_attempts
@@ -1450,6 +1469,7 @@ echo "task budget and remainder"
 SAVED_PATH="$PATH"
 T="$WORK/budget"; mkdir -p "$T/bin" "$T/feedback" "$T/extra"
 stage next_task; stage improve_gate; stage extra_prep; stage file_remainder
+mkreadok ok1 current_task.json issue.json
 cat > "$T/bin/git" <<'STUB'
 #!/bin/sh
 case "$1 $2" in
@@ -1631,6 +1651,7 @@ for n in claim triage_gate post_questions release done apply_ready improve_gate;
         FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$n"
     fi
 done
+mkreadok ok1 issue.json
 cat > "$T/bin/gh" <<'STUB'
 #!/bin/sh
 echo "$*" >> "$GH_LOG"
@@ -1824,6 +1845,8 @@ export GH_LOG="$T/gh.log" GH_STATE="$T"
 cand() { # cand <slug> <strength>
     printf '{"slug":"%s","title":"refactor: %s","strength":"%s","files":["a.py"],"problem":"p","solution":"s","benefits":"b","diagram":""}' "$1" "$1" "$2"
 }
+
+mkreadok ok1 hotspots.txt existing.json
 
 # 1. A valid file.
 echo 0 > "$T/arch/scan_attempts"
@@ -2310,6 +2333,7 @@ extract_from "$SHARED" hygiene | sed "s#/tmp/fabro#$T#g" > "$T/hygiene_node.sh"
 if ! sh -n "$T/ci_fix_gate.sh" 2>"$T/ci_fix_gate.syntax"; then
     FAIL=$((FAIL + 1)); printf '  FAIL ci_fix_gate is not valid POSIX sh\n'
 fi
+mkreadok ok1 ci_fix.md changed_files.txt diff.patch diffstat.txt commits.txt pr.json
 
 # An upstream whose `feat` branch is the PR head, cloned the way the sandbox is.
 # `hygiene` runs once first, as it does in the graph, to write hygiene.sh.
@@ -2569,6 +2593,38 @@ echo 0 > "$T/standards_attempts"
 sh "$T/standards.sh" >/dev/null 2>&1; RC=$?
 check "standards: stale receipt is repair" "1" "$RC"
 check "standards: stale never routes approve" "0" "$(sh "$T/standards.sh" 2>&1 | grep -c '"standards_status":"approve"')"
+
+
+# ---------------------------------------------------------------------------
+# implementer-gate read receipt — the reads-only form of C7 (ADR 0016 task 09).
+# A stale served visit (or a missing required input) must not accept the stage's
+# result: the repair-turn gates exit 1 on the first stale read, and the
+# failure-routing gates (resolve_merge/ci_fix/rebase) route to their failure
+# path instead (exit 0, never their success routing).
+# ---------------------------------------------------------------------------
+echo ""
+echo "implementer gate read receipt"
+T="$WORK/rcneg"; mkdir -p "$T"
+rorect_run() { # $1 graph(G/A/P/S/T) $2 node
+    local gr
+    case "$1" in
+        G) gr="$GRAPH";; A) gr="$ARCH";; P) gr="$PR";; S) gr="$SHARED";; T) gr="$SHARED_TRIAGE";;
+    esac
+    rm -rf "$T"; mkdir -p "$T/.io"
+    extract_from "$gr" "$2" | sed "s#/tmp/fabro#$T#g" > "$T/g.sh" || return 99
+    printf '%s' '{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}' > "$T/.io/stage.json"
+    printf '%s' '{"visit":"ffffffffffffffffffffffffffffffff","inputs":{}}' > "$T/.io/served.json"
+    sh "$T/g.sh" >/dev/null 2>&1; echo $?
+}
+check "decompose stale read is repair"   "1" "$(rorect_run G decompose_gate)"
+check "improve stale read is repair"     "1" "$(rorect_run G improve_gate)"
+check "extra stale read is repair"       "1" "$(rorect_run G extra_gate)"
+check "scan stale read is repair"        "1" "$(rorect_run A scan_gate)"
+check "review_fix stale read is repair"  "1" "$(rorect_run S fix_gate)"
+check "triage_gate stale read is repair" "1" "$(rorect_run T triage_gate)"
+check "resolve_merge stale routes fail"  "0" "$(rorect_run G resolve_merge_gate)"
+check "ci_fix stale routes fail"         "0" "$(rorect_run S ci_fix_gate)"
+check "rebase stale routes fail"         "0" "$(rorect_run P rebase_gate)"
 
 # ---------------------------------------------------------------------------
 # review-merge render — the Refuter and hygiene rows and sections (ADR 0013 D5)

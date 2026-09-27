@@ -84,8 +84,15 @@ jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_ur
     improve_gate [label="Validate and apply the improved body", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/improve.json
 A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"issue.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+if [ \"$ROK\" != yes ]; then S=invalid; else S=$(jq -r '.status // \"invalid\"' $F 2>/dev/null || echo invalid); fi
 N=$(jq -r .number /tmp/fabro/issue.json)
-S=$(jq -r '.status // \"invalid\"' $F 2>/dev/null || echo invalid)
 if [ \"$S\" != improved ] && [ \"$S\" != unchanged ]; then S=invalid; fi
 if [ \"$S\" = improved ]; then
   B=$(jq -r '.body // \"\"' $F 2>/dev/null || echo '')
@@ -121,7 +128,14 @@ jq -nc --arg s \"$S\" '{context_updates:{improve_status:$s}}'"]
     triage_gate [label="Validate the triage", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/triage.json
 A=$(cat /tmp/fabro/triage_attempts 2>/dev/null || echo 0)
-R=$(jq -r '.readiness // \"invalid\"' $F 2>/dev/null || echo invalid)
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"issue.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+if [ \"$ROK\" != yes ]; then R=invalid; else R=$(jq -r '.readiness // \"invalid\"' $F 2>/dev/null || echo invalid); fi
 case \"$R\" in ready|needs_info|not_actionable) ;; *) R=invalid ;; esac
 T=$(jq -r '.title // \"\"' $F 2>/dev/null || echo '')
 if ! echo \"$T\" | grep -Eq '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ./_-]+[)])?: .+'; then R=invalid; fi

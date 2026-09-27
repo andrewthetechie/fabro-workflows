@@ -60,6 +60,14 @@ echo 'history: '$(wc -l < /tmp/fabro/arch/hotspots.txt)' hot files, '$(jq length
     scan_gate [label="Validate the candidates", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/arch/candidates.json
 A=$(cat /tmp/fabro/arch/scan_attempts 2>/dev/null || echo 0)
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"hotspots.txt\",\"existing.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+if [ \"$ROK\" != yes ]; then OK=no; else
 OK=$(jq -r 'if (.candidates | type) != \"array\" then \"no\"
   elif (.candidates | length) > 20 then \"no\"
   elif ([.candidates[] | select(
@@ -73,6 +81,7 @@ OK=$(jq -r 'if (.candidates | type) != \"array\" then \"no\"
     )] | length) > 0 then \"no\"
   elif ([.candidates[].slug] | length) != ([.candidates[].slug] | unique | length) then \"no\"
   else \"yes\" end' $F 2>/dev/null || echo no)
+fi
 if [ \"$OK\" != yes ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/arch/scan_attempts

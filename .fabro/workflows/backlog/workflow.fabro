@@ -314,7 +314,14 @@ if command -v fabro-code >/dev/null; then fabro-code index; fabro-code map || tr
     decompose_gate [label="Validate decomposition", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/decomposition.json
 A=$(cat /tmp/fabro/decompose_attempts 2>/dev/null || echo 0)
-S=$(jq -r .status $F 2>/dev/null || echo invalid)
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"issue.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+if [ \"$ROK\" != yes ]; then S=invalid; else S=$(jq -r .status $F 2>/dev/null || echo invalid); fi
 if [ \"$S\" != issues ] && [ \"$S\" != no_work ] && [ \"$S\" != needs_human_review ]; then S=invalid; fi
 if [ \"$S\" = issues ]; then
   T=$(jq -r '.issues | type' $F 2>/dev/null || echo none)
@@ -422,7 +429,14 @@ fi"]
     resolve_merge_gate [label="Verify the mainline merge", shape=parallelogram, output_schema="routing",
         script="PRE=$(cat /tmp/fabro/pre_merge_sha 2>/dev/null || echo '')
 A=$(cat /tmp/fabro/merge_attempts 2>/dev/null || echo 0)
-BAD=0
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"pre_merge_sha\",\"current_task.json\",\"issue.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+if [ \"$ROK\" != yes ]; then BAD=1; else BAD=0; fi
 if [ -e .git/MERGE_HEAD ]; then BAD=1; fi
 if git diff --name-only --diff-filter=U | grep -q . ; then BAD=1; fi
 : > /tmp/fabro/merge_scan.txt
@@ -559,7 +573,14 @@ fi"]
     improve_gate [label="Validate improved task", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/improve_result.json
 A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
-D=$(jq -r .disposition $F 2>/dev/null || echo invalid)
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"current_task.json\",\"issue.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+if [ \"$ROK\" != yes ]; then D=invalid; else D=$(jq -r .disposition $F 2>/dev/null || echo invalid); fi
 if [ \"$D\" != ready ] && [ \"$D\" != redundant ] && [ \"$D\" != needs_human ] && [ \"$D\" != split ]; then D=invalid; fi
 KEEP=0
 SR=$(cat /tmp/fabro/split_rounds 2>/dev/null || echo 0)
@@ -723,6 +744,14 @@ exit 0"]
 
     prep_review [label="Prepare review inputs", shape=parallelogram, output_schema="routing",
         script="set -e
+SN=$(jq -r '.node // ""' /tmp/fabro/.io/stage.json 2>/dev/null || true)
+if [ -n \"$SN\" ] && { [ \"${SN#coder}\" != \"$SN\" ] || [ \"${SN#rework_t}\" != \"$SN\" ]; }; then
+  SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null || true)
+  RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null || true)
+  if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then
+    echo \"fabro-io: $SN produced output without a valid inputs receipt (served '$SV' vs stage '$RV'); code is judged by the review ladder, and this does not change routing (ADR 0016 D8)\"
+  fi
+fi
 BASE=$(cat /tmp/fabro/task_base_sha)
 git diff $BASE..HEAD > /tmp/fabro/review/diff.patch
 git diff --stat $BASE..HEAD > /tmp/fabro/review/diffstat.txt
@@ -864,7 +893,14 @@ echo '{\"context_updates\":{\"quality_status\":\"'$D'\"}}'"]
     extra_gate [label="Merge follow-up tasks", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/followups.json
 A=$(cat /tmp/fabro/extra_decompose_attempts 2>/dev/null || echo 0)
-S=$(jq -r .status $F 2>/dev/null || echo invalid)
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"standards.json\",\"spec.json\",\"quality.json\",\"changed_files.txt\",\"diffstat.txt\",\"issue.json\",\"completed.md\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+if [ \"$ROK\" != yes ]; then S=invalid; else S=$(jq -r .status $F 2>/dev/null || echo invalid); fi
 if [ \"$S\" != issues ] && [ \"$S\" != no_work ] && [ \"$S\" != needs_human_review ]; then S=invalid; fi
 NEWCNT=0
 if [ \"$S\" = issues ]; then

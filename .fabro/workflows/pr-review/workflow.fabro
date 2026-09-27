@@ -212,7 +212,14 @@ fi"]
     rebase_gate [label="Verify the rebase", shape=parallelogram, output_schema="routing",
         script="B=$(cat /tmp/fabro/base_ref)
 A=$(cat /tmp/fabro/rebase_attempts 2>/dev/null || echo 0)
-BAD=0
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"pre_rebase_sha\",\"target_sha\",\"base_ref\",\"pr.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+if [ \"$ROK\" != yes ]; then BAD=1; else BAD=0; fi
 if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then BAD=1; fi
 if git diff --name-only --diff-filter=U | grep -q . ; then BAD=1; fi
 git diff --name-only origin/\"$B\"...HEAD > /tmp/fabro/rebase_scan.txt 2>/dev/null || true
