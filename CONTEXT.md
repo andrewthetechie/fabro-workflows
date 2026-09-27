@@ -207,9 +207,9 @@ _Avoid_: task cap, max tasks
 
 **Remainder issue**:
 The issue a **Run** files for the tasks it did not start because its **Task budget** was
-spent. It continues the parent issue. It becomes a **Queue item** only after the run's PR
-merges.
-_Avoid_: follow-up issue, child issue, overflow
+spent. It continues the parent issue. It is a kind of **Held issue**: it becomes a **Queue item** only after the
+run's PR merges.
+_Avoid_: follow-up issue, child issue (a **Child issue** is a different thing), overflow
 
 **Priority label**:
 The `priority` issue label. The **Scheduler** ranks a **Queue item** carrying it ahead of
@@ -261,6 +261,24 @@ the blocking defects, and never a score. It is not one of the merge-phase review
 (standards, spec), and it never fixes anything (ADR 0013).
 _Avoid_: verifier, judge, second reviewer
 
+**Code index**:
+A **Run**'s own queryable graph of the symbols, calls and imports in its checkout. It is
+built from the run's working tree, never from `main`, so it includes the run's own edits.
+It knows calls and imports, not every usage. It is never proof that a name is unused
+(ADR 0014).
+_Avoid_: codegraph (the tool, not the concept), knowledge graph, code search
+
+**Repo map**:
+A ranked, size-capped outline of a checkout, rendered from the **Code index**: the
+most-referenced files and their top-level symbols. It is handed to agents as a file.
+_Avoid_: repomap, codebase summary
+
+**Task dossier**:
+What the `improve` stage found about one task: the files and symbols it touches, the test
+to extend, the governing text and the known traps. It is written for the stages that
+implement and review that task. It is not the task's spec. The task's body is the spec.
+_Avoid_: task context, brief, handoff notes
+
 **Canary** *(retired)*:
 Was to be the first repo whose `backlog` schedule is enabled at turn-on — `jelly-swipe`,
 because it has branch protection and no deploy-on-merge. No canary turn-on ever happened:
@@ -275,3 +293,44 @@ with a daily checklist and explicit exit and stop conditions. Superseded: there 
 canary and no schedule-driven expansion to gate, so the period never began. Its successor
 is draft 14's 24-hour scheduler shakedown — a measurement window with a written recipe
 rather than a daily checklist, and as of 2026-09-19 an unstarted one.
+
+**Task map**:
+Triage's proposed decomposition of one issue, stored on the issue: ordered tasks, each with
+its files and the requirements it covers. `backlog`'s decomposer reads it as a hint and
+always decomposes for itself. It is not the run's task list, and it is not a **Task
+dossier**.
+_Avoid_: plan, prefetch, pre-decomposition
+
+**Split parent**:
+An issue that triage divided into **Child issues** because its **Task map** was too large
+for one run. It tracks its children and is never worked itself. It closes when every child
+has closed as completed.
+_Avoid_: epic, tracking issue, umbrella
+
+**Child issue**:
+One slice of a **Split parent**, created by triage already ready to work, with its own
+**Task map**. It may name one earlier child that must land first. Not a **Remainder
+issue**, which a run files for work it did not start.
+_Avoid_: sub-task, sub-issue (GitHub's name for the link, not for the concept)
+
+**Held issue**:
+An issue that is ready to work but is in neither the queue nor progress, because it waits
+on another piece of work to land first: a **Child issue** waits on its predecessor child, and a
+**Remainder issue** waits on its parent's PR.
+_Avoid_: blocked, parked, deferred
+
+**Stage manifest**:
+For each agent stage, the inputs it receives, the output contract it produces and the files
+it must not see. It belongs to the graph, not to the sandbox image, so it changes when a
+prompt changes. See ADR 0016.
+_Avoid_: stage config, tool config
+
+**Sealed path**:
+A file in the sandbox that one stage must not read, because it holds another agent's
+opinion about the same work. It is sealed for that stage only.
+_Avoid_: hidden file, forbidden file, secret (a secret is a credential)
+
+**Input receipt**:
+The stamp on a stage's output that proves the stage received all of its inputs in the
+current visit. A contract without a valid receipt is not accepted, whatever it says.
+_Avoid_: nonce, marker, proof of read

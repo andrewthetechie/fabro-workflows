@@ -1,6 +1,6 @@
 # C4 · Decompose-ahead prefetch
 
-**Status:** proposed (rev 2 "Lever A"). **Axis:** throughput. **Effort:** M.
+**Status:** proposed (rev 2 "Lever A"). Superseded in design by ADR 0015 (proposed 2026-09-26): triage drafts a Task map that `decompose` reads as a hint only, and splits oversized issues. The lease-less prefetch run and the SHA-gated skip are rejected (ADR 0015 D2). **Axis:** throughput. **Effort:** M.
 **Feasibility:** medium.
 
 ## Problem

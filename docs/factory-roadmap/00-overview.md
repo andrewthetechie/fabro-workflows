@@ -45,7 +45,7 @@ Items are ranked by impact on **repeatability** (no silent loss of work, no loop
 | 5 | A4 Diff-hygiene gate | `A4-diff-hygiene-gate.md` | quality | S–M | high |
 | 6 | A5 Cross-family refuter | `A5-cross-family-refuter.md` | quality | M | high |
 | 7 | B2 Value-based queue | `B2-value-based-queue.md` | throughput, quality | M | high |
-| 8 | B3 Structured I/O submit tool | `B3-structured-io-submit-tool.md` | repeatability | M | high |
+| 8 | B3 Stage I/O (`inputs` and `submit` tools; ADR 0016, `docs/stage-io/`) | `B3-structured-io-submit-tool.md` | repeatability | M–L | high |
 | 9 | B4 Shared code context | `B4-shared-code-context.md` | throughput | M | high |
 | 10 | B6 Self-reported bugs | `B6-self-reported-bugs.md` | throughput, quality | M per source | high |
 | 11 | B7 Project memory | `B7-project-memory.md` | quality | S / M | high / medium |

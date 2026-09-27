@@ -1,6 +1,9 @@
 # B4 · Shared code context: stop every agent from grepping cold
 
-**Status:** proposed. **Axis:** throughput. **Effort:** M. **Feasibility:** high, with no
+**Status:** proposed. Step 1 measured on 2026-09-26: exploration is ~39% of input tokens,
+which is above the 15% stop rule. The design that follows from it is ADR 0014, with its plan
+in `docs/code-context/`. It keeps steps 2 and 3 and adds a queryable index, reached
+through `shell`. **Axis:** throughput. **Effort:** M. **Feasibility:** high, with no
 service to run. **Depends on:** a profile-image rebuild (tree-sitter grammars).
 
 ## Problem
@@ -75,3 +78,4 @@ pays the exploration cost, and the others inherit it.
 
 Re-run step 1's query over the 20 runs after steps 2 and 3 land. The target is a lower
 exploration share and fewer `agent.loop.detected` events, with no drop in auto-merge rate (B1).
+

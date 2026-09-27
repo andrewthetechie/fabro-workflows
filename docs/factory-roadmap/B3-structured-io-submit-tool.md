@@ -1,82 +1,138 @@
-# B3 · Structured I/O through a submit tool, never hand-written JSON
+# B3 · Stage I/O: one tool reads a stage's inputs, one tool writes its output
 
-**Status:** proposed. Supersedes `docs/research_improvements/02-tier-2-structured-output.md`.
-**Axis:** repeatability. **Effort:** M. **Feasibility:** high.
+**Status:** decided in ADR 0016 (proposed, 2026-09-26). Task series: `docs/stage-io/`.
+Supersedes `docs/research_improvements/02-tier-2-structured-output.md` and the first
+version of this record (a `fabro-submit` CLI with flags). That version assumed that no MCP
+server could run in the sandbox on this deployment. The assumption is out of date (see
+"Feasibility").
+**Axis:** repeatability. **Effort:** M–L. **Feasibility:** high, subject to one live spike.
 **Depends on:** a profile-image rebuild (`ops/profile-images/build-images.sh`).
 
 ## Problem
 
-Every agent→gate contract is a JSON file that the agent writes by hand with `write_file`:
-`tasks.json`, `improve_result.json`, `verdict.json`, `standards.json`, `spec.json`,
-`fix_result.json`, `triage.json`, `candidates.json`, `ci_fix.json`, and more. Gates validate
-them with `jq`, and sixteen `*_attempts` counters implement "bounce once, then give up"
-(`research_improvements/02`).
+Every agent stage starts by reading files that command nodes wrote under `/tmp/fabro/`.
+Every agent stage ends by writing a JSON contract by hand with `write_file`, which a gate
+then validates with `jq`. Both ends are done by the model, and the model has these problems
+at both ends:
 
-The measured bounce rate is low, about 2 in 750 gate visits over 2026-09-19..24, so this is
-not a fire. It matters for three other reasons:
+1. **Reading is not deterministic.** The prompt lists the files, and the agent decides
+   whether to read them, how much of each to read, and in what order. `read_file` stops at
+   2000 lines by default. `refute_diff.patch` may be 300 KB. Nothing proves that a stage
+   saw its inputs before it wrote its verdict.
+2. **Writing is not deterministic.** The contracts (`tasks.json`, `improve_result.json`,
+   `verdict.json`, `standards.json`, `spec.json`, `fix_result.json`, `triage.json`,
+   `candidates.json`, `refute.json` and more) are hand-written JSON. Sixteen `*_attempts`
+   counters implement "bounce once, then give up". The measured bounce rate is low (about 2
+   in 750 gate visits, 2026-09-19..24). It will not stay low as more stages move to local
+   boxes (B5), and every new contract (B2's enums, A5's checklist) adds another shape to get
+   right.
+3. **Hiding a file names it.** `refute.md.j2` tells the Refuter not to open
+   `standards.json`, `spec.json` and `fix_result.json`. That sentence is the only place
+   in the Refuter's context where those paths appear.
+4. **Reading costs turns.** Every read is a tool call, and each extra turn sends the whole
+   context again.
 
-1. **Principle.** The operator wants LLMs to generate text and code to own every data format.
-2. **Smaller models.** The rate is low on `glm-5.3`/`kimi-k3`. It will not stay low as more
-   stages move to local boxes, and B5 makes more boxes likely.
-3. **Growth.** Every new contract in this roadmap (B2's enums, A5's checklist) adds another
-   shape the model must get right, and another counter.
+The principle behind the item: LLMs write text and code, and code owns every data format
+(`00-overview.md`, "The goal these items serve").
 
-## Why not fabro's own mechanisms
+## Evidence (measured 2026-09-26)
 
-- **Custom `output_schema="@schema.json"`** validates only the *final response text*, with an
-  in-session repair turn (`docs/public/agents/outputs.mdx`). The model must emit the whole
-  contract as closing prose. That is fine for a three-field object and a bad bet for
-  `fix_result.json`.
-- **An MCP tool** would carry schema-constrained parameters, which is the strongest option,
-  but no MCP transport can write into the sandbox on this deployment: `sandbox` needs Daytona,
-  and `stdio`/`http` run outside it (checked on 0.354, 0.362 and upstream `main`).
+Three `backlog` runs completed on 2026-09-26 (`01M3E2GZ85KG`, `01M3EF21YHPZ`,
+`01M3FE4GP8VH`), 57 agent sessions, `fabro events --json`:
 
-## Design: `fabro-submit`, a validating CLI in the sandbox image
+| Measure | Value |
+|---|---|
+| LLM turns | 1001 |
+| Leading turns that only read `/tmp/fabro` inputs | 97 (9.7%) |
+| Wall time in those turns | 1296 s, about 5% of the three runs' wall time |
+| Hosted reviewers (`review`, `standards`, `spec`, `quality`, merge-phase `standards`, `spec`, `refute`) | 5–6 parallel reads in 1–2 turns, 6–20 s |
+| `coder` on a local box | 3–7 turns, 70–206 s per task |
+| `review_fix` | 2–7 turns, 14–34 s |
+| Whole-file input reads | 255, none cut at the 2000-line cap in these runs |
+| Partial input reads | 5, all `diff.patch` read 100–120 lines at a time by choice |
+| Refuter reads of other agents' files | 0 in `01M3FE4GP8VH`: the instruction held |
 
-A small Python CLI (standard library plus `jsonschema`, vendored) installed in all four
-profile images. Every agent has fabro's built-in `shell` tool. The agent passes **fields as
-flags**, and the tool builds the JSON:
+So the saving is real and modest: about one turn per reviewer stage, and three to five per
+coder task on a box. The main case is correctness. A deterministic reader always delivers
+every input, in full or in declared pages. A gate can prove that the delivery happened,
+which today it cannot. The tool also returns text without `read_file`'s `  N | ` line
+prefixes, which saves some tokens on a large diff.
 
-```sh
-fabro-submit verdict --decision changes_requested --summary "..."
-fabro-submit finding --contract verdict --severity error --file src/a.py --line 42 --text "..."
-fabro-submit triage  --readiness ready --title "fix(api): ..." --value user-facing-bug --size s --risk low
-fabro-submit task    --contract tasks --id t3 --title "..." --body-file /tmp/fabro/t3.md --covers 2
-fabro-submit done    --contract verdict      # finalises: validates the whole object, writes it
-```
+## Feasibility: the sandbox MCP transport works on the docker provider (source-verified)
 
-- **One writer.** The tool is the only thing that writes the canonical file. It writes to a
-  temporary file and renames it on `done`, so a gate never sees half a contract.
-- **Field-level errors in-session.** `--size huge` returns
-  `error: size must be one of xs,s,m,l,xl`, so the agent fixes it in the same turn. That is the
-  in-session repair fabro offers, without the "emit it all as final prose" cost.
-- **Long text by file.** Bodies go through `--body-file`, because multi-line text in flags is
-  where shells and models both fail.
-- **Schemas live in this repo** (`.fabro/workflows/_contracts/*.schema.json`) and are copied
-  into the images by `build-images.sh`. Stamp each with a version, so the graph can print a
-  clear failure if an image is older than the graph that expects it.
-- **Gates keep their semantic checks** (Conventional Commits title, "every error finding is
-  cited", label shapes), and drop the shape checks and the counters as each contract migrates.
+The first version of this record rejected MCP because "`sandbox` needs Daytona". On 0.362
+that is no longer true, according to the source. It is not yet proven live:
+
+- fabro's `sandbox` MCP transport starts the server inside the run sandbox and connects
+  through the sandbox's port route. The route is passed to every agent session with no
+  provider check (`lib/components/fabro-workflow/src/handler/llm/pebble.rs:618`,
+  `lib/components/fabro-sandbox/src/driver_sandbox.rs:1007`).
+- The docker provider has a port route. The sandbox-driver rev that fabro pins,
+  `07600aa`, has `crates/sandbox-driver-docker/src/forward.rs`: `preview_url(port)` opens a
+  loopback listener in the worker and bridges each connection into the container through
+  `docker exec` and bash's `/dev/tcp`. Every profile image has bash.
+- The "Daytona only" statements are in `docs/public/agents/mcp.mdx` and in the web
+  preview API (`fabro-server/src/server/handler/sandbox.rs:640`). Neither is on the MCP path.
+
+The limits of the transport, from the same source:
+
+- MCP servers are configured for the whole run (`[run.agent.mcps]`), so every agent sees
+  the same tools. The server starts once for each agent session.
+- A server that fails to start is logged and skipped, and the agent runs without its
+  tools. The design must fail closed at the gate.
+- A `stage_start` hook with `sandbox = true` runs in the sandbox before the stage's
+  handler starts, and it receives `FABRO_NODE_ID`. That is how the server learns which
+  stage it serves.
+- A blocking `pre_tool_use` hook refuses one tool call (`ToolErrorKind::Denied`), and the
+  agent continues (`lib/components/fabro-hooks/src/bridge.rs:92`).
+
+## Design (ADR 0016)
+
+One server, **`fabro-io`**, runs in the sandbox with the `sandbox` MCP transport. It is a
+static Rust binary (`rmcp`, the crate that fabro's own client uses), built once for
+`x86_64-unknown-linux-musl` and copied into all four profile images. The binary is
+generic. The **Stage manifest** in this repository holds every fact that is specific to a
+stage: its inputs, its output contract and schema, and its **Sealed paths**. The manifest
+travels with the graph, so a manifest change is live on the next fire, like a prompt.
+
+For each agent stage the server offers two tools:
+
+- **`inputs`** returns every input that the manifest declares for this stage, in a fixed
+  order, as text with no line numbers. An input larger than the page budget is returned in
+  numbered pages (`inputs(name, part)`). An optional input that is absent is reported as
+  absent. A missing required input is an error.
+- **`submit`** takes the stage's output as schema-typed parameters. The JSON Schema is the
+  tool's input schema. The server validates the output, stamps an **Input receipt** on it,
+  and writes it atomically. It refuses when `inputs` has not been called in this visit.
+
+The gates keep their semantic checks. They drop the shape checks and the repair counters
+as each contract migrates, and they fail closed on a missing or stale receipt. That check
+also catches a server that did not start. A `pre_tool_use` hook denies any tool call that
+names a Sealed path, and the prompts stop naming those paths.
 
 ## Migration order
 
-1. New contracts first: A5's `refute`, B2's triage enums. They are born on the tool.
-2. `triage.json` (the most shape rules in one gate).
-3. The reviewer verdicts (`verdict`, `standards`, `spec`, `quality`).
-4. `fix_result.json`, `tasks.json`, `improve_result.json` (the most complex, and last).
-
-Each migration step is one prompt change, one gate simplification and one fixture update in
-`ops/test-task-gates.sh`.
+1. `refute`: it has Sealed paths, a single output, and a gate built in ADR 0013.
+2. The reviewers: `review`, `standards`, `spec`, `quality`, the merge-phase `standards`
+   and `spec`.
+3. Inputs for the implementers: `coder`, `rework_*`, `improve`, `decompose`, `review_fix`,
+   `ci_fix_*`, `resolve_merge`, `rebase_agent_*`. This is where most turns are saved.
+4. The remaining outputs: `fix_result`, `decomposition`, `improve_result`, `triage`,
+   `improve` (triage), `candidates`, `followups`, `ci_fix_result`, `rebase_result`.
 
 ## Verification
 
-- CLI unit tests in `ops/profile-images/` (run offline in CI and in `build-images.sh`).
-- A gate fixture per migrated contract. `fabro-submit` output is byte-stable, so fixtures can
-  be generated by the tool itself.
+- `cargo test` for the server, offline, on the Mac and in the builder stage.
+- A gate fixture for each migrated contract in `ops/test-task-gates.sh`. The fixtures are
+  generated by `fabro-io` itself, so they are byte-identical to what the server writes.
+- The same measurement script before and after (`ops/fabro-exploration-share.py`, extended
+  with the input-read metrics above), and the targets in `docs/stage-io/10`.
 
-## Open questions
+## Open questions (answered in ADR 0016 or in the series)
 
-1. Where do the schemas live if the images and the graph drift? Suggest the version stamp plus
-   a `prep` check that `fabro-submit --schema-version` matches the graph's expected value.
-2. Should the tool also **read** inputs (`fabro-submit show issue`) so agents never parse
-   `issue.json` themselves? Useful, but out of scope for v1.
+1. How does the server know the stage? A sandbox `stage_start` hook writes it (ADR 0016 D3).
+2. What happens when images and graph drift? The binary is generic, and the manifest
+   travels with the graph. The manifest names the smallest binary version it needs, and
+   the entry node checks the version (D4).
+3. What if the spike fails? The same binary answers `fabro-io inputs` and
+   `fabro-io submit` through `shell`. Only the schema-typed parameters are lost (D9).
