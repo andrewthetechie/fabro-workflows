@@ -17,6 +17,7 @@ digraph ArchReview {
             .scan     { model: high-reasoning; }
             .improve  { model: high-reasoning; }
             .triage   { model: high-reasoning; }
+            .plan     { model: high-reasoning; }
         "
     ]
     rankdir=LR
@@ -153,7 +154,7 @@ jq -n --slurpfile i /tmp/fabro/arch/q_info.json --slurpfile t /tmp/fabro/arch/q_
   | ([$t[0][].number] | sort) as $n
   | $filed + ((($a + ($n - $a)) - $filed) | .[0:10])' > /tmp/fabro/queue.json
 echo 0 > /tmp/fabro/queue_index
-echo '{\"ready\":0,\"needs_info\":0,\"not_actionable\":0,\"skipped\":0,\"released\":0}' > /tmp/fabro/tally.json
+echo '{\"ready\":0,\"needs_info\":0,\"not_actionable\":0,\"skipped\":0,\"released\":0,\"split\":0}' > /tmp/fabro/tally.json
 echo 0 > /tmp/fabro/arch/deferred
 rm -f /tmp/fabro/arch/in_flight
 jq -c '{context_updates:{queue_length:length}}' /tmp/fabro/queue.json"]
@@ -169,7 +170,7 @@ jq -c '{context_updates:{queue_length:length}}' /tmp/fabro/queue.json"]
         script="set -e
 if [ -f /tmp/fabro/arch/in_flight ]; then
   O=$(cat /tmp/fabro/triage_outcome 2>/dev/null || echo released)
-  case \"$O\" in ready|needs_info|not_actionable|skipped|released) ;; *) O=released ;; esac
+  case \"$O\" in ready|split|needs_info|not_actionable|skipped|released) ;; *) O=released ;; esac
   jq --arg o \"$O\" '.[$o] += 1' /tmp/fabro/tally.json > /tmp/fabro/tally.next
   mv /tmp/fabro/tally.next /tmp/fabro/tally.json
   rm -f /tmp/fabro/arch/in_flight
@@ -206,15 +207,16 @@ L=$(jq -r 'map(\"#\" + tostring) | join(\" \")' /tmp/fabro/arch/filed.json 2>/de
 REPO=$(gh repo view --json name --jq .name 2>/dev/null || echo repository)
 TL=/tmp/fabro/tally.json
 RD=$(jq -r '.ready // 0' $TL 2>/dev/null || echo 0)
+SP=$(jq -r '.split // 0' $TL 2>/dev/null || echo 0)
 NI=$(jq -r '.needs_info // 0' $TL 2>/dev/null || echo 0)
 NA=$(jq -r '.not_actionable // 0' $TL 2>/dev/null || echo 0)
 SK=$(jq -r '.skipped // 0' $TL 2>/dev/null || echo 0)
 RL=$(jq -r '.released // 0' $TL 2>/dev/null || echo 0)
-TR=$((RD + NI + NA + SK + RL))
+TR=$((RD + NI + NA + SK + RL + SP))
 DF=$(cat /tmp/fabro/arch/deferred 2>/dev/null || echo 0)
 if [ \"$S\" = ok ]; then M=\"$REPO: $F filed\"; else M=\"$REPO: scan failed, 0 filed\"; fi
 if [ -n \"$L\" ]; then M=\"$M ($L)\"; fi
-M=\"$M; $TR triaged: $RD agent, $NI needs-info, $NA not actionable\"
+M=\"$M; $TR triaged: $RD agent, $SP split, $NI needs-info, $NA not actionable\"
 if [ \"$SK\" != 0 ]; then M=\"$M, $SK skipped\"; fi
 if [ \"$RL\" != 0 ]; then M=\"$M, $RL released\"; fi
 if [ \"$DF\" != 0 ]; then M=\"$M; $DF left for the next review\"; fi

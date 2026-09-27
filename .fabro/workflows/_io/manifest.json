@@ -370,6 +370,43 @@
           "path": "/tmp/fabro/triage.json",
           "schema": "triage"
         }
+      },
+      "plan": {
+        "live": true,
+        "prompt": ".fabro/workflows/_shared/triage/prompts/plan.md.j2",
+        "inputs": [
+          {
+            "name": "repomap.md",
+            "path": "/tmp/fabro/repomap.md",
+            "required": false,
+            "about": "a ranked outline of this checkout; can be missing, continue without it",
+            "absent": "the repository map is missing; proceed without it"
+          },
+          {
+            "name": "issue.json",
+            "path": "/tmp/fabro/issue.json",
+            "required": true,
+            "about": "the improved issue, with .body as the improved body, .title, .comments and .labels"
+          },
+          {
+            "name": "triage.json",
+            "path": "/tmp/fabro/triage.json",
+            "required": true,
+            "about": "the triage verdict: readiness, the acceptance boundary, labels and title"
+          },
+          {
+            "name": "triage.md",
+            "path": "/tmp/fabro/triage.md",
+            "required": true,
+            "about": "the triage report, including the acceptance boundary"
+          }
+        ],
+        "sealed": [],
+        "also": [],
+        "output": {
+          "path": "/tmp/fabro/plan.json",
+          "schema": "plan"
+        }
       }
     }
   },

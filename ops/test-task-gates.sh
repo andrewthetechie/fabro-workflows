@@ -1645,7 +1645,7 @@ echo "triage phase"
 PATH="$ORIG_PATH"
 SAVED_PATH="$PATH"
 T="$WORK/triage"; mkdir -p "$T/bin"
-for n in claim triage_gate post_questions release done apply_ready improve_gate; do
+for n in claim triage_gate post_questions release done apply_ready improve_gate plan_gate; do
     extract_from "$SHARED_TRIAGE" "$n" | sed "s#/tmp/fabro#$T#g" > "$T/$n.sh"
     if ! sh -n "$T/$n.sh" 2>"$T/$n.syntax"; then
         FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$n"
@@ -1810,6 +1810,144 @@ echo 0 > "$T/improve_attempts"; rm -f "$T/improved_body.md"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "no marker: body untouched"      "better report" "$(cat "$T/improved_body.md")"
 
+# --- plan_gate (ADR 0015 C1/C4) ---
+mkreadok ok1 issue.json
+printf '{"number":7,"labels":[]}' > "$T/issue.json"
+
+pg3='{"tasks":[{"id":"a","title":"A","intent":"i","files":["f"],"covers":["c"]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]}],"children":[],"summary":"s"}'
+printf '%s' "$pg3" | jq -c '._io.visit="ok1"' > "$T/plan.json"; echo 0 > "$T/plan_attempts"
+rm -f "$T/plan_ok" "$T/task_map.md" "$T/split_children.json"
+OUT=$(sh "$T/plan_gate.sh" 2>&1); RC=$?
+check "plan map: exit 0"             "0" "$RC"
+check "plan map: status"             "map"  "$(jq -r '.context_updates.plan_status' <<<"$(lastjson "$OUT")")"
+check "plan map: count"              "3"    "$(jq -r '.context_updates.task_count' <<<"$(lastjson "$OUT")")"
+check "plan map: plan_ok"            "1"    "$([ -f "$T/plan_ok" ] && echo 1 || echo 0)"
+check "plan map: 3 numbered tasks"   "3"    "$(grep -cE '^[0-9]+\. \*\*' "$T/task_map.md")"
+check "plan map: header"             "1"    "$(grep -c 'Drafted by triage against `main` at `' "$T/task_map.md")"
+
+pg7='{"tasks":[{"id":"a1","title":"A1","intent":"i","files":[],"covers":[]},{"id":"a2","title":"A2","intent":"i","files":[],"covers":[]},{"id":"a3","title":"A3","intent":"i","files":[],"covers":[]},{"id":"a4","title":"A4","intent":"i","files":[],"covers":[]},{"id":"b1","title":"B1","intent":"i","files":[],"covers":[]},{"id":"b2","title":"B2","intent":"i","files":[],"covers":[]},{"id":"b3","title":"B3","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): abc","summary":"one","tasks":["a1","a2","a3","a4"],"after":null},{"title":"feat(b): def","summary":"two","tasks":["b1","b2","b3"],"after":0}],"summary":"s"}'
+printf '%s' "$pg7" | jq -c '._io.visit="ok1"' > "$T/plan.json"; echo 0 > "$T/plan_attempts"
+rm -f "$T/plan_ok" "$T/task_map.md" "$T/split_children.json"
+OUT=$(sh "$T/plan_gate.sh" 2>&1); RC=$?
+check "plan split: status"           "split" "$(jq -r '.context_updates.plan_status' <<<"$(lastjson "$OUT")")"
+check "plan split: count"            "7"     "$(jq -r '.context_updates.task_count' <<<"$(lastjson "$OUT")")"
+check "plan split: 2 children"       "2"     "$(jq 'length' "$T/split_children.json")"
+check "plan split: child maps"       "2"     "$(jq '[.[] | select(has("task_map"))] | length' "$T/split_children.json")"
+check "plan split: tasks resolved"   "2"     "$(jq '[.[] | select((.tasks[0].id // "") != "")] | length' "$T/split_children.json")"
+
+pg13=$(python3 -c "import json;print(json.dumps({'tasks':[{'id':'t%d'%i,'title':'T','intent':'i','files':[],'covers':[]} for i in range(13)],'children':[],'summary':'s'}))")
+printf '%s' "$pg13" | jq -c '._io.visit="ok1"' > "$T/plan.json"; echo 0 > "$T/plan_attempts"
+rm -f "$T/plan_ok" "$T/task_map.md" "$T/split_children.json"
+printf '{"readiness":"ready","classification":"bug","confidence":"high","title":"feat: x","labels":[],"questions":[],"decisions":[],"summary":"s"}' > "$T/triage.json"
+printf 'old triage.md\n' > "$T/triage.md"
+OUT=$(sh "$T/plan_gate.sh" 2>&1); RC=$?
+check "plan too_large: status"       "too_large" "$(jq -r '.context_updates.plan_status' <<<"$(lastjson "$OUT")")"
+check "plan too_large: readiness"    "needs_info" "$(jq -r .readiness "$T/triage.json")"
+check "plan too_large: one question" "1"   "$(jq '.questions|length' "$T/triage.json")"
+check "plan too_large: appends map"  "1" "$(grep -c '### Proposed task map (too large to split)' "$T/triage.md")"
+check "plan too_large: no plan_ok"   "0"   "$([ -f "$T/plan_ok" ] && echo 1 || echo 0)"
+
+bad_dup='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","summary":"1","tasks":["a","b"],"after":null},{"title":"feat(b): y","summary":"2","tasks":["b","c","d","e"],"after":0}],"summary":"s"}'
+bad_5tasks='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","summary":"1","tasks":["a","b","c","d","e"],"after":null},{"title":"feat(b): y","summary":"2","tasks":["f"],"after":0}],"summary":"s"}'
+bad_after='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","summary":"1","tasks":["a","b"],"after":null},{"title":"feat(b): y","summary":"2","tasks":["c","d","e","f"],"after":4}],"summary":"s"}'
+bad_title='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","summary":"1","tasks":["a","b","c"],"after":null},{"title":"feat! b","summary":"2","tasks":["d","e","f"],"after":0}],"summary":"s"}'
+bad_empty='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[],"summary":"s"}'
+bad_did='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"a","title":"B","intent":"i","files":[],"covers":[]}],"children":[],"summary":"s"}'
+for pg_bad in bad_dup bad_5tasks bad_after bad_title bad_empty bad_did; do
+    printf '%s' "${!pg_bad}" | jq -c '._io.visit="ok1"' > "$T/plan.json"; echo 0 > "$T/plan_attempts"
+    rm -f "$T/plan_ok" "$T/task_map.md" "$T/split_children.json"
+    sh "$T/plan_gate.sh" >/dev/null 2>&1; RC=$?
+    check "plan invalid $pg_bad: retries" "1" "$RC"
+done
+
+printf '%s' "$bad_empty" | jq -c '._io.visit="ok1"' > "$T/plan.json"; echo 1 > "$T/plan_attempts"
+rm -f "$T/plan_ok" "$T/task_map.md" "$T/split_children.json"
+OUT=$(sh "$T/plan_gate.sh" 2>&1); RC=$?
+check "plan second invalid: exit 0"  "0"    "$RC"
+check "plan second invalid: none"    "none" "$(jq -r '.context_updates.plan_status' <<<"$(lastjson "$OUT")")"
+
+# claim deletes the C1 files, resets plan_attempts, and publishes plan_status
+tp_setup '[]'
+touch "$T/plan_ok" "$T/task_map.md"; echo x > "$T/plan.json"; echo y > "$T/split_children.json"; echo 5 > "$T/plan_attempts"
+sh "$T/claim.sh" >/dev/null 2>&1
+check "claim deletes plan.json"          "0"    "$([ -f "$T/plan.json" ] && echo 1 || echo 0)"
+check "claim deletes plan_ok"            "0"    "$([ -f "$T/plan_ok" ] && echo 1 || echo 0)"
+check "claim deletes task_map"           "0"    "$([ -f "$T/task_map.md" ] && echo 1 || echo 0)"
+check "claim deletes split_children"     "0"    "$([ -f "$T/split_children.json" ] && echo 1 || echo 0)"
+check "claim resets plan_attempts"       "0"    "$(cat "$T/plan_attempts")"
+OUT=$(sh "$T/claim.sh" 2>&1)
+check "claim routing plan_status"        "none" "$(jq -r '.context_updates.plan_status' <<<"$(lastjson "$OUT")")"
+
+# done publishes split
+echo split > "$T/triage_outcome"
+check "done: publishes split"            "split" "$(jq -r '.context_updates.triage_outcome' <<<"$(lastjson "$(sh "$T/done.sh" 2>&1)")")"
+rm -f "$T/triage_outcome"
+
+# --- apply_split (ADR 0015 C2/C3/C4) ---
+AS="$WORK/asplit"; mkdir -p "$AS/bin"
+extract_from "$SHARED_TRIAGE" apply_split | sed "s#/tmp/fabro#$AS#g" > "$AS/apply_split.sh"
+if ! sh -n "$AS/apply_split.sh" 2>"$AS/syn"; then FAIL=$((FAIL + 1)); printf '  FAIL apply_split is not valid POSIX sh\n'; fi
+cat > "$AS/bin/gh" <<'ASTUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+if [ "$1 $2" = "api repos/{owner}/{repo}/issues/7/sub_issues" ]; then
+  [ -f "$GH_STATE/sub_seed.json" ] && cat "$GH_STATE/sub_seed.json" || echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = "-X" ]; then
+  echo '{}'; exit 0
+fi
+if [ "$1" = api ]; then
+  echo '{"id":123456}'; exit 0
+fi
+if [ "$1 $2" = "issue create" ]; then
+  C=$(cat "$GH_STATE/counter" 2>/dev/null || echo 100); C=$((C+1)); echo $C > "$GH_STATE/counter"
+  BF=""; p=""
+  for a in "$@"; do [ "$p" = "--body-file" ] && BF="$a"; p="$a"; done
+  [ -n "$BF" ] && cp "$BF" "$GH_STATE/child_${C}.md"
+  echo "https://github.com/o/r/issues/$C"
+  exit 0
+fi
+exit 0
+ASTUB
+chmod +x "$AS/bin/gh"
+PATH="$AS/bin:$SAVED_PATH"
+export GH_LOG="$AS/gh.log" GH_STATE="$AS"
+
+printf '{"number":7,"title":"Parent","labels":[{"name":"needs-triage"},{"name":"architecture"}],"body":"parent body"}' > "$AS/issue.json"
+printf '{"readiness":"ready","title":"feat: parent","labels":[],"questions":[],"decisions":[{"question":"Where?","decision":"Here.","basis":"CONTEXT.md"}],"summary":"s"}' > "$AS/triage.json"
+printf 'report body\n' > "$AS/triage.md"
+printf '## Proposed task map\n\nDrafted by triage against `main`.\n' > "$AS/task_map.md"
+printf '%s\n' '[{"title":"feat(one): one","summary":"does one","after":null,"task_map":"## Proposed task map\n\n1. **A1** (`a1`)\n","tasks":[{"id":"a1","title":"A1","intent":"i","files":[],"covers":["c1"]}]},{"title":"feat(two): two","summary":"does two","after":0,"task_map":"## Proposed task map\n\n1. **B1** (`b1`)\n","tasks":[{"id":"b1","title":"B1","intent":"i","files":[],"covers":[]}]},{"title":"feat(three): three","summary":"does three","after":1,"task_map":"## Proposed task map\n\n1. **C1** (`c1`)\n","tasks":[{"id":"c1","title":"C1","intent":"i","files":[],"covers":[]}]}]' > "$AS/split_children.json"
+rm -f "$AS/counter" "$AS/triage_outcome" "$AS/sub_seed.json"; : > "$AS/gh.log"
+
+OUT=$(sh "$AS/apply_split.sh" 2>&1); RC=$?
+check "asplit: exit 0"                 "0" "$RC"
+check "asplit: outcome"                "split" "$(cat "$AS/triage_outcome")"
+check "asplit: 3 creates"              "3" "$(grep -c '^issue create' "$AS/gh.log")"
+check "asplit: first agent"          "1" "$(grep '^issue create' "$AS/gh.log" | sed -n '1p' | grep -c -- '--label agent ')"
+check "asplit: later children held"    "2" "$(grep '^issue create' "$AS/gh.log" | sed -n '2,3p' | grep -c -- '--label agent-held')"
+check "asplit: architecture inherited" "3" "$(grep -c -- '--label=architecture' "$AS/gh.log")"
+check "asplit: 3 sub-issue links"      "3" "$(grep -c -- 'sub_issues -F sub_issue_id' "$AS/gh.log")"
+check "asplit: parent agent-split"     "1" "$(grep -c -- 'issue edit 7 --title feat: parent --add-label agent-split' "$AS/gh.log")"
+check "asplit: parent never agent"     "0" "$(grep 'issue edit 7' "$AS/gh.log" | grep -c -- 'add-label agent ')"
+
+check "asplit: marker child1 after=0"  "<!-- fabro:split-child parent=7 after=0 -->" "$(head -1 "$AS/child_101.md")"
+check "asplit: marker child2"          "<!-- fabro:split-child parent=7 after=101 -->" "$(head -1 "$AS/child_102.md")"
+check "asplit: marker child3"          "<!-- fabro:split-child parent=7 after=102 -->" "$(head -1 "$AS/child_103.md")"
+check "asplit: split into checklist"   "1" "$(grep -c '^## Split into' "$AS/split_parent_body.md")"
+check "asplit: split decision line"    "1" "$(grep -c '\*\*Split this issue?\*\* Into #101,102,103 (basis: task map of 3 tasks' "$AS/split_parent_body.md")"
+
+printf '%s\n' '[{"sub_issue":{"number":101,"title":"feat(one): one"}},{"sub_issue":{"number":102,"title":"feat(two): two"}}]' > "$AS/sub_seed.json"
+rm -f "$AS/counter"; : > "$AS/gh.log"
+sh "$AS/apply_split.sh" >/dev/null 2>&1
+check "asplit idempotent: 1 create"    "1" "$(grep -c '^issue create' "$AS/gh.log")"
+check "asplit idempotent: 1 link"      "1" "$(grep -c -- 'sub_issues -F sub_issue_id' "$AS/gh.log")"
+
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+
+
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
@@ -1901,10 +2039,10 @@ check "file: filed_count"              "8" "$(jq -r '.context_updates.filed_coun
 
 # 5. summarize: the two shapes of the line.
 echo ok > "$T/arch/scan_status"; echo '[401,402]' > "$T/arch/filed.json"
-check "summary: filed"                 "jelly-swipe: 2 filed (#401 #402); 0 triaged: 0 agent, 0 needs-info, 0 not actionable" \
+check "summary: filed"                 "jelly-swipe: 2 filed (#401 #402); 0 triaged: 0 agent, 0 split, 0 needs-info, 0 not actionable" \
     "$(jq -r '.context_updates.arch_summary' <<<"$(lastjson "$(sh "$T/summarize.sh" 2>&1)")")"
 echo failed > "$T/arch/scan_status"; echo '[]' > "$T/arch/filed.json"
-check "summary: scan failed"           "jelly-swipe: scan failed, 0 filed; 0 triaged: 0 agent, 0 needs-info, 0 not actionable" \
+check "summary: scan failed"           "jelly-swipe: scan failed, 0 filed; 0 triaged: 0 agent, 0 split, 0 needs-info, 0 not actionable" \
     "$(jq -r '.context_updates.arch_summary' <<<"$(lastjson "$(sh "$T/summarize.sh" 2>&1)")")"
 
 PATH="$SAVED_PATH"
@@ -1954,7 +2092,7 @@ check "graph: signature limit covers the loop" "1" \
 
 # 2. next_issue walks the queue and counts each outcome.
 echo '[11,12]' > "$T/queue.json"; echo 0 > "$T/queue_index"; date +%s > "$T/run_started"
-echo '{"ready":0,"needs_info":0,"not_actionable":0,"skipped":0,"released":0}' > "$T/tally.json"
+echo '{"ready":0,"needs_info":0,"not_actionable":0,"skipped":0,"released":0,"split":0}' > "$T/tally.json"
 echo 0 > "$T/arch/deferred"; rm -f "$T/arch/in_flight"
 OUT=$(sh "$T/next_issue.sh" 2>&1)
 check "next: first issue"              "11"    "$(cat "$T/issue_number")"
@@ -1967,6 +2105,12 @@ check "next: second issue"             "12"    "$(cat "$T/issue_number")"
 echo needs_info > "$T/triage_outcome"
 OUT=$(sh "$T/next_issue.sh" 2>&1)
 check "next: counts needs_info"        "1"     "$(jq -r .needs_info "$T/tally.json")"
+echo '[5]' > "$T/queue.json"; echo 0 > "$T/queue_index"; rm -f "$T/arch/in_flight"
+echo '{"ready":0,"split":0,"needs_info":0,"not_actionable":0,"skipped":0,"released":0}' > "$T/tally.json"
+sh "$T/next_issue.sh" >/dev/null 2>&1
+echo split > "$T/triage_outcome"
+sh "$T/next_issue.sh" >/dev/null 2>&1
+check "next: counts split"             "1"     "$(jq -r .split "$T/tally.json")"
 check "next: done at the end"          "true"  "$(jq -r '.context_updates.queue_done' <<<"$(lastjson "$OUT")")"
 
 # 3. The 6-hour budget stops new triages and records what is left.
@@ -1978,10 +2122,10 @@ check "budget: deferred"               "2"     "$(cat "$T/arch/deferred")"
 
 # 4. summarize: the full line.
 echo ok > "$T/arch/scan_status"; echo '[401,402,403]' > "$T/arch/filed.json"
-echo '{"ready":10,"needs_info":1,"not_actionable":1,"skipped":0,"released":1}' > "$T/tally.json"
+echo '{"ready":10,"split":1,"needs_info":1,"not_actionable":1,"skipped":0,"released":1}' > "$T/tally.json"
 echo 2 > "$T/arch/deferred"
 check "summary: full line" \
-    "jelly-swipe: 3 filed (#401 #402 #403); 13 triaged: 10 agent, 1 needs-info, 1 not actionable, 1 released; 2 left for the next review" \
+    "jelly-swipe: 3 filed (#401 #402 #403); 14 triaged: 10 agent, 1 split, 1 needs-info, 1 not actionable, 1 released; 2 left for the next review" \
     "$(jq -r '.context_updates.arch_summary' <<<"$(lastjson "$(sh "$T/summarize.sh" 2>&1)")")"
 
 PATH="$SAVED_PATH"

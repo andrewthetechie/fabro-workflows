@@ -27,6 +27,7 @@ import httpx
 from .config import RepoConfig
 from .github import REQUEST_TIMEOUT_SECONDS, GitHubError, fetch_issues
 from .remainder import promote_remainders
+from .split import close_parents, promote_held
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -110,19 +111,36 @@ class InventoryPoller:
         self._promote(repo)
 
     def _promote(self, repo: RepoConfig) -> None:
-        """Promote held remainder issues (ADR 0011 D6). **Never raises.**
+        """Promote held work and close finished parents (ADR 0011 D6, ADR 0015 C5).
 
-        Deliberately outside `_poll`'s error handling: a promoter failure is logged,
-        and it must not mark the repo's inventory stale, because the inventory itself
-        is fine. The promotion is retried on the next pass anyway.
+        Runs three independent passes -- remainder promotion, held-child promotion
+        and split-parent closing -- each in its own `try`, so one failure never
+        stops the others. **Never raises.** Deliberately outside `_poll`'s error
+        handling: a promotion failure is logged, and it must not mark the repo's
+        inventory stale, because the inventory itself is fine. Each pass is
+        retried on the next poll.
         """
         try:
             for number, action in promote_remainders(
                 repo.name, self._token, client=self._client
-            ):
+            ):  # ADR 0011 D6
                 log.info("inventory: %s#%s remainder %s", repo.name, number, action)
         except Exception:  # noqa: BLE001 - see the docstring
             log.exception("inventory: %s: remainder promotion failed", repo.name)
+        try:
+            for number, action in promote_held(
+                repo.name, self._token, client=self._client
+            ):
+                log.info("inventory: %s#%s held child %s", repo.name, number, action)
+        except Exception:  # noqa: BLE001 - see the docstring
+            log.exception("inventory: %s: held-child promotion failed", repo.name)
+        try:
+            for number, action in close_parents(
+                repo.name, self._token, client=self._client
+            ):
+                log.info("inventory: %s#%s split parent %s", repo.name, number, action)
+        except Exception:  # noqa: BLE001 - see the docstring
+            log.exception("inventory: %s: split-parent close failed", repo.name)
 
     def _poll(self, repo: RepoConfig) -> None:
         state = self._store.fetch_state(repo.name)

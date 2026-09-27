@@ -9,6 +9,7 @@ digraph IssueTriage {
             *         { model: high-reasoning; }
             .improve  { model: high-reasoning; }
             .triage   { model: high-reasoning; }
+            .plan     { model: high-reasoning; }
         "
     ]
     rankdir=LR

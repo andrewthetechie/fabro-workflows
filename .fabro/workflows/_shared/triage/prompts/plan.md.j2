@@ -1,0 +1,101 @@
+# Draft the task map for one ready issue
+
+The issue passed triage as `ready`. You propose how the implementer should slice
+the work — either as one flat task map, or, when the work is large enough, as up
+to three ordered child issues. You emit exactly one artifact, `plan.json`. You do
+not create anything, label anything or edit the issue.
+
+## Inputs
+
+Call `inputs` first. It returns the repo map (may be absent), the improved issue,
+the triage verdict and the triage report. When it ends with `MORE:` lines, request
+each of those parts before continuing.
+
+- `repomap.md` — a ranked outline of this checkout (the most-referenced
+  files and their top-level symbols). Read it before you search. It can be missing.
+  If it is, continue without it.
+- `issue.json` — the improved issue: `.body` is the improved body, `.title` the
+  current title, `.comments` the human discussion, `.labels` repository beliefs.
+- `triage.json` — the triage verdict: `readiness`, the acceptance
+  boundary (`questions`/`decisions`), the labels and the title.
+- `triage.md` — the triage report, including the acceptance boundary.
+- The repository checkout in the current working directory, read-only, at its
+  current state.
+
+## Finding code
+
+Use `fabro-code` through the shell before `grep`, `glob` or paging a file with
+`read_file`:
+
+- `fabro-code def NAME`: where NAME is defined.
+- `fabro-code show NAME`: its source, what it calls, and what calls it. Use this
+  instead of reading a large file in pages.
+- `fabro-code callers NAME` / `callees NAME` / `impact NAME`: the call and import graph.
+- `fabro-code tests PATH…`: test files that exercise these files.
+
+Its answers include your own edits. It knows calls and imports only, not attribute
+reads, string keys or config. It matches a call by name, so a caller it lists can be
+a call to a different function with the same name. Before you conclude that
+something is unused, or before you delete or rename it, confirm with
+`grep -rnw NAME`. If it prints `no code index`, use grep.
+
+## What a task is
+
+The size budget is the same one `decompose` (backlog) uses, so the two prompts
+agree on what one task means. Each task is one implementation stage with a hard
+wall-clock limit. Measured on this server: a healthy stage runs about 24 minutes
+(median) and 47 minutes at p90. An oversized task does not run slowly, it fails.
+
+- A task satisfies **one or two** of the parent's acceptance criteria. Three is a
+  warning; more than three means you merged slices that should drain separately.
+- A task introduces a new module **and** migrates every call site to it is two
+  tasks: add the module with its tests, then migrate the callers.
+- Prefer several ordered tasks that each leave the repository green over one task
+  that does the whole job.
+- Do not pad in the other direction: splitting one small coherent edit into several
+  tasks costs a full review-and-integrate cycle each.
+
+Use `id`s in the same form `decompose` uses, because it reuses them: a stable,
+human-readable kebab-case id derived from the title and scope (e.g.
+`add-gameweek-score-column`). The same slice of work must produce the same `id`.
+
+## The split rule
+
+Do not invent a threshold — `plan_gate` enforces this exactly:
+
+- **1–4 tasks**: `children` is `[]`. The issue is implemented as one run.
+- **5–12 tasks**: group the tasks into **2 or 3 children**. Each child has 1–4
+  tasks, listed in the same order as in `tasks`, and must land and leave `main`
+  green on its own. Put prerequisites in earlier children, and set each child's
+  `after` to the child (its 0-based index) that it truly needs; `null` when it
+  depends on nothing. A child title is a Conventional Commit from the same ten
+  types as triage, with no `!` and no `BREAKING CHANGE:` — release automation
+  depends on the exact set.
+- **More than 12 tasks**: do not split. `plan_gate` turns the issue into a
+  scoping question; `children` is ignored. Keep `tasks` complete.
+
+Each child is implemented by its own backlog run, in order, and the next starts
+only when the previous one lands. A child that cannot land green on its own is an
+error in the map — reorder or regroup.
+
+## Boundaries
+
+- Inspect only. Do not edit tracked files, commit, push, change branches, install
+  dependencies, or call `gh` or `git`.
+- Write **only** `plan.json`. The workflow renders the map and creates the
+  children; you do not.
+
+## Output
+
+Call `submit` with your plan. It checks the shape and writes
+`/tmp/fabro/plan.json`; do not write it yourself. A result `submit` did not write
+is refused. The plan has:
+
+- `tasks` — an array, one or more, each with a non-empty `id`, `title` and
+  `intent`, a `files` array of repository-relative paths, and a `covers` array
+  naming the acceptance criteria the task satisfies. It is the complete,
+  ordered decomposition of the issue (one task for a small issue).
+- `children` — `[]`, or (5–12 tasks) 2 or 3 objects per the split rule above.
+- `summary` — one sentence for the operator.
+
+After `submit` writes plan.json, stop. Do not print it in chat.

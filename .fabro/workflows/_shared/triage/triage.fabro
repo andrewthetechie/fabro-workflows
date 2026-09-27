@@ -14,7 +14,7 @@ digraph Triage {
     // ## Exit contract
     //
     //   /tmp/fabro/triage_outcome and context.triage_outcome =
-    //     ready | needs_info | not_actionable | skipped | released
+    //     ready | split | needs_info | not_actionable | skipped | released
     //
     // There is no human gate (ADR 0012 D3). Questions go on the issue as a comment, the
     // issue gets `needs-info`, and the `(^|[.])post_questions$` stage_start hook sends
@@ -38,9 +38,10 @@ digraph Triage {
         script="set -e
 mkdir -p /tmp/fabro
 N=$(cat /tmp/fabro/issue_number)
-rm -f /tmp/fabro/triage_outcome /tmp/fabro/issue.json /tmp/fabro/improve.json /tmp/fabro/triage.json /tmp/fabro/triage.md
+rm -f /tmp/fabro/triage_outcome /tmp/fabro/issue.json /tmp/fabro/improve.json /tmp/fabro/triage.json /tmp/fabro/triage.md /tmp/fabro/plan.json /tmp/fabro/plan_ok /tmp/fabro/task_map.md /tmp/fabro/split_children.json
 echo 0 > /tmp/fabro/improve_attempts
 echo 0 > /tmp/fabro/triage_attempts
+echo 0 > /tmp/fabro/plan_attempts
 gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.next.json
 mv /tmp/fabro/issue.next.json /tmp/fabro/issue.json
 U=$(jq -r .url /tmp/fabro/issue.json)
@@ -52,7 +53,7 @@ if jq -e '[.labels[].name] | index(\"triage-in-progress\") != null' /tmp/fabro/i
   esac
   if [ \"$S\" = skipped ]; then
     echo skipped > /tmp/fabro/triage_outcome
-    jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_url:$u,claim_state:\"skipped\",triage_readiness:\"none\"}}'
+    jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_url:$u,claim_state:\"skipped\",triage_readiness:\"none\",plan_status:\"none\"}}'
     exit 0
   fi
 fi
@@ -67,7 +68,7 @@ if ! jq -e '[.comments[].body] | any(test(\"fabro:triage-original\"))' /tmp/fabr
     jq -r .body /tmp/fabro/issue.json ; } > /tmp/fabro/original.md
   gh issue comment $N --body-file /tmp/fabro/original.md
 fi
-jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_url:$u,claim_state:\"claimed\",triage_readiness:\"none\"}}'"]
+jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_url:$u,claim_state:\"claimed\",triage_readiness:\"none\",plan_status:\"none\"}}'"]
 
     // ---- Improve ----
     // `max_retries=1`: a stalled provider stream is invisible to the LLM retry and the
@@ -155,6 +156,149 @@ echo 0 > /tmp/fabro/triage_attempts
 QT=$(jq -r '[.questions[]? | \"- \" + (.question // \"\") + (if (.recommended // \"\") == \"\" then \"\" else \"  (suggested: \" + .recommended + \")\" end)] | join(\"  \")' $F 2>/dev/null | tr -d '\"' | cut -c1-1200)
 jq -nc --arg r \"$R\" --arg q \"$Q\" --arg qt \"$QT\" '{context_updates:{triage_readiness:$r,question_count:$q,triage_questions:$qt}}'"]
 
+    // ---- Plan: the task map and split (ADR 0015) ----
+    // Drafts the task map for a ready issue, and proposes a split into up to
+    // three ordered children when the map is large (C1). Fail-open: a dead plan
+    // agent routes straight to apply_ready with no map (ADR 0015 D1).
+    plan [label="Draft the task map", class="plan", prompt="@prompts/plan.md.j2", timeout="30m", max_retries=1]
+
+    // Implements C1 and C4. Publishes plan_status (map|split|too_large|none) and
+    // task_count. On map/split it writes plan_ok and renders task_map.md (C2), the
+    // newline via `([10]|implode)` because `\n` is the one backslash a .fabro file
+    // may not contain; on split it also writes split_children.json; on too_large it
+    // rewrites triage.json to a needs_info scoping question and appends the too-large
+    // map to triage.md. One repair turn; a second invalid file is plan_status=none
+    // (C1 rule 5, fail-open) so apply_ready runs with no map. Its failure line is
+    // its own, so the run-wide breaker counts plan_gate apart from the other gates.
+    plan_gate [label="Validate and apply the task map", shape=parallelogram, output_schema="routing",
+        script="F=/tmp/fabro/plan.json
+A=$(cat /tmp/fabro/plan_attempts 2>/dev/null || echo 0)
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+N=$(jq -r '.number // 0' /tmp/fabro/issue.json 2>/dev/null || echo 0)
+RM=0
+ST=invalid
+K=0
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
+  RM=1; ST=invalid
+else
+  K=$(jq '(.tasks // []) | if type==\"array\" then length else 0 end' $F 2>/dev/null || echo 0)
+  GOOD=$(jq -r 'if (.tasks|type) != \"array\" then \"no\"
+  elif (.tasks|length) == 0 then \"no\"
+  elif ([.tasks[] | select(
+      ((.id // \"\")|type) != \"string\" or ((.id // \"\")|length)==0
+      or ((.title // \"\")|type) != \"string\" or ((.title // \"\")|length)==0
+      or ((.intent // \"\")|type) != \"string\" or ((.intent // \"\")|length)==0
+      or ((.files // [])|type) != \"array\"
+      or ((.covers // [])|type) != \"array\")] | length) > 0 then \"no\"
+  elif ([.tasks[].id]|length) != ([.tasks[].id]|unique|length) then \"no\"
+  else \"yes\" end' $F 2>/dev/null || echo no)
+  if [ \"$GOOD\" != yes ]; then
+    ST=invalid
+  elif [ \"$K\" -gt 12 ]; then
+    ST=too_large
+  elif [ \"$K\" -le 4 ]; then
+    if [ \"$(jq '(.children // -1) | if type==\"array\" then length else -1 end' $F 2>/dev/null || echo -1)\" = 0 ]; then ST=map; else ST=invalid; fi
+  else
+    SP=$(jq -r '([.children[].tasks[]?]) as $flat
+    | ( [.children | to_entries[] | .key as $i | (.value.after) as $af
+        | ($af != null) and ( (($af|type) != \"number\") or ($af < 0) or ($af >= $i) or (($af|floor) != $af) ) ] | any ) as $badafter
+    | if (.children|type) != \"array\" then \"no\"
+      elif (.children|length) < 2 or (.children|length) > 3 then \"no\"
+      elif $flat != ([.tasks[].id]) then \"no\"
+      elif any(.children[]; ((.tasks|type)!=\"array\") or ((.tasks|length)<1) or ((.tasks|length)>4)) then \"no\"
+      elif any(.children[]; ((.title|type)!=\"string\") or ((.title//\"\")|length)==0
+           or ((.summary|type)!=\"string\") or ((.summary//\"\")|length)==0
+           or ((.title//\"\")|test(\"BREAKING CHANGE\"))) then \"no\"
+      elif $badafter then \"no\"
+      else \"yes\" end' $F 2>/dev/null || echo no)
+    if [ \"$SP\" = yes ]; then ST=split; else ST=invalid; fi
+    if [ \"$ST\" = split ]; then
+      rm -f /tmp/fabro/plan_title_bad
+      jq -r '.children[].title' $F | while read -r T; do
+        if ! echo \"$T\" | grep -Eq '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ./_-]+[)])?: .+'; then : > /tmp/fabro/plan_title_bad; break; fi
+        if echo \"$T\" | grep -Eq '^[a-z]+([(][^)]*[)])?!'; then : > /tmp/fabro/plan_title_bad; break; fi
+      done
+      if [ -f /tmp/fabro/plan_title_bad ]; then rm -f /tmp/fabro/plan_title_bad; ST=invalid; fi
+    fi
+  fi
+fi
+if [ \"$ST\" = invalid ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/plan_attempts
+  if [ $A -lt 2 ]; then
+    if [ $RM = 1 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2
+    else echo 'plan.json missing or invalid; rewrite it exactly per the contract' >&2; fi
+    exit 1
+  fi
+  rm -f /tmp/fabro/plan_ok /tmp/fabro/task_map.md /tmp/fabro/split_children.json
+  echo 0 > /tmp/fabro/plan_attempts
+  jq -nc '{context_updates:{plan_status:\"none\",task_count:0}}'
+  exit 0
+fi
+echo 0 > /tmp/fabro/plan_attempts
+SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DT=$(date -u +%F)
+RENDER='([10]|implode) as $nl |
+\"## Proposed task map\" + $nl + $nl + \"Drafted by triage against `main` at `\" + $sha + \"` on \" + $date + \". A hint for the implementer: the checkout wins where they disagree.\" + $nl + $nl +
+( [ .tasks | to_entries[] |
+    ((.value.covers // []) | join(\", \")) as $cov
+    | ((.value.files // []) | map(\"`\" + . + \"`\") | join(\", \")) as $f
+    | ((.key + 1) | tostring) as $n
+    | $n + \". **\" + .value.title + \"** (`\" + .value.id + \"`): \" + .value.intent + $nl
+      + \"   - files: \" + $f + $nl
+      + (if $cov == \"\" then \"\" else \"   - covers: \" + $cov + $nl end) ] | join(\"\") )'
+if [ \"$ST\" = map ]; then
+  : > /tmp/fabro/plan_ok
+  jq -r --arg sha \"$SHA\" --arg date \"$DT\" \"$RENDER\" $F > /tmp/fabro/task_map.md
+  jq -nc --argjson k \"$K\" '{context_updates:{plan_status:\"map\",task_count:$k}}'
+  exit 0
+fi
+if [ \"$ST\" = split ]; then
+  : > /tmp/fabro/plan_ok
+  jq -r --arg sha \"$SHA\" --arg date \"$DT\" \"$RENDER\" $F > /tmp/fabro/task_map.md
+  CHILD='. as $g
+| ([10]|implode) as $nl
+| $g.tasks as $all
+| $g.children
+| to_entries
+| map(
+    .value as $c
+    | ( [ $all[] | . as $t | select( ($c.tasks | index($t.id)) != null ) ] ) as $tasks
+    | ( \"## Proposed task map\" + $nl + $nl + \"Drafted by triage against `main` at `\" + $sha + \"` on \" + $date + \". A hint for the implementer: the checkout wins where they disagree.\" + $nl + $nl +
+        ( [ $tasks | to_entries[] |
+            ((.value.covers // []) | join(\", \")) as $cov
+            | ((.value.files // []) | map(\"`\" + . + \"`\") | join(\", \")) as $f
+            | ((.key + 1) | tostring) as $n
+            | $n + \". **\" + .value.title + \"** (`\" + .value.id + \"`): \" + .value.intent + $nl
+              + \"   - files: \" + $f + $nl
+              + (if $cov == \"\" then \"\" else \"   - covers: \" + $cov + $nl end) ] | join(\"\") )
+      ) as $tm
+    | { title: $c.title, summary: $c.summary, after: $c.after, tasks: $tasks, task_map: $tm }
+  )'
+  jq -c --arg sha \"$SHA\" --arg date \"$DT\" \"$CHILD\" $F > /tmp/fabro/split_children.json
+  jq -nc --argjson k \"$K\" '{context_updates:{plan_status:\"split\",task_count:$k}}'
+  exit 0
+fi
+if [ \"$ST\" = too_large ]; then
+  jq '.readiness=\"needs_info\" | .questions=[{\"id\":\"scope\",\"question\":\"This issue decomposes into more than 12 implementation tasks. Narrow its scope or split it into separate issues.\",\"why\":\"More than 12 tasks is too many to split into two or three children.\"}] | .summary=\"Too large to split: more than 12 implementation tasks.\"' /tmp/fabro/triage.json > /tmp/fabro/triage.next.json
+  mv /tmp/fabro/triage.next.json /tmp/fabro/triage.json
+  TOOLARGE='([10]|implode) as $nl |
+\"### Proposed task map (too large to split)\" + $nl + $nl + \"Drafted by triage against `main` at `\" + $sha + \"` on \" + $date + \". A hint for the implementer: the checkout wins where they disagree.\" + $nl + $nl +
+( [ .tasks | to_entries[] |
+    ((.value.covers // []) | join(\", \")) as $cov
+    | ((.value.files // []) | map(\"`\" + . + \"`\") | join(\", \")) as $f
+    | ((.key + 1) | tostring) as $n
+    | $n + \". **\" + .value.title + \"** (`\" + .value.id + \"`): \" + .value.intent + $nl
+      + \"   - files: \" + $f + $nl
+      + (if $cov == \"\" then \"\" else \"   - covers: \" + $cov + $nl end) ] | join(\"\") )'
+  jq -r --arg sha \"$SHA\" --arg date \"$DT\" \"$TOOLARGE\" $F >> /tmp/fabro/triage.md
+  jq -nc --argjson k \"$K\" '{context_updates:{plan_status:\"too_large\",task_count:$k}}'
+  exit 0
+fi
+jq -nc '{context_updates:{plan_status:\"none\",task_count:0}}'
+exit 0"]
+
     // ---- Terminal applications ----
     // set -e, and every agent-authored label created first: `gh issue edit` resolves
     // label names before it sends anything, so ONE missing label applies nothing.
@@ -203,20 +347,101 @@ done
 L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
 R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
 D=$(jq '[.decisions[]?] | length' /tmp/fabro/triage.json 2>/dev/null || echo 0)
-if [ \"$D\" != 0 ]; then
-  { jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Decisions made during triage$/{s=1; next} s && /^## /{s=0} !s{print}'
-    echo '## Decisions made during triage'
-    echo
-    echo 'Triage made these choices without asking. Edit this section to reverse one before the issue is worked.'
-    echo
-    jq -r '.decisions[] | \"- **\" + .question + \"** \" + .decision + (if (.basis // \"\") == \"\" then \"\" else \" (basis: \" + .basis + \")\" end)' /tmp/fabro/triage.json ; } > /tmp/fabro/decided_body.md
+EDIT=0
+if [ -f /tmp/fabro/plan_ok ]; then EDIT=1; fi
+if [ \"$D\" != 0 ]; then EDIT=1; fi
+if [ \"$EDIT\" = 1 ]; then
+  { jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Decisions made during triage$/||/^## Proposed task map$/{s=1; next} s && /^## /{s=0} !s{print}'
+    if [ \"$D\" != 0 ]; then
+      echo '## Decisions made during triage'
+      echo
+      echo 'Triage made these choices without asking. Edit this section to reverse one before the issue is worked.'
+      echo
+      jq -r '.decisions[] | \"- **\" + .question + \"** \" + .decision + (if (.basis // \"\") == \"\" then \"\" else \" (basis: \" + .basis + \")\" end)' /tmp/fabro/triage.json
+    fi
+    if [ -f /tmp/fabro/plan_ok ]; then
+      cat /tmp/fabro/task_map.md
+    fi ; } > /tmp/fabro/decided_body.md
   gh issue edit $N --body-file /tmp/fabro/decided_body.md
 fi
 { echo '<!-- fabro:triage-report -->' ; cat /tmp/fabro/triage.md ; } > /tmp/fabro/report.md
 gh issue comment $N --body-file /tmp/fabro/report.md
 gh issue edit $N --title \"$T\" --add-label agent $L $R
 echo ready > /tmp/fabro/triage_outcome
-jq -nc '{context_updates:{triage_outcome:\"ready\"}}'"]
+jq -nc '{context_updates:{triage_outcome:\"ready\"}}' "]
+
+    // Creates the Child issues a split map proposes (C2/C3/C4). Idempotent through
+    // the sub-issues API: a child whose title already exists as a sub-issue is
+    // reused, so a retried split never double-creates (C3). Children are created in
+    // order, so `after` -- the predecessor's issue number -- is always already known.
+    // The parent is labelled agent-split and never agent. The two labels are created
+    // first, per the phase's rule.
+    apply_split [label="Create the Children", shape=parallelogram, output_schema="routing",
+        script="set -e
+N=$(jq -r .number /tmp/fabro/issue.json)
+T=$(jq -r .title /tmp/fabro/triage.json)
+gh label create agent-held --color C5DEF5 --description 'A child issue waiting on an earlier child (ADR 0015)' 2>/dev/null || true
+gh label create agent-split --color BFD4F2 --description 'A split parent waiting on its children (ADR 0015)' 2>/dev/null || true
+gh api \"repos/{owner}/{repo}/issues/$N/sub_issues\" --paginate > /tmp/fabro/sub_existing.json 2>/dev/null || echo '[]' > /tmp/fabro/sub_existing.json
+jq -n '[]' > /tmp/fabro/split_numbers.json
+CN=$(jq length /tmp/fabro/split_children.json)
+I=0
+while [ $I -lt $CN ]; do
+  jq --argjson i $I '.[$i]' /tmp/fabro/split_children.json > /tmp/fabro/child.json
+  CT=$(jq -r .title /tmp/fabro/child.json)
+  EX=$(jq -r --arg t \"$CT\" '[.[] | select(.sub_issue.title == $t) | .sub_issue.number][0] // empty' /tmp/fabro/sub_existing.json 2>/dev/null)
+  if [ -n \"$EX\" ]; then
+    C=$(printf '%s' \"$EX\")
+  else
+    AF=$(jq -r '.after // \"null\"' /tmp/fabro/child.json)
+    if [ \"$AF\" = null ]; then AFTER=0; CL='agent'
+    else AFTER=$(jq -r --argjson a \"$AF\" '.[$a]' /tmp/fabro/split_numbers.json); CL='agent-held'; fi
+    CK=$(jq -r '[.tasks[].covers[]?] | unique | join(\", \")' /tmp/fabro/child.json)
+    { echo \"<!-- fabro:split-child parent=$N after=$AFTER -->\"
+      echo
+      jq -r .summary /tmp/fabro/child.json
+      echo
+      echo \"Part of #$N.\"
+      echo
+      if [ -n \"$CK\" ]; then echo \"Covers: $CK\"; echo; fi
+      jq -r .task_map /tmp/fabro/child.json ; } > /tmp/fabro/child_body.md
+    PL=$(jq -r '[.labels[].name] | map(select(. != \"needs-triage\" and . != \"needs-info\" and . != \"triage-in-progress\")) | map(\"--label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
+    URL=$(gh issue create --title \"$CT\" --body-file /tmp/fabro/child_body.md --label $CL $PL)
+    C=$(printf '%s' \"$URL\" | sed 's|.*/||')
+    case \"$C\" in ''|*[!0-9]*) echo \"WARNING: child create returned no number\" >&2; C=0 ;; esac
+    if [ \"$C\" != 0 ]; then
+      ID=$(gh api \"repos/{owner}/{repo}/issues/$C\" --jq .id)
+      gh api -X POST \"repos/{owner}/{repo}/issues/$N/sub_issues\" -F sub_issue_id=$ID || true
+    fi
+  fi
+  jq --argjson c \"$C\" '. + [$c]' /tmp/fabro/split_numbers.json > /tmp/fabro/split_numbers.next
+  mv /tmp/fabro/split_numbers.next /tmp/fabro/split_numbers.json
+  I=$((I+1))
+done
+K=$(jq '[.[].tasks[]] | length' /tmp/fabro/split_children.json)
+NUMS=$(jq -r 'map(tostring) | join(\",\")' /tmp/fabro/split_numbers.json)
+{ jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Decisions made during triage$|^## Proposed task map$|^## Split into$/{s=1; next} s && /^## /{s=0} !s{print}'
+  echo '## Decisions made during triage'
+  echo
+  echo 'Triage made these choices without asking. Edit this section to reverse one before the issue is worked.'
+  echo
+  jq -r '.decisions[] | \"- **\" + .question + \"** \" + .decision + (if (.basis // \"\") == \"\" then \"\" else \" (basis: \" + .basis + \")\" end)' /tmp/fabro/triage.json
+  echo \"- **Split this issue?** Into #$NUMS (basis: task map of $K tasks; ADR 0015 D3)\"
+  echo
+  cat /tmp/fabro/task_map.md
+  echo
+  echo '## Split into'
+  echo
+  jq -r --slurpfile n /tmp/fabro/split_numbers.json 'to_entries[] | \"- [ ] #\" + ($n[0][.key]|tostring) + \" \" + .value.title' /tmp/fabro/split_children.json ; } > /tmp/fabro/split_parent_body.md
+gh issue edit $N --body-file /tmp/fabro/split_parent_body.md
+{ echo '<!-- fabro:triage-report -->' ; cat /tmp/fabro/triage.md ; } > /tmp/fabro/report.md
+gh issue comment $N --body-file /tmp/fabro/report.md
+L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
+R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
+gh issue edit $N --title \"$T\" --add-label agent-split $L $R
+echo split > /tmp/fabro/triage_outcome
+jq -nc '{context_updates:{triage_outcome:\"split\"}}'"]
+
 
     // Labels and comments. Never closes the issue.
     apply_not_actionable [label="Record not actionable", shape=parallelogram, output_schema="routing",
@@ -250,7 +475,7 @@ echo done"]
     // turns anything unexpected into `released`.
     done [label="Triage phase complete", shape=parallelogram, output_schema="routing",
         script="O=$(cat /tmp/fabro/triage_outcome 2>/dev/null || echo released)
-case \"$O\" in ready|needs_info|not_actionable|skipped|released) ;; *) O=released ;; esac
+case \"$O\" in ready|split|needs_info|not_actionable|skipped|released) ;; *) O=released ;; esac
 jq -nc --arg o \"$O\" '{context_updates:{triage_outcome:$o}}'"]
 
     // ---- Edges ----
@@ -269,10 +494,20 @@ jq -nc --arg o \"$O\" '{context_updates:{triage_outcome:$o}}'"]
     triage -> triage_gate           [condition="outcome=succeeded"]
     triage -> release
     triage_gate -> triage           [condition="outcome=failed"]
-    triage_gate -> apply_ready      [condition="outcome=succeeded && context.triage_readiness=ready"]
+    triage_gate -> plan             [condition="outcome=succeeded && context.triage_readiness=ready"]
     triage_gate -> apply_not_actionable [condition="outcome=succeeded && context.triage_readiness=not_actionable"]
     triage_gate -> post_questions   [condition="outcome=succeeded && context.triage_readiness=needs_info"]
     triage_gate -> release
+
+    // plan is fail-open (ADR 0015 D1): its unconditional edge goes to apply_ready.
+    plan -> plan_gate               [condition="outcome=succeeded"]
+    plan -> apply_ready
+    plan_gate -> plan               [condition="outcome=failed"]
+    plan_gate -> apply_ready        [condition="outcome=succeeded && context.plan_status=map"]
+    plan_gate -> apply_ready        [condition="outcome=succeeded && context.plan_status=none"]
+    plan_gate -> apply_split        [condition="outcome=succeeded && context.plan_status=split"]
+    plan_gate -> post_questions     [condition="outcome=succeeded && context.plan_status=too_large"]
+    plan_gate -> release
 
     post_questions -> done          [condition="outcome=succeeded"]
     post_questions -> release
@@ -280,6 +515,8 @@ jq -nc --arg o \"$O\" '{context_updates:{triage_outcome:$o}}'"]
     apply_ready -> release
     apply_not_actionable -> done    [condition="outcome=succeeded"]
     apply_not_actionable -> release
+    apply_split -> done             [condition="outcome=succeeded"]
+    apply_split -> release
 
     release -> done
     done -> exit

@@ -83,6 +83,14 @@ PRIORITY_LABEL = "priority"
 # A remainder issue that a `backlog` run filed for the tasks past its task budget,
 # held out of the queue until its parent PR merges. `remainder.py` promotes it.
 REMAINDER_LABEL = "agent-remainder"
+# A Child issue a Split parent was divided into, waiting on an earlier Child
+# (ADR 0015, C3/C5). It is created out of the queue and only the scheduler
+# promotes it -- never `backlog`, which would implement it against a `main` that
+# lacks its predecessor (the ADR 0011 D6 same-repo saturation race, again).
+HELD_LABEL = "agent-held"
+# A Split parent: an issue triage divided into Child issues. It is never worked
+# and never labelled `agent`; the scheduler closes it when every child lands.
+SPLIT_LABEL = "agent-split"
 EXCLUDED_LABELS = frozenset({IN_PROGRESS_LABEL, STUCK_LABEL})
 
 
@@ -415,20 +423,22 @@ class RemainderIssue:
     body: str
 
 
-def fetch_remainders(
+def fetch_labelled(
     repo: str,
+    label: str,
     token: str,
     *,
     client: httpx.Client | None = None,
     timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> list[RemainderIssue]:
-    """Open issues in `repo` carrying `agent-remainder` (ADR 0011 D6).
+    """Open issues in `repo` carrying `label` (ADR 0011 D6, ADR 0015 C5).
 
     Unconditional, like `fetch_in_progress`: it asks for a different label
     collection than the ETag-cached inventory, and it runs once a minute per repo,
     which is 240 requests an hour for four repos -- well inside the 5,000/hour
     budget. Pull requests are dropped (`GET /issues` returns them too), and so is
-    any object that does not actually carry the label.
+    any object that does not actually carry the label. The raw body travels with
+    the issue because the promoter that consumes this parses a marker out of it.
 
     Raises `GitHubError` for anything that is not a `200`.
     """
@@ -442,7 +452,7 @@ def fetch_remainders(
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    params = {"labels": REMAINDER_LABEL, "state": "open", "per_page": PAGE_SIZE}
+    params = {"labels": label, "state": "open", "per_page": PAGE_SIZE}
 
     owned = client is None
     http = client or httpx.Client(timeout=timeout)
@@ -477,7 +487,7 @@ def fetch_remainders(
         if not isinstance(number, int) or isinstance(number, bool):
             continue
         labels = _label_names(item)
-        if REMAINDER_LABEL not in labels:
+        if label not in labels:
             continue
         body = item.get("body")
         found.append(
@@ -486,6 +496,21 @@ def fetch_remainders(
             )
         )
     return found
+
+
+def fetch_remainders(
+    repo: str,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> list[RemainderIssue]:
+    """Open issues in `repo` carrying `agent-remainder` (ADR 0011 D6).
+
+    A thin wrapper over `fetch_labelled` kept so `remainder.py` and its tests do
+    not change. Raises `GitHubError` for anything that is not a `200`.
+    """
+    return fetch_labelled(repo, REMAINDER_LABEL, token, client=client, timeout=timeout)
 
 
 def fetch_pull_state(
@@ -538,6 +563,201 @@ def fetch_pull_state(
     if payload.get("merged_at") is not None:
         return "merged"
     return "closed" if payload.get("state") == "closed" else "open"
+
+
+def fetch_issue_state(
+    repo: str,
+    number: int,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> tuple[str, str | None]:
+    """`(state, state_reason)` for one issue (ADR 0015 C5).
+
+    `GET /repos/{owner}/{repo}/issues/{number}`. `state` is `"open"` or
+    `"closed"`; `state_reason` is `"completed"`, `"not_planned"`, `"reopened"`
+    or `None`. The held-child promoter reads the predecessor through this, and the
+    `state_reason` is what distinguishes "the work landed" from "it was dropped".
+    Raises `GitHubError` for anything that is not a `200` -- including a `404` for
+    a number that is not an issue -- so the caller can tell "not done yet" from
+    "GitHub could not answer".
+    """
+    if not token or not token.strip():
+        raise GitHubError(
+            "GITHUB_TOKEN is not set; the GitHub inventory cannot be refreshed"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    owned = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        response = http.get(
+            f"{GITHUB_API}/repos/{repo}/issues/{number}", headers=headers
+        )
+    except httpx.HTTPError as exc:
+        raise GitHubError(f"{repo}: GitHub request failed: {exc}") from exc
+    finally:
+        if owned:
+            http.close()
+
+    if response.status_code != 200:
+        remaining = response.headers.get("x-ratelimit-remaining")
+        raise GitHubError(
+            _error_message(repo, response, remaining),
+            status_code=response.status_code,
+            remaining=remaining,
+        )
+    payload = response.json()
+    if not isinstance(payload, Mapping):
+        raise GitHubError(
+            f"{repo}: expected an issue object, got {type(payload).__name__}"
+        )
+    state = payload.get("state") or ""
+    reason = payload.get("state_reason")
+    return state, reason if isinstance(reason, str) else None
+
+
+def fetch_sub_issues(
+    repo: str,
+    number: int,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> list[tuple[int, str, str | None]]:
+    """`[(number, state, state_reason)]` for one issue's sub-issues (ADR 0015 C5).
+
+    `GET /repos/{owner}/{repo}/issues/{number}/sub_issues`, paged through every
+    `rel="next"` Link. Each result object carries the whole issue under a
+    `sub_issue` key. The split-parent closer uses this to tell "every child
+    landed" from "one stopped early". Raises `GitHubError` for anything that is
+    not a `200`.
+    """
+    if not token or not token.strip():
+        raise GitHubError(
+            "GITHUB_TOKEN is not set; the GitHub inventory cannot be refreshed"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    owned = client is None
+    http = client or httpx.Client(timeout=timeout)
+    results: list[tuple[int, str, str | None]] = []
+    url: str | None = f"{GITHUB_API}/repos/{repo}/issues/{number}/sub_issues"
+    try:
+        while url:
+            response = http.get(url, headers=headers)
+            if response.status_code != 200:
+                remaining = response.headers.get("x-ratelimit-remaining")
+                raise GitHubError(
+                    _error_message(f"{repo}#{number}", response, remaining),
+                    status_code=response.status_code,
+                    remaining=remaining,
+                )
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise GitHubError(
+                    f"{repo}#{number}: expected a list of sub_issues, got {type(payload).__name__}"
+                )
+            for item in payload:
+                if not isinstance(item, Mapping):
+                    continue
+                sub = item.get("sub_issue")
+                if not isinstance(sub, Mapping):
+                    continue
+                n = sub.get("number")
+                if not isinstance(n, int) or isinstance(n, bool):
+                    continue
+                state = sub.get("state") or ""
+                reason = sub.get("state_reason")
+                results.append((n, state, reason if isinstance(reason, str) else None))
+            url = _next_link_url(response)
+    except httpx.HTTPError as exc:
+        raise GitHubError(f"{repo}#{number}: GitHub request failed: {exc}") from exc
+    finally:
+        if owned:
+            http.close()
+    return results
+
+
+def comment(
+    repo: str,
+    number: int,
+    body: str,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> None:
+    """`POST /repos/{owner}/{repo}/issues/{n}/comments` -- post one comment.
+
+    Idempotent in the sense that a retry duplicates the comment rather than
+    corrupting state, but the split-parent closer calls it exactly once, right
+    before closing, because a stray duplicate is harmless but a parent closed
+    without the observation is the failure mode. Raises `GitHubError` for
+    anything that is not a `2xx`.
+    """
+    path = f"/repos/{repo}/issues/{number}/comments"
+    response = _write(
+        "POST", path, token, json={"body": body}, client=client, timeout=timeout
+    )
+    if not 200 <= response.status_code < 300:
+        raise _write_error(path, "comment", response)
+    log.info("github: %s#%s comment posted", repo, number)
+
+
+def close_issue(
+    repo: str,
+    number: int,
+    token: str,
+    *,
+    reason: str = "completed",
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> None:
+    """`PATCH /repos/{owner}/{repo}/issues/{n}` -- close with a `state_reason`.
+
+    The split-parent closer closes a parent as `completed` once every child has
+    landed. Idempotent: a second close is a `200` no-op. Raises `GitHubError` for
+    anything that is not a `2xx`.
+    """
+    path = f"/repos/{repo}/issues/{number}"
+    response = _write(
+        "PATCH",
+        path,
+        token,
+        json={"state": "closed", "state_reason": reason},
+        client=client,
+        timeout=timeout,
+    )
+    if not 200 <= response.status_code < 300:
+        raise _write_error(path, f"close ({reason})", response)
+    log.info("github: %s#%s closed (%s)", repo, number, reason)
+
+
+def _next_link_url(response: httpx.Response) -> str | None:
+    """The bare `rel="next"` URL from a Link header, or `None`."""
+    link = response.headers.get("link")
+    if not link:
+        return None
+    for part in link.split(","):
+        seg = part.split(";")
+        if len(seg) < 2:
+            continue
+        if 'rel="next"' not in seg[1] and "rel='next'" not in seg[1]:
+            continue
+        url = seg[0].strip()
+        if url.startswith("<") and url.endswith(">"):
+            return url[1:-1]
+    return None
 
 
 def add_label(

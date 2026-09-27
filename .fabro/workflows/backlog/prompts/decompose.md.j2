@@ -18,6 +18,13 @@ continuing.
   at `.body`, the title at `.title`, the number at `.number`, and human
   discussion at `.comments` (an array of objects, each with a `.body`). The
   issue body is primary; comments are supplemental context.
+- If the issue body has a `## Proposed task map` section, triage drafted it
+  against an earlier `main`. Start from it. It gives a slicing and the files
+  that are likely to be involved. Check every file and claim against the
+  checkout. When you keep a slice, keep its `id` exactly as written. When you
+  change a slice's scope, give it a new `id`. You may merge, split, reorder or
+  drop entries. Where the map and the checkout disagree, the checkout is
+  correct. The size budget below applies to your output, not to the map.
 - The repository checkout in the current working directory, read-only.
 
 ## Finding code
