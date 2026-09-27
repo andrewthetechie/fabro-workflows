@@ -59,26 +59,11 @@ findings you received — do not re-review the branch yourself.
 
 ## Output
 
-Write your result as raw JSON to `/tmp/fabro/extra/followups.json`. The file must
-contain exactly this shape and nothing else — no markdown fence, no commentary, no
-extra keys:
-
-```json
-{
-  "status": "issues" | "no_work" | "needs_human_review",
-  "summary": "one or two sentences",
-  "issues": [
-    {
-      "id": "stable-kebab-case-key",
-      "title": "short follow-up task title",
-      "body": "self-contained body with ## User Story, ## Context, ## Acceptance Criteria",
-      "files": ["path/to/file.ts"],
-      "covers": ["the distinct findings this task resolves"],
-      "priority": "high" | "medium" | "low"
-    }
-  ]
-}
-```
+Call `submit` with your `status`, `summary` and `issues`. It checks the shape
+and writes `/tmp/fabro/extra/followups.json`; do not write it yourself. A result
+`submit` did not write is refused. The shape is `status`, `summary` and `issues`
+(an array of entries with `id`, `title`, `body`, `files`, and optionally
+`covers` and `priority`).
 
 Rules — a validation gate reads this file and rejects it on any violation, which
 costs a full retry round:
@@ -103,16 +88,6 @@ costs a full retry round:
   gate warns above three entries and reads a missing or wrong-typed `covers` as
   `[]` rather than rejecting it — so leaving it out silently disables the size
   check for that task.
-- Use only the keys above. No provenance fields.
-- Markdown inside a `body` string is allowed; the JSON file itself must be raw JSON —
-  do not wrap the file contents in a ` ```json ` fence.
+- Markdown inside a `body` string is allowed.
 
-Minimal valid example:
-
-{
-  "status": "no_work",
-  "summary": "All three extra reviews approved or contained no actionable follow-up work.",
-  "issues": []
-}
-
-After writing `/tmp/fabro/extra/followups.json`, stop. Do not print the JSON in chat.
+After `submit` writes your result, stop. Do not print the JSON in chat.

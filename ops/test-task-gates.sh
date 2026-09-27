@@ -483,7 +483,7 @@ mkreadok ok1 standards.json spec.json quality.json changed_files.txt diffstat.tx
 eg_setup() { # tasks followups
     rm -f "$T"/*.json "$T"/extra/*.json "$T"/extra_decompose_attempts
     printf '%s' "$1" > "$T/tasks.json"
-    printf '%s' "$2" > "$T/extra/followups.json"
+    printf '%s' "$2" | jq --arg v ok1 '._io.visit = $v' > "$T/extra/followups.json"
 }
 
 eg_setup '[{"id":"a","title":"A","body":"b","files":[],"covers":["c1"],"source":"decompose"}]' \
