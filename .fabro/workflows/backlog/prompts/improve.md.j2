@@ -5,16 +5,18 @@ Preserve reporter intent, evidence, and human discussion. Ask no questions.
 
 ## Inputs
 
-Read these before deciding:
+Call `inputs` first. It returns the repo map (may be absent), the task being
+improved and the parent issue. When it ends with `MORE:` lines, request each of
+those parts before continuing.
 
-- `/tmp/fabro/repomap.md` — a ranked outline of this checkout (the most-referenced
+- `repomap.md` — a ranked outline of this checkout (the most-referenced
   files and their top-level symbols). Read it before you search. It can be missing.
   If it is, continue without it.
-- `/tmp/fabro/current_task.json` — the single task object being improved:
+- `current_task.json` — the single task object being improved:
   `{id, title, body, files, covers, priority, source}`. `covers` lists the distinct
   parent requirements the task delivers and is the size signal described below;
   `source` is `decompose`, `extra-review`, or `split`.
-- `/tmp/fabro/issue.json` — the parent issue, for reporter intent and human
+- `issue.json` — the parent issue, for reporter intent and human
   discussion (`.body` is the report, `.comments` is the human discussion).
 - The repository checkout in the current working directory, read-only, at its
   **current** state.

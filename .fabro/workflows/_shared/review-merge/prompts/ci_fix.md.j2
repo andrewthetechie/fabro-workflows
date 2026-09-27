@@ -8,17 +8,21 @@ check pass. Nothing else.
 
 ## Inputs
 
-| Path | What it is |
-|---|---|
-| `/tmp/fabro/feedback/ci_fix.md` | the failing check names and the failing log output from `gh run view --log-failed` |
-| `/tmp/fabro/review/changed_files.txt` | **every path this PR already touches. This is a ceiling, not a suggestion.** |
-| `/tmp/fabro/review/diff.patch` | the full unified diff of the PR, `origin/<base>...HEAD` |
-| `/tmp/fabro/review/diffstat.txt` | the change's file-by-file size summary |
-| `/tmp/fabro/review/commits.txt` | the commits on the branch |
-| `/tmp/fabro/pr.json` | PR number, title, body, refs and labels |
+Call `inputs` first. It returns the failing check tail, the changed-files list, the
+diff and its statistics, the commits and the PR. When it ends with `MORE:` lines,
+request each of those parts before continuing; you must read every part it returns.
+
+- `ci_fix.md` — the failing check names and the failing log output from
+  `gh run view --log-failed`.
+- `changed_files.txt` — **every path this PR already touches. This is a ceiling, not
+  a suggestion.**
+- `diff.patch` — the full unified diff of the PR, `origin/<base>...HEAD`.
+- `diffstat.txt` — the change's file-by-file size summary.
+- `commits.txt` — the commits on the branch.
+- `pr.json` — PR number, title, body, refs and labels.
 
 The repository checkout in the current working directory is your workspace;
-`/tmp/fabro/` is input you may read.
+`/tmp/fabro/` holds only the inputs the `inputs` tool returned.
 
 ## The check is the spec
 

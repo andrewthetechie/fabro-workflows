@@ -42,16 +42,15 @@ variable has to be on the command that needs it.
 
 ## Inputs
 
-| Path | What it is |
-|---|---|
-| `/tmp/fabro/pre_rebase_sha` | the commit this branch was on before the rebase. If you abort, HEAD must be back at this commit |
-| `/tmp/fabro/target_sha` | the base branch tip you are rebasing onto |
-| `/tmp/fabro/base_ref` | the base branch name |
-| `/tmp/fabro/pr.json` | PR metadata, for intent when resolving |
+Call `inputs` first. It returns `pre_rebase_sha` (the commit this branch was on
+before the rebase), `target_sha` (the base branch tip you are rebasing onto),
+`base_ref` (the base branch name) and `pr.json` (PR metadata, for intent when
+resolving). When it ends with `MORE:` lines, request each of those parts before
+continuing.
 
 The repository checkout in the current working directory is your workspace;
-`/tmp/fabro/` is input you may read. The one file you write outside the checkout
-is `/tmp/fabro/rebase_result.json`.
+`/tmp/fabro/` holds only the inputs the `inputs` tool returned. The one file you
+write outside the checkout is `/tmp/fabro/rebase_result.json`.
 
 ## Procedure
 

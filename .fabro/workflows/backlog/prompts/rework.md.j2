@@ -7,21 +7,25 @@ or `edit`.
 
 ## Inputs — read in this priority order
 
+Call `inputs` first. It returns the two orientation files, the human guidance, the
+findings, the task and the parent issue. When it ends with `MORE:` lines, request
+each of those parts before continuing — you must read everything it returns; the
+orientation files and the human guidance may be absent. Use them in this priority:
+
 Before the list below, two orientation files. They help you reach the code; they do
 not change the rework scope, which the findings define.
 
-- `/tmp/fabro/repomap.md` — a ranked outline of this checkout (the most-referenced
+- `repomap.md` — a ranked outline of this checkout (the most-referenced
   files and their top-level symbols). Read it before you search. It can be missing.
   If it is, continue without it.
-- `/tmp/fabro/task-context.md` — what the improve stage found about this task.
+- `task-context.md` — what the improve stage found about this task.
   Start from it. It can be missing or wrong. The checkout is the truth.
 
-1. **Human guidance, if present.** If `/tmp/fabro/feedback/rescue.md` exists and is
-   non-empty, it carries human guidance from a rescue gate and it **overrides
-   everything else**. A human has
-   looked at this run and told you what to do; do that, and treat the findings file
-   as secondary context.
-2. `/tmp/fabro/feedback/rework.md` — **the findings. This is your entire scope.**
+1. **Human guidance, if present.** If `rescue.md` is present and non-empty, it
+   carries human guidance from a rescue gate and it **overrides everything else**. A
+   human has looked at this run and told you what to do; do that, and treat the
+   findings file as secondary context.
+2. `rework.md` — **the findings. This is your entire scope.**
    Markdown, written by whichever stage rejected the previous attempt. It has three
    possible shapes:
    - `## Review findings to fix` — a reviewer's summary plus a bulleted finding
@@ -30,14 +34,13 @@ not change the rework scope, which the findings define.
      tail of the build/test log. Fix the failure; do not disable, skip, or delete
      the failing test.
    - `## Diff too large` — the change exceeded 2 MB. Shrink or split it.
-3. `/tmp/fabro/current_task.json` — the task being reworked. **If this file is
-   missing or unreadable, do not stop.** Work directly from
-   `/tmp/fabro/issue.json` instead.
-4. `/tmp/fabro/issue.json` — the parent issue, supplemental.
+3. `current_task.json` — the task being reworked. **If this file is
+   missing or unreadable, do not stop.** Work directly from `issue.json` instead.
+4. `issue.json` — the parent issue, supplemental.
 
 The repository checkout in the current working directory is your workspace.
-`/tmp/fabro/` is read-only input you may read; do not write anywhere outside the
-repository checkout.
+`/tmp/fabro/` holds only the inputs the `inputs` tool returned (and the served
+record); do not write anywhere outside the repository checkout.
 
 ## Finding code
 

@@ -100,7 +100,7 @@
         "also": []
       },
       "review_fix": {
-        "live": false,
+        "live": true,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/review_fix.md.j2",
         "inputs": [
           {
@@ -166,10 +166,6 @@
             "absent": "no previous fix attempt"
           }
         ],
-        "output": {
-          "path": "/tmp/fabro/review/fix_result.json",
-          "schema": "fix_result"
-        },
         "sealed": [],
         "also": []
       },
@@ -224,7 +220,7 @@
         ]
       },
       "ci_fix_t1": {
-        "live": false,
+        "live": true,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/ci_fix.md.j2",
         "inputs": [
           {
@@ -264,15 +260,11 @@
             "about": "PR number, title, body, refs and labels"
           }
         ],
-        "output": {
-          "path": "/tmp/fabro/review/ci_fix_result.json",
-          "schema": "ci_fix_result"
-        },
         "sealed": [],
         "also": []
       },
       "ci_fix_t2": {
-        "live": false,
+        "live": true,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/ci_fix.md.j2",
         "inputs": [
           {
@@ -312,17 +304,13 @@
             "about": "PR number, title, body, refs and labels"
           }
         ],
-        "output": {
-          "path": "/tmp/fabro/review/ci_fix_result.json",
-          "schema": "ci_fix_result"
-        },
         "sealed": [],
         "also": []
       }
     },
     "triage": {
       "improve": {
-        "live": false,
+        "live": true,
         "prompt": ".fabro/workflows/_shared/triage/prompts/improve.md.j2",
         "inputs": [
           {
@@ -339,15 +327,11 @@
             "about": "the single issue, with .body as the report, .title the current title, .comments the human discussion, .labels what the repository already believes"
           }
         ],
-        "output": {
-          "path": "/tmp/fabro/improve.json",
-          "schema": "improve"
-        },
         "sealed": [],
         "also": []
       },
       "triage": {
-        "live": false,
+        "live": true,
         "prompt": ".fabro/workflows/_shared/triage/prompts/triage.md.j2",
         "inputs": [
           {
@@ -364,10 +348,6 @@
             "about": "the single issue refreshed after improve, with .title, .comments and .labels"
           }
         ],
-        "output": {
-          "path": "/tmp/fabro/triage.json",
-          "schema": "triage"
-        },
         "sealed": [],
         "also": [
           "/tmp/fabro/triage.md"
@@ -382,7 +362,7 @@
       },
       "stages": {
         "decompose": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/decompose.md.j2",
           "inputs": [
             {
@@ -399,15 +379,11 @@
               "about": "the full parent issue; .body at body, .title at title, .number at number, human discussion at .comments"
             }
           ],
-          "output": {
-            "path": "/tmp/fabro/decomposition.json",
-            "schema": "decomposition"
-          },
           "sealed": [],
           "also": []
         },
         "resolve_merge": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/resolve_merge.md.j2",
           "inputs": [
             {
@@ -429,12 +405,11 @@
               "about": "the parent issue the accumulated work belongs to, supplemental"
             }
           ],
-          "output": null,
           "sealed": [],
           "also": []
         },
         "improve": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/improve.md.j2",
           "inputs": [
             {
@@ -457,17 +432,13 @@
               "about": "the parent issue, for reporter intent and human discussion"
             }
           ],
-          "output": {
-            "path": "/tmp/fabro/improve_result.json",
-            "schema": "improve_result"
-          },
           "sealed": [],
           "also": [
             "/tmp/fabro/task-context.md"
           ]
         },
         "coder": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/coder.md.j2",
           "inputs": [
             {
@@ -497,7 +468,6 @@
               "about": "the parent issue, for reporter intent and human discussion; supplemental"
             }
           ],
-          "output": null,
           "sealed": [],
           "also": []
         },
@@ -558,7 +528,7 @@
           "also": []
         },
         "rework_t1": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/rework.md.j2",
           "inputs": [
             {
@@ -601,14 +571,13 @@
               "about": "the parent issue, supplemental (and the fallback task source)"
             }
           ],
-          "output": null,
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
           ]
         },
         "rework_t2": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/rework.md.j2",
           "inputs": [
             {
@@ -651,14 +620,13 @@
               "about": "the parent issue, supplemental (and the fallback task source)"
             }
           ],
-          "output": null,
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
           ]
         },
         "rework_t3": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/rework.md.j2",
           "inputs": [
             {
@@ -701,14 +669,13 @@
               "about": "the parent issue, supplemental (and the fallback task source)"
             }
           ],
-          "output": null,
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
           ]
         },
         "rework_t4": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/rework.md.j2",
           "inputs": [
             {
@@ -751,7 +718,6 @@
               "about": "the parent issue, supplemental (and the fallback task source)"
             }
           ],
-          "output": null,
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
@@ -884,7 +850,7 @@
           "also": []
         },
         "extra_decompose": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/extra_decompose.md.j2",
           "inputs": [
             {
@@ -930,10 +896,6 @@
               "about": "what the run believes it did"
             }
           ],
-          "output": {
-            "path": "/tmp/fabro/extra/followups.json",
-            "schema": "followups"
-          },
           "sealed": [],
           "also": []
         }
@@ -945,7 +907,7 @@
       },
       "stages": {
         "rebase_agent_t1": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/pr-review/prompts/rebase.md.j2",
           "inputs": [
             {
@@ -973,15 +935,11 @@
               "about": "PR metadata, for intent when resolving"
             }
           ],
-          "output": {
-            "path": "/tmp/fabro/rebase_result.json",
-            "schema": "rebase_result"
-          },
           "sealed": [],
           "also": []
         },
         "rebase_agent_t2": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/pr-review/prompts/rebase.md.j2",
           "inputs": [
             {
@@ -1009,10 +967,6 @@
               "about": "PR metadata, for intent when resolving"
             }
           ],
-          "output": {
-            "path": "/tmp/fabro/rebase_result.json",
-            "schema": "rebase_result"
-          },
           "sealed": [],
           "also": []
         }
@@ -1024,7 +978,7 @@
       },
       "stages": {
         "scan": {
-          "live": false,
+          "live": true,
           "prompt": ".fabro/workflows/arch-review/prompts/scan.md.j2",
           "inputs": [
             {
@@ -1047,10 +1001,6 @@
               "about": "the architecture issues that already exist, open and closed, as [{number, title, state, stateReason, slug}]"
             }
           ],
-          "output": {
-            "path": "/tmp/fabro/arch/candidates.json",
-            "schema": "candidates"
-          },
           "sealed": [],
           "also": []
         }

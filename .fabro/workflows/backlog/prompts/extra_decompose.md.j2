@@ -7,15 +7,16 @@ drafts, emit `needs_human_review`.
 
 ## Inputs
 
-Read all of these:
+Call `inputs` first. It returns the three axis verdicts, the branch scope, the
+parent issue and what the run believes it did. When it ends with `MORE:` lines,
+request each of those parts before continuing.
 
-- `/tmp/fabro/extra/standards.json` — the standards-axis verdict
-- `/tmp/fabro/extra/spec.json` — the spec-axis verdict
-- `/tmp/fabro/extra/quality.json` — the code-quality verdict
-- `/tmp/fabro/extra/changed_files.txt`, `/tmp/fabro/extra/diffstat.txt` — branch
-  scope
-- `/tmp/fabro/issue.json` — the parent issue, for intent and acceptance criteria
-- `/tmp/fabro/completed.md` — what the run believes it did
+- `standards.json` — the standards-axis verdict
+- `spec.json` — the spec-axis verdict
+- `quality.json` — the code-quality verdict
+- `changed_files.txt`, `diffstat.txt` — branch scope
+- `issue.json` — the parent issue, for intent and acceptance criteria
+- `completed.md` — what the run believes it did
 - The repository checkout, read-only, if you need it for task shaping
 
 Any of the three verdict files may have `"decision": "approve"` with an empty

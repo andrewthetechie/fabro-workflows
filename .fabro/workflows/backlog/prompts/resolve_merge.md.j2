@@ -41,14 +41,15 @@ the command that needs it.
 
 ## Inputs
 
-| Path | What it is |
-|---|---|
-| `/tmp/fabro/pre_merge_sha` | the commit the run branch was on before the failed merge. If you abort, HEAD must be back at this commit |
-| `/tmp/fabro/current_task.json` | the task that starts once the merge lands, for intent when both sides touch the same code |
-| `/tmp/fabro/issue.json` | the parent issue the accumulated work belongs to, supplemental |
+Call `inputs` first. It returns `pre_merge_sha` (the commit the run branch was on
+before the failed merge), `current_task.json` (the task that starts once the merge
+lands, for intent when both sides touch the same code) and `issue.json` (the parent
+issue, supplemental). When it ends with `MORE:` lines, request each of those parts
+before continuing.
 
-The repository checkout in the current working directory is your workspace;
-`/tmp/fabro/` is input you may read.
+The repository checkout in the current working directory is your workspace. The
+`pre_merge_sha` input is also the file the git commands below read directly from
+`/tmp/fabro/pre_merge_sha`.
 
 ## Procedure
 
