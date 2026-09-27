@@ -261,7 +261,11 @@
           }
         ],
         "sealed": [],
-        "also": []
+        "also": [],
+        "output": {
+          "path": "/tmp/fabro/review/ci_fix_result.json",
+          "schema": "ci_fix_result"
+        }
       },
       "ci_fix_t2": {
         "live": true,
@@ -305,7 +309,11 @@
           }
         ],
         "sealed": [],
-        "also": []
+        "also": [],
+        "output": {
+          "path": "/tmp/fabro/review/ci_fix_result.json",
+          "schema": "ci_fix_result"
+        }
       }
     },
     "triage": {
