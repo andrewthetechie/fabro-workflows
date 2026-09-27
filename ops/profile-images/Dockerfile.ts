@@ -121,3 +121,5 @@ RUN cd /tmp/warm/repo \
 # The wrapper agents call instead of codegraph directly (docs/code-context C2).
 COPY fabro-code /usr/local/bin/fabro-code
 RUN chmod +x /usr/local/bin/fabro-code
+COPY fabro-io /usr/local/bin/fabro-io
+RUN chmod +x /usr/local/bin/fabro-io

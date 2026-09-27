@@ -47,6 +47,13 @@ MANIFESTS='(^|/)(pyproject\.toml|uv\.lock|\.python-version|package\.json|package
 # only the warmed registry forward, so no source reaches the shipped image.
 NEEDS_SOURCE='rust-node'
 
+# fabro-io (ADR 0016, docs/stage-io): built ONCE in a container from the crate at
+# ../fabro-io, then copied to every context root beside fabro-code. The binary is
+# x86_64-unknown-linux-musl, statically linked, no runtime dependencies.
+CRATE=$(cd "$HERE/.." && pwd)/fabro-io
+FABRO_IO_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$CRATE/Cargo.toml" | head -1)
+FABRO_IO_BIN="$WORK/fabro-io-bin"
+
 # To stderr, not stdout: sync_repo and assemble_context are read with $(...)
 # and anything they print on stdout becomes part of the sha or the context path.
 log() { printf '%s  %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
@@ -97,6 +104,9 @@ assemble_context() {
   # The fabro-code wrapper (docs/code-context C2) also lands at the context root
   # so every Dockerfile can `COPY fabro-code /usr/local/bin/fabro-code`.
   cp "$HERE/fabro-code" "$ctx/fabro-code"
+  # fabro-io (ADR 0016) lands at the context root like fabro-code, so every
+  # Dockerfile can `COPY fabro-io /usr/local/bin/fabro-io`.
+  cp "$FABRO_IO_BIN" "$ctx/fabro-io"
   log "context $profile: $n manifest file(s)"
   printf '%s' "$ctx"
 }
@@ -182,6 +192,26 @@ verify_image() {
     ok=1
   fi
 
+  # FABRO-IO (offline): the Stage-I/O binary every agent stage depends on. A broken
+  # binary blocks every stage in every run (ADR 0016, Consequences), so `fabro-io
+  # version` must print the expected version and `fabro-io stage` must exit 0 under
+  # the io-stage probe manifest (min_binary below the crate, empty stages).
+  log "verify $tag: fabro-io gate, offline"
+  if docker run --rm --network=none --entrypoint bash "$tag" -c '
+        set -eu
+        [ "$(fabro-io version)" = "fabro-io '"$FABRO_IO_VERSION"'" ] \
+          || { echo "version mismatch: $(fabro-io version)"; exit 1; }
+        FABRO_NODE_ID=probe \
+          FABRO_IO_MANIFEST="{\"version\":1,\"min_binary\":\"0.0.0\",\"stages\":{}}" \
+          fabro-io stage
+      ' >"$WORK/verify-fabroio-$repo.log" 2>&1; then
+    log "verify $tag: fabro-io OK ($FABRO_IO_VERSION)"
+  else
+    log "verify $tag: FABRO-IO CHECK FAILED"
+    tail -20 "$WORK/verify-fabroio-$repo.log" >&2
+    ok=1
+  fi
+
   if [ -x "$src/.fabro/setup.sh" ]; then
     log "verify $tag: contract check, running $repo/.fabro/setup.sh"
     t0=$(date +%s)
@@ -241,7 +271,38 @@ want() {
   return 1
 }
 
+# Build fabro-io once, for all four images, before any profile builds. `cargo test`
+# runs first -- a failing test stops the build and leaves yesterday's images in use.
+# Named volumes for the registry and the target dir make the nightly build incremental.
+build_fabro_io() {
+  log "build fabro-io $FABRO_IO_VERSION (crate $CRATE)"
+  docker volume create fabro-io-cargo >/dev/null 2>&1 || true
+  docker volume create fabro-io-target >/dev/null 2>&1 || true
+  if ! docker run --rm \
+      -v "$CRATE":/src:ro \
+      -v fabro-io-cargo:/cargo \
+      -v fabro-io-target:/target \
+      -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
+      -w /src \
+      rust:1.98.1-trixie sh -c '
+        set -eu
+        rustup target add x86_64-unknown-linux-musl >/dev/null
+        apt-get update >/dev/null
+        apt-get install -y musl-tools >/dev/null
+        cargo test --locked
+        cargo build --release --locked --target x86_64-unknown-linux-musl
+      ' >"$WORK/fabro-io-build.log" 2>&1; then
+    log "fatal: fabro-io tests/build failed (see $WORK/fabro-io-build.log); aborting before any image build"
+    tail -20 "$WORK/fabro-io-build.log" >&2
+    exit 1
+  fi
+  docker run --rm -v fabro-io-target:/target:ro -v "$WORK":/out alpine sh -c \
+    'cp /target/x86_64-unknown-linux-musl/release/fabro-io /out/fabro-io-bin && chmod +x /out/fabro-io-bin'
+  log "fabro-io $FABRO_IO_VERSION built: $FABRO_IO_BIN"
+}
+
 mkdir -p "$WORK/src" "$WORK/ctx"
+build_fabro_io
 FAILED=''
 for entry in $PROFILES; do
   PROFILE=${entry%%:*}

@@ -237,8 +237,13 @@ ssh andrew@10.10.0.32 'docker cp /tmp/discord-notify.sh \
 # the sandbox profile images. Not a file copy: build-images.sh clones each target
 # repo on the host, warms that repo's caches from its own lockfiles, and gates the
 # result on an offline cache check plus a live run of the repo's .fabro/setup.sh.
-# A failed build leaves the previous image tagged and in use.
+# A failed build leaves the previous image tagged and in use. Since ADR 0016 the
+# build also runs `cargo test` and the musl `cargo build` for the fabro-io crate,
+# which must sit beside the build tree at ~/fabro-io (build-images.sh resolves it as
+# $HERE/../fabro-io). Both trees are synced (profile-images first, the crate next,
+# because build-images.sh reads the crate to name the expected fabro-io version).
 rsync -a --delete ops/profile-images/ andrew@10.10.0.32:~/profile-images-build/
+rsync -a --delete ops/fabro-io/ andrew@10.10.0.32:~/fabro-io/
 ssh andrew@10.10.0.32 'cd ~/profile-images-build && ./build-images.sh'
 
 # the coder scheduler. Its compose service builds from ./scheduler, resolved

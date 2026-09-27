@@ -12,8 +12,10 @@ dependency caches, and — where its tests need one — a PostgreSQL server.
 | `ts` | womens-fantasy-sports | `fabro-ts:local` | `oven/bun:1.4.2` | bun 1.4.2, **uv + baked CPython 3.14** | **PostgreSQL 18** |
 | `rust-node` | writers-app | `fabro-rust-node:local` | `rust:1.98.1-trixie` | rust 1.98.1, **node 22.23.2** | — |
 
-Every image contains `git`, `jq`, `gh` (v2.100.0) and `bash`: the clone stage needs
-`git`, the gates need `jq`, the acquire/claim/validate/open_pr stages need `gh`, and
+Every image contains `git`, `jq`, `gh` (v2.100.0), `bash`, `fabro-code` and `fabro-io`:
+the clone stage needs `git`, the gates need `jq`, the acquire/claim/validate/open_pr stages need `gh`,
+`fabro-code` is the code-index wrapper (docs/code-context C2), and `fabro-io` is the Stage-I/O
+MCP server that gives every agent stage `inputs` and `submit` (ADR 0016, `docs/stage-io/`).
 fabro evaluates **every** sandbox command with `/bin/bash` and has no `sh` fallback.
 Command stages are written as POSIX `sh` regardless — no bashisms.
 

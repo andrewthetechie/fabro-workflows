@@ -2730,6 +2730,26 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
+# fabro-io — the Stage-I/O binary (docs/stage-io C1-C5). Present inside every
+# profile image but not assumed on the Mac PATH, so this prints SKIP when absent.
+# When present, probe `version` and the `stage` subcommand under a minimal manifest.
+echo "fabro-io"
+if ! command -v fabro-io >/dev/null 2>&1; then
+    echo "  SKIP fabro-io (no fabro-io on PATH; present in profile images)"
+else
+    VER=$(fabro-io version 2>&1)
+    check "fabro-io prints a version" "1" "$(grep -c '^fabro-io ' <<<"$VER")"
+    TMPIO=$(mktemp -d)
+    export FABRO_IO_ROOT="$TMPIO" FABRO_NODE_ID=probe
+    export FABRO_IO_MANIFEST='{"version":1,"min_binary":"0.0.0","stages":{}}'
+    fabro-io stage >/dev/null 2>&1; RC=$?
+    check "fabro-io stage exits 0 under probe manifest" "0" "$RC"
+    NODE_LINE=$(grep -c '"node": "probe"' "$TMPIO/.io/stage.json" 2>/dev/null || echo 0)
+    check "fabro-io stage wrote stage.json for probe" "1" "$NODE_LINE"
+    unset FABRO_IO_ROOT FABRO_NODE_ID FABRO_IO_MANIFEST
+    rm -rf "$TMPIO"
+fi
+
 echo ""
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: $PASS checks"
