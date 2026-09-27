@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "triage",
+  "title": "triage — triage's verdict (task 10)",
+  "description": "The triage agent's output (docs/stage-io, task 10). Encodes triage_gate's shape checks: readiness enum, conventional title, labels nameset, questions policy per readiness, and decisions with non-empty question/decision. `basis` is required on each decision for non-architecture issues; that is a gate check (it depends on issue.json) and is not expressible here, so it stays in the gate. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["readiness", "title", "labels", "questions", "decisions"],
+  "properties": {
+    "readiness": { "enum": ["ready", "needs_info", "not_actionable"] },
+    "title": {
+      "type": "string",
+      "pattern": "^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)(\\([a-z0-9 ./_-]+\\))?: .+"
+    },
+    "labels": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9:._-]+$" } },
+    "questions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "The gate requires questions to be non-empty for needs_info and empty for ready/not_actionable."
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "decision"],
+        "properties": {
+          "question": { "type": "string", "minLength": 1 },
+          "decision": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

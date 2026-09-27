@@ -336,7 +336,11 @@
           }
         ],
         "sealed": [],
-        "also": []
+        "also": [],
+        "output": {
+          "path": "/tmp/fabro/improve.json",
+          "schema": "improve"
+        }
       },
       "triage": {
         "live": true,
@@ -359,7 +363,11 @@
         "sealed": [],
         "also": [
           "/tmp/fabro/triage.md"
-        ]
+        ],
+        "output": {
+          "path": "/tmp/fabro/triage.json",
+          "schema": "triage"
+        }
       }
     }
   },

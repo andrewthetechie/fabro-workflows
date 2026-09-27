@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "improve",
+  "title": "improve — triage's improved issue body (task 10)",
+  "description": "The triage improve agent's output (docs/stage-io, task 10). improve_gate checks status enum and requires body when improved. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "body"],
+  "properties": {
+    "status": { "enum": ["improved", "unchanged"] },
+    "body": { "type": "string", "description": "The improved issue body; required when status is improved." }
+  }
+}
