@@ -138,7 +138,7 @@ T="$WORK/dg"; mkdir -p "$T"; stage decompose_gate
 
 dg_setup() {
     rm -f "$T"/*.json "$T"/decompose_attempts "$T"/task_index
-    printf '%s' "$1" > "$T/decomposition.json"
+    printf '%s' "$1" > "$T/decomposition.json" && jq --arg v ok1 '._io.visit=$v' "$T/decomposition.json" > /tmp/x && mv /tmp/x "$T/decomposition.json"
 }
 
 mkreadok ok1 issue.json
@@ -300,7 +300,7 @@ check "garbage split_rounds normalised"   "split" "$(jq -r '.context_updates.tas
 # fabro's routing scan go inert with no error anywhere (AGENTS.md invariant 1).
 T="$WORK/dg2"; mkdir -p "$T"; stage decompose_gate
 mkreadok ok1 issue.json
-printf '%s' '{"status":"issues","summary":"s","issues":[{"id":"a","title":"A","body":"b","files":[],"covers":["c1"]}]}' > "$T/decomposition.json"
+printf '%s' '{"status":"issues","summary":"s","issues":[{"id":"a","title":"A","body":"b","files":[],"covers":["c1"]}],"_io":{"visit":"ok1"}}' > "$T/decomposition.json"
 OUT=$(sh "$T/decompose_gate.sh" 2>&1)
 check "routing JSON always parses"  "0" "$(jq -e . >/dev/null 2>&1 <<<"$(lastjson "$OUT")"; echo $?)"
 check "oversized_tasks is a number" "number" "$(jq -r '.context_updates.oversized_tasks | type' <<<"$(lastjson "$OUT")")"

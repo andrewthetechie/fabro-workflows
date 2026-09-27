@@ -5,9 +5,10 @@
   "description": "The backlog decomposer's output (docs/stage-io, task 10). decompose_gate checks status enum and each issue's id/title/body/files shape; the task queue logic (source/covers stamping, cursor) stays in the gate. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "issues"],
+  "required": ["status", "summary", "issues"],
   "properties": {
     "status": { "enum": ["issues", "no_work", "needs_human_review"] },
+    "summary": { "type": "string", "description": "One or two sentences describing the decomposition result." },
     "issues": {
       "type": "array",
       "items": {
@@ -19,7 +20,8 @@
           "title": { "type": "string", "minLength": 1 },
           "body": { "type": "string", "minLength": 1 },
           "files": { "type": "array", "items": { "type": "string" } },
-          "covers": { "type": "array", "items": { "type": "string" } }
+          "covers": { "type": "array", "items": { "type": "string" } },
+          "priority": { "enum": ["high", "medium", "low"] }
         }
       }
     }

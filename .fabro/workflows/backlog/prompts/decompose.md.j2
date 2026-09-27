@@ -121,26 +121,13 @@ than a summary of it.
 
 ## Output
 
-Write your result as raw JSON to `/tmp/fabro/decomposition.json`. The file must
-contain exactly this shape and nothing else — no markdown fence, no commentary,
-no extra keys:
+Call `submit` with your `status`, `summary` and `issues`. It checks the shape and
+writes `/tmp/fabro/decomposition.json`; do not write it yourself. A result
+`submit` did not write is refused.
 
-```json
-{
-  "status": "issues" | "no_work" | "needs_human_review",
-  "summary": "one or two sentences describing the decomposition result",
-  "issues": [
-    {
-      "id": "stable-kebab-case-key-derived-from-title-and-scope",
-      "title": "short child task title",
-      "body": "self-contained body with ## User Story, ## Context, ## Acceptance Criteria",
-      "files": ["path/to/file.ts"],
-      "covers": ["the distinct parent requirements this task delivers"],
-      "priority": "high" | "medium" | "low"
-    }
-  ]
-}
-```
+`status` is `issues` | `no_work` | `needs_human_review`; `summary` is one or two
+sentences; `issues` is an array of tasks with `id`, `title`, `body`, `files`,
+and optionally `covers` and `priority`.
 
 Rules — a validation gate reads this file and rejects it on any violation, which
 costs a full retry round:
@@ -191,4 +178,4 @@ Minimal valid example (a single cohesive change is ONE task, status `issues`):
 }
 
 
-After writing `/tmp/fabro/decomposition.json`, stop. Do not print the JSON in chat.
+After `submit` writes your result, stop. Do not print the JSON in chat.
