@@ -1,10 +1,10 @@
 # Agents get their inputs from, and give their output to, one MCP server in the sandbox
 
-**Status:** proposed (2026-09-26). Operator decisions of 2026-09-26: the static Rust binary
+**Status:** accepted for the `sandbox` MCP transport (2026-09-27). Task 02's spike on the docker provider passed checks 1, 3, 4 and the 2 s startup budget (`docs/stage-io/spike-result.md`, `RESULT: mcp`), so D9's `shell` fallback is not needed. The static Rust binary
 (D2), `submit` refusing until every page is served (D6), the manifest in the graph (D4) and
-the 48 KB page budget (D5, to be confirmed by `docs/stage-io/01`) are accepted. Implementation plan: `docs/stage-io/`. Roadmap item
+the 48 KB page budget (D5, confirmed by `docs/stage-io/01`) are accepted. Implementation plan: `docs/stage-io/`. Roadmap item
 `docs/factory-roadmap/B3-structured-io-submit-tool.md`, which this ADR replaces as the
-design. Nothing here is implemented. Task 02 is a live spike, and D9 applies if it fails.
+design. Tasks 01 and 02 are done; the rest is not implemented.
 
 Every agent stage reads its inputs from files under `/tmp/fabro/` and writes a JSON
 contract by hand. The model decides what to read and how much of it, and it also formats

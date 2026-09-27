@@ -1,7 +1,6 @@
 # Stage I/O: overview and canonical contracts
 
-**Status:** not started. Proposed 2026-09-26. Decisions 1–4 and 8 accepted the same day. Task 02 is a live spike that decides between
-the MCP transport and the `shell` fallback (ADR 0016 D9). Operator decisions are listed in
+**Status:** task 01 (baseline) and task 02 (spike) complete, committed 2026-09-27. Proposed 2026-09-26; decisions 1–4 and 8 accepted. Task 02's spike resolved D9 to the `sandbox` MCP transport (`docs/stage-io/spike-result.md`, `RESULT: mcp`) — no `shell` fallback is needed. Decision 6 is accepted on that basis. Operator decisions are listed in
 "Decisions" at the end of this file.
 
 **Read this file first.** Every task in this folder assumes the decisions, contracts and
@@ -275,7 +274,7 @@ D10), and task 11's checks are run after each of them, not only at the end.
    `docs/stage-io/baseline-2026-09-26.txt`.
 5. **The guard is a guard against mistakes, not a boundary**, and it proceeds on its own
    errors (D8, C5). Proposed.
-6. **Fallback through `shell`** if task 02 fails (D9). Proposed.
+6. **MCP transport accepted; no `shell` fallback.** Task 02's spike resolved D9 to the `sandbox` MCP transport — `RESULT: mcp` in `spike-result.md`. All decision-gating checks passed (transport, hook order, process lifetime; startup ≈ 0.3 s ≤ 2 s); the missing-binary case is silent as designed, so C7's receipt check is authoritative. Accepted 2026-09-27.
 7. **Success targets:** the table in task 11. Proposed.
 8. **`coder`'s receipt is reported, never routed on.** `coder` has no gate: both
    `succeeded` and `partially_succeeded` go to `autofix`. A missing receipt is reported in
