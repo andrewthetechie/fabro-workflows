@@ -234,7 +234,13 @@ fi"]
     // `rework_t1..t4` (45m, never yet executed) and `resolve_merge` (30m, n=1). Those
     // have real tails or no evidence, and the same arithmetic does not hold for them.
     // See docs/perf/00-overview-and-measurements.md.
-    standards [label="Standards review", class="merge-standards", timeout="15m", max_retries=1, prompt="@prompts/standards.md.j2"]
+    //
+    // `standards` alone is now 25m. On `glm-5.3-flash` it hit 15m in runs
+    // 01M3ESJTMX2MK5H1X5VCJ65050 (2026-09-26) and 01M3H5EB787XDFTS4K4YKE00TH
+    // (2026-09-27, both attempts, so the PR went to mark_needs_human). Those were slow,
+    // not stalled, so 10m was added. Unmeasured beyond that; stall_timeout (60m) is
+    // still above it.
+    standards [label="Standards review", class="merge-standards", timeout="25m", max_retries=1, prompt="@prompts/standards.md.j2"]
     standards_gate [label="Validate standards output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/standards.json
 A=$(cat /tmp/fabro/standards_attempts 2>/dev/null || echo 0)

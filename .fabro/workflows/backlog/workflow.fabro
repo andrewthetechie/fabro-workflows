@@ -1467,6 +1467,13 @@ echo done"]
     rework_router -> human_rescue
 
     rework_t1 -> autofix            [condition="outcome=succeeded"]
+    // Tier 1 runs on a single-slot local box, whose failure is usually slowness or a
+    // hung request, not a task no model can fix. A failed tier 1 (both attempts timed
+    // out, or the session died) climbs the ladder: rework_router bumps `round` past 1,
+    // which selects rework_t2 on a hosted model. Run 01M3HRXSYA5RAYP078D3NWCYSV lost
+    // two 45m tier-1 attempts to box latency and parked on human_rescue with the
+    // edits done. Tiers 2-4 still fail to human_rescue.
+    rework_t1 -> rework_router      [condition="outcome=failed"]
     rework_t1 -> human_rescue
     rework_t2 -> autofix            [condition="outcome=succeeded"]
     rework_t2 -> human_rescue

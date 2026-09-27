@@ -71,9 +71,9 @@ ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp 
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
 ```
 
-Baselines as of 2026-09-27 (ADR 0013 added four merge-phase nodes; ADR 0015 added `plan`, `plan_gate` and `apply_split`), against **fabro 0.362.0-nightly.0** (review+merge shared and imported; ADR 0011 added
+Baselines as of 2026-09-27 (ADR 0013 added four merge-phase nodes; ADR 0015 added `plan`, `plan_gate` and `apply_split`; the `rework_t1 -> rework_router` escalation edge added one backlog edge), against **fabro 0.362.0-nightly.0** (review+merge shared and imported; ADR 0011 added
 `autofix` and `file_remainder`):
-`Backlog (65 nodes, 151 edges)` with exactly one warning — `issue_number` unbound in
+`Backlog (65 nodes, 152 edges)` with exactly one warning — `issue_number` unbound in
 `claim` (draft 10's deliberate fail-closed input, the same shape as `pr_number`) — and
 `PrReview (34 nodes, 73 edges)` with exactly one warning — `pr_number` unbound in
 `validate_input` — and `IssueTriage (16 nodes, 36 edges)` clean, and `ArchReview (24 nodes, 54 edges)` clean. Both include the 15 nodes of `_shared/triage/`. Backlog and PrReview both include the ~25
