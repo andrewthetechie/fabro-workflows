@@ -1,0 +1,32 @@
+Stage-I/O (ADR 0016) — deploy-state measurement record
+======================================================
+Date: 2026-09-27 (series pushed to main through task 10)
+
+STATUS: PENDING — the multi-day post-deploy production measurement is not run.
+The goal scope for this series stops before it. This file records that it is
+the next step, and the success targets it must report.
+
+Wait: at least 20 visits of each migrated stage in production, measured with
+ops/fabro-exploration-share.py against the committed baseline (docs/stage-io/
+baseline-B3-2026-09-26.txt). Targets (task 11):
+  - Migrated-stage contracts with a valid receipt, of those that reached their
+    gate: 100% (anything less is a bug to fix).
+  - partial_reads and capped_reads for migrated stages: 0.
+  - sealed_reads for refute: 0.
+  - Median lead_turns, reviewers: 1 or less (baseline 1-2).
+  - Median lead_turns, coder on a box: 1 or less (baseline 3-7).
+  - Median lead_secs, coder on a box: at least 50% below baseline.
+  - Gate repairs for each migrated contract: no more than the baseline.
+  - MCP startup (agent.session.started to first agent.llm.started): p95 within
+    2s of baseline.
+  - Runs stopped by io-stage: 0.
+
+If the startup target fails and the turn targets pass only for coder, the next
+step is B8 (a fabro upgrade that limits [run.agent.mcps.io] to runs where it
+pays off); it is not worked around in the graph.
+
+Deployment state on which this measurement will run:
+  - fabro-io 0.1.0 in every profile image (fabro-python, fabro-python-node,
+    fabro-ts, fabro-rust-node), matching the manifest's min_binary.
+  - All four workflow graphs and their generated FABRO_IO_MANIFEST blocks are
+    on main and thus live at the next fire.
