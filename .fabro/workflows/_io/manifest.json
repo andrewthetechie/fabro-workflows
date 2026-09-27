@@ -936,7 +936,11 @@
             }
           ],
           "sealed": [],
-          "also": []
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/rebase_result.json",
+            "schema": "rebase_result"
+          }
         },
         "rebase_agent_t2": {
           "live": true,
@@ -968,7 +972,11 @@
             }
           ],
           "sealed": [],
-          "also": []
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/rebase_result.json",
+            "schema": "rebase_result"
+          }
         }
       }
     },
