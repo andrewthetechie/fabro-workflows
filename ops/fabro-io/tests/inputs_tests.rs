@@ -38,15 +38,26 @@ fn test_4_inputs_batch_order_absent_and_paging() {
         );
 
         assert!(
-            t.contains("(absent: improve did not write opt)"),
-            "absent sentence for the optional input"
+            t.contains("=== opt: ") && t.contains("(absent: improve did not write opt)"),
+            "absent optional input is named, then its sentence"
         );
         assert!(t.contains("part 1 of 3"), "large input paged as part 1 of 3");
 
-        // MORE lines for the remaining pages of `big`.
+        // Part 1 of `big` (~49100 bytes) does not fit whole after `issues`, so it is not
+        // shown at all (never cut) and every one of its pages gets a MORE line.
+        assert!(t.contains("(not shown: no room left"), "big is deferred, not cut: {t}");
+        assert!(!t.contains(&"A".repeat(99)), "no byte of big is shown by the batch");
+        assert!(t.contains("MORE: inputs(name=\"big\", part=1)"));
         assert!(t.contains("MORE: inputs(name=\"big\", part=2)"));
         assert!(t.contains("MORE: inputs(name=\"big\", part=3)"));
         assert!(!t.contains("MORE: inputs(name=\"big\", part=4)"));
+
+        // Alone, `big` is the first block of its result, so part 1 is shown whole.
+        let alone = inputs::build(Some("big"), None);
+        assert!(!alone.is_error);
+        assert!(alone.text.contains("part 1 of 3"));
+        assert!(!alone.text.contains("MORE: inputs(name=\"big\", part=1)"));
+        assert!(alone.text.contains("MORE: inputs(name=\"big\", part=2)"));
 
         // Page determinism: parts requested out of order equal a straight split.
         let parts = pages::split(&big, pages::BUDGET);

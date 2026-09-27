@@ -10,24 +10,23 @@ use std::process::ExitCode;
 use crate::{common, manifest};
 
 /// The `stage` subcommand entry point.
+///
+/// A block decision is printed on stdout, because fabro parses a hook's decision from
+/// stdout and replaces a missing one with "hook exited with code 2".
 pub fn run() -> ExitCode {
     match manifest::load() {
         Err(manifest::LoadError::InvalidJson(e)) => {
-            eprintln!(
-                "{{\"decision\":\"block\",\"reason\":\"FABRO_IO_MANIFEST is not valid JSON: {e}\"}}"
-            );
-            return ExitCode::from(2);
+            return block(&format!("FABRO_IO_MANIFEST is not valid JSON: {e}"));
         }
         Err(manifest::LoadError::Missing) => {
             // No manifest at all: nothing to compare, still write stage.json.
         }
         Ok(m) => {
             if let Some(required) = m.min_binary_above() {
-                eprintln!(
-                    "{{\"decision\":\"block\",\"reason\":\"fabro-io {} is older than the manifest's min_binary {required}; rebuild the profile images\"}}",
+                return block(&format!(
+                    "fabro-io {} is older than the manifest's min_binary {required}; rebuild the profile images",
                     env!("CARGO_PKG_VERSION")
-                );
-                return ExitCode::from(2);
+                ));
             }
         }
     }
@@ -45,8 +44,18 @@ pub fn run() -> ExitCode {
     let path = common::io_dir().join("stage.json");
     let bytes = serde_json::to_vec_pretty(&stage).unwrap_or_else(|_| b"{}".to_vec());
     if let Err(e) = common::atomic_write(&path, &bytes) {
-        eprintln!("stage: could not write {}: {e}", path.display());
-        return ExitCode::FAILURE;
+        // C5: exit 0 in every case but the two blocks. A blocking hook that exits 1 would
+        // stop the stage. Remove the previous stage's identity instead, so that neither the
+        // server nor a gate can mistake it for this stage's: every receipt check then fails
+        // closed on the empty visit.
+        let _ = std::fs::remove_file(&path);
+        eprintln!("stage: warning: could not write {}: {e}; proceeding without a stage identity", path.display());
     }
     ExitCode::SUCCESS
+}
+
+/// Print a C5 block decision on stdout and return exit code 2.
+fn block(reason: &str) -> ExitCode {
+    println!("{}", serde_json::json!({"decision": "block", "reason": reason}));
+    ExitCode::from(2)
 }

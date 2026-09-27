@@ -45,10 +45,13 @@ impl IoHandler {
         Tool::new(
             INPUTS,
             "Read the stage's inputs. With no arguments, returns every input in manifest \
-             order until the page budget is used; a large input ends with MORE: lines \
-             naming the calls to fetch the rest. An absent optional input prints its \
-             (absent: ...) sentence. A required input that is missing is listed as \
-             MISSING and the result is an error.",
+             order within one page budget. An input that does not fit prints only its \
+             header; the result then ends with one MORE: line for every page not yet \
+             shown, naming the exact call that returns it. With name only, returns that \
+             input the same way. With name and part, returns that page's raw bytes. An \
+             absent optional input prints its (absent: ...) sentence. A required input \
+             that is missing is listed as MISSING and the result is an error. An unknown \
+             name is an error that lists the valid names.",
             schema,
         )
     }

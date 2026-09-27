@@ -66,7 +66,8 @@ fn test_8_submit_after_incomplete_large_input_refuses_naming_next_part() {
     let m = common::manifest(&root);
     common::with_manifest(&root, &m, "mystage", || {
         assert_eq!(stage::run(), std::process::ExitCode::from(0));
-        let _ = inputs::build(None, None); // serves only part 1 of `big`
+        let _ = inputs::build(None, None); // `big` does not fit after `issues`: deferred
+        let _ = inputs::build(Some("big"), Some(1)); // part 1 only
         match submit::run(&valid_output()) {
             submit::Outcome::Incomplete(msg) => {
                 assert!(msg.contains("big"), "names the input: {msg}");
@@ -122,7 +123,7 @@ fn test_10_submit_success_stamps_receipt_and_matches_fixture() {
         let io = &v["_io"];
         assert_eq!(io["stage"], "mystage");
         assert_eq!(io["visit"], FIXED_VISIT);
-        assert_eq!(io["binary"], "0.1.0");
+        assert_eq!(io["binary"], env!("CARGO_PKG_VERSION"));
         let inputs_map = io["inputs"].as_object().unwrap();
         assert!(inputs_map.contains_key("issues"), "receipt hashes each input");
         assert!(inputs_map.contains_key("big"));

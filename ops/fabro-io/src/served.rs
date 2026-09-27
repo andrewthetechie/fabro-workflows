@@ -64,6 +64,25 @@ pub fn path() -> std::path::PathBuf {
     common::io_dir().join("served.json")
 }
 
+/// Take the exclusive lock that serializes read-modify-write of `served.json`.
+///
+/// The lock is `flock` on `.io/served.lock` and is released when the returned file is
+/// dropped. A lock that cannot be taken returns `None` and the caller proceeds unlocked:
+/// a lost update only costs the model a `submit` refusal and another `inputs` call, while
+/// a failed tool call would cost the whole read.
+pub fn lock() -> Option<std::fs::File> {
+    let dir = common::io_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("served.lock"))
+        .ok()?;
+    file.lock().ok()?;
+    Some(file)
+}
+
 /// Load the served record for the current visit, or a fresh one.
 pub fn load(visit: &str) -> Served {
     let raw = std::fs::read_to_string(path()).ok();

@@ -1,8 +1,11 @@
 //! The `inputs` tool (C3): return the stage's inputs, paged, and record what was served.
 //!
 //! The same code backs the MCP tool and the CLI. A page-mode call (`name` and `part`)
-//! returns the raw bytes of that page; a batch call walks the ordered inputs until the
-//! page budget is used and emits `MORE:` lines for any input that does not fit.
+//! returns the raw bytes of that page. A batch call walks the ordered inputs, shows each
+//! one whose first page fits whole in the rest of the page budget, prints only the header
+//! of each one that does not, and ends with one `MORE:` line for every page not yet shown.
+//! A page is never cut to fit: what the batch shows of an input is always exactly one of
+//! its fixed parts, so what `served.json` records as served is what the model saw.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -21,6 +24,10 @@ pub struct InputsResult {
 }
 
 /// Build the inputs text for a call. `name`/`part` mirror the MCP `inputs` parameters.
+///
+/// The read-modify-write of `served.json` runs under an exclusive lock, because fabro
+/// runs a turn's tool calls in parallel: without it, two `inputs` calls in one turn each
+/// save their own record and the later save drops the earlier call's parts.
 pub fn build(name: Option<&str>, part: Option<u32>) -> InputsResult {
     let Some((node, visit)) = common::read_stage() else {
         return err("no stage.json: call fabro-io stage first");
@@ -32,21 +39,29 @@ pub fn build(name: Option<&str>, part: Option<u32>) -> InputsResult {
     let Some(stage) = m.stage(&node) else {
         return err(&format!("no stage '{node}' in the manifest"));
     };
+    if let Some(n) = name
+        && !stage.inputs.iter().any(|i| i.name == n)
+    {
+        return err(&format!(
+            "no input named '{n}'. This stage's inputs are: {}",
+            stage.inputs.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if part.is_some() && name.is_none() {
+        return err("part requires a name");
+    }
+
+    let _lock = served::lock();
     let mut served_rec = served::load(&visit);
-
-    let result = if part.is_some() && name.is_none() {
-        err("part requires a name")
-    } else if part.is_some() {
-        page(&stage, name.unwrap(), part.unwrap(), &mut served_rec)
-    } else {
-        batch(&stage, name, &mut served_rec)
+    let result = match (name, part) {
+        (Some(n), Some(p)) => page(stage, n, p, &mut served_rec),
+        _ => batch(stage, name, &mut served_rec),
     };
-
     let _ = served::save(&served_rec);
     result
 }
 
-/// Batch: walk inputs in manifest order until the budget is used (C3).
+/// Batch: walk inputs in manifest order within the page budget (C3).
 fn batch(
     stage: &manifest::Stage,
     only: Option<&str>,
@@ -55,98 +70,79 @@ fn batch(
     let mut text = String::new();
     let mut remaining = BUDGET;
     let mut is_error = false;
+    let mut more: Vec<String> = Vec::new();
 
     for input in &stage.inputs {
-        if let Some(n) = only {
-            if n != input.name {
-                continue;
+        if only.is_some_and(|n| n != input.name) {
+            continue;
+        }
+        let block = match std::fs::read(Path::new(&input.path)) {
+            Err(_) if input.required => {
+                is_error = true;
+                mark(served_rec, input, None, &[], "missing");
+                format!("MISSING: {} ({})\n", input.name, input.path)
             }
-        }
-        if remaining <= 0 {
-            break;
-        }
-        match serve_one_batch(input, &mut text, &mut remaining, served_rec, &mut is_error) {
-            Serve::Continue => {}
-            Serve::Stop => break,
+            Err(_) => {
+                mark(served_rec, input, None, &[], "absent");
+                format!(
+                    "=== {}: {} (absent) ===\n(absent: {})\n",
+                    input.name,
+                    input.path,
+                    input.absent.as_deref().unwrap_or("not written")
+                )
+            }
+            Ok(bytes) => {
+                let parts = pages::split(&bytes, BUDGET);
+                let n = parts.len();
+                let head = header(input, &bytes, n);
+                let first = format!("{head}{}\n", lossy(&parts[0].bytes));
+                // The first block of a result is always shown whole, even when its header
+                // pushes it past the budget: otherwise an input whose first page is
+                // exactly the budget could never be shown by a batch call at all.
+                if first.len() <= remaining || text.is_empty() {
+                    mark(served_rec, input, Some(&bytes), &[1], "ok");
+                    more.extend((2..=n).map(|k| more_line(&input.name, k)));
+                    first
+                } else {
+                    more.extend((1..=n).map(|k| more_line(&input.name, k)));
+                    format!("{head}(not shown: no room left in this result; see MORE below)\n")
+                }
+            }
+        };
+        remaining = remaining.saturating_sub(block.len());
+        text.push_str(&block);
+    }
+    if !more.is_empty() {
+        text.push_str("\nNot yet shown. Request each of these before you continue:\n");
+        for line in more {
+            text.push_str(&line);
         }
     }
     InputsResult { text, is_error }
 }
 
-enum Serve {
-    Continue,
-    Stop,
-}
-
-/// Serve one input in batch mode; `Stop` signals the budget is exhausted.
-fn serve_one_batch(
-    input: &manifest::Input,
-    text: &mut String,
-    remaining: &mut usize,
-    served_rec: &mut served::Served,
-    is_error: &mut bool,
-) -> Serve {
-    let data = std::fs::read(Path::new(&input.path));
-    match data {
-        Err(_) if input.required => {
-            *is_error = true;
-            let line = format!("MISSING: {} ({})\n", input.name, input.path);
-            text.push_str(&line);
-            *remaining = remaining.saturating_sub(line.len());
-            mark(served_rec, input, None, &[], "missing");
-            Serve::Continue
-        }
-        Err(_) => {
-            let absent = input.absent.clone().unwrap_or_else(|| "not written".to_string());
-            let line = format!("(absent: {absent})\n");
-            text.push_str(&line);
-            *remaining = remaining.saturating_sub(line.len());
-            mark(served_rec, input, None, &[], "absent");
-            Serve::Continue
-        }
-        Ok(bytes) => {
-            let nbytes = bytes.len();
-            let nlines = line_count(&bytes);
-            let header = format!("=== {}: {} ({nbytes} bytes, {nlines} lines) ===\n", input.name, input.path);
-            let about = if input.about.is_empty() {
-                String::new()
-            } else {
-                format!("{}\n", input.about)
-            };
-            let parts = pages::split(&bytes, BUDGET);
-            if parts.len() == 1 {
-                let block = format!("{header}{about}{}\n", lossy(&bytes));
-                if block.len() <= *remaining {
-                    text.push_str(&block);
-                    *remaining = remaining.saturating_sub(block.len());
-                    mark(served_rec, input, Some(&bytes), &[1], "ok");
-                    Serve::Continue
-                } else {
-                    // One small file but no room left: header + advice.
-                    text.push_str(&format!("{header}{about}MORE: inputs(name=\"{}\", part=1)\n", input.name));
-                    *remaining = 0;
-                    Serve::Stop
-                }
-            } else {
-                let n = parts.len();
-                let prefix = format!("{header}{about}part 1 of {n}\n");
-                let available = remaining.saturating_sub(prefix.len()).min(parts[0].bytes.len());
-                let show_len = line_min_prefix(&parts[0].bytes, available);
-                text.push_str(&prefix);
-                text.push_str(&lossy(&parts[0].bytes[..show_len]));
-                text.push('\n');
-                mark(served_rec, input, Some(&bytes), &[1], "ok");
-                for k in 2..=n {
-                    text.push_str(&format!("MORE: inputs(name=\"{}\", part={k})\n", input.name));
-                }
-                *remaining = 0;
-                Serve::Stop
-            }
-        }
+/// The header of one present input, its `about` line, and its part count when paged.
+fn header(input: &manifest::Input, bytes: &[u8], parts: usize) -> String {
+    let mut h = format!(
+        "=== {}: {} ({} bytes, {} lines) ===\n",
+        input.name,
+        input.path,
+        bytes.len(),
+        line_count(bytes)
+    );
+    if !input.about.is_empty() {
+        h.push_str(&input.about);
+        h.push('\n');
     }
+    if parts > 1 {
+        h.push_str(&format!("part 1 of {parts}\n"));
+    }
+    h
 }
 
-// (kept intentionally small: no additional state needed beyond `Serve`)
+fn more_line(name: &str, part: usize) -> String {
+    format!("MORE: inputs(name=\"{name}\", part={part})\n")
+}
 
 /// Page mode: return exactly one page's raw bytes (C3, test 5: concatenation is exact).
 fn page(
@@ -220,29 +216,6 @@ fn line_count(bytes: &[u8]) -> usize {
 
 fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
-}
-
-/// The longest prefix of `bytes` ending at a line boundary within `max` bytes; if none,
-/// a UTF-8 character boundary (a single line longer than the budget).
-fn line_min_prefix(bytes: &[u8], max: usize) -> usize {
-    if max >= bytes.len() {
-        return bytes.len();
-    }
-    let mut cut = 0;
-    for (i, &b) in bytes.iter().take(max).enumerate() {
-        if b == b'\n' {
-            cut = i + 1;
-        }
-    }
-    if cut == 0 {
-        let mut end = max;
-        while end > 0 && !crate::pages::char_boundary(bytes, end) {
-            end -= 1;
-        }
-        end
-    } else {
-        cut
-    }
 }
 
 fn err(msg: &str) -> InputsResult {
