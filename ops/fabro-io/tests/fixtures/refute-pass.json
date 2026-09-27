@@ -1,0 +1,28 @@
+{
+  "_io": {
+    "binary": "0.1.0",
+    "inputs": {
+      "diff": "63334a589fe7d645fac02cb2275c832b775cc6be85f26e8588ecced214741622",
+      "hygiene": "8b2ee80b6377dfd38596b58f0410684ed07e823c0e5e53542aedadf6a288550b",
+      "issues": "7a3912f754d038022b0a37e76032fdb83ff192f2b155eee7386935027b57a7e6",
+      "omitted": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "pr": "1f47c2dcc1a0499fa3f80bff5565223e4f96ffc74dbdbd4b13bc8293241edb7b"
+    },
+    "stage": "review_merge.refute",
+    "visit": "fac3fac3fac3fac3fac3fac3fac3fac3"
+  },
+  "criteria": [
+    {
+      "criterion": "login with valid credentials succeeds",
+      "evidence": "auth.py:12",
+      "status": "met"
+    },
+    {
+      "criterion": "rejected credentials are refused",
+      "evidence": "auth.py:44",
+      "status": "met"
+    }
+  ],
+  "defects": [],
+  "summary": "checked the auth flow against the diff; nothing contradicts the requirement"
+}

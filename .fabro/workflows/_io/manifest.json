@@ -53,14 +53,14 @@
         "also": []
       },
       "refute": {
-        "live": false,
+        "live": true,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/refute.md.j2",
         "inputs": [
-          {"name": "refute_issues.json", "path": "/tmp/fabro/review/refute_issues.json", "required": true, "about": "the issues this PR closes, each with number, title and body; may be []"},
-          {"name": "pr.json", "path": "/tmp/fabro/pr.json", "required": true, "about": "the PR number, title, body, refs and labels"},
-          {"name": "refute_diff.patch", "path": "/tmp/fabro/review/refute_diff.patch", "required": true, "about": "the diff of the PR against its base, smallest files first, cut off at about 300 KB"},
-          {"name": "refute_omitted.txt", "path": "/tmp/fabro/review/refute_omitted.txt", "required": true, "about": "the changed files that did not fit in the diff, one per line with their changed-line count; may be empty"},
-          {"name": "hygiene.json", "path": "/tmp/fabro/review/hygiene.json", "required": true, "about": "the diff-hygiene counters; samples lists where each fired"}
+          {"name": "issues", "path": "/tmp/fabro/review/refute_issues.json", "required": true, "about": "the issues this PR closes, each with number, title and body; may be []"},
+          {"name": "pr", "path": "/tmp/fabro/pr.json", "required": true, "about": "the PR number, title, body, refs and labels"},
+          {"name": "diff", "path": "/tmp/fabro/review/refute_diff.patch", "required": true, "about": "the diff of the PR against its base, smallest files first, cut off at about 300 KB"},
+          {"name": "omitted", "path": "/tmp/fabro/review/refute_omitted.txt", "required": true, "about": "the changed files that did not fit in the diff, one per line with their changed-line count; may be empty"},
+          {"name": "hygiene", "path": "/tmp/fabro/review/hygiene.json", "required": true, "about": "the diff-hygiene counters; samples lists where each fired"}
         ],
         "output": {"path": "/tmp/fabro/review/refute.json", "schema": "refute"},
         "sealed": [

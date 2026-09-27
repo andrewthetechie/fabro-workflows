@@ -539,7 +539,7 @@ jq -r '\"diff hygiene: config \" + .config + \", blocking [\" + (.blocking | joi
 B=$(cat /tmp/fabro/base_ref)
 R=/tmp/fabro/review
 mkdir -p $R
-rm -f $R/refute.json $R/refute_verdict $R/refute_reason.txt $R/refute_issues.ndjson $R/refute_diff.patch $R/refute_omitted.txt /tmp/fabro/refute_attempts
+rm -f $R/refute.json $R/refute_verdict $R/refute_reason.txt $R/refute_issues.ndjson $R/refute_diff.patch $R/refute_omitted.txt $R/refute.draft.json /tmp/fabro/refute_attempts
 : > $R/refute_issues.ndjson
 for N in $(jq -r '.[]?.number // empty' /tmp/fabro/linked_issues.json 2>/dev/null | head -3); do
   case \"$N\" in '' | *[!0-9]*) continue ;; esac
@@ -584,17 +584,12 @@ echo 'refuter inputs: '$(jq length $R/refute_issues.json)' linked issue(s), '$SI
         script="F=/tmp/fabro/review/refute.json
 R=/tmp/fabro/review
 A=$(cat /tmp/fabro/refute_attempts 2>/dev/null || echo 0)
-OK=$(jq -r 'if type == \"object\"
-  and ((.summary | type) == \"string\")
-  and ((.criteria | type) == \"array\") and ((.criteria | length) > 0)
-  and all(.criteria[]; ((.criterion | type) == \"string\") and ((.criterion | length) > 0) and (.status == \"met\" or .status == \"not_met\" or .status == \"unverifiable\") and ((.evidence | type) == \"string\") and ((.evidence | length) > 0))
-  and ((.defects | type) == \"array\")
-  and all(.defects[]; ((.file | type) == \"string\") and ((.scenario | type) == \"string\") and ((.scenario | length) > 0))
-  then \"ok\" else \"bad\" end' $F 2>/dev/null || echo bad)
-if [ \"$OK\" != ok ]; then
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   A=$((A+1))
   echo $A > /tmp/fabro/refute_attempts
-  if [ $A -lt 2 ]; then echo 'refute.json missing or invalid; rewrite it exactly per the contract' >&2; exit 1; fi
+  if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
   echo invalid > $R/refute_verdict
   echo 'The refuter wrote an invalid result twice, so it has no verdict and the merge is refused.' > $R/refute_reason.txt
   echo '{\"context_updates\":{\"refute_verdict\":\"invalid\"}}'
