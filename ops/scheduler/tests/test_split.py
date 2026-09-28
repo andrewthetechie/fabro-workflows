@@ -58,7 +58,8 @@ def mock_issue(number: int, state: str, reason: str | None):
 
 
 def sub_issue(number: int, state: str, reason: str | None):
-    return {"sub_issue": {"number": number, "state": state, "state_reason": reason}}
+    # The real shape: each entry IS the issue, with no wrapper key.
+    return {"number": number, "state": state, "state_reason": reason, "title": f"child {number}"}
 
 
 def mock_sub_issues(number: int, *subs):

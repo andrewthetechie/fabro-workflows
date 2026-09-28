@@ -91,7 +91,10 @@ HELD_LABEL = "agent-held"
 # A Split parent: an issue triage divided into Child issues. It is never worked
 # and never labelled `agent`; the scheduler closes it when every child lands.
 SPLIT_LABEL = "agent-split"
-EXCLUDED_LABELS = frozenset({IN_PROGRESS_LABEL, STUCK_LABEL})
+# A held child or a split parent is never a queue item, even if it also carries
+# `agent`: a held child would be implemented against a `main` that lacks its
+# predecessor, and a split parent would be implemented alongside its own children.
+EXCLUDED_LABELS = frozenset({IN_PROGRESS_LABEL, STUCK_LABEL, HELD_LABEL, SPLIT_LABEL})
 
 
 class GitHubError(RuntimeError):
@@ -633,10 +636,11 @@ def fetch_sub_issues(
     """`[(number, state, state_reason)]` for one issue's sub-issues (ADR 0015 C5).
 
     `GET /repos/{owner}/{repo}/issues/{number}/sub_issues`, paged through every
-    `rel="next"` Link. Each result object carries the whole issue under a
-    `sub_issue` key. The split-parent closer uses this to tell "every child
-    landed" from "one stopped early". Raises `GitHubError` for anything that is
-    not a `200`.
+    `rel="next"` Link. Each result object **is** the sub-issue -- a plain issue
+    object with `number`, `state` and `state_reason` at the top level, with no
+    wrapper key (checked against `cli/cli#14529` on 2026-09-27). The
+    split-parent closer uses this to tell "every child landed" from "one stopped
+    early". Raises `GitHubError` for anything that is not a `200`.
     """
     if not token or not token.strip():
         raise GitHubError(
@@ -670,14 +674,11 @@ def fetch_sub_issues(
             for item in payload:
                 if not isinstance(item, Mapping):
                     continue
-                sub = item.get("sub_issue")
-                if not isinstance(sub, Mapping):
-                    continue
-                n = sub.get("number")
+                n = item.get("number")
                 if not isinstance(n, int) or isinstance(n, bool):
                     continue
-                state = sub.get("state") or ""
-                reason = sub.get("state_reason")
+                state = item.get("state") or ""
+                reason = item.get("state_reason")
                 results.append((n, state, reason if isinstance(reason, str) else None))
             url = _next_link_url(response)
     except httpx.HTTPError as exc:

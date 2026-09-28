@@ -166,10 +166,14 @@ jq -nc --arg r \"$R\" --arg q \"$Q\" --arg qt \"$QT\" '{context_updates:{triage_
     // task_count. On map/split it writes plan_ok and renders task_map.md (C2), the
     // newline via `([10]|implode)` because `\n` is the one backslash a .fabro file
     // may not contain; on split it also writes split_children.json; on too_large it
-    // rewrites triage.json to a needs_info scoping question and appends the too-large
-    // map to triage.md. One repair turn; a second invalid file is plan_status=none
-    // (C1 rule 5, fail-open) so apply_ready runs with no map. Its failure line is
-    // its own, so the run-wide breaker counts plan_gate apart from the other gates.
+    // rewrites triage.json to a needs_info scoping question, appends the too-large
+    // map to triage.md, and republishes question_count/triage_questions (triage_gate
+    // published an empty list for the ready verdict, and the Discord hook reads them).
+    // Rule 3 is C1's: the children partition the tasks (any grouping), and each
+    // child lists its own tasks in `tasks` order. One repair turn; a second invalid
+    // file is plan_status=none (C1 rule 5, fail-open) so apply_ready runs with no map.
+    // Its failure line is its own, so the run-wide breaker counts plan_gate apart
+    // from the other gates.
     plan_gate [label="Validate and apply the task map", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/plan.json
 A=$(cat /tmp/fabro/plan_attempts 2>/dev/null || echo 0)
@@ -200,15 +204,19 @@ else
   elif [ \"$K\" -le 4 ]; then
     if [ \"$(jq '(.children // -1) | if type==\"array\" then length else -1 end' $F 2>/dev/null || echo -1)\" = 0 ]; then ST=map; else ST=invalid; fi
   else
-    SP=$(jq -r '([.children[].tasks[]?]) as $flat
+    SP=$(jq -r '[.tasks[].id] as $ids
+    | ([.children[].tasks[]?]) as $flat
     | ( [.children | to_entries[] | .key as $i | (.value.after) as $af
         | ($af != null) and ( (($af|type) != \"number\") or ($af < 0) or ($af >= $i) or (($af|floor) != $af) ) ] | any ) as $badafter
     | if (.children|type) != \"array\" then \"no\"
       elif (.children|length) < 2 or (.children|length) > 3 then \"no\"
-      elif $flat != ([.tasks[].id]) then \"no\"
+      elif ($flat|length) != ($ids|length) or ($flat|sort) != ($ids|sort) then \"no\"
       elif any(.children[]; ((.tasks|type)!=\"array\") or ((.tasks|length)<1) or ((.tasks|length)>4)) then \"no\"
+      elif any(.children[]; [.tasks[] as $x | $ids | index($x)] as $p | $p != ($p|sort)) then \"no\"
       elif any(.children[]; ((.title|type)!=\"string\") or ((.title//\"\")|length)==0
            or ((.summary|type)!=\"string\") or ((.summary//\"\")|length)==0
+           or ((.criteria|type)!=\"array\") or ((.criteria|length)<1)
+           or any(.criteria[]; (type!=\"string\") or (length==0))
            or ((.title//\"\")|test(\"BREAKING CHANGE\"))) then \"no\"
       elif $badafter then \"no\"
       else \"yes\" end' $F 2>/dev/null || echo no)
@@ -274,7 +282,7 @@ if [ \"$ST\" = split ]; then
               + \"   - files: \" + $f + $nl
               + (if $cov == \"\" then \"\" else \"   - covers: \" + $cov + $nl end) ] | join(\"\") )
       ) as $tm
-    | { title: $c.title, summary: $c.summary, after: $c.after, tasks: $tasks, task_map: $tm }
+    | { title: $c.title, summary: $c.summary, criteria: $c.criteria, after: $c.after, tasks: $tasks, task_map: $tm }
   )'
   jq -c --arg sha \"$SHA\" --arg date \"$DT\" \"$CHILD\" $F > /tmp/fabro/split_children.json
   jq -nc --argjson k \"$K\" '{context_updates:{plan_status:\"split\",task_count:$k}}'
@@ -293,7 +301,8 @@ if [ \"$ST\" = too_large ]; then
       + \"   - files: \" + $f + $nl
       + (if $cov == \"\" then \"\" else \"   - covers: \" + $cov + $nl end) ] | join(\"\") )'
   jq -r --arg sha \"$SHA\" --arg date \"$DT\" \"$TOOLARGE\" $F >> /tmp/fabro/triage.md
-  jq -nc --argjson k \"$K\" '{context_updates:{plan_status:\"too_large\",task_count:$k}}'
+  QT=$(jq -r '[.questions[]? | \"- \" + (.question // \"\")] | join(\"  \")' /tmp/fabro/triage.json | tr -d '\"' | cut -c1-1200)
+  jq -nc --argjson k \"$K\" --arg qt \"$QT\" '{context_updates:{plan_status:\"too_large\",task_count:$k,question_count:\"1\",triage_questions:$qt}}'
   exit 0
 fi
 jq -nc '{context_updates:{plan_status:\"none\",task_count:0}}'
@@ -371,47 +380,68 @@ echo ready > /tmp/fabro/triage_outcome
 jq -nc '{context_updates:{triage_outcome:\"ready\"}}' "]
 
     // Creates the Child issues a split map proposes (C2/C3/C4). Idempotent through
-    // the sub-issues API: a child whose title already exists as a sub-issue is
-    // reused, so a retried split never double-creates (C3). Children are created in
-    // order, so `after` -- the predecessor's issue number -- is always already known.
-    // The parent is labelled agent-split and never agent. The two labels are created
-    // first, per the phase's rule.
+    // the sub-issues API, whose entries are plain issue objects: a child whose title
+    // already exists as a sub-issue is reused, so a retried split never double-creates
+    // (C3). The read fails closed -- treating an unreadable list as empty would create
+    // every child again. Children are created in order, so `after` -- the
+    // predecessor's issue number -- is always already known, and a create that yields
+    // no issue number stops the node rather than strand a later child behind
+    // `after=0`. A failed link is success only when a re-read shows the child is
+    // already a sub-issue (the 422 on a duplicate link); anything else stops the node,
+    // because an unlinked child is invisible to the idempotency check and to the
+    // scheduler's parent closer. A child carries the parent's labels and the ones
+    // triage chose, minus the triage labels and every queue-state label (a held child
+    // that inherited `agent` would be worked before its predecessor lands). The
+    // parent is labelled agent-split, and `agent` is removed if it is there. Every
+    // label is created first, per the phase's rule.
     apply_split [label="Create the Children", shape=parallelogram, output_schema="routing",
         script="set -e
 N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(jq -r .title /tmp/fabro/triage.json)
 gh label create agent-held --color C5DEF5 --description 'A child issue waiting on an earlier child (ADR 0015)' 2>/dev/null || true
 gh label create agent-split --color BFD4F2 --description 'A split parent waiting on its children (ADR 0015)' 2>/dev/null || true
-gh api \"repos/{owner}/{repo}/issues/$N/sub_issues\" --paginate > /tmp/fabro/sub_existing.json 2>/dev/null || echo '[]' > /tmp/fabro/sub_existing.json
+for x in $(jq -r '.labels[]?' /tmp/fabro/triage.json); do
+  gh label create \"$x\" --color EDEDED --description 'Created by fabro issue triage' 2>/dev/null || true
+done
+gh api \"repos/{owner}/{repo}/issues/$N/sub_issues\" --paginate > /tmp/fabro/sub_pages.json
+jq -s 'add // []' /tmp/fabro/sub_pages.json > /tmp/fabro/sub_existing.json
 jq -n '[]' > /tmp/fabro/split_numbers.json
+PL=$(jq -r --slurpfile t /tmp/fabro/triage.json '([.labels[].name] + [$t[0].labels[]?]) | unique | map(select(. as $l | [\"needs-triage\",\"needs-info\",\"triage-in-progress\",\"agent\",\"agent-held\",\"agent-split\",\"agent-in-progress\",\"agent-stuck\",\"agent-remainder\",\"priority\"] | index($l) | not)) | map(\"--label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
 CN=$(jq length /tmp/fabro/split_children.json)
 I=0
 while [ $I -lt $CN ]; do
   jq --argjson i $I '.[$i]' /tmp/fabro/split_children.json > /tmp/fabro/child.json
   CT=$(jq -r .title /tmp/fabro/child.json)
-  EX=$(jq -r --arg t \"$CT\" '[.[] | select(.sub_issue.title == $t) | .sub_issue.number][0] // empty' /tmp/fabro/sub_existing.json 2>/dev/null)
-  if [ -n \"$EX\" ]; then
-    C=$(printf '%s' \"$EX\")
-  else
+  C=$(jq -r --arg t \"$CT\" '[.[] | select(.title == $t) | .number][0] // empty' /tmp/fabro/sub_existing.json)
+  if [ -z \"$C\" ]; then
     AF=$(jq -r '.after // \"null\"' /tmp/fabro/child.json)
     if [ \"$AF\" = null ]; then AFTER=0; CL='agent'
-    else AFTER=$(jq -r --argjson a \"$AF\" '.[$a]' /tmp/fabro/split_numbers.json); CL='agent-held'; fi
-    CK=$(jq -r '[.tasks[].covers[]?] | unique | join(\", \")' /tmp/fabro/child.json)
+    else
+      AFTER=$(jq -r --argjson a \"$AF\" '.[$a] // empty' /tmp/fabro/split_numbers.json); CL='agent-held'
+      case \"$AFTER\" in ''|0|*[!0-9]*) echo \"child $I: predecessor child $AF has no issue number\" >&2; exit 1 ;; esac
+    fi
     { echo \"<!-- fabro:split-child parent=$N after=$AFTER -->\"
       echo
       jq -r .summary /tmp/fabro/child.json
       echo
       echo \"Part of #$N.\"
       echo
-      if [ -n \"$CK\" ]; then echo \"Covers: $CK\"; echo; fi
+      echo '## Acceptance criteria'
+      echo
+      echo \"The criteria of #$N that this child delivers:\"
+      echo
+      jq -r '.criteria[]? | \"- \" + .' /tmp/fabro/child.json
+      echo
       jq -r .task_map /tmp/fabro/child.json ; } > /tmp/fabro/child_body.md
-    PL=$(jq -r '[.labels[].name] | map(select(. != \"needs-triage\" and . != \"needs-info\" and . != \"triage-in-progress\")) | map(\"--label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
     URL=$(gh issue create --title \"$CT\" --body-file /tmp/fabro/child_body.md --label $CL $PL)
     C=$(printf '%s' \"$URL\" | sed 's|.*/||')
-    case \"$C\" in ''|*[!0-9]*) echo \"WARNING: child create returned no number\" >&2; C=0 ;; esac
-    if [ \"$C\" != 0 ]; then
-      ID=$(gh api \"repos/{owner}/{repo}/issues/$C\" --jq .id)
-      gh api -X POST \"repos/{owner}/{repo}/issues/$N/sub_issues\" -F sub_issue_id=$ID || true
+    case \"$C\" in ''|0|*[!0-9]*) echo \"child $I: gh issue create returned no issue number: $URL\" >&2; exit 1 ;; esac
+    ID=$(gh api \"repos/{owner}/{repo}/issues/$C\" --jq .id)
+    if ! gh api -X POST \"repos/{owner}/{repo}/issues/$N/sub_issues\" -F sub_issue_id=$ID > /dev/null; then
+      gh api \"repos/{owner}/{repo}/issues/$N/sub_issues\" --paginate > /tmp/fabro/sub_pages.json
+      if ! jq -s -e --argjson c \"$C\" 'add // [] | any(.number == $c)' /tmp/fabro/sub_pages.json > /dev/null; then
+        echo \"child #$C: linking it as a sub-issue of #$N failed\" >&2; exit 1
+      fi
     fi
   fi
   jq --argjson c \"$C\" '. + [$c]' /tmp/fabro/split_numbers.json > /tmp/fabro/split_numbers.next
@@ -419,14 +449,14 @@ while [ $I -lt $CN ]; do
   I=$((I+1))
 done
 K=$(jq '[.[].tasks[]] | length' /tmp/fabro/split_children.json)
-NUMS=$(jq -r 'map(tostring) | join(\",\")' /tmp/fabro/split_numbers.json)
+NUMS=$(jq -r 'map(\"#\" + tostring) | join(\", \")' /tmp/fabro/split_numbers.json)
 { jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Decisions made during triage$|^## Proposed task map$|^## Split into$/{s=1; next} s && /^## /{s=0} !s{print}'
   echo '## Decisions made during triage'
   echo
   echo 'Triage made these choices without asking. Edit this section to reverse one before the issue is worked.'
   echo
   jq -r '.decisions[] | \"- **\" + .question + \"** \" + .decision + (if (.basis // \"\") == \"\" then \"\" else \" (basis: \" + .basis + \")\" end)' /tmp/fabro/triage.json
-  echo \"- **Split this issue?** Into #$NUMS (basis: task map of $K tasks; ADR 0015 D3)\"
+  echo \"- **Split this issue?** Into $NUMS (basis: task map of $K tasks; ADR 0015 D3)\"
   echo
   cat /tmp/fabro/task_map.md
   echo
@@ -437,7 +467,7 @@ gh issue edit $N --body-file /tmp/fabro/split_parent_body.md
 { echo '<!-- fabro:triage-report -->' ; cat /tmp/fabro/triage.md ; } > /tmp/fabro/report.md
 gh issue comment $N --body-file /tmp/fabro/report.md
 L=$(jq -r '[.labels[]?] | map(\"--add-label=\" + .) | join(\" \")' /tmp/fabro/triage.json)
-R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
+R=$(jq -r '[.labels[].name] | map(select(. == \"needs-triage\" or . == \"needs-info\" or . == \"triage-in-progress\" or . == \"agent\")) | map(\"--remove-label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
 gh issue edit $N --title \"$T\" --add-label agent-split $L $R
 echo split > /tmp/fabro/triage_outcome
 jq -nc '{context_updates:{triage_outcome:\"split\"}}'"]

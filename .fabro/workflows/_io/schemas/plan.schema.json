@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "plan",
   "title": "plan — triage's proposed task map (ADR 0015, task 02)",
-  "description": "The plan agent's output. Encodes plan_gate's shape checks at the structural level: a non-empty tasks array whose entries carry non-empty id/title/intent and array files/covers, unique ids, a children array (empty for a map, else objects with title/summary/tasks and an after index), and a summary. The cross-field split rules (children count by task count, coverage, ordering, after range, conventional child titles) are gate checks and stay in the gate. _io is stamped by the server.",
+  "description": "The plan agent's output. Encodes plan_gate's shape checks at the structural level: a non-empty tasks array whose entries carry non-empty id/title/intent and array files/covers, unique ids, a children array (empty for a map, else objects with title/summary/criteria/tasks and an after index), and a summary. The cross-field split rules (children count by task count, coverage, ordering, after range, conventional child titles) are gate checks and stay in the gate. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
   "required": ["tasks", "children", "summary"],
@@ -28,10 +28,16 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "summary", "tasks", "after"],
+        "required": ["title", "summary", "criteria", "tasks", "after"],
         "properties": {
           "title": { "type": "string", "minLength": 1 },
           "summary": { "type": "string", "minLength": 1 },
+          "criteria": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 },
+            "description": "The parent's acceptance criteria this child delivers, quoted from the issue."
+          },
           "tasks": { "type": "array", "items": { "type": "string" } },
           "after": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] }
         }

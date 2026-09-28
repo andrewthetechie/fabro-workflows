@@ -1,6 +1,6 @@
 # Triage drafts a Task map, and splits an issue that is too large into ordered Child issues
 
-**Status:** proposed (2026-09-26). Implementation plan: `docs/triage-split/`. Roadmap item
+**Status:** accepted (2026-09-26), applied 2026-09-27 (`docs/triage-split/` tasks 01–07; the map path is verified live, and the first live split and the task 07 measurement are pending). Implementation plan: `docs/triage-split/`. Roadmap item
 `docs/factory-roadmap/C4-decompose-prefetch.md`, which this replaces in part.
 
 The shared triage phase (`_shared/triage/`, imported by `issue-triage` and `arch-review`)

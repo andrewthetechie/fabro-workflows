@@ -1,7 +1,8 @@
 # Triage task map and split: overview and canonical contracts
 
-**Status:** proposed 2026-09-26. Not started. All operator decisions are made (see
-"Decisions").
+**Status:** applied 2026-09-27 (tasks 01–06, and task 07 through the deploy). The map path is
+verified live. The first live split and the task 07 measurement are pending. All operator
+decisions are made (see "Decisions").
 
 **Read this file first.** Every task in this folder assumes the decisions, contracts and
 rules in this file. If a task and this file disagree, this file is correct. Stop and report
@@ -46,6 +47,7 @@ parents**. `backlog`'s `decompose` prompt reads the map as a hint.
   ],
   "children": [
     { "title": "feat(scope): conventional title", "summary": "one prose paragraph",
+      "criteria": ["an acceptance criterion of the parent, quoted"],
       "tasks": ["kebab-case-stable-id"], "after": null }
   ],
   "summary": "one sentence for the operator"
@@ -62,7 +64,9 @@ parents**. `backlog`'s `decompose` prompt reads the map as a hint.
    child. Each child has 1–4 tasks, listed in the same order as in `tasks`. `after` is
    `null` or the 0-based index of an **earlier** child. Each `title` matches the same
    Conventional-Commits regex as `triage_gate`, with no `!` and no `BREAKING CHANGE`.
-   `summary` is not empty. `plan_status=split`.
+   `summary` is not empty. `criteria` has 1 or more non-empty strings. The children
+   partition the tasks in any grouping: a child's tasks need not be contiguous in
+   `tasks`. `plan_status=split`.
 4. With more than 12 tasks, `children` is ignored. `plan_status=too_large` (C4).
 5. A second invalid file, or the `plan` agent failing: `plan_status=none`. `apply_ready`
    then runs with no map (ADR 0015 D1, fail-open).
@@ -94,14 +98,21 @@ only its own tasks.
 | Thing | Label | First line of body |
 |---|---|---|
 | Split parent | `agent-split` (never `agent`) | unchanged |
-| Child issue, no predecessor | `agent` + the parent's labels, except the triage ones | `<!-- fabro:split-child parent=<P> after=0 -->` |
-| Child issue, with predecessor | `agent-held` + the parent's labels, except the triage ones | `<!-- fabro:split-child parent=<P> after=<N> -->` |
+| Child issue, no predecessor | `agent` + the parent's labels and the labels triage chose, except the triage and queue-state ones | `<!-- fabro:split-child parent=<P> after=0 -->` |
+| Child issue, with predecessor | `agent-held` + the parent's labels and the labels triage chose, except the triage and queue-state ones | `<!-- fabro:split-child parent=<P> after=<N> -->` |
 
-"Triage labels" are `needs-triage`, `needs-info` and `triage-in-progress`. `architecture`
-is **always** carried over. A child's body is: the marker, a blank line, the child's
+"Triage labels" are `needs-triage`, `needs-info` and `triage-in-progress`. "Queue-state
+labels" are `agent`, `agent-in-progress`, `agent-stuck`, `agent-held`, `agent-split`,
+`agent-remainder` and `priority`; a child never inherits one, and `apply_split` removes
+`agent` from the parent if it is there. `architecture` is **always** carried over. A child's body is: the marker, a blank line, the child's
 `summary` as the first prose paragraph (the same shape as a Remainder issue, whose marker-first
 body `open_pr_prep` already handles), then `Part of #<P>.`, the parent's acceptance
-criteria that the child covers, and its Task map section.
+criteria that the child covers (its `criteria`, under `## Acceptance criteria`), and its
+Task map section.
+
+`GET /issues/{P}/sub_issues` returns plain issue objects (`.number`, `.title`, `.state`,
+`.state_reason`), with no wrapper key. `apply_split` fails closed when it cannot read the
+list, and treats a failed link POST as success only when a re-read shows the child linked.
 
 ### C4. Phase outcomes
 

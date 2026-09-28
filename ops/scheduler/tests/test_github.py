@@ -56,6 +56,8 @@ def test_an_open_agent_labelled_issue_is_a_queue_item():
         pytest.param(api_issue(1, ["agent"], pull_request={"url": "x"}), id="pull-request"),
         pytest.param(api_issue(1, ["agent", "agent-in-progress"]), id="in-progress"),
         pytest.param(api_issue(1, ["agent", "agent-stuck"]), id="stuck"),
+        pytest.param(api_issue(1, ["agent", "agent-held"]), id="held-child"),
+        pytest.param(api_issue(1, ["agent", "agent-split"]), id="split-parent"),
         pytest.param(api_issue(1, ["bug"]), id="no-agent-label"),
         pytest.param(api_issue(1, ["agent"], state="closed"), id="closed"),
     ],

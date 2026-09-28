@@ -1825,7 +1825,7 @@ check "plan map: plan_ok"            "1"    "$([ -f "$T/plan_ok" ] && echo 1 || 
 check "plan map: 3 numbered tasks"   "3"    "$(grep -cE '^[0-9]+\. \*\*' "$T/task_map.md")"
 check "plan map: header"             "1"    "$(grep -c 'Drafted by triage against `main` at `' "$T/task_map.md")"
 
-pg7='{"tasks":[{"id":"a1","title":"A1","intent":"i","files":[],"covers":[]},{"id":"a2","title":"A2","intent":"i","files":[],"covers":[]},{"id":"a3","title":"A3","intent":"i","files":[],"covers":[]},{"id":"a4","title":"A4","intent":"i","files":[],"covers":[]},{"id":"b1","title":"B1","intent":"i","files":[],"covers":[]},{"id":"b2","title":"B2","intent":"i","files":[],"covers":[]},{"id":"b3","title":"B3","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): abc","summary":"one","tasks":["a1","a2","a3","a4"],"after":null},{"title":"feat(b): def","summary":"two","tasks":["b1","b2","b3"],"after":0}],"summary":"s"}'
+pg7='{"tasks":[{"id":"a1","title":"A1","intent":"i","files":[],"covers":[]},{"id":"a2","title":"A2","intent":"i","files":[],"covers":[]},{"id":"a3","title":"A3","intent":"i","files":[],"covers":[]},{"id":"a4","title":"A4","intent":"i","files":[],"covers":[]},{"id":"b1","title":"B1","intent":"i","files":[],"covers":[]},{"id":"b2","title":"B2","intent":"i","files":[],"covers":[]},{"id":"b3","title":"B3","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): abc","criteria":["c"],"summary":"one","tasks":["a1","a2","a3","a4"],"after":null},{"title":"feat(b): def","criteria":["c"],"summary":"two","tasks":["b1","b2","b3"],"after":0}],"summary":"s"}'
 printf '%s' "$pg7" | jq -c '._io.visit="ok1"' > "$T/plan.json"; echo 0 > "$T/plan_attempts"
 rm -f "$T/plan_ok" "$T/task_map.md" "$T/split_children.json"
 OUT=$(sh "$T/plan_gate.sh" 2>&1); RC=$?
@@ -1834,8 +1834,18 @@ check "plan split: count"            "7"     "$(jq -r '.context_updates.task_cou
 check "plan split: 2 children"       "2"     "$(jq 'length' "$T/split_children.json")"
 check "plan split: child maps"       "2"     "$(jq '[.[] | select(has("task_map"))] | length' "$T/split_children.json")"
 check "plan split: tasks resolved"   "2"     "$(jq '[.[] | select((.tasks[0].id // "") != "")] | length' "$T/split_children.json")"
+check "plan split: criteria carried" "c"     "$(jq -r '.[0].criteria[0]' "$T/split_children.json")"
 
-pg13=$(python3 -c "import json;print(json.dumps({'tasks':[{'id':'t%d'%i,'title':'T','intent':'i','files':[],'covers':[]} for i in range(13)],'children':[],'summary':'s'}))")
+# C1 rule 3 is a partition, not a contiguous one: children may interleave the
+# tasks as long as each lists its own in `tasks` order.
+pg5i='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","criteria":["c"],"summary":"1","tasks":["a","c","e"],"after":null},{"title":"feat(b): y","criteria":["c"],"summary":"2","tasks":["b","d"],"after":0}],"summary":"s"}'
+printf '%s' "$pg5i" | jq -c '._io.visit="ok1"' > "$T/plan.json"; echo 0 > "$T/plan_attempts"
+rm -f "$T/plan_ok" "$T/task_map.md" "$T/split_children.json"
+OUT=$(sh "$T/plan_gate.sh" 2>&1); RC=$?
+check "plan interleaved: split"      "split" "$(jq -r '.context_updates.plan_status' <<<"$(lastjson "$OUT")")"
+check "plan interleaved: child tasks" "a c e|b d" "$(jq -r 'map([.tasks[].id]|join(" "))|join("|")' "$T/split_children.json")"
+
+pg13=$(jq -nc '{tasks:[range(13) | {id:("t" + tostring),title:"T",intent:"i",files:[],covers:[]}],children:[],summary:"s"}')
 printf '%s' "$pg13" | jq -c '._io.visit="ok1"' > "$T/plan.json"; echo 0 > "$T/plan_attempts"
 rm -f "$T/plan_ok" "$T/task_map.md" "$T/split_children.json"
 printf '{"readiness":"ready","classification":"bug","confidence":"high","title":"feat: x","labels":[],"questions":[],"decisions":[],"summary":"s"}' > "$T/triage.json"
@@ -1846,14 +1856,19 @@ check "plan too_large: readiness"    "needs_info" "$(jq -r .readiness "$T/triage
 check "plan too_large: one question" "1"   "$(jq '.questions|length' "$T/triage.json")"
 check "plan too_large: appends map"  "1" "$(grep -c '### Proposed task map (too large to split)' "$T/triage.md")"
 check "plan too_large: no plan_ok"   "0"   "$([ -f "$T/plan_ok" ] && echo 1 || echo 0)"
+check "plan too_large: question_count" "1" "$(jq -r '.context_updates.question_count' <<<"$(lastjson "$OUT")")"
+check "plan too_large: hook question" "1" "$(jq -r '.context_updates.triage_questions' <<<"$(lastjson "$OUT")" | grep -c '^- This issue decomposes into more than 12')"
 
-bad_dup='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","summary":"1","tasks":["a","b"],"after":null},{"title":"feat(b): y","summary":"2","tasks":["b","c","d","e"],"after":0}],"summary":"s"}'
-bad_5tasks='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","summary":"1","tasks":["a","b","c","d","e"],"after":null},{"title":"feat(b): y","summary":"2","tasks":["f"],"after":0}],"summary":"s"}'
-bad_after='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","summary":"1","tasks":["a","b"],"after":null},{"title":"feat(b): y","summary":"2","tasks":["c","d","e","f"],"after":4}],"summary":"s"}'
-bad_title='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","summary":"1","tasks":["a","b","c"],"after":null},{"title":"feat! b","summary":"2","tasks":["d","e","f"],"after":0}],"summary":"s"}'
+bad_dup='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","criteria":["c"],"summary":"1","tasks":["a","b"],"after":null},{"title":"feat(b): y","criteria":["c"],"summary":"2","tasks":["b","c","d","e"],"after":0}],"summary":"s"}'
+bad_5tasks='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","criteria":["c"],"summary":"1","tasks":["a","b","c","d","e"],"after":null},{"title":"feat(b): y","criteria":["c"],"summary":"2","tasks":["f"],"after":0}],"summary":"s"}'
+bad_after='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","criteria":["c"],"summary":"1","tasks":["a","b"],"after":null},{"title":"feat(b): y","criteria":["c"],"summary":"2","tasks":["c","d","e","f"],"after":4}],"summary":"s"}'
+bad_title='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","criteria":["c"],"summary":"1","tasks":["a","b","c"],"after":null},{"title":"feat! b","criteria":["c"],"summary":"2","tasks":["d","e","f"],"after":0}],"summary":"s"}'
 bad_empty='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]},{"id":"f","title":"F","intent":"i","files":[],"covers":[]}],"children":[],"summary":"s"}'
+bad_order='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","criteria":["c"],"summary":"1","tasks":["c","a"],"after":null},{"title":"feat(b): y","criteria":["c"],"summary":"2","tasks":["b","d","e"],"after":0}],"summary":"s"}'
+bad_crit='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","criteria":[],"summary":"1","tasks":["a","b"],"after":null},{"title":"feat(b): y","criteria":["c"],"summary":"2","tasks":["c","d","e"],"after":0}],"summary":"s"}'
+bad_missing='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"b","title":"B","intent":"i","files":[],"covers":[]},{"id":"c","title":"C","intent":"i","files":[],"covers":[]},{"id":"d","title":"D","intent":"i","files":[],"covers":[]},{"id":"e","title":"E","intent":"i","files":[],"covers":[]}],"children":[{"title":"feat(a): x","criteria":["c"],"summary":"1","tasks":["a","b"],"after":null},{"title":"feat(b): y","criteria":["c"],"summary":"2","tasks":["c","d"],"after":0}],"summary":"s"}'
 bad_did='{"tasks":[{"id":"a","title":"A","intent":"i","files":[],"covers":[]},{"id":"a","title":"B","intent":"i","files":[],"covers":[]}],"children":[],"summary":"s"}'
-for pg_bad in bad_dup bad_5tasks bad_after bad_title bad_empty bad_did; do
+for pg_bad in bad_dup bad_5tasks bad_after bad_title bad_empty bad_did bad_order bad_crit bad_missing; do
     printf '%s' "${!pg_bad}" | jq -c '._io.visit="ok1"' > "$T/plan.json"; echo 0 > "$T/plan_attempts"
     rm -f "$T/plan_ok" "$T/task_map.md" "$T/split_children.json"
     sh "$T/plan_gate.sh" >/dev/null 2>&1; RC=$?
@@ -1887,20 +1902,34 @@ rm -f "$T/triage_outcome"
 AS="$WORK/asplit"; mkdir -p "$AS/bin"
 extract_from "$SHARED_TRIAGE" apply_split | sed "s#/tmp/fabro#$AS#g" > "$AS/apply_split.sh"
 if ! sh -n "$AS/apply_split.sh" 2>"$AS/syn"; then FAIL=$((FAIL + 1)); printf '  FAIL apply_split is not valid POSIX sh\n'; fi
+# The stub answers the sub-issues list in GitHub's real shape: a list of plain issue
+# objects, no wrapper key. Fault switches (files in $GH_STATE): sub_fail makes the
+# list read fail; link_fail makes the link POST fail; link_dup makes it fail the way
+# a duplicate link does, with the child already in the list; create_blank makes
+# `issue create` print no URL.
 cat > "$AS/bin/gh" <<'ASTUB'
 #!/bin/sh
 echo "$*" >> "$GH_LOG"
 if [ "$1 $2" = "api repos/{owner}/{repo}/issues/7/sub_issues" ]; then
+  [ -f "$GH_STATE/sub_fail" ] && { echo 'HTTP 502' >&2; exit 1; }
   [ -f "$GH_STATE/sub_seed.json" ] && cat "$GH_STATE/sub_seed.json" || echo '[]'
   exit 0
 fi
 if [ "$1" = api ] && [ "$2" = "-X" ]; then
+  [ -f "$GH_STATE/link_fail" ] && { echo 'HTTP 500' >&2; exit 1; }
+  if [ -f "$GH_STATE/link_dup" ]; then
+    C=$(cat "$GH_STATE/counter")
+    S=$(cat "$GH_STATE/sub_seed.json" 2>/dev/null || echo '[]')
+    printf '%s' "$S" | jq -c --argjson c "$C" '. + [{number:$c,title:"linked"}]' > "$GH_STATE/sub_seed.json"
+    echo 'HTTP 422: Issue may not contain duplicate sub-issues' >&2; exit 1
+  fi
   echo '{}'; exit 0
 fi
 if [ "$1" = api ]; then
-  echo '{"id":123456}'; exit 0
+  echo '123456'; exit 0
 fi
 if [ "$1 $2" = "issue create" ]; then
+  [ -f "$GH_STATE/create_blank" ] && exit 0
   C=$(cat "$GH_STATE/counter" 2>/dev/null || echo 100); C=$((C+1)); echo $C > "$GH_STATE/counter"
   BF=""; p=""
   for a in "$@"; do [ "$p" = "--body-file" ] && BF="$a"; p="$a"; done
@@ -1914,12 +1943,13 @@ chmod +x "$AS/bin/gh"
 PATH="$AS/bin:$SAVED_PATH"
 export GH_LOG="$AS/gh.log" GH_STATE="$AS"
 
-printf '{"number":7,"title":"Parent","labels":[{"name":"needs-triage"},{"name":"architecture"}],"body":"parent body"}' > "$AS/issue.json"
-printf '{"readiness":"ready","title":"feat: parent","labels":[],"questions":[],"decisions":[{"question":"Where?","decision":"Here.","basis":"CONTEXT.md"}],"summary":"s"}' > "$AS/triage.json"
+printf '{"number":7,"title":"Parent","labels":[{"name":"needs-triage"},{"name":"architecture"},{"name":"agent"}],"body":"parent body"}' > "$AS/issue.json"
+printf '{"readiness":"ready","title":"feat: parent","labels":["area:web"],"questions":[],"decisions":[{"question":"Where?","decision":"Here.","basis":"CONTEXT.md"}],"summary":"s"}' > "$AS/triage.json"
 printf 'report body\n' > "$AS/triage.md"
 printf '## Proposed task map\n\nDrafted by triage against `main`.\n' > "$AS/task_map.md"
-printf '%s\n' '[{"title":"feat(one): one","summary":"does one","after":null,"task_map":"## Proposed task map\n\n1. **A1** (`a1`)\n","tasks":[{"id":"a1","title":"A1","intent":"i","files":[],"covers":["c1"]}]},{"title":"feat(two): two","summary":"does two","after":0,"task_map":"## Proposed task map\n\n1. **B1** (`b1`)\n","tasks":[{"id":"b1","title":"B1","intent":"i","files":[],"covers":[]}]},{"title":"feat(three): three","summary":"does three","after":1,"task_map":"## Proposed task map\n\n1. **C1** (`c1`)\n","tasks":[{"id":"c1","title":"C1","intent":"i","files":[],"covers":[]}]}]' > "$AS/split_children.json"
-rm -f "$AS/counter" "$AS/triage_outcome" "$AS/sub_seed.json"; : > "$AS/gh.log"
+printf '%s\n' '[{"title":"feat(one): one","summary":"does one","criteria":["Users can do one."],"after":null,"task_map":"## Proposed task map\n\n1. **A1** (`a1`)\n","tasks":[{"id":"a1","title":"A1","intent":"i","files":[],"covers":["c1"]}]},{"title":"feat(two): two","summary":"does two","criteria":["Users can do two."],"after":0,"task_map":"## Proposed task map\n\n1. **B1** (`b1`)\n","tasks":[{"id":"b1","title":"B1","intent":"i","files":[],"covers":[]}]},{"title":"feat(three): three","summary":"does three","criteria":["Users can do three."],"after":1,"task_map":"## Proposed task map\n\n1. **C1** (`c1`)\n","tasks":[{"id":"c1","title":"C1","intent":"i","files":[],"covers":[]}]}]' > "$AS/split_children.json"
+as_reset() { rm -f "$AS/counter" "$AS/triage_outcome" "$AS/sub_seed.json" "$AS/sub_fail" "$AS/link_fail" "$AS/link_dup" "$AS/create_blank" "$AS"/child_*.md; : > "$AS/gh.log"; }
+as_reset
 
 OUT=$(sh "$AS/apply_split.sh" 2>&1); RC=$?
 check "asplit: exit 0"                 "0" "$RC"
@@ -1927,26 +1957,60 @@ check "asplit: outcome"                "split" "$(cat "$AS/triage_outcome")"
 check "asplit: 3 creates"              "3" "$(grep -c '^issue create' "$AS/gh.log")"
 check "asplit: first agent"          "1" "$(grep '^issue create' "$AS/gh.log" | sed -n '1p' | grep -c -- '--label agent ')"
 check "asplit: later children held"    "2" "$(grep '^issue create' "$AS/gh.log" | sed -n '2,3p' | grep -c -- '--label agent-held')"
-check "asplit: architecture inherited" "3" "$(grep -c -- '--label=architecture' "$AS/gh.log")"
+check "asplit: architecture inherited" "3" "$(grep '^issue create' "$AS/gh.log" | grep -c -- '--label=architecture')"
+check "asplit: triage labels inherited" "3" "$(grep '^issue create' "$AS/gh.log" | grep -c -- '--label=area:web')"
+check "asplit: triage label created"   "1" "$(grep -c '^label create area:web' "$AS/gh.log")"
+check "asplit: agent never inherited"  "0" "$(grep '^issue create' "$AS/gh.log" | grep -c -- '--label=agent')"
+check "asplit: needs-triage dropped"   "0" "$(grep '^issue create' "$AS/gh.log" | grep -c -- 'needs-triage')"
 check "asplit: 3 sub-issue links"      "3" "$(grep -c -- 'sub_issues -F sub_issue_id' "$AS/gh.log")"
 check "asplit: parent agent-split"     "1" "$(grep -c -- 'issue edit 7 --title feat: parent --add-label agent-split' "$AS/gh.log")"
 check "asplit: parent never agent"     "0" "$(grep 'issue edit 7' "$AS/gh.log" | grep -c -- 'add-label agent ')"
+check "asplit: parent agent removed"   "1" "$(grep 'issue edit 7 --title' "$AS/gh.log" | grep -c -- '--remove-label=agent')"
 
 check "asplit: marker child1 after=0"  "<!-- fabro:split-child parent=7 after=0 -->" "$(head -1 "$AS/child_101.md")"
 check "asplit: marker child2"          "<!-- fabro:split-child parent=7 after=101 -->" "$(head -1 "$AS/child_102.md")"
 check "asplit: marker child3"          "<!-- fabro:split-child parent=7 after=102 -->" "$(head -1 "$AS/child_103.md")"
+check "asplit: child summary 1st prose" "does two" "$(sed -n '3p' "$AS/child_102.md")"
+check "asplit: child criteria"         "1" "$(grep -c '^- Users can do two[.]$' "$AS/child_102.md")"
+check "asplit: child criteria heading" "1" "$(grep -c '^## Acceptance criteria$' "$AS/child_102.md")"
 check "asplit: split into checklist"   "1" "$(grep -c '^## Split into' "$AS/split_parent_body.md")"
-check "asplit: split decision line"    "1" "$(grep -c '\*\*Split this issue?\*\* Into #101,102,103 (basis: task map of 3 tasks' "$AS/split_parent_body.md")"
+check "asplit: split decision line"    "1" "$(grep -c '\*\*Split this issue?\*\* Into #101, #102, #103 (basis: task map of 3 tasks' "$AS/split_parent_body.md")"
 
-printf '%s\n' '[{"sub_issue":{"number":101,"title":"feat(one): one"}},{"sub_issue":{"number":102,"title":"feat(two): two"}}]' > "$AS/sub_seed.json"
-rm -f "$AS/counter"; : > "$AS/gh.log"
+# Idempotent re-run: the sub-issues list (real shape) already holds two children.
+as_reset
+printf '%s\n' '[{"number":101,"title":"feat(one): one","state":"open"},{"number":102,"title":"feat(two): two","state":"open"}]' > "$AS/sub_seed.json"
+echo 102 > "$AS/counter"
 sh "$AS/apply_split.sh" >/dev/null 2>&1
 check "asplit idempotent: 1 create"    "1" "$(grep -c '^issue create' "$AS/gh.log")"
 check "asplit idempotent: 1 link"      "1" "$(grep -c -- 'sub_issues -F sub_issue_id' "$AS/gh.log")"
+check "asplit idempotent: real pred"   "<!-- fabro:split-child parent=7 after=102 -->" "$(head -1 "$AS/child_103.md")"
 
-PATH="$SAVED_PATH"
-unset GH_LOG GH_STATE
+# An unreadable sub-issues list fails closed: it is never read as "no children".
+as_reset; : > "$AS/sub_fail"
+sh "$AS/apply_split.sh" >/dev/null 2>&1; RC=$?
+check "asplit read fails: nonzero"     "1" "$([ $RC -ne 0 ] && echo 1 || echo 0)"
+check "asplit read fails: no create"   "0" "$(grep -c '^issue create' "$AS/gh.log")"
+check "asplit read fails: no outcome"  "0" "$([ -f "$AS/triage_outcome" ] && echo 1 || echo 0)"
 
+# A link that fails and is not in the list stops the node after that child.
+as_reset; : > "$AS/link_fail"
+sh "$AS/apply_split.sh" >/dev/null 2>&1; RC=$?
+check "asplit link fails: nonzero"     "1" "$([ $RC -ne 0 ] && echo 1 || echo 0)"
+check "asplit link fails: 1 create"    "1" "$(grep -c '^issue create' "$AS/gh.log")"
+check "asplit link fails: no outcome"  "0" "$([ -f "$AS/triage_outcome" ] && echo 1 || echo 0)"
+
+# A link rejected as a duplicate, with the child already in the list, is success.
+as_reset; : > "$AS/link_dup"
+sh "$AS/apply_split.sh" >/dev/null 2>&1; RC=$?
+check "asplit link dup: exit 0"        "0" "$RC"
+check "asplit link dup: outcome"       "split" "$(cat "$AS/triage_outcome" 2>/dev/null)"
+
+# A create that yields no issue number stops the node; no child is held behind after=0.
+as_reset; : > "$AS/create_blank"
+sh "$AS/apply_split.sh" >/dev/null 2>&1; RC=$?
+check "asplit no number: nonzero"      "1" "$([ $RC -ne 0 ] && echo 1 || echo 0)"
+check "asplit no number: 1 create"     "1" "$(grep -c '^issue create' "$AS/gh.log")"
+check "asplit no number: no link"      "0" "$(grep -c -- 'sub_issues -F sub_issue_id' "$AS/gh.log")"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE

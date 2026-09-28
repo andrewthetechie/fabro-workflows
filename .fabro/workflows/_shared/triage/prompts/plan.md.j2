@@ -64,9 +64,9 @@ human-readable kebab-case id derived from the title and scope (e.g.
 Do not invent a threshold — `plan_gate` enforces this exactly:
 
 - **1–4 tasks**: `children` is `[]`. The issue is implemented as one run.
-- **5–12 tasks**: group the tasks into **2 or 3 children**. Each child has 1–4
-  tasks, listed in the same order as in `tasks`, and must land and leave `main`
-  green on its own. Put prerequisites in earlier children, and set each child's
+- **5–12 tasks**: group the tasks into **2 or 3 children**. Every task is in
+  exactly one child. Each child has 1–4 tasks, listed in the same order as in
+  `tasks`, and must land and leave `main` green on its own. Put prerequisites in earlier children, and set each child's
   `after` to the child (its 0-based index) that it truly needs; `null` when it
   depends on nothing. A child title is a Conventional Commit from the same ten
   types as triage, with no `!` and no `BREAKING CHANGE:` — release automation
@@ -96,6 +96,12 @@ is refused. The plan has:
   naming the acceptance criteria the task satisfies. It is the complete,
   ordered decomposition of the issue (one task for a small issue).
 - `children` — `[]`, or (5–12 tasks) 2 or 3 objects per the split rule above.
+  Each child has `title`, `summary` (one prose paragraph: what the child
+  delivers), `tasks` (its task `id`s), `after` (a 0-based index or `null`), and
+  `criteria`: the parent's acceptance criteria that this child delivers, one
+  string each, quoted from the issue as written. Every child has at least one.
+  The workflow copies them into the child issue, which is all its implementer
+  sees of the parent.
 - `summary` — one sentence for the operator.
 
 After `submit` writes plan.json, stop. Do not print it in chat.
