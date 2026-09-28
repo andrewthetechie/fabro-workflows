@@ -39,6 +39,7 @@ actually lives.
 | `ops/test-task-gates.sh` | Runs `backlog`'s `claim`, `mark_stuck`, `open_pr`, `open_pr_prep` and task-queue nodes (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. The only gate that executes a node's shell. Offline; no host or container. |
 | `ops/fabro-io-manifest.py` | The Stage-manifest generator/checker (ADR 0016): reads `.fabro/workflows/_io/manifest.json` and the output schemas, and writes the generated manifest into each workflow's `workflow.toml` `[run.environment.env]` between C2's markers. `check` regenerates in memory and fails on drift or a contract break. Python 3.11+; runs on the Mac and the host, never in a sandbox. |
 | `ops/fabro-io/` | The `fabro-io` Rust MCP binary (ADR 0016): the `stage`/`inputs`/`submit`/`guard`/`serve` tools and CLI. Built into every profile image by `ops/profile-images/build-images.sh`. |
+| `Makefile`, `ops/deploy-host.sh` | `make deploy`: the host deploy after a push that touches `ops/` or `backlog/scripts/` (see *Deploying to the server*). The Makefile only names the script's steps. |
 | `ops/fabro-run-status.sh` | LLM-free health check for an in-flight run: alive, where in the graph, making progress, and whether a compaction says the decomposition was oversized. |
 | `ops/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency (ADR 0005, ADR 0006). Draft 14's 24-hour shakedown window restarts with the container, so its acceptance criteria are pending, not unstarted. Do not trust a start time written here: every `docker compose up -d --build scheduler` re-dates the window. Read it with `docker inspect -f '{{.State.StartedAt}}' fabro-scheduler`. `ops/test-task-gates.sh` covers `claim` and `mark_stuck`, so the shell-level regression that killed the first bring-up (`5fa974d`) now fails offline. The four `backlog-<repo>` schedules are off, so the scheduler is the only producer of `backlog` runs. `ops/fabro-automation-schedule.sh` turns them back on, and `ops/fabro-fire-backlog.sh` is the manual escape hatch. Its LAN page is `http://10.10.0.32:32280/`. The operator quickstart (the page, the three controls, changing repo priority, the two monitor conditions) was `docs/scheduler/OPERATING.md`, removed in `d5cd750`: `git show d5cd750^:docs/scheduler/OPERATING.md`. |
 | `docs/research_improvements/` | An audit of all three packages against the Fabro source: what we hand-roll that Fabro already does, four operator-observed gaps traced to Fabro lines, and nine settled dead ends. A plan, not a changelog. `00-overview.md` first: its status table (2026-09-24) records what shipped (the stall watchdog, the rescue-gate label, the `truncate` preamble), the one gap still open in that work (nothing deletes `rescue.md` between tasks), and the priority of the rest. The merge-rate review of the same date is ADR 0011. |
@@ -247,7 +248,17 @@ them, except where a rule names one by id.
 
 ## Deploying to the server after a merge to `main`
 
-Manual today; automating it is the plan.
+`make deploy` does all of it: every step below except the fabro `compose up`, then
+the host-matches-repo diffs. It refuses a checkout that is dirty or not at
+`origin/main` (`ALLOW_DIRTY=1` overrides). It rebuilds the scheduler and the profile
+images only when their inputs changed since the last successful build. That is judged
+by an rsync itemize plus a git-tree-hash stamp in `~/.fabro-deploy-stamps/` on the
+host, because every scheduler rebuild re-dates the draft-14 window (`FORCE=1`
+rebuilds anyway, `SKIP_IMAGES=1` skips the images). Single steps are
+`make deploy-scheduler`, `deploy-images`, `deploy-scripts`, `deploy-notify`,
+`deploy-compose`, `provision` and `verify-host`. `make compose-up CONFIRM=1` is the
+only target that restarts fabro. The logic lives in `ops/deploy-host.sh`. The
+commands below are what it runs, and the escape hatch when it cannot.
 
 **Workflow changes need no deploy.** Every automation resolves
 `.fabro/workflows/**` from `main` at fire time, so a merged graph or prompt is live
