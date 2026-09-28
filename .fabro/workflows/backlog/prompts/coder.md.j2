@@ -28,23 +28,6 @@ The repository checkout in the current working directory is your workspace.
 record); it is read-only and you must not write anywhere outside the repository
 checkout.
 
-## Finding code
-
-Use `fabro-code` through the shell before `grep`, `glob` or paging a file with
-`read_file`:
-
-- `fabro-code def NAME`: where NAME is defined.
-- `fabro-code show NAME`: its source, what it calls, and what calls it. Use this
-  instead of reading a large file in pages.
-- `fabro-code callers NAME` / `callees NAME` / `impact NAME`: the call and import graph.
-- `fabro-code tests PATH…`: test files that exercise these files.
-
-Its answers include your own edits. It knows calls and imports only, not attribute
-reads, string keys or config. It matches a call by name, so a caller it lists can be
-a call to a different function with the same name. Before you conclude that
-something is unused, or before you delete or rename it, confirm with
-`grep -rnw NAME`. If it prints `no code index`, use grep.
-
 ## Deliverable
 
 Edits in the working tree. Nothing else. There is no plan stage and no result file:
@@ -119,15 +102,38 @@ and say so in your completion note instead. A human will make that edit.
   "cannot resolve module" error. That's a missing-dependency problem; fix the
   dependency, not the import.
 
+## Finding code
+
+Look up a symbol with `fabro-code` before `grep`, `glob`, or paging a file with
+`read_file` — it walks the call graph instead of matching text:
+
+- `fabro-code def NAME`: where NAME is defined.
+- `fabro-code show NAME`: its source, what it calls, and what calls it. Use this
+  instead of reading a large file in pages.
+- `fabro-code callers NAME` / `callees NAME` / `impact NAME`: check the blast radius
+  before you rename, remove, or change a signature.
+- `fabro-code tests PATH…`: test files that exercise these files.
+
+Its answers include your own edits. It knows calls and imports only, not attribute
+reads, string keys or config. It matches a call by name, so a caller it lists can be
+a call to a different function with the same name. Before you conclude that
+something is unused, or before you delete or rename it, confirm with
+`grep -rnw NAME`. If it prints `no code index`, use grep.
+
 ## Process
 
-1. **Read minimally.** Inspect the smallest relevant code/test surface needed to
-   implement this task. Don't browse the codebase looking for things to fix.
+1. **Read minimally.** Look up the symbols named in `current_task.json` or
+   `task-context.md` with `fabro-code def`/`show` before paging a file; inspect only
+   the smallest relevant code/test surface needed. Don't browse the codebase looking
+   for things to fix.
 2. **Avoid inspection loops.** Once you know the next useful edit, make it. Don't
    keep reading.
 3. **Before each edit**, ask: "Does the task's acceptance criteria name this file,
    or is editing it the only way to make the feature work?" Yes → edit. No → close
-   it and move on.
+   it and move on. If the edit renames, removes, or changes an existing signature,
+   check its blast radius with `fabro-code callers`/`impact` first — a caller you
+   broke by accident is scope creep, and the reviewer rejects it exactly as fast as
+   an extra file.
 4. **Soft cap.** If you're about to touch more than ~5 files, stop and re-read the
    task. You're probably over-scoping.
 5. **Test-first when applicable.** For new behavior, prefer Red-Green-Refactor:
@@ -137,7 +143,7 @@ and say so in your completion note instead. A human will make that edit.
    file you don't recognize as required by the task → revert it.
 
 Do not write narration or commentary before your first tool call. Begin with a
-`read`, `glob`, `grep`, or `edit`.
+`fabro-code` lookup, `read`, `glob`, `grep`, or `edit`.
 
 ## About commits — do not make any
 

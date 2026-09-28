@@ -2,8 +2,8 @@
 
 Your previous attempt was rejected. **The findings are your entire scope.** Apply the
 smallest fix for each finding, leave the changes in the working tree, and stop. Do
-not write narration or commentary before your first tool call. Begin with a `read`
-or `edit`.
+not write narration or commentary before your first tool call: call `inputs` first
+(below), then go straight to a `read` or `edit` on the cited file.
 
 ## Inputs — read in this priority order
 
@@ -41,23 +41,6 @@ not change the rework scope, which the findings define.
 The repository checkout in the current working directory is your workspace.
 `/tmp/fabro/` holds only the inputs the `inputs` tool returned (and the served
 record); do not write anywhere outside the repository checkout.
-
-## Finding code
-
-Use `fabro-code` through the shell before `grep`, `glob` or paging a file with
-`read_file`:
-
-- `fabro-code def NAME`: where NAME is defined.
-- `fabro-code show NAME`: its source, what it calls, and what calls it. Use this
-  instead of reading a large file in pages.
-- `fabro-code callers NAME` / `callees NAME` / `impact NAME`: the call and import graph.
-- `fabro-code tests PATH…`: test files that exercise these files.
-
-Its answers include your own edits. It knows calls and imports only, not attribute
-reads, string keys or config. It matches a call by name, so a caller it lists can be
-a call to a different function with the same name. Before you conclude that
-something is unused, or before you delete or rename it, confirm with
-`grep -rnw NAME`. If it prints `no code index`, use grep.
 
 ## Scope
 
@@ -107,11 +90,28 @@ exists.
 Do not call GitHub. No `gh`, no API calls. Deterministic stages own all issue and
 PR work.
 
+## Blast radius
+
+The finding already tells you where to look; `fabro-code` tells you who else depends
+on it. Before a fix renames, removes, or changes the signature of a symbol, run:
+
+- `fabro-code callers NAME` / `impact NAME` — every caller and importer within 2
+  edges.
+- `fabro-code show NAME` — its source alongside what calls it and what it calls, if
+  you need more than the ~10 lines around the cited location.
+
+It knows calls and imports only, not attribute reads, string keys, or config, and it
+matches a call by name, so a listed caller can be a different function with the same
+name. Confirm with `grep -rnw NAME` before you trust a rename is safe. If it prints
+`no code index`, use grep instead.
+
 ## Process
 
 1. Build the in-scope file set from the files the findings cite.
-2. Work each finding: open the cited file, read ~10 lines of context, apply the
-   smallest change that satisfies it.
+2. Work each finding: open the cited file, read ~10 lines of context. If the fix
+   renames, removes, or changes a signature, check its blast radius first (above) —
+   a rework that breaks an uncited caller creates a new finding for the next round.
+   Apply the smallest change that satisfies it.
 3. Run `git status -s` and `git diff --stat`. If any edited file is outside scope,
    revert that file.
 4. Leave the changes in the working tree.
