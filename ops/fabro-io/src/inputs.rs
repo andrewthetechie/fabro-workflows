@@ -25,10 +25,17 @@ pub struct InputsResult {
 
 /// Build the inputs text for a call. `name`/`part` mirror the MCP `inputs` parameters.
 ///
+/// A blank `name` means no name, and a `part` without a name is ignored: both calls are
+/// the batch walk. Some models fill every optional parameter, and GLM sent
+/// `{"name": "", "part": 1}` as the first `inputs` call of all three production `refute`
+/// sessions of 2026-09-27; answering it with an error cost each one five extra turns.
+///
 /// The read-modify-write of `served.json` runs under an exclusive lock, because fabro
 /// runs a turn's tool calls in parallel: without it, two `inputs` calls in one turn each
 /// save their own record and the later save drops the earlier call's parts.
 pub fn build(name: Option<&str>, part: Option<u32>) -> InputsResult {
+    let name = name.map(str::trim).filter(|n| !n.is_empty());
+    let part = part.filter(|_| name.is_some());
     let Some((node, visit)) = common::read_stage() else {
         return err("no stage.json: call fabro-io stage first");
     };
@@ -47,10 +54,6 @@ pub fn build(name: Option<&str>, part: Option<u32>) -> InputsResult {
             stage.inputs.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")
         ));
     }
-    if part.is_some() && name.is_none() {
-        return err("part requires a name");
-    }
-
     let _lock = served::lock();
     let mut served_rec = served::load(&visit);
     let result = match (name, part) {

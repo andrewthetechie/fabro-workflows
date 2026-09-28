@@ -119,6 +119,26 @@ fn unknown_name_is_an_error_listing_the_names() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A blank name, with or without a part, is the batch walk and not an unknown name: the
+/// first call GLM made in every production `refute` session of 2026-09-27.
+#[test]
+fn blank_name_is_the_batch_walk() {
+    let root = common::temp_root("b-blank");
+    write_inputs(&root);
+    common::with_manifest(&root, &manifest(&root), "st", || {
+        assert_eq!(stage::run(), std::process::ExitCode::from(0));
+        let batch = inputs::build(None, None);
+        assert!(!batch.is_error, "{}", batch.text);
+        let calls = [(Some(""), Some(1)), (Some(""), None), (Some("  "), Some(2)), (None, Some(1))];
+        for (name, part) in calls {
+            let res = inputs::build(name, part);
+            assert!(!res.is_error, "{name:?}/{part:?}: {}", res.text);
+            assert_eq!(res.text, batch.text, "{name:?}/{part:?} must be the batch walk");
+        }
+    });
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Parallel `inputs` calls in one turn each keep their record: none is lost to a later save.
 #[test]
 fn parallel_calls_do_not_lose_served_parts() {

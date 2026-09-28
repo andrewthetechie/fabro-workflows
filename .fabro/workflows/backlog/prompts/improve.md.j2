@@ -58,8 +58,9 @@ something is unused, or before you delete or rename it, confirm with
 ## Decision rules
 
 - `ready` — the task is implementation-ready and lands in one stage. If the task
-  needed no changes, return it unchanged; if title or body needed sharpening,
-  return the improved version and explain what changed in `reason`.
+  needed no changes, return it unchanged: copy every field of `current_task.json`
+  into `task`, `body` included. If title or body needed sharpening, return the
+  improved version and explain what changed in `reason`.
 - `split` — the task is real and correct but **too large for one implementation
   stage**. See the size budget below. Return ordered slices in `tasks`; they
   replace this task in the queue and run in the order you give.
@@ -127,7 +128,9 @@ Rules — a validation gate reads this file and rejects it on any violation, whi
 costs a full retry round:
 
 - `ready` requires `task` with a non-empty string `title` and a non-empty string
-  `body`. Keep `id` byte-for-byte from `current_task.json`. The gate overwrites
+  `body`, even when nothing changed: there is no short form for "unchanged", and
+  `submit` refuses a `task` that carries only `id` and `title`. Keep `id`
+  byte-for-byte from `current_task.json`. The gate overwrites
   `current_task.json` with `.task`, so whatever you put there is exactly what the
   coder gets — carry `files`, `covers`, and `priority` through rather than
   dropping them, and update `covers` if your edits changed what the task

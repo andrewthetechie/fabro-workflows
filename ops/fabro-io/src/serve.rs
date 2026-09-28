@@ -36,8 +36,8 @@ impl IoHandler {
             serde_json::from_value(serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "The input name. Omit to read every input of the stage in order."},
-                    "part": {"type": "integer", "minimum": 1, "description": "Return only this page of one input (raw bytes). Requires name."}
+                    "name": {"type": "string", "description": "The input name. Omit it, or pass an empty string, to read every input of the stage in order."},
+                    "part": {"type": "integer", "minimum": 1, "description": "Return only this page of one input (raw bytes). Ignored without a name."}
                 },
                 "additionalProperties": false
             }))

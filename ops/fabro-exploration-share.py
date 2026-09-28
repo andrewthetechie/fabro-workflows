@@ -141,6 +141,10 @@ def io_node(n):
 
 
 def is_input_read(name, args):
+    # Since ADR 0016 the stages read their inputs through the fabro-io `inputs` tool. Not
+    # counting it made every migrated stage report 0 lead turns, whatever it did.
+    if name == "mcp__io__inputs":
+        return True
     astr = json.dumps(args)
     if name == "read_file":
         return "/tmp/fabro/" in astr
@@ -263,6 +267,11 @@ def main():
                     reads[(fn, e["stage_id"], a.get("file_path"), node)] += 1
                 if c in ("grep", "glob", "shell:search"):
                     samples.append((node, t["tool_name"], json.dumps(a)[:220]))
+                # Since ADR 0016 task 10, improve_result.json is written by `submit`, whose
+                # arguments are the contract itself.
+                if (t["tool_name"] == "mcp__io__submit" and node == "improve"
+                        and isinstance(a, dict) and a.get("disposition") == "ready"):
+                    sess_ready[sid] = True
                 if t["tool_name"] == "write_file":
                     fp = a.get("file_path", "")
                     if node == "improve" and fp.endswith("improve_result.json"):
@@ -458,8 +467,9 @@ def main():
     print(f"| improve ready sessions: {ready_total} | wrote task-context.md: {with_doss} | rate: {100*with_doss/ready_total if ready_total else 0:.0f}% |")
 
     print("\n## 6. input reads (ADR 0016, task 01)")
-    print("An input read is a read_file of a /tmp/fabro path, or a shell whose first command")
-    print("is one of cat/head/tail/sed/jq/wc/ls naming a /tmp/fabro path. lead_turns is the")
+    print("An input read is an mcp__io__inputs call, a read_file of a /tmp/fabro path, or a shell")
+    print("whose first command is one of cat/head/tail/sed/jq/wc/ls naming a /tmp/fabro path.")
+    print("input_reads counts all three forms; io_calls counts inputs and submit calls. lead_turns is the")
     print("leading run of turns (LLM calls) in which every tool call is an input read.")
     print("| node | sessions | lead_turns med/p90 | lead_secs med/p90 | input_reads med | partial | capped | sealed | io_calls |")
     ir_nodes = sorted(io_sessions, key=lambda n: -io_sessions[n])

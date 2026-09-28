@@ -34,3 +34,83 @@ Deployment state on which this measurement will run:
     only "binary": "0.1.1" visits toward the targets.
   - All four workflow graphs and their generated FABRO_IO_MANIFEST blocks are
     on main and thus live at the next fire.
+
+
+Preliminary check — 2026-09-28
+==============================
+NOT the task 11 measurement: most stages have 3-13 visits, not 20. It checks that
+the tool works and finds defects early.
+
+Data: 13 runs fetched with `fabro events --json` (the fetch loop in
+ops/fabro-exploration-share.py). 10 ran on fabro-io 0.1.1 (created after the
+2026-09-27T15:57Z image build): 5 backlog, 5 issue-triage, 93 agent sessions.
+3 earlier backlog runs on 0.1.0 were used only to confirm the 0.1.1 fix.
+  0.1.1: 01M3HXHXWABF 01M3HY1YRT47 01M3J2CY0QSW 01M3J98PHXYY 01M3J9W4K9Q3
+         01M3JD4N4BM5 01M3JEP5F7E0 01M3JG8TTE70 01M3JGEDE6PM(running)
+         01M3JTQKZ2EB(running)
+  0.1.0: 01M3H5EB787X 01M3HD29WJ2K 01M3HRXSYA5R
+Lead turns and seconds were measured with the fixed ops/fabro-exploration-share.py
+(below); the other rows come from a per-session audit of tool calls and gate
+stage.failed events.
+
+Targets (0.1.1 sessions):
+  - Valid receipt, of contracts that reached a gate: MET. 76 contracts written
+    by submit; no gate failed with "no valid Input receipt"; no contract
+    written with write_file or a shell redirect.
+  - Incomplete reads (submit "not read in full"): MET, 0 (14 on 0.1.0, the
+    batch-paging defect 0.1.1 fixed). 27 page-mode calls and 5 "not shown"
+    deferrals, all fetched before submit.
+  - sealed_reads for refute: MET, 0 attempts. The guard never had to block,
+    so its blocking path is still unexercised in production.
+  - Median lead_turns, reviewers: MET. 1 (baseline: standards/quality/spec 2,
+    review_fix 3, review 1).
+  - Median lead_turns, coder: MET. 1 (baseline 3). n=13.
+  - Median lead_secs, coder: MET, barely. 35 s against 71 s (-51%). n=13.
+  - MCP startup: MET. startup_ms p95 262 (0.1.0: 244).
+  - Runs stopped by io-stage: MET, 0.
+  - Gate repairs: NOT MET YET. 3 triage_gate repairs (18:44, 20:58, 21:52Z)
+    from a schema/gate conflict: the triage schema forbade decisions[].basis
+    and triage_gate requires it on non-architecture issues. Fixed by 1d23847
+    (22:00Z); the one triage run after it had no repair. Re-check.
+  - Every 0.1.1 session had both io tools and called `inputs` first (93/93).
+    McpServerReady always reports tools: [] -- that field is not populated at
+    that point; agent.tools.available lists both tools.
+
+Defects found:
+  1. ops/fabro-exploration-share.py did not count mcp__io__inputs as an input
+     read, so every migrated stage reported 0 lead turns (the lead-turn targets
+     passed vacuously), and section 5c detected improve `ready` only from a
+     hand-written improve_result.json, so it read 0%. FIXED: inputs counts as
+     an input read; a `ready` submit counts. 5c now reads 14/14. The baseline
+     predates the tool, so it is unaffected.
+  2. refute (glm-5.3) opened all 3 sessions with inputs(name="", part=1): the
+     model fills every optional parameter. The server answered "no input named
+     ''", and the model then fetched the 5 inputs one per turn: 6 lead turns
+     against a baseline of 3. FIXED in fabro-io 0.1.2: a blank name is no name
+     and a part without a name is ignored, so the call is the batch walk.
+     Needs the profile images rebuilt (make deploy-images); min_binary stays
+     0.1.0.
+  3. backlog improve: after 1d23847 made task.body required on `ready`, 7 of 7
+     ready sessions first submitted task as {id, title}, were refused, and
+     resubmitted the whole object: median 95 s lost per visit (38-185 s, on a
+     box). The prompt's "return it unchanged" read as "send the id". FIXED in
+     improve.md.j2: copy every field, body included; no short form.
+  4. coder.md.j2 still named /tmp/fabro/current_task.json, and coder/improve
+     read it with read_file 9 times after `inputs` had served it. FIXED: the
+     prompt names the input, not the path.
+
+Open (not fixed):
+  5. Run 01M3J98PHXYY, improve visit 2: one submit call ran 21:27-22:07Z and hit
+     the 38,400-token output limit; fabro withheld the call ("the turn was
+     unfinished (length)") and the stage failed "structural". The arguments are
+     not logged. 38k tokens for one improve_result is a runaway generation on
+     the box, not a large legitimate plan. The same model would have looped in
+     a write_file call before this series, so it is not a fabro-io defect, but
+     a lower output cap for .improve would bound the loss at a few minutes.
+  6. The provider protocol does not carry the tool-result error flag (1,101
+     "unsupported_control" warnings), so a refusal reaches the model as text
+     only. All 13 schema refusals on 0.1.1 were corrected on the next call, so
+     the text is enough.
+
+Next: rebuild the images for 0.1.2, then run the task 11 measurement after >= 20
+visits per migrated stage, counting receipts stamped 0.1.1 or later.

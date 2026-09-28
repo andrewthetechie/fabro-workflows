@@ -12,7 +12,11 @@ every workflow carries `io-stage` (blocking, sandbox); and the migrated stages �
 the reviewers, and every implementer input/output — are served by `inputs` and written by
 `submit`, with the C7 receipt checked at their gates (`io-guard` seals `refute`'s paths).
 The multi-day post-deploy production measurement (task 11 success targets, after ≥20 visits
-per stage) is recorded as pending.
+per stage) is pending. A preliminary check on 2026-09-28 (10 runs, 93 sessions on
+`fabro-io` 0.1.1) met every target it could measure: every contract that reached a gate
+carried a valid receipt, and median lead turns fell to 1 for `coder` and the reviewers. It
+found one tool defect, fixed in `fabro-io` 0.1.2 (a blank `name` is the batch walk), and
+two prompt defects (`docs/stage-io/result-2026-09-27.txt`).
 
 Every agent stage reads its inputs from files under `/tmp/fabro/` and writes a JSON
 contract by hand. The model decides what to read and how much of it, and it also formats

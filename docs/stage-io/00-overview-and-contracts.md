@@ -9,7 +9,8 @@ defects before the measurement: the batch `inputs` call cut a page short and rec
 served, never named the inputs after one that did not fit, answered an unknown name with an
 empty success, and lost `served.json` updates to parallel calls (all in `fabro-io` 0.1.1);
 and `rebase_gate` sent a tier-1 receipt miss to `entry_failed`. C3, C1 and C5 below describe
-the fixed behaviour. Operator decisions are listed in "Decisions" at the end of this file.
+the fixed behaviour. A preliminary production check on 2026-09-28 added one more fix in
+`fabro-io` 0.1.2 (a blank `name`, C3); see `result-2026-09-27.txt`. Operator decisions are listed in "Decisions" at the end of this file.
 
 **Read this file first.** Every task in this folder assumes the decisions, contracts and
 rules in this file. Each task repeats what it needs. If a task and this file disagree, this
@@ -140,7 +141,9 @@ optional). CLI: `fabro-io inputs [<name> [--part N]]`.
 - `inputs(name=X)` walks that one input the same way. `inputs(name=X, part=K)` returns
   only that page's raw bytes, so the parts can be requested in any order.
 - A name that the stage does not declare is an error (`is_error`) that lists the stage's
-  input names.
+  input names. A blank name (empty or whitespace) is no name, and a `part` without a
+  name is ignored, so both are the batch walk (0.1.2). Some models fill every optional
+  parameter: GLM opened every production `refute` session with `name="", part=1`.
 - An optional input that is absent prints `=== <name>: <path> (absent) ===` and
   `(absent: <absent sentence>)`. A required input that is absent is listed in the result
   as `MISSING: <name> (<path>)`. The tool result is marked `is_error`, and `served.json`
