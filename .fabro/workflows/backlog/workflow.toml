@@ -42,7 +42,7 @@ kimi-for-coding = ["zai:glm-5.3"]
 # The adversarial reviewer (.refute). Non-GLM, and its fallback is likewise non-GLM:
 # a refute outage degrades to the sibling openai model, and the merge gate keeps its
 # adversarial independence either way.
-"gpt-6-sol" = ["openai:gpt-6-luna"]
+"gpt-6.1-sol" = ["openai:gpt-6-luna"]
 # The mechanical-check tier (.review-standards, .merge-standards) and, since
 # glm-4.7 was removed, the first hosted rung of the coder ladder (.coder-t2) and
 # the landing spot for a failed local box. It escalates UP to full glm-5.3 rather

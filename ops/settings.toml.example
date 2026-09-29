@@ -206,15 +206,15 @@ enabled = false
 # no provider table here -- only model rows, the same way `zai` is extended above.
 # The key lives in the fabro vault (`fabro secret set OPENAI_API_KEY <key>`), which
 # validates it against the openai endpoint before storing. Two models are used by
-# the factory: `gpt-6-sol`, the adversarial reviewer (`backlog`/`pr-review`'s
+# the factory: `gpt-6.1-sol`, the adversarial reviewer (`backlog`/`pr-review`'s
 # `.refute`), and `gpt-6-luna`, the implementer's final escalation rung
 # (`backlog`'s `coders-a`/`coders-b` fallback chains). Both model names must resolve
-# before the merge gate flips to them; verify with `fabro model test -m gpt-6-sol`
+# before the merge gate flips to them; verify with `fabro model test -m gpt-6.1-sol`
 # and `-m gpt-6-luna`, which must report provider `openai`. Take effect with no
 # restart (5s settings poll).
-[llm.providers.openai.models."gpt-6-sol"]
-display_name = "GPT-6 Sol (OpenAI)"
-api_model = "gpt-6-sol"
+[llm.providers.openai.models."gpt-6.1-sol"]
+display_name = "GPT-6.1 Sol (OpenAI)"
+api_model = "gpt-6.1-sol"
 limits = { context_tokens = 262144, max_output_tokens = 32768 }
 capabilities = { text = true, tools = true, reasoning = true }
 
