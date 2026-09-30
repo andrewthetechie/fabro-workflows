@@ -76,15 +76,21 @@ fn triage_accepts_a_decision_basis() {
 fn improve_result_requires_the_task_its_disposition_needs() {
     let v = validator("improve_result");
     let ready_no_body = serde_json::json!({
-        "disposition": "ready", "reason": "r", "task": {"id": "a", "title": "t"}
+        "disposition": "ready", "reason": "r", "task_title": "t"
     });
-    assert!(!v.is_valid(&ready_no_body), "ready without task.body must be refused");
+    assert!(!v.is_valid(&ready_no_body), "ready without task_body must be refused");
+    // The nested shape corrupted in a local model's tool call (run
+    // 01M3SFYASZQ7MEKVKR1A38C4J0); the contract is flat now.
+    let nested = serde_json::json!({
+        "disposition": "ready", "reason": "r", "task": {"id": "a", "title": "t", "body": "b"}
+    });
+    assert!(!v.is_valid(&nested), "a nested task must be refused");
     let ready_no_task = serde_json::json!({"disposition": "ready", "reason": "r"});
     assert!(!v.is_valid(&ready_no_task), "ready without task must be refused");
     let split_no_tasks = serde_json::json!({"disposition": "split", "reason": "r"});
     assert!(!v.is_valid(&split_no_tasks), "split without tasks must be refused");
     let ready = serde_json::json!({
-        "disposition": "ready", "reason": "r", "task": {"id": "a", "title": "t", "body": "b"}
+        "disposition": "ready", "reason": "r", "task_title": "t", "task_body": "b"
     });
     assert!(v.is_valid(&ready));
     let redundant = serde_json::json!({"disposition": "redundant", "reason": "r"});

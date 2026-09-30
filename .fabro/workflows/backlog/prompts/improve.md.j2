@@ -58,8 +58,8 @@ something is unused, or before you delete or rename it, confirm with
 ## Decision rules
 
 - `ready` — the task is implementation-ready and lands in one stage. If the task
-  needed no changes, return it unchanged: copy every field of `current_task.json`
-  into `task`, `body` included. If title or body needed sharpening, return the
+  needed no changes, return it unchanged: pass its `title` and `body` as `task_title` and
+  `task_body`. If title or body needed sharpening, return the
   improved version and explain what changed in `reason`.
 - `split` — the task is real and correct but **too large for one implementation
   stage**. See the size budget below. Return ordered slices in `tasks`; they
@@ -117,32 +117,33 @@ neither a safe split nor a single-stage implementation is possible.
 ## Output
 
 Call `submit` with your `disposition`, `reason`, and — when the disposition
-requires it — `task` or `tasks`. It checks the shape and writes
+requires it — the flat `task_*` fields or `tasks`. It checks the shape and writes
 `/tmp/fabro/improve_result.json`; do not write it yourself. A result `submit`
 did not write is refused.
 
 `disposition` is `ready` | `redundant` | `needs_human` | `split`; `reason` is one
-or two sentences justifying it. `task` carries `id`, `title`, `body`, `files`,
-`covers` and `priority`; `tasks` is an array of such slice objects.
+or two sentences justifying it. For `ready`, pass the task as **flat top-level
+arguments, never a nested `task` object**: `task_title`, `task_body`, and
+optionally `task_files`, `task_covers` and `task_priority`. `tasks`
+(for `split`) is an array of slice objects.
 
 Rules — a validation gate reads this file and rejects it on any violation, which
 costs a full retry round:
 
-- `ready` requires `task` with a non-empty string `title` and a non-empty string
-  `body`, even when nothing changed: there is no short form for "unchanged", and
-  `submit` refuses a `task` that carries only `id` and `title`. Keep `id`
-  byte-for-byte from `current_task.json`. The gate overwrites
-  `current_task.json` with `.task`, so whatever you put there is exactly what the
-  coder gets — carry `files`, `covers`, and `priority` through rather than
-  dropping them, and update `covers` if your edits changed what the task
-  delivers.
-- `redundant` and `needs_human` may omit `task` and `tasks`. The gate validates
+- `ready` requires a non-empty string `task_title` and a non-empty string
+  `task_body`, even when nothing changed: there is no short form for "unchanged".
+  The gate builds `current_task.json` from these fields, so whatever you put there
+  is exactly what the coder gets. It keeps the current task's `id`, and carries
+  `files`, `covers` and `priority` over from `current_task.json` when you omit
+  them; pass `task_covers` if your edits changed what the task delivers, and
+  `task_files` if the files changed.
+- `redundant` and `needs_human` may omit the `task_*` fields and `tasks`. The gate validates
   only `disposition`, but always write `reason` anyway: it is the record a human
   reads when deciding whether the call was right, and a `redundant` with no cited
   evidence is indistinguishable from a task that was silently skipped.
 - `split` requires `tasks`: **two to four** slices, in the order they must run,
   each with a non-empty string `id`, `title`, and `body`, and array `files` and
-  `covers`. Omit `task` — the slices replace the current task in the queue
+  `covers`. Omit the `task_*` fields — the slices replace the current task in the queue
   entirely. Give every slice a new kebab-case `id` derived from its own subject:
   later stages dedupe follow-up work by `id`, so a slice carrying the original
   task's id misreports a part as the whole.

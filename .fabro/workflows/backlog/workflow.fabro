@@ -587,7 +587,7 @@ if [ \"$D\" = split ] && [ $SR -ge 2 ]; then
   D=ready; KEEP=1
 fi
 if [ \"$D\" = ready ] && [ $KEEP = 0 ]; then
-  jq -e '.task and ((.task.title | type) == \"string\") and ((.task.body | type) == \"string\") and ((.task.body | length) > 0)' $F >/dev/null 2>&1 || D=invalid
+  jq -e '((.task_title | type) == \"string\") and ((.task_title | length) > 0) and ((.task_body | type) == \"string\") and ((.task_body | length) > 0)' $F >/dev/null 2>&1 || D=invalid
 fi
 if [ \"$D\" = split ]; then
   jq -e '(.tasks | type) == \"array\" and (.tasks | length) >= 2 and (.tasks | length) <= 4' $F >/dev/null 2>&1 || D=invalid
@@ -607,7 +607,7 @@ if [ \"$D\" = invalid ]; then
   if [ $A -lt 2 ]; then if [ $RM = 1 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; else echo 'improve_result.json missing or invalid; rewrite it exactly per the contract' >&2; fi; exit 1; fi
 fi
 echo 0 > /tmp/fabro/improve_attempts
-if [ \"$D\" = ready ] && [ $KEEP = 0 ]; then jq .task $F > /tmp/fabro/current_task.json; fi
+if [ \"$D\" = ready ] && [ $KEEP = 0 ]; then jq --slurpfile cur /tmp/fabro/current_task.json '{id: ($cur[0].id // .task_id), title: .task_title, body: .task_body, files: (.task_files // $cur[0].files // []), covers: (.task_covers // $cur[0].covers // []), priority: (.task_priority // $cur[0].priority)} | with_entries(select(.value != null))' $F > /tmp/fabro/current_task.new && mv /tmp/fabro/current_task.new /tmp/fabro/current_task.json; fi
 if [ \"$D\" = split ]; then
   IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 1)
   POS=$((IDX-1))

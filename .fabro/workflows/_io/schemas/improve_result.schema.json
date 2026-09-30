@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "improve_result",
   "title": "improve_result — backlog improve's improved task (task 10)",
-  "description": "The backlog improve agent's output (docs/stage-io, task 10). improve_gate checks the disposition enum and the per-disposition shape; the split/queue logic and per-run budget stay in the gate. `reason` is always written for the human record. _io is stamped by the server.",
+  "description": "The backlog improve agent's output (docs/stage-io, task 10). The `ready` task is FLAT (task_title, task_body, ...) because a local quantised model corrupted a nested `task` object in its tool call (run 01M3SFYASZQ7MEKVKR1A38C4J0); improve_gate assembles current_task.json from those fields and defaults id, files, covers and priority from the current task. `split` keeps a nested `tasks` array. improve_gate checks the disposition enum and the per-disposition shape; the split/queue logic and per-run budget stay in the gate. `reason` is always written for the human record. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
   "required": ["disposition", "reason"],
@@ -10,8 +10,7 @@
     {
       "if": { "properties": { "disposition": { "const": "ready" } }, "required": ["disposition"] },
       "then": {
-        "required": ["task"],
-        "properties": { "task": { "required": ["id", "title", "body"] } }
+        "required": ["task_title", "task_body"]
       }
     },
     {
@@ -22,18 +21,12 @@
   "properties": {
     "disposition": { "enum": ["ready", "redundant", "needs_human", "split"] },
     "reason": { "type": "string", "description": "One or two sentences justifying the disposition." },
-    "task": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "title": { "type": "string", "minLength": 1 },
-        "body": { "type": "string", "minLength": 1 },
-        "files": { "type": "array", "items": { "type": "string" } },
-        "covers": { "type": "array", "items": { "type": "string" } },
-        "priority": { "enum": ["high", "medium", "low"] }
-      }
-    },
+    "task_id": { "type": "string", "minLength": 1, "description": "Ignored when the current task has an id; the gate keeps that id byte-for-byte." },
+    "task_title": { "type": "string", "minLength": 1 },
+    "task_body": { "type": "string", "minLength": 1 },
+    "task_files": { "type": "array", "items": { "type": "string" } },
+    "task_covers": { "type": "array", "items": { "type": "string" } },
+    "task_priority": { "enum": ["high", "medium", "low"] },
     "tasks": {
       "type": "array",
       "minItems": 2,

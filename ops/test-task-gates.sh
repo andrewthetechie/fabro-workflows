@@ -267,10 +267,32 @@ sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "splice at tail"              "a big big-module big-migrate" "$(jq -r '[.[].id]|join(" ")' "$T/tasks.json")"
 
 # The pre-existing dispositions must be untouched by all of the above.
-ig_setup "$TASKS" "$CUR" '{"disposition":"ready","task":{"id":"big","title":"Sharpened","body":"nb","files":[],"covers":["c1"]}}' 2 0
+ig_setup "$TASKS" "$CUR" '{"disposition":"ready","task_id":"big","task_title":"Sharpened","task_body":"nb","task_files":[],"task_covers":["c1"]}' 2 0
 OUT=$(sh "$T/improve_gate.sh" 2>/dev/null)
 check "ready disposition"           "ready"     "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
 check "ready rewrites current_task" "Sharpened" "$(jq -r .title "$T/current_task.json")"
+check "ready flat: body"            "nb"        "$(jq -r .body "$T/current_task.json")"
+check "ready flat: explicit covers" "c1"        "$(jq -r '.covers|join(" ")' "$T/current_task.json")"
+
+# Flat ready: id, files, covers and priority default from the current task, and an
+# id the agent supplies cannot replace it with another (the gate keeps byte-for-byte).
+CURP='{"id":"big","title":"Big","body":"b","files":["f.py"],"covers":["c1","c2"],"priority":"high","source":"decompose"}'
+ig_setup "$TASKS" "$CURP" '{"disposition":"ready","task_id":"other","task_title":"S","task_body":"nb"}' 2 0
+sh "$T/improve_gate.sh" >/dev/null 2>&1
+check "flat ready: id from current"       "big"   "$(jq -r .id "$T/current_task.json")"
+check "flat ready: files from current"    "f.py"  "$(jq -r '.files|join(" ")' "$T/current_task.json")"
+check "flat ready: covers from current"   "c1 c2" "$(jq -r '.covers|join(" ")' "$T/current_task.json")"
+check "flat ready: priority from current" "high"  "$(jq -r .priority "$T/current_task.json")"
+check "flat ready: no null keys"          "0"     "$(jq '[.[]|select(.==null)]|length' "$T/current_task.json")"
+
+# The nested shape that corrupted in run 01M3SFYASZQ7MEKVKR1A38C4J0 is no longer valid
+# input, and an empty body is not a body.
+ig_setup "$TASKS" "$CUR" '{"disposition":"ready","task":{"id":"big","title":"S","body":"nb"}}' 2 0
+sh "$T/improve_gate.sh" >/dev/null 2>&1
+check "nested task is refused"            "1"     "$?"
+ig_setup "$TASKS" "$CUR" '{"disposition":"ready","task_title":"S","task_body":""}' 2 0
+sh "$T/improve_gate.sh" >/dev/null 2>&1
+check "empty task_body is refused"        "1"     "$?"
 check "ready leaves queue alone"    "a big z"   "$(jq -r '[.[].id]|join(" ")' "$T/tasks.json")"
 
 ig_setup "$TASKS" "$CUR" '{"disposition":"redundant","reason":"done"}' 2 0
@@ -1515,14 +1537,14 @@ bd_setup() { # bd_setup <tasks_coded> <task_index> <last task id>
 # 1. improve_gate counts a task routed to the coder, and only that.
 bd_setup 3 1 2
 printf '%s' '{"id":"t1","title":"T1","body":"b","files":[],"covers":[],"source":"decompose"}' > "$T/current_task.json"
-printf '%s' '{"disposition":"ready","task":{"title":"T1","body":"sharpened"},"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
+printf '%s' '{"disposition":"ready","task_title":"T1","task_body":"sharpened","_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "ready counts toward the budget" "4" "$(cat "$T/tasks_coded")"
 printf '%s' '{"disposition":"redundant","reason":"already done","_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "redundant does not count"       "4" "$(cat "$T/tasks_coded")"
 printf '%s' '{"id":"x1","title":"X1","body":"b","files":[],"covers":[],"source":"extra-review"}' > "$T/current_task.json"
-printf '%s' '{"disposition":"ready","task":{"title":"X1","body":"sharpened"},"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
+printf '%s' '{"disposition":"ready","task_title":"X1","task_body":"sharpened","_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "extra-review ready does not count" "4" "$(cat "$T/tasks_coded")"
 
@@ -1538,7 +1560,7 @@ sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "extra split: slices carry from_extra" "true true" "$(jq -r '[.[8:][] | .from_extra | tostring] | join(" ")' "$T/tasks.json")"
 check "extra split: nothing counted"   "4" "$(cat "$T/tasks_coded")"
 jq '.[8]' "$T/tasks.json" > "$T/current_task.json"
-printf '%s' '{"disposition":"ready","task":{"title":"X1a","body":"sharpened"},"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
+printf '%s' '{"disposition":"ready","task_title":"X1a","task_body":"sharpened","_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 sh "$T/improve_gate.sh" >/dev/null 2>&1
 check "extra slice ready does not count" "4" "$(cat "$T/tasks_coded")"
 bd_setup 4 1 2
