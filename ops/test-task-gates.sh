@@ -2753,6 +2753,54 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# improve end to end — the REAL fabro-io `submit`, under backlog's GENERATED
+# manifest, then the REAL improve_gate. The flat `ready` shape (task_title,
+# task_body, ...) must survive the schema and the receipt, and the gate must build
+# current_task.json from it. Needs fabro-io on PATH; SKIPs otherwise.
+# ---------------------------------------------------------------------------
+echo ""
+echo "improve end to end"
+if ! command -v fabro-io >/dev/null 2>&1; then
+    echo "  SKIP improve end to end (no fabro-io on PATH; present in profile images)"
+else
+    PATH="$ORIG_PATH"
+    T="$WORK/ie2e"; rm -rf "$T"; mkdir -p "$T"
+    export FABRO_IO_ROOT="$T"
+    MANIFEST_TOML="$(cd "$(dirname "$0")/.." && pwd)/.fabro/workflows/backlog/workflow.toml"
+    # The generated line is `FABRO_IO_MANIFEST = '''<json>'''`: keep from the first `{`
+    # to the last `}`, then point the absolute sandbox paths at the scratch root.
+    FABRO_IO_MANIFEST=$(grep '^FABRO_IO_MANIFEST' "$MANIFEST_TOML" | sed -e 's/^[^{]*//' -e 's/[^}]*$//' | sed "s#/tmp/fabro#$T#g")
+    export FABRO_IO_MANIFEST
+    check "improve e2e: manifest extracted" "1" "$([ -n "$FABRO_IO_MANIFEST" ] && echo 1 || echo 0)"
+    extract improve_gate | sed "s#/tmp/fabro#$T#g" > "$T/improve_gate.sh"
+    printf '%s' '{"id":"big","title":"Big","body":"b","files":["f.py"],"covers":["c1","c2"],"priority":"high","source":"decompose"}' > "$T/current_task.json"
+    printf '%s' '[{"id":"big","title":"Big","body":"b","files":[],"covers":["c1"],"source":"decompose"}]' > "$T/tasks.json"
+    printf '%s' '{"number":1,"title":"t","body":"b","comments":[],"labels":[]}' > "$T/issue.json"
+    echo 1 > "$T/task_index"
+    FABRO_WORKFLOW=backlog FABRO_NODE_ID=improve fabro-io stage >/dev/null 2>&1
+    fabro-io inputs >/dev/null 2>&1
+    # the nested shape is refused by submit, with the schema's own message
+    printf '%s' '{"disposition":"ready","reason":"r","task":{"id":"big","title":"S","body":"nb"}}' > "$T/nested.json"
+    fabro-io submit --file "$T/nested.json" >/dev/null 2>&1; RC=$?
+    check "improve e2e: nested task refused by submit" "4" "$RC"
+    # the flat shape is written with a receipt, and the gate builds the task from it
+    printf '%s' '{"disposition":"ready","reason":"r","task_title":"Sharpened","task_body":"new body","task_covers":["c1"]}' > "$T/flat.json"
+    fabro-io submit --file "$T/flat.json" >/dev/null 2>&1; RC=$?
+    check "improve e2e: flat ready accepted by submit" "0" "$RC"
+    OUT=$(sh "$T/improve_gate.sh" 2>/dev/null); RC=$?
+    check "improve e2e: gate exits 0"        "0"         "$RC"
+    check "improve e2e: gate routes ready"   "ready"     "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
+    check "improve e2e: title"               "Sharpened" "$(jq -r .title "$T/current_task.json")"
+    check "improve e2e: body"                "new body"  "$(jq -r .body "$T/current_task.json")"
+    check "improve e2e: id kept"             "big"       "$(jq -r .id "$T/current_task.json")"
+    check "improve e2e: covers overridden"   "c1"        "$(jq -r '.covers|join(" ")' "$T/current_task.json")"
+    check "improve e2e: files defaulted"     "f.py"      "$(jq -r '.files|join(" ")' "$T/current_task.json")"
+    check "improve e2e: priority defaulted"  "high"      "$(jq -r .priority "$T/current_task.json")"
+    unset FABRO_IO_ROOT FABRO_IO_MANIFEST
+    rm -rf "$T"
+fi
+
+# ---------------------------------------------------------------------------
 # reviewer gates — C7 receipt check on the migrated reviewer stages (ADR 0016
 # task 08): backlog review/standards/spec/quality and review-merge standards/spec.
 # A real submit stamps `_io.visit`; hand-written or stale files are refused.
