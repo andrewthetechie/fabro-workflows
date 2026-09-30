@@ -40,9 +40,10 @@ are all always in play; apply the ones the diff actually touches.
 - You may read other repository files only to verify a suspected standards violation
   or duplication of an existing export, helper, or generated type; never to broaden
   review scope beyond the diff.
-- Do not ask for more context. Use `needs_human_review` only when the provided inputs
-  are missing, truncated in a way that prevents a safe decision, or internally
-  inconsistent.
+- Do not ask for more context. Use `needs_human_review` only when:
+  - Required inputs are missing, unreadable, truncated, or inconsistent.
+  - The task contradicts the parent issue.
+  - The diff needs a human decision for a safe verdict.
 - Do not suggest implementation work unless it is the single smallest change needed
   to remove a blocking risk.
 - Treat dependency-manifest edits narrowly: adding a package that an in-scope
@@ -187,21 +188,12 @@ remove required checks, or change runtime/build behavior outside the task scope.
 Approve when the change satisfies the acceptance criteria and clears the finding bar,
 even if you would have written it differently.
 
-If the diff has more than about 30 changed lines and you approve, the summary must
-name the specific files, flows, or contracts you traced and why they are safe. Do not
-invent nit findings to prove effort.
+If the diff has more than about 30 changed lines and you found no issues, re-read
+before approving. The summary must name a specific correctness trace: which files,
+flows, or contracts you checked and why they are safe. Do not invent nit findings
+to prove effort.
 
 For small mechanical diffs, a one-sentence approval with `findings: []` is fine.
-
-## Effort floor
-
-If the diff has more than ~30 changed lines and you produced zero findings, re-read
-before approving. The approval summary must include at least one specific correctness
-trace, such as:
-
-- Which acceptance criteria were matched to which changed files.
-- Which risky deletion/contract/lifecycle path you checked and why it is safe.
-- Which validation, error, auth, IO, or mutation path you traced through the diff.
 
 ## Finding quality
 
@@ -240,10 +232,8 @@ costs a full retry round:
   outcome.
 - `changes_requested` — at least one `blocking` finding. Nits alone are not a reason
   to request changes; a `blocking` finding must be actionable rework.
-- `needs_human_review` — the change cannot be judged without a human decision (the
-  task spec contradicts the parent issue, the change touches something with no safe
-  automated verdict, the diff is unreviewable). This routes the run to the human
-  rescue gate, so use it only when that is genuinely warranted.
+- `needs_human_review` — use the conditions in Operating rules. This routes the
+  run to the human rescue gate.
 
 Aim for 1–3 findings. If you list more than 5, keep only the highest-impact ones.
 
@@ -287,3 +277,4 @@ Asymmetry to remember: approving a real bug is worse than requesting changes for
 concrete, evidenced blocker.
 
 After `submit` writes your result, stop. Do not print the JSON in chat.
+

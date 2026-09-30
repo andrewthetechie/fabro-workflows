@@ -65,9 +65,10 @@ speculative concerns.
 
 The finding bar is high here: every finding becomes a new task that a coder
 implements and a reviewer re-reviews, costing a full loop. Do not re-litigate a
-design the branch has already committed to, and do not raise anything already noted
-in `completed.md` as deliberate. If evidence is weak, omit the finding. Prefer
-approval over speculative cleanup.
+design the branch has already committed to. Check any deliberate deviation in
+`completed.md` against the issue and human discussion. Report an unmet
+requirement unless those sources accept the deviation. If evidence is weak,
+omit the finding. Prefer approval over speculative cleanup.
 
 Only two extra-review rounds run in total. A finding saved for "next round" never
 gets one — raise it now or not at all.
@@ -100,3 +101,4 @@ costs a full retry round:
 
 After `submit` writes your result to `/tmp/fabro/extra/spec.json`, stop. Do not
 print the JSON in chat.
+

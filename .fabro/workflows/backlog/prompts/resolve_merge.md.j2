@@ -25,10 +25,13 @@ merge:
 - Allowed: `git merge`, `git add`, `git merge --continue`, `git merge --abort`, and
   read-only inspection (`git status`, `git diff`, `git log`, `git rev-parse`,
   `git show`).
+- If `git merge --abort` does not restore HEAD to `pre_merge_sha`, the escape hatch
+  below also permits `git reset --hard` to that exact commit.
 - Never `git push`. Delivery is a later stage's job.
 - Never `git commit` directly. `git merge --continue` is the only commit you make.
-- Never `git rebase`, `git checkout -b`, or `git fetch`, and never move the branch any
-  other way. `origin/main` is already fetched and up to date.
+- Never `git rebase`, `git checkout -b`, or `git fetch`. Move the branch only
+  through the merge or the exact escape hatch above. `origin/main` is already
+  fetched and up to date.
 - Never call GitHub (`gh`, the API), change labels, or comment.
 - Do not ask questions. If the merge cannot be completed safely, the escape hatch
   below is to abort and stop.
@@ -92,3 +95,4 @@ of HEAD. It does **not** read anything you write, and it will undo your work if 
 does not agree with you.
 
 Do not describe the merge as resolved when git does not.
+

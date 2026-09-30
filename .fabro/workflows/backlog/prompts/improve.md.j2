@@ -106,8 +106,9 @@ Judge size by the work that remains, not by the size of the body:
 
 Each slice you return must stand on its own: it leaves the repository building
 and its tests green, so it can be reviewed and integrated before the next slice
-starts. If you cannot carve the work that way, keep it whole and return `ready`
-rather than emitting slices that only make sense together.
+starts. If the work cannot be split that way, return `ready` only when the whole
+task can finish in one stage. Otherwise return `needs_human` and explain why
+neither a safe split nor a single-stage implementation is possible.
 
 **Never split a task that is already a slice.** If `current_task.json` has
 `"source": "split"`, this task came from an earlier split; return `ready`,
@@ -188,3 +189,4 @@ read, and keep it under the size cap.
 
 After `submit` writes your result (and you write `task-context.md` with
 `write_file` when `ready`), stop. Do not print the JSON in chat.
+
