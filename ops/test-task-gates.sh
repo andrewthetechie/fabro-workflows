@@ -567,6 +567,55 @@ for entry in "claim|$PR|{\"context_updates\":{\"base_ref\":\"main\"}}" \
 done
 check "acquire still picks its issue" "5" "$(cat "$WORK/entry-acquire/sb/issue_number" 2>/dev/null)"
 
+# The agent guide install (docs/coder-tweaks 02, C1), in the same four entry nodes. The
+# guide is written to .codex/instructions.md and excluded once; an empty variable writes
+# nothing; a repository that TRACKS the file keeps it byte-identical; stdout is unchanged
+# and the node still succeeds. The backlog fragment is cut out of `prep` by its first and
+# last line.
+GUIDE_TEXT=$(printf '# guide\nline two\n')
+for entry in "prep|$GRAPH|" "claim|$PR|{\"context_updates\":{\"base_ref\":\"main\"}}" \
+             "prep|$ARCH|ready" "acquire|$INTRIAGE|"; do
+    NODE=${entry%%|*}; rest=${entry#*|}; EGRAPH=${rest%%|*}; WANT=${rest#*|}
+    case "$EGRAPH" in "$GRAPH") LABEL=backlog-prep ;; "$ARCH") LABEL=arch-prep ;; *) LABEL=$NODE ;; esac
+    ET="$WORK/guide-$LABEL"; entry_repo "$ET"; echo 7 > "$ET/sb/pr_number"
+    if [ "$EGRAPH" = "$GRAPH" ]; then
+        extract_from "$EGRAPH" "$NODE" | sed "s#/tmp/fabro#$ET/sb#g" \
+            | awk '/^if \[ -z "\$FABRO_AGENT_GUIDE"/ {p = 1} p {print} /^else echo .agent guide/ {p = 0}' > "$ET/$NODE.sh"
+        check "$LABEL: guide lines found" "4" "$(grep -c . "$ET/$NODE.sh")"
+        RUN="set -e; . $ET/$NODE.sh"
+    else
+        extract_from "$EGRAPH" "$NODE" | sed "s#/tmp/fabro#$ET/sb#g" > "$ET/$NODE.sh"
+        RUN=". $ET/$NODE.sh"
+    fi
+    for i in 1 2; do
+        OUT=$( cd "$ET/repo" && PATH="$ET/bin:$PATH" FABRO_TEST_STATE="$ET/sb/code_index" FABRO_AGENT_GUIDE="$GUIDE_TEXT" sh -c "$RUN" ); EC=$?
+    done
+    check "$LABEL: guide install exits 0"        "0" "$EC"
+    check "$LABEL: guide file is the guide"      "$GUIDE_TEXT" "$(cat "$ET/repo/.codex/instructions.md" 2>/dev/null)"
+    check "$LABEL: guide excluded once"          "1" "$(grep -cx '.codex/instructions.md' "$ET/repo/.git/info/exclude")"
+    check "$LABEL: guide file not in porcelain"  "0" "$(git -C "$ET/repo" status --porcelain | grep -c codex)"
+    if [ "$EGRAPH" != "$GRAPH" ]; then
+        check "$LABEL: stdout unchanged by the guide" "$WANT" "$(grep -v 'FABRO-CODE LEAKED' <<<"$OUT")"
+    fi
+    # an empty variable: nothing is written, the node still succeeds
+    ET2="$WORK/guide0-$LABEL"; entry_repo "$ET2"; echo 7 > "$ET2/sb/pr_number"
+    sed "s#$ET/sb#$ET2/sb#g" "$ET/$NODE.sh" > "$ET2/$NODE.sh"
+    if [ "$EGRAPH" = "$GRAPH" ]; then RUN2="set -e; . $ET2/$NODE.sh"; else RUN2=". $ET2/$NODE.sh"; fi
+    ( cd "$ET2/repo" && PATH="$ET2/bin:$PATH" FABRO_TEST_STATE="$ET2/sb/code_index" FABRO_AGENT_GUIDE="" sh -c "$RUN2" ) >/dev/null 2>&1; EC=$?
+    check "$LABEL: empty guide exits 0"          "0" "$EC"
+    check "$LABEL: empty guide writes nothing"   "absent" "$([ -e "$ET2/repo/.codex" ] && echo present || echo absent)"
+    # a tracked file is left alone
+    ET3="$WORK/guide1-$LABEL"; entry_repo "$ET3"; echo 7 > "$ET3/sb/pr_number"
+    sed "s#$ET/sb#$ET3/sb#g" "$ET/$NODE.sh" > "$ET3/$NODE.sh"
+    mkdir -p "$ET3/repo/.codex"; printf 'mine\n' > "$ET3/repo/.codex/instructions.md"
+    git -C "$ET3/repo" add -A; git -C "$ET3/repo" -c user.email=t@t -c user.name=t commit -qm codex
+    if [ "$EGRAPH" = "$GRAPH" ]; then RUN3="set -e; . $ET3/$NODE.sh"; else RUN3=". $ET3/$NODE.sh"; fi
+    ( cd "$ET3/repo" && PATH="$ET3/bin:$PATH" FABRO_TEST_STATE="$ET3/sb/code_index" FABRO_AGENT_GUIDE="$GUIDE_TEXT" sh -c "$RUN3" ) >/dev/null 2>&1; EC=$?
+    check "$LABEL: tracked file, exits 0"        "0" "$EC"
+    check "$LABEL: tracked file left alone"      "mine" "$(cat "$ET3/repo/.codex/instructions.md")"
+    check "$LABEL: tracked file not excluded"    "0" "$(grep -cx '.codex/instructions.md' "$ET3/repo/.git/info/exclude")"
+done
+
 # ---------------------------------------------------------------------------
 # extra_gate — follow-up tasks join the same queue under the same size budget
 # ---------------------------------------------------------------------------

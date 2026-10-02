@@ -281,6 +281,13 @@ fi"]
     // fabro-code would exit 127 and fail every run. `fabro-code index` never exits
     // non-zero and `map` has `|| true`, so an index failure cannot fail prep (ADR 0014
     // D3) -- the index makes agents faster; correctness does not depend on it.
+    //
+    // The last lines install the agent guide (docs/coder-tweaks 02, C1): pebble loads
+    // `.codex/instructions.md` into the SYSTEM prompt next to AGENTS.md, which is where its
+    // `rg` advice lives. FABRO_AGENT_GUIDE is generated into workflow.toml from
+    // `_io/agent-guide.md`. It is skipped, with one stderr line, when the variable is empty
+    // or the repository tracks that file; the file is excluded like `.codegraph/`, so the
+    // checkpoint never commits it. It never fails the node.
     prep [label="Prep workspace and install deps", shape=parallelogram, timeout="20m", max_retries=1,
         script="set -e
 mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra
@@ -290,7 +297,11 @@ echo 0 > /tmp/fabro/tasks_coded
 rm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue
 ./.fabro/setup.sh
 grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
-if command -v fabro-code >/dev/null; then fabro-code index; fabro-code map || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi"]
+if command -v fabro-code >/dev/null; then fabro-code index; fabro-code map || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi
+if [ -z \"$FABRO_AGENT_GUIDE\" ]; then echo 'agent guide: FABRO_AGENT_GUIDE is empty, nothing installed' >&2
+elif git ls-files --error-unmatch .codex/instructions.md >/dev/null 2>&1; then echo 'agent guide: the repository tracks .codex/instructions.md, left alone' >&2
+elif mkdir -p .codex && printf '%s' \"$FABRO_AGENT_GUIDE\" > .codex/instructions.md; then grep -qx '.codex/instructions.md' .git/info/exclude 2>/dev/null || echo '.codex/instructions.md' >> .git/info/exclude
+else echo 'agent guide: could not write .codex/instructions.md' >&2; fi"]
 
     // ---- Decomposition (agent writes file; gate validates) ----
     // `max_retries=1` on every agent node in this graph, for the reason spelled out on
