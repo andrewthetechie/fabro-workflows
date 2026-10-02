@@ -1,0 +1,25 @@
+Task 08 status, 2026-10-02 (deploy done; measurement pending)
+
+Deployed 2026-10-02 04:09Z (push 8822b78) and 04:16Z (images). Runs created before that
+(including 01M3XC9P..., 01M3XBD8..., 01M3XB5V...) do not count toward any metric.
+
+Verified
+- fabro-io 0.3.0 and `fabro-code search` in all four images (make deploy, build-images gate).
+- M6, first post-deploy run 01M3XDESFTEPAERPFB4567AYMQ (backlog, jelly-swipe): agent.memory.loaded
+  lists /workspace/jelly-swipe/.codex/instructions.md, truncated=false. The agent tool list
+  carries code_search, restore_file and baseline_check. Not yet seen for pr-review, arch-review
+  or issue-triage (first run of each).
+- git-guard, run inside that run's sandbox at its `coder` stage with the real stage.json and
+  FABRO_IO_MANIFEST: `git stash list && git stash` and `git checkout -- a.py` exit 2 with the
+  C2 reason naming restore_file/baseline_check; `git status && git diff --stat` and
+  `grep -n "git stash" f` exit 0.
+
+Not verified
+- The forced violation through fabro (hook fires, reason reaches the agent as a tool result).
+  `fabro steer` could not force it: the improve agent ran only the allowed `git stash list` and
+  then refused `git stash` on its own, citing its read-only constraints. The run's events show
+  no hook events at all, so the wiring is unconfirmed until a model makes a blocked call.
+  Look for "is blocked: agents do not change files" in agent.tool.completed output of later runs.
+- M1-M5, M7, M8 over 15+ post-deploy runs: needs the runs to exist.
+  python3.11 ops/fabro-agent-tools.py --local-only <events of those runs>, then compare with
+  baseline-2026-10-02.txt and apply the decision rules in 08-deploy-verify.md.
