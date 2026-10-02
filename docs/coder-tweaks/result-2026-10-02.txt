@@ -23,3 +23,11 @@ Not verified
 - M1-M5, M7, M8 over 15+ post-deploy runs: needs the runs to exist.
   python3.11 ops/fabro-agent-tools.py --local-only <events of those runs>, then compare with
   baseline-2026-10-02.txt and apply the decision rules in 08-deploy-verify.md.
+
+Review fix, 2026-10-02 (fabro-io 0.3.1; needs make deploy-images)
+- restore_file's base: HEAD once run_base_sha exists (backlog merge phase, pr-review) or with
+  no base file; task_base_sha only in backlog's task loop. See 04-git-safe-tools.md.
+- git-guard and fabro-agent-tools.py both see git after if/then/else/elif/do/while/until/!.
+- Every guard reason now starts with "git-guard: ", which BLOCKED_RE matches. Before 0.3.1
+  the script counted a blocked call as executed. Runs on 0.3.0 images say only "is blocked:".
+- The agent guide names the git exception (resolve_merge, the rebase agents). Live on push.

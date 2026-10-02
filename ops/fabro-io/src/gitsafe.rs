@@ -6,7 +6,10 @@
 //! touching the agent's index, branch or stash. They run git themselves, which the
 //! `git-guard` hook allows: it watches the agent's `shell`, not our tools.
 //!
-//! `baseline_check` runs a command in a separate worktree at the task base. The shared
+//! The two tools use different base commits: [`restore_base`] is where the agent's own
+//! work started, [`baseline_base`] is what that work is compared with.
+//!
+//! `baseline_check` runs a command in a separate worktree at its base. The shared
 //! dependency directories are the delicate part, and the spike in
 //! `docs/coder-tweaks/04-git-safe-tools.md` records why they are set up as they are:
 //! a plain `uv run` in the worktree re-points the shared virtualenv's editable install
@@ -50,9 +53,10 @@ pub fn tools() -> Vec<(&'static str, String, serde_json::Value)> {
     vec![
         (
             RESTORE_FILE,
-            "Undo your change to one file: restore it to its content at the task's base \
-             commit, or delete it if it did not exist there. Use it instead of git \
-             checkout or git stash. It never touches the index or other files."
+            "Undo your change to one file: restore it to its content before your work \
+             started (the task's base commit, or the start of this stage), or delete it \
+             if it did not exist then. Use it instead of git checkout or git stash. It \
+             never touches the index or other files."
                 .to_string(),
             serde_json::json!({
                 "type": "object",
@@ -65,8 +69,8 @@ pub fn tools() -> Vec<(&'static str, String, serde_json::Value)> {
         ),
         (
             BASELINE_CHECK,
-            "Run a command on the task's base commit, in a separate worktree, to see whether a \
-             failure predates your change. Use it instead of git stash. It never touches \
+            "Run a command on the base commit your work is compared with, in a separate \
+             worktree, to see whether a failure predates your change. Use it instead of git stash. It never touches \
              your checkout. Returns the exit code and the last 200 lines of output."
                 .to_string(),
             serde_json::json!({
@@ -96,45 +100,74 @@ pub async fn call(
 ) -> Result<String, String> {
     let checkout = crate::code::checkout()?;
     let root = common::io_root();
-    let base = base_sha(&root, &checkout)?;
     match name {
         RESTORE_FILE => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let base = restore_base(&root, &checkout)?;
             restore_file(&checkout, &base, path)
         }
         BASELINE_CHECK => {
             let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("").trim();
             let timeout = args.get("timeout_s").and_then(|v| v.as_u64()).unwrap_or(DEFAULT_TIMEOUT_S);
+            let base = baseline_base(&root, &checkout)?;
             baseline_check(&root, &checkout, &base, command, timeout).await
         }
         other => Err(format!("unknown tool '{other}'")),
     }
 }
 
-/// The commit the task started from.
+/// The trimmed commit id in `root/name`, when the file holds one.
+fn sha_file(root: &Path, name: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(root.join(name)).ok()?;
+    let sha = raw.trim();
+    (!sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit())).then(|| sha.to_string())
+}
+
+/// The commit `restore_file` restores to: the start of the agent's own unit of work.
 ///
-/// Reads `task_base_sha` under `root` (backlog writes it per task). Without it, uses
-/// the merge base of `HEAD` and `origin/<base_ref>` (pr-review and arch-review).
+/// In backlog's task loop that is `task_base_sha`, so a rework stage can still undo
+/// the coder's out-of-scope edit to a file. Once `run_base_sha` exists (backlog's
+/// merge phase, which keeps the last task's stale `task_base_sha`, and every pr-review
+/// stage) and in workflows with neither file, it is `HEAD`. Agents cannot commit and
+/// every stage ends in a checkpoint commit, so `HEAD` is the tree the stage started
+/// from. A merge base with `origin/<base_ref>` is never used here: in pr-review it
+/// would put the file back to `main` and erase the PR author's change to it.
 ///
 /// # Errors
 ///
-/// Returns a sentence for the model when neither file is usable.
-pub fn base_sha(root: &Path, checkout: &Path) -> Result<String, String> {
-    if let Ok(raw) = std::fs::read_to_string(root.join("task_base_sha")) {
-        let sha = raw.trim();
-        if !sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Ok(sha.to_string());
-        }
+/// Returns a sentence for the model when `HEAD` cannot be read.
+pub fn restore_base(root: &Path, checkout: &Path) -> Result<String, String> {
+    if !root.join("run_base_sha").exists()
+        && let Some(sha) = sha_file(root, "task_base_sha")
+    {
+        return Ok(sha);
+    }
+    Ok(git(checkout, &["rev-parse", "HEAD"])?.trim().to_string())
+}
+
+/// The commit `baseline_check` runs on: what the agent's work is compared against.
+///
+/// `run_base_sha` first: the branch point in backlog's merge phase, and the PR head
+/// the run claimed in pr-review. Then `task_base_sha` (backlog's task loop). Then the
+/// merge base of `HEAD` and `origin/<base_ref>`.
+///
+/// # Errors
+///
+/// Returns a sentence for the model when no file is usable.
+pub fn baseline_base(root: &Path, checkout: &Path) -> Result<String, String> {
+    if let Some(sha) = sha_file(root, "run_base_sha").or_else(|| sha_file(root, "task_base_sha")) {
+        return Ok(sha);
     }
     if let Ok(raw) = std::fs::read_to_string(root.join("base_ref")) {
         let base_ref = raw.trim();
         if !base_ref.is_empty() {
+            // No run or task base: compare with the branch point on the base branch.
             let out = git(checkout, &["merge-base", "HEAD", &format!("origin/{base_ref}")])?;
             return Ok(out.trim().to_string());
         }
     }
-    Err("no base commit is known for this stage (task_base_sha and base_ref are both \
-         missing); note the failure and move on"
+    Err("no base commit is known for this stage (run_base_sha, task_base_sha and base_ref \
+         are all missing); note the failure and move on"
         .to_string())
 }
 

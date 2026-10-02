@@ -108,6 +108,21 @@ fn command_position_forms_are_found() {
 }
 
 #[test]
+fn git_after_a_shell_reserved_word_is_found() {
+    assert_eq!(blocked("if git diff --quiet; then git stash; fi"), ["stash"]);
+    assert_eq!(blocked("if git stash; then echo y; fi"), ["stash"]);
+    assert_eq!(blocked("for f in a b; do git checkout -- $f; done"), ["checkout"]);
+    assert_eq!(blocked("while true; do git fetch; done"), ["fetch"]);
+    assert_eq!(blocked("until git pull; do sleep 1; done"), ["pull"]);
+    assert_eq!(blocked("if x; then :; elif y; then git reset --hard; else git clean -fd; fi"), ["reset", "clean"]);
+    assert_eq!(blocked("! git checkout -- x"), ["checkout"]);
+    assert_eq!(blocked("if ! git stash; then :; fi"), ["stash"]);
+    // A reserved word is only skipped at command position.
+    assert!(violations("echo then git stash").is_empty());
+    assert!(violations("if git diff --quiet; then echo clean; fi").is_empty());
+}
+
+#[test]
 fn quoted_and_inert_text_passes() {
     for c in [
         "grep -n 'git stash' f",
@@ -139,6 +154,9 @@ fn reasons_name_the_alternative() {
         assert!(reason(c).contains("command nodes own branch and remote state"), "{c}");
     }
     assert!(reason("git stash").contains("git stash"), "names the subcommand");
+    for c in ["git stash", "git commit -m x", "git fetch", "git notes add"] {
+        assert!(reason(c).starts_with("git-guard: "), "{c}: the events tell a block from a run by it");
+    }
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # Coder tool use: overview and canonical contracts
 
-**Status:** tasks 01-07 implemented 2026-10-01 (commits on `main` once pushed); task 08, the deploy and the measurement, is pending. Each task file records its own deviations. The earlier change
+**Status:** tasks 01-07 implemented 2026-10-01 and deployed 2026-10-02 (fabro-io 0.3.0); a review fix (fabro-io 0.3.1: `restore_file`'s base, the guard's shell reserved words, the `git-guard:` reason prefix, the guide's git exception) needs `make deploy-images`. Task 08's measurement is pending. Each task file records its own deviations. The earlier change
 it builds on, `24eb95c` (the `excerpts` node, the coder prompt rules, and the fabro-io
 0.2.0 `code_*` tools), is live. Its follow-up check is in `handoff.md`.
 
@@ -125,7 +125,9 @@ What the agents were trying to do with git:
   `describe`, `shortlog`, `rev-list`, `diff-tree`, `name-rev`, `for-each-ref`,
   `check-ignore`, `version`, `help`; `stash list|show`; `branch` with no arguments or
   only listing flags; `worktree list`; `config --get*`. Global options (`-C <dir>`,
-  `-c k=v`, `--no-pager`) are skipped before the subcommand is read.
+  `-c k=v`, `--no-pager`) are skipped before the subcommand is read. A `git` after a shell
+  reserved word (`if`, `then`, `else`, `elif`, `do`, `while`, `until`, `!`) is at command
+  position too.
 - **Everything else is mutating** and is blocked outside the exempt stages, `fetch`
   included.
 - **Exempt stages** carry `"git": "write"` in their `_io/manifest.json` entry: backlog
@@ -142,7 +144,9 @@ What the agents were trying to do with git:
   `fabro-io git-guard; [ $? -eq 2 ] && exit 2; exit 0`. The wrapper is required: without
   it, an image older than the subcommand would block every shell call (see the exit-code
   fact above).
-- **Reason text:** it names the blocked subcommand and the alternative.
+- **Reason text:** it starts with `git-guard: ` (fabro passes it to the agent unchanged, and
+  `ops/fabro-agent-tools.py` tells a blocked call from an executed one by it), and names the
+  blocked subcommand and the alternative.
   - For `stash` and `checkout -- <path>`/`restore`: "use `restore_file` to undo your
     change to a file; to see whether a failure predates your change, use
     `baseline_check`".
@@ -166,13 +170,17 @@ What the agents were trying to do with git:
 
 ### C4. `restore_file` and `baseline_check`
 
-- **`restore_file(path)`** restores one repo-relative path to its content at
-  `/tmp/fabro/task_base_sha`, or deletes it if it did not exist there. It refuses a path
+- **`restore_file(path)`** restores one repo-relative path to its content where the
+  agent's work started, or deletes it if it did not exist there: `/tmp/fabro/task_base_sha`
+  in backlog's task loop, and `HEAD` (the stage's start) once `/tmp/fabro/run_base_sha`
+  exists or when neither file does. Never a merge base with `base_ref`, which in pr-review
+  is `main` (amended 2026-10-02 after the review; see `04-git-safe-tools.md`). It refuses a path
   outside the checkout and a path under `.github/workflows/`, and it prints what changed.
   It runs git inside fabro-io, which is allowed: the guard watches the agent's
   `shell`, not our tools.
-- **`baseline_check(command)`** runs `command` in a **separate worktree** at the task base
-  (`git worktree add --detach /tmp/fabro/base-tree <task_base_sha>`, created once per
+- **`baseline_check(command)`** runs `command` in a **separate worktree** at
+  `run_base_sha`, else `task_base_sha`, else the merge base with `base_ref`
+  (`git worktree add --detach /tmp/fabro/base-tree <base>`, created once per
   task). The cwd is the same relative directory as the agent's. It returns the exit code
   and the last 200 lines of output. It never touches the agent's checkout. Dependency
   sharing per ecosystem (`UV_PROJECT_ENVIRONMENT`, a `node_modules` symlink,

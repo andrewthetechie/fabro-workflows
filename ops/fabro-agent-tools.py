@@ -51,6 +51,11 @@ BRANCH_LISTING = {
 # Global git options that take a separate value.
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 PREFIX_WORDS = {"time", "env", "nice", "nohup", "sudo", "command", "exec"}
+# Shell reserved words that put the next word at command position (`then git stash`).
+# Kept in step with KEYWORDS in ops/fabro-io/src/gitguard.rs.
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
+# fabro hands a hook's block reason to the agent unchanged, and every git-guard reason
+# starts with "git-guard: " (REASON_PREFIX in gitguard.rs).
 BLOCKED_RE = re.compile(r"git-guard|blocked by (a )?hook|hook (blocked|denied)|denied by", re.I)
 VIEW_WORDS = ("head", "tail", "cat", "sed", "python", "python3")
 
@@ -132,11 +137,11 @@ def split_segments(command: str) -> list[list[str]]:
 
 
 def strip_prefix(words: list[str]) -> list[str]:
-    """Drop `timeout N`, `uv run`, `xargs [opts]`, env assignments and the like."""
+    """Drop `timeout N`, `uv run`, `xargs [opts]`, env assignments, reserved words and the like."""
     w = list(words)
     while w:
         head = w[0].rsplit("/", 1)[-1]
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or head in PREFIX_WORDS:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or head in PREFIX_WORDS or w[0] in KEYWORDS:
             w = w[1:]
         elif head == "timeout":
             w = w[1:]

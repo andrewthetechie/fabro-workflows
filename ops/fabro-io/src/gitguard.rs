@@ -39,6 +39,17 @@ const GLOBAL_VALUE_OPTS: &[&str] = &["-C", "-c", "--git-dir", "--work-tree", "--
 /// Words that run the next word as a command and are skipped to find it.
 const WRAPPERS: &[&str] = &["time", "env", "nice", "nohup", "sudo", "command", "exec"];
 
+/// Shell reserved words that put the next word at command position.
+///
+/// Without them `if x; then git stash; fi` and `for f in a; do git checkout -- $f; done`
+/// pass: the segment after `;` starts with `then` or `do`, not `git`.
+const KEYWORDS: &[&str] = &["if", "then", "else", "elif", "do", "while", "until", "!"];
+
+/// The start of every block reason, so a blocked call can be told from an executed one
+/// in the run's events (`ops/fabro-agent-tools.py` matches it). fabro hands the reason to
+/// the agent unchanged.
+const REASON_PREFIX: &str = "git-guard: ";
+
 /// The `manifest.json` value of `"git"` that exempts a stage.
 const WRITE: &str = "write";
 
@@ -245,7 +256,8 @@ fn skip_heredocs(chars: &[char], from: usize, pending: &mut Vec<(String, bool)>)
     i
 }
 
-/// Drops wrapper words (`env X=1`, `time`, `timeout N`, `xargs -n1`) in front of the command.
+/// Drops wrapper words (`env X=1`, `time`, `timeout N`, `xargs -n1`) and shell reserved
+/// words (`then`, `do`, `!`) in front of the command.
 fn strip_wrappers(mut words: Vec<String>) -> Vec<String> {
     loop {
         let Some(first) = words.first() else { return words };
@@ -253,7 +265,7 @@ fn strip_wrappers(mut words: Vec<String>) -> Vec<String> {
         let is_assignment = first.split_once('=').is_some_and(|(k, _)| {
             !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         });
-        if is_assignment || WRAPPERS.contains(&base.as_str()) {
+        if is_assignment || WRAPPERS.contains(&base.as_str()) || KEYWORDS.contains(&first.as_str()) {
             words.remove(0);
         } else if base == "timeout" {
             words.remove(0);
@@ -314,7 +326,7 @@ fn branch_lists(args: &[String]) -> bool {
 
 /// The block reason for `sub`, naming the alternative (C2).
 fn reason(sub: &str) -> String {
-    match sub {
+    let body = match sub {
         "stash" | "checkout" | "restore" | "reset" | "clean" | "switch" => format!(
             "git {sub} is blocked: agents do not change files, the index or branches with git. \
              Use `restore_file` to undo your change to a file; to see whether a failure \
@@ -332,5 +344,6 @@ fn reason(sub: &str) -> String {
              graph's command nodes own. Use `restore_file` to undo your change to a file, or \
              `baseline_check` to test the base commit."
         ),
-    }
+    };
+    format!("{REASON_PREFIX}{body}")
 }

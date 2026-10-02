@@ -120,3 +120,21 @@ The tool therefore does what the spike supports: link every `node_modules`; for 
 `UV_NO_SYNC`, `UV_FROZEN`, `VIRTUAL_ENV`, `PATH` (the venv's `bin` first) and `PYTHONPATH`.
 The tool description tells the model to run its normal command (`uv run pytest ...`,
 `npx vitest run ...`).
+
+## Amendment after review (2026-10-02, fabro-io 0.3.1)
+
+The first build used one base for both tools: `task_base_sha`, else the merge base of `HEAD`
+and `origin/<base_ref>`. That was wrong for `restore_file` outside backlog's task loop:
+
+- In pr-review there is no `task_base_sha`, so the merge base was `main`, and restoring a
+  file erased the PR author's change to it.
+- In backlog's merge phase `task_base_sha` is the last task's base, so restoring a file also
+  dropped that task's work on it.
+
+Both are reachable: the guide and every `git-guard` reason tell the agent to use
+`restore_file`. The bases are now separate (`gitsafe::restore_base`, `gitsafe::baseline_base`):
+
+| Tool | backlog task loop | after `run_base_sha` exists, or no base file |
+|---|---|---|
+| `restore_file` | `task_base_sha` (so rework can undo the coder's out-of-scope edit) | `HEAD`, the stage's start (agents cannot commit, and every stage checkpoints) |
+| `baseline_check` | `task_base_sha` | `run_base_sha` (backlog: the branch point; pr-review: the PR head it claimed), else the merge base with `base_ref` |

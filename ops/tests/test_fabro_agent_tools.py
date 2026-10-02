@@ -36,6 +36,17 @@ class Classification(unittest.TestCase):
                         ("git branch -D x", "branch"), ("xargs git add", "add")):
             self.assertEqual(self.mutating(c), [want], c)
 
+    def test_git_after_a_reserved_word(self):
+        self.assertEqual(self.mutating("if git diff --quiet; then git stash; fi"), ["stash"])
+        self.assertEqual(self.mutating("for f in a b; do git checkout -- $f; done"), ["checkout"])
+        self.assertEqual(self.mutating("! git checkout -- x"), ["checkout"])
+        self.assertEqual(self.mutating("echo then git stash"), [])
+
+    def test_guard_reasons_count_as_blocked(self):
+        # The reason as fabro hands it to the agent (bridge.rs passes it unchanged).
+        self.assertTrue(fat.BLOCKED_RE.search(
+            "git-guard: git stash is blocked: agents do not change files, the index or branches with git."))
+
     def test_quoted_and_escaped_words_are_not_commands(self):
         self.assertEqual([w[0] for w in fat.commands("grep -n 'a\\|b' f | head")], ["grep", "head"])
         self.assertEqual([w[0] for w in fat.commands('echo "git stash"')], ["echo"])

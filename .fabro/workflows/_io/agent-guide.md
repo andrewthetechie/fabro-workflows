@@ -27,3 +27,5 @@ and `limit`.
 Do not run git commands that change files, the index or branches (`stash`, `checkout`,
 `restore`, `reset`, `commit`, `fetch`). To undo your change to a file, use
 `restore_file`. To see whether a failure predates your change, use `baseline_check`.
+The one exception: if your task prompt says you are the git exception (a merge or
+rebase to finish), run the git commands it lists.

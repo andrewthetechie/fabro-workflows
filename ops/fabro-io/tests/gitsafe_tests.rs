@@ -92,21 +92,59 @@ fn restore_file_restores_deletes_and_refuses() {
 }
 
 #[test]
-fn base_sha_prefers_task_base_sha_then_merge_base() {
-    let root = common::temp_root("gs-base");
+fn restore_base_is_the_task_base_in_the_task_loop_and_head_after_it() {
+    let root = common::temp_root("gs-restore-base");
     let (dir, base) = repo(&root);
+    let head = git(&dir, &["rev-parse", "HEAD"]);
     let io = root.join("io");
     std::fs::create_dir_all(&io).unwrap();
 
-    assert!(gitsafe::base_sha(&io, &dir).is_err(), "neither file is an error that says to move on");
-    std::fs::write(io.join("task_base_sha"), format!("{base}\n")).unwrap();
-    assert_eq!(gitsafe::base_sha(&io, &dir).unwrap(), base);
+    // arch-review and issue-triage: no base file, so the start of the stage.
+    assert_eq!(gitsafe::restore_base(&io, &dir).unwrap(), head);
 
-    // pr-review and arch-review: the merge base of HEAD and origin/<base_ref>.
-    std::fs::remove_file(io.join("task_base_sha")).unwrap();
+    // backlog's task loop: the task base, which also undoes the coder's edit in rework.
+    std::fs::write(io.join("task_base_sha"), format!("{base}\n")).unwrap();
+    assert_eq!(gitsafe::restore_base(&io, &dir).unwrap(), base);
+
+    // Once run_base_sha exists (backlog's merge phase keeps a stale task_base_sha, and
+    // pr-review has a base_ref), it is HEAD: never the last task's base, never main.
+    std::fs::write(io.join("run_base_sha"), format!("{base}\n")).unwrap();
     std::fs::write(io.join("base_ref"), "main\n").unwrap();
     git(&dir, &["update-ref", "refs/remotes/origin/main", &base]);
-    assert_eq!(gitsafe::base_sha(&io, &dir).unwrap(), base);
+    assert_eq!(gitsafe::restore_base(&io, &dir).unwrap(), head);
+    std::fs::remove_file(io.join("task_base_sha")).unwrap();
+    assert_eq!(gitsafe::restore_base(&io, &dir).unwrap(), head);
+
+    // In pr-review, restoring a file the PR changed keeps the PR's content.
+    std::fs::write(dir.join("a.txt"), "fixer's edit\n").unwrap();
+    let to = gitsafe::restore_base(&io, &dir).unwrap();
+    gitsafe::restore_file(&dir, &to, "a.txt").unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "agent a\n");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn baseline_base_prefers_run_base_then_task_base_then_merge_base() {
+    let root = common::temp_root("gs-base");
+    let (dir, base) = repo(&root);
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    let io = root.join("io");
+    std::fs::create_dir_all(&io).unwrap();
+
+    assert!(gitsafe::baseline_base(&io, &dir).is_err(), "no file is an error that says to move on");
+
+    // With no run or task base: the merge base of HEAD and origin/<base_ref>.
+    std::fs::write(io.join("base_ref"), "main\n").unwrap();
+    git(&dir, &["update-ref", "refs/remotes/origin/main", &base]);
+    assert_eq!(gitsafe::baseline_base(&io, &dir).unwrap(), base);
+
+    // backlog's task loop.
+    std::fs::write(io.join("task_base_sha"), format!("{head}\n")).unwrap();
+    assert_eq!(gitsafe::baseline_base(&io, &dir).unwrap(), head);
+
+    // backlog's merge phase and pr-review: run_base_sha wins over a stale task base.
+    std::fs::write(io.join("run_base_sha"), format!("{base}\n")).unwrap();
+    assert_eq!(gitsafe::baseline_base(&io, &dir).unwrap(), base);
     let _ = std::fs::remove_dir_all(&root);
 }
 

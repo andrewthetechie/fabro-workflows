@@ -35,10 +35,15 @@ listed `read_file` instead: two backlog runs on 2026-10-01 made no `fabro-code` 
 
 Two git-safe tools (`src/gitsafe.rs`, docs/coder-tweaks C4) stand in for what agents used
 `git stash` and `git checkout --` for. `restore_file(path)` restores one file to its content
-at the task base (`/tmp/fabro/task_base_sha`, else the merge base with `base_ref`), or
-deletes it if it did not exist there; it refuses `..`, paths outside the checkout and
-`.github/workflows/`. `baseline_check(command, timeout_s?)` runs a command in a separate
-worktree at the base (`/tmp/fabro/base-tree`) and returns `exit=<n>` and the last 200 lines.
+where the agent's work started, or deletes it if it did not exist there; it refuses `..`,
+paths outside the checkout and `.github/workflows/`. In backlog's task loop that is
+`/tmp/fabro/task_base_sha`. Once `/tmp/fabro/run_base_sha` exists (backlog's merge phase,
+where the task base is stale, and all of pr-review) and in workflows with neither file, it
+is `HEAD`, the stage's start: a merge base with `base_ref` would put a pr-review file back
+to `main` and erase the PR's change to it. `baseline_check(command, timeout_s?)` runs a
+command in a separate worktree (`/tmp/fabro/base-tree`) at `run_base_sha`, else
+`task_base_sha`, else the merge base with `base_ref`, and returns `exit=<n>` and the last
+200 lines.
 It links every `node_modules` into the worktree, points `uv` at the checkout's `.venv` with
 `UV_NO_SYNC=1` and the worktree's sources first on `PYTHONPATH`, and says "not available in
 this repository" when there is nothing to share. Because it can run for 10 minutes, the `io`
