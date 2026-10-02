@@ -62,7 +62,11 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
 BIN_SCRIPTS="fabro-branch-sweep.sh fabro-sandbox-sweep.sh fabro-monitor.sh fabro-auto-merge-switch.sh fabro-fire-backlog.sh fabro-automation-schedule.sh"
-SCHED_EXCLUDES=(--exclude .venv --exclude __pycache__ --exclude .pytest_cache)
+# node_modules is the Mac's untracked Tailwind toolchain (build-css.sh); the image never
+# reads it (.dockerignore). Synced, its .bin symlinks never match: macOS gives a symlink
+# mode 0755 and Linux always 0777, so rsync reported a change on every run, which rebuilt
+# the scheduler (re-dating its shakedown window) and failed verify's tree check.
+SCHED_EXCLUDES=(--exclude .venv --exclude __pycache__ --exclude .pytest_cache --exclude node_modules)
 COMPOSE_CHANGED=0
 
 say()  { printf '\n==> %s\n' "$*"; }
