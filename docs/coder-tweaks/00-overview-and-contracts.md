@@ -133,7 +133,10 @@ What the agents were trying to do with git:
 - **Exempt stages** carry `"git": "write"` in their `_io/manifest.json` entry: backlog
   `resolve_merge`, pr-review `rebase_agent_t1` and `rebase_agent_t2`. Any other value,
   or no value, means read-only.
-- **Guard:** `fabro-io git-guard` reads `FABRO_HOOK_CONTEXT`. It acts only when
+- **Guard:** `fabro-io git-guard` reads `FABRO_HOOK_CONTEXT`. For a sandbox hook that is the
+  **path** of a JSON file fabro writes (`/tmp/fabro-hook-context-<nanos>.json`,
+  fabro-hooks `executor.rs`), not the JSON; 0.3.0 parsed it as JSON and proceeded on every
+  call (fixed in 0.3.1). It acts only when
   `tool_name == "shell"`, and it scans every `git` invocation in
   `tool_input.command`. It reads the stage from `.io/stage.json`. On a violation it
   prints `{"decision":"block","reason":"<C2 reason>"}` and exits 2. Otherwise, and on any

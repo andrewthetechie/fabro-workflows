@@ -31,3 +31,14 @@ Review fix, 2026-10-02 (fabro-io 0.3.1; needs make deploy-images)
 - Every guard reason now starts with "git-guard: ", which BLOCKED_RE matches. Before 0.3.1
   the script counted a blocked call as executed. Runs on 0.3.0 images say only "is blocked:".
 - The agent guide names the git exception (resolve_merge, the rebase agents). Live on push.
+- git-guard never blocked on 0.3.0. The hook fires on every shell call and only on shell
+  (run 01M3XDESFT...: 20 shell calls, 20 pre_tool_use hook runs, all Proceed; across the
+  logs median 78 ms, max 0.6 s, against the 5 s timeout). But for a sandbox hook fabro sets
+  FABRO_HOOK_CONTEXT to the PATH of a JSON file (fabro-hooks executor.rs, a192bce, the
+  deployed build), and 0.3.0 parsed the variable as JSON, so it proceeded on a parse error
+  every time. Reproduced in that run's sandbox: path form exit 0, inline form exit 2. The
+  first verification passed inline JSON by hand. 0.3.1 reads either form
+  (common::hook_context). After make deploy-images, repeat the check with the path form.
+- io-guard (ADR 0016, src/guard.rs) parses the variable the same way, so the refuter's
+  Sealed paths have never been enforced. Not changed here: turning it on is a behaviour
+  change for refute.

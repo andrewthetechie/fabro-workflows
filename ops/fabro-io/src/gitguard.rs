@@ -1,6 +1,6 @@
 //! The `git-guard` hook (docs/coder-tweaks C2): a guard against mistakes, not a boundary.
 //!
-//! Reads `FABRO_HOOK_CONTEXT`. When the tool is `shell` and the stage is not exempt, it
+//! Reads the hook context (`FABRO_HOOK_CONTEXT`, a file path in the sandbox). When the tool is `shell` and the stage is not exempt, it
 //! scans every `git` invocation in `tool_input.command` and blocks (exit 2,
 //! `{"decision":"block","reason":...}`) one that changes files, the index, branches or
 //! remotes. The reason names the safe alternative: `restore_file`, `baseline_check`, or
@@ -64,14 +64,10 @@ pub struct Violation {
 
 /// The `git-guard` subcommand entry point.
 pub fn run() -> ExitCode {
-    let Ok(raw) = std::env::var("FABRO_HOOK_CONTEXT") else {
-        eprintln!("git-guard: warning: FABRO_HOOK_CONTEXT not set; proceeding");
-        return ExitCode::SUCCESS;
-    };
-    let ctx: serde_json::Value = match serde_json::from_str(&raw) {
+    let ctx = match common::hook_context() {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("git-guard: warning: could not parse FABRO_HOOK_CONTEXT ({e}); proceeding");
+            eprintln!("git-guard: warning: {e}; proceeding");
             return ExitCode::SUCCESS;
         }
     };

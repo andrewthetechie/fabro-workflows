@@ -199,6 +199,16 @@ fn the_hook_blocks_outside_exempt_stages_and_proceeds_inside() {
         set_ctx(&serde_json::json!({"tool_input": {"command": "git stash"}}).to_string());
         assert_eq!(gitguard::run(), ExitCode::from(2));
 
+        // fabro passes a sandbox hook the PATH of the context file, not the JSON.
+        let path = root.join("hook-context.json");
+        std::fs::write(&path, shell("git stash")).unwrap();
+        set_ctx(&path.display().to_string());
+        assert_eq!(gitguard::run(), ExitCode::from(2), "the path form is read");
+        std::fs::write(&path, shell("git status")).unwrap();
+        assert_eq!(gitguard::run(), ExitCode::SUCCESS);
+        set_ctx(&root.join("missing.json").display().to_string());
+        assert_eq!(gitguard::run(), ExitCode::SUCCESS, "a missing context file proceeds");
+
         // Its own errors never block.
         set_ctx("not json");
         assert_eq!(gitguard::run(), ExitCode::SUCCESS);
