@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult, PaginatedRequestParams,
     ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext};
@@ -145,53 +145,59 @@ impl ServerHandler for IoHandler {
         &self,
         request: CallToolRequestParams,
         _ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let name = request.name.as_ref();
-        if name == INPUTS {
-            let params = request.arguments.unwrap_or_default();
-            let pname = params.get("name").and_then(|v| v.as_str());
-            let part = params.get("part").and_then(|v| v.as_u64()).map(|v| v as u32);
-            let res = inputs::build(pname, part);
-            if res.is_error {
-                return Ok(CallToolResult::error(vec![Content::text(res.text)]));
-            }
-            return Ok(CallToolResult::success(vec![Content::text(res.text)]));
-        }
-        if name == SUBMIT {
-            let Some((_, stage)) = Self::current() else {
-                return Ok(CallToolResult::error(vec![Content::text(
-                    "no stage in stage.json".to_string(),
-                )]));
-            };
-            if stage.output.is_none() {
-                return Ok(CallToolResult::error(vec![Content::text(
-                    "this stage has no output contract".to_string(),
-                )]));
-            }
-            let args = serde_json::Value::Object(request.arguments.unwrap_or_default());
-            return Ok(match submit::run(&args) {
-                submit::Outcome::Written(msg) => CallToolResult::success(vec![Content::text(msg)]),
-                o => CallToolResult::error(vec![Content::text(outcome_text(&o))]),
-            });
-        }
-        if let Some(verb) = code::verb(name) {
-            let args = request.arguments.unwrap_or_default();
-            return Ok(match code::run(verb, &args).await {
-                Ok(text) => CallToolResult::success(vec![Content::text(text)]),
-                Err(text) => CallToolResult::error(vec![Content::text(text)]),
-            });
-        }
-        if gitsafe::is_tool(name) {
-            let args = request.arguments.unwrap_or_default();
-            return Ok(match gitsafe::call(name, &args).await {
-                Ok(text) => CallToolResult::success(vec![Content::text(text)]),
-                Err(text) => CallToolResult::error(vec![Content::text(text)]),
-            });
-        }
-        Ok(CallToolResult::error(vec![Content::text(format!(
-            "unknown tool '{name}'"
-        ))]))
+    ) -> Result<CallToolResponse, ErrorData> {
+        Ok(CallToolResponse::Complete(run_tool(request).await?))
     }
+}
+
+/// Runs one tool call to a finished result. Every failure is a tool error the model can act on,
+/// never a protocol error.
+async fn run_tool(request: CallToolRequestParams) -> Result<CallToolResult, ErrorData> {
+    let name = request.name.as_ref();
+    if name == INPUTS {
+        let params = request.arguments.unwrap_or_default();
+        let pname = params.get("name").and_then(|v| v.as_str());
+        let part = params.get("part").and_then(|v| v.as_u64()).map(|v| v as u32);
+        let res = inputs::build(pname, part);
+        if res.is_error {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(res.text)]));
+        }
+        return Ok(CallToolResult::success(vec![ContentBlock::text(res.text)]));
+    }
+    if name == SUBMIT {
+        let Some((_, stage)) = IoHandler::current() else {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                "no stage in stage.json".to_string(),
+            )]));
+        };
+        if stage.output.is_none() {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                "this stage has no output contract".to_string(),
+            )]));
+        }
+        let args = serde_json::Value::Object(request.arguments.unwrap_or_default());
+        return Ok(match submit::run(&args) {
+            submit::Outcome::Written(msg) => CallToolResult::success(vec![ContentBlock::text(msg)]),
+            o => CallToolResult::error(vec![ContentBlock::text(outcome_text(&o))]),
+        });
+    }
+    if let Some(verb) = code::verb(name) {
+        let args = request.arguments.unwrap_or_default();
+        return Ok(match code::run(verb, &args).await {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Err(text) => CallToolResult::error(vec![ContentBlock::text(text)]),
+        });
+    }
+    if gitsafe::is_tool(name) {
+        let args = request.arguments.unwrap_or_default();
+        return Ok(match gitsafe::call(name, &args).await {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Err(text) => CallToolResult::error(vec![ContentBlock::text(text)]),
+        });
+    }
+    Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+        "unknown tool '{name}'"
+    ))]))
 }
 
 fn outcome_text(o: &submit::Outcome) -> String {
