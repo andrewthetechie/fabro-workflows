@@ -93,6 +93,20 @@ fn arguments_are_checked() {
         ["a.py", "b.py"]
     );
     assert!(code::arguments(tests, &args(serde_json::json!({"paths": []}))).is_err());
+
+    // code_search: a pattern (which may start with '-') and an optional path.
+    let search = code::verb("code_search").unwrap();
+    assert_eq!(search.shape, code::Shape::Search);
+    assert_eq!(code::arguments(search, &args(serde_json::json!({"pattern": " foo.*bar "}))).unwrap(), ["foo.*bar"]);
+    assert_eq!(code::arguments(search, &args(serde_json::json!({"pattern": "-x"}))).unwrap(), ["-x"]);
+    assert_eq!(
+        code::arguments(search, &args(serde_json::json!({"pattern": "a", "path": "src"}))).unwrap(),
+        ["a", "src"]
+    );
+    assert_eq!(code::arguments(search, &args(serde_json::json!({"pattern": "a", "path": ""}))).unwrap(), ["a"]);
+    assert!(code::arguments(search, &args(serde_json::json!({}))).is_err());
+    assert!(code::arguments(search, &args(serde_json::json!({"pattern": ""}))).is_err());
+    assert!(code::arguments(search, &args(serde_json::json!({"pattern": "a", "path": "-r"}))).is_err());
 }
 
 #[test]
@@ -116,6 +130,10 @@ fn run_maps_wrapper_exit_codes() {
     let tests = code::verb("code_tests").unwrap();
     let out = rt.block_on(code::run(tests, &args(serde_json::json!({"paths": ["a.py", "b.py"]}))));
     assert_eq!(out.unwrap(), "cwd=repo args=tests a.py b.py");
+
+    let search = code::verb("code_search").unwrap();
+    let out = rt.block_on(code::run(search, &args(serde_json::json!({"pattern": "fn main", "path": "src"}))));
+    assert_eq!(out.unwrap(), "cwd=repo args=search fn main src", "search passes pattern then path");
 
     // Exit 1 is an answer ("nothing found"), not an error.
     let def = code::verb("code_def").unwrap();

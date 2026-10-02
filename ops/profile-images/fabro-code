@@ -2,7 +2,7 @@
 # fabro-code -- the only interface agents use to the codegraph index (docs/code-context C2).
 # Installed at /usr/local/bin/fabro-code in every profile image. POSIX sh + jq + sqlite3.
 #
-# Verbs: index, def, show, callers, callees, impact, tests, map.
+# Verbs: index, def, show, search, callers, callees, impact, tests, map.
 # Exit codes: 0 = an answer; 1 = nothing found / ambiguous; 2 = no index; 64 = usage.
 #
 # codegraph builds and syncs the index; every answer is read straight out of
@@ -338,16 +338,76 @@ map_() {
   exit 0
 }
 
+# `search <pattern> [path]`: grep, with each match grouped under the narrowest symbol
+# that holds its line (the `show path:line` resolution), one sqlite3 query per file.
+# Every match line stays `path:line:text`, exactly as grep prints it, under a one-line
+# group header `path:start-end kind name`. A bare identifier that resolves to exactly
+# one definition prints that definition first. It is never worse than grep: with no
+# index, or no enclosing symbol, the plain matches are printed and the exit is 0.
+# Raw matches are cut at 400 before grouping; the output is capped at CAP lines.
+search_() {
+  pat=$1; where=${2:-}
+  where=${where#./}
+  raw=$(mktemp) || exit 1
+  if command -v rg >/dev/null 2>&1; then
+    rg -n -H --no-heading -e "$pat" -- "${where:-.}" </dev/null 2>/dev/null | sed 's#^[.]/##' | head -n 400 > "$raw"
+  else
+    grep -rnIH --exclude-dir=.git --exclude-dir=.codegraph --exclude-dir=node_modules -e "$pat" -- "${where:-.}" </dev/null 2>/dev/null \
+      | sed 's#^[.]/##' | head -n 400 > "$raw"
+  fi
+  if [ ! -s "$raw" ]; then
+    rm -f "$raw"
+    echo "no matches for $pat"
+    exit 1
+  fi
+  indexed=0
+  if [ -f "$STATE" ] && [ "$(cat "$STATE" 2>/dev/null)" = "ok" ]; then
+    "$CODEGRAPH" sync --quiet </dev/null >/dev/null 2>&1 || true
+    [ -f "$DB" ] && [ "$(sqlite3 -readonly "$DB" 'SELECT MAX(version) FROM schema_versions;' 2>/dev/null)" = "$KNOWN_SCHEMA" ] && indexed=1
+  fi
+  if [ "$indexed" -eq 0 ]; then
+    cap_out < "$raw"
+    rm -f "$raw"
+    exit 0
+  fi
+  out=$(mktemp) || exit 1
+  case "$pat" in
+    ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*) ;;
+    *) resolve_name "$pat" >/dev/null 2>&1 && { printf 'definition: '; printf '%s' "$NODE" | jq -r "$ROW_JQ"; } >> "$out" ;;
+  esac
+  part=$(mktemp) || exit 1
+  cut -d: -f1 "$raw" | awk '!s[$0]++' | while IFS= read -r f; do
+    awk -F: -v f="$f" '$1 == f' "$raw" > "$part"
+    vals=$(awk -F: '$2 ~ /^[0-9]+$/ {print $2}' "$part" | sort -un | awk '{printf "%sSELECT %s AS line", (NR > 1 ? " UNION ALL " : ""), $1}')
+    rows=$(sqlite3 -readonly -json "$DB" "SELECT m.line AS mline, n.kind, n.name, n.start_line, n.end_line
+      FROM ($vals) m LEFT JOIN nodes n ON n.id = (SELECT id FROM nodes
+        WHERE file_path = '$(sq "$f")' AND kind <> 'file' AND start_line <= m.line AND end_line >= m.line
+        ORDER BY (end_line - start_line) ASC, start_line ASC LIMIT 1);" 2>/dev/null)
+    if ! printf '%s' "${rows:-[]}" | jq -e 'type == "array"' >/dev/null 2>&1; then cat "$part" >> "$out"; continue; fi
+    printf '%s' "${rows:-[]}" | jq -r --rawfile m "$part" '
+      ($m | split("\n") | map(select(length > 0) | capture("^(?<p>[^:]+):(?<n>[0-9]+):(?<t>.*)$") | .n |= tonumber)) as $ms
+      | (map({key: (.mline | tostring), value: .}) | from_entries) as $by
+      | $ms | map(. + {r: ($by[(.n | tostring)] // {})})
+      | group_by([.r.start_line // 0, .r.name // ""]) | sort_by(.[0].r.start_line // 0)
+      | .[] | (.[0].r as $r | if $r.name then "\(.[0].p):\($r.start_line)-\($r.end_line) \($r.kind) \($r.name)" else .[0].p end),
+        (.[] | "\(.p):\(.n):\(.t)")' >> "$out" 2>/dev/null || cat "$part" >> "$out"
+  done
+  cap_out < "$out"
+  rm -f "$raw" "$out" "$part"
+  exit 0
+}
+
 usage() { echo "usage: fabro-code $1" >&2; exit 64; }
 
 case "${1:-}" in
   index)   index_ ;;
   def)     [ "$#" -ge 2 ] || usage 'def <name>'; def_ "$2" ;;
   show)    [ "$#" -ge 2 ] || usage 'show <name|path:line>'; show_ "$2" ;;
+  search)  [ "$#" -ge 2 ] || usage 'search <pattern> [path]'; shift; search_ "$@" ;;
   callers) [ "$#" -ge 2 ] || usage 'callers <name>'; ref_ callers "$2" ;;
   callees) [ "$#" -ge 2 ] || usage 'callees <name>'; ref_ callees "$2" ;;
   impact)  [ "$#" -ge 2 ] || usage 'impact <name>'; impact_ "$2" ;;
   tests)   shift; tests_ "$@" ;;
   map)     map_ ;;
-  *)       usage '{index|def|show|callers|callees|impact|tests|map} ...' ;;
+  *)       usage '{index|def|show|search|callers|callees|impact|tests|map} ...' ;;
 esac

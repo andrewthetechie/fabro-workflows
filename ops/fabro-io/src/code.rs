@@ -24,6 +24,17 @@ use std::time::Duration;
 /// about 0.3 s, including the wrapper's `codegraph sync`.
 const CALL_TIMEOUT: Duration = Duration::from_secs(25);
 
+/// The arguments a [`Verb`] takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shape {
+    /// One exact symbol `name` (or `path:line` for `code_show`).
+    Name,
+    /// A list of repository-relative `paths` (`code_tests`).
+    Paths,
+    /// A regex `pattern` and an optional repository-relative `path` (`code_search`).
+    Search,
+}
+
 /// One `code_*` tool and the wrapper verb it runs.
 #[derive(Debug)]
 pub struct Verb {
@@ -33,8 +44,8 @@ pub struct Verb {
     pub verb: &'static str,
     /// The tool description shown to the model.
     pub description: &'static str,
-    /// True when the verb takes a list of paths (`tests`), false for one `name`.
-    pub paths: bool,
+    /// The arguments the verb takes.
+    pub shape: Shape,
 }
 
 /// Said in every description: what the index cannot see, from ADR 0014 D1.
@@ -46,44 +57,52 @@ pub const VERBS: &[Verb] = &[
     Verb {
         tool: "code_def",
         verb: "def",
-        description: "Where a symbol is defined: path:line, kind and signature. Takes an \
-            exact name. Use it before grep or glob to find a definition.",
-        paths: false,
+        description: "Find where a function, class or variable is defined: path:line, kind \
+            and signature. Exact, and faster than grep for a name.",
+        shape: Shape::Name,
     },
     Verb {
         tool: "code_show",
         verb: "show",
-        description: "A symbol's source, what it calls and what calls it. Takes an exact \
-            name, or path:line for the narrowest symbol that holds the line. Use it instead \
-            of read_file on a large file.",
-        paths: false,
+        description: "Read one function or class (by name, or path:line) with its callers and \
+            callees, instead of reading the whole file.",
+        shape: Shape::Name,
+    },
+    Verb {
+        tool: "code_search",
+        verb: "search",
+        description: "Search the code for a regex, like grep, with each match grouped under \
+            the function or class it is in. Takes a regex `pattern` and an optional `path`.",
+        shape: Shape::Search,
     },
     Verb {
         tool: "code_callers",
         verb: "callers",
-        description: "Every call site of a symbol (path:line and the enclosing symbol). \
-            Check it before you change or remove a signature.",
-        paths: false,
+        description: "Find every caller of a function or class (path:line and the enclosing \
+            symbol), instead of grepping for its name. Check it before you change or remove a \
+            signature.",
+        shape: Shape::Name,
     },
     Verb {
         tool: "code_callees",
         verb: "callees",
-        description: "What a symbol calls (path:line of each callee's definition).",
-        paths: false,
+        description: "List what a function calls (path:line of each callee's definition), \
+            instead of reading its body for calls.",
+        shape: Shape::Name,
     },
     Verb {
         tool: "code_impact",
         verb: "impact",
-        description: "Every symbol that reaches this one within two call or import edges: \
+        description: "Find every symbol that reaches this one within two call or import edges: \
             the blast radius of a change.",
-        paths: false,
+        shape: Shape::Name,
     },
     Verb {
         tool: "code_tests",
         verb: "tests",
-        description: "Test files that import the given files, directly or through up to \
-            four more imports. Takes repository-relative paths.",
-        paths: true,
+        description: "Find the test files that import the given files, directly or through up \
+            to four more imports. Takes repository-relative paths.",
+        shape: Shape::Paths,
     },
 ];
 
@@ -99,8 +118,8 @@ pub fn description(verb: &Verb) -> String {
 
 /// The JSON input schema of `verb`.
 pub fn schema(verb: &Verb) -> serde_json::Value {
-    if verb.paths {
-        serde_json::json!({
+    match verb.shape {
+        Shape::Paths => serde_json::json!({
             "type": "object",
             "properties": {
                 "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1,
@@ -108,9 +127,8 @@ pub fn schema(verb: &Verb) -> serde_json::Value {
             },
             "required": ["paths"],
             "additionalProperties": false
-        })
-    } else {
-        serde_json::json!({
+        }),
+        Shape::Name => serde_json::json!({
             "type": "object",
             "properties": {
                 "name": {"type": "string",
@@ -118,7 +136,17 @@ pub fn schema(verb: &Verb) -> serde_json::Value {
             },
             "required": ["name"],
             "additionalProperties": false
-        })
+        }),
+        Shape::Search => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "A regex, as for grep -E."},
+                "path": {"type": "string",
+                         "description": "A repository-relative file or directory to search. Default: the whole repository."}
+            },
+            "required": ["pattern"],
+            "additionalProperties": false
+        }),
     }
 }
 
@@ -170,29 +198,39 @@ fn checkout() -> Result<PathBuf, String> {
 ///
 /// # Errors
 ///
-/// Returns a sentence for the model when a required argument is missing, empty, or
-/// starts with `-`.
+/// Returns a sentence for the model when a required argument is missing or empty, or
+/// a name or path starts with `-`. A search `pattern` may start with `-`: the wrapper
+/// passes it to the searcher as an explicit pattern.
 pub fn arguments(
     verb: &Verb,
     args: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<String>, String> {
-    let values: Vec<String> = if verb.paths {
-        args.get("paths")
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|p| p.as_str()).map(str::to_string).collect())
-            .unwrap_or_default()
-    } else {
-        args.get("name")
-            .and_then(|v| v.as_str())
-            .map(|n| vec![n.trim().to_string()])
-            .unwrap_or_default()
+    let text = |key: &str| args.get(key).and_then(|v| v.as_str()).map(|v| v.trim().to_string());
+    let (what, values): (&str, Vec<String>) = match verb.shape {
+        Shape::Paths => (
+            "paths",
+            args.get("paths")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|p| p.as_str()).map(str::to_string).collect())
+                .unwrap_or_default(),
+        ),
+        Shape::Name => ("name", text("name").into_iter().collect()),
+        Shape::Search => ("pattern", text("pattern").into_iter().collect()),
     };
-    let what = if verb.paths { "paths" } else { "name" };
     if values.is_empty() || values.iter().any(String::is_empty) {
         return Err(format!("{} needs a non-empty `{what}`", verb.tool));
     }
-    if values.iter().any(|v| v.starts_with('-')) {
+    if verb.shape != Shape::Search && values.iter().any(|v| v.starts_with('-')) {
         return Err(format!("{}: `{what}` cannot start with '-'", verb.tool));
+    }
+    let mut values = values;
+    if verb.shape == Shape::Search {
+        if let Some(path) = text("path").filter(|p| !p.is_empty()) {
+            if path.starts_with('-') {
+                return Err(format!("{}: `path` cannot start with '-'", verb.tool));
+            }
+            values.push(path);
+        }
     }
     Ok(values)
 }

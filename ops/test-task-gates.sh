@@ -46,6 +46,11 @@ command -v jq >/dev/null || { echo "ERROR: jq is required" >&2; exit 1; }
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
+# A gate that runs git (improve_gate's backstop reverts HEAD) must run in a scratch
+# directory, never here. 2026-10-01: two unwrapped runs reverted the repo's own HEAD.
+# The last check of the suite compares this snapshot.
+REPO_STATE_BEFORE="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
+
 # The PATH as it was before any section prepended a stub bin. `next_task` installs
 # an `exit 0` git and never restores it, so every later `SAVED_PATH="$PATH"`
 # captures that stub too -- which silently turns a section that wants the REAL git
@@ -3072,7 +3077,7 @@ rorect_run() { # $1 graph(G/A/P/S/T) $2 node
     extract_from "$gr" "$2" | sed "s#/tmp/fabro#$T#g" > "$T/g.sh" || return 99
     printf '%s' '{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}' > "$T/.io/stage.json"
     printf '%s' '{"visit":"ffffffffffffffffffffffffffffffff","inputs":{}}' > "$T/.io/served.json"
-    sh "$T/g.sh" >/dev/null 2>&1; echo $?
+    (cd "$T" && sh "$T/g.sh") >/dev/null 2>&1; echo $?
 }
 check "decompose stale read is repair"   "1" "$(rorect_run G decompose_gate)"
 check "improve stale read is repair"     "1" "$(rorect_run G improve_gate)"
@@ -3090,7 +3095,7 @@ rorect_msg() { # $1 graph $2 node -> the gate's output under a stale receipt
     rm -rf "$T"; mkdir -p "$T/.io" "$T/arch" "$T/review" "$T/extra"
     extract_from "$gr" "$2" | sed "s#/tmp/fabro#$T#g" > "$T/g.sh"
     printf '%s' '{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}' > "$T/.io/stage.json"
-    sh "$T/g.sh" 2>&1
+    (cd "$T" && sh "$T/g.sh") 2>&1
 }
 for g in G:decompose_gate G:improve_gate G:extra_gate A:scan_gate S:fix_gate T:improve_gate T:triage_gate; do
     check "${g#*:} receipt miss says submit tool" "1" "$(rorect_msg "${g%%:*}" "${g#*:}" | grep -c 'submit tool')"
@@ -3099,7 +3104,7 @@ rm -rf "$T"; mkdir -p "$T/.io"
 extract_from "$GRAPH" decompose_gate | sed "s#/tmp/fabro#$T#g" > "$T/g.sh"
 printf '%s' '{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}' > "$T/.io/stage.json"
 printf '%s' '{"status":"bogus","_io":{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}}' > "$T/decomposition.json"
-OUT=$(sh "$T/g.sh" 2>&1)
+OUT=$( (cd "$T" && sh "$T/g.sh") 2>&1)
 check "decompose: stamped but invalid keeps its hint" "1" "$(grep -c 'rewrite it exactly per the contract' <<<"$OUT")"
 check "decompose: stamped but invalid not submit hint" "0" "$(grep -c 'submit tool' <<<"$OUT")"
 
@@ -3421,6 +3426,28 @@ EOF
     fc_run def >/dev/null; RC=$?
     check "fc: usage rc=64"                  "64" "$RC"
 
+    # 9b2. search (docs/coder-tweaks/03, C3): the definition first, then each match
+    #      under the narrowest symbol holding it, every match line `path:line:text`.
+    OUT=$(fc_run search get_thing); RC=$?
+    check "fc: search rc=0"                  "0" "$RC"
+    check "fc: search definition first"      "definition: mod_a.py:4  function  get_thing" "$(head -n 1 <<<"$OUT" | cut -c1-48)"
+    check "fc: search groups under caller"   "1" "$(grep -c '^mod_b.py:[0-9]*-[0-9]* function call_it$' <<<"$OUT")"
+    check "fc: search match line is grep's"  "1" "$(grep -cF 'mod_b.py:4:    return get_thing() and Config.FLAG' <<<"$OUT")"
+    OUT=$(fc_run search get_thing tests)
+    check "fc: search path limits it"        "0" "$(grep -c '^mod_' <<<"$OUT")"
+    check "fc: search path keeps tests"      "1" "$(grep -c '^tests/test_mod_a.py:[0-9]*:' <<<"$OUT" | awk '$1 > 0 {print 1}')"
+    OUT=$(fc_run search 'FLAG = ')
+    check "fc: search text is not a name"    "0" "$(grep -c '^definition: ' <<<"$OUT")"
+    check "fc: search text match line"       "1" "$(grep -cF 'mod_a.py:2:    FLAG = "on"' <<<"$OUT")"
+    OUT=$(fc_run search no_such_text_anywhere); RC=$?
+    check "fc: search no match rc=1"         "1" "$RC"
+    printf 'failed: x\n' > "$FABRO_CODE_STATE"
+    OUT=$(fc_run search get_thing); RC=$?
+    check "fc: search without an index rc=0" "0" "$RC"
+    check "fc: search without an index is plain" "0" "$(grep -cE '^(definition: |[^:]+:[0-9]+-[0-9]+ )' <<<"$OUT")"
+    check "fc: search without an index has matches" "1" "$(grep -cF 'mod_b.py:4:    return get_thing() and Config.FLAG' <<<"$OUT")"
+    fc_run index
+
     # 9c. A database removed under a live `ok` state (a `git clean -x`) fails closed
     #     with exit 2, never prints junk as an answer.
     mv "$T/wt/.codegraph" "$T/wt/.cg-away"
@@ -3466,6 +3493,8 @@ else
 fi
 
 echo ""
+echo "the suite leaves the checkout alone"
+check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: $PASS checks"
     exit 0

@@ -53,17 +53,20 @@ Begin with your first tool call; do not narrate before it.
 
 ## Finding code
 
-Use the code tools before `grep`, `glob` or reading a whole file with `read_file`.
-They return one symbol instead of a whole file:
+Use the code tools for code names; `grep` is fine for other text. They return one
+symbol instead of a whole file:
 
 - `code_def` (name): where a symbol is defined.
 - `code_show` (name, or `path:line`): its source, what it calls, and what calls it.
   Use this instead of reading a large file.
+- `code_search` (pattern, optional path): like `grep`, with each match grouped under
+  the function or class it is in.
 - `code_callers` / `code_callees` / `code_impact` (name): the call and import graph.
 - `code_tests` (paths): test files that exercise these files.
 
 If those tools are not in your tool list, run the same verbs in the shell:
-`fabro-code def NAME`, `fabro-code show NAME`, `fabro-code callers NAME`, and so on.
+`fabro-code def NAME`, `fabro-code show NAME`, `fabro-code search PATTERN`,
+`fabro-code callers NAME`, and so on.
 
 Their answers include your own edits. They know calls and imports only, not attribute
 reads, string keys or config. They match a call by name, so a caller they list can be

@@ -21,7 +21,8 @@ from the **Stage manifest** (C2), generated into each `workflow.toml` as the
 | `serve --port N` | The MCP streamable-HTTP server on `127.0.0.1:N`. `list_tools`/`call_tool` read `stage.json` and the manifest on every request, so it is stateless (D3): each stage sees only its own tools. A stage problem is returned as an `is_error` tool result, never a JSON-RPC error. |
 | `version` | Prints the crate version. |
 
-Every known stage also gets six `code_*` tools (`src/code.rs`): `code_def`, `code_show`,
+Every known stage also gets seven `code_*` tools (`src/code.rs`): `code_def`, `code_show`,
+`code_search` (a grep that groups each match under its enclosing function or class),
 `code_callers`, `code_callees`, `code_impact` and `code_tests`. Each runs the matching
 `fabro-code` verb (ADR 0014) in the repository checkout and returns what it prints. The
 server's cwd is `/workspace`, so the checkout is its one child holding `.git` (the indexed
