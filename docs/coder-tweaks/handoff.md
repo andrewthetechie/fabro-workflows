@@ -1,5 +1,8 @@
 # Coder tweaks: handoff for the follow-up measurement
 
+> The next series, on tool steering and git, is planned in `00-overview-and-contracts.md`
+> in this folder. This file covers only the check of `24eb95c`.
+
 Your job is to check recent `backlog` runs and decide whether the coder changes
 of 2026-10-01 worked. This doc gives the baseline, what changed, how to measure,
 and what counts as success. It does not repeat the change itself. For that, read
