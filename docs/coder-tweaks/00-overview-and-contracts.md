@@ -27,16 +27,17 @@ tool calls in all:
 
 | Measure | Value |
 |---|---|
-| `fabro-code` calls (shell) | **4** (no `code_*` tool calls: they are not in the images yet) |
+| `fabro-code` calls (shell) | **6** (4 in the first scratch count; see `baseline-2026-10-02.txt`; no `code_*` tool calls: they are not in the images yet) |
 | text search: native `grep` / shell `grep` / `rg` | 599 / 706 / 87 |
 | `read_file` | 1,435 calls, **9.0 MB** returned, 616 (43%) of them whole files |
 | shell views: `head` / `tail` / `cat` / `sed` / `python` | 377 / 357 / 79 / 71 / 23 |
 | `inputs` output | 6.2 MB (the repomap and the issue, in every stage) |
 | `edit_file` | 569 calls, **1 error**. The old text is 262K characters, 38% of edit output. |
 
-Mutating git, counted by contract C2's rule over all stages and models: **15 shell calls
-in 13 stage visits**. 6 were in `coder`, 6 in `improve`, and 1 each in `rework_t1`,
-`review_fix` and `spec`. By command: `stash` 12, `checkout` 3, `fetch` 1.
+Mutating git, counted by contract C2's rule over all stages and models by
+`ops/fabro-agent-tools.py`: **11 shell calls in 9 stage visits**. 5 were in `coder`, 4 in
+`improve`, and 1 each in `rework_t1` and `spec`. By command segment: `stash` 12, `checkout` 3,
+`fetch` 1. (The first scratch count said 15 calls in 13 visits; it counted segments, not calls.)
 
 What the agents were trying to do with git:
 
@@ -201,14 +202,14 @@ under the existing 40,000-byte cap, with code blocks first.
 
 | Id | Metric | Baseline | Target after task 08 |
 |---|---|---|---|
-| M1 | code-index share of searches: `code_*` + `fabro-code` ÷ (those + native grep + shell grep/rg) | 0.3% | ≥ 25% |
-| M2 | `read_file` bytes per local-model stage visit | task 01 computes it | −40% |
+| M1 | code-index share of searches: `code_*` + `fabro-code` ÷ (those + native grep + shell grep/rg) | 0.4% | ≥ 25% |
+| M2 | `read_file` bytes per local-model stage visit | 49,077 (184 visits) | −40% |
 | M3 | whole-file share of `read_file` | 43% | < 20% |
-| M4 | mutating git **executed** outside exempt stages | 15 calls / 20 runs | 0 (blocked attempts are reported separately) |
-| M5 | `improve` visits whose checkpoint changed the tree | task 01 computes it | 0 reach `coder` |
+| M4 | mutating git **executed** outside exempt stages | 11 calls / 20 runs | 0 (blocked attempts are reported separately) |
+| M5 | `improve` visits that edited a tracked file (attempt-based proxy) | 4 of 87 | 0 reach `coder` |
 | M6 | agent sessions whose `agent.memory.loaded` lists `.codex/instructions.md` | 0% | 100% of sessions in runs after task 02 |
-| M7 | coder start → first edit (median), see `handoff.md` | 17 min | ≤ 6 min |
-| M8 | review first-pass rate and rework escalations per task | task 01 computes it | no worse |
+| M7 | coder start → first edit (median), see `handoff.md` | 4.7 min over all 84 coder visits (17 min was the two 2026-10-01 runs) | ≤ 6 min |
+| M8 | review first-pass rate and rework escalations per task | 93.0% (80 of 86); 0.15 reworks per task | no worse |
 
 ## Tasks
 

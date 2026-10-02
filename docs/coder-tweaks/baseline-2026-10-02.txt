@@ -1,0 +1,52 @@
+Baseline for docs/coder-tweaks (task 01). Recorded 2026-10-01.
+Command: python3.11 ops/fabro-agent-tools.py --local-only <events of the 20 runs>
+Runs: the 20 `backlog` runs 01M3RXPP9CKVYQD9KXZX64J2A5 .. 01M3X2GDWNYWTR4Q5SDW6SK3F3,
+collected with `fabro events <id> --json` (event files hold issue text and are not committed).
+
+Difference from the overview's first numbers (which came from throwaway scripts):
+- read_file (1,435 calls, 9,030,333 bytes, 616 whole = 42.9%), native grep (599), shell grep (706)
+  and rg (87) reproduce exactly.
+- fabro-code: 6, not 4. The script counts each command segment, so `fabro-code def a; fabro-code def b`
+  in one call is two. M1 is 0.4%, not 0.3%.
+- Mutating git: the commands match (stash 12, checkout 3, fetch 1 = 16 segments). The script counts
+  CALLS: 11 shell calls in 9 stage visits (coder 5, improve 4, rework_t1 1, review_merge.spec 1),
+  not 15 in 13. The scratch count was per segment (`git stash && ...; git stash pop` is two
+  segments, one call) and its per-stage split (including one review_fix visit) does not reproduce.
+  `git branch --show-current` and `git branch -a --contains <sha>` are listing, so are not counted.
+- M5 is an attempt-based proxy (an edit outside /tmp, or mutating git, in an improve visit): the
+  events carry no diff of the checkpoint. After task 06, `improve_gate` reverts the tree anyway.
+
+M1  code-index share of searches
+    code_* + fabro-code 6; native grep 599; shell grep/rg 793 (grep 706, rg 87)
+    share 0.4%
+
+M2  read_file bytes per stage visit
+    1435 calls, 9030333 bytes over 184 stage visits = 49077 bytes per visit
+M3  whole-file share of read_file
+    616 of 1435 = 42.9%
+
+M4  mutating git executed outside exempt stages (all stages, all models)
+    exempt: rebase_agent_t1, rebase_agent_t2, resolve_merge
+    executed 11 shell call(s) in 9 stage visit(s); by command {'stash': 12, 'checkout': 3, 'fetch': 1}; by stage {'coder': 5, 'rework_t1': 1, 'improve': 4, 'review_merge.spec': 1}
+    blocked attempts (reported separately): 0
+
+M5  improve visits that edited a tracked file (attempt-based proxy)
+    4 of 87 improve visits
+
+M6  sessions whose agent.memory.loaded lists .codex/instructions.md
+    0 of 511 = 0.0%
+
+M7  coder start to first edit (median)
+    4.7 min over 84 coder visit(s) with an edit; 2 with none
+
+M8  review first-pass rate and rework escalations
+    80 of 86 tasks approved at the first review_gate = 93.0%
+    rework visits {'rework_t1': 11, 'rework_t2': 2}; per task 0.15
+
+Per-stage tool calls (local-model visits only)
+    stage                    visits     read_file          grep          glob     edit_file    write_file        code_*    fabro-code    sh grep/rg       sh view        sh git      sh other inputs/submit         other
+    coder                        86           791           289            21           525            32             0             0           273           482           285          1255            88             0
+    improve                      87           594           299            33            36            91             0             6           472           327           196           505           204             0
+    rework_t1                    11            50            11             0             8             0             0             0            48           120            79           775            14             0
+
+runs 20; stage visits with tools 463; local-model visits 184; tool calls in scope 4629
