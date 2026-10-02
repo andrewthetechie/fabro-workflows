@@ -56,6 +56,17 @@ fn test_12_guard_sealing() {
         set_ctx(&format!(r#"{{"tool_input":{{"path":"{}"}}}}"#, seal_path.display()));
         assert_eq!(guard::run(), std::process::ExitCode::from(0));
 
+        // fabro passes a sandbox hook the PATH of the context file, not the JSON.
+        common::write_stage(&root, node, &visit);
+        let ctx_file = root.join("hook-context.json");
+        std::fs::write(&ctx_file, format!(r#"{{"tool_input":{{"path":"{}"}}}}"#, seal_path.display())).unwrap();
+        set_ctx(&ctx_file.display().to_string());
+        assert_eq!(guard::run(), std::process::ExitCode::from(2), "the path form is read");
+        std::fs::write(&ctx_file, format!(r#"{{"tool_input":{{"path":"{}/other.txt"}}}}"#, root.display())).unwrap();
+        assert_eq!(guard::run(), std::process::ExitCode::from(0));
+        set_ctx(&root.join("missing.json").display().to_string());
+        assert_eq!(guard::run(), std::process::ExitCode::from(0), "a missing context file proceeds");
+
         // a context that cannot be read -> proceed (0)
         clear_ctx();
         assert_eq!(guard::run(), std::process::ExitCode::from(0));

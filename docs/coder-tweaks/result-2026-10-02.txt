@@ -39,6 +39,7 @@ Review fix, 2026-10-02 (fabro-io 0.3.1; needs make deploy-images)
   every time. Reproduced in that run's sandbox: path form exit 0, inline form exit 2. The
   first verification passed inline JSON by hand. 0.3.1 reads either form
   (common::hook_context). After make deploy-images, repeat the check with the path form.
-- io-guard (ADR 0016, src/guard.rs) parses the variable the same way, so the refuter's
-  Sealed paths have never been enforced. Not changed here: turning it on is a behaviour
-  change for refute.
+- io-guard (ADR 0016, src/guard.rs) parsed the variable the same way, so the refuter's
+  Sealed paths were never enforced. 0.3.1 reads the file there too, so from the next image
+  build `refute` is blocked from standards.json, spec.json, fix_result.json,
+  ci_fix_result.json and /tmp/fabro/feedback/** for the first time. None is a refute input.

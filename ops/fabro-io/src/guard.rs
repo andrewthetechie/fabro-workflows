@@ -1,6 +1,6 @@
 //! The `guard` hook (C5): a guard against mistakes, not a boundary.
 //!
-//! Reads `FABRO_HOOK_CONTEXT`, collects every string value in `tool_input`, and blocks
+//! Reads the hook context (`FABRO_HOOK_CONTEXT`, a file path in the sandbox), collects every string value in `tool_input`, and blocks
 //! (exit 2, `{"decision":"block",...}`) when one contains a Sealed path or a path a
 //! sealed glob matches. It proceeds on its own errors with a warning, so a broken guard
 //! never stops a stage (ADR 0016 D8).
@@ -13,14 +13,10 @@ use crate::{common, manifest};
 
 /// The `guard` subcommand entry point.
 pub fn run() -> ExitCode {
-    let Ok(raw) = std::env::var("FABRO_HOOK_CONTEXT") else {
-        eprintln!("guard: warning: FABRO_HOOK_CONTEXT not set; proceeding");
-        return ExitCode::SUCCESS;
-    };
-    let ctx: serde_json::Value = match serde_json::from_str(&raw) {
+    let ctx = match common::hook_context() {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("guard: warning: could not parse FABRO_HOOK_CONTEXT ({e}); proceeding");
+            eprintln!("guard: warning: {e}; proceeding");
             return ExitCode::SUCCESS;
         }
     };
