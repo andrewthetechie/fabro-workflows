@@ -2006,6 +2006,218 @@ PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
 # ---------------------------------------------------------------------------
+# rescue_brief and partial_remainder — the rescue gate explains itself
+#
+# Every edge into human_rescue passes through rescue_brief, which writes the gate's
+# summary into `response.rescue_brief` and points `last_stage` at it. Its facts come
+# from failure_signature (stdin) and the run's files. partial_remainder sits on the
+# [P] edge and moves the unfinished and unstarted tasks to remainder.json, so
+# file_remainder files them instead of dropping them. Fixtures are shaped on run
+# 01M3Y86Z013N2V1QDNNG591MBQ (womens-fantasy-sports#1279): 7 tasks, 5 landed, task 6
+# out of rework tiers on a .github/workflows/ finding, task 7 never started.
+# ---------------------------------------------------------------------------
+echo ""
+echo "rescue_brief and partial_remainder"
+SAVED_PATH="$PATH"
+T="$WORK/rescue"; mkdir -p "$T/bin"
+FAB="$T/fabro"
+cat > "$T/bin/git" <<'STUB'
+#!/bin/sh
+case "$1 $2" in
+  "diff --shortstat") echo " 40 files changed, 859 insertions(+), 983 deletions(-)" ;;
+  "diff --quiet") [ -f "$GIT_STATE/empty_diff" ] && exit 0; exit 1 ;;
+  "log --format=%H") [ -f "$GIT_STATE/wf_commit" ] && echo deadbeef ;;
+  "rev-parse --abbrev-ref") echo "fabro/run/01TESTRUN" ;;
+esac
+exit 0
+STUB
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue create") echo "https://github.com/o/r/issues/88"; exit 0 ;;
+  "pr comment") shift 2; while [ $# -gt 0 ]; do [ "$1" = "--body-file" ] && cp "$2" "$GH_STATE/pr_comment.txt"; shift; done; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/git" "$T/bin/gh"
+PATH="$T/bin:$ORIG_PATH"
+export GIT_STATE="$T" GH_LOG="$T/gh.log" GH_STATE="$T"
+stage_into rescue_brief "$FAB"
+stage_into partial_remainder "$FAB"
+stage_into file_remainder "$FAB"
+stage_into next_task "$FAB"
+
+rs_tasks() { # rs_tasks N -> t1..tN
+    i=1; out=""
+    while [ "$i" -le "$1" ]; do
+        out="$out{\"id\":\"t$i\",\"title\":\"T$i\",\"body\":\"do t$i\",\"files\":[],\"covers\":[],\"source\":\"decompose\"},"
+        i=$((i + 1))
+    done
+    printf '[%s]' "${out%,}"
+}
+rs_setup() { # rs_setup <task_index> <landed> <current id>: 7 tasks
+    rm -rf "$FAB" "$T/empty_diff" "$T/wf_commit" "$T/pr_comment.txt"; mkdir -p "$FAB/feedback" "$FAB/.io"; : > "$T/gh.log"
+    printf '%s' '{"number":1279,"title":"Cut over to session auth","labels":[{"name":"agent-in-progress"}]}' > "$FAB/issue.json"
+    rs_tasks 7 > "$FAB/tasks.json"
+    echo "$1" > "$FAB/task_index"
+    i=1; while [ "$i" -le "$2" ]; do printf '### Task: T%s\n- Review: ok\n\n' "$i" >> "$FAB/completed.md"; i=$((i + 1)); done
+    jq ".[] | select(.id == \"$3\")" "$FAB/tasks.json" > "$FAB/current_task.json"
+    echo 0 > "$FAB/round"
+    printf '%s' '{"workflow":"backlog","node":"review","visit":"v1","started":"2026-10-02T00:00:00Z"}' > "$FAB/.io/stage.json"
+}
+rs_run() { # rs_run <stdin> -> sets OUT (merged) and J (the routing object), RC
+    OUT=$(printf '%s' "$1" | sh "$T/rescue_brief.sh" 2>&1); RC=$?
+    J=$(printf '%s' "$1" | sh "$T/rescue_brief.sh" 2>/dev/null)
+}
+rs_text() { jq -r '.context_updates["response.rescue_brief"]' <<<"$J"; }
+rs_has() { rs_text | grep -qF -- "$1" && echo yes || echo no; }
+
+# 1. The rework ladder ran out on a finding no agent may fix.
+rs_setup 6 5 t6; echo 6 > "$FAB/round"
+printf '%s\n' '## Review findings to fix' 'Criterion 4 is missing.' '- .github/workflows/build-publish.yml:73-77 still passes VITE_AUTH0_*' > "$FAB/feedback/rework.md"
+FABRO_AUTO_MERGE=1 rs_run ''
+check "ladder: exits 0"                    "0" "$RC"
+check "ladder: routing object is last"     "rescue_brief" "$(jq -r '.context_updates.last_stage' <<<"$(lastjson "$OUT")")"
+check "ladder: brief is the gate's text"   "rescue_brief" "$(jq -r '.context_updates.last_stage' <<<"$J")"
+check "ladder: says why"                   "yes" "$(rs_has 'the rework ladder ran out. Task 6 failed validate or review at every tier (6 rounds).')"
+check "ladder: names the task"             "yes" "$(rs_has 'Unfinished task 6 of 7: T6')"
+check "ladder: counts landed and unstarted" "yes" "$(rs_has 'Tasks: 5 of 7 passed review, 1 not started.')"
+check "ladder: branch size"                "yes" "$(rs_has 'Branch against main: 40 files changed')"
+check "ladder: quotes the findings"        "yes" "$(rs_has 'Criterion 4 is missing.')"
+check "ladder: flags the workflow file"    "yes" "$(rs_has 'No agent may edit that directory')"
+check "ladder: guidance cannot help"       "yes" "$(rs_has '**Type guidance:** Cannot help')"
+check "ladder: [P] says what ships"        "yes" "$(rs_has 'Opens a PR with the 5 task(s) that passed review and the unreviewed edits of task 6')"
+check "ladder: [P] files the rest"         "yes" "$(rs_has 'The 2 task(s) not done (task 6 included) go to one held remainder issue')"
+check "ladder: [P] can auto-merge"         "yes" "$(rs_has 'merges it with no human')"
+check "ladder: [X] says what is lost"      "yes" "$(rs_has 'so the 5 task(s) that passed review are lost')"
+check "ladder: [X] names the issue"        "yes" "$(rs_has 'Labels #1279 agent-stuck')"
+check "ladder: prints only the object"   "1" "$(printf '%s\n' "$OUT" | grep -c .)"
+check "ladder: brief kept in a file"      "1" "$(grep -c '^\*\*Why the run stopped:\*\*' "$FAB/rescue_brief.md")"
+
+# 2. A failed node: the signature names it, and guidance retries the unfinished task.
+rs_setup 3 2 t3; echo 1 > "$FAB/round"
+printf '%s\n' '## Review findings to fix' 'The test asserts nothing.' > "$FAB/feedback/rework.md"
+rs_run 'rework_t2|transient_infra|stage timed out after <n>ms'
+check "failed node: exits 0"               "0" "$RC"
+check "failed node: names it"              "yes" "$(rs_has 'rework_t2 failed (transient_infra): stage timed out after <n>ms')"
+check "failed node: guidance retries it"   "yes" "$(rs_has 'tries task 3 again with your text')"
+check "failed node: no workflow flag"      "no" "$(rs_has 'No agent may edit')"
+check "failed node: auto-merge off host"   "yes" "$(rs_has 'Auto-merge is off on this host')"
+
+# 3. A validate failure: header plus the tail, with ANSI colour stripped.
+rs_setup 2 1 t2; echo 2 > "$FAB/round"
+ESC=$(printf '\033')
+{ echo '## Validation failed (exit 1): ./.fabro/setup.sh && ./.fabro/ci.sh'; i=1; while [ $i -le 30 ]; do echo "${ESC}[31mline $i${ESC}[39m"; i=$((i + 1)); done; } > "$FAB/feedback/rework.md"
+rs_run ''
+check "validate: keeps the header"         "yes" "$(rs_has '## Validation failed (exit 1)')"
+check "validate: keeps the last line"      "yes" "$(rs_has 'line 30')"
+check "validate: drops the middle"         "no" "$(rs_has 'line 5')"
+check "validate: strips ANSI"              "0" "$(rs_text | grep -c "$ESC")"
+check "validate: gate reason when round<6" "yes" "$(rs_has 'a gate rejected its agent')"
+check "validate: names the last agent"     "yes" "$(rs_has 'The last agent stage was review.')"
+
+# 4. Findings from an earlier task are not shown: round 0 means no rework yet.
+rs_setup 4 3 t4
+printf '%s\n' '## Review findings to fix' 'STALE from task 3' > "$FAB/feedback/rework.md"
+rs_run 'improve|deterministic|script failed'
+check "stale findings: not shown"          "no" "$(rs_has 'STALE from task 3')"
+
+# 5. Every task landed: nothing unfinished, guidance has nothing to fix.
+rs_setup 7 7 t7
+rs_run 'standards|deterministic|unknown'
+check "all landed: no unfinished task"     "no" "$(rs_has 'Unfinished task')"
+check "all landed: counts"                 "yes" "$(rs_has 'Tasks: 7 of 7 passed review, 0 not started.')"
+check "all landed: guidance is useless"    "yes" "$(rs_has 'No task is unfinished')"
+check "all landed: nothing to file"        "no" "$(rs_has 'remainder issue')"
+
+# 6. open_pr_prep's two refusals, and the PR-already-open case.
+rs_setup 6 5 t6; : > "$T/empty_diff"; rs_run ''
+check "empty diff: [P] refused"            "yes" "$(rs_has 'The branch changes no file')"
+rs_setup 6 5 t6; : > "$T/wf_commit"; rs_run ''
+check "workflow commit: [P] refused"       "yes" "$(rs_has 'which the sandbox token cannot push')"
+rs_setup 7 7 t7; echo 1319 > "$FAB/pr_number"; rs_run 'review_merge|deterministic|unknown'
+check "PR open: [P] reuses it"             "yes" "$(rs_has 'PR #1319 is already open')"
+check "PR open: [X] keeps it"              "yes" "$(rs_has 'PR #1319 stays open')"
+
+# 7. The auto-merge sentence follows the same switches the merge phase reads.
+rs_setup 6 5 t6
+printf '%s' '{"number":1279,"labels":[{"name":"architecture"}]}' > "$FAB/issue.json"
+FABRO_AUTO_MERGE=1 rs_run ''
+check "architecture: a human merges"       "yes" "$(rs_has 'labelled architecture')"
+rs_setup 6 5 t6; echo 0 > "$FAB/auto_merge_repo"; FABRO_AUTO_MERGE=1 rs_run ''
+check "repo switch off: a human merges"    "yes" "$(rs_has 'off for this repository')"
+
+# 8. claim died before anything: the directory does not exist yet.
+rm -rf "$FAB"
+rs_run 'claim|deterministic|script failed with exit code: <n>'
+check "nothing: exits 0"                   "0" "$RC"
+check "nothing: creates the directory"     "yes" "$([ -d "$FAB" ] && echo yes || echo no)"
+check "nothing: still a routing object"    "rescue_brief" "$(jq -r '.context_updates.last_stage' <<<"$J")"
+check "nothing: [P] refused"               "yes" "$(rs_has 'never read the issue')"
+check "nothing: no tasks"                  "yes" "$(rs_has 'Tasks: none')"
+echo 353 > "$FAB/issue_number"; rs_run ''
+check "nothing: issue from issue_number"   "yes" "$(rs_has 'Labels #353 agent-stuck')"
+
+# 9. The brief is capped, however long the findings are.
+rs_setup 6 5 t6; echo 6 > "$FAB/round"
+{ echo '## Review findings to fix'; i=1; while [ $i -le 40 ]; do printf 'finding %s %0390d\n' "$i" 0; i=$((i + 1)); done; } > "$FAB/feedback/rework.md"
+rs_run ''
+check "cap: brief at most 3500 bytes"      "yes" "$([ "$(rs_text | wc -c)" -le 3501 ] && echo yes || echo no)"
+check "cap: still valid JSON"              "rescue_brief" "$(jq -r '.context_updates.last_stage' <<<"$J")"
+
+# partial_remainder
+# 10. Mid-task: the unfinished task and the unstarted one move; tasks.json keeps the landed.
+rs_setup 6 5 t6
+OUT=$(sh "$T/partial_remainder.sh" 2>&1); RC=$?
+check "partial: exits 0"                   "0" "$RC"
+check "partial: moves task 6 and 7"        "t6,t7" "$(jq -r 'map(.id) | join(",")' "$FAB/remainder.json")"
+check "partial: tasks.json keeps 5"        "5" "$(jq length "$FAB/tasks.json")"
+check "partial: marks the kind"            "partial" "$(cat "$FAB/remainder_kind")"
+check "partial: says so"                   "1" "$(grep -c '2 unfinished task(s) moved' <<<"$OUT")"
+OUT=$(sh "$T/next_task.sh" 2>&1)
+check "partial: next_task starts nothing"  "true" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
+
+# 11. The current task already landed: only the unstarted ones move.
+rs_setup 6 6 t6
+sh "$T/partial_remainder.sh" >/dev/null 2>&1
+check "landed current: moves only t7"      "t7" "$(jq -r 'map(.id) | join(",")' "$FAB/remainder.json")"
+
+# 12. A budget remainder already holds t7: no duplicate.
+rs_setup 6 5 t6
+printf '%s' '[{"id":"t7","title":"T7","body":"do t7"},{"id":"t9","title":"T9","body":"do t9"}]' > "$FAB/remainder.json"
+sh "$T/partial_remainder.sh" >/dev/null 2>&1
+check "dedupe: keeps one t7"               "t7,t9,t6" "$(jq -r 'map(.id) | join(",")' "$FAB/remainder.json")"
+
+# 13. Every task finished: nothing moves, nothing is marked.
+rs_setup 7 7 t7
+OUT=$(sh "$T/partial_remainder.sh" 2>&1); RC=$?
+check "all done: exits 0"                  "0" "$RC"
+check "all done: no remainder"             "absent" "$([ -e "$FAB/remainder.json" ] && echo present || echo absent)"
+check "all done: no kind marker"           "absent" "$([ -e "$FAB/remainder_kind" ] && echo present || echo absent)"
+
+# 14. Before decompose: no tasks.json, still exits 0.
+rm -rf "$FAB"; mkdir -p "$FAB"
+OUT=$(sh "$T/partial_remainder.sh" 2>&1); RC=$?
+check "no tasks: exits 0"                  "0" "$RC"
+check "no tasks: nothing written"          "absent" "$([ -e "$FAB/remainder.json" ] && echo present || echo absent)"
+
+# 15. file_remainder tells the next run why the tasks were not done.
+rs_setup 6 5 t6; echo 1319 > "$FAB/pr_number"
+sh "$T/partial_remainder.sh" >/dev/null 2>&1
+OUT=$(sh "$T/file_remainder.sh" 2>&1); RC=$?
+check "partial filing: exits 0"            "0" "$RC"
+check "partial filing: held issue"         "1" "$(grep '^issue create' "$T/gh.log" | grep -c -- '--label agent-remainder')"
+check "partial filing: marker first"       "<!-- fabro:remainder parent=1279 pr=1319 -->" "$(head -1 "$FAB/remainder_body.md")"
+check "partial filing: body says why"      "1" "$(grep -c 'an operator chose Accept partial' "$FAB/remainder_body.md")"
+check "partial filing: no budget claim"    "0" "$(grep -c 'task budget' "$FAB/remainder_body.md")"
+check "partial filing: lists both tasks"   "2" "$(grep -c '^### T' "$FAB/remainder_body.md")"
+check "partial filing: PR comment says why" "1" "$(grep -c 'chose Accept partial' "$T/pr_comment.txt")"
+
+PATH="$SAVED_PATH"
+unset GIT_STATE GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
 # triage phase (_shared/triage) — claim, triage_gate, terminal outcome (ADR 0012)
 # ---------------------------------------------------------------------------
 echo ""

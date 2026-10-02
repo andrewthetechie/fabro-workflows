@@ -1399,6 +1399,9 @@ echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\"}}'"]
     // file_remainder: the decomposed tasks this run did not start because its task
     // budget of 8 was spent (ADR 0011 D6; `next_task` moved them to /tmp/fabro/remainder.json)
     // become ONE issue, labelled `agent-remainder` and `ai-generated` -- NOT `agent`.
+    // `partial_remainder` adds the unfinished and unstarted tasks to the same file when
+    // an operator chooses [P] Accept partial, and marks it with remainder_kind so the
+    // issue and the PR comment say why those tasks were not done.
     // The scheduler's remainder promoter adds `agent` and `priority` once this PR
     // merges (automatically or by hand), so the remainder is worked next and never
     // starts from a `main` that lacks this PR. The first body line is the marker the
@@ -1425,7 +1428,11 @@ gh label create priority --color B60205 2>/dev/null || true
 {
   echo '<!-- fabro:remainder parent='$N' pr='$PR' -->'
   echo
-  echo 'This issue continues #'$N'. fabro run `'$RUN'` implemented the first 8 decomposed tasks in PR #'$PR' and stopped at its task budget (fabro-workflows ADR 0011). The '$K' task(s) below were not started.'
+  if [ -s /tmp/fabro/remainder_kind ]; then
+    echo 'This issue continues #'$N'. fabro run `'$RUN'` stopped before it finished: an operator chose Accept partial at its rescue gate, and PR #'$PR' carries the tasks that landed. The '$K' task(s) below are not done. The first one may be partly in that PR.'
+  else
+    echo 'This issue continues #'$N'. fabro run `'$RUN'` implemented the first 8 decomposed tasks in PR #'$PR' and stopped at its task budget (fabro-workflows ADR 0011). The '$K' task(s) below were not started.'
+  fi
   echo
   echo 'It is held with `agent-remainder`. The scheduler adds `agent` and `priority` as soon as PR #'$PR' merges, so it is worked next. If PR #'$PR' is closed without merging, the scheduler labels it `agent-stuck` instead. Do not add `agent` by hand before the PR merges.'
   echo
@@ -1455,7 +1462,11 @@ case \"$M\" in
 esac
 echo $M > /tmp/fabro/remainder_issue
 {
-  echo 'This PR implements the first 8 decomposed tasks of #'$N', plus any extra-review follow-ups. The other '$K' are in #'$M'.'
+  if [ -s /tmp/fabro/remainder_kind ]; then
+    echo 'This PR carries the tasks of #'$N' that landed before an operator chose Accept partial at the rescue gate. The other '$K' are in #'$M'.'
+  else
+    echo 'This PR implements the first 8 decomposed tasks of #'$N', plus any extra-review follow-ups. The other '$K' are in #'$M'.'
+  fi
   echo
   echo 'The scheduler queues #'$M' with `priority` as soon as this PR merges, whether it is merged automatically or by hand.'
 } > /tmp/fabro/remainder_comment.md
@@ -1547,7 +1558,190 @@ echo done"]
     // `mark_stuck`, not "[X] Abandon". Without it, an expired gate returns
     // retry_classify("human gate timeout, no default") instead of routing.
     human_rescue [shape=hexagon, timeout="4h", human.default_choice="mark_stuck",
-        label="Agent stuck. Type guidance to retry, or choose an option."]
+        label="The run stopped and needs a decision. The summary below says why and what each option does."]
+
+    // rescue_brief: every edge into human_rescue passes through here, so the gate can
+    // say why the run stopped and what [P], [X] and guidance would do in THIS run.
+    // Before it, the gate showed only its fixed label and the last agent's final line
+    // (on 01M3Y86Z013N2V1QDNNG591MBQ, "Verdict submitted."), and the operator had to read
+    // the events to learn that the task needed a .github/workflows/ edit no agent may make.
+    //
+    // How the text reaches the gate: the human handler shows `response.<last_stage>`
+    // as the question's context (fabro handler/human.rs, build_human_gate_question).
+    // Only agent and prompt handlers set those keys, but routing `context_updates` are
+    // applied unfiltered (handler/structured_output.rs, apply_routing_fields), so this
+    // node sets both `last_stage` and `response.rescue_brief`.
+    //
+    // Why it stopped comes from `failure_signature`, which the engine writes after every
+    // node as `node|failure class|normalised reason` (empty after a success). A command
+    // cannot read context except one key through stdin_source. When it is empty, a gate
+    // routed here on a success: a `round` of 6 or more means the rework ladder ran out,
+    // anything else is a gate that rejected its agent's output.
+    //
+    // The [P] text mirrors open_pr_prep's two refusals and partial_remainder below; the
+    // [X] text mirrors mark_stuck. Change them together. The node never fails: a missing
+    // file reads as "nothing", and if it did fail its unconditional edge still reaches
+    // the gate, which then shows what it showed before this node existed. It prints
+    // nothing but the routing object, on one line: fabro scans stdout and stderr together
+    // for brace-balanced objects (structured_output.rs, find_json_objects), and finding
+    // text such as `${{ secrets.X }}` echoed before it could join it into one invalid
+    // candidate that names `context_updates`, which fails the node. The brief stays in
+    // /tmp/fabro/rescue_brief.md.
+    rescue_brief [label="Explain why the run stopped", shape=parallelogram, timeout="1m",
+        output_schema="routing", stdin_source="failure_signature",
+        script="mkdir -p /tmp/fabro
+F=/tmp/fabro
+SIG=$(head -c 600)
+rm -f $F/rescue_findings.txt $F/rescue_findings.cut
+N=$(jq -r .number $F/issue.json 2>/dev/null)
+case \"$N\" in '' | *[!0-9]*) N=$(cat $F/issue_number 2>/dev/null) ;; esac
+case \"$N\" in '' | *[!0-9]*) N='?' ;; esac
+COUNT=$(jq length $F/tasks.json 2>/dev/null)
+case \"$COUNT\" in '' | *[!0-9]*) COUNT=0 ;; esac
+IDX=$(cat $F/task_index 2>/dev/null)
+case \"$IDX\" in '' | *[!0-9]*) IDX=0 ;; esac
+ROUND=$(cat $F/round 2>/dev/null)
+case \"$ROUND\" in '' | *[!0-9]*) ROUND=0 ;; esac
+LANDED=$(grep -c '^### Task: ' $F/completed.md 2>/dev/null)
+case \"$LANDED\" in '' | *[!0-9]*) LANDED=0 ;; esac
+LEFT=0
+if [ $COUNT -gt $IDX ]; then LEFT=$((COUNT - IDX)); fi
+CT=$(jq -r '.title // empty' $F/current_task.json 2>/dev/null)
+LAST=$(grep '^### Task: ' $F/completed.md 2>/dev/null | tail -1 | cut -c11-)
+CUR=''
+if [ $IDX -gt 0 ] && [ -n \"$CT\" ] && [ \"$CT\" != \"$LAST\" ]; then CUR=$IDX; fi
+PR=$(cat $F/pr_number 2>/dev/null)
+case \"$PR\" in *[!0-9]*) PR='' ;; esac
+STG=$(jq -r '.node // empty' $F/.io/stage.json 2>/dev/null)
+DIFF=$(git diff --shortstat origin/main HEAD 2>/dev/null | sed 's/^ *//')
+NODE=''
+if [ -n \"$SIG\" ]; then
+  NODE=${SIG%%|*}
+  REST=${SIG#*|}
+  WHAT=\"$NODE failed (${REST%%|*}): ${REST#*|}\"
+elif [ $ROUND -ge 6 ] && [ -n \"$CUR\" ]; then
+  WHAT=\"the rework ladder ran out. Task $CUR failed validate or review at every tier ($ROUND rounds).\"
+else
+  WHAT=\"a gate rejected its agent's output after its retries. The last agent stage was ${STG:-unknown}. The run's events name the gate and its reason.\"
+fi
+if [ -n \"$CUR\" ] && [ $ROUND -gt 0 ] && [ -s $F/feedback/rework.md ]; then
+  awk 'BEGIN { e = sprintf(\"%c\", 27) } { gsub(e \"[[][0-9;]*[A-Za-z]\", \"\"); if ($0 ~ /^[ ]*$/) next; print substr($0, 1, 400) }' $F/feedback/rework.md > $F/rescue_findings.txt 2>/dev/null
+  if head -1 $F/rescue_findings.txt | grep -q 'Validation failed'; then
+    { head -1 $F/rescue_findings.txt; tail -10 $F/rescue_findings.txt; } > $F/rescue_findings.cut
+  else
+    head -12 $F/rescue_findings.txt > $F/rescue_findings.cut
+  fi
+fi
+WF=''
+if grep -q '[.]github/workflows' $F/rescue_findings.cut 2>/dev/null; then WF=yes; fi
+if jq -e '[.labels[]?.name] | index(\"architecture\") != null' $F/issue.json >/dev/null 2>&1; then
+  MERGE='A human merges it, because the issue is labelled architecture.'
+elif [ \"${FABRO_AUTO_MERGE:-0}\" != 1 ]; then
+  MERGE='Auto-merge is off on this host, so a human merges it.'
+elif [ \"$(cat $F/auto_merge_repo 2>/dev/null)\" = 0 ]; then
+  MERGE='Auto-merge is off for this repository, so a human merges it.'
+else
+  MERGE='If every merge gate passes, the merge phase merges it with no human.'
+fi
+MOVE=$LEFT
+if [ -n \"$CUR\" ]; then MOVE=$((LEFT + 1)); fi
+if [ ! -s $F/issue.json ]; then
+  P='The run never read the issue, so there is no PR to open. You come back here.'
+elif git diff --quiet origin/main HEAD 2>/dev/null; then
+  P='The branch changes no file, so open_pr_prep refuses: a PR would claim work that does not exist. You come back here.'
+elif [ -n \"$(git log --format=%H origin/main..HEAD -- .github/workflows/ 2>/dev/null | head -1)\" ]; then
+  P='A commit on this branch changes .github/workflows/, which the sandbox token cannot push, so open_pr_prep refuses. You come back here.'
+else
+  if [ -n \"$PR\" ]; then
+    P=\"PR #$PR is already open. Main is merged in, setup and CI run again, and the PR goes through the merge phase again.\"
+  else
+    P=\"Opens a PR with the $LANDED task(s) that passed review\"
+    if [ -n \"$CUR\" ]; then P=\"$P and the unreviewed edits of task $CUR\"; fi
+    P=\"$P, after main is merged in and setup and CI pass.\"
+  fi
+  if [ $MOVE -gt 0 ]; then
+    P=\"$P The $MOVE task(s) not done\"
+    if [ -n \"$CUR\" ]; then P=\"$P (task $CUR included)\"; fi
+    P=\"$P go to one held remainder issue, which the scheduler queues when the PR merges.\"
+  fi
+  P=\"$P $MERGE\"
+fi
+X=\"Labels #$N agent-stuck and posts a generic comment.\"
+if [ -n \"$PR\" ]; then
+  X=\"$X PR #$PR stays open. Close it by hand if you do not want it.\"
+elif [ $LANDED -gt 0 ]; then
+  X=\"$X No PR is opened and the branch exists only in this sandbox, so the $LANDED task(s) that passed review are lost.\"
+fi
+X=\"$X The gate does this by itself when its 4h timeout ends.\"
+if [ \"$NODE\" = open_pr_prep ]; then
+  G='The tier-4 rework agent gets your text and the final validation failure, then validate and review run again.'
+elif [ -n \"$WF\" ]; then
+  G='Cannot help: the findings need a change under .github/workflows/, which no agent may make. Choose [P] and make that edit yourself, or [X].'
+elif [ -n \"$CUR\" ]; then
+  G=\"The tier-4 rework agent tries task $CUR again with your text, then validate and review run again. If review rejects it again, you come back here.\"
+else
+  G='No task is unfinished, so the rework agent has nothing to fix. Choose [P] or [X].'
+fi
+{
+  echo \"**Why the run stopped:** $WHAT\"
+  echo
+  if [ -n \"$CUR\" ]; then echo \"- Unfinished task $CUR of $COUNT: $CT\"; fi
+  if [ $COUNT -gt 0 ]; then
+    echo \"- Tasks: $LANDED of $COUNT passed review, $LEFT not started.\"
+  else
+    echo '- Tasks: none. The run stopped before the issue was decomposed.'
+  fi
+  if [ -n \"$DIFF\" ]; then echo \"- Branch against main: $DIFF\"; fi
+  if [ -n \"$PR\" ]; then echo \"- PR: #$PR\"; fi
+  if [ -s $F/rescue_findings.cut ]; then
+    echo
+    echo \"**Last findings for task $CUR:**\"
+    echo
+    echo '```'
+    cat $F/rescue_findings.cut
+    echo '```'
+    if [ -n \"$WF\" ]; then echo; echo 'These findings need a change under .github/workflows/. No agent may edit that directory, so only a human can make it.'; fi
+  fi
+  echo
+  echo \"- **[P] Accept partial:** $P\"
+  echo \"- **[X] Abandon:** $X\"
+  echo \"- **Type guidance:** $G\"
+} > $F/rescue_brief.md
+head -c 3500 $F/rescue_brief.md > $F/rescue_brief.cut
+jq -cRs '{context_updates: {last_stage: \"rescue_brief\", \"response.rescue_brief\": .}}' < $F/rescue_brief.cut 2>/dev/null || echo '{\"context_updates\":{}}'"]
+
+    // partial_remainder: [P] used to go straight to open_pr_prep, and the PR it opened
+    // carried "Resolves #N" while the unfinished task and every task the run never
+    // reached were recorded nowhere. On 01M3Y86Z013N2V1QDNNG591MBQ (womens-fantasy-sports
+    // #1279) that would have dropped task 7, the auth regression spec, without a trace.
+    // This moves them to remainder.json, the file next_task's task budget already fills,
+    // so file_remainder files them as one held issue that the scheduler queues when the
+    // PR merges (ADR 0011 D6). The unfinished task is the current one when completed.md
+    // does not end with its title; its partial edits ship in the PR.
+    //
+    // tasks.json is trimmed to the tasks before the moved ones, so a run that comes back
+    // to the gate and is then given guidance cannot start a moved task. That guidance can
+    // still finish the unfinished task, which is then also in the remainder; the
+    // remainder body tells the next run to decompose again, so that is a duplicate to
+    // close, not a wrong change. `remainder_kind` makes file_remainder say why the tasks
+    // were not done. Always exits 0.
+    partial_remainder [label="Move unfinished tasks to the remainder", shape=parallelogram,
+        script="F=/tmp/fabro
+COUNT=$(jq length $F/tasks.json 2>/dev/null)
+case \"$COUNT\" in '' | *[!0-9]*) COUNT=0 ;; esac
+IDX=$(cat $F/task_index 2>/dev/null)
+case \"$IDX\" in '' | *[!0-9]*) IDX=0 ;; esac
+CT=$(jq -r '.title // empty' $F/current_task.json 2>/dev/null)
+LAST=$(grep '^### Task: ' $F/completed.md 2>/dev/null | tail -1 | cut -c11-)
+FROM=$IDX
+if [ $IDX -gt 0 ] && [ -n \"$CT\" ] && [ \"$CT\" != \"$LAST\" ]; then FROM=$((IDX - 1)); fi
+if [ $FROM -ge $COUNT ]; then echo 'accept partial: every task finished, so nothing moves to the remainder'; exit 0; fi
+jq --argjson i $FROM '.[$i:]' $F/tasks.json > $F/remainder.new.json 2>/dev/null || { echo 'accept partial: could not read tasks.json; nothing moved' >&2; exit 0; }
+if [ -s $F/remainder.json ]; then cp $F/remainder.json $F/remainder.old.json; else echo '[]' > $F/remainder.old.json; fi
+jq -s '(.[0] + .[1]) | reduce .[] as $t ([]; if any(.[]; .id == $t.id) then . else . + [$t] end)' $F/remainder.old.json $F/remainder.new.json > $F/remainder.merged.json 2>/dev/null && mv $F/remainder.merged.json $F/remainder.json
+jq --argjson i $FROM '.[0:$i]' $F/tasks.json > $F/tasks.trim.json 2>/dev/null && mv $F/tasks.trim.json $F/tasks.json
+echo partial > $F/remainder_kind
+echo 'accept partial: '$((COUNT - FROM))' unfinished task(s) moved to the remainder, which file_remainder files as one held issue after open_pr'"]
 
     // Taking the receipt off is the load-bearing half of this node, not the
     // comment. `claim` swapped `agent` -> `agent-in-progress`, and an issue left
@@ -1584,12 +1778,12 @@ echo done"]
     // ---- Edges ----
     start -> claim
     claim -> prep                   [condition="outcome=succeeded"]
-    claim -> human_rescue
+    claim -> rescue_brief
     prep -> decompose               [condition="outcome=succeeded"]
-    prep -> human_rescue
+    prep -> rescue_brief
 
     decompose -> decompose_gate     [condition="outcome=succeeded"]
-    decompose -> human_rescue
+    decompose -> rescue_brief
     decompose_gate -> decompose     [condition="outcome=failed"]
     decompose_gate -> next_task     [condition="context.decomp_status=issues"]
     decompose_gate -> close_noop    [condition="context.decomp_status=no_work"]
@@ -1599,7 +1793,7 @@ echo done"]
     // mark_stuck, which posts the decomposer's summary on the issue and frees the
     // coder box, instead of holding it at the gate for up to 4h.
     decompose_gate -> mark_stuck    [condition="context.decomp_status=needs_human_review"]
-    decompose_gate -> human_rescue
+    decompose_gate -> rescue_brief
 
     next_task -> extra_prep         [condition="context.tasks_done=true"]
     next_task -> resolve_merge      [condition="context.rebase_failed=true"]
@@ -1613,10 +1807,10 @@ echo done"]
     resolve_merge -> resolve_merge_gate
     resolve_merge_gate -> improve       [condition="context.merge_ok=true", weight=10]
     resolve_merge_gate -> resolve_merge [condition="context.merge_attempts=1"]
-    resolve_merge_gate -> human_rescue
+    resolve_merge_gate -> rescue_brief
 
     improve -> improve_gate         [condition="outcome=succeeded"]
-    improve -> human_rescue
+    improve -> rescue_brief
     improve_gate -> improve         [condition="outcome=failed"]
     improve_gate -> next_task       [condition="context.task_disposition=redundant"]
     // A split rewound `task_index` to the slot the oversized task occupied and
@@ -1625,24 +1819,24 @@ echo done"]
     // counters, which is exactly right: a slice is a new task.
     improve_gate -> next_task       [condition="context.task_disposition=split"]
     improve_gate -> excerpts        [condition="context.task_disposition=ready"]
-    improve_gate -> human_rescue
+    improve_gate -> rescue_brief
 
     // excerpts always exits 0; the failed edge covers a timeout, and the unconditional
     // edge exists only because every command node must have one.
     excerpts -> coder               [condition="outcome=succeeded"]
     excerpts -> coder               [condition="outcome=failed"]
-    excerpts -> human_rescue
+    excerpts -> rescue_brief
 
     coder -> autofix                [condition="outcome=succeeded"]
     // Retries exhausted on a coder that was still working. allow_partial makes
     // that partially_succeeded rather than failed; this edge is what stops it
     // falling through to the unconditional human_rescue and skipping the ladder.
     coder -> autofix                [condition="outcome=partially_succeeded"]
-    coder -> human_rescue
+    coder -> rescue_brief
 
     autofix -> prep_review          [condition="outcome=succeeded"]
     autofix -> prep_review          [condition="outcome=failed"]
-    autofix -> human_rescue
+    autofix -> rescue_brief
 
     prep_review -> rework_router    [condition="context.diff_too_large=true"]
     prep_review -> validate
@@ -1651,11 +1845,11 @@ echo done"]
     validate -> rework_router
 
     review -> review_gate           [condition="outcome=succeeded"]
-    review -> human_rescue
+    review -> rescue_brief
     review_gate -> review           [condition="outcome=failed"]
     review_gate -> integrate        [condition="context.review_decision=approved"]
     review_gate -> rework_router    [condition="context.review_decision=changes_requested"]
-    review_gate -> human_rescue
+    review_gate -> rescue_brief
 
     integrate -> next_task
 
@@ -1664,10 +1858,10 @@ echo done"]
     rework_router -> rework_t3      [condition="context.round=4"]
     rework_router -> rework_t4      [condition="context.round=5"]
     rework_router -> drop_followup  [condition="context.round=6 && context.task_exempt=true"]
-    rework_router -> human_rescue
+    rework_router -> rescue_brief
 
     drop_followup -> next_task      [condition="outcome=succeeded"]
-    drop_followup -> human_rescue
+    drop_followup -> rescue_brief
 
     rework_t1 -> autofix            [condition="outcome=succeeded"]
     // Tier 1 runs on a single-slot local box, whose failure is usually slowness or a
@@ -1677,54 +1871,54 @@ echo done"]
     // two 45m tier-1 attempts to box latency and parked on human_rescue with the
     // edits done. Tiers 2-4 still fail to human_rescue.
     rework_t1 -> rework_router      [condition="outcome=failed"]
-    rework_t1 -> human_rescue
+    rework_t1 -> rescue_brief
     rework_t2 -> autofix            [condition="outcome=succeeded"]
-    rework_t2 -> human_rescue
+    rework_t2 -> rescue_brief
     rework_t3 -> autofix            [condition="outcome=succeeded"]
-    rework_t3 -> human_rescue
+    rework_t3 -> rescue_brief
     rework_t4 -> autofix            [condition="outcome=succeeded"]
-    rework_t4 -> human_rescue
+    rework_t4 -> rescue_brief
 
     extra_prep -> open_pr_prep      [condition="context.extra_done=true"]
     extra_prep -> standards
 
     standards -> standards_gate     [condition="outcome=succeeded"]
-    standards -> human_rescue
+    standards -> rescue_brief
     standards_gate -> standards     [condition="outcome=failed"]
-    standards_gate -> human_rescue  [condition="context.standards_status=needs_human_review || context.standards_status=invalid"]
+    standards_gate -> rescue_brief  [condition="context.standards_status=needs_human_review || context.standards_status=invalid"]
     standards_gate -> spec
 
     spec -> spec_gate               [condition="outcome=succeeded"]
-    spec -> human_rescue
+    spec -> rescue_brief
     spec_gate -> spec               [condition="outcome=failed"]
-    spec_gate -> human_rescue       [condition="context.spec_status=needs_human_review || context.spec_status=invalid"]
+    spec_gate -> rescue_brief       [condition="context.spec_status=needs_human_review || context.spec_status=invalid"]
     spec_gate -> quality
 
     quality -> quality_gate         [condition="outcome=succeeded"]
-    quality -> human_rescue
+    quality -> rescue_brief
     quality_gate -> quality         [condition="outcome=failed"]
-    quality_gate -> human_rescue    [condition="context.quality_status=needs_human_review || context.quality_status=invalid"]
+    quality_gate -> rescue_brief    [condition="context.quality_status=needs_human_review || context.quality_status=invalid"]
     quality_gate -> extra_decompose
 
     extra_decompose -> extra_gate   [condition="outcome=succeeded"]
-    extra_decompose -> human_rescue
+    extra_decompose -> rescue_brief
     extra_gate -> extra_decompose   [condition="outcome=failed"]
     extra_gate -> next_task         [condition="context.new_tasks>0"]
-    extra_gate -> human_rescue      [condition="context.followup_status=needs_human_review"]
+    extra_gate -> rescue_brief      [condition="context.followup_status=needs_human_review"]
     extra_gate -> open_pr_prep
 
     open_pr_prep -> open_pr         [condition="outcome=succeeded"]
-    open_pr_prep -> human_rescue
+    open_pr_prep -> rescue_brief
     open_pr -> file_remainder       [condition="outcome=succeeded"]
-    open_pr -> human_rescue
+    open_pr -> rescue_brief
     file_remainder -> pr_handoff    [condition="outcome=succeeded"]
-    file_remainder -> human_rescue
+    file_remainder -> rescue_brief
     pr_handoff -> review_merge      [condition="outcome=succeeded"]
-    pr_handoff -> human_rescue
+    pr_handoff -> rescue_brief
     // The import reports both outcomes on the PR itself before it exits, so a
     // merged PR and a deliberately-unmerged one are both finished runs. Only a
     // failure of the placeholder needs a human.
-    review_merge -> human_rescue    [condition="outcome=failed"]
+    review_merge -> rescue_brief    [condition="outcome=failed"]
     review_merge -> exit
 
     close_noop -> exit
@@ -1741,10 +1935,14 @@ echo done"]
 cat > /tmp/fabro/feedback/rescue.md
 echo recorded"]
 
+    rescue_brief -> human_rescue
+
     human_rescue -> record_guidance [freeform=true]
     record_guidance -> rework_t4
-    human_rescue -> open_pr_prep    [label="[P] Accept partial"]
-    human_rescue -> mark_stuck      [label="[X] Abandon"]
+    human_rescue -> partial_remainder [label="[P] Accept partial: open a PR with what landed, file the rest"]
+    human_rescue -> mark_stuck      [label="[X] Abandon: label the issue agent-stuck, open no PR"]
+    partial_remainder -> open_pr_prep [condition="outcome=succeeded"]
+    partial_remainder -> rescue_brief
 
     mark_stuck -> exit
 }

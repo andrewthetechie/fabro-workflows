@@ -73,9 +73,9 @@ ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp 
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
 ```
 
-Baselines as of 2026-10-02 (ADR 0013 added four merge-phase nodes; ADR 0015 added `plan`, `plan_gate` and `apply_split`; the `rework_t1 -> rework_router` escalation edge added one backlog edge; `excerpts` added one backlog node and a net three edges; `drop_followup` added one backlog node and three edges, and `decompose_gate -> mark_stuck` one more), against **fabro 0.362.0-nightly.0** (review+merge shared and imported; ADR 0011 added
+Baselines as of 2026-10-02 (ADR 0013 added four merge-phase nodes; ADR 0015 added `plan`, `plan_gate` and `apply_split`; the `rework_t1 -> rework_router` escalation edge added one backlog edge; `excerpts` added one backlog node and a net three edges; `drop_followup` added one backlog node and three edges, and `decompose_gate -> mark_stuck` one more; `rescue_brief` and `partial_remainder` added two backlog nodes and three edges), against **fabro 0.362.0-nightly.0** (review+merge shared and imported; ADR 0011 added
 `autofix` and `file_remainder`):
-`Backlog (67 nodes, 159 edges)` with exactly one warning — `issue_number` unbound in
+`Backlog (69 nodes, 162 edges)` with exactly one warning — `issue_number` unbound in
 `claim` (draft 10's deliberate fail-closed input, the same shape as `pr_number`) — and
 `PrReview (34 nodes, 73 edges)` with exactly one warning — `pr_number` unbound in
 `validate_input` — and `IssueTriage (16 nodes, 36 edges)` clean, and `ArchReview (24 nodes, 54 edges)` clean. Both include the 13 nodes of `_shared/triage/`. Backlog and PrReview both include the ~25
@@ -128,7 +128,7 @@ the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them 
 fixtures:
 
 ```sh
-./ops/test-task-gates.sh      # 736 checks on the Mac, 824 in a profile image; offline
+./ops/test-task-gates.sh      # 803 checks on the Mac, 891 in a profile image; offline
 ```
 
 It needs only `jq`, `awk` and `git` — no `python3`, which `fabro-ts` and `fabro-python-node` do not ship — so it belongs in the same pre-push hook and also runs inside every profile image, the one way to test the counters against the sandbox's own mawk and jq (`jq 1.6` in `fabro-python-node`). It covers
@@ -148,7 +148,8 @@ the code-index lines of every workflow's entry node (`backlog` `prep`, `pr-revie
 cites into `task-code.md` for the coder: ranges, merging, the byte cap, and single lines
 with and without `fabro-code`. Since 2026-10-02 it also covers `rework_router`'s
 exemption lookup, `drop_followup` (real git), and the `needs_human_review` route from
-`decompose_gate` to `mark_stuck` with the decomposer's reason. Inside a profile image, where `codegraph` exists, it also runs the `fabro-code`
+`decompose_gate` to `mark_stuck` with the decomposer's reason, and the rescue gate's
+`rescue_brief` summary and `partial_remainder`'s move of the unfinished tasks. Inside a profile image, where `codegraph` exists, it also runs the `fabro-code`
 wrapper against a real-git fixture; on the Mac that section prints `SKIP`.
 It says nothing about whether an agent fills a contract correctly.
 
@@ -211,6 +212,7 @@ them, except where a rule names one by id.
 | Reset per-iteration context keys, and write every key on both branches | A stale key from an earlier loop can satisfy an edge meant for this one. |
 | Delete a contract file before the agent that writes it runs | An agent that exits succeeded without writing hands the gate its predecessor's result. |
 | Agents do not run `git` | Two deliberate exceptions: `pr-review`'s rebase agent and `backlog`'s `resolve_merge` agent, which need `git add` and `--continue`. Enforced by the `git-guard` `pre_tool_use` hook (docs/coder-tweaks C2): read-only git (`status`, `diff`, `log`, ...) passes, everything else is blocked from `shell` with a reason naming `restore_file` or `baseline_check`. Exempt stages carry `"git": "write"` in `_io/manifest.json` (the generator copies it into each `workflow.toml`'s manifest). `sh -c` and `python` bypass it; it catches mistakes. |
+| Every edge into `human_rescue` passes through `rescue_brief`, and `[P] Accept partial` passes through `partial_remainder` | The gate shows only its fixed label and `response.<last_stage>`, which fabro sets for agent stages alone. `rescue_brief` writes that key and `last_stage` itself, from `failure_signature` and the run's files, so the gate says why the run stopped and what `[P]`, `[X]` and guidance do in that run. Before it, run `01M3Y86Z013N2V1QDNNG591MBQ` showed "Verdict submitted." for a task no agent could finish (a `.github/workflows/` edit). An edge straight to `human_rescue` brings that back silently. `[P]` without `partial_remainder` opens a PR that says `Resolves #N` and records the unfinished task and every unstarted one nowhere; with it they go to `remainder.json` and `file_remainder` files them as one held issue. `rescue_brief` prints only its one-line routing object: fabro scans stdout and stderr together for brace-balanced objects, and echoed finding text could merge with it into an invalid candidate. Its `[P]` and `[X]` texts mirror `open_pr_prep`'s refusals and `mark_stuck`; change them together. Covered by `ops/test-task-gates.sh`. |
 | A blocking hook's script exits 0 when its own program is missing or crashes | fabro treats **any** hook exit but 0 as a block (`parse_decision`: 2 blocks, and every other code blocks too; an unrunnable sandbox hook reports -1). A guard whose binary is missing from an old image, or that panics, would fail every call it matches. `git-guard`'s script is `fabro-io git-guard; [ $? -eq 2 ] && exit 2; exit 0`, and `ops/test-task-gates.sh` extracts it from each `workflow.toml` and runs it with `fabro-io` absent. |
 | A conflicted merge or rebase never crosses a stage boundary | The checkpoint is `git add -A && git commit`, and `git add` marks a conflicted file resolved — so the checkpoint commits conflict markers. The command node aborts to restore a clean tree; a dedicated agent then redoes and resolves the whole thing inside one stage. On 0.362 a checkpoint **commit** failure stops the run (it was best-effort on 0.354), so this rule is now also a run-killer, not just a merge hazard. |
 | `backlog` never chooses its own issue: `claim` validates `args.inputs.issue_number` and fails closed | Draft 10 deleted `acquire`, the marker comment and the lowest-ULID arbitration together — the race they patched (two runs implementing jelly-swipe#356 on separate branches) is now prevented upstream, by the scheduler's lease table rather than by the graph. Restoring any selection inside the graph re-opens it. `claim` must keep quitting on an issue that is missing, closed, or not `agent-in-progress` after its idempotent label swap; picking a different issue is the failure the whole design exists to prevent. |
