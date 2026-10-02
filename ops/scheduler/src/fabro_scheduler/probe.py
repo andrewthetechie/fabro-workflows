@@ -22,9 +22,19 @@ advance without hammering either fabro or a busy browser. So this is a
 `RunProgress` on a fixed beat, and the page renders from the cache synchronously
 with no API work of its own.
 
+The sandbox files are read only while the run is live. Fabro's docker provider
+answers `sandbox/file` on a STOPPED sandbox by starting the container again, and
+nothing stops it a second time. A lease outlives its run by up to one reconcile
+poll, so a beat that lands between the run's terminal state and the release
+restarted the sandbox it read: 14 succeeded runs between 2026-09-26 and
+2026-10-01 left `fabro-run-*` containers up for days, each started again 0.3-11s
+after fabro stopped it, and `fabro-sandbox-sweep.sh` never removes a running
+container. So `_probe` reads the run's status kind first and skips both file
+reads once it is terminal.
+
 Interval guidance: stages last tens of seconds to minutes each, so a 30-second
-beat keeps the display visibly current while making only ~3 API calls per beat
-(one for the stage list, two for the sandbox files), one per leased coder
+beat keeps the display visibly current while making only ~4 API calls per beat
+(one for the run status, one for the stage list, two for the sandbox files), one per leased coder
 instance and there are at most four. That is a rounding error on a localhost
 fabro API.
 """
@@ -37,8 +47,9 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from .fabro import FabroClient
+from .fabro import FabroClient, status_kind
 from .lease import LeaseStore
+from .reconcile import TERMINAL
 
 log = logging.getLogger(__name__)
 
@@ -134,7 +145,9 @@ class RunProbe:
 
     def _probe(self, run_id: str) -> RunProgress:
         stage_name, stage_visit, status = self._current_stage(run_id)
-        completed, total = self._task_progress(run_id)
+        completed, total = None, None
+        if self._run_is_live(run_id):
+            completed, total = self._task_progress(run_id)
         return RunProgress(
             run_id=run_id,
             status=status,
@@ -144,6 +157,17 @@ class RunProbe:
             tasks_total=total,
             fetched_at=datetime.now(UTC),
         )
+
+    def _run_is_live(self, run_id: str) -> bool:
+        """Whether the run is not yet terminal, so its sandbox may be read.
+
+        A terminal run's sandbox is stopped, and reading a file from it would start
+        it again (see the module docstring). A `get_run` error propagates to
+        `tick`, which records it for this run alone.
+        """
+        if self._fabro is None:
+            return False
+        return status_kind(self._fabro.get_run(run_id)) not in TERMINAL
 
     def _current_stage(self, run_id: str) -> tuple[str | None, int | None, str | None]:
         """The most recent not-finished stage: in progress if any, else the last.

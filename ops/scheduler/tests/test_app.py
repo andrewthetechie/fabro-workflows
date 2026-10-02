@@ -651,6 +651,9 @@ def test_the_page_shows_tasks_and_stage_columns(config, store):
     )
 
     class _FakeFabro:
+        def get_run(self, run_id):
+            return {"lifecycle": {"status": {"kind": "running"}}}
+
         def get_stages(self, run_id):
             return [
                 {"node_id": "claim", "visit": 1, "status": "succeeded", "started_at": "t1"},

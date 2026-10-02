@@ -39,14 +39,20 @@ class FakeFabro:
     which `read_sandbox_file` turns into `None` — the probe reads that as "—".
     """
 
-    def __init__(self, stages=None, files: dict[str, str] | None = None):
+    def __init__(self, stages=None, files: dict[str, str] | None = None, kind="running"):
         self.stages = stages or []
         self.files = files or {}
+        self.kind = kind
+        self.reads: list[str] = []
+
+    def get_run(self, run_id):
+        return {"lifecycle": {"status": {"kind": self.kind}}}
 
     def get_stages(self, run_id):
         return self.stages
 
     def read_sandbox_file(self, run_id, path):
+        self.reads.append(path)
         return self.files.get(path)
 
 
@@ -199,3 +205,32 @@ def test_probe_prunes_a_released_lease(tmp_path):
     probe.tick()
 
     assert probe.snapshot("01MRUN") is None
+
+
+def test_probe_never_reads_the_sandbox_of_a_terminal_run(tmp_path):
+    # A lease outlives its run by up to one reconcile poll. Reading a file from the
+    # stopped sandbox in that window makes fabro start the container again, and
+    # nothing stops it: 14 succeeded runs leaked running sandboxes that way.
+    for kind in ("succeeded", "failed", "dead"):
+        store = Store(tmp_path / f"{kind}.db")
+        _lease(store)
+        fabro = FakeFabro(stages=_stages(), files={TASKS: "[{},{}]", INDEX: "2"}, kind=kind)
+
+        probe = RunProbe(fabro, LeaseStore(store))
+        probe.tick()
+
+        snap = probe.snapshot("01MRUN")
+        assert fabro.reads == [], kind
+        assert snap is not None and snap.error is None
+        assert snap.tasks_total is None and snap.tasks_completed is None
+        assert snap.stage_name == "coder"
+
+
+def test_probe_still_reads_the_sandbox_of_a_live_run(tmp_path):
+    store = Store(tmp_path / "scheduler.db")
+    _lease(store)
+    fabro = FakeFabro(stages=_stages(), files={TASKS: "[{},{}]", INDEX: "2"}, kind="running")
+
+    RunProbe(fabro, LeaseStore(store)).tick()
+
+    assert fabro.reads == [TASKS, INDEX]
