@@ -374,6 +374,30 @@ check "clean improve: routing unchanged"   "redundant" "$(jq -r '.context_update
 PATH="$ORIG_PATH_SAVE"
 
 # ---------------------------------------------------------------------------
+# next_task drops the baseline_check worktree (docs/coder-tweaks 04): REAL git, so the
+# stale `base-tree` of the last task is gone before the next one starts, and the node
+# still prints exactly one routing object.
+# ---------------------------------------------------------------------------
+echo ""
+echo "next_task worktree cleanup"
+PATH="$ORIG_PATH"
+T="$WORK/ntwt"; mkdir -p "$T/repo"; stage next_task
+mkreadok ok1 current_task.json issue.json
+( cd "$T/repo" && git init -q -b main . && git config user.email t@t && git config user.name t \
+  && echo a > a.txt && git add -A && git commit -qm base && echo b > b.txt && git add -A && git commit -qm second \
+  && git worktree add -q --detach "$T/base-tree" HEAD~1 && mkdir -p "$T/base-tree/node_modules" && ln -s "$T/repo" "$T/base-tree/linked" )
+echo '[]' > "$T/tasks.json"; echo 0 > "$T/task_index"
+check "worktree exists before"        "2" "$(git -C "$T/repo" worktree list | wc -l | tr -d ' ')"
+OUT=$( (cd "$T/repo" && sh "$T/next_task.sh") 2>/dev/null)
+check "stale worktree removed"        "1" "$(git -C "$T/repo" worktree list | wc -l | tr -d ' ')"
+check "stale worktree dir removed"    "absent" "$([ -e "$T/base-tree" ] && echo present || echo absent)"
+check "link target survives"          "1" "$([ -f "$T/repo/a.txt" ] && echo 1 || echo 0)"
+check "one routing object"            "1" "$(grep -c 'context_updates' <<<"$OUT")"
+check "routing says done"             "true" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
+( cd "$T/repo" && sh "$T/next_task.sh" >/dev/null 2>&1 ); RC=$?
+check "no worktree at all is fine"    "0" "$RC"
+
+# ---------------------------------------------------------------------------
 # next_task + improve_gate — the split must resume ON the first slice
 # ---------------------------------------------------------------------------
 echo ""

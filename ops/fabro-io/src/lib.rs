@@ -6,6 +6,7 @@
 pub mod cli;
 pub mod code;
 pub mod common;
+pub mod gitsafe;
 pub mod guard;
 pub mod inputs;
 pub mod manifest;

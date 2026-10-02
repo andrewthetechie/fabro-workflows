@@ -211,7 +211,7 @@ fn test_13_serve_tools_and_submit() {
         let names = tool_names(&list);
         assert!(names.iter().any(|n| n == "inputs"));
         assert!(names.iter().any(|n| n == "submit"), "submit listed for an output stage");
-        for tool in ["code_def", "code_show", "code_search", "code_callers", "code_callees", "code_impact", "code_tests"] {
+        for tool in ["code_def", "code_show", "code_search", "code_callers", "code_callees", "code_impact", "code_tests", "restore_file", "baseline_check"] {
             assert!(names.iter().any(|n| n == tool), "{tool} listed for a known stage");
         }
 

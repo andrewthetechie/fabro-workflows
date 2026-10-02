@@ -346,6 +346,10 @@ if [ \"$S\" = issues ]; then
 fi
 echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT',\"oversized_tasks\":'$OVER'}}'"]
 
+    // The first lines drop the worktree `baseline_check` makes at /tmp/fabro/base-tree
+    // (docs/coder-tweaks 04, C4): it is per task, and a stale one would hold the previous
+    // task's base. They write nothing to stdout, because this node routes.
+
     // ---- Sequential task loop ----
     // The task budget (ADR 0011 D6, amended 2026-09-24) bounds the DECOMPOSED scope
     // of one run: at most 8 tasks from `decompose`, or slices `improve` split out of
@@ -370,7 +374,10 @@ echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT',\"o
     // clean at the pre-merge state, so that map is correct for the tree resolve_merge
     // starts from.
     next_task [label="Next task + mainline refresh", shape=parallelogram, output_schema="routing",
-        script="IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 0)
+        script="git worktree remove --force /tmp/fabro/base-tree >/dev/null 2>&1
+rm -rf /tmp/fabro/base-tree
+git worktree prune >/dev/null 2>&1
+IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 0)
 COUNT=$(jq length /tmp/fabro/tasks.json)
 if [ $IDX -ge $COUNT ]; then echo '{\"context_updates\":{\"tasks_done\":true}}'; exit 0; fi
 TCD=$(cat /tmp/fabro/tasks_coded 2>/dev/null || echo 0)

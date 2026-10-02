@@ -33,6 +33,17 @@ They exist because a local model ignores a shell command it is told about and us
 listed `read_file` instead: two backlog runs on 2026-10-01 made no `fabro-code` call in
 `improve` or `coder`.
 
+Two git-safe tools (`src/gitsafe.rs`, docs/coder-tweaks C4) stand in for what agents used
+`git stash` and `git checkout --` for. `restore_file(path)` restores one file to its content
+at the task base (`/tmp/fabro/task_base_sha`, else the merge base with `base_ref`), or
+deletes it if it did not exist there; it refuses `..`, paths outside the checkout and
+`.github/workflows/`. `baseline_check(command, timeout_s?)` runs a command in a separate
+worktree at the base (`/tmp/fabro/base-tree`) and returns `exit=<n>` and the last 200 lines.
+It links every `node_modules` into the worktree, points `uv` at the checkout's `.venv` with
+`UV_NO_SYNC=1` and the worktree's sources first on `PYTHONPATH`, and says "not available in
+this repository" when there is nothing to share. Because it can run for 10 minutes, the `io`
+server's `tool_timeout` is 660 s.
+
 The sandbox `type = "sandbox"` MCP transport is wired per C6. The `serve` service is
 mounted at the HTTP router fallback (any path), because the fabro sandbox client's
 `initialize` does not hit `/mcp` (spike check 1).

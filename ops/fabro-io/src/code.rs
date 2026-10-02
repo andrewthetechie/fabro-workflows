@@ -18,9 +18,9 @@ use std::time::Duration;
 
 /// How long one wrapper call may run.
 ///
-/// Below the 30 s `tool_timeout` of `[run.agent.mcps.io]` in each `workflow.toml`, so
-/// a slow call returns this module's own error instead of fabro's silent tool
-/// timeout (ADR 0016: the server's absence is silent in fabro). A healthy call takes
+/// Well below the `tool_timeout` of `[run.agent.mcps.io]` in each `workflow.toml` (30 s
+/// until docs/coder-tweaks 04 raised it to 660 s), so a slow call returns this
+/// module's own error instead of fabro's silent tool timeout (ADR 0016: the server's absence is silent in fabro). A healthy call takes
 /// about 0.3 s, including the wrapper's `codegraph sync`.
 const CALL_TIMEOUT: Duration = Duration::from_secs(25);
 
@@ -186,7 +186,7 @@ pub fn find_checkout(dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// The checkout the tools run in: `FABRO_CODE_ROOT` if set, else found from the cwd.
-fn checkout() -> Result<PathBuf, String> {
+pub fn checkout() -> Result<PathBuf, String> {
     if let Ok(root) = std::env::var("FABRO_CODE_ROOT") {
         return Ok(PathBuf::from(root));
     }

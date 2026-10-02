@@ -22,7 +22,7 @@ use rmcp::transport::streamable_http_server::{
 };
 use rmcp::{ErrorData, RoleServer};
 
-use crate::{code, common, inputs, manifest, submit};
+use crate::{code, common, gitsafe, inputs, manifest, submit};
 
 const DEFAULT_PORT: u16 = 7391;
 const INPUTS: &str = "inputs";
@@ -85,6 +85,13 @@ impl IoHandler {
         Tool::new(verb.tool, code::description(verb), schema)
     }
 
+    /// One git-safe tool (docs/coder-tweaks C4), listed for every known stage.
+    fn gitsafe_tool(name: &'static str, description: String, schema: serde_json::Value) -> Tool {
+        let schema: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_value(schema).expect("static gitsafe schema is an object");
+        Tool::new(name, description, schema)
+    }
+
     /// The stage the server should serve right now, from the current stage.json.
     fn current() -> Option<(String, manifest::Stage)> {
         let (node, _) = common::read_stage()?;
@@ -114,6 +121,7 @@ impl ServerHandler for IoHandler {
             };
             if !tools.is_empty() {
                 tools.extend(code::VERBS.iter().map(Self::code_tool));
+                tools.extend(gitsafe::tools().into_iter().map(|(n, d, s)| Self::gitsafe_tool(n, d, s)));
             }
             Ok(ListToolsResult { tools, ..Default::default() })
         }
@@ -124,7 +132,12 @@ impl ServerHandler for IoHandler {
         match name {
             INPUTS => Some(Self::inputs_tool()),
             SUBMIT if stage.output.is_some() => Some(Self::submit_tool(&stage)),
-            other => code::verb(other).map(Self::code_tool),
+            other => code::verb(other).map(Self::code_tool).or_else(|| {
+                gitsafe::tools()
+                    .into_iter()
+                    .find(|(n, _, _)| *n == other)
+                    .map(|(n, d, s)| Self::gitsafe_tool(n, d, s))
+            }),
         }
     }
 
@@ -164,6 +177,13 @@ impl ServerHandler for IoHandler {
         if let Some(verb) = code::verb(name) {
             let args = request.arguments.unwrap_or_default();
             return Ok(match code::run(verb, &args).await {
+                Ok(text) => CallToolResult::success(vec![Content::text(text)]),
+                Err(text) => CallToolResult::error(vec![Content::text(text)]),
+            });
+        }
+        if gitsafe::is_tool(name) {
+            let args = request.arguments.unwrap_or_default();
+            return Ok(match gitsafe::call(name, &args).await {
                 Ok(text) => CallToolResult::success(vec![Content::text(text)]),
                 Err(text) => CallToolResult::error(vec![Content::text(text)]),
             });

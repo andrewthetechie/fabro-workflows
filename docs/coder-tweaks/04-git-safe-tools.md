@@ -76,3 +76,47 @@ reasonable each time; only the mechanism is dangerous.
   changes. That is acceptable for read-only checks, but the spike must check it.
 - **The 660s tool timeout:** the alternative is a background job that the agent polls,
   which DeepSeek will not use reliably. Take the timeout.
+
+## Spike results (2026-10-01)
+
+Run on the host, in `fabro-python-node:local`, against a copy of `lawncare-saas` (the
+sandbox clone is shallow, so the base was made by committing a marker edit and adding the
+worktree at `HEAD~1`). The other three repositories were **not** spiked: the build tree
+holds their clones but each needs its own dependency install, and nothing below was
+measured for them. They get the same generic detection; the doc says so rather than
+claiming a result.
+
+**Python (uv), lawncare-saas.**
+- **A plain `uv run` in the worktree breaks the agent's environment.** With
+  `UV_PROJECT_ENVIRONMENT=<checkout>/.venv`, `uv run --frozen` syncs the shared venv and
+  re-points its editable install at the worktree. The agent's own checkout then imports
+  the **base** code (`backend.__file__` moved to `/tmp/base-tree/src/...`, and the agent's
+  marker attribute vanished). The plan in this file would have shipped that.
+- **`UV_NO_SYNC=1` plus `PYTHONPATH=<worktree>/src` is correct.** The venv stays pointed at
+  the checkout (verified after the run), and imports resolve to the worktree and the base
+  content. `ruff check` ran in 0.05 s. `pytest` ran, but the lawncare suite needs a
+  PostgreSQL the sandbox only has inside a stage, so 13 DB tests errored here; that is the
+  environment, not the method. `mypy` is not in lawncare's dev dependencies, so `uv run
+  mypy` failed to spawn in the base and in the checkout alike.
+- Nothing wrote into the checkout (`git status` clean).
+
+**Node (npm workspaces), lawncare-saas.**
+- Symlinking the checkout's `node_modules` (root, found by walking the tree) into the
+  worktree works: `vitest run` in `frontend/` passed 1,214 tests in 23 s. It wrote
+  `frontend/junit/frontend.xml` into the **worktree**, not the checkout.
+- Caveat: the workspace packages inside the shared `node_modules` are relative symlinks
+  (`node_modules/frontend -> ../frontend`). They resolve against the **checkout**, so a
+  test that imports a sibling workspace package sees the agent's version of it. Same-package
+  imports resolve in the worktree.
+
+**Rust.** Not spiked. A cold `cargo` build of writers-app's Tauri workspace in a worktree
+was not measured, so `baseline_check` sets `CARGO_TARGET_DIR=/tmp/fabro/base-target` (the
+agent's `target/` is never written) and leaves the cost to the caller's `timeout_s`. A
+repository with only `Cargo.toml` and no `node_modules` or `.venv` gets the "not available"
+answer.
+
+The tool therefore does what the spike supports: link every `node_modules`; for the shallowest
+`.venv` that has a `uv.lock` or `pyproject.toml` beside it, set `UV_PROJECT_ENVIRONMENT`,
+`UV_NO_SYNC`, `UV_FROZEN`, `VIRTUAL_ENV`, `PATH` (the venv's `bin` first) and `PYTHONPATH`.
+The tool description tells the model to run its normal command (`uv run pytest ...`,
+`npx vitest run ...`).
