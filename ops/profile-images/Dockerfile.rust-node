@@ -27,6 +27,12 @@ ENV LANG=C.UTF-8 \
     PGCLIENTENCODING=UTF8
 
 ARG GH_VERSION=2.100.0
+# writers-app's CI uses dtolnay/rust-toolchain@stable, so clippy/rustc here must
+# track current stable or lints diverge (1.99 added assert_is_empty and stopped
+# firing float_cmp on literals; the 1.98.1 image passed what CI rejected). The
+# official rust:1.99.0-trixie tag was not published yet (2026-10-01), so rustup
+# installs it over the 1.98.1 base. Drop the rustup step once the tag exists.
+ARG RUST_VERSION=1.99.0
 # .github/workflows/ci.yml sets up node-version: 22 in every job that touches the
 # frontend, and release.yml does the same.
 ARG NODE_VERSION=22.23.2
@@ -49,7 +55,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git jq curl xz-
     libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
     librsvg2-dev libssl-dev libxdo-dev libsoup-3.0-dev \
   && rm -rf /var/lib/apt/lists/* \
-  && rustup component add rustfmt clippy \
+  && rustup toolchain install ${RUST_VERSION} --profile minimal -c rustfmt -c clippy \
+  && rustup default ${RUST_VERSION} \
   && curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
   && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
   && curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \

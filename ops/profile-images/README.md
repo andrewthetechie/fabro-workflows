@@ -10,7 +10,7 @@ dependency caches, and — where its tests need one — a PostgreSQL server.
 | `python` | jelly-swipe | `fabro-python:local` | `python:3.13.15-trixie` | python 3.13.15, **node 20.19.5**, uv | — |
 | `python-node` | lawncare-saas | `fabro-python-node:local` | `node:22.23.2-bookworm-slim` | node 22.23.2, uv + **baked CPython 3.13** | **PostgreSQL 17** |
 | `ts` | womens-fantasy-sports | `fabro-ts:local` | `oven/bun:1.4.2` | bun 1.4.2, **uv + baked CPython 3.14** | **PostgreSQL 18** |
-| `rust-node` | writers-app | `fabro-rust-node:local` | `rust:1.98.1-trixie` | rust 1.98.1, **node 22.23.2** | — |
+| `rust-node` | writers-app | `fabro-rust-node:local` | `rust:1.98.1-trixie` | rust 1.99.0 (rustup over base), **node 22.23.2** | — |
 
 Every image contains `git`, `jq`, `gh` (v2.100.0), `bash`, `fabro-code` and `fabro-io`:
 the clone stage needs `git`, the gates need `jq`, the acquire/claim/validate/open_pr stages need `gh`,
