@@ -394,7 +394,7 @@ echo 0 > /tmp/fabro/round
 echo 0 > /tmp/fabro/review_attempts
 echo 0 > /tmp/fabro/improve_attempts
 echo 0 > /tmp/fabro/merge_attempts
-rm -f /tmp/fabro/improve_result.json
+rm -f /tmp/fabro/improve_result.json /tmp/fabro/improve_touched_tree
 rm -f /tmp/fabro/task-context.md /tmp/fabro/task-code.md
 git rev-parse HEAD > /tmp/fabro/pre_merge_sha
 if git fetch origin main && git merge --no-edit origin/main; then
@@ -561,13 +561,30 @@ fi"]
     // are prerequisites of each other and of nothing else, so appending them
     // after every remaining task would run them out of order.
     //
+    // Backstop (docs/coder-tweaks/06, C5): `improve` is read-only, but runs
+    // 01M3SN85YDECYRDVP3YYPYM6AM (edited 4 tracked files) and 01M3TN6GJK6PG1YEKCE786T16V
+    // (stashed and popped the coder's work) show the prompt alone does not hold. The
+    // first lines revert anything improve's checkpoint changed: HEAD is improve's
+    // checkpoint and HEAD^ the previous stage's, which holds only while EVERY stage
+    // commits (`--allow-empty`); if fabro ever skips empty checkpoints this would
+    // revert the previous stage. The gate's own checkpoint commits the revert. The
+    // file count goes to /tmp/fabro/improve_touched_tree and never fails the task.
+    // The shared triage phase's `improve` runs on a checkout nothing commits back to
+    // a PR branch, so it has no backstop.
+    //
     // `tasks_coded` counts a `ready` task toward the task budget (see next_task) only
     // when it is decomposed scope. EXT is read before a `ready` result overwrites
     // current_task.json, and a split of an extra-review follow-up stamps its slices
     // `from_extra: true`, because `source` becomes `split` and would otherwise lose
     // the exemption.
     improve_gate [label="Validate improved task", shape=parallelogram, output_schema="routing",
-        script="F=/tmp/fabro/improve_result.json
+        script="if git rev-parse -q --verify HEAD^ >/dev/null 2>&1 && ! git diff --quiet HEAD^ HEAD; then
+  N=$(git diff --name-only HEAD^ HEAD | wc -l | tr -d ' ')
+  git diff --name-only HEAD^ HEAD | sed 's/^/improve changed (reverted): /'
+  git revert --no-edit --no-commit HEAD
+  echo $N > /tmp/fabro/improve_touched_tree
+fi
+F=/tmp/fabro/improve_result.json
 A=$(cat /tmp/fabro/improve_attempts 2>/dev/null || echo 0)
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
@@ -644,6 +661,15 @@ echo '{\"context_updates\":{\"task_disposition\":\"'$D'\",\"task_count\":'$TC'}}
     // stale. Only `coder` reads task-code.md: rework and review run after the code
     // changed. next_task deletes it with the dossier.
     //
+    // Call sites (docs/coder-tweaks/07, C6): after the code blocks and before the "Not
+    // copied" list, `## Where these are used` lists `fabro-code callers NAME` for each
+    // backticked identifier under `## Files and symbols` (at most 12 symbols, 15 rows
+    // each, each row followed by its call line trimmed to 160 characters), so the
+    // coder's commonest search is answered before it asks. It shares the 40000-byte
+    // cap with the code blocks, which are counted first; a symbol's call sites are
+    // dropped whole when they would not fit, never a code block. Written only when
+    // fabro-code is on PATH and at least one symbol has callers.
+    //
     // It ALWAYS succeeds and publishes no context key, like `autofix`: an empty or
     // missing dossier means no task-code.md, and the coder reads files as it always did.
     excerpts [label="Copy the code the dossier cites", shape=parallelogram, timeout="5m",
@@ -684,12 +710,35 @@ while read F S E; do
   USED=$((USED + B)); OUT=$((OUT + 1))
   { echo ''; echo \"## $F:$S-$E\"; echo '````'; awk -v s=$S -v e=$E 'NR >= s && NR <= e' \"$F\"; echo '````'; } >> $O.tmp
 done < $R.merged
+CN=0
+if [ $FC = 1 ] && [ $OUT -gt 0 ]; then
+  SYMS=$(awk '/^## /{p=($0==\"## Files and symbols\"); next} p' $D | grep -o '`[^`]*`' | tr -d '`' | sed 's/(.*//' | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | awk '!s[$0]++' | head -n 12)
+  : > $O.cs; CB=200
+  for SYM in $SYMS; do
+    fabro-code callers \"$SYM\" 2>/dev/null | grep -E '^[^ ]+:[0-9]+  ' | head -n 15 > $O.rows
+    [ -s $O.rows ] || continue
+    { echo ''; echo \"### $SYM\"
+      while read ROW; do
+        REF=${ROW%% *}; P=${REF%:*}; LN=${REF##*:}
+        echo \"- $ROW\"
+        if [ -f \"$P\" ]; then TXT=$(awk -v l=$LN 'NR==l' \"$P\" | sed 's/^[[:space:]]*//' | cut -c1-160); if [ -n \"$TXT\" ]; then echo \"    $TXT\"; fi; fi
+      done < $O.rows; } > $O.sym
+    SB=$(wc -c < $O.sym)
+    if [ $((USED + CB + SB)) -gt 40000 ]; then break; fi
+    CB=$((CB + SB)); CN=$((CN + 1)); cat $O.sym >> $O.cs
+  done
+  if [ $CN -gt 0 ]; then
+    { echo ''; echo '## Where these are used'; echo ''; echo 'Call sites of the symbols the dossier names, from the code index (fabro-code callers). Each row is path:line, then the enclosing symbol, then the call line itself. An absent caller is not proof of none: grep still applies.'; cat $O.cs; } >> $O.tmp
+  fi
+  rm -f $O.cs $O.rows $O.sym
+fi
 if [ -n \"$SKIP\" ]; then
   { echo ''; echo '## Not copied: over the 40000-byte cap. Read these with code_show or read_file'; for X in $SKIP; do echo \"- $X\"; done; } >> $O.tmp
 fi
 if [ $OUT -gt 0 ]; then
   mv $O.tmp $O
   echo \"excerpts: copied $OUT range(s), $USED bytes, to $O\"
+  if [ $CN -gt 0 ]; then echo \"excerpts: call sites for $CN symbol(s) appended\"; fi
 else
   rm -f $O.tmp
   echo 'excerpts: the dossier cites no line range in a file that exists; nothing to copy'

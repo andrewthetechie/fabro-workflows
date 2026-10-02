@@ -217,7 +217,7 @@ printf '%s' "$3" > "$T/improve_result.json" && jq --arg v ok1 '._io.visit=$v' "$
 }
 
 ig_setup "$TASKS" "$CUR" "$SPLIT2" 2 0
-OUT=$(sh "$T/improve_gate.sh" 2>/dev/null); RC=$?; J=$(lastjson "$OUT")
+OUT=$( (cd "$T" && sh "$T/improve_gate.sh") 2>/dev/null); RC=$?; J=$(lastjson "$OUT")
 check "split exits 0"               "0"     "$RC"
 check "split disposition"           "split" "$(jq -r '.context_updates.task_disposition' <<<"$J")"
 check "spliced in place, in order"  "a big-module big-migrate z" "$(jq -r '[.[].id]|join(" ")' "$T/tasks.json")"
@@ -228,47 +228,47 @@ check "task_count republished"      "4"     "$(jq -r '.context_updates.task_coun
 
 # Guard 1: a slice can never be split again.
 ig_setup "$TASKS" '{"id":"big-1","title":"S","body":"b","files":[],"source":"split"}' "$SPLIT2" 2 0
-OUT=$(sh "$T/improve_gate.sh" 2>/dev/null)
+OUT=$( (cd "$T" && sh "$T/improve_gate.sh") 2>/dev/null)
 check "slice refuses re-split"      "ready"   "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
 check "refusal leaves queue alone"  "a big z" "$(jq -r '[.[].id]|join(" ")' "$T/tasks.json")"
 check "refusal keeps current_task"  "big-1"   "$(jq -r .id "$T/current_task.json")"
 
 # Guard 2: the per-run budget.
 ig_setup "$TASKS" "$CUR" "$SPLIT2" 2 2
-OUT=$(sh "$T/improve_gate.sh" 2>/dev/null)
+OUT=$( (cd "$T" && sh "$T/improve_gate.sh") 2>/dev/null)
 check "spent budget coerces ready"  "ready" "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
 check "spent budget keeps current"  "big"   "$(jq -r .id "$T/current_task.json")"
 
 ig_setup "$TASKS" "$CUR" '{"disposition":"split","tasks":[{"id":"x","title":"X","body":"b","files":[]}]}' 2 0
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "one slice is invalid"        "1" "$?"
 
 ig_setup "$TASKS" "$CUR" '{"disposition":"split","tasks":[{"id":"z","title":"X","body":"b","files":[]},{"id":"q","title":"Q","body":"b","files":[]}]}' 2 0
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "id colliding with queue"     "1" "$?"
 
 ig_setup "$TASKS" "$CUR" '{"disposition":"split","tasks":[{"id":"dup","title":"X","body":"b","files":[]},{"id":"dup","title":"Q","body":"b","files":[]}]}' 2 0
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "duplicate ids within split"  "1" "$?"
 
 # The replaced task's own id is free to reuse -- it is leaving the queue.
 ig_setup "$TASKS" "$CUR" '{"disposition":"split","tasks":[{"id":"big","title":"X","body":"b","files":[]},{"id":"q","title":"Q","body":"b","files":[]}]}' 2 0
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "slice may reuse replaced id" "0" "$?"
 
 # Splice at both ends of the queue.
 ig_setup "$TASKS" '{"id":"a","source":"decompose"}' "$SPLIT2" 1 0
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "splice at head"              "big-module big-migrate big z" "$(jq -r '[.[].id]|join(" ")' "$T/tasks.json")"
 check "splice at head rewinds to 0" "0" "$(cat "$T/task_index")"
 
 ig_setup "$TASKS" '{"id":"z","source":"decompose"}' "$SPLIT2" 3 0
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "splice at tail"              "a big big-module big-migrate" "$(jq -r '[.[].id]|join(" ")' "$T/tasks.json")"
 
 # The pre-existing dispositions must be untouched by all of the above.
 ig_setup "$TASKS" "$CUR" '{"disposition":"ready","task_id":"big","task_title":"Sharpened","task_body":"nb","task_files":[],"task_covers":["c1"]}' 2 0
-OUT=$(sh "$T/improve_gate.sh" 2>/dev/null)
+OUT=$( (cd "$T" && sh "$T/improve_gate.sh") 2>/dev/null)
 check "ready disposition"           "ready"     "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
 check "ready rewrites current_task" "Sharpened" "$(jq -r .title "$T/current_task.json")"
 check "ready flat: body"            "nb"        "$(jq -r .body "$T/current_task.json")"
@@ -278,7 +278,7 @@ check "ready flat: explicit covers" "c1"        "$(jq -r '.covers|join(" ")' "$T
 # id the agent supplies cannot replace it with another (the gate keeps byte-for-byte).
 CURP='{"id":"big","title":"Big","body":"b","files":["f.py"],"covers":["c1","c2"],"priority":"high","source":"decompose"}'
 ig_setup "$TASKS" "$CURP" '{"disposition":"ready","task_id":"other","task_title":"S","task_body":"nb"}' 2 0
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "flat ready: id from current"       "big"   "$(jq -r .id "$T/current_task.json")"
 check "flat ready: files from current"    "f.py"  "$(jq -r '.files|join(" ")' "$T/current_task.json")"
 check "flat ready: covers from current"   "c1 c2" "$(jq -r '.covers|join(" ")' "$T/current_task.json")"
@@ -288,19 +288,19 @@ check "flat ready: no null keys"          "0"     "$(jq '[.[]|select(.==null)]|l
 # The nested shape that corrupted in run 01M3SFYASZQ7MEKVKR1A38C4J0 is no longer valid
 # input, and an empty body is not a body.
 ig_setup "$TASKS" "$CUR" '{"disposition":"ready","task":{"id":"big","title":"S","body":"nb"}}' 2 0
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "nested task is refused"            "1"     "$?"
 ig_setup "$TASKS" "$CUR" '{"disposition":"ready","task_title":"S","task_body":""}' 2 0
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "empty task_body is refused"        "1"     "$?"
 check "ready leaves queue alone"    "a big z"   "$(jq -r '[.[].id]|join(" ")' "$T/tasks.json")"
 
 ig_setup "$TASKS" "$CUR" '{"disposition":"redundant","reason":"done"}' 2 0
-OUT=$(sh "$T/improve_gate.sh" 2>/dev/null)
+OUT=$( (cd "$T" && sh "$T/improve_gate.sh") 2>/dev/null)
 check "redundant disposition"       "redundant" "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
 
 ig_setup "$TASKS" "$CUR" '{"disposition":"nonsense"}' 2 0
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "unknown disposition retries" "1" "$?"
 
 # A truncated counter file must not read as "budget unspent". Unquoted `[ $SR
@@ -308,13 +308,13 @@ check "unknown disposition retries" "1" "$?"
 # circuits the && and silently PERMITS the split.
 ig_setup "$TASKS" "$CUR" "$SPLIT2" 2 ""
 : > "$T/split_rounds"
-OUT=$(sh "$T/improve_gate.sh" 2>/dev/null)
+OUT=$( (cd "$T" && sh "$T/improve_gate.sh") 2>/dev/null)
 check "empty split_rounds is not a crash" "split" "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
 check "empty split_rounds counts as 0"    "1"     "$(cat "$T/split_rounds")"
 
 # Same for a garbage counter: treat as spent-from-zero, never as an error.
 ig_setup "$TASKS" "$CUR" "$SPLIT2" 2 "garbage"
-OUT=$(sh "$T/improve_gate.sh" 2>/dev/null)
+OUT=$( (cd "$T" && sh "$T/improve_gate.sh") 2>/dev/null)
 check "garbage split_rounds normalised"   "split" "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
 
 # `oversized_tasks` and `task_count` are interpolated bare into the routing
@@ -326,6 +326,47 @@ printf '%s' '{"status":"issues","summary":"s","issues":[{"id":"a","title":"A","b
 OUT=$(sh "$T/decompose_gate.sh" 2>&1)
 check "routing JSON always parses"  "0" "$(jq -e . >/dev/null 2>&1 <<<"$(lastjson "$OUT")"; echo $?)"
 check "oversized_tasks is a number" "number" "$(jq -r '.context_updates.oversized_tasks | type' <<<"$(lastjson "$OUT")")"
+
+# ---------------------------------------------------------------------------
+# improve_gate backstop (docs/coder-tweaks/06): REAL git. An improve checkpoint
+# that changed the tree is reverted (staged, not committed) and counted; a clean
+# one is left alone. Only HEAD is reverted, never the stage before it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "improve_gate backstop"
+export ORIG_PATH_SAVE="$PATH"; PATH="$ORIG_PATH"
+T="$WORK/igb"; mkdir -p "$T/repo"; stage improve_gate
+mkreadok ok1 current_task.json issue.json
+ig_git_setup() {
+    rm -rf "$T/repo" "$T"/improve_touched_tree; mkdir -p "$T/repo"
+    ( cd "$T/repo" && git init -q . && git config user.email t@t && git config user.name t \
+      && echo one > mod.txt && echo two > del.txt && git add -A && git commit -qm base \
+      && echo coder > coder.txt && git add -A && git commit -qm coder-checkpoint )
+    printf '%s' "$TASKS" > "$T/tasks.json"; printf '%s' "$CUR" > "$T/current_task.json"
+    printf '%s' '{"disposition":"redundant","reason":"r","_io":{"visit":"ok1"}}' > "$T/improve_result.json"
+    echo 2 > "$T/task_index"; echo 0 > "$T/split_rounds"
+}
+ig_git_setup
+( cd "$T/repo" && echo changed > mod.txt && git rm -q del.txt && echo new > add.txt \
+  && git add -A && git commit -qm improve-checkpoint )
+OUT=$( (cd "$T/repo" && sh "$T/improve_gate.sh") 2>/dev/null); RC=$?
+check "touched improve: exits 0"           "0" "$RC"
+check "touched improve: routing unchanged" "redundant" "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
+check "touched improve: file count"        "3" "$(cat "$T/improve_touched_tree" 2>/dev/null)"
+check "touched improve: names the files"   "3" "$(grep -c '^improve changed (reverted): ' <<<"$OUT")"
+check "touched improve: tree is the coder's" "" "$(cd "$T/repo" && git diff --cached --name-only HEAD^ -- coder.txt)"
+check "touched improve: mod.txt restored"  "one" "$(cat "$T/repo/mod.txt")"
+check "touched improve: del.txt restored"  "two" "$(cat "$T/repo/del.txt")"
+check "touched improve: add.txt removed"   "1" "$([ -e "$T/repo/add.txt" ]; echo $?)"
+check "touched improve: coder work kept"   "coder" "$(cat "$T/repo/coder.txt")"
+check "touched improve: revert is staged, not committed" "improve-checkpoint" "$(cd "$T/repo" && git log -1 --format=%s)"
+ig_git_setup
+( cd "$T/repo" && git commit -q --allow-empty -m improve-checkpoint )
+OUT=$( (cd "$T/repo" && sh "$T/improve_gate.sh") 2>/dev/null)
+check "clean improve: nothing written"     "1" "$([ -e "$T/improve_touched_tree" ]; echo $?)"
+check "clean improve: nothing reverted"    "" "$(cd "$T/repo" && git status --porcelain)"
+check "clean improve: routing unchanged"   "redundant" "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
+PATH="$ORIG_PATH_SAVE"
 
 # ---------------------------------------------------------------------------
 # next_task + improve_gate — the split must resume ON the first slice
@@ -356,7 +397,7 @@ cat > "$T/improve_result.json" <<'EOF'
  {"id":"big-migrate","title":"Migrate callers","body":"y","files":[],"covers":["c2","c3"]},
  {"id":"big-adr","title":"Record ADR","body":"z","files":[],"covers":["c4","c5"]}],"_io":{"visit":"ok1"}}
 EOF
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "queue spliced"               "small big-module big-migrate big-adr" "$(jq -r '[.[].id]|join(" ")' "$T/tasks.json")"
 
 # The regression this guards: an off-by-one here silently SKIPS the first slice.
@@ -364,7 +405,7 @@ OUT=$(sh "$T/next_task.sh" 2>/dev/null)
 check "resumes on the first slice"  "big-module" "$(jq -r .id "$T/current_task.json")"
 check "disposition reset by next"   "none"       "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
 
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "slice cannot re-split"       "small big-module big-migrate big-adr" "$(jq -r '[.[].id]|join(" ")' "$T/tasks.json")"
 
 sh "$T/next_task.sh" >/dev/null 2>&1
@@ -1557,6 +1598,54 @@ check "cap: listed ranges"              "4" "$(grep -c '^- src/big.py' "$T/task-
 check "cap: under the byte cap"         "1" "$([ "$(wc -c < "$T/task-code.md")" -lt 42000 ] && echo 1 || echo 0)"
 check "cap: says how much"              "1" "$(grep -c 'copied 8 range(s), 36000 bytes' <<<"$OUT")"
 
+# 4b. Call sites (docs/coder-tweaks/07). A stub fabro-code whose `callers` prints two
+# rows and a footer: both rows appear, each followed by its call line, and no footer.
+cat > "$T/bin/fabro-code" <<'FC'
+#!/bin/sh
+case "$1" in
+  show) echo '## calls'; exit 0 ;;
+  callers)
+    case "$2" in
+      f) echo 'src/a.py:30  function  g'; echo 'tests/t.py:5  function  test_f'; echo '[index synced]'; exit 0 ;;
+      *) echo "no callers of $2 found"; exit 1 ;;
+    esac ;;
+esac
+exit 64
+FC
+chmod +x "$T/bin/fabro-code"
+cat > "$T/task-context.md" <<'DOSSIER'
+# Task dossier: t1 Do the thing
+## Files and symbols
+- src/a.py:10-14 `f` and `nobody(x)`; `src/a.py:2` is not a symbol; `f` again
+## Tests
+- tests/t.py:29 `ignored_symbol`
+DOSSIER
+OUT=$(ex_run "$T/bin:$NOFC_PATH"); RC=$?
+check "callers: exit 0"                 "0" "$RC"
+check "callers: section after the code" "## src/a.py:1-14|## tests/t.py:26-30|## Where these are used" \
+    "$(grep '^## ' "$T/task-code.md" | paste -sd'|' -)"
+check "callers: both rows"              "2" "$(grep -c '^- .*:[0-9]*  function  ' "$T/task-code.md")"
+check "callers: call line follows row"  "    line 30 of a" "$(grep -A1 '^- src/a.py:30  function  g' "$T/task-code.md" | tail -1)"
+check "callers: second call line"       "    line 5 of t" "$(grep -A1 '^- tests/t.py:5  ' "$T/task-code.md" | tail -1)"
+check "callers: no footer"              "0" "$(grep -c 'index synced' "$T/task-code.md")"
+check "callers: one symbol listed"      "1" "$(grep -c '^### ' "$T/task-code.md")"
+check "callers: scratch files removed"  "0" "$(ls "$T"/task-code.md.* 2>/dev/null | grep -c .)"
+OUT=$(ex_run "$NOFC_PATH")
+check "callers: no fabro-code, no section" "0" "$(grep -c 'Where these are used' "$T/task-code.md")"
+# Near the cap the call sites go first: eight 4500-byte code blocks leave no room.
+{ echo '# Task dossier: big'; echo '## Files and symbols'; echo '- `s1` `s2` `s3` `s4` `s5` `s6` `s7` `s8` `s9` `s10` `s11` `s12`'; for i in 0 1 2 3 4 5 6 7 8 9 10 11; do
+    echo "- src/big.py:$((i * 160 + 1))-$((i * 160 + 150))"; done; } > "$T/task-context.md"
+cat > "$T/bin/fabro-code" <<'FC'
+#!/bin/sh
+[ "$1" = callers ] || { echo '## calls'; exit 0; }
+i=0; while [ $i -lt 15 ]; do echo "src/big.py:$((i + 1))  function  caller$i"; i=$((i + 1)); done
+FC
+OUT=$(ex_run "$T/bin:$NOFC_PATH"); RC=$?
+check "callers cap: exit 0"             "0" "$RC"
+check "callers cap: every code block kept" "8" "$(grep -c '^## src/big.py' "$T/task-code.md")"
+check "callers cap: some call sites cut" "1" "$([ "$(grep -c '^### ' "$T/task-code.md")" -lt 12 ] && echo 1 || echo 0)"
+check "callers cap: under the byte cap" "1" "$([ "$(wc -c < "$T/task-code.md")" -le 42000 ] && echo 1 || echo 0)"
+
 # 5. A dossier with no usable range leaves no task-code.md behind.
 echo stale > "$T/task-code.md"
 printf '%s\n' '# Task dossier: none' '- src/a.py has no range' > "$T/task-context.md"
@@ -1628,14 +1717,14 @@ bd_setup() { # bd_setup <tasks_coded> <task_index> <last task id>
 bd_setup 3 1 2
 printf '%s' '{"id":"t1","title":"T1","body":"b","files":[],"covers":[],"source":"decompose"}' > "$T/current_task.json"
 printf '%s' '{"disposition":"ready","task_title":"T1","task_body":"sharpened","_io":{"visit":"ok1"}}'> "$T/improve_result.json"
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "ready counts toward the budget" "4" "$(cat "$T/tasks_coded")"
 printf '%s' '{"disposition":"redundant","reason":"already done","_io":{"visit":"ok1"}}'> "$T/improve_result.json"
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "redundant does not count"       "4" "$(cat "$T/tasks_coded")"
 printf '%s' '{"id":"x1","title":"X1","body":"b","files":[],"covers":[],"source":"extra-review"}' > "$T/current_task.json"
 printf '%s' '{"disposition":"ready","task_title":"X1","task_body":"sharpened","_io":{"visit":"ok1"}}'> "$T/improve_result.json"
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "extra-review ready does not count" "4" "$(cat "$T/tasks_coded")"
 
 # 1b. A split of an extra-review follow-up stamps its slices from_extra, and a slice
@@ -1646,17 +1735,17 @@ jq '. + [{"id":"x1","title":"X1","body":"b","files":[],"covers":[],"source":"ext
 jq '.[8]' "$T/tasks.json" > "$T/current_task.json"
 rm -f "$T/split_rounds"
 printf '%s' '{"disposition":"split","tasks":[{"id":"x1a","title":"X1a","body":"b"},{"id":"x1b","title":"X1b","body":"b"}],"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "extra split: slices carry from_extra" "true true" "$(jq -r '[.[8:][] | .from_extra | tostring] | join(" ")' "$T/tasks.json")"
 check "extra split: nothing counted"   "4" "$(cat "$T/tasks_coded")"
 jq '.[8]' "$T/tasks.json" > "$T/current_task.json"
 printf '%s' '{"disposition":"ready","task_title":"X1a","task_body":"sharpened","_io":{"visit":"ok1"}}'> "$T/improve_result.json"
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "extra slice ready does not count" "4" "$(cat "$T/tasks_coded")"
 bd_setup 4 1 2
 printf '%s' '{"disposition":"split","tasks":[{"id":"t1a","title":"T1a","body":"b"},{"id":"t1b","title":"T1b","body":"b"}],"_io":{"visit":"ok1"}}'> "$T/improve_result.json"
 jq '.[0]' "$T/tasks.json" > "$T/current_task.json"
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "decompose split: slices not exempt" "false false" "$(jq -r '[.[0:2][] | .from_extra | tostring] | join(" ")' "$T/tasks.json")"
 rm -f "$T/split_rounds"
 
@@ -1907,7 +1996,7 @@ ig_run() { # ig_run <improved body>
     jq -n --arg m "$MKR" '{number:7,labels:[],body:($m + "\n\nold body")}' > "$T/issue.json"
     jq -n --arg b "$1" '{status:"improved",body:$b,_io:{visit:"ok1"}}' > "$T/improve.json"
     echo 0 > "$T/improve_attempts"; : > "$T/gh.log"; rm -f "$T/improved_body.md"
-    sh "$T/improve_gate.sh" >/dev/null 2>&1
+    (cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 }
 printf '{"number":7,"title":"t","body":"b","labels":[],"comments":[],"url":"u"}' > "$T/issue_fixture.json"
 ig_run 'new body, marker dropped'
@@ -1919,7 +2008,7 @@ check "marker moved: only once"        "1" "$(grep -cF "$MKR" "$T/improved_body.
 jq -n '{number:7,labels:[],body:"a human report"}' > "$T/issue.json"
 jq -n '{status:"improved",body:"better report",_io:{visit:"ok1"}}' > "$T/improve.json"
 echo 0 > "$T/improve_attempts"; rm -f "$T/improved_body.md"
-sh "$T/improve_gate.sh" >/dev/null 2>&1
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "no marker: body untouched"      "better report" "$(cat "$T/improved_body.md")"
 
 # --- plan_gate (ADR 0015 C1/C4) ---
@@ -2877,7 +2966,7 @@ else
     printf '%s' '{"disposition":"ready","reason":"r","task_title":"Sharpened","task_body":"new body","task_covers":["c1"]}' > "$T/flat.json"
     fabro-io submit --file "$T/flat.json" >/dev/null 2>&1; RC=$?
     check "improve e2e: flat ready accepted by submit" "0" "$RC"
-    OUT=$(sh "$T/improve_gate.sh" 2>/dev/null); RC=$?
+    OUT=$( (cd "$T" && sh "$T/improve_gate.sh") 2>/dev/null); RC=$?
     check "improve e2e: gate exits 0"        "0"         "$RC"
     check "improve e2e: gate routes ready"   "ready"     "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
     check "improve e2e: title"               "Sharpened" "$(jq -r .title "$T/current_task.json")"
