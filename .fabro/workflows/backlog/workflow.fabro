@@ -294,7 +294,7 @@ mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra
 echo 0 > /tmp/fabro/extra_round
 echo 0 > /tmp/fabro/split_rounds
 echo 0 > /tmp/fabro/tasks_coded
-rm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue
+rm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue /tmp/fabro/stuck_reason.md
 ./.fabro/setup.sh
 grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
 if command -v fabro-code >/dev/null; then fabro-code index; fabro-code map || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi
@@ -355,6 +355,7 @@ if [ \"$S\" = issues ]; then
     echo 'improve decides what to do about it: it runs per task against the checkout as it will actually be, and can split.'
   fi
 fi
+if [ \"$S\" = needs_human_review ]; then jq -r '.summary // empty' $F > /tmp/fabro/stuck_reason.md 2>/dev/null || true; fi
 echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT',\"oversized_tasks\":'$OVER'}}'"]
 
     // The first lines drop the worktree `baseline_check` makes at /tmp/fabro/base-tree
@@ -945,11 +946,48 @@ S=$(jq -r '.summary // empty' /tmp/fabro/review/verdict.json 2>/dev/null || true
 { echo '### Task: '$T; echo '- Review: '$S; echo; } >> /tmp/fabro/completed.md
 echo integrated"]
 
+    // `task_exempt` says whether the current task is an extra-review follow-up (or a
+    // slice split from one), which the ladder's exhaustion edge needs. It is looked
+    // up in tasks.json by id, not read from current_task.json: improve_gate rewrites
+    // current_task.json without `source`/`from_extra`. Written on every visit.
     rework_router [label="Escalate rework round", shape=parallelogram, output_schema="routing",
         script="R=$(cat /tmp/fabro/round 2>/dev/null || echo 0)
 R=$((R+1))
 echo $R > /tmp/fabro/round
-echo '{\"context_updates\":{\"round\":'$R'}}'"]
+EX=$(jq -r --slurpfile cur /tmp/fabro/current_task.json '[.[] | select(.id == $cur[0].id)] | if length == 0 then \"false\" elif ((.[0].source == \"extra-review\") or (.[0].from_extra == true)) then \"true\" else \"false\" end' /tmp/fabro/tasks.json 2>/dev/null || echo false)
+case \"$EX\" in true) ;; *) EX=false ;; esac
+echo '{\"context_updates\":{\"round\":'$R',\"task_exempt\":'$EX'}}'"]
+
+    // An extra-review follow-up that the whole rework ladder could not get past
+    // review is reverted and the run goes on, instead of waiting at human_rescue.
+    // The follow-up fixes a branch whose decomposed tasks all passed review, so
+    // dropping it costs one fix. Waiting at the gate costs the whole run: its 4h
+    // default is mark_stuck, which throws away every task that landed.
+    //
+    // Cost, run 01M3XB5VAKR65RAVBFVD9SYYNS on 2026-10-02, womens-fantasy-sports#1300:
+    // extra_decompose emitted a follow-up that required a comment edit in
+    // `.github/workflows/test-frontend.yml`. All six rework rounds correctly refused
+    // to touch the file, the reviewer rejected every round for its absence, and the
+    // gate expired. Three reviewed tasks and 8.5 hours were lost, and no PR was opened.
+    //
+    // `round=6` is the first round past tier 4 only. After a human's freeform guidance
+    // (record_guidance -> rework_t4) the rounds go past 6 and use the old route back
+    // to human_rescue, so the operator who is working with the run keeps it.
+    // `git restore` puts the index and the tree back to the task base, and deletes
+    // files the task added. The checkpoint after this node commits the revert, the
+    // same as improve_gate's `--no-commit` revert. The entry in completed.md puts the
+    // drop in the PR body.
+    drop_followup [label="Drop the follow-up the ladder could not land", shape=parallelogram,
+        script="set -e
+BASE=$(cat /tmp/fabro/task_base_sha)
+git cat-file -e \"$BASE^{commit}\"
+git restore --source=\"$BASE\" --staged --worktree -- .
+git diff --quiet \"$BASE\" --
+I=$(jq -r '.id // \"?\"' /tmp/fabro/current_task.json)
+T=$(jq -r '.title // \"?\"' /tmp/fabro/current_task.json)
+S=$(jq -r '.summary // empty' /tmp/fabro/review/verdict.json 2>/dev/null || true)
+{ echo '### Dropped follow-up: '$T; echo '- Not in this PR. The extra-review follow-up `'$I'` was still rejected after every rework tier, so its changes were reverted. It needs a human.'; echo '- Last review: '$S; echo; } >> /tmp/fabro/completed.md
+echo 'dropped follow-up '$I': tree restored to the task base '$BASE"]
 
     rework_t1 [label="Rework (tier 1: coders)", class="coder", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
     rework_t2 [label="Rework (tier 2: glm-5.3-flash)", class="coder-t2", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
@@ -1523,13 +1561,23 @@ echo done"]
     // entirely. That is what stranded jelly-swipe#353 and lawncare-saas#2277 on
     // 2026-09-19. /tmp/fabro/issue_number is written by `claim` before any network
     // call, so it is there whenever the run got past input validation at all.
+    //
+    // The comment carries the decomposer's summary when decompose_gate routed here on
+    // needs_human_review (stuck_reason.md, which prep deletes). Otherwise it is the
+    // generic line. The comment file is written only when a number was found, and the
+    // directory exists whenever claim wrote that number.
     mark_stuck [label="Mark stuck", shape=parallelogram,
         script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || true)
 case \"$N\" in '' | *[!0-9]*) N=$(cat /tmp/fabro/issue_number 2>/dev/null || echo 0) ;; esac
 case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
 if [ \"$N\" != 0 ]; then
   gh issue edit $N --remove-label agent-in-progress --add-label agent-stuck || true
-  gh issue comment $N --body 'Agent run could not complete this issue and gave up. See the fabro run for details.' || true
+  if [ -s /tmp/fabro/stuck_reason.md ]; then
+    { echo 'Agent run stopped before implementing this issue. The decomposer reported:'; echo; cat /tmp/fabro/stuck_reason.md; } > /tmp/fabro/stuck_comment.md
+  else
+    echo 'Agent run could not complete this issue and gave up. See the fabro run for details.' > /tmp/fabro/stuck_comment.md
+  fi
+  gh issue comment $N --body-file /tmp/fabro/stuck_comment.md || true
 fi
 echo done"]
 
@@ -1545,6 +1593,12 @@ echo done"]
     decompose_gate -> decompose     [condition="outcome=failed"]
     decompose_gate -> next_task     [condition="context.decomp_status=issues"]
     decompose_gate -> close_noop    [condition="context.decomp_status=no_work"]
+    // A decomposer that says needs_human_review (most often: a declared blocker has
+    // not landed) leaves nothing for the rescue gate to retry. Guidance goes to
+    // rework_t4 with no task, and [P] finds an empty tree. So it goes straight to
+    // mark_stuck, which posts the decomposer's summary on the issue and frees the
+    // coder box, instead of holding it at the gate for up to 4h.
+    decompose_gate -> mark_stuck    [condition="context.decomp_status=needs_human_review"]
     decompose_gate -> human_rescue
 
     next_task -> extra_prep         [condition="context.tasks_done=true"]
@@ -1609,7 +1663,11 @@ echo done"]
     rework_router -> rework_t2      [condition="context.round>=2 && context.round<4"]
     rework_router -> rework_t3      [condition="context.round=4"]
     rework_router -> rework_t4      [condition="context.round=5"]
+    rework_router -> drop_followup  [condition="context.round=6 && context.task_exempt=true"]
     rework_router -> human_rescue
+
+    drop_followup -> next_task      [condition="outcome=succeeded"]
+    drop_followup -> human_rescue
 
     rework_t1 -> autofix            [condition="outcome=succeeded"]
     // Tier 1 runs on a single-slot local box, whose failure is usually slowness or a

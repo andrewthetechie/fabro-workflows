@@ -56,6 +56,14 @@ The diff implements one task out of a sequence. Changes that earlier tasks in th
 run already landed are not in this diff and are not yours to judge. Judge this diff
 against the acceptance criteria in `current_task.json` — nothing more.
 
+Files under `.github/workflows/` are out of reach for this run: the run pushes its
+branch with a token that lacks GitHub's `workflow` scope, so a commit that touches
+one of those files makes the branch unpushable. No stage of this run is allowed to
+edit them, even for a comment. If the task asks for a change to one of them, its
+absence is not a `blocking` finding. No rework round can make that change, so
+blocking on it only loops. At most, record it as a `nit` that names the edit a
+human must make.
+
 ## Finding bar
 
 Emit a `blocking` finding only when all of these are true:

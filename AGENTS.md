@@ -73,9 +73,9 @@ ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp 
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
 ```
 
-Baselines as of 2026-10-01 (ADR 0013 added four merge-phase nodes; ADR 0015 added `plan`, `plan_gate` and `apply_split`; the `rework_t1 -> rework_router` escalation edge added one backlog edge; `excerpts` added one backlog node and a net three edges), against **fabro 0.362.0-nightly.0** (review+merge shared and imported; ADR 0011 added
+Baselines as of 2026-10-02 (ADR 0013 added four merge-phase nodes; ADR 0015 added `plan`, `plan_gate` and `apply_split`; the `rework_t1 -> rework_router` escalation edge added one backlog edge; `excerpts` added one backlog node and a net three edges; `drop_followup` added one backlog node and three edges, and `decompose_gate -> mark_stuck` one more), against **fabro 0.362.0-nightly.0** (review+merge shared and imported; ADR 0011 added
 `autofix` and `file_remainder`):
-`Backlog (66 nodes, 155 edges)` with exactly one warning — `issue_number` unbound in
+`Backlog (67 nodes, 159 edges)` with exactly one warning — `issue_number` unbound in
 `claim` (draft 10's deliberate fail-closed input, the same shape as `pr_number`) — and
 `PrReview (34 nodes, 73 edges)` with exactly one warning — `pr_number` unbound in
 `validate_input` — and `IssueTriage (16 nodes, 36 edges)` clean, and `ArchReview (24 nodes, 54 edges)` clean. Both include the 13 nodes of `_shared/triage/`. Backlog and PrReview both include the ~25
@@ -128,7 +128,7 @@ the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them 
 fixtures:
 
 ```sh
-./ops/test-task-gates.sh      # 595 checks on the Mac, 671 in a profile image; offline
+./ops/test-task-gates.sh      # 736 checks on the Mac, 824 in a profile image; offline
 ```
 
 It needs only `jq`, `awk` and `git` — no `python3`, which `fabro-ts` and `fabro-python-node` do not ship — so it belongs in the same pre-push hook and also runs inside every profile image, the one way to test the counters against the sandbox's own mawk and jq (`jq 1.6` in `fabro-python-node`). It covers
@@ -146,7 +146,9 @@ the code-index lines of every workflow's entry node (`backlog` `prep`, `pr-revie
 `arch-review` `prep`, `issue-triage` `acquire`), each with and without `fabro-code` on
 `PATH`. Since 2026-10-01 it also covers `excerpts`, which copies the code the task dossier
 cites into `task-code.md` for the coder: ranges, merging, the byte cap, and single lines
-with and without `fabro-code`. Inside a profile image, where `codegraph` exists, it also runs the `fabro-code`
+with and without `fabro-code`. Since 2026-10-02 it also covers `rework_router`'s
+exemption lookup, `drop_followup` (real git), and the `needs_human_review` route from
+`decompose_gate` to `mark_stuck` with the decomposer's reason. Inside a profile image, where `codegraph` exists, it also runs the `fabro-code`
 wrapper against a real-git fixture; on the Mac that section prints `SKIP`.
 It says nothing about whether an agent fills a contract correctly.
 

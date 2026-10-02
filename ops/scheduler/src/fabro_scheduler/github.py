@@ -167,7 +167,34 @@ def is_eligible(payload: Mapping[str, Any]) -> bool:
     labels = _label_names(payload)
     if REQUIRED_LABEL not in labels:
         return False
-    return not labels & EXCLUDED_LABELS
+    if labels & EXCLUDED_LABELS:
+        return False
+    return open_blockers(payload) == 0
+
+
+def open_blockers(payload: Mapping[str, Any]) -> int:
+    """How many of the issue's GitHub `blocked_by` dependencies are still open.
+
+    `issue_dependencies_summary.blocked_by` counts the open ones only
+    (`total_blocked_by` counts all of them), and it rides on every object of the
+    `GET /issues` list, so this costs no extra request. An issue with an open
+    blocker is not a queue item: `backlog` would implement it against a `main`
+    that lacks the blocker's work. On 2026-10-02 run 01M3XAQJBC36XX9AVY65Z23TP9
+    took a coder box for womens-fantasy-sports#1279 while its blocker #1278 was
+    still open, and the decomposer could only report `needs_human_review`.
+
+    The summary is part of the response body, so a blocker closing changes the
+    collection's ETag and the next poll sees the issue again. A missing or
+    malformed summary counts as no blockers, which is the behaviour before this
+    check existed.
+    """
+    summary = payload.get("issue_dependencies_summary")
+    if not isinstance(summary, Mapping):
+        return 0
+    count = summary.get("blocked_by")
+    if isinstance(count, bool) or not isinstance(count, int):
+        return 0
+    return max(count, 0)
 
 
 def fetch_issues(
@@ -244,6 +271,15 @@ def fetch_issues(
 
     seen_at = datetime.now(UTC)
     issues = [_to_issue(repo, item, seen_at) for item in payload if is_eligible(item)]
+    for item in payload:
+        # An `agent` issue missing from the queue page needs a reason somewhere.
+        if isinstance(item, Mapping) and open_blockers(item) > 0:
+            log.info(
+                "github: %s#%s held out of the queue: %d open blocker(s)",
+                repo,
+                item.get("number"),
+                open_blockers(item),
+            )
 
     new_etag = response.headers.get("etag") or None
     log.info(

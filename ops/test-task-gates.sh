@@ -196,6 +196,20 @@ dg_setup '{"status":"issues","summary":"s","issues":[{"id":"","title":"A","body"
 sh "$T/decompose_gate.sh" >/dev/null 2>&1
 check "invalid entry still retries" "1" "$?"
 
+# needs_human_review routes straight to mark_stuck, which posts the summary on the
+# issue. The gate is the only writer of stuck_reason.md; prep deletes it.
+rm -f "$T/stuck_reason.md"
+dg_setup '{"status":"needs_human_review","summary":"blocked by #1278, which is not merged","issues":[]}'
+OUT=$(sh "$T/decompose_gate.sh" 2>&1); RC=$?; J=$(lastjson "$OUT")
+check "needs_human_review exits 0"     "0" "$RC"
+check "needs_human_review routes"      "needs_human_review" "$(jq -r '.context_updates.decomp_status' <<<"$J")"
+check "needs_human_review writes reason" "blocked by #1278, which is not merged" "$(cat "$T/stuck_reason.md" 2>/dev/null)"
+check "needs_human_review one routing object" "1" "$(grep -c 'context_updates' <<<"$OUT")"
+rm -f "$T/stuck_reason.md"
+dg_setup '{"status":"issues","summary":"s","issues":[{"id":"a","title":"A","body":"b","files":[]}]}'
+sh "$T/decompose_gate.sh" >/dev/null 2>&1
+check "issues writes no stuck reason"  "absent" "$([ -e "$T/stuck_reason.md" ] && echo present || echo absent)"
+
 # ---------------------------------------------------------------------------
 # improve_gate — the split splice and its guards
 # ---------------------------------------------------------------------------
@@ -371,6 +385,69 @@ OUT=$( (cd "$T/repo" && sh "$T/improve_gate.sh") 2>/dev/null)
 check "clean improve: nothing written"     "1" "$([ -e "$T/improve_touched_tree" ]; echo $?)"
 check "clean improve: nothing reverted"    "" "$(cd "$T/repo" && git status --porcelain)"
 check "clean improve: routing unchanged"   "redundant" "$(jq -r '.context_updates.task_disposition' <<<"$(lastjson "$OUT")")"
+PATH="$ORIG_PATH_SAVE"
+
+# ---------------------------------------------------------------------------
+# rework_router — `task_exempt` is looked up in tasks.json by id, because
+# improve_gate rewrites current_task.json without `source`/`from_extra`. Only an
+# exempt task takes the round-6 edge to drop_followup.
+# ---------------------------------------------------------------------------
+echo ""
+echo "rework_router"
+T="$WORK/rr"; mkdir -p "$T"; stage rework_router
+printf '%s' '[{"id":"t1","source":"decompose"},{"id":"f1","source":"extra-review"},{"id":"s1","source":"split","from_extra":true},{"id":"s2","source":"split","from_extra":false}]' > "$T/tasks.json"
+rr_run() { printf '%s' "{\"id\":\"$1\",\"title\":\"T\"}" > "$T/current_task.json"; echo "$2" > "$T/round"; lastjson "$(sh "$T/rework_router.sh" 2>&1)"; }
+J=$(rr_run f1 5)
+check "round increments"               "6"     "$(jq -r '.context_updates.round' <<<"$J")"
+check "extra-review follow-up exempt"  "true"  "$(jq -r '.context_updates.task_exempt' <<<"$J")"
+check "round persisted"                "6"     "$(cat "$T/round")"
+check "slice of a follow-up exempt"    "true"  "$(jq -r '.context_updates.task_exempt' <<<"$(rr_run s1 0)")"
+check "decomposed task not exempt"     "false" "$(jq -r '.context_updates.task_exempt' <<<"$(rr_run t1 5)")"
+check "slice of a decomposed task not exempt" "false" "$(jq -r '.context_updates.task_exempt' <<<"$(rr_run s2 5)")"
+check "unknown id not exempt"          "false" "$(jq -r '.context_updates.task_exempt' <<<"$(rr_run nope 5)")"
+rm -f "$T/tasks.json"
+J=$(rr_run f1 0)
+check "no tasks.json not exempt"       "false" "$(jq -r '.context_updates.task_exempt' <<<"$J")"
+check "no tasks.json still counts"     "1"     "$(jq -r '.context_updates.round' <<<"$J")"
+check "no round file starts at 1"      "1"     "$(rm -f "$T/round"; printf '%s' '{"id":"x"}' > "$T/current_task.json"; jq -r '.context_updates.round' <<<"$(lastjson "$(sh "$T/rework_router.sh" 2>&1)")")"
+
+# ---------------------------------------------------------------------------
+# drop_followup — REAL git. The follow-up's commits are undone back to the task
+# base (added files deleted, modified and deleted files restored), work from
+# earlier tasks stays, nothing is committed (the checkpoint does that), and the
+# drop is recorded in completed.md for the PR body.
+# ---------------------------------------------------------------------------
+echo ""
+echo "drop_followup"
+export ORIG_PATH_SAVE="$PATH"; PATH="$ORIG_PATH"
+T="$WORK/df"; mkdir -p "$T/repo" "$T/review"; stage drop_followup
+( cd "$T/repo" && git init -q . && git config user.email t@t && git config user.name t \
+  && echo one > mod.txt && echo two > del.txt && echo earlier > earlier.txt && git add -A && git commit -qm task-base )
+git -C "$T/repo" rev-parse HEAD > "$T/task_base_sha"
+( cd "$T/repo" && echo changed > mod.txt && git rm -q del.txt && echo new > add.txt && mkdir -p d && echo x > d/f.txt \
+  && git add -A && git commit -qm followup-rework )
+printf '%s' '{"id":"update-vitest-docs","title":"Fix the CI comment"}' > "$T/current_task.json"
+printf '%s' '{"decision":"changes_requested","summary":"the workflow comment is still stale"}' > "$T/review/verdict.json"
+echo '### Task: earlier' > "$T/completed.md"
+OUT=$( (cd "$T/repo" && sh "$T/drop_followup.sh") 2>&1); RC=$?
+check "drop: exits 0"                  "0"     "$RC"
+check "drop: tree equals the task base" "0"    "$(cd "$T/repo" && git diff --quiet "$(cat "$T/task_base_sha")" --; echo $?)"
+check "drop: mod.txt restored"         "one"   "$(cat "$T/repo/mod.txt")"
+check "drop: del.txt restored"         "two"   "$(cat "$T/repo/del.txt" 2>/dev/null)"
+check "drop: add.txt removed"          "absent" "$([ -e "$T/repo/add.txt" ] && echo present || echo absent)"
+check "drop: nested added file removed" "absent" "$([ -e "$T/repo/d/f.txt" ] && echo present || echo absent)"
+check "drop: earlier work kept"        "earlier" "$(cat "$T/repo/earlier.txt")"
+check "drop: not committed"            "followup-rework" "$(cd "$T/repo" && git log -1 --format=%s)"
+check "drop: earlier entries kept"     "1"     "$(grep -c '^### Task: earlier$' "$T/completed.md")"
+check "drop: recorded for the PR body" "1"     "$(grep -c '^### Dropped follow-up: Fix the CI comment$' "$T/completed.md")"
+check "drop: names the task id"        "1"     "$(grep -c 'update-vitest-docs' "$T/completed.md")"
+check "drop: carries the last review"  "1"     "$(grep -c 'Last review: the workflow comment is still stale' "$T/completed.md")"
+rm -f "$T/task_base_sha"
+( cd "$T/repo" && sh "$T/drop_followup.sh" >/dev/null 2>&1 ); RC=$?
+check "drop: no task base fails"       "1"     "$([ $RC -ne 0 ] && echo 1 || echo 0)"
+echo 0000000000000000000000000000000000000000 > "$T/task_base_sha"
+( cd "$T/repo" && sh "$T/drop_followup.sh" >/dev/null 2>&1 ); RC=$?
+check "drop: unknown task base fails"  "1"     "$([ $RC -ne 0 ] && echo 1 || echo 0)"
 PATH="$ORIG_PATH_SAVE"
 
 # ---------------------------------------------------------------------------
@@ -900,7 +977,7 @@ PATH="$T/bin:$SAVED_PATH"
 export GH_LOG="$T/gh.log" GH_STATE="$T"
 stage_into mark_stuck "$FAB"
 
-ms_setup() { : > "$T/gh.log"; rm -f "$FAB/issue.json" "$FAB/issue_number"; }
+ms_setup() { : > "$T/gh.log"; rm -f "$FAB/issue.json" "$FAB/issue_number" "$FAB/stuck_reason.md" "$FAB/stuck_comment.md"; }
 
 ms_setup
 printf '%s' '{"number":356}' > "$FAB/issue.json"
@@ -908,6 +985,18 @@ OUT=$(sh "$T/mark_stuck.sh" 2>&1); RC=$?
 check "exits 0 with issue.json"       "0" "$RC"
 check "swaps the receipt for stuck"   "1" \
     "$(grep -c -- 'issue edit 356 --remove-label agent-in-progress --add-label agent-stuck' "$T/gh.log")"
+check "comments from a file"          "1" "$(grep -c -- "issue comment 356 --body-file $FAB/stuck_comment.md" "$T/gh.log")"
+check "generic comment without a reason" "1" "$(grep -c 'could not complete this issue and gave up' "$FAB/stuck_comment.md")"
+
+# decompose_gate's needs_human_review route: the decomposer's summary is the comment.
+ms_setup
+printf '%s' '{"number":1279}' > "$FAB/issue.json"
+echo 'blocker #1278 is not merged' > "$FAB/stuck_reason.md"
+OUT=$(sh "$T/mark_stuck.sh" 2>&1); RC=$?
+check "reason: exits 0"               "0" "$RC"
+check "reason: still swaps the label" "1" "$(grep -c -- 'issue edit 1279 --remove-label agent-in-progress --add-label agent-stuck' "$T/gh.log")"
+check "reason: comment carries it"    "1" "$(grep -c '^blocker #1278 is not merged$' "$FAB/stuck_comment.md")"
+check "reason: names the decomposer"  "1" "$(grep -c 'The decomposer reported' "$FAB/stuck_comment.md")"
 
 # THE REGRESSION: claim died before writing issue.json, so the only record of the
 # issue is the number claim wrote first.

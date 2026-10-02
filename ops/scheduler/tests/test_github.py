@@ -60,6 +60,14 @@ def test_an_open_agent_labelled_issue_is_a_queue_item():
         pytest.param(api_issue(1, ["agent", "agent-split"]), id="split-parent"),
         pytest.param(api_issue(1, ["bug"]), id="no-agent-label"),
         pytest.param(api_issue(1, ["agent"], state="closed"), id="closed"),
+        pytest.param(
+            api_issue(
+                1,
+                ["agent"],
+                issue_dependencies_summary={"blocked_by": 1, "total_blocked_by": 5},
+            ),
+            id="open-blocker",
+        ),
     ],
 )
 def test_these_are_not_queue_items(payload):
@@ -72,6 +80,23 @@ def test_a_pull_request_is_excluded_on_the_pull_request_key_alone():
     pr = api_issue(9, ["agent"], pull_request={"merged_at": None})
     assert is_eligible(pr) is False
     assert "pull_request" not in api_issue(9, ["agent"])
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        pytest.param({"blocked_by": 0, "total_blocked_by": 5}, id="all-blockers-closed"),
+        pytest.param(None, id="no-summary"),
+        pytest.param({"total_blocked_by": 2}, id="no-open-count"),
+        pytest.param({"blocked_by": "1"}, id="string-count"),
+        pytest.param("garbage", id="not-an-object"),
+    ],
+)
+def test_an_issue_with_no_open_blocker_is_a_queue_item(summary):
+    # `blocked_by` counts OPEN blockers only. Once every blocker has closed the
+    # issue is work again, and a summary we cannot read must not hide real work.
+    extra = {} if summary is None else {"issue_dependencies_summary": summary}
+    assert is_eligible(api_issue(1, ["agent"], **extra)) is True
 
 
 def test_a_string_label_is_still_read():

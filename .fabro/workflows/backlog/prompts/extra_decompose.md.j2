@@ -54,6 +54,12 @@ findings you received — do not re-review the branch yourself.
   work from the task alone: carry the finding's `message` as the problem statement
   and its `suggestion` as the required change.
 - If the findings are all nits or already addressed in the branch, emit `no_work`.
+- Never emit a task that requires a change to a file under `.github/workflows/`, not
+  in `files` and not in the body: the run pushes its branch with a token that lacks
+  GitHub's `workflow` scope, so a commit that touches one of those files makes the
+  branch unpushable. No stage of this run is allowed to edit them, even for a comment.
+  A reviewer of that follow-up would reject every rework round for the missing edit.
+  Drop that part of the finding. If nothing else is left of it, emit no task for it.
 - If the findings contradict each other, or the branch is in a state no follow-up can
   safely fix, emit `needs_human_review`.
 

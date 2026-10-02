@@ -79,7 +79,14 @@ Operate read-only.
   with a single entry. Do NOT emit `no_work` merely because the issue fits in one
   change, needs no splitting, or already has a complete spec in its body.
 - If requirements conflict or remain too ambiguous for safe task drafting, emit
-  `needs_human_review`.
+  `needs_human_review`. Your `summary` is then posted on the issue as the reason the
+  run stopped, so name the blocker (for example a declared `Blocked by` issue whose
+  work is not in this checkout) and what has to happen first.
+- Never put a change to a file under `.github/workflows/` in a task, not in `files` and
+  not in the body: the run pushes its branch with a token that lacks GitHub's
+  `workflow` scope, so a commit that touches one of those files makes the branch
+  unpushable. No stage of this run is allowed to edit them, even for a comment.
+  Leave that part out and say in `summary` that a human must make the workflow edit.
 - Tasks run sequentially in array order. Order the array so prerequisites come
   first.
 
