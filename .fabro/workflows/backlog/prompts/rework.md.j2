@@ -90,6 +90,9 @@ Do **not** run the project's full test suite. A separate `validate` stage runs
 useful check for the surface you changed, and only when a cheap obvious command
 exists.
 
+If a check fails in code you did not touch, note it in your completion message. To
+confirm it predates your change, use `baseline_check`. Never stash or check out files.
+
 Do not call GitHub. No `gh`, no API calls. Deterministic stages own all issue and
 PR work.
 
@@ -119,7 +122,7 @@ answers `no code index`, use grep instead.
    a rework that breaks an uncited caller creates a new finding for the next round.
    Apply the smallest change that satisfies it.
 3. Run `git status -s` and `git diff --stat`. If any edited file is outside scope,
-   revert that file.
+   undo your change with `restore_file`.
 4. Leave the changes in the working tree.
 
 ## About commits — do not make any

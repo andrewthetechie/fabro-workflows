@@ -73,7 +73,7 @@ pub fn tools() -> Vec<(&'static str, String, serde_json::Value)> {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string",
-                                "description": "A shell command, run from the worktree root."},
+                                "description": "A shell command, run from the worktree root, for example `uv run pytest tests/test_x.py` or `npx vitest run`."},
                     "timeout_s": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_S,
                                   "description": "Seconds before the command is killed. Default 120."}
                 },

@@ -54,6 +54,22 @@ sandbox = true
 timeout = "10s"
 script = "fabro-io stage"
 
+# git-guard (docs/coder-tweaks 05, C2): blocks mutating git (`stash`, `checkout --`, `commit`,
+# `fetch`, ...) from an agent's `shell` outside the stages the manifest marks `"git": "write"`
+# (resolve_merge, rebase_agent_t1/t2); the reason names `restore_file` / `baseline_check`.
+# matcher ^shell$ is tested against tool_name. blocking = true, sandbox = true. ANY non-zero
+# exit but 2 also blocks (fabro's parse_decision), so a `fabro-io` missing from an old image
+# (exit 127) would fail every shell call: the wrapper turns every code but 2 into 0. It is a
+# guard against mistakes, not a boundary: `sh -c` and `python` bypass it.
+[[run.hooks]]
+id = "git-guard"
+event = "pre_tool_use"
+matcher = "^shell$"
+blocking = true
+sandbox = true
+timeout = "5s"
+script = "fabro-io git-guard; [ $? -eq 2 ] && exit 2; exit 0"
+
 [[run.hooks]]
 id = "discord-arch-summary"
 event = "stage_start"

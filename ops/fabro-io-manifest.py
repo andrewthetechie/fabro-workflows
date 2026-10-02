@@ -92,7 +92,7 @@ def load_schemas() -> dict[str, dict]:
     return out
 
 def materialize(spec: dict, schemas: dict[str, dict]) -> dict:
-    """Flat generated stage: inputs/output/sealed only (server adds _io)."""
+    """Flat generated stage: inputs/output/sealed/git only (server adds _io)."""
     stage: dict[str, object] = {}
     stage["inputs"] = [
         {k: v for k, v in {
@@ -110,6 +110,8 @@ def materialize(spec: dict, schemas: dict[str, dict]) -> dict:
         }
     if spec.get("sealed"):
         stage["sealed"] = spec["sealed"]
+    if spec.get("git"):
+        stage["git"] = spec["git"]
     return stage
 
 def generated_for(workflow: str, src: dict, schemas: dict[str, dict]) -> dict:

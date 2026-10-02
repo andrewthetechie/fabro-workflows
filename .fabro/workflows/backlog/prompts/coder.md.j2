@@ -56,6 +56,9 @@ useful check for the surface you changed (a single test file, a typecheck of one
 package, a lint of the changed files) — and only when a cheap obvious command
 exists.
 
+If a check fails in code you did not touch, note it in your completion message. To
+confirm it predates your change, use `baseline_check`. Never stash or check out files.
+
 Do not call GitHub. No `gh`, no API calls. Deterministic stages own all issue and
 PR work.
 
@@ -166,7 +169,8 @@ then decide the next edit. If an edit fails, re-read only the lines around it.
    write one failing test, write the smallest implementation to pass it, repeat
    until acceptance criteria are met.
 6. **Self-check before finishing.** Run `git status -s` and `git diff --stat`. Any
-   file you don't recognize as required by the task → revert it.
+   file you don't recognize as required by the task → undo your change with
+   `restore_file`.
 
 Do not write narration or commentary before your first tool call. After `inputs`,
 your next call should usually be an `edit_file` built from `task-code.md`.

@@ -1,14 +1,14 @@
 //! Subcommand dispatch and exit-code mapping (C3–C5).
 //!
-//! `stage` 0/2 · `input` 0/3 · `submit` 0/3/4 · `guard` 0/2 · `version` 0 · usage 64.
+//! `stage` 0/2 · `input` 0/3 · `submit` 0/3/4 · `guard` 0/2 · `git-guard` 0/2 · `version` 0 · usage 64.
 
 use std::process::ExitCode;
 
-use crate::{guard, inputs, serve, stage, submit};
+use crate::{gitguard, guard, inputs, serve, stage, submit};
 
 const USAGE: &str = concat!(
     "usage: fabro-io <command> [args]\n",
-    "commands: stage | serve [--port N] | guard | inputs [<name> [--part N]] | submit --file <path> | version\n"
+    "commands: stage | serve [--port N] | guard | git-guard | inputs [<name> [--part N]] | submit --file <path> | version\n"
 );
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -21,6 +21,7 @@ pub fn run(args: &[String]) -> ExitCode {
         "stage" => stage::run(),
         "serve" => serve::run(rest),
         "guard" => guard::run(),
+        "git-guard" => gitguard::run(),
         "inputs" => inputs::run_cli(rest),
         "submit" => submit_cli(rest),
         "version" => {

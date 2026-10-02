@@ -443,6 +443,7 @@
         },
         "resolve_merge": {
           "live": true,
+          "git": "write",
           "prompt": ".fabro/workflows/backlog/prompts/resolve_merge.md.j2",
           "inputs": [
             {
@@ -975,6 +976,7 @@
       "stages": {
         "rebase_agent_t1": {
           "live": true,
+          "git": "write",
           "prompt": ".fabro/workflows/pr-review/prompts/rebase.md.j2",
           "inputs": [
             {
@@ -1011,6 +1013,7 @@
         },
         "rebase_agent_t2": {
           "live": true,
+          "git": "write",
           "prompt": ".fabro/workflows/pr-review/prompts/rebase.md.j2",
           "inputs": [
             {

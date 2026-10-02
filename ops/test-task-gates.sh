@@ -3249,6 +3249,32 @@ check "render: invalid config explained"    "1" "$(grep -c 'hygiene.json is not 
 # Rebase the wrapper's /tmp/fabro state onto $T so the section is hermetic.
 # ---------------------------------------------------------------------------
 echo ""
+echo "git-guard hook wrapper (docs/coder-tweaks 05)"
+# Any non-zero hook exit but 2 BLOCKS in fabro (parse_decision), so a hook whose program
+# is missing or crashing would fail every shell call it matches. The wrapper maps every
+# code but 2 to 0. It is extracted from each workflow.toml and run, not retyped.
+for W in backlog pr-review issue-triage arch-review; do
+    TOML="$REPO_ROOT/.fabro/workflows/$W/workflow.toml"
+    HOOK=$(python3.11 -c 'import sys,tomllib;d=tomllib.load(open(sys.argv[1],"rb"));print(next(h["script"] for h in d["run"]["hooks"] if h["id"]=="git-guard"))' "$TOML" 2>/dev/null \
+        || sed -n 's/^script = "\(fabro-io git-guard[^"]*\)"$/\1/p' "$TOML" | head -1)
+    check "$W: git-guard hook script found" "1" "$(grep -c '^fabro-io git-guard' <<<"$HOOK")"
+    T="$WORK/gg-$W"; mkdir -p "$T/bin" "$T/empty"
+    ln -sf "$(command -v sh)" "$T/empty/sh" 2>/dev/null
+    printf '#!/bin/sh\necho "{\\"decision\\":\\"block\\"}"; exit 2\n' > "$T/bin/fabro-io"; chmod +x "$T/bin/fabro-io"
+    OUT=$(PATH="$T/bin:$ORIG_PATH" sh -c "$HOOK"); RC=$?
+    check "$W: git-guard exit 2 blocks"           "2" "$RC"
+    check "$W: git-guard block decision on stdout" "1" "$(grep -c '"decision":"block"' <<<"$OUT")"
+    for code in 0 1 64 127; do
+        printf '#!/bin/sh\nexit %s\n' "$code" > "$T/bin/fabro-io"
+        PATH="$T/bin:$ORIG_PATH" sh -c "$HOOK" >/dev/null 2>&1; RC=$?
+        check "$W: git-guard exit $code proceeds" "0" "$RC"
+    done
+    rm -f "$T/bin/fabro-io"
+    PATH="$T/bin:$ORIG_PATH" sh -c "$HOOK" >/dev/null 2>&1; RC=$?
+    check "$W: no fabro-io on PATH proceeds"      "0" "$RC"
+done
+
+echo ""
 echo "fabro-code"
 if ! command -v codegraph >/dev/null 2>&1; then
     echo "  SKIP fabro-code (no codegraph on PATH; present in profile images)"

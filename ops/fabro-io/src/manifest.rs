@@ -32,6 +32,10 @@ pub struct Stage {
     pub output: Option<Output>,
     #[serde(default)]
     pub sealed: Vec<String>,
+    /// `"write"` exempts the stage from `git-guard` (docs/coder-tweaks C2); anything
+    /// else, or nothing, means the stage may only read with git.
+    #[serde(default)]
+    pub git: Option<String>,
 }
 
 /// One ordered input. `absent` is the sentence shown when an optional input is absent.
