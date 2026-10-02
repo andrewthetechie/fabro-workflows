@@ -1,6 +1,6 @@
 # Coder tool use: overview and canonical contracts
 
-**Status:** planned 2026-10-02. Nothing in this series is applied yet. The earlier change
+**Status:** tasks 01-07 implemented 2026-10-01 (commits on `main` once pushed); task 08, the deploy and the measurement, is pending. Each task file records its own deviations. The earlier change
 it builds on, `24eb95c` (the `excerpts` node, the coder prompt rules, and the fabro-io
 0.2.0 `code_*` tools), is live. Its follow-up check is in `handoff.md`.
 
