@@ -9,11 +9,17 @@
 #
 # Sources, none of which put a secret in this repo:
 #   webhook URL   /storage/secrets/discord_webhook_url   (operator-populated)
-#   run link base $FABRO_WEB_URL                         (from ~/fabro/.env)
+#   run link base /storage/scripts/fabro-web-url         (written by `make deploy-notify`
+#                                                         from the server's FABRO_WEB_URL)
 #   API token     /storage/server.dev-token              (already in the volume)
 #   repo + issue  the local fabro API over 127.0.0.1
 #
-# Hooks inherit the server process environment, so no host address is hard-coded.
+# Hooks do NOT see the server's environment. They run inside the run's worker, and
+# fabro starts every worker with env_clear() plus an allowlist (fabro-server
+# spawn_env.rs, WORKER_ENV_ALLOWLIST) that drops FABRO_WEB_URL and FABRO_PORT. So
+# every ping before 2026-10-02 went out with no run link. The deploy step copies the
+# server's FABRO_WEB_URL into a file beside this script; nothing is hard-coded.
+# FABRO_PORT falls back to 32276, the port the compose file publishes.
 # Every enrichment step is optional: if a lookup fails the message still sends,
 # just with less detail. Any failure exits 0 — notification must never fail a run.
 set -u
@@ -65,6 +71,8 @@ fi
 
 run_id="${FABRO_RUN_ID:-?}"
 base_url="${FABRO_WEB_URL:-}"
+[ -n "$base_url" ] || base_url="$(cat /storage/scripts/fabro-web-url 2>/dev/null || true)"
+base_url="${base_url%/}"
 api="http://127.0.0.1:${FABRO_PORT:-32276}"
 token_file="/storage/server.dev-token"
 

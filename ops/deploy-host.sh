@@ -117,6 +117,14 @@ step_notify() {
   say "notify: discord-notify.sh into fabro-fabro-1"
   scp -q .fabro/workflows/backlog/scripts/discord-notify.sh "$HOST:/tmp/discord-notify.sh"
   remote 'docker cp /tmp/discord-notify.sh fabro-fabro-1:/storage/scripts/discord-notify.sh && rm /tmp/discord-notify.sh'
+  # The hooks run in fabro's worker, whose environment is an allowlist without
+  # FABRO_WEB_URL, so the script reads the run-link base from this file instead.
+  remote 'docker exec fabro-fabro-1 sh -c "printenv FABRO_WEB_URL > /storage/scripts/fabro-web-url"'
+  if [ -z "$(remote 'docker exec fabro-fabro-1 cat /storage/scripts/fabro-web-url')" ]; then
+    warn "FABRO_WEB_URL is not set in the fabro container (~/fabro/.env), so Discord pings carry no run link"
+  else
+    echo "    run link base: $(remote 'docker exec fabro-fabro-1 cat /storage/scripts/fabro-web-url')"
+  fi
 }
 
 step_scripts() {
