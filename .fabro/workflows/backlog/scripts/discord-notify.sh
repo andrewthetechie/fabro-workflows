@@ -126,6 +126,34 @@ if [ -r "$token_file" ]; then
   triage_questions=$(printf '%s' "$triage_questions" | sed 's/[\\"]//g' | cut -c1-800)
 fi
 
+# The rescue ping says why the run stopped and links the gate itself, so a phone
+# preview is enough to decide whether to get up. Both come from the run state, read
+# once into a temp file here because it can be megabytes:
+#   why    the first line of `response.rescue_brief`, which the backlog graph's
+#          rescue_brief node writes just before the gate (tail -1: the newest, for a
+#          run that reaches the gate more than once). The pattern steps over JSON
+#          escapes, so a `\"` inside a failure reason does not end the match; the
+#          sed then drops every backslash and quote, which keeps the payload valid.
+#   visit  every entry to human_rescue passes through rescue_brief, so the gate's
+#          visit is rescue_brief's highest finished visit. The gate's own
+#          `human_rescue@N` record may not exist yet when this stage_start hook runs.
+#          A graph without rescue_brief falls back to the newest human_rescue@N.
+# Either can come back empty; the ping then carries the run link and no reason.
+rescue_why=""
+rescue_visit=""
+if [ "$kind" = "rescue" ] && [ -r "$token_file" ]; then
+  st=$(mktemp 2>/dev/null || echo /tmp/discord-notify-state.$$)
+  if wget -q -T 10 -O "$st" --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null; then
+    rescue_why=$(grep -oE '"response.rescue_brief":[[:space:]]*"([^"\\]|\\.)*' "$st" | tail -1 \
+      | sed 's/^"response.rescue_brief":[[:space:]]*"//; s/\\n.*//; s/^[*]*Why the run stopped:[*]* *//; s/[\\"]//g' | cut -c1-300)
+    rescue_visit=$(grep -oE '"rescue_brief@[0-9]+"' "$st" | tr -dc '0-9\n' | sort -n | tail -1)
+    if [ -z "$rescue_visit" ]; then
+      rescue_visit=$(grep -oE '"human_rescue@[0-9]+"' "$st" | tr -dc '0-9\n' | sort -n | tail -1)
+    fi
+  fi
+  rm -f "$st"
+fi
+
 # The triage kinds name the newest issue_number, never the head -1 read above, which
 # is the first issue a looping run triaged. Empty means no link, never a wrong one.
 case "$kind" in
@@ -148,7 +176,10 @@ subject=""
 [ -n "$issue" ] && subject="$subject #$issue"
 
 case "$kind" in
-  rescue)   msg="🟡 fabro needs a human decision${subject} (rescue gate)" ;;
+  rescue)
+    msg="🟡 fabro needs a human decision${subject} (rescue gate)"
+    [ -n "$rescue_why" ] && msg="${msg}\\nWhy: ${rescue_why}"
+    ;;
   complete) msg="✅ fabro opened a PR${subject}" ;;
   failed)   msg="🔴 fabro run failed${subject}" ;;
   # The merge outcome, and the only kind pr-review fires. A rocket, not a checkmark:
@@ -192,7 +223,10 @@ esac
 links=""
 # The PR is the most useful link when there is one, so it leads.
 [ -n "$pr_url" ] && links="${links}\\n${pr_url}"
-if [ -n "$base_url" ] && [ "$kind" != "triage-question" ]; then
+if [ -n "$base_url" ] && [ "$kind" = "rescue" ] && [ -n "$rescue_visit" ]; then
+  # Straight to the gate's page, where the summary and the three options are.
+  links="${links}\\n${base_url}/runs/${run_id}/stages/human_rescue@${rescue_visit}"
+elif [ -n "$base_url" ] && [ "$kind" != "triage-question" ]; then
   links="${links}\\n${base_url}/runs/${run_id}"
 fi
 if [ -n "$repo_url" ] && [ -n "$issue" ]; then
