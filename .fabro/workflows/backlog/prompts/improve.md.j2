@@ -29,20 +29,23 @@ detectable — an earlier task in this same run may already have done the work.
 
 ## Finding code
 
-Use `fabro-code` through the shell before `grep`, `glob` or paging a file with
-`read_file`:
+Use the code tools before `grep`, `glob` or reading a whole file with `read_file`.
+They return one symbol instead of a whole file:
 
-- `fabro-code def NAME`: where NAME is defined.
-- `fabro-code show NAME`: its source, what it calls, and what calls it. Use this
-  instead of reading a large file in pages.
-- `fabro-code callers NAME` / `callees NAME` / `impact NAME`: the call and import graph.
-- `fabro-code tests PATH…`: test files that exercise these files.
+- `code_def` (name): where a symbol is defined.
+- `code_show` (name, or `path:line`): its source, what it calls, and what calls it.
+  Use this instead of reading a large file.
+- `code_callers` / `code_callees` / `code_impact` (name): the call and import graph.
+- `code_tests` (paths): test files that exercise these files.
 
-Its answers include your own edits. It knows calls and imports only, not attribute
-reads, string keys or config. It matches a call by name, so a caller it lists can be
+If those tools are not in your tool list, run the same verbs in the shell:
+`fabro-code def NAME`, `fabro-code show NAME`, `fabro-code callers NAME`, and so on.
+
+Their answers include your own edits. They know calls and imports only, not attribute
+reads, string keys or config. They match a call by name, so a caller they list can be
 a call to a different function with the same name. Before you conclude that
 something is unused, or before you delete or rename it, confirm with
-`grep -rnw NAME`. If it prints `no code index`, use grep.
+`grep -rnw NAME`. If one answers `no code index`, use grep.
 
 ## Boundaries
 
@@ -184,9 +187,22 @@ it, and it is never written for `redundant`, `split` or `needs_human`.
 - one line each, e.g. "`useSSE` is also imported by X; changing its signature breaks X"
 ```
 
-Fill `## Files and symbols` and `## Tests` from `fabro-code def`, `fabro-code show`
-and `fabro-code tests` (see Finding code above), cite line ranges you have actually
-read, and keep it under the size cap.
+Fill `## Files and symbols` and `## Tests` from `code_def`, `code_show` and
+`code_tests` (see Finding code above), cite line ranges you have actually read, and
+keep it under the size cap.
+
+Every `path:start-end` and `path:line` you cite is copied verbatim from the checkout
+into the coder's inputs (`task-code.md`, up to 40,000 bytes), so the coder can edit
+without reading files. Make the ranges the ones the coder will change or must see:
+the function to edit, each call site to update, the test class to extend, the fixture
+to reuse. Write the full repository-relative path every time (`src/app/x.py:40-62`,
+not `x.py:40-62` or `:40-62`); a reference without a path is not copied. Cite
+statements and small functions whole rather than whole files.
+
+The coder treats the dossier as verified and does not re-check it, so put every fact
+it needs to get right in `## Traps`, stated plainly: what you confirmed, and where
+(for example "RLS applies to `availability` (010_fix_rls_policies.py:100-130); the
+superuser fixture bypasses it").
 
 After `submit` writes your result (and you write `task-context.md` with
 `write_file` when `ready`), stop. Do not print the JSON in chat.

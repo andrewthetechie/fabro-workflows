@@ -4,6 +4,7 @@
 //! stage facts live in the manifest (C2), never in the binary.
 
 pub mod cli;
+pub mod code;
 pub mod common;
 pub mod guard;
 pub mod inputs;

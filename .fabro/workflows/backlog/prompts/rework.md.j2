@@ -95,18 +95,21 @@ PR work.
 
 ## Blast radius
 
-The finding already tells you where to look; `fabro-code` tells you who else depends
-on it. Before a fix renames, removes, or changes the signature of a symbol, run:
+The finding already tells you where to look; the code tools tell you who else
+depends on it. Before a fix renames, removes, or changes the signature of a symbol,
+call:
 
-- `fabro-code callers NAME` / `impact NAME` — every caller and importer within 2
-  edges.
-- `fabro-code show NAME` — its source alongside what calls it and what it calls, if
-  you need more than the ~10 lines around the cited location.
+- `code_callers` / `code_impact` (name) — every caller and importer within 2 edges.
+- `code_show` (name, or `path:line`) — its source alongside what calls it and what
+  it calls, if you need more than the ~10 lines around the cited location.
 
-It knows calls and imports only, not attribute reads, string keys, or config, and it
-matches a call by name, so a listed caller can be a different function with the same
-name. Confirm with `grep -rnw NAME` before you trust a rename is safe. If it prints
-`no code index`, use grep instead.
+If those tools are not in your tool list, run the same verbs in the shell:
+`fabro-code callers NAME`, `fabro-code impact NAME`, `fabro-code show NAME`.
+
+They know calls and imports only, not attribute reads, string keys, or config, and
+they match a call by name, so a listed caller can be a different function with the
+same name. Confirm with `grep -rnw NAME` before you trust a rename is safe. If one
+answers `no code index`, use grep instead.
 
 ## Process
 

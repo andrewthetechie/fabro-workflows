@@ -38,7 +38,7 @@ actually lives.
 | `ops/check-routing-schemas.py` | Catches command-node routing-schema mismatches that `fabro validate` accepts and fabro only reports at runtime. Reads the parsed AST, not the DOT text. |
 | `ops/test-task-gates.sh` | Runs `backlog`'s `claim`, `mark_stuck`, `open_pr`, `open_pr_prep` and task-queue nodes (`decompose_gate`, `improve_gate`, `next_task`) against fixtures, extracted verbatim from the graph. The only gate that executes a node's shell. Offline; no host or container. |
 | `ops/fabro-io-manifest.py` | The Stage-manifest generator/checker (ADR 0016): reads `.fabro/workflows/_io/manifest.json` and the output schemas, and writes the generated manifest into each workflow's `workflow.toml` `[run.environment.env]` between C2's markers. `check` regenerates in memory and fails on drift or a contract break. Python 3.11+; runs on the Mac and the host, never in a sandbox. |
-| `ops/fabro-io/` | The `fabro-io` Rust MCP binary (ADR 0016): the `stage`/`inputs`/`submit`/`guard`/`serve` tools and CLI. Built into every profile image by `ops/profile-images/build-images.sh`. |
+| `ops/fabro-io/` | The `fabro-io` Rust MCP binary (ADR 0016): the `stage`/`inputs`/`submit`/`guard`/`serve` tools and CLI, plus the six `code_*` MCP tools that run `fabro-code` in the checkout for every agent stage (`src/code.rs`). Built into every profile image by `ops/profile-images/build-images.sh`. |
 | `Makefile`, `ops/deploy-host.sh` | `make deploy`: the host deploy after a push that touches `ops/` or `backlog/scripts/` (see *Deploying to the server*). The Makefile only names the script's steps. |
 | `ops/fabro-run-status.sh` | LLM-free health check for an in-flight run: alive, where in the graph, making progress, and whether a compaction says the decomposition was oversized. |
 | `ops/scheduler/` | The coder scheduler: an external service that owns admission to the two llama.cpp instances, because fabro's own queue is FIFO-on-creation with no priority and no per-pool concurrency (ADR 0005, ADR 0006). Draft 14's 24-hour shakedown window restarts with the container, so its acceptance criteria are pending, not unstarted. Do not trust a start time written here: every `docker compose up -d --build scheduler` re-dates the window. Read it with `docker inspect -f '{{.State.StartedAt}}' fabro-scheduler`. `ops/test-task-gates.sh` covers `claim` and `mark_stuck`, so the shell-level regression that killed the first bring-up (`5fa974d`) now fails offline. The four `backlog-<repo>` schedules are off, so the scheduler is the only producer of `backlog` runs. `ops/fabro-automation-schedule.sh` turns them back on, and `ops/fabro-fire-backlog.sh` is the manual escape hatch. Its LAN page is `http://10.10.0.32:32280/`. The operator quickstart (the page, the three controls, changing repo priority, the two monitor conditions) was `docs/scheduler/OPERATING.md`, removed in `d5cd750`: `git show d5cd750^:docs/scheduler/OPERATING.md`. |
@@ -72,9 +72,9 @@ ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp 
 ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
 ```
 
-Baselines as of 2026-09-27 (ADR 0013 added four merge-phase nodes; ADR 0015 added `plan`, `plan_gate` and `apply_split`; the `rework_t1 -> rework_router` escalation edge added one backlog edge), against **fabro 0.362.0-nightly.0** (review+merge shared and imported; ADR 0011 added
+Baselines as of 2026-10-01 (ADR 0013 added four merge-phase nodes; ADR 0015 added `plan`, `plan_gate` and `apply_split`; the `rework_t1 -> rework_router` escalation edge added one backlog edge; `excerpts` added one backlog node and a net three edges), against **fabro 0.362.0-nightly.0** (review+merge shared and imported; ADR 0011 added
 `autofix` and `file_remainder`):
-`Backlog (65 nodes, 152 edges)` with exactly one warning — `issue_number` unbound in
+`Backlog (66 nodes, 155 edges)` with exactly one warning — `issue_number` unbound in
 `claim` (draft 10's deliberate fail-closed input, the same shape as `pr_number`) — and
 `PrReview (34 nodes, 73 edges)` with exactly one warning — `pr_number` unbound in
 `validate_input` — and `IssueTriage (16 nodes, 36 edges)` clean, and `ArchReview (24 nodes, 54 edges)` clean. Both include the 13 nodes of `_shared/triage/`. Backlog and PrReview both include the ~25
@@ -127,7 +127,7 @@ the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them 
 fixtures:
 
 ```sh
-./ops/test-task-gates.sh      # 489 checks on the Mac, 554 in a profile image; offline
+./ops/test-task-gates.sh      # 595 checks on the Mac, 671 in a profile image; offline
 ```
 
 It needs only `jq`, `awk` and `git` — no `python3`, which `fabro-ts` and `fabro-python-node` do not ship — so it belongs in the same pre-push hook and also runs inside every profile image, the one way to test the counters against the sandbox's own mawk and jq (`jq 1.6` in `fabro-python-node`). It covers
@@ -143,7 +143,9 @@ counters, each with a real-git fixture, and `refute_prep`, `refute_gate`, `merge
 checks 13, 13b and 14, and the review comment's Refuter and hygiene sections (ADR 0013). It also runs
 the code-index lines of every workflow's entry node (`backlog` `prep`, `pr-review` `claim`,
 `arch-review` `prep`, `issue-triage` `acquire`), each with and without `fabro-code` on
-`PATH`. Inside a profile image, where `codegraph` exists, it also runs the `fabro-code`
+`PATH`. Since 2026-10-01 it also covers `excerpts`, which copies the code the task dossier
+cites into `task-code.md` for the coder: ranges, merging, the byte cap, and single lines
+with and without `fabro-code`. Inside a profile image, where `codegraph` exists, it also runs the `fabro-code`
 wrapper against a real-git fixture; on the Mac that section prints `SKIP`.
 It says nothing about whether an agent fills a contract correctly.
 

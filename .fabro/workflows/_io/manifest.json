@@ -505,24 +505,24 @@
           "prompt": ".fabro/workflows/backlog/prompts/coder.md.j2",
           "inputs": [
             {
-              "name": "repomap.md",
-              "path": "/tmp/fabro/repomap.md",
-              "required": false,
-              "about": "ranked outline of the checkout; can be missing",
-              "absent": "the repository map is missing; proceed without it"
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the task to implement; .title and .body are the spec, .files a hint"
             },
             {
               "name": "task-context.md",
               "path": "/tmp/fabro/task-context.md",
               "required": false,
-              "about": "what the improve stage found about this task; the checkout is the truth",
-              "absent": "improve did not write a dossier for this task"
+              "about": "what improve verified in this checkout minutes ago: files, line ranges, tests, traps; treat it as verified",
+              "absent": "improve did not write a dossier for this task; find the code with the code_* tools"
             },
             {
-              "name": "current_task.json",
-              "path": "/tmp/fabro/current_task.json",
-              "required": true,
-              "about": "the task to implement; .title and .body are the spec, .files a hint"
+              "name": "task-code.md",
+              "path": "/tmp/fabro/task-code.md",
+              "required": false,
+              "about": "the current text of every line range the dossier cites, copied from this checkout; usable as edit_file old_string",
+              "absent": "no code was copied for this task; read the dossier's ranges with code_show or read_file"
             },
             {
               "name": "issue.json",

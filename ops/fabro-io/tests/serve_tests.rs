@@ -211,6 +211,9 @@ fn test_13_serve_tools_and_submit() {
         let names = tool_names(&list);
         assert!(names.iter().any(|n| n == "inputs"));
         assert!(names.iter().any(|n| n == "submit"), "submit listed for an output stage");
+        for tool in ["code_def", "code_show", "code_callers", "code_callees", "code_impact", "code_tests"] {
+            assert!(names.iter().any(|n| n == tool), "{tool} listed for a known stage");
+        }
 
         // Reads-only stage -> inputs only (same server, new stage.json).
         common::write_stage(&root, "reader", &visit);
@@ -218,6 +221,14 @@ fn test_13_serve_tools_and_submit() {
         let names = tool_names(&list);
         assert!(names.iter().any(|n| n == "inputs"));
         assert!(!names.iter().any(|n| n == "submit"), "no submit for a reads-only stage");
+        assert!(names.iter().any(|n| n == "code_show"), "code tools for a reads-only stage");
+
+        // A code tool call with a bad argument comes back as a tool error, not a
+        // protocol error, so the model can act on it.
+        let call = rpc(&session, 5, "tools/call", serde_json::json!({"name":"code_def","arguments":{}}));
+        assert_eq!(call["result"]["isError"], serde_json::json!(true), "code_def error: {call}");
+        let text = call["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(text.contains("non-empty `name`"), "code_def error text: {text}");
 
         // Unknown node -> no tools.
         common::write_stage(&root, "ghost", &visit);

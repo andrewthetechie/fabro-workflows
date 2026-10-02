@@ -2,7 +2,8 @@
 //!
 //! `list_tools`, `get_tool` and `call_tool` each read `stage.json` and the manifest
 //! again, so the server stays stateless (ADR 0016 D3): each stage sees only its own
-//! tools, and a fresh stage.json on a later request changes what is served. A stage
+//! tools, and a fresh stage.json on a later request changes what is served. Every known
+//! stage also gets the `code_*` tools (`code.rs`). A stage
 //! problem is returned as an `is_error` tool result (never a JSON-RPC error), so the
 //! model sees and can act on it; a protocol error would end the session.
 
@@ -21,7 +22,7 @@ use rmcp::transport::streamable_http_server::{
 };
 use rmcp::{ErrorData, RoleServer};
 
-use crate::{common, inputs, manifest, submit};
+use crate::{code, common, inputs, manifest, submit};
 
 const DEFAULT_PORT: u16 = 7391;
 const INPUTS: &str = "inputs";
@@ -77,6 +78,13 @@ impl IoHandler {
         )
     }
 
+    /// One `code_*` tool (docs/code-context), listed for every known stage.
+    fn code_tool(verb: &code::Verb) -> Tool {
+        let schema: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_value(code::schema(verb)).expect("static code schema is an object");
+        Tool::new(verb.tool, code::description(verb), schema)
+    }
+
     /// The stage the server should serve right now, from the current stage.json.
     fn current() -> Option<(String, manifest::Stage)> {
         let (node, _) = common::read_stage()?;
@@ -97,13 +105,16 @@ impl ServerHandler for IoHandler {
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
         async move {
-            let tools = match Self::current() {
+            let mut tools = match Self::current() {
                 Some((_, stage)) if stage.output.is_some() => {
                     vec![Self::inputs_tool(), Self::submit_tool(&stage)]
                 }
                 Some(_) => vec![Self::inputs_tool()],
                 None => vec![],
             };
+            if !tools.is_empty() {
+                tools.extend(code::VERBS.iter().map(Self::code_tool));
+            }
             Ok(ListToolsResult { tools, ..Default::default() })
         }
     }
@@ -113,7 +124,7 @@ impl ServerHandler for IoHandler {
         match name {
             INPUTS => Some(Self::inputs_tool()),
             SUBMIT if stage.output.is_some() => Some(Self::submit_tool(&stage)),
-            _ => None,
+            other => code::verb(other).map(Self::code_tool),
         }
     }
 
@@ -148,6 +159,13 @@ impl ServerHandler for IoHandler {
             return Ok(match submit::run(&args) {
                 submit::Outcome::Written(msg) => CallToolResult::success(vec![Content::text(msg)]),
                 o => CallToolResult::error(vec![Content::text(outcome_text(&o))]),
+            });
+        }
+        if let Some(verb) = code::verb(name) {
+            let args = request.arguments.unwrap_or_default();
+            return Ok(match code::run(verb, &args).await {
+                Ok(text) => CallToolResult::success(vec![Content::text(text)]),
+                Err(text) => CallToolResult::error(vec![Content::text(text)]),
             });
         }
         Ok(CallToolResult::error(vec![Content::text(format!(

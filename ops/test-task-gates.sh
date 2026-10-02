@@ -395,6 +395,7 @@ exit 0
 STUB
 chmod +x "$T/bin/fabro-code"
 printf '%s' '# Task dossier: stale' > "$T/task-context.md"
+printf '%s' '# Code the task dossier cites: stale' > "$T/task-code.md"
 cat > "$T/tasks.json" <<'EOF'
 [{"id":"t1","title":"T1","body":"b","files":[],"covers":["c1"],"source":"decompose"}]
 EOF
@@ -402,6 +403,8 @@ echo 0 > "$T/task_index"
 OUT=$(sh "$T/next_task.sh" 2>&1)
 check "next_task deletes task-context" "absent" \
     "$([ -e "$T/task-context.md" ] && echo present || echo absent)"
+check "next_task deletes task-code" "absent" \
+    "$([ -e "$T/task-code.md" ] && echo present || echo absent)"
 check "next_task discards fabro-code stdout" "0" "$(grep -c 'MAP LEAKED' <<<"$OUT")"
 check "next_task still one routing object" "1" "$(grep -c '^{.*}$' <<<"$OUT")"
 
@@ -1473,6 +1476,93 @@ printf '%s\n' 'printf "formatted\n" > a.txt' > "$T/wt/.fabro/fix.sh"
 OUT=$(af_run); RC=$?
 check "non-executable fix.sh: exit 0" "0" "$RC"
 check "non-executable fix.sh: ran"  "formatted" "$(cat "$T/wt/a.txt")"
+
+PATH="$SAVED_PATH"
+
+# ---------------------------------------------------------------------------
+# excerpts — the code the task dossier cites, copied for the coder, always exit 0
+# ---------------------------------------------------------------------------
+echo ""
+echo "excerpts"
+SAVED_PATH="$PATH"
+PATH="$ORIG_PATH"
+T="$WORK/excerpts"; mkdir -p "$T/bin" "$T/wt/src" "$T/wt/tests"; stage excerpts
+ex_run() { ( cd "$T/wt" && PATH="$1" sh "$T/excerpts.sh" 2>&1 ); }
+awk 'BEGIN {for (i = 1; i <= 60; i++) print "line " i " of a"}' > "$T/wt/src/a.py"
+awk 'BEGIN {for (i = 1; i <= 30; i++) print "line " i " of t"}' > "$T/wt/tests/t.py"
+# 2000 lines of 30 bytes: one 150-line range is 4500 bytes, so eight ranges fit the cap.
+awk 'BEGIN {for (i = 1; i <= 2000; i++) printf "big %025d\n", i}' > "$T/wt/src/big.py"
+
+# 1. No dossier: nothing is written, and a stale task-code.md is removed.
+rm -f "$T/task-context.md"; echo stale > "$T/task-code.md"
+OUT=$(ex_run "$NOFC_PATH"); RC=$?
+check "no dossier: exit 0"              "0" "$RC"
+check "no dossier: no task-code.md"     "absent" "$([ -e "$T/task-code.md" ] && echo present || echo absent)"
+check "no dossier: says so"             "1" "$(grep -c 'no task dossier' <<<"$OUT")"
+
+# 2. Ranges are copied verbatim, merged per file, and missing files are skipped. A
+# single line with no fabro-code is the window N-3..N+12, clamped to the file.
+cat > "$T/task-context.md" <<'DOSSIER'
+# Task dossier: t1 Do the thing
+## Files and symbols
+- src/a.py:10-14 `f`: the seam; also src/a.py:16-20 `g`, merged with the first
+- src/a.py:40-45 `h`; `src/a.py:2` the import line
+- ./src/a.py:58-70 runs past the end of the file
+- gone/x.py:1-5 does not exist; :30 a bare line number is skipped
+## Tests
+- tests/t.py:29
+DOSSIER
+OUT=$(ex_run "$NOFC_PATH"); RC=$?
+check "ranges: exit 0"                  "0" "$RC"
+check "ranges: one line of stdout"      "1" "$(grep -c . <<<"$OUT")"
+check "ranges: no routing object"       "0" "$(grep -c 'context_updates' <<<"$OUT")"
+check "ranges: headings" \
+    "## src/a.py:1-20|## src/a.py:40-45|## src/a.py:58-60|## tests/t.py:26-30" \
+    "$(grep '^## ' "$T/task-code.md" | paste -sd'|' -)"
+check "ranges: block is the file text" "$(sed -n '40,45p' "$T/wt/src/a.py")" \
+    "$(awk '/^## src[/]a[.]py:40-45$/ {getline; on = 1; next} on && /^````$/ {exit} on' "$T/task-code.md")"
+check "ranges: missing file skipped"    "0" "$(grep -c 'gone/x.py' "$T/task-code.md")"
+check "ranges: no scratch files left"   "0" "$(ls "$T"/excerpts.refs* "$T"/task-code.md.tmp 2>/dev/null | grep -c .)"
+
+# 3. With fabro-code, a single line becomes the narrowest symbol that holds it.
+cat > "$T/bin/fabro-code" <<'FC'
+#!/bin/sh
+[ "$1" = show ] || exit 64
+case "$2" in
+  src/a.py:2)    echo '# src/a.py:1-4  function  imports' ;;
+  src/a.py:30)   echo '# src/a.py:30-30  variable  LIMIT' ;;
+  tests/t.py:29) echo 'no symbol at tests/t.py:29'; exit 1 ;;
+esac
+echo '## calls'
+exit 0
+FC
+chmod +x "$T/bin/fabro-code"
+OUT=$(ex_run "$T/bin:$NOFC_PATH"); RC=$?
+check "fabro-code: exit 0"              "0" "$RC"
+check "fabro-code: symbol range used" \
+    "## src/a.py:1-4|## src/a.py:10-20|## src/a.py:40-45|## src/a.py:58-60|## tests/t.py:26-30" \
+    "$(grep '^## ' "$T/task-code.md" | paste -sd'|' -)"
+printf '%s\n' '# Task dossier: const' '- src/a.py:30 `LIMIT` is one line' > "$T/task-context.md"
+ex_run "$T/bin:$NOFC_PATH" >/dev/null
+check "fabro-code: a one-line symbol keeps the window" "## src/a.py:27-42" \
+    "$(grep '^## ' "$T/task-code.md")"
+
+# 4. Past 40000 bytes a range is listed, not copied, and nothing is cut mid-range.
+{ echo '# Task dossier: big'; for i in 0 1 2 3 4 5 6 7 8 9 10 11; do
+    echo "- src/big.py:$((i * 160 + 1))-$((i * 160 + 150))"; done; } > "$T/task-context.md"
+OUT=$(ex_run "$NOFC_PATH"); RC=$?
+check "cap: exit 0"                     "0" "$RC"
+check "cap: copied ranges"              "8" "$(grep -c '^## src/big.py' "$T/task-code.md")"
+check "cap: listed ranges"              "4" "$(grep -c '^- src/big.py' "$T/task-code.md")"
+check "cap: under the byte cap"         "1" "$([ "$(wc -c < "$T/task-code.md")" -lt 42000 ] && echo 1 || echo 0)"
+check "cap: says how much"              "1" "$(grep -c 'copied 8 range(s), 36000 bytes' <<<"$OUT")"
+
+# 5. A dossier with no usable range leaves no task-code.md behind.
+echo stale > "$T/task-code.md"
+printf '%s\n' '# Task dossier: none' '- src/a.py has no range' > "$T/task-context.md"
+OUT=$(ex_run "$NOFC_PATH"); RC=$?
+check "no ranges: exit 0"               "0" "$RC"
+check "no ranges: no task-code.md"      "absent" "$([ -e "$T/task-code.md" ] && echo present || echo absent)"
 
 PATH="$SAVED_PATH"
 

@@ -21,6 +21,17 @@ from the **Stage manifest** (C2), generated into each `workflow.toml` as the
 | `serve --port N` | The MCP streamable-HTTP server on `127.0.0.1:N`. `list_tools`/`call_tool` read `stage.json` and the manifest on every request, so it is stateless (D3): each stage sees only its own tools. A stage problem is returned as an `is_error` tool result, never a JSON-RPC error. |
 | `version` | Prints the crate version. |
 
+Every known stage also gets six `code_*` tools (`src/code.rs`): `code_def`, `code_show`,
+`code_callers`, `code_callees`, `code_impact` and `code_tests`. Each runs the matching
+`fabro-code` verb (ADR 0014) in the repository checkout and returns what it prints. The
+server's cwd is `/workspace`, so the checkout is its one child holding `.git` (the indexed
+one, if there are several); `FABRO_CODE_ROOT` and `FABRO_CODE_BIN` override both in tests.
+A call is cut at 25 s, under the 30 s `tool_timeout`. Wrapper exit 1 ("nothing found") is an
+answer; exit 2 (no index) and anything else is an `is_error` result that says to use grep.
+They exist because a local model ignores a shell command it is told about and uses the
+listed `read_file` instead: two backlog runs on 2026-10-01 made no `fabro-code` call in
+`improve` or `coder`.
+
 The sandbox `type = "sandbox"` MCP transport is wired per C6. The `serve` service is
 mounted at the HTTP router fallback (any path), because the fabro sandbox client's
 `initialize` does not hit `/mcp` (spike check 1).
