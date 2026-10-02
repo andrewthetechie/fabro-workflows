@@ -43,3 +43,81 @@ Review fix, 2026-10-02 (fabro-io 0.3.1; needs make deploy-images)
   Sealed paths were never enforced. 0.3.1 reads the file there too, so from the next image
   build `refute` is blocked from standards.json, spec.json, fix_result.json,
   ci_fix_result.json and /tmp/fabro/feedback/** for the first time. None is a refute input.
+
+Preliminary spot check, 2026-10-02 19:30Z (5 runs; task 08 wants 15)
+Runs: 01M3XDESFT (jelly-swipe#418), 01M3XF4R0S (jelly-swipe#416), 01M3XXCJWG (writers-app#993),
+01M3YH8QVJ (writers-app#994), all finished, and 01M3Y86Z01 (womens-fantasy-sports#1279), still
+running at rework_t4. The first two ran on 0.3.0 images (built 04:59-05:01Z); the rest on 0.3.1.
+01M3Z0M01J (writers-app#996, started 19:14Z) is too early to count. Same-repo comparison: 7
+baseline-window runs still in the API (writers-app X2GD/WCFT/VFK5, wfs WRYJ, lawncare WS83/VYRK/VD7H).
+Command: python3.11 ops/fabro-agent-tools.py --local-only <the 5 event files>
+
+     metric                         baseline (20 runs)     now (5 runs)          target      verdict
+M1   code-index share of searches   0.4%                   5.2% (19 of 363)      >= 25%      miss
+M2   read_file bytes per visit      49,077                 38,156 (-22%)         -40%        miss
+M3   whole-file share               42.9%                  64.2%                 < 20%       miss, worse
+M4   mutating git executed          11 calls               0 (0 blocked)         0           met
+M5   improve visits that edited     4 of 87                0 of 22               0           met
+M6   sessions loading the guide     0%                     89.8% (132 of 147)    100%        met for openai profile
+M7   coder start to first edit      4.7 min                5.8 min               <= 6 min    met (barely)
+M8   first-pass / reworks per task  93.0% / 0.15           86.4% / 0.50          no worse    worse, but one run (below)
+
+M4/M5, git. No agent tried mutating git, so the guard never had to block. The only git
+in an improve visit was `git stash list`. The agents used the new tools instead:
+restore_file 12 calls, baseline_check 6. restore_file correctly refused
+.github/workflows/build-publish.yml. The live guard path through fabro on 0.3.1 is still
+not seen. That is not a gap, because nothing tried. Two notes. (1) One writers-app coder
+visit (01M3XXCJ coder@1) restored the same two files 9 times in an hour, so it started
+over repeatedly. (2) Agents pipe baseline_check commands into `| tail`, so it reports the
+exit code of tail (exit=0 over a failing run).
+
+M6. Every openai-profile session loaded .codex/instructions.md. All 15 misses are
+anthropic-profile sessions on glm-5.3 (spec 7, extra_decompose 7, rework_t3 1). That
+profile reads AGENTS.md and CLAUDE.md, never .codex/instructions.md. So the overview's
+"every stage logs profile openai" fact is no longer true for those stages. No local-model
+stage is affected.
+
+M1. The code tools are used now (code_def 7, code_show 6, code_search 5, code_impact 1,
+code_tests 1, against 6 fabro-code calls in 20 baseline runs), but grep still wins by
+far: improve 6.5%, coder 4.3%. By repo: jelly-swipe 14.8%, writers-app 10.6%, wfs 0%.
+
+M3 and M7: the real finding. Part of the M3 rise is repo mix: the new runs are all
+TypeScript, the baseline includes lawncare-saas at 29%, and the median whole-file read
+is 5.4 KB. Within one repo the share still rose (writers-app 48% -> 60%, wfs 46% -> 63%).
+The cause is that the coder re-reads files that excerpts already copied. In 22 coder
+visits, every task-code.md had ranges. Of 87 whole-file reads before the first edit, 58
+(401 KB of 560 KB) were of a file that task-code.md cites. The prompt says "Do not
+`read_file` a range it already shows". The model reads the whole file instead, which that
+rule does not forbid.
+Reasoning drafts are unchanged: 8 of 22 coder visits had a pre-edit turn over 2,000
+output tokens with fenced code (17 of 41 in the baseline-window runs). Those turns hold
+69K of 118K pre-edit output tokens. The worst cases were writers-app 01M3XXCJ coder@2
+(9,734 tokens, a 10.7 min turn) and coder@3 (15,086 tokens, 16.7 min). They are why
+writers-app's median first edit went from 6.9 to 10.8 min.
+
+M8. 7 of the 11 rework visits are 01M3Y86Z (wfs#1279, the issue's 4th attempt). In its
+first task, validate failed 3 times on "[vitest-pool]: Failed to start forks worker"
+(AppearanceSettings.test.tsx). baseline_check showed the same error at the base, so it
+is environmental, not code. Its sixth task fails review 4 times because acceptance
+criterion 4 needs an edit to .github/workflows/build-publish.yml, which no agent may
+make. Neither failure comes from this series. Without that run: 14 of 16 first-pass
+(87.5%), 0.25 reworks per task. The remaining review rejections (writers-app#994: e2e
+assertions that race async UI) do not trace back to a dossier error.
+
+Merge outcome. All 4 finished runs ended report_blocked by merge_gate check 2b
+(`architecture` label), as designed. Three of the PRs were since merged by hand.
+
+Decision (provisional, 5 runs):
+- M1 missed and M6 met: per 08, next is D5's profile override or the PATH enrichment.
+  Wait for 15 runs first.
+- Before that, the cheap fix with the largest effect is in coder.md.j2: forbid a whole-file
+  read of a file task-code.md cites (read with offset/limit around the block instead),
+  and/or have excerpts copy more context lines around each range.
+- The draft-in-reasoning rule (handoff item 3) has not taken. Consider a lower
+  reasoning_effort on .coder, or a hard rule that names the cost.
+- Operational: wfs#1279 cannot finish without a human edit to the workflow file, and
+  the wfs image's vitest fork-worker failure needs a check against ci.sh.
+- Applied with this entry: coder.md.j2 now forbids a whole-file read of a file task-code.md
+  shows a block from (read around the block with offset/limit, or code_show path:line).
+  Live on push. Recheck M3 and the "cited file re-read" count (58 of 87 here) on the next
+  runs. excerpts is unchanged.

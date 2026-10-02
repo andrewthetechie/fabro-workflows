@@ -25,8 +25,13 @@ dossier and the code may be absent. Use them as follows:
 - `task-code.md` — the current text of every line range the dossier cites, copied
   from this checkout after `improve` finished and before you started. Each block is
   exact and has no line numbers, so you can use it as the `old_string` of
-  `edit_file` without reading the file. Do not `read_file` a range it already
-  shows. Ranges it lists under "Not copied" are still yours to read.
+  `edit_file` without reading the file. **Do not `read_file` a whole file that
+  `task-code.md` shows a block from**, and do not read a range it already shows.
+  Each block heading gives its `path:start-end`. If you need the lines around a
+  block, read only those lines: `read_file` with `offset` and `limit` set just
+  outside the block, or `code_show path:line`. Whole-file re-reads of these
+  files are the largest read cost this stage has. Ranges it lists under "Not
+  copied" are still yours to read.
 - `issue.json` — the parent issue, for reporter intent and human discussion in
   `.comments`. Supplemental: `current_task.json` wins where they disagree.
 
@@ -137,8 +142,9 @@ a call to a different function with the same name. Before you conclude that
 something is unused, or before you delete or rename it, confirm with
 `grep -rnw NAME`. If one answers `no code index`, use grep.
 
-When you must use `read_file` on a large file, pass `offset` and `limit` for the
-part you need instead of reading the whole file.
+When you must use `read_file` on a large file, or on any file `task-code.md`
+shows, pass `offset` and `limit` for the part you need instead of reading the
+whole file.
 
 ## Think briefly, then write the code once
 
