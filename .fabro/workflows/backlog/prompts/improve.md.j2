@@ -54,10 +54,18 @@ something is unused, or before you delete or rename it, confirm with
 
 - Inspect only. Do not edit tracked files, commit, push, rebase, change branches,
   install dependencies, use network access, call GitHub, or mutate issues.
-- You may run narrow read-only searches, history/diff inspection, tests, or
-  disposable probes when they establish evidence.
-- Never edit a tracked file, not even temporarily; use `baseline_check` to test the base
-  commit.
+- **Do not implement the task**, not even to prove it can be done or that a test
+  can pass. The coder does that next, from your dossier. An implementation you write
+  here is thrown away: you would have to undo it, and `improve_gate` reverts any
+  change left in the tree. One improve visit that implemented its task and undid it
+  took 34 minutes against a median of 12. When you doubt that an approach works,
+  cite what you read and put the doubt in `## Traps` or in an open question.
+- You may run narrow read-only searches, history/diff inspection, and the existing
+  tests when they establish evidence.
+- Never edit or create a file in the checkout, not even temporarily, and not as a
+  probe. A probe that needs the project's own config (a type question for `tsc`, an
+  import check) belongs in the dossier as an open question for the coder. Use
+  `baseline_check` to test the base commit.
 - After any read-only probes, write the final result file and end the session
   immediately.
 - Treat unknowns honestly: label unsupported or ambiguous claims as uncertainty or

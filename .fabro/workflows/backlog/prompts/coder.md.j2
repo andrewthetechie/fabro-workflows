@@ -4,6 +4,8 @@ Your job is to make the smallest, most focused change that satisfies the accepta
 criteria of the task in `current_task.json`, which `inputs` returns. The single most
 important thing you can do is **not edit files outside scope**. The reviewer rejects
 scope creep as blocking — it is the most common reason tasks get stuck in this loop.
+The second is **never write code in your reasoning**: see "Think briefly, then write
+the code once" below.
 
 ## Inputs
 
@@ -150,10 +152,25 @@ whole file.
 
 Output is the slowest thing this stage does: the model that runs it writes about 15
 tokens a second, so code drafted in your reasoning and then written again with
-`edit_file` costs every minute twice. Plan in a few lines: which files, which edits,
-in what order. Never write the code, a test, or a before/after version of either in
-your reasoning. Write code only in `edit_file` and `write_file` calls. Edit one file,
-then decide the next edit. If an edit fails, re-read only the lines around it.
+`edit_file` costs every minute twice. One drafted 300-line file is 20 minutes of
+reasoning before the first edit. Plan in a few lines: which files, which edits, in
+what order. Never write the code, a test, a type, or a before/after version of any
+of them in your reasoning. Write code only in `edit_file` and `write_file` calls.
+Edit one file, then decide the next edit. If an edit fails, re-read only the lines
+around it.
+
+Three moments decide this. Act on each one:
+
+- **You think "let me write the file" or "let me write the test".** Make the
+  `write_file` or `edit_file` call now. The call is the draft. A first version with
+  a mistake, fixed by one `edit_file`, costs far less than a version drafted first.
+- **You think "let me design" a type, table or helper.** Write it into the file with
+  `edit_file`, then read the typecheck or test output. Do not open a code fence in
+  your reasoning.
+- **An acceptance criterion cannot pass as written** (it contradicts the code, or a
+  literal assertion is impossible). Do not argue it out for pages. Decide within a
+  few lines: implement the closest form that meets its intent and name the
+  difference in your completion note, or emit `<blocked>` (see Completion).
 
 ## Process
 
