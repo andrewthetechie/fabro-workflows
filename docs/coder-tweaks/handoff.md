@@ -154,3 +154,19 @@ to `main`.
 - `diagnose`: if a metric regressed or a run failed in `excerpts`/`coder`.
 - `ms-rust`: required before any edit to `ops/fabro-io/` (item 5).
 - `writing-for-agents`: when you revise `coder.md.j2` / `improve.md.j2`.
+
+## 2026-10-03: result for `24eb95c`
+
+Measured over 43 coder visits in 11 `backlog` runs on four repos (10 with the 17fe4f2 rule).
+The details and the run list are in `result-2026-10-03.txt`.
+
+| Criterion | Result |
+|---|---|
+| median coder start → first edit ≤ 6 min | **met**: 4.1 min (17 min before). The tail is long: 9 of 43 visits took over 10 min. |
+| ≤ 3 `read_file` before the first edit | **met at the median** (3), but 21 of 43 visits read more |
+| no whole-file reads of files `task-code.md` covers | **mostly**: 13 in 37 visits after 17fe4f2, against 58 in 22 before |
+| no pre-edit reasoning turn of thousands of tokens that drafts code | **missed**: 10 of 37 visits; 62.6K of 154.2K pre-edit output tokens. writers-app is the worst. |
+| review first-pass and reworks no worse | **met**: 95.3% first-pass. Reworks are 0.19 per task without wfs#1300, whose failures are environmental. |
+| `code_*` calls in `improve`/`coder` | **met**: 89 calls (code_show 37, code_def 27, code_search 21) |
+
+`excerpts` gave a `task-code.md` with ranges to 41 of 43 coder visits.

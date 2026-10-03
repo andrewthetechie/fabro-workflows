@@ -1,6 +1,6 @@
 # Coder tool use: overview and canonical contracts
 
-**Status:** tasks 01-07 implemented 2026-10-01 and deployed 2026-10-02 (fabro-io 0.3.0); a review fix (fabro-io 0.3.1: `restore_file`'s base, the guard's shell reserved words, the `git-guard:` reason prefix, the guide's git exception) needs `make deploy-images`. Task 08's measurement is pending. Each task file records its own deviations. The earlier change
+**Status:** tasks 01-07 implemented 2026-10-01 and deployed 2026-10-02 (fabro-io 0.3.0); a review fix (fabro-io 0.3.1: `restore_file`'s base, the guard's shell reserved words, the `git-guard:` reason prefix, the guide's git exception) is in all four images. Task 08 was measured over 16 runs on 2026-10-03 (`result-2026-10-03.txt`): M4, M5, M7 and M8 are met, M6 is met for the openai profile, the guard has blocked live, and M1, M2 and M3 (improve) are short. Its follow-up fixes (fabro-io 0.3.2 `baseline_check` pipefail, `rg` and Node 24 in the images, the coder and improve prompt rules) are recorded at the end of that file. Each task file records its own deviations. The earlier change
 it builds on, `24eb95c` (the `excerpts` node, the coder prompt rules, and the fabro-io
 0.2.0 `code_*` tools), is live. Its follow-up check is in `handoff.md`.
 

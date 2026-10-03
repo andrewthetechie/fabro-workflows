@@ -1,0 +1,159 @@
+Task 08 result, 2026-10-03 (16 runs; follows result-2026-10-02.txt)
+
+Runs: the 5 of the 2026-10-02 spot check (01M3XDESFT, 01M3XF4R0S, 01M3XXCJWG, 01M3YH8QVJ,
+01M3Y86Z01) and 11 newer `backlog` runs, all created after the 2026-10-02 04:09Z deploy:
+  01M3Z0M01J writers-app#996      01M3ZYZ2HB lawncare-saas#2677   01M40J87JX lawncare-saas#2678
+  01M3Z5H9M2 lawncare-saas#2676   01M40D2MJ8 jelly-swipe#419      01M40KM3TB jelly-swipe#417
+  01M3ZPCFFR wfs#1280 (stuck)     01M40H5NBD jelly-swipe#411      01M40XMZZJ writers-app#997
+  01M3ZPMBH6 wfs#1300 (failed)    01M3ZW9R3G writers-app#991
+Still running and not counted: 01M412FHCG (lawncare-saas#2679), 01M41840 (wfs#1300 retry).
+Also read: arch-review 01M3ZYPDKE (womens-fantasy-sports), for M6 only.
+Images: all four carry fabro-io 0.3.1 (`docker run --rm --entrypoint fabro-io <image> version`).
+01M3Z0M01J started 19:14Z, before 17fe4f2 (19:32Z), so its coder prompt lacks the whole-file
+rule (its stage.prompt confirms). The 10 runs after it have the rule.
+Command: python3.11 ops/fabro-agent-tools.py --local-only <event files>. Per-visit detail
+(cited re-reads, drafts, improve edits) came from a scratch script over the same files.
+
+     metric                         baseline (20)    spot check (5)   new 11           all 16           target      verdict
+M1   code-index share of searches   0.4%             5.2%             14.9% (89/596)   11.3%            >= 25%      miss
+M2   read_file bytes per visit      49,077           38,156           44,856 (-9%)     42,514 (-13%)    -40%        miss
+M3   whole-file share               42.9%            64.2%            20.5%            35.9%            < 20%       coder met (6.7%); improve 39%
+M4   mutating git executed          11 calls         0                0 (2 blocked)    0 (2 blocked)    0           met
+M5   improve visits that edited     4 of 87          0 of 22          3 of 43          3 of 65          0 reach coder  met (all undone in-stage)
+M6   sessions loading the guide     0%               89.8%            88.4% (252/285)  89.1%            100%        met for the openai profile
+M7   coder start to first edit      4.7 min          5.8 min          4.1 min          4.5 min          <= 6 min    met
+M8   first-pass / reworks per task  93.0% / 0.15     86.4% / 0.50     95.3% / 0.28     92.3% / 0.37     no worse    met (0.19 without wfs#1300)
+
+M4: the guard works through fabro, the first live block
+- 01M40XMZZJ (writers-app#997) `spec@1` and `review_merge.spec@1`, both glm-5.3, ran `git fetch`
+  (once as `git fetch --dry-run`). Both got `git-guard: git fetch is blocked: the graph's command
+  nodes own branch and remote state.` as the tool result and continued with read-only git
+  (`git log origin/main`, `git merge-base`). This is the forced-violation check that
+  result-2026-10-02 left open.
+- A scan of every shell call in the 11 runs, at any position (not only command position), found
+  no other mutating git. The other matches were `git merge-base` reads. No `sh -c` or `python`
+  bypass was seen.
+
+M3: the coder prompt fix (17fe4f2) worked; the rest is improve
+- coder whole-file share: 99 of 181 (55%) in the spot check, 18 of 268 (6.7%) in the 10 post-fix
+  runs. Whole-file reads before the first edit of a file task-code.md cites: 58 (390 KB) in 22
+  visits before, 13 (109 KB) in 37 visits after. Ranged reads of cited files rose from 41 to
+  126, which is what the rule asks for.
+- Caution: 01M3Z0M01J ran the old prompt and still read only 3 whole files in 77 reads, so part
+  of the drop is run-to-run variance. Every repo still went down within the post-fix runs
+  (jelly-swipe coder 26/40 -> 8/34, writers-app 46/168 -> 0/72).
+- What is left is improve: 104 of 267 reads (39%) are whole files. improve has no task-code.md,
+  and it reads to write the dossier, so some of that is legitimate. No change proposed yet.
+- M2 fell only 9%: the coder now reads more ranges, and the ranges are large.
+
+M1: better, still short
+- improve 17.1%, coder 14.9%, rework_t1 0%. By repo: writers-app 26.9% (meets the target),
+  jelly-swipe 12.5%, lawncare-saas 7.2%, wfs 0% (2 visits only).
+- Tools used: code_show 37, code_def 27, code_search 21, code_callers 2, code_tests 2. No
+  shell `fabro-code` calls; the MCP tools replaced them.
+- New: no profile image has `rg` (`command -v rg` fails in all four), but pebble's openai
+  prompt tells the model to prefer it. 30 local-model shell calls in the 11 runs died with
+  `rg: command not found` (lawncare 17, writers-app 8, jelly-swipe 3, wfs 2); 15 in the spot
+  check. Each one is a wasted turn before the model falls back to grep.
+
+M5: improve still implements the task sometimes
+- 01M3Z5H9M2 (lawncare#2676) improve@3: 6 edits over 3 source files, ruff and pytest runs, then
+  restore_file on all three. 33.6 min, against an improve median of 11.8. improve@5: 3 more
+  edits, then restore_file. 01M3ZW9R3G improve@5 wrote two `src/__probe*.ts` files to test a
+  type question with tsc, then removed them.
+- In all three the tree was clean at the checkpoint, so improve_gate found no diff and
+  reverted nothing (its stdout is only the routing object). Nothing reached coder. The cost
+  is time, not correctness.
+
+M6
+- All 33 misses are anthropic-profile sessions on glm-5.3: spec and extra_decompose (2 each per
+  run), plus one rework_t3. No local-model stage is affected. arch-review 01M3ZYPDKE: 13 of 13.
+  pr-review and issue-triage: no run in the window, still not seen.
+
+M7 and reasoning drafts (handoff item 3)
+- Median 4.1 min, but the tail is long: 9 of 43 coder visits took over 10 min to the first edit,
+  and the slowest four are draft cases: 01M3Z0M01J coder@1 34.9 min (17.9K draft tokens, old
+  prompt), 01M40XMZZJ coder@1 33.0 min, 01M3ZW9R3G coder@1 18.4 min (one 15.0K-token turn),
+  01M40J87JX coder@3 15.4 min.
+- 10 of 37 post-fix coder visits had a pre-edit turn over 2,000 output tokens holding fenced
+  code (spot check 8 of 22, baseline window 17 of 41). Those turns hold 62.6K of 154.2K pre-edit
+  output tokens. writers-app accounts for 4 of the 10 and 37K of the 62.6K. The rule has not
+  taken.
+
+M8
+- 41 of 43 tasks passed review at the first review_gate. Rework visits: rework_t1 7,
+  rework_t2 4, rework_t3 1. Four of them (t1, t2 x2, t3) are 01M3ZPMBH6, see below; the rest
+  follow validate failures (lawncare#2676 4, lawncare#2678 2, writers-app#996 1,
+  lawncare#2677 1). Without 01M3ZPMBH6: 8 rework visits over 43 tasks = 0.19 per task.
+- Merge outcome: all 9 runs that opened a PR ended `report_blocked` by merge_gate check 2b
+  (`architecture` label), as designed. Four of those PRs have since been merged by hand
+  (lawncare #2686, #2688; writers-app #1005; jelly-swipe #435).
+
+Tool notes
+- restore_file 11 calls, baseline_check 11. 7 of the 11 baseline_check commands pipe into
+  `| tail` or `| head`, so the reported exit code is the pipe's, not the test's. Same as the
+  spot check (4 of 5).
+
+Operational, outside this series
+- womens-fantasy-sports cannot pass validate in the sandbox. Every frontend test file fails
+  with `[vitest-pool]: Failed to start forks worker ... 'addEventListener' called on an object
+  that is not a valid instance of EventTarget` (130 errors). It started with Dependabot #1317
+  (2026-10-02 03:42Z: vitest 4.1.11 -> 5.0.1, jsdom 30.0.1 -> 30.1.1); wfs#1279 was the first
+  run to hit it. GitHub CI now passes on main (#1319's test-frontend-unit is green), so the
+  sandbox differs from CI. `node` is not on fabro-ts's default PATH; bun 1.4.2 is. That is a
+  lead, not a confirmed cause.
+  01M3ZPMBH6 (wfs#1300) climbed rework_t1..t3 against it and was killed by the failure-signature
+  breaker at validate@5 ("repeated 3 times (limit 3)"), with no failure sink: backlog's
+  loop_restart_signature_limit is still the default (docs/research_improvements item 1). The
+  retry 01M41840 is on the same path (rework_t2@2 at 17:00Z) and holds a coder box.
+- 01M3ZPCFFR (wfs#1280): the decomposer returned needs_human_review and decompose_gate routed to
+  mark_stuck. That is the designed path.
+
+Decision (task 08 rules)
+- M1 missed and M6 met: the guide reaches the model and moves it only partly (0.4% -> 14.9%,
+  writers-app 27%). Before D5's profile override, remove the `rg` dead end. There are two ways:
+  one line in _io/agent-guide.md ("`rg` is not installed; use the grep tool, code_search, or
+  `grep -rn`"; live on push, no rebuild), or ripgrep in the four Dockerfiles (needs
+  make deploy-images). Recheck M1 after it. If it stays under 25%, try D5 on writers-app or
+  lawncare for one week.
+- M4 is 0 and the guard is verified live. No parser change is needed.
+- M8 is not worse. No revert.
+- D3 (hashline): M7 is met, but the largest pre-edit output cost is reasoning drafts, not edit
+  output. Do not revisit yet.
+- Next cheap fixes, in order of effect:
+  1. Reasoning drafts: a lower reasoning_effort on .coder (now medium), or a sharper rule in
+     coder.md.j2. Judge by the >10 min first-edit tail, not the median.
+  2. baseline_check: run the command with `set -o pipefail` in fabro-io, or reject a trailing
+     `| tail`/`| head` with a hint (needs make deploy-images).
+  3. improve: say plainly in improve.md.j2 that it must not implement the task. restore_file
+     makes a stray implementation safe but not free (33.6 min in lawncare#2676).
+- Operational: stop or let fail 01M41840; reproduce the wfs vitest failure in fabro-ts with the
+  repo's .fabro/ci.sh before the next wfs dispatch, or every wfs issue will burn a coder box on
+  the rework ladder.
+
+Applied, 2026-10-03 (the four fixes above and the wfs failure)
+- wfs: fabro-ts gets Node 24.21.0 (official tarball; the repo's test-frontend.yml pins 24).
+  Reproduced on the host with a fresh clone of main in the current fabro-ts image: without
+  Node, 130 errors and no tests run; with node v24.21.0 on PATH, 130 files / 938 tests pass
+  and `bun run --filter frontend build` exits 0. Needs make deploy-images.
+- rg: ripgrep in all four images. build-images.sh gains a tools check: `rg` everywhere, real
+  Node (not a bun shim) wherever `node` is on PATH, and Node required in fabro-ts. Needs
+  make deploy-images. The agent guide is unchanged: once rg exists, the pebble advice works.
+- reasoning drafts: reasoning_effort was NOT lowered. Probe on coders-b (llama.cpp b10352,
+  DeepSeek-V4-Flash): llama.cpp maps `none` to thinking off and `low`/`medium` to thinking
+  on, and the chat template adds text only at `high`/`max`, so low and medium send the same
+  prompt. Thinking off answered 17*23 as 187 and 193, so it is not an option for the coder.
+  Instead coder.md.j2 names the three moments that start a draft in these traces ("let me
+  write the file", "let me design" a type, an acceptance criterion that cannot pass as
+  written) with the action for each, and the opening paragraph points at the rule. Live on
+  push. Recheck: coder visits with a >2,000-token fenced pre-edit turn (10 of 37 here) and
+  visits over 10 min to first edit (9 of 43).
+- baseline_check: fabro-io 0.3.2 runs the command under `bash -o pipefail`, and the tool
+  description says not to pipe into tail or head because the output is already the last 200
+  lines. New test in gitsafe_tests.rs; cargo test 35 passed. Needs make deploy-images.
+- improve: improve.md.j2 says plainly not to implement the task, even to prove it can be
+  done, with the 34-minute case, and drops "disposable probes" in favor of never creating a
+  file in the checkout. Live on push.
+- Validation: fabro validate unchanged (Backlog 69/162, PrReview 34/73, IssueTriage 16/36,
+  ArchReview 24/54, the two deliberate warnings); routing checker 0 mismatches; manifest
+  check OK; ops/test-task-gates.sh 803 checks; build-images.sh sh -n.
