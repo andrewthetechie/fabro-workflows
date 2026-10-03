@@ -177,6 +177,13 @@ fn baseline_check_runs_on_the_base_and_never_touches_the_checkout() {
     assert!(dir.join("new.txt").exists());
     assert_eq!(git(&dir, &["status", "--porcelain"]), before);
 
+    // pipefail: a failing command piped into tail reports the failure, not tail's 0.
+    let out = rt
+        .block_on(gitsafe::baseline_check(&io, &dir, &base, "(echo boom; exit 4) | tail -5", 20))
+        .unwrap();
+    assert!(out.starts_with("exit=4\n"), "{out}");
+    assert!(out.contains("boom"), "{out}");
+
     // A command written to the worktree stays there.
     rt.block_on(gitsafe::baseline_check(&io, &dir, &base, "echo scratch > scratch.txt", 20)).unwrap();
     assert!(!dir.join("scratch.txt").exists());

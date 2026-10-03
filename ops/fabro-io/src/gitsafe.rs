@@ -71,7 +71,9 @@ pub fn tools() -> Vec<(&'static str, String, serde_json::Value)> {
             BASELINE_CHECK,
             "Run a command on the base commit your work is compared with, in a separate \
              worktree, to see whether a failure predates your change. Use it instead of git stash. It never touches \
-             your checkout. Returns the exit code and the last 200 lines of output."
+             your checkout. Returns the exit code and the last 200 lines of output, so \
+             do not pipe the command into tail or head. The command runs with pipefail: \
+             the exit code is the first failing command's in a pipeline."
                 .to_string(),
             serde_json::json!({
                 "type": "object",
@@ -389,6 +391,9 @@ fn ensure_worktree(root: &Path, checkout: &Path, base: &str) -> Result<PathBuf, 
 /// Runs `command` on the task base, in a worktree, and returns the exit code and the
 /// last [`TAIL_LINES`] lines of output.
 ///
+/// The command runs under `bash -o pipefail`, so a pipeline reports the exit code of
+/// its last failing command, not of a trailing `tail`.
+///
 /// # Errors
 ///
 /// Returns a sentence for the model when the command is empty, no worktree can be made,
@@ -411,8 +416,11 @@ pub async fn baseline_check(
             .to_string());
     };
     let limit = Duration::from_secs(timeout_s.clamp(1, MAX_TIMEOUT_S));
+    // pipefail: agents append `| tail -30` to the command, and without it the exit
+    // code reported is tail's 0 over a failing test run (docs/coder-tweaks
+    // result-2026-10-03.txt: 7 of 11 calls were piped).
     let mut cmd = tokio::process::Command::new("bash");
-    cmd.arg("-c")
+    cmd.args(["-o", "pipefail", "-c"])
         .arg(format!("exec 2>&1; {command}"))
         .current_dir(&wt)
         .envs(env)
