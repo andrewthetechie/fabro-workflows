@@ -218,6 +218,27 @@ verify_image() {
     ok=1
   fi
 
+  # TOOLS (offline): `rg`, which pebble's prompt tells every agent to prefer, and
+  # real Node wherever a `node` is on PATH. fabro-ts once had no Node, so vitest ran
+  # on Bun's runtime and every womens-fantasy-sports validate failed in worker
+  # setup (docs/coder-tweaks result-2026-10-03.txt). fabro-ts must have Node.
+  log "verify $tag: tools check, offline"
+  if docker run --rm --network=none --entrypoint bash "$tag" -c '
+        set -eu
+        rg --version | head -1
+        if [ "'"$tag"'" = fabro-ts:local ]; then command -v node >/dev/null || { echo "no node"; exit 1; }; fi
+        if command -v node >/dev/null; then
+          node -e "process.exit(process.versions.bun ? 1 : 0)" || { echo "node is a bun shim"; exit 1; }
+          echo "node $(node -v)"
+        fi
+      ' >"$WORK/verify-tools-$repo.log" 2>&1; then
+    log "verify $tag: tools OK ($(tr '\n' ' ' <"$WORK/verify-tools-$repo.log"))"
+  else
+    log "verify $tag: TOOLS CHECK FAILED"
+    tail -20 "$WORK/verify-tools-$repo.log" >&2
+    ok=1
+  fi
+
   if [ -x "$src/.fabro/setup.sh" ]; then
     log "verify $tag: contract check, running $repo/.fabro/setup.sh"
     t0=$(date +%s)

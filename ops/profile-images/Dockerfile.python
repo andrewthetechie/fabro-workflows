@@ -48,7 +48,8 @@ ENV LANG=C.UTF-8 \
 ARG NODE_VERSION=20.19.5
 ARG GH_VERSION=2.100.0
 
-RUN apt-get update && apt-get install -y --no-install-recommends git jq curl xz-utils sqlite3 \
+# ripgrep: see Dockerfile.ts (pebble's prompt prefers `rg`; without it those calls exit 127).
+RUN apt-get update && apt-get install -y --no-install-recommends git jq curl xz-utils sqlite3 ripgrep \
   && rm -rf /var/lib/apt/lists/* \
   && curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
   && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \

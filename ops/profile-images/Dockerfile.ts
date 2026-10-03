@@ -21,22 +21,40 @@ ARG GH_VERSION=2.100.0
 # is postgres:18, and backup-bats.yml pins the same fixture image.
 ARG PYTHON_VERSION=3.14
 ARG PG_MAJOR=18
+# .github/workflows/test-frontend.yml sets up node-version: 24 (see Toolchain).
+ARG NODE_VERSION=24.21.0
 
 # ---------------------------------------------------------------------------
 # Toolchain
 # ---------------------------------------------------------------------------
-# Bun is the runtime and package manager. `node` in this base is bun's
-# node-fallback symlink, not a Node runtime -- `node -v` prints bun's own help.
-# Nothing in this repository's ci.sh needs real Node, so that is left alone.
+# Bun is the package manager and runs the scripts, but vitest needs real Node.
+# Its bin is `#!/usr/bin/env node`, and with no `node` on PATH `bun run` puts its
+# own node shim there, so vitest runs on Bun's runtime. Since vitest 5.0.1
+# (Dependabot #1317, 2026-10-02) jsdom's EventTarget check then fails and every
+# test file errors in worker setup: "[vitest-pool]: Failed to start forks worker
+# ... 'addEventListener' called on an object that is not a valid instance of
+# EventTarget". The repository's CI hit the same thing and added setup-node 24
+# (#1318). Without Node here, every womens-fantasy-sports validate failed and
+# wfs#1300 died on the rework ladder. Node comes from the official tarball, the
+# same way as in Dockerfile.rust-node; .tar.gz because this base has no xz.
 #
 # uv and Python are NEW: this image had neither, so womens-fantasy-sports's
 # `.fabro/ci.sh` could not touch the backend at all and says so --
 # "Backend pytest is excluded here because it requires Postgres + Python 3.14".
+#
+# ripgrep: pebble's system prompt tells the model to prefer `rg`, and with no rg
+# every such shell call failed with exit 127 (docs/coder-tweaks
+# result-2026-10-03.txt). The native grep tool and `fabro-code search` use it too.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git jq curl ca-certificates gnupg sqlite3 \
+      git jq curl ca-certificates gnupg sqlite3 ripgrep \
   && curl -LsSf https://astral.sh/uv/install.sh | sh \
   && curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
   && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
+  && curl -fsSL -o /tmp/node.tgz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" \
+  && tar -xzf /tmp/node.tgz -C /usr/local --strip-components=1 \
+       --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE' \
+  && rm /tmp/node.tgz \
+  && node -v && rg --version \
   && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------

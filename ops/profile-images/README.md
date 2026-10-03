@@ -12,10 +12,12 @@ dependency caches, and — where its tests need one — a PostgreSQL server.
 | `ts` | womens-fantasy-sports | `fabro-ts:local` | `oven/bun:1.4.2` | bun 1.4.2, **uv + baked CPython 3.14** | **PostgreSQL 18** |
 | `rust-node` | writers-app | `fabro-rust-node:local` | `rust:1.98.1-trixie` | rust 1.99.0 (rustup over base), **node 22.23.2** | — |
 
-Every image contains `git`, `jq`, `gh` (v2.100.0), `bash`, `fabro-code` and `fabro-io`:
+Every image contains `git`, `jq`, `gh` (v2.100.0), `bash`, `rg`, `fabro-code` and `fabro-io`:
 the clone stage needs `git`, the gates need `jq`, the acquire/claim/validate/open_pr stages need `gh`,
 `fabro-code` is the code-index wrapper (docs/code-context C2), and `fabro-io` is the Stage-I/O
 MCP server that gives every agent stage `inputs` and `submit` (ADR 0016, `docs/stage-io/`).
+`rg` is there because pebble's system prompt tells every agent to prefer it; without it
+those shell calls exit 127 (`docs/coder-tweaks/result-2026-10-03.txt`).
 fabro evaluates **every** sandbox command with `/bin/bash` and has no `sh` fallback.
 Command stages are written as POSIX `sh` regardless — no bashisms.
 
@@ -24,6 +26,10 @@ repo's workflow files is the authority. Three of the four were wrong before:
 jelly-swipe had no node at all while its `ci.sh` ran `npm ci`, writers-app built on
 node 20 against a CI that pins 22, and neither node-based image had a Python its
 repo could use.
+The fourth followed on 2026-10-03: fabro-ts had only bun, so vitest ran on Bun's
+runtime and every womens-fantasy-sports frontend test failed in worker setup once
+vitest reached 5.0.1. The repo's CI pins node 24 for that job, and so does the image.
+The verify step's tools check fails a fabro-ts build with no real Node.
 
 ## Building
 
