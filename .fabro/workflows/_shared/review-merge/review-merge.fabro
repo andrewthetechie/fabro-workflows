@@ -647,6 +647,13 @@ fi"]
     // review_fix legitimately added would read as out-of-scope later and block the merge
     // over a file `ci_fix` never touched. This is the set the merge decision was actually
     // made against.
+    // Check 6: a commit without the fabro co-author still passes when it is a merge whose
+    // every parent but the first is already in origin/<base>. That is the run's own
+    // git merge of main (next_task, open_pr_prep), authored by the agent identity alone.
+    // A human commit, or a merge of any other branch, fails. A gh or git error fails
+    // closed: an unreadable commit has no parents and counts as human. `cut -s` matters:
+    // without it a commit git shows with no parents (a root, or a shallow-clone boundary)
+    // prints its own SHA as its parent list.
     merge_gate [label="Evaluate merge eligibility", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 F=/tmp/fabro/review/fix_result.json
@@ -684,10 +691,21 @@ if [ \"$E\" = true ]; then
   T=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved}}}}}' -F o=\"$O\" -F r=\"$R\" -F n=\"$PR\" --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo bad)
   if [ \"$T\" != 0 ]; then fail 'There are unresolved review conversations on this PR.'; fi
 fi
-# 6. no human commits (identify by author email, not login)
+# 6. no human commits (author email; own merges of origin/<base> allowed)
 if [ \"$E\" = true ]; then
-  C=$(gh pr view \"$PR\" --json commits --jq '[.commits[] | select([.authors[].email] | index(\"noreply@fabro.sh\") | not)] | length' 2>/dev/null || echo bad)
-  if [ \"$C\" != 0 ]; then fail 'A commit on this PR was not authored by the automation; a human must merge it.'; fi
+  C=$(gh pr view \"$PR\" --json commits --jq '[.commits[] | select([.authors[].email] | index(\"noreply@fabro.sh\") | not) | .oid] | join(\" \")' 2>/dev/null || echo bad)
+  BR=$(cat /tmp/fabro/base_ref 2>/dev/null || echo bad)
+  H=0
+  if [ \"$C\" = bad ] || [ \"$BR\" = bad ]; then H=1; else
+    for X in $C; do
+      PS=$(git rev-list --parents -n 1 \"$X\" 2>/dev/null | cut -s -d' ' -f3-)
+      if [ -z \"$PS\" ]; then H=1; break; fi
+      for P in $PS; do
+        if ! git merge-base --is-ancestor \"$P\" \"origin/$BR\" 2>/dev/null; then H=1; fi
+      done
+    done
+  fi
+  if [ \"$H\" != 0 ]; then fail 'A commit on this PR was not authored by the automation; a human must merge it.'; fi
 fi
 # 7. fix_outcome mergeable
 if [ \"$E\" = true ]; then

@@ -3105,6 +3105,69 @@ check "13b tree changed: reason"            "1"     "$(grep -c 'code changed aft
 mg_green; echo '{"blocking":[]}' > "$T/review/hygiene.json"
 check "13b no head: not eligible"           "false" "$(mg_run)"
 
+# Check 6, real git. The run branch holds a fabro-co-authored commit and a merge of a
+# moved origin/main, authored by the agent identity alone (what next_task and
+# open_pr_prep produce). `cm_state` writes the PR's commit list the way gh reports it.
+git -C "$T" branch -q -f base HEAD
+git -C "$T" update-ref refs/remotes/origin/main "$(git -C "$T" rev-parse base)"
+git -C "$T" checkout -q -b runbr
+echo w > "$T/code/w.txt"; git -C "$T" add code; git -C "$T" commit -qm "fabro work"
+W=$(git -C "$T" rev-parse HEAD)
+git -C "$T" checkout -q -b mainmoved base
+echo m > "$T/code/m.txt"; git -C "$T" add code; git -C "$T" commit -qm "main moved"
+git -C "$T" update-ref refs/remotes/origin/main "$(git -C "$T" rev-parse HEAD)"
+git -C "$T" checkout -q runbr
+git -C "$T" merge -q --no-edit origin/main
+G=$(git -C "$T" rev-parse HEAD)
+git -C "$T" checkout -q -b other base
+echo o > "$T/code/o.txt"; git -C "$T" add code; git -C "$T" commit -qm "unmerged side branch"
+git -C "$T" checkout -q runbr
+git -C "$T" merge -q --no-edit other
+GO=$(git -C "$T" rev-parse HEAD)
+cm_state() { # cm_state merge|other|human: the fabro commit W plus that case's commits
+    mg_green
+    jq --arg w "$W" --arg g "$G" --arg go "$GO" --arg e "$1" '
+      .commits = [{oid:$w, authors:[{email:"noreply@fabro.sh"}]}]
+        + (if $e == "merge" then [{oid:$g, authors:[{email:"bot@users.noreply.github.com"}]}]
+           elif $e == "other" then [{oid:$g, authors:[{email:"bot@users.noreply.github.com"}]},
+                                    {oid:$go, authors:[{email:"bot@users.noreply.github.com"}]}]
+           elif $e == "human" then [{oid:$w, authors:[{email:"someone@example.com"}]}]
+           else [] end)' "$T/pr.fixture.json" > "$T/pr.fixture.tmp" && mv "$T/pr.fixture.tmp" "$T/pr.fixture.json"
+    jq -n --arg h "$(git -C "$T" rev-parse HEAD)" '{blocking:[], head:$h}' > "$T/review/hygiene.json"
+}
+# 9. Only fabro-co-authored commits and a merge of origin/main: not blocked by check 6.
+git -C "$T" checkout -q -B runbr "$G"
+cm_state merge
+check "6 merge of main: eligible"           "true"  "$(mg_run)"
+# 10. A commit by a human address (no fabro co-author, one parent) still blocks.
+cm_state human
+check "6 human commit: not eligible"        "false" "$(mg_run)"
+check "6 human commit: reason"              "1"     "$(grep -c 'not authored by the automation' "$T/merge_block_reason")"
+# 11. A merge that brings in a branch not contained in origin/main still blocks.
+git -C "$T" checkout -q -B runbr "$GO"
+cm_state other
+check "6 merge of other branch: blocks"     "false" "$(mg_run)"
+check "6 merge of other branch: reason"     "1"     "$(grep -c 'not authored by the automation' "$T/merge_block_reason")"
+# 12. A commit gh reports but git cannot find fails closed.
+git -C "$T" checkout -q -B runbr "$G"
+cm_state merge
+jq '.commits += [{oid:"0000000000000000000000000000000000000001", authors:[{email:"x@y"}]}]' "$T/pr.fixture.json" > "$T/pr.fixture.tmp" && mv "$T/pr.fixture.tmp" "$T/pr.fixture.json"
+check "6 unknown commit: fails closed"      "false" "$(mg_run)"
+# 13. A gh error fails closed.
+cm_state merge; echo 'not json' > "$T/pr.fixture.json"
+check "6 gh error: fails closed"            "false" "$(mg_run)"
+# 14. A commit git shows with no parents (a root, or a shallow boundary) blocks even
+# when it is in origin/main: `cut -s` keeps its own SHA from reading as its parents.
+cm_state merge
+R=$(git -C "$T" rev-list --max-parents=0 HEAD)
+jq --arg r "$R" '.commits += [{oid:$r, authors:[{email:"x@y"}]}]' "$T/pr.fixture.json" > "$T/pr.fixture.tmp" && mv "$T/pr.fixture.tmp" "$T/pr.fixture.json"
+check "6 parentless commit: blocks"         "false" "$(mg_run)"
+check "6 parentless commit: reason"         "1"     "$(grep -c 'not authored by the automation' "$T/merge_block_reason")"
+# 15. A missing base_ref fails closed: there is no origin/<base> to test parents against.
+cm_state merge; rm -f "$T/base_ref"
+check "6 no base_ref: fails closed"         "false" "$(mg_run)"
+check "6 no base_ref: reason"               "1"     "$(grep -c 'not authored by the automation' "$T/merge_block_reason")"
+
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
