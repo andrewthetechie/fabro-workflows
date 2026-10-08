@@ -57,6 +57,7 @@ What the agents were trying to do with git:
 | D3 | **hashline is deferred.** `edit_file` fails 1 time in 569, so the reliability case does not apply. The token case (38% of edit output, about 3-4 minutes per run) is smaller than the read and search costs this series targets, and adoption has the same DeepSeek problem as `fabro-code`. Revisit after task 08. If pursued, put the anchors inside the `code_*` family (`code_show` prints them and a `code_edit` applies them), not in a second tool family. |
 | D4 | **No fork of pebble or fabro.** The levers are the instruction files pebble loads, our MCP tools, the stage inputs, hooks and the profile images. |
 | D5 | **Out of scope:** a PATH wrapper around `grep`/`rg` that adds index hints, and changing the pebble agent profile through `metadata.agent.profile`. Both are possible follow-ups if task 08 shows the steering failed. |
+| D6 | **One Agent profile: every session runs the openai profile** (ADR 0017), pinned at the provider with `metadata.agent.profile = "openai"` for any provider whose first codec is not `openai-chat`, and checked by `ops/check-agent-profiles.py`. **D5's profile override is withdrawn** with it; its remaining lever, the PATH wrapper around `grep`/`rg`, waits for #3's corrected M1. |
 
 ## Verified facts (sources)
 

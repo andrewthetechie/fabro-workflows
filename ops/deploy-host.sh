@@ -30,7 +30,8 @@
 #   provision  ops/provision-server-state.sh against the API with the server's own
 #              dev token. Create-if-absent: it never rewrites a row, and drift is
 #              reported (exit 2), which this treats as a warning.
-#   verify     every host copy diffed against this checkout, and scheduler /health.
+#   verify     every host copy diffed against this checkout, scheduler /health, and
+#              the live overlay checked for the openai Agent profile (ADR 0017).
 #   compose-up `docker compose up -d` for the whole project. Explicit only, and it
 #              needs CONFIRM=1.
 #
@@ -237,6 +238,22 @@ step_verify() {
   else
     echo "    FAIL  scheduler /health"; bad=1
   fi
+  # ADR 0017 (issue #2): every agent session must run pebble's openai Agent profile, and
+  # the live overlay is the thing that decides it -- nothing else reads it, and a provider
+  # on another codec loses the Agent guide in silence. The overlay holds provider
+  # credentials, so it is copied out to a host temp file with mode 600, read by a checker
+  # that prints only provider ids, model ids, codecs and profiles, and removed in the same
+  # command. `fabro model list --json`, `fabro doctor` and GET /settings report no profile,
+  # so this is the only overlay-wide check available; the built-in rows are verified per
+  # run from the `agent.memory.loaded` event.
+  scp -q ops/check-agent-profiles.py "$HOST:/tmp/check-agent-profiles.py"
+  if remote 'umask 077; o=$(mktemp) && docker exec fabro-fabro-1 cat /storage/.home/settings.toml >"$o" && python3 /tmp/check-agent-profiles.py "$o"; rc=$?; rm -f "$o"; exit $rc'; then
+    echo "    ok    every enabled provider in the live overlay resolves the openai Agent profile"
+  else
+    echo "    FAIL  a provider or model row in the live overlay resolves a profile other than openai (ADR 0017)"
+    bad=1
+  fi
+  remote 'rm -f /tmp/check-agent-profiles.py'
   [ "$bad" = 0 ] || die "the host does not match this checkout (above)"
 }
 

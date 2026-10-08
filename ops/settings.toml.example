@@ -184,6 +184,10 @@ api_model = "kimi-k3"
 limits = { context_tokens = 262144, max_output_tokens = 16384 }
 capabilities = { text = true, tools = true, reasoning = true }
 
+# ADR 0017: every agent session runs pebble's openai Agent profile, because only that profile loads <checkout>/.codex/instructions.md (the Agent guide); kimi's anthropic-messages codec would imply the anthropic one. Pinned at the provider, not per model, and the wire format is unchanged.
+[llm.providers.kimi.metadata.agent]
+profile = "openai"
+
 # Disabling the built-in `moonshot` provider is load-bearing, not tidying.
 # Fabro's built-in `moonshot` provider reads `KIMI_API_KEY` -- the same secret the
 # `kimi` provider above needs. Storing that key therefore flips `moonshot` to
