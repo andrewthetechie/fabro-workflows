@@ -1188,11 +1188,19 @@ echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'
     // 3.5 hours behind the sandbox, and cost two `[P] Accept partial` answers before the
     // loop was recognised. 98 commits and 71 files of real work sat only in the sandbox.
     //
-    // The check is `git log origin/main..HEAD -- .github/workflows/`, not a two-dot
-    // `git diff`: the rejection is evaluated against the COMMITS in the push, so a
+    // The check is `git log --no-merges origin/main..HEAD -- .github/workflows/`, not a
+    // two-dot `git diff`: the rejection is evaluated against the COMMITS in the push, so a
     // branch that edits a workflow file and reverts it later still fails, and a net-diff
-    // test would call that branch clean. Path-limited log also skips the merge commit
-    // this node just made, so a workflow change arriving FROM main never trips it.
+    // test would call that branch clean. `--no-merges` is load-bearing: without it, an
+    // stale branch's `git merge origin/main` can create a merge commit whose workflow
+    // tree matches neither parent (a real 3-way content merge), and path-limited history
+    // simplification then INCLUDES that merge commit even though the workflow delta came
+    // entirely from main -- a false positive that trips the guard, loops the Accept-partial
+    // path, and dies to the deterministic breaker. The motivating case (run
+    // 01M4DSYPAWDMJB68CCX5HM3M56, womens-fantasy-sports#1391) was exactly that: only the
+    // merge commit `64240f8` was flagged with an empty files list. Excluding merges keeps
+    // the guard aimed at agent-authored workflow commits while letting a clean
+    // merge-of-main through.
     //
     // It runs before the setup/ci loop for the same reason the empty-tree floor does:
     // there is nothing to validate on a branch that cannot be pushed, and this makes the
@@ -1214,7 +1222,7 @@ if git diff --quiet origin/main HEAD; then
   echo 'answer [X] Abandon at the rescue gate unless the run can be made to do the work.' >&2
   exit 1
 fi
-if [ -n \"$(git log --format=%H origin/main..HEAD -- .github/workflows/ | head -1)\" ]; then
+if [ -n \"$(git log --no-merges --format=%H origin/main..HEAD -- .github/workflows/ | head -1)\" ]; then
   echo 'refusing to open a PR: a commit on this branch changes a file under .github/workflows/.' >&2
   echo 'the sandbox pushes over HTTPS with an OAuth App token. GitHub rejects any push whose' >&2
   echo 'new commits create or update a workflow file unless that token carries the `workflow`' >&2
@@ -1649,7 +1657,7 @@ if [ ! -s $F/issue.json ]; then
   P='The run never read the issue, so there is no PR to open. You come back here.'
 elif git diff --quiet origin/main HEAD 2>/dev/null; then
   P='The branch changes no file, so open_pr_prep refuses: a PR would claim work that does not exist. You come back here.'
-elif [ -n \"$(git log --format=%H origin/main..HEAD -- .github/workflows/ 2>/dev/null | head -1)\" ]; then
+elif [ -n \"$(git log --no-merges --format=%H origin/main..HEAD -- .github/workflows/ 2>/dev/null | head -1)\" ]; then
   P='A commit on this branch changes .github/workflows/, which the sandbox token cannot push, so open_pr_prep refuses. You come back here.'
 else
   if [ -n \"$PR\" ]; then

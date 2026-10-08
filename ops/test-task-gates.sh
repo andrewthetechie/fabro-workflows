@@ -1419,6 +1419,19 @@ OUT=$(opp_run); RC=$?
 check "workflow change from main is not ours" "0" "$RC"
 check "workflow change from main still runs CI" "2" "$(wc -l < "$T/opp.log" | tr -d ' ')"
 
+# 10. The regression from run 01M4DSYPAWDMJB68CCX5HM3M56 (womens-fantasy-sports#1391,
+#     2026-10-08): a long/stale run's `git merge origin/main` inside this node created a
+#     merge commit {64240f8} whose workflow delta came entirely from main. Under the
+#     plain path-limited log that commit appeared in `origin/main..HEAD -- .github/workflows/`
+#     with an EMPTY files list -- a false positive that tripped the guard, looped the
+#     Accept-partial path four times, and died to the deterministic breaker. The guard
+#     must exclude merge commits (--no-merges) so it only fires on agent-authored
+#     workflow commits, which tests 7 and 8 still catch. Grepping the extracted script is
+#     the binding contract test: a revert to plain `git log` re-opens this bug and fails
+#     here even though no fixture can cheaply rebuild the historical 3-way merge state.
+check "guard excludes merge commits" "1" "$(grep -c -- 'git log --no-merges' "$T/open_pr_prep.sh")"
+check "guard still scopes to workflows path" "1" "$(grep -q -- '-- .github/workflows/' "$T/open_pr_prep.sh" && echo 1 || echo 0)"
+
 PATH="$SAVED_PATH"
 
 # ---------------------------------------------------------------------------
@@ -2027,6 +2040,7 @@ case "$1 $2" in
   "diff --shortstat") echo " 40 files changed, 859 insertions(+), 983 deletions(-)" ;;
   "diff --quiet") [ -f "$GIT_STATE/empty_diff" ] && exit 0; exit 1 ;;
   "log --format=%H") [ -f "$GIT_STATE/wf_commit" ] && echo deadbeef ;;
+  "log --no-merges") [ -f "$GIT_STATE/wf_commit" ] && echo deadbeef ;;
   "rev-parse --abbrev-ref") echo "fabro/run/01TESTRUN" ;;
 esac
 exit 0
