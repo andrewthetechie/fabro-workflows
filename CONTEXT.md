@@ -334,3 +334,15 @@ _Avoid_: hidden file, forbidden file, secret (a secret is a credential)
 The stamp on a stage's output that proves the stage received all of its inputs in the
 current visit. A contract without a valid receipt is not accepted, whatever it says.
 _Avoid_: nonce, marker, proof of read
+
+**Agent guide**:
+The tool-use guidance every agent **Session** receives in its system prompt: which tool
+answers which kind of question, and which git commands are allowed. There is one text for
+every stage of every workflow.
+_Avoid_: instructions file, system prompt (the guide is one part of it)
+
+**Agent profile**:
+The prompt, tool set and instruction files an agent **Session** runs with, chosen per
+model. The factory runs every session on one profile, whatever model or provider serves it,
+so every session receives the **Agent guide** and offers the same tools.
+_Avoid_: harness, codec (the codec is the wire format, a separate choice)

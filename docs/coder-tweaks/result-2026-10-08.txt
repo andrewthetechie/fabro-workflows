@@ -1,0 +1,151 @@
+Task 08 recheck, 2026-10-08 (49 runs; follows result-2026-10-03.txt)
+
+Window: every `backlog` run created after the 2026-10-03 `make deploy-images` (22:27-22:39Z:
+fabro-io 0.3.2, rg in every image, Node 24 in fabro-ts) and finished by 2026-10-08 04:47Z.
+That is 49 runs, 01M41ZH1JG (2026-10-03 22:53Z) to 01M4CHMABV (2026-10-08 01:21Z):
+womens-fantasy-sports 30, writers-app 11, lawncare-saas 8, jelly-swipe 0. No graph, prompt or
+image changed inside the window (HEAD 64953d5 throughout).
+Not counted in the tool metrics: 01M41FWZVH, 01M41NXTPK, 01M41V0980 (new prompts, old images;
+counted in the merge outcomes below), and 01M4CRH7QR, 01M4CSDPQ2 (still running).
+Also read, for M6 only: arch-review x5, issue-triage x6 in the same window. No pr-review run.
+
+Comparison sets: the event files of both earlier windows were re-exported from the server
+(`fabro events <id> --json`), so every number below comes from the same files and scripts.
+`ops/fabro-agent-tools.py` reproduces baseline-2026-10-02.txt and result-2026-10-03.txt exactly
+on them (shell grep 796 now, 793 then; nothing else differs). Breakdowns by repo, search kind,
+read size and draft turns came from scratch scripts over the same files.
+The repo mix matters: the baseline is lawncare/wfs/writers-app (75/58/51 local visits), the
+2026-10-03 window adds jelly-swipe and has 7 wfs coder visits, and this one is 56% wfs.
+
+     metric                         baseline (20)    2026-10-03 (16)  now (49)          target      verdict
+M1   code-index share of searches   0.4%             11.3%            7.6% (123/1,627)  >= 25%      miss
+M2   read_file bytes per visit      49,077           42,514 (-13%)    30,630 (-38%)     -40%        near; -31% at baseline repo mix
+M3   whole-file share               42.9%            35.9%            38.1%             < 20%       miss; repo mix, see below
+M4   mutating git executed          11 calls         0 (2 blocked)    0 (1 blocked)     0           met
+M5   improve visits that edited     4 of 87          3 of 65          1 of 184          0 reach coder  met (undone in-stage)
+M6   sessions loading the guide     0%               89.1%            86.2% (1016/1179) 100%        met for the openai profile
+M7   coder start to first edit      4.7 min          4.5 min          3.1 min (183)     <= 6 min    met; >10 min tail 23% -> 10%
+M8   first-pass / reworks per task  93.0% / 0.15     92.3% / 0.37     92.3% / 0.20      no worse    met (within noise; see wfs)
+
+M1: the coder hardly searches now, and when it does it uses grep and rg
+- By stage: improve 12.0% (108/898), coder 2.2% (15/667), rework_t1 0% (0/62).
+  By repo: lawncare 11.1%, wfs 6.5%, writers-app 6.4%.
+- The coder's 10.1% on 2026-10-03 was a small sample: 32 of its 43 code_* calls came from two
+  writers-app runs (01M40XMZZJ 19, 01M3Z0M01J 13). improve is steady: 14.1% then, 12.8% now
+  (both without stdin filters, next point).
+- The metric counts grep used as a pipe filter. 252 of the coder's 438 shell grep/rg segments
+  read a pipe (`cargo test | grep "test result"`), so no index can replace them. Without them
+  M1 is 9.5% (123/1,300); the baseline is 0.5% and 2026-10-03 is 13.3%.
+- The coder searches less than half as much: 5.4 file searches per visit in the baseline,
+  2.2 now. task-code.md and its call sites (C6) answer what it used to search for.
+- rg works now: 217 shell calls ran and none failed (45 failed with `command not found` in
+  the 2026-10-03 window). Removing the dead end did not move the model to code_*. It moved to
+  a working rg, which is what pebble's openai prompt tells it to use.
+- About half of the searches are a bare name (`PositionBucket`, `def seed_service`,
+  `A|B|C` of names): coder 46%, improve 54%. That is the share code_def or code_search can take.
+- The tools work. All 123 code_* calls returned results (code_show 53, code_def 33,
+  code_callers 19, code_search 9, code_tests 9) and none returned an error.
+
+M2 and M3: reads are smaller; wfs reads small files whole
+- read_file bytes per local visit by repo, baseline -> now: lawncare 55,900 -> 37,050 (-34%),
+  wfs 41,659 -> 24,530 (-41%), writers-app 47,480 -> 39,527 (-17%). At the baseline repo mix
+  that is 33,790 (-31%).
+- Whole-file reads of 12 KB or more in coder+improve: 1.32 per visit and 26.7 KB per visit in
+  the baseline, 0.49 and 10.5 KB now (-61%).
+- Whole-file share by repo, baseline -> now: lawncare 34% -> 27%, writers-app 48% -> 22%,
+  wfs 50% -> 51%. wfs is 56% of this window. Its whole reads are React components and tests,
+  median 4.3 KB (coder) and 4.8 KB (improve), and 43% are under 4 KB. Reading a 4 KB file whole
+  is the right call, so a count-based M3 overstates the problem.
+- improve is now the largest reader: 43.0 KB per visit against the coder's 20.9 KB, 65% of all
+  read bytes, and 49% whole files (53% in the baseline).
+
+M4: one block, no execution, no bypass
+- 01M4BW8J59 (wfs#1375) rework_t2 (glm-5.3-flash, hosted) sent one shell call that mutated
+  admin_stats.py with python, ran one test and ended with `git checkout --` to undo the mutation.
+  The guard refused the whole call, so the python mutation did not run either.
+- A scan of every shell call outside the exempt stages, at any position in the command, found
+  no other mutating git and no `sh -c` or `python` bypass.
+
+M5: improve stopped implementing
+- One visit: 01M43JYF6A (wfs#1328) improve@3 wrote frontend/tests/logout.spec.ts (the task's own
+  spec), removed it with restore_file and submitted `ready`. Nothing reached the coder.
+- restore_file: 2 calls (23 in the 2026-10-03 window, most of them improve undoing its own
+  work). improve duration median 10.1 min (12.1 then, 10.5 baseline), p90 20.9, max 44.7.
+
+M6: the misses are the anthropic profile, and the cause is now known
+- All 163 misses are kimi-k3 sessions (the `kimi` provider) on pebble's anthropic profile:
+  spec 81 and extra_decompose 81 (class .review-frontier), and 1 review session that fell back
+  from glm-5.3 to kimi-k3. Every openai-profile session loaded the guide.
+- Cause: fabro gives a provider the profile its first codec implies, and `kimi` is the only
+  provider on `anthropic-messages`. Pebble's anthropic profile reads AGENTS.md and CLAUDE.md,
+  never .codex/instructions.md (`memory_filenames` in pebble-coding-agent/src/types.rs). The
+  same gap covers .coder-t3 (rework_t3, kimi-for-coding) and every fallback to kimi-k3.
+- arch-review 82/82. issue-triage 16/16, the first issue-triage runs seen. pr-review: no run.
+
+M7 and reasoning drafts: the tail halved, and writers-app is still the source
+- Median 3.1 min (183 visits). Visits over 10 min to the first edit: baseline 19/84 (23%),
+  2026-10-03 16/65 (25%), now 19/183 (10%).
+- By repo, baseline -> now: writers-app median 7.5 -> 3.8 min with >10 min 42% -> 19%;
+  lawncare 4.2 -> 3.5 (12% -> 12%); wfs 3.9 -> 2.6 (19% -> 6%).
+- Draft turns (a pre-edit turn over 2,000 output tokens that holds a code fence), counted the
+  same way in all three windows: baseline 28/84 (33%), 2026-10-03 20/65 (31%), now 46/183 (25%).
+  writers-app 63% -> 45%, lawncare 21% -> 19%, wfs 23% -> 19%. This count is not the "10 of 37"
+  in result-2026-10-03, which used a different scratch definition.
+- The drafts that are left are big: they hold 57% of pre-edit output tokens (49% in the
+  baseline). Worst case: 01M4AT8SAY (writers-app#1024) coder@1, 59 min to the first edit. It
+  wrote four reasoning turns of 6K-16K tokens to design a generic Rust path-map core, plus 12
+  minutes reading tracing macro source. That is the "let me design a type" moment that the
+  prompt names. It persists in writers-app's architecture refactors.
+
+M8
+- 168 of 182 tasks passed at the first review_gate. Rework visits: rework_t1 30, rework_t2 6,
+  none above t2. Of the 36 entries to rework_router, 23 came from validate and 13 from
+  review_gate.
+- By repo: lawncare 100% / 0.12, writers-app 93% / 0.12, wfs 89% / 0.27 (baseline 96% / 0.19).
+  wfs is the only repo below its baseline, and most of it is validate failures.
+
+Tool notes
+- baseline_check: 42 calls, 6 still piped into tail or head. Under 0.3.2 the exit code is the
+  test's (one `pytest ... | tail -3` reported exit=5, no tests collected), so this is fixed.
+
+Outcome of the 52 runs (49 + the 3 prompt-only runs), outside this series
+- Every run opened a PR. 6 auto-merged (all wfs), 43 report_blocked, 3 mark_needs_human.
+  36 of the 46 not merged by the run have since been merged by hand.
+- Block reasons: `architecture` label (check 2b, as designed) 23; commit authorship (check 6)
+  9; Refuter 5; risk missing or above 3 3; hygiene asserts_removed 2; CI fix failed 2;
+  force-with-lease rejected 1; unspecified 1.
+- Check 6 gives false positives. It blocks a PR when any commit lacks the noreply@fabro.sh
+  author. fabro's checkpoints carry it as a co-author. The `git merge --no-edit origin/main`
+  that next_task (each task) and open_pr_prep run does not carry it, and makes a merge commit
+  whenever main moved during the run. wfs main moves often, because PRs from parallel runs are
+  merged by hand. At least 6 of the 9 blocks are that merge commit (wfs #1350, #1357, #1360,
+  #1399, #1405, #1406). One (#1352) is a real operator commit. This belongs to the merge-gate
+  series (ADR 0013 / _shared/review-merge check 6), not here.
+
+Decision (task 08 rules)
+- M1 missed and M6 met, now with rg working. The guide reached the model and did not change its
+  search tool. The rule's next step was D5's profile override. It is withdrawn: every agent
+  session is to run one profile, the openai profile (ADR 0017, proposed 2026-10-08; the plan is
+  issue #2). That also closes the M6 misses. D5's only remaining lever, the PATH wrapper
+  around grep/rg, waits for the corrected M1 of issue #3.
+- Fix the metric before the next measurement. ops/fabro-agent-tools.py should leave out
+  grep/rg segments that read a pipe from M1, and report M3 by bytes or by whole reads of
+  12 KB or more, next to the count. Report both forms against the baseline, so the old numbers
+  stay comparable.
+- The underlying goal is mostly met. Read bytes fell 17-41% per repo (31% at the baseline mix), large whole reads fell
+  61%, and coder searches fell by more than half. That came from the dossier and excerpts,
+  not from the model choosing code_*. Keep the 25% M1 target only if the index answers
+  something grep cannot. Otherwise lower it to what improve reaches after the trial.
+- M4 is 0 and no parser change is needed. M5 is met. M8 is not worse, and no revert is needed.
+  Watch the wfs validate failures.
+- D3 (hashline): still no. M7 is met, and the largest pre-edit output cost is still the
+  reasoning drafts, not edit output.
+- Drafts: the rule shortened the tail everywhere but has not stopped the design drafts in
+  writers-app's Rust refactors. The next lever is task size: one task to "create the generic
+  core and port both twins" is a design problem that the coder solves in reasoning. decompose
+  could split such a task into "write the core's types and signatures" and "port one twin".
+  Measure that first on writers-app architecture issues.
+- Outside this series: fix merge_gate check 6 so that the run's own `git merge origin/main`
+  commit does not count as a human commit. Two ways: check 6 skips a merge commit whose
+  non-first parent is on origin/main, or the two merge sites commit with the fabro identity
+  and its trailer. 9 of 52 PRs (17%) were blocked this way, all in wfs.
