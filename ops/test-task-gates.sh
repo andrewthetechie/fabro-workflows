@@ -4593,6 +4593,207 @@ vcmp_check 'vcmp("5.0.12";"5.0.9")' 1
 vcmp_check 'vcmp("v0.16.10";"v0.16.9")' 1
 vcmp_check 'vcmp("2.8.0rc1";"2.8.0")' -1
 
+
+# ---------------------------------------------------------------------------
+# dependabot — the merge loop (ADR 0022 task 04): dep_next, dep_checks, dep_validate, dep_merge.
+# Real git: a bare origin with main and refs/pull/7/head, and a run branch in a clone. gh is
+# stubbed and logs every call. The inner timeouts and polls are lowered through DEP_* variables.
+# ---------------------------------------------------------------------------
+echo ""
+echo "dependabot: the merge loop"
+LOOP_STUBS="$WORK/dep-loop-stubs/bin"; mkdir -p "$LOOP_STUBS"
+cat > "$LOOP_STUBS/gh" <<'STUB'
+#!/bin/sh
+echo "gh $*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr view") printf '{"state":"%s","headRefOid":"%s","mergeable":"%s","comments":%s}\n' "${GH_STATE:-OPEN}" "${GH_HEAD:-$GH_SHA}" "${GH_MERGEABLE:-MERGEABLE}" "${GH_COMMENTS:-[]}" ;;
+  "pr checks") printf '%s\n' "${GH_CHECKS_JSON:-[]}" ;;
+  "pr merge")
+    n=$(cat "$GH_LOG.merges" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$GH_LOG.merges"
+    if [ -n "${GH_MERGE_FAIL_ONCE:-}" ] && [ "$n" -eq 1 ]; then echo "Base branch was modified. Review and try the merge again." >&2; exit 1; fi
+    echo merged ;;
+  "api user") echo '{"login":"fabro-bot"}' ;;
+  *) : ;;
+esac
+exit 0
+STUB
+chmod +x "$LOOP_STUBS/gh"
+
+# $1 name, $2 mode (clean | green | red | slow | conflict). Builds $WORK/loop-<name>/{origin.git,work,fab}.
+# The PR (pull/7/head) changes feature.txt, or .fabro/ci.sh for red and slow, or README for conflict.
+loop_repo() {
+    L="$WORK/loop-$1"; mkdir -p "$L"
+    git init -q --bare "$L/origin.git"
+    git clone -q "$L/origin.git" "$L/work" >/dev/null 2>&1
+    git -C "$L/work" config user.email t@example.test; git -C "$L/work" config user.name t
+    git -C "$L/work" checkout -q -b main
+    mkdir -p "$L/work/.fabro"
+    printf 'exit 0\n' > "$L/work/.fabro/setup.sh"; printf 'exit 0\n' > "$L/work/.fabro/ci.sh"; chmod +x "$L/work/.fabro/setup.sh" "$L/work/.fabro/ci.sh"
+    echo base > "$L/work/README"
+    git -C "$L/work" add -A; git -C "$L/work" commit -qm base; git -C "$L/work" push -q origin main
+    git -C "$L/work" checkout -q -b pr7
+    case "$2" in
+      red) printf 'echo the-check-failed\necho x > untracked.txt\nexit 3\n' > "$L/work/.fabro/ci.sh"; chmod +x "$L/work/.fabro/ci.sh" ;;
+      slow) printf 'sleep 30\n' > "$L/work/.fabro/ci.sh"; chmod +x "$L/work/.fabro/ci.sh" ;;
+    esac
+    echo feat > "$L/work/feature.txt"
+    if [ "$2" = conflict ]; then echo pr-line > "$L/work/README"; fi
+    git -C "$L/work" add -A; git -C "$L/work" commit -qm pr
+    PR_SHA=$(git -C "$L/work" rev-parse HEAD); echo "$PR_SHA" > "$L/pr_sha"
+    git -C "$L/work" push -q origin "$PR_SHA:refs/pull/7/head"
+    git -C "$L/work" checkout -q main
+    if [ "$2" = conflict ]; then
+        echo main-line > "$L/work/README"; git -C "$L/work" commit -qam main-moved; git -C "$L/work" push -q origin main
+    fi
+    git -C "$L/work" checkout -q -b run
+    mkdir -p "$L/fab/dep"; echo main > "$L/fab/base_ref"; echo '[]' > "$L/fab/dep/results.json"; echo 1 > "$L/fab/dep/merge_enabled"
+    : > "$L/gh.log"
+    # The queue: one PR, as dep_next reads it.
+    jq -cn --arg s "$PR_SHA" '[{number: 7, title: "t", head_sha: $s, created_at: "2026-10-01T00:00:00Z", fixes: []}]' > "$L/fab/dep/prs.json"
+}
+
+# $1 node, $2 repo name. Runs the node's script in the clone with /tmp/fabro rebased onto the repo's fab dir.
+# The caller exports any GH_* or DEP_* variables first. Leaves $L/$1.out, $1.err and $1.rc.
+loop_run() {
+    L="$WORK/loop-$2"
+    extract_from "$DEP" "$1" | sed "s#/tmp/fabro#$L/fab#g" > "$L/$1.sh"
+    if ! sh -n "$L/$1.sh" 2>"$L/$1.syntax"; then FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$1"; fi
+    (cd "$L/work" && PATH="$LOOP_STUBS:$ORIG_PATH" GH_LOG="$L/gh.log" GH_SHA="$(cat "$L/pr_sha")" sh "$L/$1.sh" > "$L/$1.out" 2> "$L/$1.err"); echo $? > "$L/$1.rc"
+}
+loop_route() { tail -1 "$WORK/loop-$1/$2.out" | jq -r "$3"; }
+loop_clean() { [ "$(git -C "$WORK/loop-$1/work" symbolic-ref --short HEAD)" = run ] && [ -z "$(git -C "$WORK/loop-$1/work" status --porcelain)" ] && echo 1 || echo 0; }
+
+# 1. The cap: seven PRs, six visits. The sixth publishes no and appends the two left as skipped_cap.
+loop_repo cap clean
+jq -cn '[range(7) as $i | {number: (100 + $i), title: "t", head_sha: "x", created_at: "2026-10-01T00:00:00Z", fixes: []}]' > "$WORK/loop-cap/fab/dep/prs.json"
+for v in 1 2 3 4 5 6; do loop_run dep_next cap; done
+check "dep_next cap: sixth visit publishes no" "no" "$(loop_route cap dep_next '.context_updates.dep_pr_next')"
+check "dep_next cap: two skipped_cap entries" "2" "$(jq '[.[] | select(.outcome == "skipped_cap")] | length' "$WORK/loop-cap/fab/dep/results.json")"
+check "dep_next cap: the skipped PRs are the last two" "105 106" "$(jq -r '[.[] | select(.outcome == "skipped_cap") | .pr] | map(tostring) | join(" ")' "$WORK/loop-cap/fab/dep/results.json")"
+
+# 2. The time cap: the loop started 5401 seconds ago, so nothing is picked and both PRs are skipped.
+loop_repo time clean
+jq -cn '[range(2) as $i | {number: (200 + $i), title: "t", head_sha: "x", created_at: "2026-10-01T00:00:00Z", fixes: []}]' > "$WORK/loop-time/fab/dep/prs.json"
+echo $(($(date +%s) - 5401)) > "$WORK/loop-time/fab/dep/loop_started"; echo 0 > "$WORK/loop-time/fab/dep/cursor"
+git -C "$WORK/loop-time/work" symbolic-ref --short HEAD >/dev/null
+echo run > "$WORK/loop-time/fab/dep/run_branch"
+loop_run dep_next time
+check "dep_next time cap: publishes no" "no" "$(loop_route time dep_next '.context_updates.dep_pr_next')"
+check "dep_next time cap: both PRs skipped" "2" "$(jq '[.[] | select(.outcome == "skipped_cap")] | length' "$WORK/loop-time/fab/dep/results.json")"
+
+# 3. A dirty checkout: dep_next exits 1 and publishes no.
+loop_repo dirty clean
+loop_run dep_next dirty
+echo stray > "$WORK/loop-dirty/work/stray.txt"
+loop_run dep_next dirty
+check "dep_next dirty: exits 1" "1" "$(cat "$WORK/loop-dirty/dep_next.rc")"
+check "dep_next dirty: publishes no" "no" "$(loop_route dirty dep_next '.context_updates.dep_pr_next')"
+
+# 4. A clean merge with green checks: the validation passes, the tree is the run branch and clean,
+#    and the PR's file is not in the working tree. Then dep_merge merges it once.
+loop_repo green clean
+loop_run dep_next green
+check "dep_next green: publishes yes" "yes" "$(loop_route green dep_next '.context_updates.dep_pr_next')"
+export GH_CHECKS_JSON='[{"name":"test","bucket":"pass"}]' DEP_POLL=0
+loop_run dep_checks green
+unset GH_CHECKS_JSON DEP_POLL
+check "dep_checks green: publishes green" "green" "$(loop_route green dep_checks '.context_updates.dep_checks')"
+loop_run dep_validate green
+check "dep_validate green: publishes pass" "pass" "$(loop_route green dep_validate '.context_updates.dep_valid')"
+check "dep_validate green: HEAD is the run branch" "1" "$(loop_clean green)"
+check "dep_validate green: the PR's file is not in the tree" "0" "$(test -e "$WORK/loop-green/work/feature.txt" && echo 1 || echo 0)"
+check "dep_validate green: no merge state left" "0" "$(test -e "$WORK/loop-green/work/.git/MERGE_HEAD" && echo 1 || echo 0)"
+loop_run dep_merge green
+check "dep_merge green: records merged" "merged" "$(jq -r '.[-1].outcome' "$WORK/loop-green/fab/dep/results.json")"
+check "dep_merge green: one merge call" "1" "$(grep -c '^gh pr merge' "$WORK/loop-green/gh.log")"
+
+# 5. Red CI: the log's last line is the reason, the untracked file ci.sh left is gone, and the tree is restored.
+loop_repo redci red
+loop_run dep_next redci
+export GH_CHECKS_JSON='[{"name":"test","bucket":"pass"}]' DEP_POLL=0
+loop_run dep_checks redci
+unset GH_CHECKS_JSON DEP_POLL
+loop_run dep_validate redci
+check "dep_validate red: publishes fail" "fail" "$(loop_route redci dep_validate '.context_updates.dep_valid')"
+check "dep_validate red: reason is the log's last line" "the-check-failed" "$(jq -r .reason "$WORK/loop-redci/fab/dep/cur_result.json")"
+check "dep_validate red: the untracked file is gone" "0" "$(test -e "$WORK/loop-redci/work/untracked.txt" && echo 1 || echo 0)"
+check "dep_validate red: HEAD is the run branch and clean" "1" "$(loop_clean redci)"
+
+# 6. A conflict: the merge stops, nothing is validated, and no merge state is left behind.
+loop_repo conf conflict
+loop_run dep_next conf
+export GH_CHECKS_JSON='[{"name":"test","bucket":"pass"}]' DEP_POLL=0
+loop_run dep_checks conf
+unset GH_CHECKS_JSON DEP_POLL
+loop_run dep_validate conf
+check "dep_validate conflict: publishes conflict" "conflict" "$(loop_route conf dep_validate '.context_updates.dep_valid')"
+check "dep_validate conflict: no MERGE_HEAD" "0" "$(test -e "$WORK/loop-conf/work/.git/MERGE_HEAD" && echo 1 || echo 0)"
+check "dep_validate conflict: HEAD is the run branch and clean" "1" "$(loop_clean conf)"
+
+# 7. The inner timeout: ci.sh sleeps past a lowered bound. RC 124, the reason says timeout, and the tree is restored.
+loop_repo slow slow
+loop_run dep_next slow
+export DEP_VALIDATE_TIMEOUT=2
+loop_run dep_validate slow
+unset DEP_VALIDATE_TIMEOUT
+check "dep_validate timeout: publishes fail" "fail" "$(loop_route slow dep_validate '.context_updates.dep_valid')"
+check "dep_validate timeout: reason says timeout" "1" "$(grep -c 'timed out' "$WORK/loop-slow/fab/dep/cur_result.json")"
+check "dep_validate timeout: HEAD is the run branch and clean" "1" "$(loop_clean slow)"
+
+# 8. dep_merge with the switch off: a switch_off entry, and no merge call.
+loop_repo off clean
+echo 0 > "$WORK/loop-off/fab/dep/merge_enabled"; echo "Auto-merge is switched off for this repository." > "$WORK/loop-off/fab/dep/merge_off_reason"
+jq -cn --arg s "$(cat "$WORK/loop-off/pr_sha")" '{number: 7, head_sha: $s, fixes: []}' > "$WORK/loop-off/fab/dep/cur.json"
+loop_run dep_merge off
+check "dep_merge switch off: records switch_off" "switch_off" "$(jq -r '.[-1].outcome' "$WORK/loop-off/fab/dep/results.json")"
+check "dep_merge switch off: no merge call" "0" "$(grep -c '^gh pr merge' "$WORK/loop-off/gh.log")"
+
+# 9. dep_merge with the head moved: stale, and no merge call.
+loop_repo stale clean
+jq -cn --arg s "$(cat "$WORK/loop-stale/pr_sha")" '{number: 7, head_sha: $s, fixes: []}' > "$WORK/loop-stale/fab/dep/cur.json"
+GH_HEAD=deadbeef loop_run dep_merge stale
+check "dep_merge stale: records stale" "stale" "$(jq -r '.[-1].outcome' "$WORK/loop-stale/fab/dep/results.json")"
+check "dep_merge stale: no merge call" "0" "$(grep -c '^gh pr merge' "$WORK/loop-stale/gh.log")"
+
+# 10. dep_merge retry: the first merge is rejected with "Base branch was modified", the second succeeds.
+loop_repo retry clean
+jq -cn --arg s "$(cat "$WORK/loop-retry/pr_sha")" '{number: 7, head_sha: $s, fixes: []}' > "$WORK/loop-retry/fab/dep/cur.json"
+export DEP_RETRY_WAIT=0 DEP_MERGE_WAIT=0 GH_MERGE_FAIL_ONCE=1
+loop_run dep_merge retry
+unset DEP_RETRY_WAIT DEP_MERGE_WAIT GH_MERGE_FAIL_ONCE
+check "dep_merge retry: records merged" "merged" "$(jq -r '.[-1].outcome' "$WORK/loop-retry/fab/dep/results.json")"
+check "dep_merge retry: two merge calls" "2" "$(grep -c '^gh pr merge' "$WORK/loop-retry/gh.log")"
+
+# 11. A conflict comments @dependabot rebase once. A recent comment from this token suppresses a second.
+loop_repo rebase clean
+echo '{"outcome":"conflict","reason":""}' > "$WORK/loop-rebase/fab/dep/cur_result.json"
+jq -cn --arg s "$(cat "$WORK/loop-rebase/pr_sha")" '{number: 7, head_sha: $s, fixes: []}' > "$WORK/loop-rebase/fab/dep/cur.json"
+loop_run dep_merge rebase
+check "dep_merge conflict with no comment: one rebase comment" "1" "$(grep -c '^gh pr comment' "$WORK/loop-rebase/gh.log")"
+RECENT=$(jq -n '(now - 7200) | strftime("%Y-%m-%dT%H:%M:%SZ")')
+loop_repo rebase2 clean
+echo '{"outcome":"conflict","reason":""}' > "$WORK/loop-rebase2/fab/dep/cur_result.json"
+jq -cn --arg s "$(cat "$WORK/loop-rebase2/pr_sha")" '{number: 7, head_sha: $s, fixes: []}' > "$WORK/loop-rebase2/fab/dep/cur.json"
+export GH_COMMENTS="[{\"author\":{\"login\":\"fabro-bot\"},\"body\":\"@dependabot rebase\",\"createdAt\":\"$RECENT\"}]"
+loop_run dep_merge rebase2
+unset GH_COMMENTS
+check "dep_merge conflict with a recent comment: no new comment" "0" "$(grep -c '^gh pr comment' "$WORK/loop-rebase2/gh.log")"
+
+# 12. dep_checks: stale, red, no checks and pending.
+loop_repo chk clean
+jq -cn --arg s "$(cat "$WORK/loop-chk/pr_sha")" '{number: 7, head_sha: $s, fixes: []}' > "$WORK/loop-chk/fab/dep/cur.json"
+GH_HEAD=deadbeef loop_run dep_checks chk
+check "dep_checks stale: publishes stale" "stale" "$(loop_route chk dep_checks '.context_updates.dep_checks')"
+export DEP_POLL=0
+GH_CHECKS_JSON='[{"name":"lint","bucket":"fail"}]' loop_run dep_checks chk
+check "dep_checks red: publishes red" "red" "$(loop_route chk dep_checks '.context_updates.dep_checks')"
+check "dep_checks red: the reason names the check" "1" "$(grep -c 'GitHub check lint failed' "$WORK/loop-chk/fab/dep/cur_result.json")"
+DEP_NO_CHECKS_GRACE=0 GH_CHECKS_JSON='[]' loop_run dep_checks chk
+check "dep_checks no checks: outcome no_checks" "no_checks" "$(jq -r .outcome "$WORK/loop-chk/fab/dep/cur_result.json")"
+DEP_CHECK_BOUND=0 GH_CHECKS_JSON='[{"name":"t","bucket":"pending"}]' loop_run dep_checks chk
+check "dep_checks pending: outcome pending" "pending" "$(jq -r .outcome "$WORK/loop-chk/fab/dep/cur_result.json")"
+unset DEP_POLL
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
