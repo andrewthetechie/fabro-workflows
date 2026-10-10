@@ -19,6 +19,11 @@ time against the deploy log, or look for `excerpts`, `.codex/instructions.md` in
 `agent.memory.loaded`, or `git-guard` in the run's hook events.
 
 ## Measure
+The recheck is two commands, run on the Mac (docs/recheck-follow-ups, tasks 02 and 03):
+`ops/fabro-export-runs.sh --since <end of the last window>` exports the window's runs to an
+`OUTDIR` outside the repo, then `python3.11 ops/fabro-agent-tools.py --local-only --outcomes
+<OUTDIR>/*.jsonl` prints the metrics and the outcome table. Add `--prs` to read block reasons
+from the PRs of runs without `merge_block_reason`.
 `python3.11 ops/fabro-agent-tools.py` over the new runs. Report each metric with its
 baseline and target, and flag a miss. For a miss, read 3 sessions and say why. Was the
 guide loaded? Did the model see `code_search` and pick `grep` anyway? Was the guard

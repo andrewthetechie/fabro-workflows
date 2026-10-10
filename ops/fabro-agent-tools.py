@@ -1,7 +1,11 @@
 #!/usr/bin/env python3.11
 """Tool-use metrics (C7, docs/coder-tweaks) from `fabro events <run> --json` files.
 
-Usage: fabro-agent-tools.py [--local-only] [--since ISO] EVENTS.jsonl...
+Usage: fabro-agent-tools.py [--local-only] [--since ISO] [--outcomes [--prs]] EVENTS.jsonl...
+
+--outcomes adds the per-run outcome table, the block reasons and the rework and failure
+sweep (task 03 of docs/recheck-follow-ups); --prs reads block reasons from gh for runs with a
+pr_url and no merge_block_reason.
 
 Standard library only. Runs on the Mac and on the host, never in a sandbox.
 One events file per run. Event files carry issue text: never commit them.
@@ -34,6 +38,7 @@ import argparse
 import json
 import re
 import statistics
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -247,6 +252,16 @@ class Visit:
         return any(m.startswith("coders-") for m in self.models)
 
 
+def truthy(value: object) -> int:
+    """1 for a published true (a bool, or the string "true"), else 0."""
+    return int(str(value).lower() == "true")
+
+
+def bare(node: str) -> str:
+    """A node id without its import prefix: `review_merge.report_blocked` is `report_blocked`."""
+    return node.rsplit(".", 1)[-1]
+
+
 def load_run(path: Path, since: str | None):
     visits: dict[str, Visit] = {}
     pending: dict[str, dict] = {}
@@ -255,6 +270,14 @@ def load_run(path: Path, since: str | None):
     created = ""
     origin = ""
     run_id = path.stem
+    # C3's outcome fields
+    labels: dict = {}
+    completed: tuple[str, str] | None = None  # (ts, run.completed status)
+    reached: list[str] = []  # bare node ids, one per visit, in start order
+    ctx: dict = {}  # the last value each context key was published with
+    autofix = {"keyed": False, "visits": 0, "ran": 0}
+    failovers: list[tuple[str, str]] = []  # (from, to), one per RouteFailover
+    failures: list[tuple[str, str, str]] = []  # (event, bare node, message)
     with path.open() as fh:
         for line in fh:
             line = line.strip()
@@ -267,8 +290,10 @@ def load_run(path: Path, since: str | None):
             kind = ev.get("event", "")
             if kind == "run.created":
                 created = ev.get("ts", "")
-                git = (ev.get("properties") or {}).get("git") or {}
+                props0 = ev.get("properties") or {}
+                git = props0.get("git") or {}
                 origin = str(git.get("origin_url") or "")
+                labels = props0.get("labels") or {}
                 continue
             props = ev.get("properties") or {}
             sid = ev.get("stage_id") or props.get("stage_id") or ""
@@ -283,6 +308,21 @@ def load_run(path: Path, since: str | None):
             if kind == "stage.started":
                 v = visit()
                 v.started = ts_seconds(ev["ts"])
+                reached.append(bare(node))
+            elif kind == "stage.completed":
+                cu = props.get("context_updates") or {}
+                ctx.update(cu)
+                if bare(node) == "autofix":
+                    autofix["visits"] += 1
+                    autofix["ran"] += truthy(cu.get("autofix_ran"))
+                    autofix["keyed"] = autofix["keyed"] or "autofix_ran" in cu
+            elif kind == "run.completed":
+                completed = (ev.get("ts", ""), str(props.get("status") or ""))
+            elif kind == "run.failed":
+                # A failed run ends with run.failed, not run.completed.
+                completed = (ev.get("ts", ""), "failed")
+            elif kind == "stage.failed":
+                failures.append((kind, bare(node), str((props.get("failure") or {}).get("message") or "")))
             elif kind == "agent.message":
                 msg = (props.get("event") or {}).get("AssistantMessage") or {}
                 if msg.get("model"):
@@ -305,6 +345,16 @@ def load_run(path: Path, since: str | None):
                     out = tc.get("output")
                     rec["output"] = out if isinstance(out, str) else json.dumps(out or "")
                     rec["error"] = bool(tc.get("is_error"))
+            elif kind == "agent.error":
+                err = (((props.get("event") or {}).get("Error") or {}).get("error")) or {}
+                failures.append((kind, bare(node), str(err.get("message") or "")))
+            elif kind == "agent.warning":
+                warn = (props.get("event") or {}).get("Warning") or {}
+                failures.append((kind, bare(node), str(warn.get("message") or "")))
+            elif kind == "agent.route.failover":
+                rf = (props.get("event") or {}).get("RouteFailover") or {}
+                failovers.append((str(rf.get("from", "")), str(rf.get("to", ""))))
+                failures.append((kind, bare(node), str((rf.get("error") or {}).get("message") or "")))
             elif kind == "edge.selected":
                 edges.append((props.get("from_node", ""), props.get("to_node", "")))
             elif kind == "agent.memory.loaded":
@@ -314,7 +364,9 @@ def load_run(path: Path, since: str | None):
     if since and created and created < since:
         return None
     return {"id": run_id, "repo": repo_of(origin), "visits": list(visits.values()), "edges": edges,
-            "memory": memory}
+            "memory": memory, "created_ts": created, "labels": labels, "completed": completed,
+            "reached": reached, "ctx": ctx, "autofix": autofix, "failovers": failovers,
+            "failures": failures}
 
 
 def pct(a: float, b: float) -> str:
@@ -635,12 +687,121 @@ def report(runs: list[dict], local_only: bool) -> str:
     return "\n".join(lines)
 
 
+# Nodes that end a run. A run's terminal node is the last of these it reached.
+TERMINAL_NODES = ("report_merged", "report_blocked", "mark_needs_human", "mark_stuck", "close_noop",
+                  "entry_failed", "human_rescue")
+
+
+def show(value: object) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def pr_reason(url: str) -> str:
+    """The `**Reason:**` line of the newest PR comment that has one. `?` when gh fails."""
+    try:
+        out = subprocess.run(["gh", "pr", "view", url, "--json", "comments"],
+                             capture_output=True, text=True, check=True).stdout
+        comments = json.loads(out).get("comments") or []
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return "?"
+    for c in sorted(comments, key=lambda c: c.get("createdAt") or "", reverse=True):
+        for line in (c.get("body") or "").splitlines():
+            if line.startswith("**Reason:**"):
+                return line
+    return "-"
+
+
+def outcome_row(r: dict) -> list[str]:
+    ctx = r["ctx"]
+    reached = r["reached"]
+    terminal = [n for n in reached if n in TERMINAL_NODES]
+    # A failed run shows `failed` even after a terminal node: a rescue that then fails is a failure.
+    if r["completed"] and r["completed"][1] == "failed":
+        end = "failed"
+    elif terminal:
+        end = terminal[-1]
+    else:
+        end = r["completed"][1] if r["completed"] else "-"
+    minutes = "-"
+    if r["completed"] and r["created_ts"]:
+        minutes = f"{(ts_seconds(r['completed'][0]) - ts_seconds(r['created_ts'])) / 60:.1f}"
+    autofix = "-"
+    if r["autofix"]["keyed"]:
+        autofix = f"{r['autofix']['ran']}/{r['autofix']['visits']}"
+    validate = sum(1 for frm, to in r["edges"] if bare(frm) == "validate" and bare(to) == "rework_router")
+    rework = Counter(n for n in reached if re.fullmatch(r"rework_t\d+", n))
+    failovers = Counter(r["failovers"])
+    return [
+        r["id"][:10],
+        r["repo"],
+        r["created_ts"][:16].replace("T", " ") or "-",
+        minutes,
+        str(r["labels"].get("workflow_sha") or "-")[:12],
+        end,
+        show(ctx.get("refute_verdict")),
+        show(ctx.get("merge_eligible")),
+        autofix,
+        str(validate),
+        "/".join(str(rework.get(f"rework_t{i}", 0)) for i in range(1, 5)),
+        "; ".join(f"{a}>{b} x{n}" for (a, b), n in sorted(failovers.items())) or "-",
+    ]
+
+
+OUTCOME_HEAD = ["id", "repo", "created", "min", "sha", "terminal", "refute", "merge", "autofix",
+                "validate", "rework", "failovers"]
+
+
+def outcome_lines(runs: list[dict], prs: bool) -> list[str]:
+    ordered = sorted(runs, key=lambda r: r["created_ts"])
+    body = [outcome_row(r) for r in ordered]
+    widths = [max(len(x) for x in col) for col in zip(OUTCOME_HEAD, *body)]
+
+    def fmt(cells: list[str]) -> str:
+        return "  ".join(c.ljust(w) for c, w in zip(cells, widths)).rstrip()
+
+    lines = ["Outcomes per run (creation order)", "    " + fmt(OUTCOME_HEAD)]
+    lines += ["    " + fmt(row) for row in body]
+
+    lines += ["", "Block reasons (merge_block_reason; with --prs, the PR's **Reason:** line for runs with a pr_url)"]
+    for r in ordered:
+        # An empty value is absent: a merged run publishes pr_url as "" with no PR to ask.
+        ctx = r["ctx"]
+        if ctx.get("merge_block_reason"):
+            lines.append(f"    {r['id'][:10]}  {ctx['merge_block_reason']}")
+        elif prs and ctx.get("pr_url"):
+            lines.append(f"    {r['id'][:10]}  {pr_reason(str(ctx['pr_url']))}")
+
+    into_gate = Counter(bare(frm) for r in runs for frm, to in r["edges"] if bare(to) == "rework_router")
+    sigs: Counter[str] = Counter()
+    events = 0
+    for r in runs:
+        for event, node, message in r["failures"]:
+            events += 1
+            sigs[f"{event} {node} {re.sub('[0-9]', 'N', message[:80])}"] += 1
+    lines += ["", f"Entries to rework_router by source node: {dict(sorted(into_gate.items()))}",
+              f"Top failure signatures (stage.failed, agent.error, agent.route.failover, agent.warning;"
+              f" {events} event(s)):"]
+    ranked = sorted(sigs.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
+    lines += [f"    {n:>4}  {sig}" for sig, n in ranked]
+    return lines
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="C7 tool-use metrics from fabro events files.")
     ap.add_argument("--local-only", action="store_true", help="restrict M1-M3, M5, M7 and the table to coders-* visits")
     ap.add_argument("--since", help="ISO timestamp: skip runs created before it")
+    ap.add_argument("--outcomes", action="store_true",
+                    help="add the per-run outcome table, block reasons and the failure sweep")
+    ap.add_argument("--prs", action="store_true",
+                    help="with --outcomes: read the block reason of runs with a pr_url from gh (one call per run)")
     ap.add_argument("events", nargs="+", help="one `fabro events <run> --json` file per run")
     args = ap.parse_args(argv)
+    if args.prs and not args.outcomes:
+        ap.error("--prs needs --outcomes")
     runs = []
     for name in args.events:
         try:
@@ -651,6 +812,9 @@ def main(argv: list[str]) -> int:
         if run is not None:
             runs.append(run)
     print(report(runs, args.local_only))
+    if args.outcomes:
+        print()
+        print("\n".join(outcome_lines(runs, args.prs)))
     return 0
 
 

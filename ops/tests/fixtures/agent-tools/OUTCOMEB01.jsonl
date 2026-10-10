@@ -1,0 +1,7 @@
+{"event": "run.created", "ts": "2026-10-01T01:00:00.000000000Z", "properties": {"git": {"origin_url": "https://github.com/example/outcome-beta.git"}, "labels": {}}}
+{"event": "stage.started", "ts": "2026-10-01T01:00:01.000000000Z", "properties": {}, "node_id": "validate", "stage_id": "validate@1"}
+{"event": "stage.failed", "ts": "2026-10-01T01:00:30.000000000Z", "properties": {"failure": {"category": "deterministic", "message": "Script failed attempt 1 of 4"}}, "node_id": "validate", "stage_id": "validate@1"}
+{"event": "stage.completed", "ts": "2026-10-01T01:09:00.000000000Z", "properties": {"context_updates": {"pr_url": "https://github.com/example/outcome-beta/pull/2"}}, "node_id": "open_pr", "stage_id": "open_pr@1"}
+{"event": "stage.completed", "ts": "2026-10-01T01:09:30.000000000Z", "properties": {"context_updates": {"merge_eligible": true}}, "node_id": "review_merge.merge_gate", "stage_id": "review_merge.merge_gate@1"}
+{"event": "stage.started", "ts": "2026-10-01T01:09:31.000000000Z", "properties": {}, "node_id": "review_merge.report_merged", "stage_id": "review_merge.report_merged@1"}
+{"event": "run.completed", "ts": "2026-10-01T01:10:00.000000000Z", "properties": {"status": "succeeded"}}

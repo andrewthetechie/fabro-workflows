@@ -3,6 +3,11 @@
     python3.11 -m unittest discover -s ops/tests
 """
 import importlib.util
+import os
+import re
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -171,6 +176,86 @@ class Forms(unittest.TestCase):
                          ["example/forms-alpha", "example/forms-beta"])
         self.assertIn("    example/forms-alpha: M1 33.3% (1/3); M2 22528; M3 100.0% / 100.0% / 1.00", out)
         self.assertIn("    example/forms-beta: M1 0.0% (0/2); M2 16384; M3 50.0% / 75.0% / 1.00", out)
+
+
+OUTCOME_DIR = HERE / "fixtures/agent-tools"
+OUTCOME_RUNS = [OUTCOME_DIR / f"{name}.jsonl" for name in ("OUTCOMEA01", "OUTCOMEB01", "OUTCOMEC01", "OUTCOMED01")]
+GH_STUB = """#!/bin/sh
+# Stands in for gh: `gh pr view <url> --json comments`. A pull/2 URL has two comments, and the
+# newer one has the reason on its second line. Any other URL fails, as gh does for a PR it cannot see.
+case "$3" in
+    */pull/2) printf '%s\\n' '{"comments":[{"body":"**Reason:** older","createdAt":"2026-10-01T09:00:00Z"},{"body":"thanks\\n**Reason:** newest","createdAt":"2026-10-01T10:00:00Z"}]}' ;;
+    *) echo "no such PR" >&2; exit 1 ;;
+esac
+"""
+
+
+class Outcomes(unittest.TestCase):
+    def run_cli(self, *args, path_prefix=None):
+        env = dict(os.environ)
+        if path_prefix:
+            env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
+        return subprocess.run([sys.executable, str(HERE.parent / "fabro-agent-tools.py"), *args],
+                              capture_output=True, text=True, env=env)
+
+    def table(self, out):
+        lines = out.splitlines()
+        i = lines.index("Outcomes per run (creation order)")
+        rows = []
+        for line in lines[i + 2:]:
+            if not line.strip():
+                break
+            rows.append(re.split(r"\s{2,}", line.strip()))
+        return {row[0]: row for row in rows}
+
+    def test_one_row_per_run_with_each_column(self):
+        p = self.run_cli("--outcomes", *map(str, OUTCOME_RUNS))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        rows = self.table(p.stdout)
+        self.assertEqual(rows["OUTCOMEA01"], ["OUTCOMEA01", "example/outcome-alpha", "2026-10-01 00:00", "20.0",
+                                              "bbbbbbbbbbbb", "report_blocked", "pass", "false", "0/1", "1",
+                                              "1/0/0/0", "kimi/kimi-k3>zai/glm-5.3 x1"])
+        self.assertEqual(rows["OUTCOMEB01"], ["OUTCOMEB01", "example/outcome-beta", "2026-10-01 01:00", "10.0",
+                                              "-", "report_merged", "-", "true", "-", "0", "0/0/0/0", "-"])
+        self.assertEqual(rows["OUTCOMEC01"], ["OUTCOMEC01", "example/outcome-gamma", "2026-10-01 02:00", "5.0",
+                                              "-", "failed", "-", "-", "-", "0", "0/0/0/0", "-"])
+        self.assertEqual(rows["OUTCOMED01"], ["OUTCOMED01", "example/outcome-delta", "2026-10-01 03:00", "5.0",
+                                              "-", "failed", "-", "-", "-", "0", "0/0/0/0", "-"])
+        self.assertEqual(list(rows), ["OUTCOMEA01", "OUTCOMEB01", "OUTCOMEC01", "OUTCOMED01"])  # creation order
+
+    def test_block_reason_is_printed_in_full_and_gh_is_not_called_without_prs(self):
+        out = self.run_cli("--outcomes", *map(str, OUTCOME_RUNS)).stdout
+        self.assertIn("    OUTCOMEA01  risk > 3", out)
+        self.assertNotIn("OUTCOMEB01  ", out.split("Block reasons", 1)[1].split("Entries", 1)[0])
+
+    def test_prs_takes_the_newest_reason_line_and_question_mark_on_gh_error(self):
+        with tempfile.TemporaryDirectory() as bindir:
+            gh = Path(bindir) / "gh"
+            gh.write_text(GH_STUB)
+            gh.chmod(0o755)
+            p = self.run_cli("--outcomes", "--prs", *map(str, OUTCOME_RUNS), path_prefix=bindir)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("    OUTCOMEA01  risk > 3", p.stdout)  # the key wins, gh is not asked
+        self.assertIn("    OUTCOMEB01  **Reason:** newest", p.stdout)
+        self.assertIn("    OUTCOMEC01  ?", p.stdout)
+        # A merged run publishes pr_url as "": no PR to ask, so no line and no gh call.
+        self.assertNotIn("OUTCOMED01  ", p.stdout.split("Block reasons", 1)[1].split("Entries", 1)[0])
+
+    def test_signatures_mask_digits_and_rework_entries_count_by_source(self):
+        out = self.run_cli("--outcomes", *map(str, OUTCOME_RUNS)).stdout
+        self.assertIn("Entries to rework_router by source node: {'validate': 1}", out)
+        self.assertIn("2  stage.failed validate Script failed attempt N of N", out)  # attempt 3 and 1 of 4
+        self.assertIn("1  agent.route.failover spec provider kimi usage limit N of N", out)
+        self.assertIn("4 event(s)", out)
+
+    def test_prs_needs_outcomes(self):
+        self.assertEqual(self.run_cli("--prs", *map(str, OUTCOME_RUNS)).returncode, 2)
+
+    def test_without_outcomes_the_output_is_the_metrics_report(self):
+        p = self.run_cli(*map(str, OUTCOME_RUNS))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        runs = [fat.load_run(path, None) for path in OUTCOME_RUNS]
+        self.assertEqual(p.stdout, fat.report(runs, False) + "\n")
 
 
 if __name__ == "__main__":

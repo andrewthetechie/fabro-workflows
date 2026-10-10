@@ -1,0 +1,5 @@
+{"event": "run.created", "ts": "2026-10-01T03:00:00.000000000Z", "properties": {"git": {"origin_url": "https://github.com/example/outcome-delta.git"}, "labels": {}}}
+{"event": "stage.started", "ts": "2026-10-01T03:01:00.000000000Z", "properties": {}, "node_id": "review_merge.report_blocked", "stage_id": "review_merge.report_blocked@1"}
+{"event": "stage.completed", "ts": "2026-10-01T03:02:00.000000000Z", "properties": {"context_updates": {"pr_url": ""}}, "node_id": "open_pr", "stage_id": "open_pr@1"}
+{"event": "stage.started", "ts": "2026-10-01T03:03:00.000000000Z", "properties": {}, "node_id": "open_pr_prep", "stage_id": "open_pr_prep@1"}
+{"event": "run.failed", "ts": "2026-10-01T03:05:00.000000000Z", "properties": {"failure": {"detail": {"category": "deterministic", "message": "x"}}}}

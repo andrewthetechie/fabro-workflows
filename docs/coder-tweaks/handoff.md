@@ -54,14 +54,20 @@ again `Up`, that fix regressed.
   (also `fabro-python-node`, `fabro-python`, `fabro-rust-node`). The image build
   time is in `docker image inspect -f '{{.Created}}' <image>`, and the
   deployment log names the rebuild.
-- List recent runs. The CLI has no list verb, so use the API (`.data[]` carries `id`,
-  `lifecycle`, `timestamps`, `repository`, `labels`):
-  `ssh andrew@10.10.0.32 'curl -s -H "Authorization: Bearer $(docker exec fabro-fabro-1 cat /storage/server.dev-token)" http://10.10.0.32:32276/api/v1/runs'`.
+- List and export the runs of a window with `ops/fabro-export-runs.sh --since <ISO> [--until <ISO>]
+  [--workflow backlog|all] [--status terminal|all] OUTDIR`. It writes `OUTDIR/<id>.jsonl` (the
+  events) and `OUTDIR/index.tsv` (run, created, workflow, repo, status, issue, workflow_sha), and
+  reads the token on the host. Rerun it to resume. It needs no `curl` or `while read` loop.
+  The CLI has no list verb; the API behind it is `GET /api/v1/runs`, paged at 100.
   `docker ps -a --filter name=fabro-run-` also lists recent sandboxes. The sweeper
   removes them after 48 h. A run's issue is in `fabro inspect <run>` at
   `.[0].run_spec.settings.run.metadata.issue`.
 - Raw events, which carry tool names, arguments, timings and token usage:
   `fabro events <run> --json`. `-p` hides tool names (it shows `?`).
+- Command output (the `fix.sh` log, a gate's output) is not in the events. `fabro dump <run> -o DIR`
+  writes it to `stages/<NNN>-<node>@<visit>/output.log`, with `events.jsonl`, `run.json`,
+  `graph.fabro` and `checkpoints/`. One finished run was 35.5 MB, so use it for one run at a
+  time, never as a recheck default. This answers #13 item 4 (measure-2026-10-10.txt).
 
 ## How to measure
 

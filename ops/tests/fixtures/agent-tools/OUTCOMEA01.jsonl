@@ -1,0 +1,12 @@
+{"event": "run.created", "ts": "2026-10-01T00:00:00.000000000Z", "properties": {"git": {"origin_url": "git@github.com:example/outcome-alpha.git"}, "labels": {"issue": "5", "workflow_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}
+{"event": "stage.started", "ts": "2026-10-01T00:00:01.000000000Z", "properties": {}, "node_id": "validate", "stage_id": "validate@1"}
+{"event": "agent.route.failover", "ts": "2026-10-01T00:00:05.000000000Z", "properties": {"event": {"RouteFailover": {"attempt": 1, "from": "kimi/kimi-k3", "to": "zai/glm-5.3", "error": {"kind": "llm", "message": "provider kimi usage limit 2 of 7"}}}}, "node_id": "review_merge.spec", "stage_id": "review_merge.spec@1"}
+{"event": "stage.failed", "ts": "2026-10-01T00:01:00.000000000Z", "properties": {"failure": {"category": "deterministic", "message": "Script failed attempt 3 of 4"}}, "node_id": "validate", "stage_id": "validate@1"}
+{"event": "edge.selected", "ts": "2026-10-01T00:01:01.000000000Z", "properties": {"from_node": "validate", "to_node": "rework_router"}}
+{"event": "stage.started", "ts": "2026-10-01T00:01:02.000000000Z", "properties": {}, "node_id": "rework_t1", "stage_id": "rework_t1@1"}
+{"event": "stage.completed", "ts": "2026-10-01T00:05:00.000000000Z", "properties": {"context_updates": {"refute_verdict": "pass"}}, "node_id": "review_merge.refute_gate", "stage_id": "review_merge.refute_gate@1"}
+{"event": "stage.completed", "ts": "2026-10-01T00:06:00.000000000Z", "properties": {"context_updates": {"merge_eligible": false, "merge_block_reason": "risk > 3"}}, "node_id": "review_merge.merge_gate", "stage_id": "review_merge.merge_gate@1"}
+{"event": "stage.started", "ts": "2026-10-01T00:06:01.000000000Z", "properties": {}, "node_id": "review_merge.report_blocked", "stage_id": "review_merge.report_blocked@1"}
+{"event": "stage.completed", "ts": "2026-10-01T00:06:02.000000000Z", "properties": {"context_updates": {"autofix_ran": false}}, "node_id": "autofix", "stage_id": "autofix@1"}
+{"event": "agent.warning", "ts": "2026-10-01T00:06:03.000000000Z", "properties": {"event": {"Warning": {"kind": "unsupported_control", "message": "unsupported control 12"}}}, "node_id": "decompose", "stage_id": "decompose@1"}
+{"event": "run.completed", "ts": "2026-10-01T00:20:00.000000000Z", "properties": {"status": "succeeded"}}
