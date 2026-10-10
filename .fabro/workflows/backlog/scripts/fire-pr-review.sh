@@ -271,6 +271,9 @@ fi
 git clone --depth 1 --branch "$WORKFLOWS_REF" \
     "https://github.com/$WORKFLOWS_REPO" "$tmp/wf" >/dev/null 2>&1 \
   || die "could not clone $WORKFLOWS_REPO at $WORKFLOWS_REF"
+# The graph version this run uses, stamped on the run as the workflow_sha label (ADR 0020,
+# #13). Captured, not printed: the last stdout line of this script is the run id.
+SHA="$(git -C "$tmp/wf" rev-parse HEAD)" || die "could not read the commit of the $WORKFLOWS_REF clone"
 
 # The whole `.fabro/` tree, not the pr-review package: that is what makes the `../`
 # import resolvable. The cost is that a version now carries all three packages (26
@@ -344,13 +347,14 @@ jq -n \
   --arg prs "$PR_NUM" \
   --arg env_id "$env_id" \
   --arg issue "$ISSUE_NUMBER" \
-  --arg parent "$VALID_PARENT" '
+  --arg parent "$VALID_PARENT" \
+  --arg sha "$SHA" '
   {
     workflow_version_id: $vvid,
     target: $target,
     args: {
       inputs: { pr_number: $pr, auto_merge: $am },
-      labels: ({ source: "backlog", pr: $prs }
+      labels: ({ source: "backlog", pr: $prs, workflow_sha: $sha }
                + (if $issue == "" then {} else { issue: $issue } end))
     },
     environment_id: $env_id

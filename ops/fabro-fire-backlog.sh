@@ -209,6 +209,8 @@ fi
 git clone --depth 1 --branch "$WORKFLOWS_REF" \
     "https://github.com/$WORKFLOWS_REPO" "$tmp/wf" >/dev/null 2>&1 \
   || die "could not clone $WORKFLOWS_REPO at $WORKFLOWS_REF"
+# The graph version this run uses, stamped on the run as the workflow_sha label (ADR 0020, #13).
+SHA="$(git -C "$tmp/wf" rev-parse HEAD)" || die "could not read the commit of the $WORKFLOWS_REF clone"
 
 pkg="$tmp/wf/.fabro"
 [ -f "$pkg/$ENTRYPOINT" ] \
@@ -278,12 +280,13 @@ jq -n \
   --argjson issue "$ISSUE_NUM" \
   --arg issue_s "$ISSUE_NUM" \
   --arg env_id "$env_id" \
+  --arg sha "$SHA" \
   '{
     workflow_version_id: $vvid,
     target: $target,
     args: {
       inputs: { issue_number: $issue, coder_pool: "coders-a" },
-      labels: { source: "manual", issue: $issue_s }
+      labels: { source: "manual", issue: $issue_s, workflow_sha: $sha }
     },
     environment_id: $env_id
   }' > "$tmp/intent.json" || die "could not build the RunIntent payload"

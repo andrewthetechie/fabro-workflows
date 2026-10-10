@@ -273,6 +273,29 @@ def test_dispatch_registers_the_version_then_creates_and_starts_the_run(fake_che
 
 
 @respx.mock
+def test_dispatch_stamps_the_clones_sha_as_the_workflow_sha_label(fake_checkout):
+    respx.post(f"{API}/workflow-versions").mock(
+        return_value=httpx.Response(201, json={"workflow_version_id": VERSION_ID})
+    )
+    create = respx.post(f"{API}/runs").mock(
+        return_value=httpx.Response(201, json={"id": "R1", "lifecycle": {"status": {"kind": "submitted"}}})
+    )
+    respx.post(f"{API}/runs/R1/start").mock(return_value=start_ok("runnable"))
+
+    client(fake_checkout).dispatch(
+        repo="andrewthetechie/jelly-swipe",
+        issue_number=7,
+        coder_pool="coders-a",
+        environment_id="python",
+    )
+
+    labels = json.loads(create.calls.last.request.content)["args"]["labels"]
+    assert labels["workflow_sha"] == fake_checkout.sha
+    assert labels["source"] == "scheduler"
+    assert labels["issue"] == "7"
+
+
+@respx.mock
 def test_two_dispatches_on_an_unchanged_main_register_the_version_once(fake_checkout):
     register = respx.post(f"{API}/workflow-versions").mock(
         return_value=httpx.Response(201, json={"workflow_version_id": VERSION_ID})

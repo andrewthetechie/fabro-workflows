@@ -674,6 +674,9 @@ class FabroClient:
             coder_pool=coder_pool,
             environment_id=environment_id,
             branch=self._branch,
+            # The graph version this run uses: the fabro-workflows commit the clone came
+            # from (ADR 0020, #13). `GET /runs` does not carry it for scheduler runs.
+            labels={"workflow_sha": sha},
         )
         run_id = create_run(self._api, self._token, intent, timeout=self._call_timeout)
         try:
@@ -690,7 +693,7 @@ class FabroClient:
             ) from exc
 
         log.info(
-            "fabro: dispatched %s#%s -> run %s status=%s pool=%s env=%s version=%s reused=%s",
+            "fabro: dispatched %s#%s -> run %s status=%s pool=%s env=%s version=%s sha=%s reused=%s",
             repo,
             issue_number,
             run_id,
@@ -698,6 +701,7 @@ class FabroClient:
             coder_pool,
             environment_id,
             version_id[:12],
+            sha[:12],
             reused,
         )
         return DispatchResult(

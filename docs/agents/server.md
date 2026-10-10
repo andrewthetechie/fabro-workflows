@@ -4,6 +4,9 @@ Moved verbatim from `AGENTS.md` on 2026-10-09. `AGENTS.md`, *The server*, has ss
 
 ## Firing a run by hand
 
+The graph a run used is its `workflow_sha` label: the `fabro-workflows` commit the run's clone came from. The scheduler, `fabro-fire-backlog.sh` and `fire-pr-review.sh` all set it (ADR 0020, #13), so a recheck reads it from `fabro-export-runs.sh`'s index rather than comparing dispatch times with commit times.
+
+
 ```sh
 ~/bin/fabro-fire-pr-review.sh andrewthetechie/jelly-swipe 123
 ```
