@@ -346,3 +346,17 @@ The prompt, tool set and instruction files an agent **Session** runs with, chose
 model. The factory runs every session on one profile, whatever model or provider serves it,
 so every session receives the **Agent guide** and offers the same tools.
 _Avoid_: harness, codec (the codec is the wire format, a separate choice)
+
+**Test environment**:
+What a target repository's tests need before any test command works: the services to
+start, the one-off preparation (migrations, seed data) and the environment variables. A
+repository declares it once. Validation and an agent's narrow test run both use the same
+declaration, so a test that passes for the agent ran under the conditions validation will
+use. A repository that declares none needs nothing.
+_Avoid_: test setup (confused with `setup.sh`, which installs dependencies), test config
+
+**Test target**:
+A named, narrow test command a repository declares with its **Test environment**. An agent
+picks a target and adds only the paths or selectors to run. The command itself comes from
+the repository.
+_Avoid_: test suite (a target is deliberately narrower), test script
