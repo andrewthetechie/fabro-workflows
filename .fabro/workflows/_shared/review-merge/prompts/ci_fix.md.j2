@@ -71,11 +71,11 @@ belong to later stages.
 1. Read `/tmp/fabro/feedback/ci_fix.md`.
 2. Edit files — only files already in `/tmp/fabro/review/changed_files.txt` —
    to fix the cause of the failing check.
-3. Run the narrowest validation that exercises what you touched: `run_tests TARGET
-   <test files or node ids>`, with TARGET from its list, or through the shell only
-   when `run_tests` reports no targets (a typecheck of one package, a lint of the
-   changed files), and only when a cheap, obvious command exists. Do **not** run the
-   full suite.
+3. Run the narrowest validation that exercises what you touched, and only when a
+   cheap, obvious command exists. Tests run with `run_tests TARGET <test files or node
+   ids>`, with TARGET from its list, and through the shell only when `run_tests`
+   reports no targets. A typecheck of one package or a lint of the changed files goes
+   through the shell. Do **not** run the full suite.
 4. Leave a clean tree: no conflict markers, no in-progress rebase or merge.
 
 ## Output — `ci_fix_result.json`

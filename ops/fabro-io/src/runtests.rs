@@ -44,33 +44,53 @@ fn fail(text: impl Into<String>) -> Report {
 
 /// Whether this call must prepare: `fresh`, no stamp, or a stamp whose fingerprint differs
 /// from the current one (C3, D4).
-fn needs_prepare(root: &Path, env: &TestEnv, fresh: bool) -> bool {
-    fresh
-        || testenv::stamp_fingerprint().as_deref() != Some(testenv::fingerprint(root, env).as_str())
+///
+/// The fingerprint walks the checkout, so it runs on the blocking pool.
+async fn needs_prepare(root: &Path, env: &TestEnv, fresh: bool) -> bool {
+    if fresh {
+        return true;
+    }
+    let (root, env) = (root.to_path_buf(), env.clone());
+    tokio::task::spawn_blocking(move || {
+        testenv::stamp_fingerprint().as_deref() != Some(testenv::fingerprint(&root, &env).as_str())
+    })
+    .await
+    .unwrap_or(true)
 }
 
-/// Runs the Test environment's preparation under `root`, with `extra` variables, and returns
-/// the seconds it took.
+/// Runs the Test environment's preparation under `root`, with `extra` variables, within
+/// `budget`, and returns the seconds it took. The caller holds [`testenv::EnvLock`].
+///
+/// Preparation blocks for up to its whole budget, so it runs on tokio's blocking pool: the
+/// MCP server keeps answering other tool calls meanwhile.
 ///
 /// # Errors
 ///
 /// Returns the C4 `phase: prepare` text: the step's exit code, the failure, the tail of the
 /// preparation log and the log's path.
-pub fn prepare_now(root: &Path, env: &TestEnv, extra: &[(String, String)]) -> Result<u64, String> {
-    let budget = Duration::from_secs(env.prepare.timeout.min(TOTAL_MAX_S));
-    testenv::prepare_with(root, env, budget, extra)
-        .map(|p| p.seconds)
-        .map_err(|message| prepare_failure(&message))
+pub async fn prepare_now(
+    root: &Path,
+    env: &TestEnv,
+    extra: &[(String, String)],
+    budget: Duration,
+) -> Result<u64, String> {
+    let (root, env, extra) = (root.to_path_buf(), env.clone(), extra.to_vec());
+    let done = tokio::task::spawn_blocking(move || testenv::prepare_with(&root, &env, budget, &extra))
+        .await
+        .unwrap_or_else(|e| Err(format!("the preparation task stopped: {e}")));
+    done.map(|p| p.seconds).map_err(|message| prepare_failure(&message))
+}
+
+/// The first lines of a C4 result that failed before or during `phase`.
+fn failure_header(phase: &str, exit_code: &str, message: &str) -> String {
+    format!("phase: {phase}\nexit_code: {exit_code}\nerror: {message}\n")
 }
 
 /// The C4 text for a failed preparation.
 fn prepare_failure(message: &str) -> String {
     let log = testenv::log_path();
     let tail = gitsafe::tail_lines(&std::fs::read(&log).unwrap_or_default(), false);
-    let mut out = format!(
-        "phase: prepare\nexit_code: {}\nerror: {message}\n",
-        exit_code_of(message)
-    );
+    let mut out = failure_header("prepare", &exit_code_of(message), message);
     if !tail.is_empty() {
         out.push_str(&tail);
         out.push('\n');
@@ -164,9 +184,11 @@ fn target_names(env: &TestEnv) -> String {
 
 /// Runs one target: checks its arguments, prepares when needed, and runs the command (C4).
 ///
-/// The budget is the target's `timeout`, plus the preparation's `timeout` when this call
-/// prepares, and never more than [`TOTAL_MAX_S`] in all. `extra` is applied to preparation
-/// and run alike; `run_tests` passes none, and `baseline_check` passes the shared-dependency
+/// The call holds [`testenv::EnvLock`] from before the stamp is read until the command has
+/// finished, so concurrent calls take turns. The budget is the target's `timeout`, plus the
+/// preparation's `timeout` when this call prepares, and the whole call, waiting for the lock
+/// included, never takes more than [`TOTAL_MAX_S`]. `extra` is applied to preparation and
+/// run alike; `run_tests` passes none, and `baseline_check` passes the shared-dependency
 /// guard of its worktree.
 pub async fn execute(
     root: &Path,
@@ -186,24 +208,30 @@ pub async fn execute(
         return fail(message);
     }
     let script = command_line(target, args);
-    let prepares = needs_prepare(root, env, fresh);
-    let started = Instant::now();
+    let ceiling = Instant::now() + Duration::from_secs(TOTAL_MAX_S);
+    let _lock = match testenv::EnvLock::acquire_async(ceiling).await {
+        Ok(lock) => lock,
+        Err(message) => return fail(failure_header("prepare", "none", &message).trim_end()),
+    };
+    let prepares = needs_prepare(root, env, fresh).await;
     let prepare_s = if prepares { env.prepare.timeout } else { 0 };
-    let total = Duration::from_secs((target.timeout + prepare_s).min(TOTAL_MAX_S));
+    let deadline = (Instant::now() + Duration::from_secs(target.timeout + prepare_s)).min(ceiling);
     let prepared = if prepares {
-        match prepare_now(root, env, extra) {
+        let budget = Duration::from_secs(env.prepare.timeout)
+            .min(deadline.saturating_duration_since(Instant::now()));
+        match prepare_now(root, env, extra, budget).await {
             Ok(seconds) => Some(seconds),
             Err(text) => return fail(text),
         }
     } else {
         None
     };
-    let left = total
-        .saturating_sub(started.elapsed())
+    let left = deadline
+        .saturating_duration_since(Instant::now())
         .min(Duration::from_secs(target.timeout));
     if left.is_zero() {
         return fail(
-            "phase: run\nexit_code: none\nerror: the call's time budget is spent before the target starts",
+            failure_header("run", "none", "the call's time budget is spent before the target starts").trim_end(),
         );
     }
 
@@ -214,7 +242,7 @@ pub async fn execute(
         .envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     let cap = match gitsafe::capture(cmd, left).await {
         Ok(cap) => cap,
-        Err(message) => return fail(format!("phase: run\nexit_code: none\nerror: {message}")),
+        Err(message) => return fail(failure_header("run", "none", &message).trim_end()),
     };
 
     let exit = if cap.timed_out {

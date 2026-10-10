@@ -16,8 +16,11 @@ so a branch that edits them changes the rules that judge it.
    service, use `run_tests`; the repository declares how to start it." Regenerate (`ops/fabro-io-manifest.py generate`)
    and stay under 3,000 bytes.
 2. `backlog/prompts/coder.md.j2`, the "Do not run the project's full test suite" paragraph:
-   run the narrowest check with `run_tests TARGET <test files or node ids>`, and through
-   shell only when `run_tests` reports no targets. Make the same change wherever
+   run tests with `run_tests TARGET <test files or node ids>`, and through shell only when
+   `run_tests` reports no targets. A typecheck or a lint, which no target covers, stays
+   on the shell (amended 2026-10-10: the first wording sent every check through
+   `run_tests`, which forbade typecheck and lint in any repository that declares
+   targets). Make the same change wherever
    `rework*.md.j2` and the merge phase's `ci_fix`/`review_fix` prompts tell the agent how to
    run a test.
 3. `_shared/review-merge/` `hygiene`: C6. The comment above the node and the review

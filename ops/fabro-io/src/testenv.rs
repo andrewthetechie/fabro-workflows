@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use globset::{GlobBuilder, GlobSetBuilder};
 use serde::Deserialize;
 
-use crate::common::{atomic_write, io_root, sha256_hex};
+use crate::common::{atomic_write, io_root, kill_group, sha256_hex};
 
 /// The declaration, relative to the checkout root (C1).
 pub const TEST_TOML: &str = ".fabro/test.toml";
@@ -25,6 +25,9 @@ pub const TEST_TOML: &str = ".fabro/test.toml";
 pub const STAMP_FILE: &str = "test-env.stamp";
 /// The preparation log under the io root. Every preparation truncates it (C2, C4).
 pub const LOG_FILE: &str = "test-env.log";
+
+/// The lock file under the io root that serializes use of the Test environment.
+pub const LOCK_FILE: &str = "test-env.lock";
 
 /// The only accepted `version` (C1).
 const VERSION: u32 = 1;
@@ -38,12 +41,15 @@ const TARGET_TIMEOUT_DEFAULT_S: u64 = 120;
 /// How often the supervisor polls a running preparation step. Short enough that a budget
 /// overrun is seen within a fraction of a second; each poll is one `try_wait`.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// How often a caller waiting for [`EnvLock`] retries. A held lock lasts seconds to minutes
+/// (a preparation or a test run), so a tenth of a second adds no noticeable delay.
+const LOCK_POLL: Duration = Duration::from_millis(100);
 /// How long to wait for a step's output reader once the step has exited. A step that starts
 /// a daemon holding the pipe must not block the caller forever, so the reader is then detached.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// A parsed, validated `.fabro/test.toml` (C1).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TestEnv {
     /// The `[env]` table, applied to every preparation step and target. Sorted by name.
     pub env: BTreeMap<String, String>,
@@ -58,7 +64,7 @@ pub struct TestEnv {
 }
 
 /// The `[prepare]` table (C1).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Prepare {
     /// Globs, relative to the checkout root, whose matched files are hashed into the fingerprint.
     pub inputs: Vec<String>,
@@ -69,7 +75,7 @@ pub struct Prepare {
 }
 
 /// One `[targets.<name>]` table (C1).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Target {
     /// One line naming what the target runs, shown to agents.
     pub about: String,
@@ -490,13 +496,6 @@ fn run_step(
     Ok(())
 }
 
-/// Kills the process group `pid` leads. The step runs in its own group, so this takes the
-/// children it started (uv, pytest, node) with it.
-fn kill_group(pid: u32) {
-    let _ = Command::new("kill")
-        .args(["-KILL", "--", &format!("-{pid}")])
-        .output();
-}
 
 /// The `PATH` for preparation and targets: the `path` entries under `root`, in order, then
 /// the caller's `PATH` (C1).
@@ -533,6 +532,84 @@ pub fn command_env(root: &Path, env: &TestEnv, extra: &[(String, String)]) -> Ve
     vars.insert("PATH".to_string(), path_over(root, env, &base));
     vars.into_iter().collect()
 }
+
+/// Exclusive use of the sandbox's Test environment, released when dropped.
+///
+/// Preparation recreates shared state (`fabro-pg-ensure` drops and recreates the
+/// databases), and two test runs against one database collide, so every caller that
+/// prepares or runs a target holds this lock throughout: `run_tests`, `fabro-test`,
+/// `baseline_check` and `fabro-io test-env`. It is an advisory lock on [`LOCK_FILE`]
+/// under the io root, so it also serializes separate processes, such as the MCP server
+/// and a `fabro-test` call from the shell.
+#[derive(Debug)]
+pub struct EnvLock {
+    _file: std::fs::File,
+}
+
+impl EnvLock {
+    /// Takes the lock if it is free, without waiting.
+    ///
+    /// Returns `Ok(None)` when another caller holds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a sentence when the io root or the lock file cannot be opened or locked.
+    pub fn try_acquire() -> Result<Option<EnvLock>, String> {
+        let io = io_root();
+        std::fs::create_dir_all(&io).map_err(|e| format!("cannot create {}: {e}", io.display()))?;
+        let path = io.join(LOCK_FILE);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(EnvLock { _file: file })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(e)) => Err(format!("cannot lock {}: {e}", path.display())),
+        }
+    }
+
+    /// Waits for the lock until `deadline`, blocking the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LOCK_TIMEOUT`] when the deadline passes first, or the
+    /// [`EnvLock::try_acquire`] error.
+    pub fn acquire(deadline: Instant) -> Result<EnvLock, String> {
+        loop {
+            if let Some(lock) = EnvLock::try_acquire()? {
+                return Ok(lock);
+            }
+            if Instant::now() >= deadline {
+                return Err(LOCK_TIMEOUT.to_string());
+            }
+            std::thread::sleep(LOCK_POLL);
+        }
+    }
+
+    /// Waits for the lock until `deadline` without blocking the async runtime.
+    ///
+    /// # Errors
+    ///
+    /// As [`EnvLock::acquire`].
+    pub async fn acquire_async(deadline: Instant) -> Result<EnvLock, String> {
+        loop {
+            if let Some(lock) = EnvLock::try_acquire()? {
+                return Ok(lock);
+            }
+            if Instant::now() >= deadline {
+                return Err(LOCK_TIMEOUT.to_string());
+            }
+            tokio::time::sleep(LOCK_POLL).await;
+        }
+    }
+}
+
+/// What a caller is told when another call held the Test environment for its whole budget.
+pub const LOCK_TIMEOUT: &str = "another run_tests, fabro-test, baseline_check or fabro-io test-env call \
+     held the Test environment for this call's whole time budget; try again when it has finished";
 
 /// The fingerprint recorded in the stamp, or `None` when there is no stamp (C3).
 pub fn stamp_fingerprint() -> Option<String> {
@@ -602,6 +679,15 @@ pub fn run_cli(args: &[String]) -> ExitCode {
     if check {
         return ExitCode::SUCCESS;
     }
+    // Wait at most one preparation budget for an agent's call to finish, then prepare
+    // within a budget of its own.
+    let _lock = match EnvLock::acquire(Instant::now() + Duration::from_secs(env.prepare.timeout)) {
+        Ok(lock) => lock,
+        Err(message) => {
+            eprintln!("test-env: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
     match prepare(&root, &env, Duration::from_secs(env.prepare.timeout)) {
         Ok(_) => {
             print!("{}", exports(&root, &env));

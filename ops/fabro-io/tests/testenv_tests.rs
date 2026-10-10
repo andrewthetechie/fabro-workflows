@@ -170,6 +170,7 @@ fn exports_quote_each_value_and_put_path_last() {
 
 #[test]
 fn an_exported_value_round_trips_through_sh() {
+    let _g = lock(); // a sibling test may swap PATH (common::NoKillPath)
     let env = testenv::parse("version = 1\n[env]\nTRICKY = \"a'b c\"\n").expect("valid");
     let out = testenv::exports(Path::new("/checkout"), &env);
     let script = format!("{out}printf '%s' \"$TRICKY\"");
@@ -369,6 +370,26 @@ fn the_budget_kills_a_step_that_runs_too_long() {
     let _ = std::fs::remove_dir_all(&io);
 }
 
+#[test]
+fn the_budget_kills_the_whole_step_even_without_a_kill_binary() {
+    let _g = lock();
+    let io = io_root_for("prep-nokill");
+    let (root, env) = with_run(&["sleep 30 & echo $! > child.pid; wait"], "prep-nokill-root");
+    let path = common::NoKillPath::new("prep");
+
+    let started = Instant::now();
+    let err = testenv::prepare(&root, &env, Duration::from_secs(1)).unwrap_err();
+    let took = started.elapsed();
+    drop(path);
+    assert!(took < Duration::from_secs(5), "returned after {took:?}");
+    assert!(err.contains("budget"), "{err}");
+    let pid = common::read_pid(&root.join("child.pid"));
+    assert!(common::process_gone(&pid), "the step's backgrounded child {pid} was killed with it");
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&io);
+}
+
 /// Runs the `ci.sh` line from docs/test-env C2 through the real binary.
 fn ci_line(root: &Path, io: &Path, tail: &str) -> std::process::Output {
     let script = format!(
@@ -433,6 +454,7 @@ fn test_env_with_no_file_prints_nothing_and_exits_zero() {
 
 #[test]
 fn test_env_check_fails_and_names_a_bad_key() {
+    let _g = lock(); // a sibling test may swap PATH (common::NoKillPath)
     let root = common::temp_root("check-bad");
     std::fs::create_dir_all(root.join(".fabro")).unwrap();
     std::fs::write(root.join(".fabro/test.toml"), "version = 2\n").unwrap();

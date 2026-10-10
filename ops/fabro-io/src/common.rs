@@ -72,3 +72,15 @@ pub fn hook_context() -> Result<serde_json::Value, String> {
     };
     serde_json::from_str(&text).map_err(|e| format!("could not parse FABRO_HOOK_CONTEXT ({e})"))
 }
+
+/// Sends `SIGKILL` to the process group that `pid` leads.
+///
+/// Every bounded command in this crate is spawned with `process_group(0)`, so its pid names
+/// its group, and this takes the children it started (uv, pytest, node) with it. It calls
+/// `killpg` directly rather than running a `kill` binary: `fabro-python-node:local` ships
+/// none, and the missing binary used to fail silently, so a budget was never enforced there.
+/// A group that has already exited is not an error.
+pub fn kill_group(pid: u32) {
+    let Ok(raw) = i32::try_from(pid) else { return };
+    let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(raw), nix::sys::signal::Signal::SIGKILL);
+}

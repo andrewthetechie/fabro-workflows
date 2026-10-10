@@ -127,9 +127,10 @@ test to make a check pass.
   `mark_needs_human`.
 - **Do not run the full test suite.** The `validate` stage runs
   `./.fabro/setup.sh && ./.fabro/ci.sh` next. Run only the narrowest useful check for
-  the surface you changed: `run_tests TARGET <test files or node ids>`, with TARGET
-  from its list, or through the shell only when `run_tests` reports no targets, and
-  only when a cheap, obvious command exists.
+  the surface you changed, and only when a cheap, obvious command exists. Tests run
+  with `run_tests TARGET <test files or node ids>`, with TARGET from its list, and
+  through the shell only when `run_tests` reports no targets. A typecheck or a lint
+  goes through the shell.
 - Never modify generated files, lockfiles, or CI configuration.
 
 ## Scope discipline

@@ -50,7 +50,7 @@ bytes of `jq` spread across `decompose_gate`, `improve_gate` and `next_task`, an
 cursor off-by-one there silently skips a task rather than failing — the same class of
 bug, one layer down. `ops/test-task-gates.sh` extracts those `script` attributes from
 the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them against
-fixtures (814 checks on the Mac, 902 in a profile image; offline).
+fixtures (821 checks on the Mac, 909 in a profile image; offline).
 
 It needs only `jq`, `awk` and `git` — no `python3`, which `fabro-ts` and `fabro-python-node` do not ship — so it belongs in the same pre-push hook and also runs inside every profile image, the one way to test the counters against the sandbox's own mawk and jq (`jq 1.6` in `fabro-python-node`). It covers
 the task-queue gates, `open_pr`, and — since 2026-09-19 — `claim`, `mark_stuck` and the

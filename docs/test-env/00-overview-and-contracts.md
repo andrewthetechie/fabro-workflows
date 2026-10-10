@@ -1,6 +1,14 @@
 # Test environment: overview and canonical contracts
 
-**Status:** designed 2026-10-09 (ADR 0018, proposed). Nothing is implemented.
+**Status:** designed 2026-10-09 (ADR 0018, proposed). Tasks 01–05 are implemented in this
+repository. The images carry `fabro-io` 0.4.0. 0.4.1 (2026-10-10, after review) kills a
+timed-out command's process group without a `kill` binary, serializes calls with a lock,
+and keeps preparation off the MCP server's async threads; it needs `make deploy-images`
+before task 06 lands. Tasks 06 and 07 exist as local branches in the target repositories,
+with no PRs yet. Task 08 is not started.
+
+**Setting up a repository?** Read `setup-guide.md`: every `test.toml` key, how it behaves,
+and how to check a file before it lands.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report

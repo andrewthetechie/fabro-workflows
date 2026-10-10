@@ -1,6 +1,6 @@
 [package]
 name = "fabro-io"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Stage I/O MCP server (ADR 0016): reads a stage's inputs and writes its output contract with an Input receipt"
 license = "MIT"
@@ -12,6 +12,7 @@ getrandom = { version = "0.3", features = ["std"] }
 globset = "0.4"
 hex = "0.4"
 jsonschema = "0.26"
+nix = { version = "0.31.3", default-features = false, features = ["signal"] }
 rmcp = { version = "=3.5.0", features = ["server", "transport-streamable-http-server"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.151" }

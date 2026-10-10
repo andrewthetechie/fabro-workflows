@@ -65,9 +65,10 @@ The repository checkout in the current working directory is your workspace. The
    code you notice on the way through.
 3. `git add <file>`, then `GIT_EDITOR=true git merge --continue`. Repeat until the
    merge completes.
-4. Run the narrowest validation that exercises what you touched: `run_tests TARGET
-   <test files or node ids>`, with TARGET from its list, or through the shell only
-   when `run_tests` reports no targets, and only when a cheap, obvious command exists.
+4. Run the narrowest validation that exercises what you touched, and only when a
+   cheap, obvious command exists. Tests run with `run_tests TARGET <test files or node
+   ids>`, with TARGET from its list, and through the shell only when `run_tests`
+   reports no targets. A typecheck or a lint goes through the shell.
    Do **not** run the full test suite — a later stage runs `./.fabro/ci.sh`.
 5. Leave a clean tree: no conflict markers, no merge in progress.
 

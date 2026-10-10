@@ -114,3 +114,69 @@ pub fn visit_of(root: &Path) -> String {
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
     v["visit"].as_str().unwrap().to_string()
 }
+
+/// While alive, `PATH` names one directory holding only `sh`, `sleep` and `cat`, so no `kill`
+/// binary resolves: the shape of `fabro-python-node:local`, which ships none. Restores `PATH`
+/// on drop. Callers hold `LOCK`.
+pub struct NoKillPath {
+    old: Option<std::ffi::OsString>,
+    dir: PathBuf,
+}
+
+impl NoKillPath {
+    /// Points `PATH` at a fresh directory of symlinks named after `tag`.
+    pub fn new(tag: &str) -> Self {
+        let old = std::env::var_os("PATH");
+        let dir = temp_root(&format!("nokill-{tag}"));
+        for tool in ["sh", "sleep", "cat"] {
+            let found = std::env::split_paths(old.as_deref().unwrap_or_default())
+                .map(|d| d.join(tool))
+                .find(|p| p.is_file())
+                .unwrap_or_else(|| panic!("no {tool} on PATH"));
+            std::os::unix::fs::symlink(found, dir.join(tool)).unwrap();
+        }
+        // SAFETY: the environment is process-global; callers hold `LOCK`, which every test
+        // that reads or writes it takes, so no other thread touches it meanwhile.
+        unsafe {
+            std::env::set_var("PATH", &dir);
+        }
+        NoKillPath { old, dir }
+    }
+}
+
+impl Drop for NoKillPath {
+    fn drop(&mut self) {
+        // SAFETY: as in `new`: the guard is dropped while its test still holds `LOCK`.
+        unsafe {
+            match &self.old {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// True once no process `pid` exists, polled for up to 3 s (an orphan is reaped by init).
+pub fn process_gone(pid: &str) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        let alive = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("kill -0 {pid} 2>/dev/null")])
+            .status()
+            .is_ok_and(|s| s.success());
+        if !alive {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+/// The pid a test step wrote to `path`, trimmed.
+pub fn read_pid(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .trim()
+        .to_string()
+}

@@ -80,7 +80,7 @@ those inputs in `[run.inputs]`.
 The offline gates run on the Mac with Python 3.11+ (macOS ships 3.9):
 
 ```sh
-./ops/test-task-gates.sh      # 814 checks on the Mac, 902 in a profile image
+./ops/test-task-gates.sh      # 821 checks on the Mac, 909 in a profile image
 python3.11 ops/fabro-io-manifest.py check
 python3.11 ops/check-agent-profiles.py ops/settings.toml.example
 python3.11 -m unittest discover -s ops/tests

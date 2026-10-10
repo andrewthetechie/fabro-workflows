@@ -37,6 +37,11 @@ const DEFAULT_TIMEOUT_S: u64 = 120;
 /// Below the 660 s `tool_timeout` of `[run.agent.mcps.io]` in each `workflow.toml`, so
 /// a runaway command returns this module's answer instead of fabro's silent timeout.
 pub(crate) const MAX_TIMEOUT_S: u64 = 600;
+/// What `baseline_check` answers, in either form, when the checkout has no dependency
+/// directory to share with the base worktree: without the guard, a `uv run` or `npm` there
+/// would install into, or re-point, the agent's own environment.
+const NOT_AVAILABLE: &str =
+    "baseline_check is not available in this repository; note the failure and move on";
 /// Lines of output a bounded command returns, counted from the end (C4 and `baseline_check`).
 const TAIL_LINES: usize = 200;
 /// How deep below the checkout the dependency directories are searched for.
@@ -433,19 +438,23 @@ pub async fn baseline_check(
     let started = Instant::now();
     let wt = ensure_worktree(root, checkout, base)?;
     let Some(extra) = environment(root, checkout, &wt) else {
-        return Err("baseline_check is not available in this repository; note the failure and \
-                    move on"
-            .to_string());
+        return Err(NOT_AVAILABLE.to_string());
     };
     let limit = Duration::from_secs(timeout_s.clamp(1, MAX_TIMEOUT_S));
-    let vars = match base_test_env(checkout, base)? {
+    let ceiling = started + Duration::from_secs(MAX_TIMEOUT_S);
+    // `held` lives until the command has finished: the command may use the database the
+    // preparation just rebuilt. Without a declaration there is nothing to share, so no lock.
+    let (held, vars) = match base_test_env(checkout, base)? {
         Some(decl) => {
-            if let Err(text) = runtests::prepare_now(&wt, &decl, &extra) {
+            let lock = testenv::EnvLock::acquire_async(ceiling).await?;
+            let budget = Duration::from_secs(decl.prepare.timeout)
+                .min(ceiling.saturating_duration_since(Instant::now()));
+            if let Err(text) = runtests::prepare_now(&wt, &decl, &extra, budget).await {
                 return Ok(text);
             }
-            testenv::command_env(&wt, &decl, &extra)
+            (Some(lock), testenv::command_env(&wt, &decl, &extra))
         }
-        None => extra,
+        None => (None, extra),
     };
     // The whole call stays under MAX_TIMEOUT_S, so a long preparation shortens the command
     // rather than letting fabro's tool timeout end the call silently.
@@ -460,6 +469,7 @@ pub async fn baseline_check(
         .current_dir(&wt)
         .envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     let cap = capture(cmd, limit).await?;
+    drop(held);
     let mut out = format!("exit={}\n", cap.status);
     out.push_str(&tail_lines(&cap.bytes, cap.timed_out));
     Ok(out.trim_end().to_string())
@@ -471,8 +481,9 @@ pub async fn baseline_check(
 ///
 /// # Errors
 ///
-/// Returns a sentence for the model when no worktree can be made or the repository declares
-/// no test targets. An unknown target, a refused argument, a failed preparation or a failing
+/// Returns a sentence for the model when no worktree can be made, the checkout has no
+/// dependency directory to share with it (as `baseline_check` with a command), or the
+/// repository declares no test targets. An unknown target, a refused argument, a failed preparation or a failing
 /// run is an answer in the returned text.
 pub async fn baseline_target(
     root: &Path,
@@ -485,7 +496,9 @@ pub async fn baseline_target(
         return Err(runtests::NO_DECLARATION.to_string());
     };
     let wt = ensure_worktree(root, checkout, base)?;
-    let extra = environment(root, checkout, &wt).unwrap_or_default();
+    let Some(extra) = environment(root, checkout, &wt) else {
+        return Err(NOT_AVAILABLE.to_string());
+    };
     Ok(runtests::execute(&wt, &decl, name, args, true, &extra).await.text)
 }
 
@@ -539,7 +552,7 @@ pub(crate) async fn capture(mut cmd: tokio::process::Command, limit: Duration) -
         Err(_) => {
             // The whole group: the command usually runs children (uv, pytest, node).
             if let Some(pid) = pid {
-                let _ = Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).output();
+                common::kill_group(pid);
             }
             Ok(Captured {
                 status: format!("timed out after {}s and was killed", limit.as_secs()),

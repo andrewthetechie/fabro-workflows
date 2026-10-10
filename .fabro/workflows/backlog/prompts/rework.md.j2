@@ -87,9 +87,10 @@ and say so in your completion note instead. A human will make that edit.
 
 Do **not** run the project's full test suite. A separate `validate` stage runs
 `./.fabro/setup.sh && ./.fabro/ci.sh` after you finish. Run only the narrowest
-useful check for the surface you changed: `run_tests TARGET <test files or node
-ids>`, with TARGET from its list. Use the shell for a check only when `run_tests`
-reports no targets, and only when a cheap obvious command exists.
+useful check for the surface you changed, and only when a cheap obvious command
+exists. Run tests with `run_tests TARGET <test files or node ids>`, with TARGET from
+its list; run a test through the shell only when `run_tests` reports no targets. A
+typecheck or a lint goes through the shell.
 
 If a check fails in code you did not touch, note it in your completion message. To
 confirm it predates your change, use `baseline_check`. Never stash or check out files.

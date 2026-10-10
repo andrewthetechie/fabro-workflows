@@ -327,6 +327,90 @@ fn a_preparation_past_its_timeout_reports_phase_prepare_and_returns_early() {
 }
 
 #[test]
+fn a_run_past_its_timeout_kills_the_whole_group_even_without_a_kill_binary() {
+    let _g = lock();
+    let io = io_root_for("rt-nokill-io");
+    let root = common::temp_root("rt-nokill");
+    let toml = "version = 1\n[targets.unit]\nabout = \"unit\"\ntimeout = 1\n\
+                run = \"sleep 30 & echo $! > child.pid; wait\"\n";
+    let dir = checkout(&root, toml);
+    let env = load(&dir);
+    let path = common::NoKillPath::new("rt");
+
+    let started = Instant::now();
+    let report = block_on(runtests::execute(&dir, &env, "unit", &[], false, &[]));
+    let took = started.elapsed();
+    drop(path);
+    assert!(took < Duration::from_secs(5), "returned after {took:?}");
+    assert!(report.text.contains("timed out"), "{}", report.text);
+    let pid = common::read_pid(&dir.join("child.pid"));
+    assert!(common::process_gone(&pid), "the target's backgrounded child {pid} was killed with it");
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&io);
+}
+
+#[test]
+fn concurrent_calls_take_turns_with_the_test_environment() {
+    let _g = lock();
+    let io = io_root_for("rt-turns-io");
+    let root = common::temp_root("rt-turns");
+    // Each run brackets a one-second sleep with its own start and end lines. Overlapping
+    // runs would interleave them, as two runs sharing one database would collide.
+    let toml = "version = 1\n[prepare]\nrun = [\"true\"]\n[targets.unit]\nabout = \"unit\"\n\
+                run = \"echo start >> turns.txt; sleep 1; echo end >> turns.txt\"\n";
+    let dir = checkout(&root, toml);
+    let env = load(&dir);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (a, b) = rt.block_on(async {
+        tokio::join!(
+            runtests::execute(&dir, &env, "unit", &[], true, &[]),
+            runtests::execute(&dir, &env, "unit", &[], true, &[]),
+        )
+    });
+    assert!(a.success && b.success, "{}\n{}", a.text, b.text);
+    let turns = std::fs::read_to_string(dir.join("turns.txt")).unwrap();
+    assert_eq!(turns, "start\nend\nstart\nend\n", "the runs overlapped");
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&io);
+}
+
+#[test]
+fn preparation_leaves_the_async_runtime_free_for_other_calls() {
+    let _g = lock();
+    let io = io_root_for("rt-free-io");
+    let root = common::temp_root("rt-free");
+    let toml = "version = 1\n[prepare]\nrun = [\"sleep 1\"]\n[targets.unit]\nabout = \"unit\"\nrun = \"true\"\n";
+    let dir = checkout(&root, toml);
+    let env = load(&dir);
+
+    // One thread, as a busy server can be: a blocking preparation would starve the ticker,
+    // which stands in for every other tool call the MCP server is answering meanwhile.
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let report = rt.block_on(async {
+        let counter = ticks.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        let report = runtests::execute(&dir, &env, "unit", &[], true, &[]).await;
+        ticker.abort();
+        report
+    });
+    assert!(report.success, "{}", report.text);
+    let seen = ticks.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(seen >= 10, "the ticker ran {seen} times during a one-second preparation");
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&io);
+}
+
+#[test]
 fn a_repository_without_a_declaration_or_with_an_invalid_one_is_told_so() {
     let _g = lock();
     let io = io_root_for("rt-decl-io");
@@ -384,6 +468,9 @@ fn baseline_target_prepares_the_base_and_the_next_run_tests_prepares_again() {
     let root = common::temp_root("rt-base");
     let dir = checkout(&root, TOML);
     let base = git(&dir, &["rev-parse", "HEAD"]);
+    // An untracked dependency directory, as every target repository has; baseline_check
+    // links it into the base worktree.
+    std::fs::create_dir_all(dir.join("node_modules")).unwrap();
 
     let out = block_on(gitsafe::baseline_target(
         &io,
@@ -422,6 +509,24 @@ fn baseline_target_prepares_the_base_and_the_next_run_tests_prepares_again() {
     assert!(next.success, "{}", next.text);
     assert!(next.text.contains("prepared in "), "{}", next.text);
     assert_eq!(count_lines(&dir.join("prepares.txt")), 1);
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&io);
+}
+
+#[test]
+fn baseline_target_refuses_like_the_command_form_without_dependency_directories() {
+    let _g = lock();
+    let io = io_root_for("rt-base-nodeps-io");
+    let root = common::temp_root("rt-base-nodeps");
+    let dir = checkout(&root, TOML);
+    let base = git(&dir, &["rev-parse", "HEAD"]);
+
+    let by_command = block_on(gitsafe::baseline_check(&io, &dir, &base, "true", 30)).unwrap_err();
+    let by_target = block_on(gitsafe::baseline_target(&io, &dir, &base, "unit", &[])).unwrap_err();
+    assert!(by_command.contains("not available in this repository"), "{by_command}");
+    assert_eq!(by_target, by_command, "both forms give the same answer");
+    assert_eq!(count_lines(&io.join("base-tree").join("prepares.txt")), 0, "nothing was prepared");
 
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&io);
