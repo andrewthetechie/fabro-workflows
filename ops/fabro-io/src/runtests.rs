@@ -367,6 +367,13 @@ pub fn run_cli(args: &[String]) -> ExitCode {
         eprintln!("usage: fabro-io run-tests TARGET [args...] [--fresh]");
         return ExitCode::from(64);
     }
+    // `fabro-test --help` (task 04 acceptance): print the usage and succeed, without naming
+    // a target.
+    if matches!(positional[0].as_str(), "--help" | "-h") {
+        println!("usage: fabro-test TARGET [args...] [--fresh]");
+        println!("Runs a named test target from the repository's .fabro/test.toml.");
+        return ExitCode::SUCCESS;
+    }
     let target = positional.remove(0);
     let root = match testenv::checkout_root() {
         Ok(root) => root,

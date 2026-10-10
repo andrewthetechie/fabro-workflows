@@ -1,0 +1,4 @@
+#!/bin/sh
+# fabro-test -- shell alias for run_tests (docs/test-env C4), installed at
+# /usr/local/bin/fabro-test in every profile image beside fabro-code.
+exec fabro-io run-tests "$@"

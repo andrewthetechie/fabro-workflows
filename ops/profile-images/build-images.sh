@@ -110,6 +110,8 @@ assemble_context() {
   # The fabro-code wrapper (docs/code-context C2) also lands at the context root
   # so every Dockerfile can `COPY fabro-code /usr/local/bin/fabro-code`.
   cp "$HERE/fabro-code" "$ctx/fabro-code"
+  # The run_tests shell alias (docs/test-env C4), beside fabro-code for the same reason.
+  cp "$HERE/fabro-test" "$ctx/fabro-test"
   # fabro-io (ADR 0016) lands at the context root like fabro-code, so every
   # Dockerfile can `COPY fabro-io /usr/local/bin/fabro-io`.
   cp "$FABRO_IO_BIN" "$ctx/fabro-io"
@@ -207,6 +209,7 @@ verify_image() {
         set -eu
         [ "$(fabro-io version)" = "fabro-io '"$FABRO_IO_VERSION"'" ] \
           || { echo "version mismatch: $(fabro-io version)"; exit 1; }
+        fabro-test --help >/dev/null
         FABRO_NODE_ID=probe \
           FABRO_IO_MANIFEST="{\"version\":1,\"min_binary\":\"0.0.0\",\"stages\":{}}" \
           fabro-io stage
@@ -255,6 +258,23 @@ verify_image() {
     fi
   else
     log "verify $tag: $repo has no .fabro/setup.sh to check"
+  fi
+
+  # TEST ENV (offline): a repository that declares .fabro/test.toml must parse under this
+  # image's fabro-io (ADR 0018, docs/test-env C2). A broken file fails the image the way a
+  # failed setup.sh does, instead of failing every run that loads it.
+  if [ -f "$src/.fabro/test.toml" ]; then
+    log "verify $tag: test-env check, offline"
+    if docker run --rm --network=none -v "$src":/src:ro --entrypoint bash "$tag" -c \
+          'fabro-io test-env --check --root /src' >"$WORK/verify-testenv-$repo.log" 2>&1; then
+      log "verify $tag: test-env OK"
+    else
+      log "verify $tag: TEST-ENV CHECK FAILED -- .fabro/test.toml does not parse"
+      tail -20 "$WORK/verify-testenv-$repo.log" >&2
+      ok=1
+    fi
+  else
+    log "verify $tag: $repo declares no .fabro/test.toml"
   fi
 
   # INDEX (offline): does codegraph build an index of this repository in a 2 CPU

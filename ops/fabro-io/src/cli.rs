@@ -26,7 +26,7 @@ pub fn run(args: &[String]) -> ExitCode {
         "submit" => submit_cli(rest),
         "test-env" => testenv::run_cli(rest),
         "run-tests" => runtests::run_cli(rest),
-        "version" => {
+        "version" | "--version" | "-V" => {
             println!("fabro-io {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
