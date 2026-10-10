@@ -368,6 +368,168 @@ fi
 rm -f $D/stopped_at
 jq -cn '{context_updates: {}}'"]
 
+    // Groups the open alerts that have a patched version (C4), drops the ones a PR merged in this run
+    // fixed, and ranks the rest by D16. It walks the ranking and takes the first group the tracking-issue
+    // rules (C6, D22) do not skip. A group with a switch_off PR is dropped, since that PR will merge.
+    // The issue lookup is by the marker on the first line; `startswith` is exact because the marker
+    // ends in ` -->`. Publishes patch_group (a key or `none`) and writes group.json or skipped_groups.json.
+    pick_group [label="pick_group", shape=parallelogram, timeout="5m", output_schema="routing",
+        script="D=/tmp/fabro/dep
+cat > $D/pick.jq <<'JQ'
+include \"version\";
+def sevrank: {\"critical\": 0, \"high\": 1, \"medium\": 2, \"low\": 3}[.] // 4;
+def scoperank: if . == \"runtime\" then 0 else 1 end;
+$results[0] as $res
+| $prs[0] as $pl
+| ([$res[] | select(.outcome == \"merged\") | .fixes[]]) as $merged
+| ([$res[] | select(.outcome == \"switch_off\") | .fixes[]]) as $held
+| [$alerts[0][] | select(.first_patched != null) | select(.number as $n | ([$merged[] | select(. == $n)] | length) == 0)] as $live
+| [$live | group_by([.ecosystem, .manifest, .package])[]
+   | . as $g
+   | {
+       key: ($g[0].ecosystem + \":\" + $g[0].manifest + \":\" + $g[0].package),
+       ecosystem: $g[0].ecosystem, manifest: $g[0].manifest, package: $g[0].package,
+       severity: (min_by(.severity | sevrank) | .severity),
+       scope: (if any($g[]; .scope == \"runtime\") then \"runtime\" else $g[0].scope end),
+       alerts: ($g | map(.number) | sort),
+       first_patched: ($g | map(.first_patched) | reduce .[] as $v (null; if . == null then $v elif vcmp($v; .) > 0 then $v else . end)),
+       created: ($g | map(.created_at) | min),
+       held: ([$g[] | .number as $n | select(([$held[] | select(. == $n)] | length) > 0)] | length > 0),
+       replaces: [$pl[] as $p
+                  | select(([$p.fixes[] as $f | select(([$g[] | select(.number == $f)] | length) > 0)] | length) > 0)
+                  | select((([$res[] | select(.pr == $p.number and (.outcome == \"merged\" or .outcome == \"switch_off\"))] | length) == 0))
+                  | $p.number]
+     }
+   | select(.held | not)
+   | del(.held)
+  ]
+| sort_by([(.severity | sevrank), (.scope | scoperank), (-(.alerts | length)), .created])
+| map(del(.created))
+JQ
+echo pick_group > /tmp/fabro/dep/stopped_at
+D=/tmp/fabro/dep
+rm -f /tmp/fabro/review_merge_outcome $D/skipped_groups.json
+jq -c '[.[] | select(.first_patched == null)]' $D/alerts.json > $D/no_patch.json
+jq -n -L $D --slurpfile alerts $D/alerts.json --slurpfile prs $D/prs.json --slurpfile results $D/results.json -f $D/pick.jq > $D/ranked.json || { echo 'pick_group: could not rank the groups' >&2; exit 1; }
+: > $D/skipped.lines
+NOW=$(date +%s)
+CHOSEN=none
+jq -c '.[]' $D/ranked.json > $D/ranked.lines
+while IFS= read -r G; do
+  KEY=$(printf '%s' \"$G\" | jq -r .key)
+  gh issue list --state all --label security --search \"fabro:dep-group key=$KEY\" --json number,state,stateReason,closedAt,labels,body > $D/issues.json || { echo 'pick_group: could not list the tracking issues' >&2; exit 1; }
+  ISSUE=$(jq -c --arg m \"<!-- fabro:dep-group key=$KEY -->\" '[.[] | select((.body // \"\") | startswith($m))] | .[0] // null' $D/issues.json)
+  if [ \"$ISSUE\" = null ]; then
+    CHOSEN=$KEY; NUM=0; break
+  fi
+  NUM=$(printf '%s' \"$ISSUE\" | jq -r .number)
+  ST=$(printf '%s' \"$ISSUE\" | jq -r .state)
+  SR=$(printf '%s' \"$ISSUE\" | jq -r '.stateReason // \"\"')
+  CA=$(printf '%s' \"$ISSUE\" | jq -r '.closedAt // \"\"')
+  if [ \"$ST\" = OPEN ]; then
+    if printf '%s' \"$ISSUE\" | jq -e 'any(.labels[]; .name == \"needs-human\")' >/dev/null; then
+      jq -cn --arg k \"$KEY\" '{key: $k, reason: \"its tracking issue has needs-human\"}' >> $D/skipped.lines; continue
+    fi
+    if printf '%s' \"$ISSUE\" | jq -e 'any(.labels[]; .name == \"Review\")' >/dev/null; then
+      gh pr list --state open --json number,closingIssuesReferences > $D/open_prs.json || { echo 'pick_group: could not list the open PRs' >&2; exit 1; }
+      if jq -e --argjson n \"$NUM\" 'any(.[]; any(.closingIssuesReferences[]?; .number == $n))' $D/open_prs.json >/dev/null; then
+        jq -cn --arg k \"$KEY\" '{key: $k, reason: \"its patch PR is open\"}' >> $D/skipped.lines; continue
+      fi
+      gh issue edit \"$NUM\" --remove-label Review >/dev/null 2>&1 || true
+    fi
+    CHOSEN=$KEY; break
+  fi
+  if [ \"$SR\" = COMPLETED ] && [ -n \"$CA\" ]; then
+    CLOSED=$(jq -rn --arg t \"$CA\" '$t | fromdateiso8601')
+    if [ $((NOW - CLOSED)) -lt 259200 ]; then
+      jq -cn --arg k \"$KEY\" '{key: $k, reason: \"its tracking issue closed completed less than 3 days ago\"}' >> $D/skipped.lines; continue
+    fi
+    LIST=$(jq -r '.alerts | map(\"#\" + tostring) | join(\", \")' <<<\"$G\")
+    gh issue reopen \"$NUM\" >/dev/null 2>&1 || true
+    gh issue edit \"$NUM\" --add-label needs-human >/dev/null 2>&1 || true
+    gh issue comment \"$NUM\" --body \"The patch for this group merged on $CA, but alerts $LIST are still open after 3 days. A human should check whether the fix reached the lockfile.\" >/dev/null 2>&1 || true
+    jq -cn --arg k \"$KEY\" '{key: $k, reason: \"its patch merged more than 3 days ago and the alerts are still open; the issue was reopened with needs-human\"}' >> $D/skipped.lines
+    continue
+  fi
+  CHOSEN=$KEY; break
+done < $D/ranked.lines
+if [ \"$CHOSEN\" = none ]; then
+  jq -s '.' $D/skipped.lines > $D/skipped_groups.json
+  rm -f $D/stopped_at
+  jq -cn '{context_updates: {patch_group: \"none\"}}'
+  exit 0
+fi
+jq -c --arg k \"$CHOSEN\" --argjson n \"$NUM\" '[.[] | select(.key == $k)] | .[0] + {issue: $n}' $D/ranked.json > $D/group.json
+jq -s '.' $D/skipped.lines > $D/skipped_groups.json
+rm -f $D/stopped_at
+jq -cn --arg k \"$CHOSEN\" '{context_updates: {patch_group: $k}}'"]
+
+    // Finds or files the tracking issue for the chosen group (C6). The body is rendered from the alert
+    // records. An issue closed as completed is reopened here only when the group was chosen anyway (a
+    // closed-not-planned issue, for example). The group_alerts.json file is the patch's input (task 06).
+    // A failure to file exits 1: a patch with no issue cannot pass merge_gate.
+    track_issue [label="track_issue", shape=parallelogram, timeout="5m",
+        script="echo track_issue > /tmp/fabro/dep/stopped_at
+D=/tmp/fabro/dep
+KEY=$(jq -r .key $D/group.json)
+PKG=$(jq -r .package $D/group.json)
+MAN=$(jq -r .manifest $D/group.json)
+NUM=$(jq -r .issue $D/group.json)
+gh label create security --color d73a4a --description \"Security vulnerability alert\" >/dev/null 2>&1 || true
+gh label create dependencies --color 0366d6 --description \"Pull requests that update a dependency file\" >/dev/null 2>&1 || true
+gh label create ai-generated --color bf0f66 >/dev/null 2>&1 || true
+gh label create needs-human --color d93f0b --description \"A human must look before the run continues\" >/dev/null 2>&1 || true
+gh label create Review --color 0e8a16 --description \"Agent produced a review-ready branch; open a PR.\" >/dev/null 2>&1 || true
+jq -r '.alerts | join(\",\")' $D/group.json > $D/group_numbers.txt
+jq --argjson nums \"[$(cat $D/group_numbers.txt)]\" '[.[] | select(.number as $n | $nums | index($n))]' $D/alerts_raw.json > $D/group_alerts.json
+jq -r -n --arg key \"$KEY\" --arg pkg \"$PKG\" --arg man \"$MAN\" --slurpfile g $D/group.json --slurpfile ra $D/alerts_raw.json --slurpfile pr $D/prs.json '
+  ($g[0].alerts) as $nums
+  | ($ra[0] | map(select(.number as $n | $nums | index($n)))) as $al
+  | \"<!-- fabro:dep-group key=\" + $key + \" -->\",
+    \"> Filed by the daily dependabot run (fabro-workflows ADR 0022).\",
+    \"\",
+    (\"Patch `\" + $pkg + \"` in `\" + $man + \"` for the open security alerts below. The patch PR says `Resolves #N` for this issue.\"),
+    \"\",
+    \"| Alert | Severity | Scope | Vulnerable | First patched | Advisory |\",
+    \"|---|---|---|---|---|---|\",
+    ($al | sort_by(.number) | .[] | \"| [#\" + (.number | tostring) + \"](\" + .html_url + \") | \" + .security_advisory.severity + \" | \" + (.dependency.scope // \"unknown\") + \" | \" + (.security_vulnerability.vulnerable_version_range // \"\") + \" | \" + (.security_vulnerability.first_patched_version.identifier // \"\") + \" | \" + .security_advisory.ghsa_id + (if .security_advisory.cve_id then \" / \" + .security_advisory.cve_id else \"\" end) + \" |\"),
+    (if ($g[0].replaces | length) > 0 then \"\", \"Replaces:\", ($g[0].replaces[] as $r | ($pr[0] | map(select(.number == $r)) | .[0].url) as $u | \"- [#\" + ($r | tostring) + \"](\" + $u + \")\") else empty end)
+' > $D/issue_body.md
+TITLE=$(jq -rn --arg p \"$PKG\" --arg m \"$MAN\" '\"fix(deps): patch \" + $p + \" security alerts in \" + $m | if length > 72 then (.[0:72] | sub(\" [^ ]*$\"; \"\")) else . end')
+if [ \"$NUM\" = 0 ]; then
+  URL=$(gh issue create --title \"$TITLE\" --body-file $D/issue_body.md --label security --label dependencies --label ai-generated) || { echo 'track_issue: could not file the tracking issue' >&2; exit 1; }
+  NUM=${URL##*/}
+else
+  gh issue edit \"$NUM\" --body-file $D/issue_body.md >/dev/null || { echo 'track_issue: could not update the tracking issue' >&2; exit 1; }
+  if [ \"$(gh issue view \"$NUM\" --json state --jq .state)\" = CLOSED ]; then gh issue reopen \"$NUM\" >/dev/null 2>&1 || true; fi
+fi
+jq --argjson n \"$NUM\" '. + {issue: $n}' $D/group.json > $D/group.tmp && mv $D/group.tmp $D/group.json
+gh issue view \"$NUM\" --json number,title,body,labels,url,state > /tmp/fabro/issue.json
+rm -f $D/stopped_at
+echo ready"]
+
+    // Merges origin/<base> into the run branch before the patch starts (D21), so the patch sees the
+    // Dependabot PRs this run merged. The run branch holds only empty checkpoint commits, so the merge
+    // should not conflict; if it does, merge --abort and exit 1, and a human looks. It records the
+    // resulting HEAD in sync_base_sha for patch_gate (task 06).
+    sync_base [label="sync_base", shape=parallelogram, timeout="5m",
+        script="echo sync_base > /tmp/fabro/dep/stopped_at
+D=/tmp/fabro/dep
+B=$(cat /tmp/fabro/base_ref)
+git fetch -q origin \"$B\" || { echo 'sync_base: could not fetch the base' >&2; exit 1; }
+if ! git -c user.email=noreply@fabro.sh -c user.name=fabro-dependabot merge -q --no-edit \"origin/$B\" >/dev/null 2>&1; then
+  git merge --abort >/dev/null 2>&1
+  echo 'sync_base: the run branch conflicts with the base; that should not happen (it holds only checkpoints). A human should look.' >&2
+  exit 1
+fi
+git rev-parse HEAD > $D/sync_base_sha
+if [ \"$(git symbolic-ref --short HEAD)\" != \"$(cat $D/run_branch)\" ] || [ -n \"$(git status --porcelain)\" ]; then
+  echo 'sync_base: the checkout is not clean on the run branch' >&2
+  exit 1
+fi
+rm -f $D/stopped_at
+echo synced"]
+
     // Builds the one-line summary from the files that exist, and always exits 0 (D24).
     // Task 08 gives it its final form.
     summarize [label="Summarize the run", shape=parallelogram, output_schema="routing", timeout="2m",
@@ -386,12 +548,11 @@ exit 0"]
     start -> prep
     prep -> inventory                 [condition="outcome=succeeded"]
     prep -> summarize
-    // pick_group (task 05) does not exist yet: the no-PR and no-group exits go to summarize.
     inventory -> dep_next             [condition="outcome=succeeded && context.dep_pr_count!=0"]
-    inventory -> summarize            [condition="outcome=succeeded && context.dep_pr_count=0"]
+    inventory -> pick_group           [condition="outcome=succeeded && context.dep_pr_count=0"]
     inventory -> summarize
     dep_next -> dep_checks            [condition="outcome=succeeded && context.dep_pr_next=yes"]
-    dep_next -> summarize             [condition="outcome=succeeded && context.dep_pr_next=no"]
+    dep_next -> pick_group            [condition="outcome=succeeded && context.dep_pr_next=no"]
     dep_next -> summarize
     dep_checks -> dep_validate        [condition="outcome=succeeded && context.dep_checks=green"]
     dep_checks -> dep_merge           [condition="outcome=succeeded && context.dep_checks!=green"]
@@ -400,6 +561,12 @@ exit 0"]
     dep_validate -> summarize
     dep_merge -> dep_next             [condition="outcome=succeeded"]
     dep_merge -> summarize
+    pick_group -> track_issue         [condition="outcome=succeeded && context.patch_group!=none"]
+    pick_group -> summarize           [condition="outcome=succeeded && context.patch_group=none"]
+    pick_group -> summarize
+    track_issue -> sync_base          [condition="outcome=succeeded"]
+    track_issue -> summarize
+    sync_base -> summarize
     summarize -> finish               [condition="outcome=succeeded"]
     summarize -> finish
     finish -> exit

@@ -55,7 +55,7 @@ class Counts(unittest.TestCase):
             "issue-triage": (16, 36),
             "arch-review": (24, 54),
             # Task 02 skeleton (ADR 0022). Task 10 records the `fabro validate` baseline.
-            "dependabot": (10, 19),
+            "dependabot": (13, 25),
         })
 
 

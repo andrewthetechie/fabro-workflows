@@ -1,0 +1,72 @@
+[
+  {
+    "number": 74,
+    "ecosystem": "pip",
+    "package": "urllib3",
+    "manifest": "uv.lock",
+    "severity": "medium",
+    "scope": "runtime",
+    "first_patched": "2.8.0",
+    "ghsa": "GHSA-gh4c-6fx4-qh6g",
+    "cve": "CVE-2026-97688",
+    "created_at": "2026-10-01T04:10:34Z",
+    "url": "https://github.com/andrewthetechie/jelly-swipe/security/dependabot/74",
+    "fixed_at": null
+  },
+  {
+    "number": 73,
+    "ecosystem": "pip",
+    "package": "urllib3",
+    "manifest": "uv.lock",
+    "severity": "high",
+    "scope": "runtime",
+    "first_patched": "2.8.0",
+    "ghsa": "GHSA-vxq7-64xx-v4gw",
+    "cve": "CVE-2026-97689",
+    "created_at": "2026-10-01T04:10:33Z",
+    "url": "https://github.com/andrewthetechie/jelly-swipe/security/dependabot/73",
+    "fixed_at": null
+  },
+  {
+    "number": 72,
+    "ecosystem": "pip",
+    "package": "urllib3",
+    "manifest": "uv.lock",
+    "severity": "high",
+    "scope": "runtime",
+    "first_patched": "2.8.0",
+    "ghsa": "GHSA-8988-9cw3-xx77",
+    "cve": "CVE-2026-97687",
+    "created_at": "2026-10-01T04:10:33Z",
+    "url": "https://github.com/andrewthetechie/jelly-swipe/security/dependabot/72",
+    "fixed_at": null
+  },
+  {
+    "number": 70,
+    "ecosystem": "npm",
+    "package": "brace-expansion",
+    "manifest": "frontend/package-lock.json",
+    "severity": "medium",
+    "scope": "development",
+    "first_patched": "2.1.7",
+    "ghsa": "GHSA-q2hr-2g5m-vwhr",
+    "cve": "CVE-2026-102277",
+    "created_at": "2026-10-01T04:10:32Z",
+    "url": "https://github.com/andrewthetechie/jelly-swipe/security/dependabot/70",
+    "fixed_at": null
+  },
+  {
+    "number": 69,
+    "ecosystem": "npm",
+    "package": "brace-expansion",
+    "manifest": "frontend/package-lock.json",
+    "severity": "medium",
+    "scope": "development",
+    "first_patched": "5.0.12",
+    "ghsa": "GHSA-q2hr-2g5m-vwhr",
+    "cve": "CVE-2026-102277",
+    "created_at": "2026-10-01T04:10:32Z",
+    "url": "https://github.com/andrewthetechie/jelly-swipe/security/dependabot/69",
+    "fixed_at": null
+  }
+]

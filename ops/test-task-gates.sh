@@ -4794,6 +4794,114 @@ DEP_CHECK_BOUND=0 GH_CHECKS_JSON='[{"name":"t","bucket":"pending"}]' loop_run de
 check "dep_checks pending: outcome pending" "pending" "$(jq -r .outcome "$WORK/loop-chk/fab/dep/cur_result.json")"
 unset DEP_POLL
 
+
+# ---------------------------------------------------------------------------
+# dependabot — pick_group, track_issue, sync_base (ADR 0022 task 05). gh is stubbed and logs; the
+# alerts are the live jelly-swipe C1 projection; the issue lists come from the test.
+# ---------------------------------------------------------------------------
+echo ""
+echo "dependabot: pick_group, track_issue, sync_base"
+PT_STUBS="$WORK/pt-stubs/bin"; mkdir -p "$PT_STUBS"
+cat > "$PT_STUBS/gh" <<'STUB'
+#!/bin/sh
+echo "gh $*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue list") printf '%s\n' "${GH_ISSUES_JSON:-[]}" ;;
+  "pr list") printf '%s\n' "${GH_OPEN_PRS:-[]}" ;;
+  "issue create") echo "https://github.com/andrewthetechie/jelly-swipe/issues/412" ;;
+  "issue view") case "$*" in *--jq*) echo "${GH_ISSUE_STATE:-OPEN}" ;; *) echo '{}' ;; esac ;;
+  *) : ;;
+esac
+exit 0
+STUB
+chmod +x "$PT_STUBS/gh"
+
+# $1 case, $2 results JSON, $3 issues JSON (for `gh issue list`). Seeds $PT/dep and makes version.jq.
+pt_seed() {
+    PT="$WORK/pt-$1"; mkdir -p "$PT/dep"; : > "$PT/gh.log"
+    cp "$DEP_FIX/jelly-swipe-c1-open.json" "$PT/dep/alerts.json"
+    cp "$ALERTS_JELLY" "$PT/dep/alerts_raw.json"
+    jq 'map(. + {fixes: []})' "$PRS_JELLY" > "$PT/dep/prs.json"
+    echo '{"nameWithOwner":"andrewthetechie/jelly-swipe"}' > "$PT/dep/repo.json"
+    printf '%s' "$2" > "$PT/dep/results.json"
+    printf 'main' > "$PT/base_ref"
+    extract_from "$DEP" inventory | awk '/version\.jq <</{f=1; next} /^JQ$/{f=0} f' > "$PT/dep/version.jq"
+    export GH_ISSUES_JSON="$3"
+}
+# $1 node, $2 the case dir. Runs the node's script in $PT with /tmp/fabro rebased to $PT.
+pt_run() {
+    extract_from "$DEP" "$1" | sed "s#/tmp/fabro#$PT#g" > "$PT/$1.sh"
+    if ! sh -n "$PT/$1.sh" 2>"$PT/$1.syntax"; then FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$1"; fi
+    (cd "$PT" && PATH="$PT_STUBS:$ORIG_PATH" GH_LOG="$PT/gh.log" sh "$PT/$1.sh" > "$PT/$1.out" 2> "$PT/$1.err"); echo $? > "$PT/$1.rc"
+}
+pt_group() { jq -r "$1" "$PT/dep/group.json" 2>/dev/null; }
+
+ISSUE_NONE='[]'
+pt_seed rank '[]' "$ISSUE_NONE"; pt_run pick_group rank
+check "pick_group ranking: exit 0" "0" "$(cat "$PT/pick_group.rc")"
+check "pick_group ranking: urllib3 first" "pip:uv.lock:urllib3" "$(tail -1 "$PT/pick_group.out" | jq -r .context_updates.patch_group)"
+check "pick_group ranking: group alerts 72,73,74" "72 73 74" "$(pt_group '.alerts | map(tostring) | join(" ")')"
+check "pick_group ranking: first_patched 2.8.0" "2.8.0" "$(pt_group .first_patched)"
+check "pick_group ranking: no tracking issue yet (issue 0)" "0" "$(pt_group .issue)"
+
+pt_seed merged '[{"pr":900,"outcome":"merged","reason":"","fixes":[72,73,74]}]' "$ISSUE_NONE"; pt_run pick_group merged
+check "pick_group merged this run: brace-expansion picked" "npm:frontend/package-lock.json:brace-expansion" "$(tail -1 "$PT/pick_group.out" | jq -r .context_updates.patch_group)"
+
+pt_seed nopatch '[]' "$ISSUE_NONE"; jq 'map(.first_patched = null)' "$PT/dep/alerts.json" > "$PT/dep/a.tmp" && mv "$PT/dep/a.tmp" "$PT/dep/alerts.json"; pt_run pick_group nopatch
+check "pick_group no patched version: patch_group none" "none" "$(tail -1 "$PT/pick_group.out" | jq -r .context_updates.patch_group)"
+check "pick_group no patched version: no_patch.json holds all five" "5" "$(jq length "$PT/dep/no_patch.json")"
+
+U_NH='[{"number":5,"state":"OPEN","stateReason":"","closedAt":null,"labels":[{"name":"needs-human"}],"body":"<!-- fabro:dep-group key=pip:uv.lock:urllib3 -->"}]'
+pt_seed needshuman '[]' "$U_NH"; pt_run pick_group needshuman
+check "pick_group needs-human: brace-expansion picked" "npm:frontend/package-lock.json:brace-expansion" "$(tail -1 "$PT/pick_group.out" | jq -r .context_updates.patch_group)"
+check "pick_group needs-human: skipped_groups names urllib3" "1" "$(jq '[.[] | select(.key == "pip:uv.lock:urllib3")] | length' "$PT/dep/skipped_groups.json")"
+
+U_REV='[{"number":6,"state":"OPEN","stateReason":"","closedAt":null,"labels":[{"name":"Review"}],"body":"<!-- fabro:dep-group key=pip:uv.lock:urllib3 -->"}]'
+pt_seed stalerev '[]' "$U_REV"; GH_OPEN_PRS='[]' pt_run pick_group stalerev
+check "pick_group stale Review: urllib3 picked" "pip:uv.lock:urllib3" "$(tail -1 "$PT/pick_group.out" | jq -r .context_updates.patch_group)"
+check "pick_group stale Review: Review removed" "1" "$(grep -c 'issue edit 6 --remove-label Review' "$PT/gh.log")"
+
+U_RECENT=$(jq -cn '[{number: 7, state: "CLOSED", stateReason: "COMPLETED", closedAt: ((now - 86400) | strftime("%Y-%m-%dT%H:%M:%SZ")), labels: [], body: "<!-- fabro:dep-group key=pip:uv.lock:urllib3 -->"}]')
+pt_seed window1 '[]' "$U_RECENT"; pt_run pick_group window1
+check "pick_group D22 inside 3 days: urllib3 skipped" "npm:frontend/package-lock.json:brace-expansion" "$(tail -1 "$PT/pick_group.out" | jq -r .context_updates.patch_group)"
+U_OLD=$(jq -cn '[{number: 7, state: "CLOSED", stateReason: "COMPLETED", closedAt: ((now - 345600) | strftime("%Y-%m-%dT%H:%M:%SZ")), labels: [], body: "<!-- fabro:dep-group key=pip:uv.lock:urllib3 -->"}]')
+pt_seed window4 '[]' "$U_OLD"; pt_run pick_group window4
+check "pick_group D22 past 3 days: issue reopened" "1" "$(grep -c 'issue reopen 7' "$PT/gh.log")"
+check "pick_group D22 past 3 days: needs-human added and commented" "2" "$(grep -cE 'issue (edit 7 --add-label needs-human|comment 7)' "$PT/gh.log")"
+
+pt_seed replaces '[{"pr":440,"outcome":"red","reason":"x","fixes":[72]}]' "$ISSUE_NONE"; jq 'map(if .number == 440 then .fixes = [72] else . end)' "$PT/dep/prs.json" > "$PT/dep/p.tmp" && mv "$PT/dep/p.tmp" "$PT/dep/prs.json"; pt_run pick_group replaces
+check "pick_group replaces: a red PR that fixes 72 is replaced" "[440]" "$(pt_group '.replaces | tostring')"
+pt_seed heldoff '[{"pr":440,"outcome":"switch_off","reason":"x","fixes":[72]}]' "$ISSUE_NONE"; pt_run pick_group heldoff
+check "pick_group switch_off: the urllib3 group is dropped" "npm:frontend/package-lock.json:brace-expansion" "$(tail -1 "$PT/pick_group.out" | jq -r .context_updates.patch_group)"
+
+# track_issue: the tracking issue is filed with the marker first, one row per alert, and the labels.
+pt_seed track '[]' "$ISSUE_NONE"; pt_run pick_group track
+pt_run track_issue track
+check "track_issue: exit 0" "0" "$(cat "$PT/track_issue.rc")"
+check "track_issue: body's first line is the exact marker" "<!-- fabro:dep-group key=pip:uv.lock:urllib3 -->" "$(head -1 "$PT/dep/issue_body.md")"
+check "track_issue: one table row per alert" "3" "$(grep -c '^| \[#' "$PT/dep/issue_body.md")"
+check "track_issue: the group records the new issue" "412" "$(pt_group .issue)"
+check "track_issue: filed with the three labels" "1" "$(grep -c 'issue create.*--label security --label dependencies --label ai-generated' "$PT/gh.log")"
+check "track_issue: title is the C6 title" "1" "$(grep -cF "issue create --title fix(deps): patch urllib3 security alerts in uv.lock --body-file" "$PT/gh.log")"
+check "track_issue: group_alerts.json has the three alerts" "3" "$(jq length "$PT/dep/group_alerts.json")"
+
+# sync_base: a run branch with two empty checkpoints, and a base that moved by one commit. The
+# merge brings the new file in, and the tree is clean on the run branch.
+SY="$WORK/sync"; mkdir -p "$SY"
+git init -q --bare "$SY/origin.git"; git clone -q "$SY/origin.git" "$SY/work" >/dev/null 2>&1
+git -C "$SY/work" config user.email t@example.test; git -C "$SY/work" config user.name t
+git -C "$SY/work" checkout -q -b main; echo base > "$SY/work/README"; git -C "$SY/work" add -A; git -C "$SY/work" commit -qm base; git -C "$SY/work" push -q origin main
+git -C "$SY/work" checkout -q -b run; git -C "$SY/work" commit -q --allow-empty -m cp1; git -C "$SY/work" commit -q --allow-empty -m cp2
+git -C "$SY/work" checkout -q main; echo new > "$SY/work/new.txt"; git -C "$SY/work" add -A; git -C "$SY/work" commit -qm moved; git -C "$SY/work" push -q origin main
+git -C "$SY/work" checkout -q run
+mkdir -p "$SY/fab/dep"; printf 'main' > "$SY/fab/base_ref"; printf 'run' > "$SY/fab/dep/run_branch"
+extract_from "$DEP" sync_base | sed "s#/tmp/fabro#$SY/fab#g" > "$SY/sync.sh"
+(cd "$SY/work" && sh "$SY/sync.sh" > "$SY/sync.out" 2> "$SY/sync.err"); echo $? > "$SY/sync.rc"
+check "sync_base: exit 0" "0" "$(cat "$SY/sync.rc")"
+check "sync_base: HEAD now contains the new commit" "1" "$(test -e "$SY/work/new.txt" && echo 1 || echo 0)"
+check "sync_base: the tree is clean" "" "$(git -C "$SY/work" status --porcelain)"
+check "sync_base: sync_base_sha recorded" "$(git -C "$SY/work" rev-parse HEAD)" "$(cat "$SY/fab/dep/sync_base_sha")"
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
