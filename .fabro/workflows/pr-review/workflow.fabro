@@ -110,18 +110,18 @@ digraph PrReview {
     // slurp, `ci_fix_result.json`, renders in every kind: the PR's code changed
     // after the reviewers looked at it, so the reader has to see that. It slurps to
     // `{}` when absent, which renders as nothing at all.
+    // mkdir first: this node is the first to run, and /tmp/fabro is not guaranteed to
+    // exist yet. Writing the switch files below before the directory exists aborts the
+    // node on a redirection error, with nothing reported.
+    // The per-repo switch only. The host-wide switch, and the combination of the two,
+    // moved into the imported review-merge phase, which owns the merge decision.
     validate_input [label="Validate input", shape=parallelogram, output_schema="routing", language="shell",
         script="PR='{{ inputs.pr_number }}'
-# mkdir first: this node is the first to run, and /tmp/fabro is not guaranteed to
-# exist yet. Writing the switch files below before the directory exists aborts the
-# node on a redirection error, with nothing reported.
 mkdir -p /tmp/fabro /tmp/fabro/review /tmp/fabro/feedback
 case \"$PR\" in '' | *[!0-9]*) echo 'pr_number must be a positive integer' >&2; exit 1;; esac
 if [ \"$PR\" -lt 1 ]; then echo 'pr_number must be a positive integer' >&2; exit 1; fi
 AM='{{ inputs.auto_merge }}'
 case \"$AM\" in 1) ;; *) AM=0 ;; esac
-# The per-repo switch only. The host-wide switch, and the combination of the two,
-# moved into the imported review-merge phase, which owns the merge decision.
 echo \"$AM\" > /tmp/fabro/auto_merge_repo
 echo \"$PR\" > /tmp/fabro/pr_number
 echo 0 > /tmp/fabro/rebase_attempts
