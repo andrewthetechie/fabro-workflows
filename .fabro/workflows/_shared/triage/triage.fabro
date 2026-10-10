@@ -164,8 +164,8 @@ jq -nc --arg r \"$R\" --arg q \"$Q\" --arg qt \"$QT\" '{context_updates:{triage_
 
     // Implements C1 and C4. Publishes plan_status (map|split|too_large|none) and
     // task_count. On map/split it writes plan_ok and renders task_map.md (C2), the
-    // newline via `([10]|implode)` because `\n` is the one backslash a .fabro file
-    // may not contain; on split it also writes split_children.json; on too_large it
+    // newline via `([10]|implode)`, because the newline escape is not allowed in a .fabro
+    // file; on split it also writes split_children.json; on too_large it
     // rewrites triage.json to a needs_info scoping question, appends the too-large
     // map to triage.md, and republishes question_count/triage_questions (triage_gate
     // published an empty list for the ready verdict, and the Discord hook reads them).

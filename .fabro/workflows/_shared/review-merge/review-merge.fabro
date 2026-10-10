@@ -687,36 +687,46 @@ fi"]
     // closed: an unreadable commit has no parents and counts as human. `cut -s` matters:
     // without it a commit git shows with no parents (a root, or a shallow-clone boundary)
     // prints its own SHA as its parent list.
+    // 1. kill switch file
+    // 2. agent-authored label
+    // 2b. architecture label: a human merges it (ADR 0012 D8)
+    // 3. open and not draft
+    // 4. no requested changes
+    // 5. no unresolved review threads (GraphQL; gh pr view has no reviewThreads field)
+    // 6. no human commits (author email; own merges of origin/<base> allowed)
+    // 7. fix_outcome mergeable
+    // 8. risk present and <= 3
+    // 9. not_fixed empty
+    // 10. every own error finding is accounted for, by its own id, in fixes_applied
+    // 11. live title is a Conventional Commit
+    // 12. the commit-body block extracts to a non-empty body containing Resolves #
+    // 13. diff hygiene: no tamper counter, and no erosion counter over its threshold in block mode (ADR 0013 D1)
+    // 13b. the tree still matches the one the counters read: nothing between hygiene and here (the refuter included) changed the code
+    // 14. the refuter could not refute the work (ADR 0013 D5)
     merge_gate [label="Evaluate merge eligibility", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 F=/tmp/fabro/review/fix_result.json
 E=true
 fail() { E=false; printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; }
-# 1. kill switch file
 if [ \"$(cat /tmp/fabro/auto_merge 2>/dev/null || echo 0)\" != 1 ]; then fail \"$(cat /tmp/fabro/auto_merge_off_reason 2>/dev/null || echo 'Auto-merge is switched off.')\"; fi
-# 2. agent-authored label
 if [ \"$E\" = true ]; then
   L=$(gh pr view \"$PR\" --json labels --jq '[.labels[].name] | index(\"agent-authored\") != null' 2>/dev/null || echo bad)
   if [ \"$L\" != true ]; then fail 'The PR does not carry the agent-authored label, so it is not eligible for automatic merge.'; fi
 fi
-# 2b. architecture label: a human merges it (ADR 0012 D8)
 if [ \"$E\" = true ]; then
   AR=$(gh pr view \"$PR\" --json labels --jq '[.labels[].name] | index(\"architecture\") != null' 2>/dev/null || echo bad)
   if [ \"$AR\" != false ]; then fail 'This PR implements an Architecture issue (label architecture). ADR 0012 requires a human to merge it.'; fi
 fi
-# 3. open and not draft
 if [ \"$E\" = true ]; then
   S=$(gh pr view \"$PR\" --json state,isDraft 2>/dev/null || echo '{\"state\":\"bad\"}')
   ST=$(printf '%s' \"$S\" | jq -r .state)
   DR=$(printf '%s' \"$S\" | jq -r '.isDraft // false')
   if [ \"$ST\" != OPEN ] || [ \"$DR\" = true ]; then fail 'The PR is not open or is still a draft, so it cannot be auto-merged.'; fi
 fi
-# 4. no requested changes
 if [ \"$E\" = true ]; then
   RD=$(gh pr view \"$PR\" --json reviewDecision --jq .reviewDecision 2>/dev/null || echo bad)
   if [ \"$RD\" = CHANGES_REQUESTED ]; then fail 'Reviewers have requested changes on this PR.'; fi
 fi
-# 5. no unresolved review threads (GraphQL; gh pr view has no reviewThreads field)
 if [ \"$E\" = true ]; then
   U=$(jq -r .url /tmp/fabro/pr.json 2>/dev/null || echo '')
   O=$(printf '%s' \"$U\" | awk -F/ '{print $4}')
@@ -724,7 +734,6 @@ if [ \"$E\" = true ]; then
   T=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved}}}}}' -F o=\"$O\" -F r=\"$R\" -F n=\"$PR\" --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo bad)
   if [ \"$T\" != 0 ]; then fail 'There are unresolved review conversations on this PR.'; fi
 fi
-# 6. no human commits (author email; own merges of origin/<base> allowed)
 if [ \"$E\" = true ]; then
   C=$(gh pr view \"$PR\" --json commits --jq '[.commits[] | select([.authors[].email] | index(\"noreply@fabro.sh\") | not) | .oid] | join(\" \")' 2>/dev/null || echo bad)
   BR=$(cat /tmp/fabro/base_ref 2>/dev/null || echo bad)
@@ -740,48 +749,39 @@ if [ \"$E\" = true ]; then
   fi
   if [ \"$H\" != 0 ]; then fail 'A commit on this PR was not authored by the automation; a human must merge it.'; fi
 fi
-# 7. fix_outcome mergeable
 if [ \"$E\" = true ]; then
   O=$(jq -r .outcome \"$F\" 2>/dev/null || echo missing)
   if [ \"$O\" != fixed ] && [ \"$O\" != no_changes_needed ]; then fail 'The review did not end in a mergeable state.'; fi
 fi
-# 8. risk present and <= 3
 if [ \"$E\" = true ]; then
   R=$(jq -r 'if (.risk | type) == \"number\" and (.risk >= 0) and (.risk <= 3) and ((.risk | floor) == .risk) then .risk else \"bad\" end' \"$F\" 2>/dev/null || echo bad)
   if [ \"$R\" = bad ]; then fail 'The risk rating is missing or above 3; a human must merge this PR.'; fi
 fi
-# 9. not_fixed empty
 if [ \"$E\" = true ]; then
   NF=$(jq '[.not_fixed[]?] | length' \"$F\" 2>/dev/null || echo 99)
   if [ \"$NF\" != 0 ]; then fail 'There are unfixed findings; a human must merge this PR.'; fi
 fi
-# 10. every own error finding is accounted for, by its own id, in fixes_applied
 if [ \"$E\" = true ]; then
   M=$(jq '[.own_findings[]? | select(.severity == \"error\") | .id] - [.fixes_applied[]?.finding_id] | length' \"$F\" 2>/dev/null || echo 99)
   if [ \"$M\" != 0 ]; then fail 'The review reported an error-severity finding of its own that its record does not account for, so whether it was fixed cannot be told from the report; a human must merge this PR.'; fi
 fi
-# 11. live title is a Conventional Commit
 if [ \"$E\" = true ]; then
   T=$(gh pr view \"$PR\" --json title --jq .title 2>/dev/null || echo '')
   if ! printf '%s' \"$T\" | grep -qE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .'; then fail 'The PR title is not a Conventional Commit, so it cannot be auto-merged.'; fi
 fi
-# 12. the commit-body block extracts to a non-empty body containing Resolves #
 if [ \"$E\" = true ]; then
   gh pr view \"$PR\" --json body --jq .body > /tmp/fabro/pr_body_live.md 2>/dev/null || echo > /tmp/fabro/pr_body_live.md
   awk '/fabro:commit-body:start/{f=1;next} /fabro:commit-body:end/{f=0} f' /tmp/fabro/pr_body_live.md > /tmp/fabro/commit_body.md
   if [ ! -s /tmp/fabro/commit_body.md ] || ! grep -q '^Resolves #' /tmp/fabro/commit_body.md; then fail 'The PR description has no valid fabro commit-body block; a human must merge this PR.'; fi
 fi
-# 13. diff hygiene: no tamper counter, and no erosion counter over its threshold in block mode (ADR 0013 D1)
 if [ \"$E\" = true ]; then
   HB=$(jq -r 'if (.blocking | type) == \"array\" then (.blocking | length) else \"bad\" end' /tmp/fabro/review/hygiene.json 2>/dev/null || echo bad)
   if [ \"$HB\" != 0 ]; then fail \"$(cat /tmp/fabro/review/hygiene_reason.txt 2>/dev/null || echo 'The diff-hygiene result is missing or invalid, so the merge is refused.')\"; fi
 fi
-# 13b. the tree still matches the one the counters read: nothing between hygiene and here (the refuter included) changed the code
 if [ \"$E\" = true ]; then
   HT=$(git rev-parse \"$(jq -r '.head // empty' /tmp/fabro/review/hygiene.json 2>/dev/null)^{tree}\" 2>/dev/null || echo none)
   if [ \"$HT\" != \"$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo head)\" ]; then fail 'The code changed after the diff-hygiene counters ran (a later stage, such as the refuter, edited the checkout), so the reviewed diff is not the one on the PR and the merge is refused.'; fi
 fi
-# 14. the refuter could not refute the work (ADR 0013 D5)
 if [ \"$E\" = true ]; then
   RV=$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || echo missing)
   if [ \"$RV\" != pass ]; then fail \"$(cat /tmp/fabro/review/refute_reason.txt 2>/dev/null || echo 'The refuter did not return a verdict, so the merge is refused.')\"; fi
@@ -914,8 +914,7 @@ rm -f /tmp/fabro/review/ci_fix_result.json
   echo
   echo \"$NAMES\"
   echo
-  jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link] | .[]' /tmp/fabro/checks.json 2>/dev/null \
-    | sed 's|.*/actions/runs/||; s|/.*||' | sort -u | while IFS= read -r RID; do
+  jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link] | .[]' /tmp/fabro/checks.json 2>/dev/null | sed 's|.*/actions/runs/||; s|/.*||' | sort -u | while IFS= read -r RID; do
       case \"$RID\" in '' | *[!0-9]*) continue ;; esac
       echo '### Failing log for run '$RID
       echo
@@ -956,13 +955,15 @@ exit 0"]
     // the stage most likely to skip a failing test, and it runs after merge_gate has
     // approved the diff. The program is the one `hygiene` wrote; see that node. A
     // blocking result refuses the push and reports blocked, like every other refusal here.
+    // Every refusal writes BOTH reason files: merge_block_reason for `blocked`, and
+    // needs_human_reason, which mark_needs_human reads if this node fails (invariants-merge).
+    // scope check from git, not from the agent's claim
+    // no conflict markers, no in-progress merge or rebase
     ci_fix_gate [label="Verify CI fix", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 B=$(cat /tmp/fabro/base_ref)
 H=$(cat /tmp/fabro/head_ref)
 F=/tmp/fabro/review/ci_fix_result.json
-# Every refusal writes BOTH reason files: merge_block_reason for `blocked`, and
-# needs_human_reason, which mark_needs_human reads if this node fails (invariants-merge).
 block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
@@ -980,14 +981,12 @@ if [ \"$O\" = cannot_fix ]; then
   echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
-# scope check from git, not from the agent's claim
 NEW=$(git diff --name-only origin/\"$B\"...HEAD 2>/dev/null | while IFS= read -r f; do grep -qxF \"$f\" /tmp/fabro/review/merge_base_files.txt || echo \"$f\"; done)
 if [ -n \"$NEW\" ]; then
   block 'The CI fix touched files outside the reviewed change set; the merge is refused.'
   echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
-# no conflict markers, no in-progress merge or rebase
 BAD=0
 if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then BAD=1; fi
 git diff --name-only origin/\"$B\"...HEAD > /tmp/fabro/ci_fix_scan.txt 2>/dev/null || true
@@ -1188,11 +1187,11 @@ fi
 echo 'The branch is still behind the base after a re-merge attempt; a human must merge this PR.' > /tmp/fabro/merge_block_reason
 echo '{\"context_updates\":{\"merge_state\":\"blocked\"}}'
 exit 0"]
+    // Every refusal writes BOTH reason files, as in ci_fix_gate.
     remerge_base [label="Re-merge base tip", shape=parallelogram, output_schema="routing",
         script="B=$(cat /tmp/fabro/base_ref)
 H=$(cat /tmp/fabro/head_ref)
 echo 1 > /tmp/fabro/strict_retry
-# Every refusal writes BOTH reason files, as in ci_fix_gate.
 block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
 git fetch origin \"$B\"
 if git rebase origin/\"$B\"; then
