@@ -12,11 +12,12 @@ CHECK := ./ops/check.sh
 CHECK_HOST := ./ops/check-host.sh
 
 .DEFAULT_GOAL := help
-.PHONY: help check check-host hooks deploy deploy-notify deploy-scripts \
+.PHONY: help check check-fast check-host hooks deploy deploy-notify deploy-scripts \
 	deploy-compose deploy-scheduler deploy-images provision verify-host compose-up
 
 help:
 	@echo "make check            offline gates that must pass before any push (test-task-gates, manifest, profiles, unittest, toml, cargo)"
+	@echo "make check-fast       make check without test-task-gates.sh (~3s; what the pre-push hook runs)"
 	@echo "make check-host       host gates that need the LAN + container: routing schemas, fabro validate x4 vs baselines (opt-in)"
 	@echo "make hooks            install the pre-push hook (git config core.hooksPath ops/hooks)"
 	@echo "make deploy            every step below except compose-up, then verify-host"
@@ -32,11 +33,14 @@ help:
 check:
 	$(CHECK)
 
+check-fast:
+	CHECK_SHELL=never $(CHECK)
+
 check-host:
 	$(CHECK_HOST)
 
 hooks:
-	@git config core.hooksPath ops/hooks && echo "pre-push hook installed (core.hooksPath=ops/hooks); a push now runs make check"
+	@git config core.hooksPath ops/hooks && echo "pre-push hook installed (core.hooksPath=ops/hooks); a push now runs make check-fast"
 
 deploy:
 	$(DEPLOY) all

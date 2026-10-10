@@ -6,8 +6,10 @@
 # non-zero exit from this hook blocks `git push`. Any non-zero output is shown on
 # the terminal, then the push is aborted.
 #
-# This runs `make check` only — the offline gates (ops/check.sh). It deliberately
-# does NOT run `make check-host`: that needs the LAN and the fabro container, so it
+# This runs `make check-fast`: the offline gates (ops/check.sh) minus
+# ops/test-task-gates.sh, whose ~820 checks take ~90s — too slow to sit in front of every
+# push. Run `make check` for the full suite before a push that changes a command node.
+# It deliberately does NOT run `make check-host`: that needs the LAN and the fabro container, so it
 # stays a manual, opt-in step when the operator wants the container validation.
 #
 # `git` runs hooks from the top-level of the working tree, so resolve the root
@@ -22,4 +24,4 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 # shellcheck disable=SC2046  # one word per variable name, by design
 unset $(git rev-parse --local-env-vars)
 
-exec make check
+exec make check-fast

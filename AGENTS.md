@@ -58,14 +58,16 @@ writes it, is the most common way to break one of these.
 
 ## Validating
 
-`make check` runs every offline gate that must pass before a push to `main` — and the
-pre-push hook runs it for you, so a push that fails a gate is aborted instead of
-remembered-to-check. `make check-host` runs the gates that need the fabro container over
+`make check` runs every offline gate that must pass before a push to `main`. The
+pre-push hook runs `make check-fast` — the same minus `ops/test-task-gates.sh`, which
+takes ~90s — so a push that fails a fast gate is aborted instead of remembered-to-check.
+Run `make check` yourself before a push that changes a command node's shell. `make check-host` runs the gates that need the fabro container over
 the LAN and is opt-in. Install the hook once per checkout, then just push:
 
 ```sh
-make hooks            # git config core.hooksPath ops/hooks; git push now runs make check
-make check            # the offline gates (ops/check.sh)
+make hooks            # git config core.hooksPath ops/hooks; git push now runs make check-fast
+make check            # every offline gate (ops/check.sh), ~90s
+make check-fast       # all but test-task-gates.sh (CHECK_SHELL=never), ~3s
 make check-host       # opt-in: needs ssh to andrew@10.10.0.32 (ops/check-host.sh)
 ```
 

@@ -14,6 +14,10 @@
 # Environment:
 #   CHECK_CARGO=always|auto|never   when to run `cargo test` in ops/fabro-io/
 #                                    (default auto: only when that tree changed)
+#   CHECK_SHELL=always|never        whether to run ops/test-task-gates.sh (default
+#                                    always). It is ~820 checks, ~90s serial: too slow
+#                                    for the pre-push hook, which sets never via
+#                                    `make check-fast`. Run `make check` for the lot.
 #
 # Exit 0 = every gate passed. Exit 1 = the first gate that failed.
 
@@ -38,8 +42,20 @@ say() { builtin printf '\n== %s ==\n' "$*"; }
 
 # 1. The command-node shell. `fabro validate` parses the graphs but never runs the
 #    embedded `jq`/`awk` scripts; their bugs pass validation and fail at runtime.
-say "ops/test-task-gates.sh"
-ops/test-task-gates.sh
+case "${CHECK_SHELL:-always}" in
+    always)
+        say "ops/test-task-gates.sh"
+        ops/test-task-gates.sh
+        ;;
+    never)
+        say "ops/test-task-gates.sh"
+        echo "  skipped: CHECK_SHELL=never (make check-fast); run make check for the full suite"
+        ;;
+    *)
+        echo "ERROR: CHECK_SHELL must be always or never (got '$CHECK_SHELL')" >&2
+        exit 1
+        ;;
+esac
 
 # 2. The Stage manifest (ADR 0016) is generated, never hand-edited. `fabro validate`
 #    is blind to drift, so regenerate in memory and fail on any drift or Gate break.
