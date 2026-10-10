@@ -418,10 +418,11 @@ def r3_phase_classes(root: Graph, phases: list[Graph]) -> list[tuple]:
 INPUT_DEFAULT = re.compile(r"\{\{\s*inputs\.(\w+)\s*\|\s*default\((.)")
 
 
-def r4_stylesheet_and_inputs(root: Graph, run_inputs: set[str]) -> list[tuple]:
+def r4_stylesheet_and_inputs(root: Graph, run_inputs: set[str], phases: list[Graph]) -> list[tuple]:
     """R4: stylesheet class selectors match [a-z0-9-]+; every `{{ inputs.X | default(...) }}`
     quotes its default with ', and X is not a key of the package's [run.inputs] (invariants-
-    graph.md, the stylesheet and the per-run model rows).
+    graph.md, the stylesheet and the per-run model rows). An imported phase renders with the
+    importing package's inputs, so its nodes are checked against them too.
     """
     out = []
     for c in stylesheet_classes(root.graph_attrs.get("model_stylesheet", "")):
@@ -430,6 +431,9 @@ def r4_stylesheet_and_inputs(root: Graph, run_inputs: set[str]) -> list[tuple]:
     values = list(root.graph_attrs.items())
     for nid, attrs in root.nodes.items():
         values += [(f"{nid}.{k}", v) for k, v in attrs.items()]
+    for phase in phases:
+        for nid, attrs in phase.nodes.items():
+            values += [(f"{phase.name}.{nid}.{k}", v) for k, v in attrs.items()]
     for where, value in values:
         for m in INPUT_DEFAULT.finditer(value):
             name, quote = m.group(1), m.group(2)
@@ -585,7 +589,7 @@ def package_violations(pkg_dir: Path, workflows: Path) -> tuple[list[tuple], int
     out += [(package, *v) for v in r1_breaker(root, nodes, edges, imports)]
     out += [(package, *v) for v in r2_stall(root, nodes)]
     out += [(package, *v) for v in r3_phase_classes(root, phase_graphs)]
-    out += [(package, *v) for v in r4_stylesheet_and_inputs(root, run_inputs)]
+    out += [(package, *v) for v in r4_stylesheet_and_inputs(root, run_inputs, phase_graphs)]
     running = set(nodes)
     out += [(package, *v) for v in r5_hooks(hooks, running)]
     out += [(package, *v) for v in r7_checkpoint_hooks(

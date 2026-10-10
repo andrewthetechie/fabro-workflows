@@ -957,8 +957,8 @@ exit 0"]
     // blocking result refuses the push and reports blocked, like every other refusal here.
     // Every refusal writes BOTH reason files: merge_block_reason for `blocked`, and
     // needs_human_reason, which mark_needs_human reads if this node fails (invariants-merge).
-    // scope check from git, not from the agent's claim
-    // no conflict markers, no in-progress merge or rebase
+    // After the visit and outcome checks, the script checks scope from git, not from the
+    // agent's claim, then refuses conflict markers and an in-progress merge or rebase.
     ci_fix_gate [label="Verify CI fix", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 B=$(cat /tmp/fabro/base_ref)

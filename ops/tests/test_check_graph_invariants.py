@@ -6,6 +6,8 @@ The fixtures under fixtures/graph-invariants/ are one package and one phase (`ok
 `r<N>` breaks exactly rule N. The real tree must have no violation: `make check` runs the checker on it.
 """
 import importlib.util
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -29,6 +31,20 @@ class Fixtures(unittest.TestCase):
             with self.subTest(rule=f"R{n}"):
                 found = rules_of(FIXTURES / f"r{n}")
                 self.assertEqual(found, [f"R{n}"], found)
+
+    def test_r4_reads_the_inputs_of_an_imported_phase(self):
+        # A phase renders with the importing package's [run.inputs], so a default there that
+        # the package binds is as dead as one in the root graph.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ok"
+            shutil.copytree(FIXTURES / "ok", root)
+            toml = root / ".fabro/workflows/ok/workflow.toml"
+            toml.write_text(toml.read_text() + '\n[run.inputs]\nissue = "1"\n')
+            phase = root / ".fabro/workflows/_shared/phase/phase.fabro"
+            phase.write_text(phase.read_text().replace(
+                'label="Work"', "label=\"Work\", prompt=\"Issue {{ inputs.issue | default('0') }}\""))
+            found = [(rule, node) for _, rule, node, _ in cgi.run(root)]
+            self.assertEqual(found, [("R4", "phase.work.prompt")], found)
 
 
 class Counts(unittest.TestCase):
