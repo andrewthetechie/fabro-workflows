@@ -4902,6 +4902,98 @@ check "sync_base: HEAD now contains the new commit" "1" "$(test -e "$SY/work/new
 check "sync_base: the tree is clean" "" "$(git -C "$SY/work" status --porcelain)"
 check "sync_base: sync_base_sha recorded" "$(git -C "$SY/work" rev-parse HEAD)" "$(cat "$SY/fab/dep/sync_base_sha")"
 
+
+# ---------------------------------------------------------------------------
+# dependabot — the patch path (ADR 0022 task 06): patch_prep, patch_gate, patch_validate, patch_blocked.
+# A scratch repository stands for the checkout: sync_base_sha is the base commit, and the patch
+# commit (uv.lock bumped) is HEAD. The receipt is $PB/.io/stage.json (visit v1).
+# ---------------------------------------------------------------------------
+echo ""
+echo "dependabot: the patch path"
+PB_STUBS="$WORK/pb-stubs/bin"; mkdir -p "$PB_STUBS"
+printf '#!/bin/sh\nexit 1\n' > "$PB_STUBS/gh"; chmod +x "$PB_STUBS/gh"
+
+# $1 case, $2 "lock" (uv.lock bumped), "lock-and-yarn" (also adds yarn.lock), "none" (HEAD = sync_base).
+pg_repo() {
+    PB="$WORK/pg-$1"; mkdir -p "$PB/dep" "$PB/.io" "$PB/.fabro"
+    git -C "$PB" init -q; git -C "$PB" config user.email t@example.test; git -C "$PB" config user.name t
+    printf 'exit 0\n' > "$PB/.fabro/setup.sh"; printf 'exit 0\n' > "$PB/.fabro/ci.sh"; chmod +x "$PB/.fabro/setup.sh" "$PB/.fabro/ci.sh"
+    printf 'dep/\n.io/\n' > "$PB/.gitignore"
+    echo 'urllib3 2.7.1' > "$PB/uv.lock"; git -C "$PB" add -A; git -C "$PB" commit -qm base
+    git -C "$PB" rev-parse HEAD > "$PB/dep/sync_base_sha"
+    if [ "$2" != none ]; then echo 'urllib3 2.8.0' > "$PB/uv.lock"; fi
+    if [ "$2" = lock-and-yarn ]; then echo 'yarn' > "$PB/yarn.lock"; fi
+    git -C "$PB" add -A; git -C "$PB" commit -qm patch --allow-empty
+    printf '{"visit":"v1"}' > "$PB/.io/stage.json"
+    echo '{"number":412,"issue":412,"package":"urllib3","manifest":"uv.lock","first_patched":"2.8.0","alerts":[72,73,74],"replaces":[]}' > "$PB/dep/group.json"
+    echo 1 > "$PB/dep/patch_visits"
+    extract_from "$DEP" inventory | awk '/version\.jq <</{f=1; next} /^JQ$/{f=0} f' > "$PB/dep/version.jq"
+}
+# $1 status, $2 to-version, $3 blocker, $4 changes (JSON array), $5 receipt visit (default v1).
+pg_contract() {
+    jq -cn --arg st "$1" --arg to "$2" --arg b "$3" --argjson ch "$4" --arg v "${5:-v1}" \
+      '{status: $st, summary: "s", changes: $ch, verification: [], major: false, blocker: $b, _io: {visit: $v}}' > "$PB/dep/patch.json"
+}
+pg_change() { jq -cn --arg to "$1" '[{package: "urllib3", from: "2.7.1", to: $to, manifest: "uv.lock", direct: false, parent: ""}]'; }
+pg_run() {
+    extract_from "$DEP" "$1" | sed "s#/tmp/fabro#$PB#g" > "$PB/$1.sh"
+    (cd "$PB" && PATH="$2:$ORIG_PATH" sh "$PB/$1.sh" > "$PB/$1.out" 2> "$PB/$1.err"); echo $? > "$PB/$1.rc"
+}
+
+# 1. A valid patch: the contract is patched, the receipt matches, the diff changes the lock.
+pg_repo valid lock; pg_contract patched 2.8.0 "" "$(pg_change 2.8.0)"; pg_run patch_gate "$ORIG_PATH"
+check "patch_gate valid: exit 0" "0" "$(cat "$PB/patch_gate.rc")"
+check "patch_gate valid: patch_status patched" "patched" "$(tail -1 "$PB/patch_gate.out" | jq -r .context_updates.patch_status)"
+
+# 2. No receipt: exit 1 with the one fixed line, and the gate leaves the visit count alone.
+pg_repo noreceipt lock; pg_contract patched 2.8.0 "" "$(pg_change 2.8.0)" v0; pg_run patch_gate "$ORIG_PATH"
+check "patch_gate no receipt: exit 1" "1" "$(cat "$PB/patch_gate.rc")"
+check "patch_gate no receipt: one fixed line on stderr" "1" "$(grep -c 'patch.json is missing or invalid' "$PB/patch_gate.err")"
+check "patch_gate no receipt: patch_visits unchanged" "1" "$(cat "$PB/dep/patch_visits")"
+
+# 3. A version below first_patched: exit 1 on the first visit, and failed at the third.
+pg_repo low lock; pg_contract patched 2.7.9 "" "$(pg_change 2.7.9)"; pg_run patch_gate "$ORIG_PATH"
+check "patch_gate too low, visit 1: exit 1" "1" "$(cat "$PB/patch_gate.rc")"
+echo 3 > "$PB/dep/patch_visits"; pg_run patch_gate "$ORIG_PATH"
+check "patch_gate too low, visit 3: publishes failed" "failed" "$(tail -1 "$PB/patch_gate.out" | jq -r .context_updates.patch_status)"
+
+# 4. No change: a patched contract with HEAD equal to sync_base is invalid.
+pg_repo nochange none; pg_contract patched 2.8.0 "" "$(pg_change 2.8.0)"; pg_run patch_gate "$ORIG_PATH"
+check "patch_gate no change: exit 1" "1" "$(cat "$PB/patch_gate.rc")"
+
+# 5. A second lockfile added: invalid.
+pg_repo twolock lock-and-yarn; pg_contract patched 2.8.0 "" "$(pg_change 2.8.0)"; pg_run patch_gate "$ORIG_PATH"
+check "patch_gate added yarn.lock: exit 1" "1" "$(cat "$PB/patch_gate.rc")"
+
+# 6. Blocked with a blocker and no changes: patch_status blocked.
+pg_repo blocked lock; pg_contract blocked "" "a major migration is needed" "[]"; pg_run patch_gate "$ORIG_PATH"
+check "patch_gate blocked: patch_status blocked" "blocked" "$(tail -1 "$PB/patch_gate.out" | jq -r .context_updates.patch_status)"
+
+# patch_validate: a red run on the first visit goes back with the log tail; the third visit does not.
+pg_repo red lock; printf 'echo ci-broke\nexit 1\n' > "$PB/.fabro/ci.sh"; chmod +x "$PB/.fabro/ci.sh"
+pg_run patch_validate "$ORIG_PATH"
+check "patch_validate red, visit 1: patch_ci red" "red" "$(tail -1 "$PB/patch_validate.out" | jq -r .context_updates.patch_ci)"
+check "patch_validate red, visit 1: patch_retry yes" "yes" "$(tail -1 "$PB/patch_validate.out" | jq -r .context_updates.patch_retry)"
+check "patch_validate red, visit 1: feedback has the log tail" "1" "$(grep -c 'ci-broke' "$PB/dep/patch_feedback.md")"
+echo 3 > "$PB/dep/patch_visits"; pg_run patch_validate "$ORIG_PATH"
+check "patch_validate red, visit 3: patch_retry no" "no" "$(tail -1 "$PB/patch_validate.out" | jq -r .context_updates.patch_retry)"
+check "patch_validate red, visit 3: patch_status failed" "failed" "$(cat "$PB/dep/patch_status")"
+pg_repo green lock; pg_run patch_validate "$ORIG_PATH"
+check "patch_validate green: patch_ci green" "green" "$(tail -1 "$PB/patch_validate.out" | jq -r .context_updates.patch_ci)"
+
+# patch_prep: the first visit clears the feedback and starts the count; each visit clears patch.json.
+pg_repo prep lock; rm -f "$PB/dep/patch_visits"; echo stale > "$PB/dep/patch_feedback.md"; echo stale > "$PB/dep/patch.json"
+pg_run patch_prep "$ORIG_PATH"
+check "patch_prep first visit: count is 1" "1" "$(cat "$PB/dep/patch_visits")"
+check "patch_prep first visit: feedback cleared" "0" "$(test -e "$PB/dep/patch_feedback.md" && echo 1 || echo 0)"
+check "patch_prep first visit: contract cleared" "0" "$(test -e "$PB/dep/patch.json" && echo 1 || echo 0)"
+pg_run patch_prep "$ORIG_PATH"
+check "patch_prep second visit: count is 2" "2" "$(cat "$PB/dep/patch_visits")"
+
+# patch_blocked: the report must not fail the run even when gh fails.
+pg_repo blockedgh lock; pg_contract blocked "" "blocked for a reason" "[]"; pg_run patch_blocked "$PB_STUBS"
+check "patch_blocked, gh failing: exit 0" "0" "$(cat "$PB/patch_blocked.rc")"
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"

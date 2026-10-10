@@ -1095,7 +1095,50 @@
       "stages": {}
     },
     "dependabot": {
-      "stages": {}
+      "stages": {
+        "patch": {
+          "live": true,
+          "prompt": ".fabro/workflows/dependabot/prompts/patch.md.j2",
+          "inputs": [
+            {
+              "name": "group.json",
+              "path": "/tmp/fabro/dep/group.json",
+              "required": true,
+              "about": "the alert group to patch: package, manifest, ecosystem, its alert numbers, and first_patched, the minimum version that fixes it"
+            },
+            {
+              "name": "group_alerts.json",
+              "path": "/tmp/fabro/dep/group_alerts.json",
+              "required": true,
+              "about": "the full Dependabot alert records for this group (vulnerable range, advisory summary, identifiers)"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the tracking issue this patch resolves"
+            },
+            {
+              "name": "patch_feedback.md",
+              "path": "/tmp/fabro/dep/patch_feedback.md",
+              "required": false,
+              "about": "the failing validation output from your last attempt; absent on the first attempt",
+              "absent": "this is the first attempt; there is no feedback"
+            },
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "a ranked outline of this checkout; can be missing, continue without it",
+              "absent": "the repository map is missing; proceed without it"
+            }
+          ],
+          "output": {
+            "path": "/tmp/fabro/dep/patch.json",
+            "schema": "dep_patch"
+          }
+        }
+      }
     }
   }
 }

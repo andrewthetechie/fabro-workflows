@@ -35,6 +35,7 @@ rm -f /tmp/fabro/dep/no_patch.json /tmp/fabro/dep/skipped_groups.json /tmp/fabro
 rm -f /tmp/fabro/dep/run_branch /tmp/fabro/dep/merge_enabled /tmp/fabro/dep/merge_off_reason /tmp/fabro/dep/sync_base_sha
 rm -f /tmp/fabro/dep/stop_reason /tmp/fabro/dep/alert_count /tmp/fabro/dep/dep_pr_count
 rm -f /tmp/fabro/issue.json /tmp/fabro/pr_number /tmp/fabro/review_merge_outcome /tmp/fabro/auto_merge_repo
+rm -f /tmp/fabro/dep/patch_visits /tmp/fabro/dep/patch_feedback.md /tmp/fabro/dep/patch.json /tmp/fabro/dep/patch_status
 date +%s > /tmp/fabro/run_started
 echo '[]' > /tmp/fabro/dep/results.json
 gh repo view --json nameWithOwner,defaultBranchRef > /tmp/fabro/dep/repo.json
@@ -530,6 +531,115 @@ fi
 rm -f $D/stopped_at
 echo synced"]
 
+    // Counts the patch loop's visits (at most 3: one attempt and two repairs, from the gate or from
+    // validation). The first visit of the run clears the feedback; every visit clears the contract, so the
+    // gate never reads an earlier attempt (invariants-graph, Routing and contracts).
+    patch_prep [label="Count the patch attempt", shape=parallelogram, timeout="2m",
+        script="echo patch_prep > /tmp/fabro/dep/stopped_at
+D=/tmp/fabro/dep
+if [ ! -f $D/patch_visits ]; then
+  echo 0 > $D/patch_visits
+  rm -f $D/patch_feedback.md
+fi
+rm -f $D/patch.json
+echo $(($(cat $D/patch_visits) + 1)) > $D/patch_visits
+rm -f $D/stopped_at
+echo ready"]
+
+    // The one agent that writes code in this package (ADR 0022 D1, D6). It runs on glm-5.3-flash, which the
+    // `.dep-patch` class sets (D14). Its timeout is unmeasured: task 10 records the first real durations. Its
+    // inputs and output are the Stage manifest's `patch` entry, and it has no git exception (rule 3).
+    patch [label="Patch the alert group", class="dep-patch", timeout="45m", max_retries=1, prompt="@prompts/patch.md.j2"]
+
+    // The receipt check (the scan_gate pattern), then the contract's cross-field rules: blocked needs a blocker
+    // and no changes; patched needs changes, every `to` at or above first_patched by the module's comparator, a
+    // diff against sync_base_sha, and no added lockfile the repository did not have. Below the third visit an
+    // invalid contract exits 1 (the repair turn). At the third it publishes patch_status = failed.
+    patch_gate [label="Check the patch contract", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="echo patch_gate > /tmp/fabro/dep/stopped_at
+D=/tmp/fabro/dep
+F=$D/patch.json
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+A=$(cat $D/patch_visits)
+OK=no
+if [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
+  ST=$(jq -r '.status // \"\"' $F)
+  NCH=$(jq '.changes | length' $F)
+  BLK=$(jq -r '.blocker // \"\"' $F)
+  if [ \"$ST\" = blocked ]; then
+    if [ -n \"$BLK\" ] && [ \"$NCH\" = 0 ]; then OK=yes; fi
+  elif [ \"$ST\" = patched ] && [ \"$NCH\" -ge 1 ]; then
+    FP=$(jq -r .first_patched $D/group.json)
+    LOW=$(jq -n -L $D --arg fp \"$FP\" --slurpfile c $F 'include \"version\"; [$c[0].changes[] | select(vcmp(.to; $fp) < 0)] | length')
+    SB=$(cat $D/sync_base_sha)
+    ADDED=$(git diff --name-only --diff-filter=A \"$SB\" HEAD | grep -E '(^|/)(package-lock[.]json|yarn[.]lock|pnpm-lock[.]yaml|bun[.]lockb|bun[.]lock|uv[.]lock|poetry[.]lock|Cargo[.]lock)$' || true)
+    if [ \"$LOW\" = 0 ] && [ -z \"$ADDED\" ] && ! git diff --quiet \"$SB\" HEAD; then OK=yes; fi
+  fi
+fi
+if [ \"$OK\" = yes ]; then
+  ST=$(jq -r .status $F)
+  rm -f $D/stopped_at
+  jq -cn --arg s \"$ST\" '{context_updates: {patch_status: $s}}'
+  exit 0
+fi
+if [ \"$A\" -lt 3 ]; then
+  echo 'patch_gate: patch.json is missing or invalid; submit the contract again' >&2
+  exit 1
+fi
+rm -f $D/stopped_at
+echo failed > $D/patch_status
+jq -cn '{context_updates: {patch_status: \"failed\"}}'"]
+
+    // The repository's own gate on the run branch (D25): setup.sh and ci.sh under an inner timeout. Green goes
+    // on to the pull request. Red goes back to the agent with the log tail, up to the third visit, and then to
+    // patch_blocked. patch_retry says which: the two red edges are mutually exclusive.
+    patch_validate [label="Validate the patch", shape=parallelogram, output_schema="routing", timeout="20m",
+        script="echo patch_validate > /tmp/fabro/dep/stopped_at
+D=/tmp/fabro/dep
+A=$(cat $D/patch_visits)
+timeout 1020 sh -c './.fabro/setup.sh && ./.fabro/ci.sh' > $D/patch_validate.log 2>&1
+RC=$?
+rm -f $D/stopped_at
+if [ \"$RC\" = 0 ]; then
+  rm -f $D/patch_feedback.md
+  jq -cn '{context_updates: {patch_ci: \"green\", patch_retry: \"no\"}}'
+  exit 0
+fi
+tail -c 6000 $D/patch_validate.log > $D/patch_feedback.md
+if [ \"$A\" -lt 3 ]; then
+  jq -cn '{context_updates: {patch_ci: \"red\", patch_retry: \"yes\"}}'
+else
+  echo failed > $D/patch_status
+  jq -cn '{context_updates: {patch_ci: \"red\", patch_retry: \"no\"}}'
+fi"]
+
+    // A blocked or failed patch never opens a pull request. The tracking issue gets the blocker, or the last
+    // validation log tail, and needs-human. Every gh call is `|| true`, so a failure here cannot fail the run.
+    patch_blocked [label="Report the blocked patch", shape=parallelogram, timeout="5m",
+        script="echo patch_blocked > /tmp/fabro/dep/stopped_at
+D=/tmp/fabro/dep
+ISSUE=$(jq -r '.issue // 0' $D/group.json 2>/dev/null || echo 0)
+{
+  if [ -f $D/patch.json ] && [ \"$(jq -r '.status // \"\"' $D/patch.json)\" = blocked ]; then
+    echo 'The patch for this group is blocked. A human should act on this:'
+    echo ''
+    jq -r '.blocker' $D/patch.json
+  else
+    echo 'The patch for this group did not pass validation after three attempts. The last log tail:'
+    echo ''
+    echo '```'
+    tail -c 3000 $D/patch_validate.log 2>/dev/null
+    echo '```'
+  fi
+} > $D/patch_blocked.md 2>/dev/null
+if [ \"$ISSUE\" != 0 ]; then
+  gh issue comment \"$ISSUE\" --body-file $D/patch_blocked.md >/dev/null 2>&1 || true
+  gh issue edit \"$ISSUE\" --add-label needs-human >/dev/null 2>&1 || true
+fi
+rm -f $D/stopped_at
+echo blocked"]
+
     // Builds the one-line summary from the files that exist, and always exits 0 (D24).
     // Task 08 gives it its final form.
     summarize [label="Summarize the run", shape=parallelogram, output_schema="routing", timeout="2m",
@@ -566,7 +676,22 @@ exit 0"]
     pick_group -> summarize
     track_issue -> sync_base          [condition="outcome=succeeded"]
     track_issue -> summarize
+    sync_base -> patch_prep           [condition="outcome=succeeded"]
     sync_base -> summarize
+    patch_prep -> patch               [condition="outcome=succeeded"]
+    patch_prep -> summarize
+    patch -> patch_gate               [condition="outcome=succeeded"]
+    patch -> patch_blocked
+    patch_gate -> patch_prep          [condition="outcome=failed"]
+    patch_gate -> patch_validate      [condition="outcome=succeeded && context.patch_status=patched"]
+    patch_gate -> patch_blocked       [condition="outcome=succeeded && context.patch_status!=patched"]
+    patch_gate -> patch_blocked
+    // open_pr (task 07) does not exist yet: the green edge goes to summarize.
+    patch_validate -> summarize       [condition="outcome=succeeded && context.patch_ci=green"]
+    patch_validate -> patch_prep      [condition="outcome=succeeded && context.patch_ci=red && context.patch_retry=yes"]
+    patch_validate -> patch_blocked   [condition="outcome=succeeded && context.patch_ci=red && context.patch_retry=no"]
+    patch_validate -> patch_blocked
+    patch_blocked -> summarize
     summarize -> finish               [condition="outcome=succeeded"]
     summarize -> finish
     finish -> exit
