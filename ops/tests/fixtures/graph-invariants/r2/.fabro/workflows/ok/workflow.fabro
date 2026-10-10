@@ -1,0 +1,16 @@
+digraph Ok {
+    graph [goal="Fixture: a package that passes every rule", stall_timeout="10m", loop_restart_signature_limit=20, model_stylesheet="
+        *       { model: coders-a; }
+        .coder  { model: coders-a; }
+        .work   { model: coders-a; }
+    "]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+    phase [import="../_shared/phase/phase.fabro"]
+    check [shape=parallelogram, label="Check", timeout="15m", output_schema="routing",
+        script="echo '{\"context_updates\":{\"ok\":true}}'"]
+
+    start -> phase -> check -> exit
+}

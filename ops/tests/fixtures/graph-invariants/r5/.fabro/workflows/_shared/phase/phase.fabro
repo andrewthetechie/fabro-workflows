@@ -1,0 +1,8 @@
+digraph Phase {
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+    work [label="Work", class="work"]
+    report_merged [shape=parallelogram, label="Report", timeout="5m", script="echo done"]
+
+    start -> work -> report_merged -> exit
+}

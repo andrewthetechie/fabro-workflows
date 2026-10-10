@@ -1,0 +1,12 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+[[run.hooks]]
+event = "checkpoint_saved"
+matcher = "(^|[.])report_merged$"
+
+[[run.hooks]]
+event = "stage_start"
+matcher = "agent"

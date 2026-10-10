@@ -1,0 +1,9 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+[[run.hooks]]
+[[run.hooks]]
+event = "stage_start"
+matcher = "^agent$"

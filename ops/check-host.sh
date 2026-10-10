@@ -48,6 +48,29 @@ say "ops/check-routing-schemas.py"
 ssh "$HOST" 'cd ~/fabro && python3 /tmp/check-routing-schemas.py \
     /tmp/check/workflows/*/workflow.fabro /tmp/check/workflows/_shared/*/*.fabro' | tail -1
 
+say "parity: fabro parse against check-graph-invariants.py --dump, six files (ADR 0019, D2)"
+scp -q ops/check-graph-invariants.py "$HOST:/tmp/check-graph-invariants.py"
+PARITY_BAD=0
+for f in workflows/backlog/workflow.fabro workflows/pr-review/workflow.fabro \
+         workflows/issue-triage/workflow.fabro workflows/arch-review/workflow.fabro \
+         workflows/_shared/review-merge/review-merge.fabro workflows/_shared/triage/triage.fabro; do
+    # Both sides are normalized on the host: fabro's {"Str": v} wrappers, and the reader's plain strings.
+    if ssh "$HOST" "cd ~/fabro && docker compose exec -T fabro fabro parse /tmp/check/$f </dev/null \
+            | python3 /tmp/check-graph-invariants.py --normalize > /tmp/parity-fabro.json \
+        && python3 /tmp/check-graph-invariants.py --dump /tmp/check/$f > /tmp/parity-reader.json \
+        && cmp -s /tmp/parity-fabro.json /tmp/parity-reader.json"; then
+        echo "  ok   $f"
+    else
+        echo "  FAIL $f: fabro parse and the reader disagree"
+        PARITY_BAD=$((PARITY_BAD + 1))
+    fi
+done
+ssh "$HOST" 'rm -f /tmp/parity-fabro.json /tmp/parity-reader.json /tmp/check-graph-invariants.py' || true
+if [ "$PARITY_BAD" -ne 0 ]; then
+    echo "  FAIL: $PARITY_BAD file(s) differ between fabro parse and the reader"
+    exit 1
+fi
+
 say "fabro validate on all four packages (node/edge vs AGENTS.md baselines)"
 for w in backlog pr-review issue-triage arch-review; do
     OUT=$(ssh "$HOST" "cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/$w/workflow.toml" 2>&1)
