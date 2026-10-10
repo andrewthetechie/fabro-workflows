@@ -1,0 +1,26 @@
+Baseline for the new metric forms (docs/recheck-follow-ups, task 01, issue #3). Recorded 2026-10-10.
+Command: python3.11 ops/fabro-agent-tools.py --local-only <events of the 20 runs>
+Runs: the same 20 `backlog` runs as baseline-2026-10-02.txt, 01M3RXPP9CKVYQD9KXZX64J2A5 .. 01M3X2GDWNYWTR4Q5SDW6SK3F3,
+exported with `fabro events <id> --json` (event files hold issue text and are not committed).
+
+The old-form lines match baseline-2026-10-02.txt except shell grep, 796 here (793 recorded),
+which result-2026-10-08.txt already explains. The M4 onward lines are unchanged apart from the
+M-env and M-run sections, which postdate this baseline.
+
+The 12 KB figures differ from result-2026-10-08.txt (1.32 whole reads and 26.7 KB per visit) because
+that scratch count used coder and improve visits only. This count uses every local-model visit with
+tool calls, as the script does.
+
+M1  code-index share of searches
+    code_* + fabro-code 6; native grep 599; shell grep/rg 796 (grep 709, rg 87; 213 read a pipe)
+    share 0.4%; without pipe filters 0.5%
+
+M2  read_file bytes per stage visit
+    1435 calls, 9030333 bytes over 184 stage visits = 49077 bytes per visit
+M3  whole-file share of read_file
+    616 of 1435 = 42.9%; by bytes 71.8%
+    whole reads >= 12 KB: 230 = 1.25 per visit, 25384 bytes per visit
+By repo (M1 without pipe filters; M2 bytes per visit; M3 whole share by count, by bytes, whole reads >= 12 KB per visit)
+    andrewthetechie/lawncare-saas: M1 0.2% (1/565); M2 55900; M3 34.0% / 71.2% / 1.72
+    andrewthetechie/womens-fantasy-sports: M1 0.0% (0/311); M2 41659; M3 49.8% / 78.0% / 0.93
+    andrewthetechie/writers-app: M1 1.6% (5/312); M2 47480; M3 48.3% / 66.7% / 0.92

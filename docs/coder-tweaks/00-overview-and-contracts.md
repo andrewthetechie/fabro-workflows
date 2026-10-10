@@ -214,9 +214,9 @@ under the existing 40,000-byte cap, with code blocks first.
 
 | Id | Metric | Baseline | Target after task 08 |
 |---|---|---|---|
-| M1 | code-index share of searches: `code_*` + `fabro-code` ÷ (those + native grep + shell grep/rg) | 0.4% | ≥ 25% |
+| M1 | code-index share of searches: `code_*` + `fabro-code` ÷ (those + native grep + shell grep/rg) | 0.4% (0.5% without pipe filters) | ≥ 25% |
 | M2 | `read_file` bytes per local-model stage visit | 49,077 (184 visits) | −40% |
-| M3 | whole-file share of `read_file` | 43% | < 20% |
+| M3 | whole-file share of `read_file` | 42.9% by count, 71.8% by bytes, 1.25 whole reads of 12 KB or more per visit | < 20% |
 | M4 | mutating git **executed** outside exempt stages | 11 calls / 20 runs | 0 (blocked attempts are reported separately) |
 | M5 | `improve` visits that edited a tracked file (attempt-based proxy) | 4 of 87 | 0 reach `coder` |
 | M6 | agent sessions whose `agent.memory.loaded` lists `.codex/instructions.md` | 0% | 100% of sessions in runs after task 02 |

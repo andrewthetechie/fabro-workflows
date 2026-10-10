@@ -138,5 +138,40 @@ class TestEnv(unittest.TestCase):
         self.assertIn("'direct pytest': 2", out)
 
 
+FORMS_A = HERE / "fixtures/agent-tools/forms-a.jsonl"
+FORMS_B = HERE / "fixtures/agent-tools/forms-b.jsonl"
+
+
+class Forms(unittest.TestCase):
+    def report(self, *paths):
+        return fat.report([fat.load_run(p, None) for p in paths], False)
+
+    def test_pipe_filter_counts_in_the_old_m1_only(self):
+        out = self.report(FORMS_A)
+        # old M1: 1 code call of 4 searches (the grep after `|` counts); new M1 drops that grep.
+        self.assertIn("share 25.0%; without pipe filters 33.3%", out)
+        self.assertIn("shell grep/rg 3 (grep 2, rg 1; 1 read a pipe)", out)
+
+    def test_both_halves_of_an_or_command_count(self):
+        out = self.report(FORMS_A)
+        # rg, the grep after `||`, and the grep after `|`: three shell searches, one of them a pipe filter.
+        self.assertIn("shell grep/rg 3 (grep 2, rg 1; 1 read a pipe)", out)
+
+    def test_read_threshold_is_twelve_kilobytes(self):
+        out = self.report(FORMS_A)
+        self.assertIn("whole reads >= 12 KB: 1 = 1.00 per visit, 20480 bytes per visit", out)
+        self.assertIn("2 of 2 = 100.0%", out)  # the 2 KB whole read is whole, but not big
+        out_b = self.report(FORMS_B)
+        self.assertIn("whole reads >= 12 KB: 1 = 1.00 per visit", out_b)  # 12288 bytes counts, 4096 offset read does not
+
+    def test_by_repo_has_one_line_per_repository(self):
+        out = self.report(FORMS_A, FORMS_B)
+        block = out.split("By repo", 1)[1].split("\n\nM4", 1)[0].splitlines()[1:]
+        self.assertEqual([line.split(":", 1)[0].strip() for line in block],
+                         ["example/forms-alpha", "example/forms-beta"])
+        self.assertIn("    example/forms-alpha: M1 33.3% (1/3); M2 22528; M3 100.0% / 100.0% / 1.00", out)
+        self.assertIn("    example/forms-beta: M1 0.0% (0/2); M2 16384; M3 50.0% / 75.0% / 1.00", out)
+
+
 if __name__ == "__main__":
     unittest.main()

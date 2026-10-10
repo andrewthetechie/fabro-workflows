@@ -42,6 +42,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / ".fabro/workflows/_io/manifest.json"
 DEFAULT_EXEMPT = {"resolve_merge", "rebase_agent_t1", "rebase_agent_t2"}
+BIG_READ = 12 * 1024  # M3's whole reads of this size or more
 
 READ_ONLY = {
     "status", "diff", "log", "show", "blame", "grep", "ls-files", "ls-tree", "rev-parse",
@@ -365,6 +366,41 @@ def env_hit(v: Visit) -> bool:
     return any(ENV_RE.search(t["output"]) for t in v.tools)
 
 
+def search_counts(visits: list[Visit]) -> dict:
+    """M1 counts over `visits`: searches by kind, and the shell grep/rg segments that read a pipe."""
+    out = {"code": 0, "native": 0, "shell": 0, "filters": 0}
+    words: Counter[str] = Counter()
+    for v in visits:
+        for t in v.tools:
+            if t["name"].startswith("mcp__io__code_"):
+                out["code"] += 1
+            elif t["name"] == "grep":
+                out["native"] += 1
+            elif t["name"] == "shell":
+                for w, filters in commands_piped(str(t["args"].get("command", ""))):
+                    words[w[0]] += 1
+                    if w[0] == "fabro-code":
+                        out["code"] += 1
+                    elif w[0] in ("grep", "rg", "egrep", "fgrep"):
+                        out["shell"] += 1
+                        out["filters"] += filters
+    out["words"] = words
+    return out
+
+
+def read_counts(visits: list[Visit]) -> dict:
+    """M2 and M3 over the read_file calls in `visits`: output bytes per call."""
+    reads = [t for v in visits for t in v.tools if t["name"] == "read_file"]
+    sizes = [len(t["output"].encode()) for t in reads]
+    whole = [len(t["output"].encode()) for t in reads if "limit" not in t["args"] and "offset" not in t["args"]]
+    return {
+        "calls": len(reads),
+        "bytes": sum(sizes),
+        "whole": whole,
+        "big": [b for b in whole if b >= BIG_READ],
+    }
+
+
 def report(runs: list[dict], local_only: bool) -> str:
     exempt = exempt_stages()
     lines: list[str] = []
@@ -373,50 +409,42 @@ def report(runs: list[dict], local_only: bool) -> str:
     local_visits = [v for v in all_visits if v.tools and v.local]
 
     # M1 - search share
-    code_idx = native_grep = shell_grep = shell_filter = 0
-    shell_words: Counter[str] = Counter()
-    native: Counter[str] = Counter()
-    for v in scoped:
-        for t in v.tools:
-            native[t["name"]] += 1
-            if t["name"].startswith("mcp__io__code_"):
-                code_idx += 1
-            elif t["name"] == "grep":
-                native_grep += 1
-            elif t["name"] == "shell":
-                for w, filters in commands_piped(str(t["args"].get("command", ""))):
-                    shell_words[w[0]] += 1
-                    if w[0] == "fabro-code":
-                        code_idx += 1
-                    elif w[0] in ("grep", "rg", "egrep", "fgrep"):
-                        shell_grep += 1
-                        shell_filter += filters
-    searches = code_idx + native_grep + shell_grep
+    s = search_counts(scoped)
+    searches = s["code"] + s["native"] + s["shell"]
     lines += [
         "M1  code-index share of searches",
-        f"    code_* + fabro-code {code_idx}; native grep {native_grep}; shell grep/rg {shell_grep}"
-        f" (grep {shell_words['grep']}, rg {shell_words['rg']}; {shell_filter} read a pipe)",
-        f"    share {pct(code_idx, searches)}; without pipe filters {pct(code_idx, searches - shell_filter)}",
+        f"    code_* + fabro-code {s['code']}; native grep {s['native']}; shell grep/rg {s['shell']}"
+        f" (grep {s['words']['grep']}, rg {s['words']['rg']}; {s['filters']} read a pipe)",
+        f"    share {pct(s['code'], searches)}; without pipe filters {pct(s['code'], searches - s['filters'])}",
         "",
     ]
 
     # M2 / M3 - read_file
-    reads = [t for v in scoped for t in v.tools if t["name"] == "read_file"]
-    rbytes = sum(len(t["output"].encode()) for t in reads)
-    wholes = [len(t["output"].encode()) for t in reads if "limit" not in t["args"] and "offset" not in t["args"]]
-    big = [b for b in wholes if b >= 12 * 1024]
+    r = read_counts(scoped)
+    rbytes, wholes, big = r["bytes"], r["whole"], r["big"]
     nv = max(len(scoped), 1)
     lines += [
         "M2  read_file bytes per stage visit",
-        f"    {len(reads)} calls, {rbytes} bytes over {len(scoped)} stage visits"
+        f"    {r['calls']} calls, {rbytes} bytes over {len(scoped)} stage visits"
         f" = {rbytes // nv} bytes per visit",
         "M3  whole-file share of read_file",
-        f"    {len(wholes)} of {len(reads)} = {pct(len(wholes), len(reads))};"
+        f"    {len(wholes)} of {r['calls']} = {pct(len(wholes), r['calls'])};"
         f" by bytes {pct(sum(wholes), rbytes)}",
         f"    whole reads >= 12 KB: {len(big)} = {len(big) / nv:.2f} per visit,"
         f" {sum(big) // nv} bytes per visit",
-        "",
+        "By repo (M1 without pipe filters; M2 bytes per visit; M3 whole share by count, by bytes, whole reads >= 12 KB per visit)",
     ]
+    for repo in sorted({run["repo"] for run in runs}):
+        rv = [v for run in runs if run["repo"] == repo for v in run["visits"] if v.tools and (v.local or not local_only)]
+        rs, rd = search_counts(rv), read_counts(rv)
+        rsearch = rs["code"] + rs["native"] + rs["shell"] - rs["filters"]
+        n = max(len(rv), 1)
+        lines.append(
+            f"    {repo}: M1 {pct(rs['code'], rsearch)} ({rs['code']}/{rsearch}); M2 {rd['bytes'] // n};"
+            f" M3 {pct(len(rd['whole']), rd['calls'])} / {pct(sum(rd['whole']), rd['bytes'])} /"
+            f" {len(rd['big']) / n:.2f}"
+        )
+    lines.append("")
 
     # M4 - mutating git, every stage
     executed: list[tuple[str, str, str]] = []
