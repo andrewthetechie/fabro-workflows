@@ -58,35 +58,27 @@ writes it, is the most common way to break one of these.
 
 ## Validating
 
-Run these before every push. There is no `fabro` binary on this Mac, so the graphs are
-validated in the container (repeat the last line for `backlog`, `issue-triage` and
-`arch-review`):
+`make check` runs every offline gate that must pass before a push to `main` — and the
+pre-push hook runs it for you, so a push that fails a gate is aborted instead of
+remembered-to-check. `make check-host` runs the gates that need the fabro container over
+the LAN and is opt-in. Install the hook once per checkout, then just push:
 
 ```sh
-rsync -a --delete ~/Documents/code/fabro-workflows/.fabro/ andrew@10.10.0.32:/tmp/check/
-scp ops/check-routing-schemas.py andrew@10.10.0.32:/tmp/check-routing-schemas.py
-ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp /tmp/check fabro-fabro-1:/tmp/check'
-ssh andrew@10.10.0.32 'cd ~/fabro && python3 /tmp/check-routing-schemas.py \
-  /tmp/check/workflows/*/workflow.fabro /tmp/check/workflows/_shared/*/*.fabro'
-ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/pr-review/workflow.toml'
+make hooks            # git config core.hooksPath ops/hooks; git push now runs make check
+make check            # the offline gates (ops/check.sh)
+make check-host       # opt-in: needs ssh to andrew@10.10.0.32 (ops/check-host.sh)
 ```
+
+The offline gates need only jq, awk, git, python3.11 and, when `ops/fabro-io/` or
+`_io/schemas/` changed, cargo. `git push --no-verify` skips the hook. There is no `fabro`
+binary on this Mac, so graph validation happens in the container via `make check-host`.
 
 Baselines (as of 2026-10-02, fabro 0.362.0-nightly.0): `Backlog (69 nodes, 162 edges)`
 with one warning, `issue_number` unbound in `claim`; `PrReview (34 nodes, 73 edges)` with
 one warning, `pr_number` unbound in `validate_input`; `IssueTriage (16 nodes, 36 edges)`
 and `ArchReview (24 nodes, 54 edges)` clean. Both warnings are deliberate: never bind
-those inputs in `[run.inputs]`.
-
-The offline gates run on the Mac with Python 3.11+ (macOS ships 3.9):
-
-```sh
-./ops/test-task-gates.sh      # 821 checks on the Mac, 909 in a profile image
-python3.11 ops/fabro-io-manifest.py check
-python3.11 ops/check-agent-profiles.py ops/settings.toml.example
-python3.11 -m unittest discover -s ops/tests
-for f in .fabro/workflows/*/workflow.toml; do python3.11 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$f" || echo "BAD $f"; done
-(cd ops/fabro-io && cargo test)   # when ops/fabro-io/ or _io/schemas/ changed
-```
+those inputs in `[run.inputs]`. `make check-host` compares `fabro validate`'s node and
+edge counts against these.
 
 `docs/agents/validating.md` says what each gate covers and misses, why the warnings are
 deliberate, and why `fabro preflight` is not an offline check.

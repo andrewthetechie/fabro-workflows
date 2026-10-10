@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# pre-push — run the offline gates before a push to `main` goes live.
+#
+# Installed by `make hooks` (git config core.hooksPath ops/hooks). A push to `main`
+# is live on the next automation fire, so a failing gate must stop the push: a
+# non-zero exit from this hook blocks `git push`. Any non-zero output is shown on
+# the terminal, then the push is aborted.
+#
+# This runs `make check` only — the offline gates (ops/check.sh). It deliberately
+# does NOT run `make check-host`: that needs the LAN and the fabro container, so it
+# stays a manual, opt-in step when the operator wants the container validation.
+#
+# `git` runs hooks from the top-level of the working tree, so resolve the root
+# explicitly rather than assuming the invocation directory.
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# Git exports GIT_DIR and friends to this hook. The gates build scratch repositories and
+# commit and push in them; inherited, these variables aim that git at this repository and
+# its GitHub remote (2026-10-10: main rewritten locally and on origin). Clear them before
+# anything else runs. ops/check.sh and ops/test-task-gates.sh clear them as well.
+# shellcheck disable=SC2046  # one word per variable name, by design
+unset $(git rev-parse --local-env-vars)
+
+exec make check

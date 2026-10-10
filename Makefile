@@ -8,12 +8,17 @@
 # See the header of ops/deploy-host.sh for what each one does.
 
 DEPLOY := ./ops/deploy-host.sh
+CHECK := ./ops/check.sh
+CHECK_HOST := ./ops/check-host.sh
 
 .DEFAULT_GOAL := help
-.PHONY: help deploy deploy-notify deploy-scripts deploy-compose deploy-scheduler \
-	deploy-images provision verify-host compose-up
+.PHONY: help check check-host hooks deploy deploy-notify deploy-scripts \
+	deploy-compose deploy-scheduler deploy-images provision verify-host compose-up
 
 help:
+	@echo "make check            offline gates that must pass before any push (test-task-gates, manifest, profiles, unittest, toml, cargo)"
+	@echo "make check-host       host gates that need the LAN + container: routing schemas, fabro validate x4 vs baselines (opt-in)"
+	@echo "make hooks            install the pre-push hook (git config core.hooksPath ops/hooks)"
 	@echo "make deploy            every step below except compose-up, then verify-host"
 	@echo "make deploy-notify     discord-notify.sh into the fabro container"
 	@echo "make deploy-scripts    operator scripts into ~/bin"
@@ -23,6 +28,15 @@ help:
 	@echo "make provision         create any missing automation or server variable"
 	@echo "make verify-host       diff every host copy against this checkout"
 	@echo "make compose-up CONFIRM=1   apply the compose file to fabro (fails in-flight runs)"
+
+check:
+	$(CHECK)
+
+check-host:
+	$(CHECK_HOST)
+
+hooks:
+	@git config core.hooksPath ops/hooks && echo "pre-push hook installed (core.hooksPath=ops/hooks); a push now runs make check"
 
 deploy:
 	$(DEPLOY) all

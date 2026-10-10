@@ -27,6 +27,26 @@
 
 set -uo pipefail
 
+# Every fixture below builds a scratch repository and runs git in it, `push` included.
+# Git exports GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and more to its hooks. Inherited
+# here, they point all of those commands at the real checkout instead, whose `origin` is
+# GitHub, where a push to main deploys. On 2026-10-10 a pre-push hook ran this suite and
+# rewrote main both locally and on origin. So clear every repository-local variable git
+# knows about, then prove a fresh scratch repository resolves to itself before any fixture
+# runs: that also catches a leak this list does not name.
+# shellcheck disable=SC2046  # one word per variable name, by design
+unset $(git rev-parse --local-env-vars)
+CANARY=$(mktemp -d)
+git -C "$CANARY" init -q
+CANARY_GIT=$(cd "$CANARY" && git rev-parse --absolute-git-dir 2>/dev/null)
+if [ "$CANARY_GIT" != "$(cd "$CANARY" && pwd -P)/.git" ]; then
+    echo "ABORT: git in a scratch directory resolves to '$CANARY_GIT', not to the scratch" >&2
+    echo "repository. The fixtures would commit and push in that repository; refusing." >&2
+    rm -rf "$CANARY"
+    exit 2
+fi
+rm -rf "$CANARY"
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GRAPH="$REPO_ROOT/.fabro/workflows/backlog/workflow.fabro"
 SHARED="$REPO_ROOT/.fabro/workflows/_shared/review-merge/review-merge.fabro"

@@ -1,0 +1,41 @@
+# Offline-gate backstop. The real gate is the local pre-push hook (`make hooks`;
+# ops/hooks/pre-push runs `make check`); like everything on a push to `main`, this
+# job reports AFTER the deploy is live, so it backs up the hook rather than
+# replacing it. It only needs the repo's own toolchain — no secrets, no host.
+#
+# CHECK_CARGO=always: in CI the origin/main diff is unreliable, and a fresh check
+# of every commit should always compile the schemas, so override the hook's
+# "only when changed" default.
+
+name: check
+
+on: push
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ops/fabro-io
+
+      - name: Run the offline gates
+        run: make check
+        env:
+          CHECK_CARGO: always
