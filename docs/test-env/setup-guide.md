@@ -117,8 +117,14 @@ file under that directory, and `backend/*.py` is only the top level of `backend/
 invalid glob is an error.
 
 Longer preparation logic goes in a script under `.fabro/` that one `run` entry calls, for
-example `"sh .fabro/node24.sh"`. That keeps each entry readable in an error message, which
+example `"sh .fabro/seed.sh"`. That keeps each entry readable in an error message, which
 quotes the failing entry's text.
+
+**Do not install toolchains in preparation.** Preparation runs on the first test call in
+every fresh sandbox, so a download there is paid on every run. A runtime the tests need
+(Node, a compiler, a CLI) belongs in the repository's profile image
+(`ops/profile-images/`), where it is built once. womens-fantasy-sports first downloaded
+Node 24 in preparation, though `fabro-ts` already ships it.
 
 ### `[targets.NAME]`
 
@@ -323,20 +329,23 @@ run.
   argument check refuses it.
 - **Mirror CI.** The target should run tests the way CI does, under the same Test
   environment, so a pass under `run_tests` predicts a pass in `validate`.
-- **Typecheck and lint are not targets.** The prompts send those through the shell. A
-  repository-wide typecheck with no narrow form is better left out (lawncare-saas has no
-  `frontend` target for this reason).
+- **Cover every unit-test suite CI runs.** A suite without a target can only be run
+  through the shell, outside the Test environment. lawncare-saas has `backend`,
+  `frontend` and `frontend-admin`.
+- **A narrow run must fail when it matches nothing.** Call the runner directly rather
+  than a package script that passes `--passWithNoTests` (or similar), or a mistyped path
+  reports a pass. lawncare-saas uses `npx vitest run`, not `npm test`, for this reason.
+- **Typecheck and lint are not targets.** The prompts send those through the shell.
 - **Raise `timeout` for cold builds.** The 120 s default is short for a first
   `cargo test`; writers-app's `rust` target uses 600.
 
 ## Examples from the target repositories
 
-womens-fantasy-sports (Postgres, a migrated and seeded database, Node 24 for vitest):
+womens-fantasy-sports (Postgres, a migrated and seeded database; Node 24 for vitest comes
+from the `fabro-ts` image):
 
 ```toml
 version = 1
-
-path = ["node_modules/.fabro-node/node-v24.11.0-linux-x64/bin"]
 
 [env]
 POSTGRES_SERVER = "localhost"
@@ -352,7 +361,6 @@ timeout = 300
 run = [
   "fabro-pg-ensure",
   "psql -h localhost -p 5432 -U test -d postgres -v ON_ERROR_STOP=1 -c \"ALTER ROLE test SET client_encoding TO 'UTF8'\"",
-  "sh .fabro/node24.sh",
   "cd backend && uv run bash scripts/prestart.sh",
 ]
 
@@ -366,6 +374,42 @@ value_flags = ["-k"]
 [targets.frontend]
 about = "frontend vitest unit suite; pass test files, relative to frontend/ (e.g. src/foo.test.tsx)"
 run = "bun run --filter frontend test:unit --"
+```
+
+lawncare-saas (Postgres with no migrations to cache, and two frontends):
+
+```toml
+version = 1
+
+[env]
+CI = "1"                    # its conftest starts testcontainers unless CI is set
+DATABASE_URL = "postgresql+asyncpg://test:test@localhost:5432/test"
+JWT_ISSUER = "lawncare"
+JWT_AUDIENCE = "https://lawncare.example.com"
+JWKS_URL = "https://lawncare.example.com/.well-known/jwks.json"
+CRON_SECRET = "test-secret"
+
+[prepare]
+run = ["fabro-pg-ensure"]
+
+[targets.backend]
+about = "backend pytest; pass test files or node ids"
+run = "uv run pytest -q"
+flags = ["-x", "-v"]
+value_flags = ["-k"]
+
+[targets.frontend]
+about = "frontend vitest unit tests; pass test files, relative to frontend/ (e.g. src/utils/timezone.test.ts)"
+cwd = "frontend"
+run = "npx vitest run"
+value_flags = ["-t"]
+timeout = 300
+
+[targets.frontend-admin]
+about = "frontend-admin vitest unit tests; pass test files, relative to frontend-admin/"
+cwd = "frontend-admin"
+run = "npx vitest run"
+value_flags = ["-t"]
 ```
 
 writers-app (no services; a Rust crate and a frontend):
