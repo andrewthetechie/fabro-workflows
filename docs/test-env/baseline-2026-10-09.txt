@@ -1,0 +1,93 @@
+Baseline for docs/test-env (task 01, C7 M-env and M-run). Recorded 2026-10-09, before task 05 changes any prompt.
+Command: python3.11 ops/fabro-agent-tools.py --since 2026-10-02T00:00:00Z <events of the 102 runs below>
+Runs: every `backlog` run created 2026-10-02 .. 2026-10-09 on the four target repositories (102 runs:
+womens-fantasy-sports 61, lawncare-saas 18, writers-app 18, jelly-swipe 5), collected with
+`fabro events <id> --json` on the host. Event files hold issue text and are not committed. The script ran
+on the host against a copy of the working-tree ops/fabro-agent-tools.py and _io/manifest.json (exempt stages read from it).
+
+Caveat on the other metrics: the M1 (pipe filters) and M3 (bytes, >= 12 KB whole reads) lines come from
+uncommitted changes to ops/fabro-agent-tools.py made by another session, and this run includes them. Those
+changes were not compared against the committed tool, so the M1 and M3 lines are not a clean baseline of
+the committed code. M-env and M-run are this task's additions.
+
+Verification on run 01M4HVKKAHPFK3X9KJ18D8YDZG (womens-fantasy-sports, coder@1, box-b): M-env counts 1 of its
+7 stage visits, the coder (the connection refusal on port 5432 in its first pytest call), and M-run counts 0 of its
+9 test invocations as run_tests or fabro-test (all 9 direct pytest).
+
+Reading M-env against C7's target (about 0 on womens-fantasy-sports and lawncare-saas):
+- womens-fantasy-sports: 20 of 1370 stage visits (1.5%), all `coder`, in 20 of 61 runs. The 1.5% is
+  close to 0, so the target stands. It is still one refusal in every three runs, which is the case the
+  series exists to remove.
+- lawncare-saas: 0 of 524 visits. Its ci.sh starts the same service, so the agents there do not hit it today.
+  Target met as it stands.
+- jelly-swipe and writers-app need no service and show 0, as expected.
+The target column is unchanged; the baseline does not make it meaningless.
+
+Reading M-run against C7's target (at least 60%): 0 of 1208 test invocations go through run_tests or fabro-test,
+because neither tool exists yet. The denominator is pytest, vitest, cargo test, npm/bun test and npx vitest,
+counted per shell segment. Task 03 adds the entry points; the target stands.
+
+----- metrics output (fabro-agent-tools.py, unmodified report) -----
+
+M1  code-index share of searches
+    code_* + fabro-code 1141; native grep 4953; shell grep/rg 8480 (grep 4896, rg 3584; 1694 read a pipe)
+    share 7.8%; without pipe filters 8.9%
+
+M2  read_file bytes per stage visit
+    15118 calls, 87265226 bytes over 2404 stage visits = 36300 bytes per visit
+M3  whole-file share of read_file
+    5673 of 15118 = 37.5%; by bytes 58.2%
+    whole reads >= 12 KB: 1201 = 0.50 per visit, 11289 bytes per visit
+
+M4  mutating git executed outside exempt stages (all stages, all models)
+    exempt: rebase_agent_t1, rebase_agent_t2, resolve_merge
+    executed 2 shell call(s) in 2 stage visit(s); by command {'fetch': 1, 'stash': 2}; by stage {'decompose': 1, 'rework_t2': 1}
+    blocked attempts (reported separately): 4
+
+M5  improve visits that edited a tracked file (attempt-based proxy)
+    5 of 394 improve visits
+
+M6  sessions whose agent.memory.loaded lists .codex/instructions.md
+    2273 of 2558 = 88.9%
+
+M7  coder start to first edit (median)
+    3.1 min over 388 coder visit(s) with an edit; 1 with none
+
+M8  review first-pass rate and rework escalations
+    360 of 391 tasks approved at the first review_gate = 92.1%
+    rework visits {'rework_t1': 85, 'rework_t2': 32, 'rework_t3': 4, 'rework_t4': 2}; per task 0.31
+
+M-env  Test-environment refusals (port 5432 or ConftestImportFailure) in tool output
+    all repositories: 20 of 2404 stage visit(s) = 0.8%
+    andrewthetechie/jelly-swipe: 0 of 102 stage visit(s) = 0.0%; 0 of 5 run(s)
+    andrewthetechie/lawncare-saas: 0 of 524 stage visit(s) = 0.0%; 0 of 18 run(s)
+    andrewthetechie/womens-fantasy-sports: 20 of 1370 stage visit(s) = 1.5%; 20 of 61 run(s)
+    andrewthetechie/writers-app: 0 of 408 stage visit(s) = 0.0%; 0 of 18 run(s)
+    by stage {'coder': 20}
+
+M-run  test invocations that go through run_tests or fabro-test
+    0 of 1208 = 0.0%; by entry point {'direct bun': 59, 'direct cargo': 170, 'direct npm': 6, 'direct npx': 128, 'direct pytest': 843, 'direct vitest': 2}
+    test invocations: run_tests, baseline_check with a target, fabro-test, and direct pytest, vitest, cargo test, npm/bun test
+
+Per-stage tool calls
+    stage                    visits     read_file          grep          glob     edit_file    write_file        code_*    fabro-code    sh grep/rg       sh view        sh git      sh other inputs/submit         other
+    coder                       389          2330           544            14          2526           113            73             0           904          2350          1195          9319           447            91
+    decompose                   102           950           280            95             0             0            57             3           646           694            64           890           205             7
+    extra_decompose             155           119            96             7             0             0             4             0            62            74             9            57           311             0
+    improve                     394          2968          1100           188            20           397           281             0           952           786           474          1194           812            12
+    quality                     155          1291           496            36             0             0            91             0          1159          1360           315          2554           510             0
+    resolve_merge                 3             8             0             0             9             0             0             0            11            28            56            50             3             0
+    review                      416          1609           563            23             0             0            65             0           495           587             8           862           993            31
+    review_merge.ci_fix_t1        2             4             1             1             0             0             0             0            15            53            31            94             7             0
+    review_merge.refute          86          1668           190            79             0             0           120             0            53            12           107           333           236             0
+    review_merge.review_fix      93           850           299            26           440            14           107             0           765          1218           149          2186           343            28
+    review_merge.spec            88           593           308            22             0             0            21             0           712           741           152          1125           232             0
+    review_merge.standards       88           908           273           134             0             0           128             0           905          1029           114          1083           318             0
+    rework_t1                    85           279            57             0            95             0             2             0           136           474           563          1108           100            14
+    rework_t2                    32            93            15             0            51             5            10             0           345           816           311          2404            36            14
+    rework_t3                     4             2             2             0             1             1             0             0            16            65            33           111             4             1
+    rework_t4                     2             3             0             0             0             0             0             0             0             2             6             3             2             0
+    spec                        155           559           417            21             0             0            50             0           413           388           145           568           510             6
+    standards                   155           884           312            91             0             0           129             0           891           901           163           992           513             1
+
+runs 102; stage visits with tools 2404; local-model visits 868; tool calls in scope 43100

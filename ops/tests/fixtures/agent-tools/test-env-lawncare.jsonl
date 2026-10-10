@@ -1,0 +1,5 @@
+{"event": "run.created", "ts": "2026-10-01T00:00:00Z", "properties": {"git": {"origin_url": "git@github.com:andrewthetechie/lawncare-saas.git"}}}
+{"event": "stage.started", "ts": "2026-10-01T00:00:01.000000000Z", "properties": {}, "node_id": "coder", "stage_id": "coder@1"}
+{"event": "agent.message", "ts": "2026-10-01T00:00:01.000000000Z", "properties": {"event": {"AssistantMessage": {"model": "coders-a"}}}, "node_id": "coder", "stage_id": "coder@1"}
+{"event": "agent.tool.started", "ts": "2026-10-01T00:00:02.000000000Z", "properties": {"event": {"ToolCallStarted": {"tool_name": "shell", "arguments": {"command": "bun run test:unit"}, "tool_call_id": "l1"}}}, "node_id": "coder", "stage_id": "coder@1"}
+{"event": "agent.tool.completed", "ts": "2026-10-01T00:00:12.000000000Z", "properties": {"event": {"ToolCallCompleted": {"tool_call_id": "l1", "output": "OSError: [Errno 111] Connect call failed ('127.0.0.1', 5432)", "is_error": true}}}, "node_id": "coder", "stage_id": "coder@1"}
