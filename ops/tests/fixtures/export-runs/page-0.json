@@ -1,0 +1,81 @@
+{
+  "data": [
+    {
+      "id": "RUN5",
+      "workflow": {
+        "slug": "backlog"
+      },
+      "repository": {
+        "name": "andrewthetechie/lawncare-saas"
+      },
+      "labels": {
+        "issue": "42",
+        "source": "scheduler"
+      },
+      "lifecycle": {
+        "status": {
+          "kind": "succeeded"
+        }
+      },
+      "timestamps": {
+        "created_at": "2026-10-09T10:00:00.000Z",
+        "completed_at": "2026-10-09T10:20:00.000Z"
+      },
+      "automation": null
+    },
+    {
+      "id": "RUN4",
+      "workflow": {
+        "slug": "pr-review"
+      },
+      "repository": {
+        "name": "andrewthetechie/womens-fantasy-sports"
+      },
+      "labels": {
+        "pr": "7"
+      },
+      "lifecycle": {
+        "status": {
+          "kind": "succeeded"
+        }
+      },
+      "timestamps": {
+        "created_at": "2026-10-09T02:00:00.000Z",
+        "completed_at": "2026-10-09T02:05:00.000Z"
+      },
+      "automation": {
+        "workflow_source": {
+          "resolved_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    },
+    {
+      "id": "RUN3",
+      "workflow": {
+        "slug": "backlog"
+      },
+      "repository": {
+        "name": "andrewthetechie/writers-app"
+      },
+      "labels": {},
+      "lifecycle": {
+        "status": {
+          "kind": "running"
+        }
+      },
+      "timestamps": {
+        "created_at": "2026-10-08T06:00:00.000Z",
+        "completed_at": null
+      },
+      "automation": {
+        "workflow_source": {
+          "resolved_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    }
+  ],
+  "meta": {
+    "has_more": true,
+    "total": 5
+  }
+}
