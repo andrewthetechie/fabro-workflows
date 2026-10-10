@@ -18,10 +18,12 @@
 // Rust guideline compliant 2026-07-21
 
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::common;
+use crate::runtests;
+use crate::testenv::{self, TestEnv};
 
 /// The MCP name of the restore tool.
 pub const RESTORE_FILE: &str = "restore_file";
@@ -34,8 +36,8 @@ const DEFAULT_TIMEOUT_S: u64 = 120;
 ///
 /// Below the 660 s `tool_timeout` of `[run.agent.mcps.io]` in each `workflow.toml`, so
 /// a runaway command returns this module's answer instead of fabro's silent timeout.
-const MAX_TIMEOUT_S: u64 = 600;
-/// Lines of output `baseline_check` returns, counted from the end.
+pub(crate) const MAX_TIMEOUT_S: u64 = 600;
+/// Lines of output a bounded command returns, counted from the end (C4 and `baseline_check`).
 const TAIL_LINES: usize = 200;
 /// How deep below the checkout the dependency directories are searched for.
 ///
@@ -73,17 +75,22 @@ pub fn tools() -> Vec<(&'static str, String, serde_json::Value)> {
              worktree, to see whether a failure predates your change. Use it instead of git stash. It never touches \
              your checkout. Returns the exit code and the last 200 lines of output, so \
              do not pipe the command into tail or head. The command runs with pipefail: \
-             the exit code is the first failing command's in a pipeline."
+             the exit code is the first failing command's in a pipeline. Instead of a \
+             command, pass `target` (and `args`) to run a named test target from \
+             .fabro/test.toml in its Test environment; see run_tests."
                 .to_string(),
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "command": {"type": "string",
-                                "description": "A shell command, run from the worktree root, for example `uv run pytest tests/test_x.py` or `npx vitest run`."},
+                                "description": "A shell command, run from the worktree root, for example `uv run pytest tests/test_x.py` or `npx vitest run`. Not with target."},
+                    "target": {"type": "string",
+                               "description": "A test target from .fabro/test.toml, run instead of a command. Not with command."},
+                    "args": {"type": "array", "items": {"type": "string"},
+                             "description": "Arguments for target, checked as run_tests checks them."},
                     "timeout_s": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_S,
-                                  "description": "Seconds before the command is killed. Default 120."}
+                                  "description": "Seconds before the command is killed. Default 120. Ignored with target, which has its own timeout."}
                 },
-                "required": ["command"],
                 "additionalProperties": false
             }),
         ),
@@ -110,9 +117,21 @@ pub async fn call(
         }
         BASELINE_CHECK => {
             let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("").trim();
-            let timeout = args.get("timeout_s").and_then(|v| v.as_u64()).unwrap_or(DEFAULT_TIMEOUT_S);
+            let target = args.get("target").and_then(|v| v.as_str()).unwrap_or("").trim();
             let base = baseline_base(&root, &checkout)?;
-            baseline_check(&root, &checkout, &base, command, timeout).await
+            match (command.is_empty(), target.is_empty()) {
+                (false, true) => {
+                    let timeout = args.get("timeout_s").and_then(|v| v.as_u64()).unwrap_or(DEFAULT_TIMEOUT_S);
+                    baseline_check(&root, &checkout, &base, command, timeout).await
+                }
+                (true, false) => {
+                    let argv = runtests::string_args(args.get("args"))?;
+                    baseline_target(&root, &checkout, &base, target, &argv).await
+                }
+                _ => Err("baseline_check takes either `command` or `target` (with `args`), not both \
+                          and not neither"
+                    .to_string()),
+            }
         }
         other => Err(format!("unknown tool '{other}'")),
     }
@@ -392,7 +411,9 @@ fn ensure_worktree(root: &Path, checkout: &Path, base: &str) -> Result<PathBuf, 
 /// last [`TAIL_LINES`] lines of output.
 ///
 /// The command runs under `bash -o pipefail`, so a pipeline reports the exit code of
-/// its last failing command, not of a trailing `tail`.
+/// its last failing command, not of a trailing `tail`. When the repository declares a
+/// Test environment, it is prepared from the base first and the command runs with its
+/// variables (docs/test-env C5).
 ///
 /// # Errors
 ///
@@ -409,13 +430,27 @@ pub async fn baseline_check(
     if command.is_empty() {
         return Err("baseline_check needs a non-empty `command`".to_string());
     }
+    let started = Instant::now();
     let wt = ensure_worktree(root, checkout, base)?;
-    let Some(env) = environment(root, checkout, &wt) else {
+    let Some(extra) = environment(root, checkout, &wt) else {
         return Err("baseline_check is not available in this repository; note the failure and \
                     move on"
             .to_string());
     };
     let limit = Duration::from_secs(timeout_s.clamp(1, MAX_TIMEOUT_S));
+    let vars = match base_test_env(checkout, base)? {
+        Some(decl) => {
+            if let Err(text) = runtests::prepare_now(&wt, &decl, &extra) {
+                return Ok(text);
+            }
+            testenv::command_env(&wt, &decl, &extra)
+        }
+        None => extra,
+    };
+    // The whole call stays under MAX_TIMEOUT_S, so a long preparation shortens the command
+    // rather than letting fabro's tool timeout end the call silently.
+    let left = Duration::from_secs(MAX_TIMEOUT_S).saturating_sub(started.elapsed());
+    let limit = limit.min(left.max(Duration::from_secs(1)));
     // pipefail: agents append `| tail -30` to the command, and without it the exit
     // code reported is tail's 0 over a failing test run (docs/coder-tweaks
     // result-2026-10-03.txt: 7 of 11 calls were piped).
@@ -423,32 +458,105 @@ pub async fn baseline_check(
     cmd.args(["-o", "pipefail", "-c"])
         .arg(format!("exec 2>&1; {command}"))
         .current_dir(&wt)
-        .envs(env)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
+        .envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    let cap = capture(cmd, limit).await?;
+    let mut out = format!("exit={}\n", cap.status);
+    out.push_str(&tail_lines(&cap.bytes, cap.timed_out));
+    Ok(out.trim_end().to_string())
+}
+
+/// Runs a named test target on the task base (docs/test-env C5). The Test environment is
+/// read from the base tree and prepared from its worktree, which writes the base's stamp,
+/// so the agent's next `run_tests` prepares again (D5).
+///
+/// # Errors
+///
+/// Returns a sentence for the model when no worktree can be made or the repository declares
+/// no test targets. An unknown target, a refused argument, a failed preparation or a failing
+/// run is an answer in the returned text.
+pub async fn baseline_target(
+    root: &Path,
+    checkout: &Path,
+    base: &str,
+    name: &str,
+    args: &[String],
+) -> Result<String, String> {
+    let Some(decl) = base_test_env(checkout, base)? else {
+        return Err(runtests::NO_DECLARATION.to_string());
+    };
+    let wt = ensure_worktree(root, checkout, base)?;
+    let extra = environment(root, checkout, &wt).unwrap_or_default();
+    Ok(runtests::execute(&wt, &decl, name, args, true, &extra).await.text)
+}
+
+/// The Test environment C5 names: the base's `.fabro/test.toml`, or the checkout's when the
+/// base has none (the rollout PR itself).
+///
+/// # Errors
+///
+/// Returns the parse error when the file that is read is invalid.
+fn base_test_env(checkout: &Path, base: &str) -> Result<Option<TestEnv>, String> {
+    let spec = format!("{base}:{}", testenv::TEST_TOML);
+    if git(checkout, &["cat-file", "-e", &spec]).is_ok() {
+        let text = git(checkout, &["show", &spec])?;
+        return testenv::parse(&text).map(Some);
+    }
+    TestEnv::load(checkout)
+}
+
+/// What [`capture`] saw: the exit status as text, the output, and whether the limit passed.
+pub(crate) struct Captured {
+    /// The exit code, `killed` for a signal, or the timeout sentence.
+    pub status: String,
+    /// Everything the command wrote to stdout (stderr is merged by the script).
+    pub bytes: Vec<u8>,
+    /// Whether the limit passed and the group was killed.
+    pub timed_out: bool,
+}
+
+/// Runs a bounded command in its own process group and captures its output.
+///
+/// The group is killed when `limit` passes, so children (uv, pytest, node) go with the
+/// command.
+///
+/// # Errors
+///
+/// Returns a sentence when the command cannot start or cannot be waited on.
+pub(crate) async fn capture(mut cmd: tokio::process::Command, limit: Duration) -> Result<Captured, String> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .kill_on_drop(true)
         .process_group(0);
-    let child = cmd.spawn().map_err(|e| format!("cannot run bash: {e}"))?;
+    let child = cmd.spawn().map_err(|e| format!("cannot run the command: {e}"))?;
     let pid = child.id();
-    let (code, bytes, timed_out) = match tokio::time::timeout(limit, child.wait_with_output()).await {
-        Ok(Ok(out)) => (
-            out.status.code().map_or("killed".to_string(), |c| c.to_string()),
-            out.stdout,
-            false,
-        ),
-        Ok(Err(e)) => return Err(format!("baseline_check failed: {e}")),
+    match tokio::time::timeout(limit, child.wait_with_output()).await {
+        Ok(Ok(out)) => Ok(Captured {
+            status: out.status.code().map_or("killed".to_string(), |c| c.to_string()),
+            bytes: out.stdout,
+            timed_out: false,
+        }),
+        Ok(Err(e)) => Err(format!("the command failed: {e}")),
         Err(_) => {
             // The whole group: the command usually runs children (uv, pytest, node).
             if let Some(pid) = pid {
                 let _ = Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).output();
             }
-            (format!("timed out after {}s and was killed", limit.as_secs()), Vec::new(), true)
+            Ok(Captured {
+                status: format!("timed out after {}s and was killed", limit.as_secs()),
+                bytes: Vec::new(),
+                timed_out: true,
+            })
         }
-    };
-    let text = String::from_utf8_lossy(&bytes);
+    }
+}
+
+/// The last [`TAIL_LINES`] lines of `bytes`, with a note of how many were cut, and a note
+/// when the output belongs to a killed command.
+pub(crate) fn tail_lines(bytes: &[u8], timed_out: bool) -> String {
+    let text = String::from_utf8_lossy(bytes);
     let lines: Vec<&str> = text.lines().collect();
     let cut = lines.len().saturating_sub(TAIL_LINES);
-    let mut out = format!("exit={code}\n");
+    let mut out = String::new();
     if cut > 0 {
         out.push_str(&format!("({cut} earlier lines cut)\n"));
     }
@@ -456,5 +564,5 @@ pub async fn baseline_check(
     if timed_out {
         out.push_str("\n(output of a killed command is not kept)");
     }
-    Ok(out.trim_end().to_string())
+    out
 }

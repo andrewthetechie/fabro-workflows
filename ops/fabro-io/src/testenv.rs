@@ -357,6 +357,22 @@ pub struct Prepared {
 /// Returns a sentence naming the failing step by index and text, the budget overrun, or an
 /// io failure on the log or the stamp.
 pub fn prepare(root: &Path, env: &TestEnv, budget: Duration) -> Result<Prepared, String> {
+    prepare_with(root, env, budget, &[])
+}
+
+/// [`prepare`] with extra variables for every step (docs/test-env C5). The base worktree of
+/// `baseline_check` needs the same shared-dependency guard its command runs under, so a
+/// plain `uv run` cannot re-point the agent's virtualenv at the base.
+///
+/// # Errors
+///
+/// As [`prepare`].
+pub fn prepare_with(
+    root: &Path,
+    env: &TestEnv,
+    budget: Duration,
+    extra: &[(String, String)],
+) -> Result<Prepared, String> {
     let io = io_root();
     std::fs::create_dir_all(&io).map_err(|e| format!("cannot create {}: {e}", io.display()))?;
     let stamp = io.join(STAMP_FILE);
@@ -365,11 +381,11 @@ pub fn prepare(root: &Path, env: &TestEnv, budget: Duration) -> Result<Prepared,
     let log = std::fs::File::create(&log_path)
         .map_err(|e| format!("cannot create {}: {e}", log_path.display()))?;
     let fp = fingerprint(root, env);
-    let path_value = path_value(root, env);
+    let vars = command_env(root, env, extra);
     let started = Instant::now();
     let deadline = started + budget;
     let result = env.prepare.run.iter().enumerate().try_for_each(|(i, step)| {
-        run_step(root, env, &path_value, i, step, deadline, &log)
+        run_step(root, &vars, i, step, deadline, &log)
     });
     if let Err(message) = result {
         return Err(match remove_stamp(&stamp) {
@@ -403,8 +419,7 @@ fn remove_stamp(path: &Path) -> Result<(), String> {
 /// Runs one `prepare.run` step as `sh -c` in its own process group, teeing its output.
 fn run_step(
     root: &Path,
-    env: &TestEnv,
-    path_value: &str,
+    vars: &[(String, String)],
     index: usize,
     step: &str,
     deadline: Instant,
@@ -421,8 +436,7 @@ fn run_step(
         let mut cmd = Command::new("sh");
         cmd.args(["-c", step])
             .current_dir(root)
-            .envs(&env.env)
-            .env("PATH", path_value)
+            .envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(Stdio::null())
             .stdout(writer.try_clone().map_err(|e| format!("cannot clone pipe: {e}"))?)
             .stderr(writer)
@@ -487,15 +501,49 @@ fn kill_group(pid: u32) {
 /// The `PATH` for preparation and targets: the `path` entries under `root`, in order, then
 /// the caller's `PATH` (C1).
 pub fn path_value(root: &Path, env: &TestEnv) -> String {
+    path_over(root, env, &std::env::var("PATH").unwrap_or_default())
+}
+
+/// The `path` entries under `root`, in order, then `base`. An empty `base` adds nothing.
+fn path_over(root: &Path, env: &TestEnv, base: &str) -> String {
     let mut entries: Vec<String> = env
         .path
         .iter()
         .map(|p| root.join(p).display().to_string())
         .collect();
-    if let Some(existing) = std::env::var_os("PATH") {
-        entries.push(existing.to_string_lossy().into_owned());
+    if !base.is_empty() {
+        entries.push(base.to_string());
     }
     entries.join(":")
+}
+
+/// The variables every preparation step and target runs with (C1, C2): `[env]`, then `extra`,
+/// then `PATH`. An `extra` `PATH` replaces the caller's `PATH` as the base the `path` entries
+/// are prepended to. Sorted by name.
+pub fn command_env(root: &Path, env: &TestEnv, extra: &[(String, String)]) -> Vec<(String, String)> {
+    let mut vars: BTreeMap<String, String> = env.env.clone();
+    let mut base = std::env::var("PATH").unwrap_or_default();
+    for (key, value) in extra {
+        if key == "PATH" {
+            base = value.clone();
+        } else {
+            vars.insert(key.clone(), value.clone());
+        }
+    }
+    vars.insert("PATH".to_string(), path_over(root, env, &base));
+    vars.into_iter().collect()
+}
+
+/// The fingerprint recorded in the stamp, or `None` when there is no stamp (C3).
+pub fn stamp_fingerprint() -> Option<String> {
+    let raw = std::fs::read_to_string(io_root().join(STAMP_FILE)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("fingerprint")?.as_str().map(str::to_string)
+}
+
+/// The preparation log's path under the io root (C2).
+pub fn log_path() -> PathBuf {
+    io_root().join(LOG_FILE)
 }
 
 /// The `export` lines `ci.sh` evaluates (C2): each `[env]` key in name order, then `PATH`.
@@ -509,7 +557,7 @@ pub fn exports(root: &Path, env: &TestEnv) -> String {
 }
 
 /// Single-quotes `value` for `sh`, escaping each embedded quote as `'\''`.
-fn shell_quote(value: &str) -> String {
+pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
@@ -567,7 +615,7 @@ pub fn run_cli(args: &[String]) -> ExitCode {
 }
 
 /// The top level of the git checkout the current directory is in.
-fn checkout_root() -> Result<PathBuf, String> {
+pub fn checkout_root() -> Result<PathBuf, String> {
     let out = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()

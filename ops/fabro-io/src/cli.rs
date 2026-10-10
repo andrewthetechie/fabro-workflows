@@ -4,11 +4,11 @@
 
 use std::process::ExitCode;
 
-use crate::{gitguard, guard, inputs, serve, stage, submit, testenv};
+use crate::{gitguard, guard, inputs, runtests, serve, stage, submit, testenv};
 
 const USAGE: &str = concat!(
     "usage: fabro-io <command> [args]\n",
-    "commands: stage | serve [--port N] | guard | git-guard | inputs [<name> [--part N]] | submit --file <path> | test-env [--check] [--root DIR] | version\n"
+    "commands: stage | serve [--port N] | guard | git-guard | inputs [<name> [--part N]] | submit --file <path> | test-env [--check] [--root DIR] | run-tests TARGET [args...] [--fresh] | version\n"
 );
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -25,6 +25,7 @@ pub fn run(args: &[String]) -> ExitCode {
         "inputs" => inputs::run_cli(rest),
         "submit" => submit_cli(rest),
         "test-env" => testenv::run_cli(rest),
+        "run-tests" => runtests::run_cli(rest),
         "version" => {
             println!("fabro-io {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
