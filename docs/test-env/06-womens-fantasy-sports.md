@@ -11,12 +11,14 @@ the serial-run truncation trap.
 ## Change
 A hand-written PR in womens-fantasy-sports (never a factory run: D7 would block its
 auto-merge anyway):
-1. `.fabro/node24.sh`: the Node v24.11.0 download block moved out of `ci.sh` unchanged.
+1. Delete the Node v24.11.0 download block from `ci.sh`, and do not move it into
+   preparation: `fabro-ts` has shipped Node 24 at `/usr/local/bin/node` since 2026-10-03,
+   and a download in preparation is paid in every sandbox (amended 2026-10-10; the first
+   version moved it to `.fabro/node24.sh`).
 2. `.fabro/test.toml`:
    - `[env]`: the five `POSTGRES_*` values and `PGCLIENTENCODING = "UTF8"`.
-   - `path`: the Node 24 bin directory.
    - `[prepare]`:
-     - `run`: `fabro-pg-ensure`, the `ALTER ROLE … UTF8` psql line, `sh .fabro/node24.sh`, `cd backend && uv run bash scripts/prestart.sh`.
+     - `run`: `fabro-pg-ensure`, the `ALTER ROLE … UTF8` psql line, `cd backend && uv run bash scripts/prestart.sh`.
      - `inputs`: `backend/app/alembic/**`, `backend/app/seed/**`, `backend/app/initial_data.py`, `content/**`.
    - `[targets.backend]`: `cwd = "backend"`, `run = "uv run pytest -n 1 -q"`. Never `-n0`: the session `db` fixture would truncate the seeded template. `flags = ["-x", "-v", "--lf"]`, `value_flags = ["-k"]`.
    - `[targets.frontend]`: `run = "bun run --filter frontend test:unit --"`.
