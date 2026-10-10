@@ -406,7 +406,7 @@ done
 gh api \"repos/{owner}/{repo}/issues/$N/sub_issues\" --paginate > /tmp/fabro/sub_pages.json
 jq -s 'add // []' /tmp/fabro/sub_pages.json > /tmp/fabro/sub_existing.json
 jq -n '[]' > /tmp/fabro/split_numbers.json
-PL=$(jq -r --slurpfile t /tmp/fabro/triage.json '([.labels[].name] + [$t[0].labels[]?]) | unique | map(select(. as $l | [\"needs-triage\",\"needs-info\",\"triage-in-progress\",\"agent\",\"agent-held\",\"agent-split\",\"agent-in-progress\",\"agent-stuck\",\"agent-remainder\",\"priority\"] | index($l) | not)) | map(\"--label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
+PL=$(jq -r --slurpfile t /tmp/fabro/triage.json '([.labels[].name] + [$t[0].labels[]?]) | unique | map(select(. as $l | [\"needs-triage\",\"needs-info\",\"triage-in-progress\",\"agent\",\"agent-held\",\"agent-split\",\"agent-in-progress\",\"agent-stuck\",\"agent-remainder\",\"priority\",\"agent-noop\"] | index($l) | not)) | map(\"--label=\" + .) | join(\" \")' /tmp/fabro/issue.json)
 CN=$(jq length /tmp/fabro/split_children.json)
 I=0
 while [ $I -lt $CN ]; do

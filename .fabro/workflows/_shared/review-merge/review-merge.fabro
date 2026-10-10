@@ -66,9 +66,11 @@ else
 fi
 echo 0 > /tmp/fabro/fix_attempts
 echo 0 > /tmp/fabro/recheck_done
+rm -f /tmp/fabro/delivery
 cat > /tmp/fabro/render.jq <<'RENDER_JQ'
 def NL: [10] | implode;
 def nz($a): ($a // []);
+def shipped: ($kind != \"needs-human\") or ($delivery == \"delivered\") or ($delivery == \"pushed_on_stop\");
 def sev: (.severity // \"info\");
 def loc:
   (nz(.files) | if length > 0 then .[0] else null end) as $f
@@ -107,7 +109,12 @@ def one($axis):
   \"### Findings\", \"\",
   ( $all | if length == 0 then \"_None recorded._\" else [ .[] | one(._a) ] | join(NL) end ),
   \"\",
-  \"### Fixes applied\", \"\",
+  ( if shipped then \"### Fixes applied\" else \"### Fixes made in this run but NOT pushed\" end ), \"\",
+  ( if (shipped | not) and ((nz($F.fixes_applied) | length) > 0)
+    then \"_The run stopped before these reached the PR branch. They exist only in the run's sandbox, and the branch does not have them._\", \"\"
+    elif $delivery == \"pushed_on_stop\" and ((nz($F.fixes_applied) | length) > 0)
+    then \"_Pushed to the PR branch when the run stopped, before the run finished checking them. GitHub CI on this head is the check that counts._\", \"\"
+    else empty end ),
   ( nz($F.fixes_applied)
     | if length == 0 then \"_None recorded._\"
       else [ .[] | (. + {id: (.finding_id // .id)}) | one(.axis // \"fix\") ] | join(NL) end ),
@@ -136,8 +143,8 @@ def one($axis):
   \"\",
   \"### Commits with changes\", \"\",
   ( $C | if length == 0 then \"_This review made no file changes._\"
-         else [ .[] | \"- [`\" + .short + \"`](\" + $prurl + \"/commits/\" + .sha + \") - `\"
-                    + .stage + \"` - \" + .stat ] | join(NL) end ),
+         else [ .[] | (if shipped then \"- [`\" + .short + \"`](\" + $prurl + \"/commits/\" + .sha + \")\" else \"- `\" + .short + \"`\" end)
+                    + \" - `\" + .stage + \"` - \" + .stat ] | join(NL) end ),
   ( if ($X | length) > 0
     then [ \"\", \"### CI fixes\", \"\",
            ( (nz($X.checks) | if length == 0 then \"GitHub checks\" else join(\", \") end) as $lbl
@@ -185,7 +192,7 @@ if [ -n \"$BASE\" ]; then
   done
 fi
 jq -s . $T/cm.ndjson > $T/cm.json
-jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\"
+jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\"
 RENDER_SH
 echo '{\"context_updates\":{\"review_merge_outcome\":\"needs_human\"}}'"]
 
@@ -619,16 +626,39 @@ if [ \"$V\" = fail ]; then
 fi
 echo '{\"context_updates\":{\"refute_verdict\":\"'$V'\"}}'"]
 
+    // A rejected lease push used to say only "the branch moved", even when a human had
+    // merged or closed the PR and the review's commits never reached it (issue #9). It now
+    // reads the PR state and counts the commits the branch lacks. The reason goes to both
+    // files, as `merge` does, so either renderer shows it.
     deliver [label="Push and label", shape=parallelogram, output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 H=$(cat /tmp/fabro/head_ref)
 B=$(cat /tmp/fabro/base_ref)
 if git push --force-with-lease origin HEAD:\"$H\"; then
+  echo delivered > /tmp/fabro/delivery
   gh pr edit $PR --add-label ai-review-complete || echo 'WARNING: could not add the ai-review-complete label. Check that the run token has issues:write.' >&2
   echo 'The review was delivered and the merge decision did not complete; a human should finish this PR.' > /tmp/fabro/needs_human_reason
   echo '{\"context_updates\":{\"delivered\":true}}'
 else
-  echo 'git push --force-with-lease was rejected: the PR branch moved while this run was working. Not overwriting.' > /tmp/fabro/needs_human_reason
+  echo rejected > /tmp/fabro/delivery
+  S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
+  D='The number of commits from this review that were not delivered is unknown.'
+  if git rev-parse -q --verify \"refs/remotes/origin/$H\" >/dev/null && git log --format='%h %s' \"refs/remotes/origin/$H\"..HEAD -- . > /tmp/fabro/undelivered.txt; then
+    if [ -s /tmp/fabro/undelivered.txt ]; then
+      N=$(wc -l < /tmp/fabro/undelivered.txt | tr -d ' ')
+      L=$(paste -s -d ';' /tmp/fabro/undelivered.txt | sed 's/;/; /g')
+      D=\"$N commit(s) from this review were not delivered: $L. Apply them by hand if you want them.\"
+    else
+      D='The review left no commit that the PR branch lacks.'
+    fi
+  fi
+  case \"$S\" in
+    MERGED) M=\"The PR was merged by hand before the review finished, so the push was refused. $D\" ;;
+    CLOSED) M=\"The PR was closed before the review finished, so the push was refused. $D\" ;;
+    *) M='git push --force-with-lease was rejected: the PR branch moved while this run was working. Not overwriting.' ;;
+  esac
+  printf '%s' \"$M\" > /tmp/fabro/merge_block_reason
+  printf '%s' \"$M\" > /tmp/fabro/needs_human_reason
   echo '{\"context_updates\":{\"delivered\":false}}'
 fi"]
 
@@ -1214,12 +1244,27 @@ fi
 gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the blocked comment.' >&2
 echo done
 exit 0"]
+    // A stop before `deliver` used to leave review_fix's commits in the sandbox while the
+    // comment still listed them as applied (issue #8). When deliver never ran and the PR is
+    // still open, push them here, so the comment is true. A marker already set by `deliver`
+    // is left alone, so a rejected push is not retried. A closed or merged PR is not pushed.
     mark_needs_human [label="Label needs-human", shape=parallelogram,
         script="echo needs_human > /tmp/fabro/review_merge_outcome
 PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
 if [ -z \"$PR\" ]; then
   echo 'No PR number was recorded, so there is nothing to label or comment on.' >&2
   exit 0
+fi
+D=$(cat /tmp/fabro/delivery 2>/dev/null || echo '')
+H=$(cat /tmp/fabro/head_ref 2>/dev/null || echo '')
+if [ -z \"$D\" ] && [ -n \"$H\" ]; then
+  S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
+  if [ \"$S\" = OPEN ]; then
+    if git push --force-with-lease origin HEAD:\"$H\"; then echo pushed_on_stop > /tmp/fabro/delivery
+    else echo rejected > /tmp/fabro/delivery; fi
+  else
+    echo not_pushed > /tmp/fabro/delivery
+  fi
 fi
 if ! sh /tmp/fabro/render_comment.sh needs-human > /tmp/fabro/pr_comment.md; then
   R=$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)

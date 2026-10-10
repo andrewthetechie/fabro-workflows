@@ -36,6 +36,15 @@ digraph Backlog {
         // stage. That backstop cancels the run either way, and every agent node here
         // already carries its own measured timeout.
         stall_timeout="60m",
+        // Fabro's failure-signature breaker counts run-wide and never resets on success
+        // (lifecycle/circuit_breaker.rs). At the default of 3 it ended run 01M4G6C8MWBYJPY84QQ8BNB6DT
+        // (womens-fantasy-sports#1413) after 6.4 h: `validate` failed once on each of three
+        // different tasks, the masked signatures matched, and no PR was opened. This run can
+        // hit the same gate up to 8 decomposed tasks plus extra-review follow-ups, several
+        // times each. The rework ladder (round 6) and the human gates already bound every
+        // loop, so the breaker adds no protection the graph lacks. 100 is well above any
+        // count observed (writers-app#963 saw 21 validate failures in one run).
+        loop_restart_signature_limit=100,
         // Bound the preamble. `compact` (the default) prepends EVERY completed stage to
         // every agent prompt, with up to 25 lines of command output each
         // (handler/llm/preamble.rs:391, COMPACT_OUTPUT_MAX_LINES=25), plus the whole
@@ -1541,10 +1550,27 @@ echo handoff ready"]
 
     review_merge [import="../_shared/review-merge/review-merge.fabro"]
 
+    // Posts the decomposer's summary under the fixed sentence, because the summary says WHY
+    // there is no work (issue #10). Without it the operator reads a decomposer failure and
+    // re-labels the issue `agent`, which burns another run. Each gh call is its own
+    // statement, so a failed label cannot stop the receipt removal or the comment.
     close_noop [label="Close (no actionable work)", shape=parallelogram,
         script="N=$(jq -r .number /tmp/fabro/issue.json)
+S=$(jq -r '.summary // empty' /tmp/fabro/decomposition.json 2>/dev/null || true)
+{
+  echo 'Agent run found no actionable decomposition for this issue; leaving it for human triage.'
+  if [ -n \"$(printf '%s' \"$S\" | tr -d '[:space:]')\" ]; then
+    echo
+    echo 'The decomposer reported:'
+    echo
+    printf '%s' \"$S\" | sed 's/^/> /'
+    echo
+  fi
+} > /tmp/fabro/noop_comment.md
 gh issue edit $N --remove-label agent-in-progress || true
-gh issue comment $N --body 'Agent run found no actionable decomposition for this issue; leaving it for human triage.' || true
+gh label create agent-noop --color D4C5F9 --description 'Agent run found nothing to do; read the comment before re-adding agent' 2>/dev/null || true
+gh issue edit $N --add-label agent-noop || true
+gh issue comment $N --body-file /tmp/fabro/noop_comment.md || true
 echo done"]
 
     // A human gate blocks until a human answers, and with no timeout that is

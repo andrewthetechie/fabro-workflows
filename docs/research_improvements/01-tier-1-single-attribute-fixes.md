@@ -21,6 +21,8 @@ output seldom does. ADR 0011's D5 (`autofix` before `validate`) removes most of 
 writers-app failures, which lowers the exposure further. Keep this as a one-line insurance
 change. Nothing measured makes it urgent.
 
+**Status 2026-10-10: applied** (issue #7). `backlog` sets `loop_restart_signature_limit=100` and `pr-review` sets `=20`. The first measured cost was run `01M4G6C8MWBYJPY84QQ8BNB6DT`, which lost 6.4 h of work.
+
 **Update 2026-09-25: still open.** ADR 0012 set `loop_restart_signature_limit=20` on
 `arch-review` for the same reason, so a precedent now exists. `backlog` still has no
 setting. Now tracked in `docs/factory-roadmap/H-housekeeping.md`.

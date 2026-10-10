@@ -2557,7 +2557,7 @@ chmod +x "$AS/bin/gh"
 PATH="$AS/bin:$SAVED_PATH"
 export GH_LOG="$AS/gh.log" GH_STATE="$AS"
 
-printf '{"number":7,"title":"Parent","labels":[{"name":"needs-triage"},{"name":"architecture"},{"name":"agent"}],"body":"parent body"}' > "$AS/issue.json"
+printf '{"number":7,"title":"Parent","labels":[{"name":"needs-triage"},{"name":"architecture"},{"name":"agent"},{"name":"agent-noop"}],"body":"parent body"}' > "$AS/issue.json"
 printf '{"readiness":"ready","title":"feat: parent","labels":["area:web"],"questions":[],"decisions":[{"question":"Where?","decision":"Here.","basis":"CONTEXT.md"}],"summary":"s"}' > "$AS/triage.json"
 printf 'report body\n' > "$AS/triage.md"
 printf '## Proposed task map\n\nDrafted by triage against `main`.\n' > "$AS/task_map.md"
@@ -2574,7 +2574,8 @@ check "asplit: later children held"    "2" "$(grep '^issue create' "$AS/gh.log" 
 check "asplit: architecture inherited" "3" "$(grep '^issue create' "$AS/gh.log" | grep -c -- '--label=architecture')"
 check "asplit: triage labels inherited" "3" "$(grep '^issue create' "$AS/gh.log" | grep -c -- '--label=area:web')"
 check "asplit: triage label created"   "1" "$(grep -c '^label create area:web' "$AS/gh.log")"
-check "asplit: agent never inherited"  "0" "$(grep '^issue create' "$AS/gh.log" | grep -c -- '--label=agent')"
+check "asplit: agent never inherited"  "0" "$(grep '^issue create' "$AS/gh.log" | grep -cE -- '--label=agent( |$)')"
+check "asplit: agent-noop never inherited" "0" "$(grep '^issue create' "$AS/gh.log" | grep -c -- '--label=agent-noop')"
 check "asplit: needs-triage dropped"   "0" "$(grep '^issue create' "$AS/gh.log" | grep -c -- 'needs-triage')"
 check "asplit: 3 sub-issue links"      "3" "$(grep -c -- 'sub_issues -F sub_issue_id' "$AS/gh.log")"
 check "asplit: parent agent-split"     "1" "$(grep -c -- 'issue edit 7 --title feat: parent --add-label agent-split' "$AS/gh.log")"
@@ -3655,6 +3656,250 @@ check "rebase: tier-2 receipt miss ends the ladder" "2"   "$(jq -r .context_upda
 rc_repo
 rc_gate "$SHARED" ci_fix_gate
 check "ci_fix: no receipt routes not ok"          "false" "$(jq -r .context_updates.ci_fix_ok <<<"$J")"
+
+# ---------------------------------------------------------------------------
+# breaker limits (issue #7): the run-wide failure-signature breaker must sit above
+# the number of times one gate can fail in a run, or it ends the run with no PR.
+# ---------------------------------------------------------------------------
+echo ""
+echo "breaker limits"
+check "backlog: signature limit set"   "1" "$(grep -c '^        loop_restart_signature_limit=100,$' "$GRAPH")"
+check "pr-review: signature limit set" "1" "$(grep -c '^        loop_restart_signature_limit=20,$' "$PR")"
+
+# ---------------------------------------------------------------------------
+# close_noop — the decomposer's reason goes on the issue (issue #10)
+#
+# `no_work` used to post one fixed sentence, so the operator read a decomposer
+# failure, re-labelled the issue `agent`, and burned another run. The summary is
+# the reason. The label is a separate call, so a failure there cannot stop the
+# receipt removal or the comment.
+# ---------------------------------------------------------------------------
+echo ""
+echo "close_noop"
+T="$WORK/closenoop"; mkdir -p "$T/bin" "$T/fab"
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$*" in
+  *"--add-label agent-noop"*) [ -f "$GH_STATE/add_fails" ] && exit 1 ;;
+esac
+while [ $# -gt 0 ]; do
+  [ "$1" = --body-file ] && cp "$2" "$GH_STATE/comment.md"
+  shift
+done
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+PATH="$T/bin:$ORIG_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+stage_into close_noop "$T/fab"
+
+# $1 = decomposition.json body, or empty for a missing file; $2 = make --add-label fail
+cn_run() {
+    rm -rf "$T/fab"; mkdir -p "$T/fab"
+    printf '%s' '{"number":1393}' > "$T/fab/issue.json"
+    if [ -n "${1:-}" ]; then printf '%s' "$1" > "$T/fab/decomposition.json"; fi
+    : > "$T/gh.log"; rm -f "$T/comment.md" "$T/add_fails"
+    if [ -n "${2:-}" ]; then : > "$T/add_fails"; fi
+    OUT=$(sh "$T/close_noop.sh" 2>&1); RC=$?
+}
+
+cn_run '{"status":"no_work","summary":"Already done by #1426.\nSecond line.","issues":[]}'
+check "noop: exits 0"                    "0" "$RC"
+check "noop: removes the receipt"        "1" "$(grep -c -- 'issue edit 1393 --remove-label agent-in-progress' "$T/gh.log")"
+check "noop: keeps the generic sentence" "1" "$(grep -c '^Agent run found no actionable decomposition for this issue; leaving it for human triage.$' "$T/comment.md")"
+check "noop: names the decomposer"       "1" "$(grep -c '^The decomposer reported:$' "$T/comment.md")"
+check "noop: quotes line one"            "1" "$(grep -c '^> Already done by #1426\.$' "$T/comment.md")"
+check "noop: quotes line two"            "1" "$(grep -c '^> Second line\.$' "$T/comment.md")"
+check "noop: labels agent-noop"          "1" "$(grep -c -- 'issue edit 1393 --add-label agent-noop' "$T/gh.log")"
+check "noop: creates the label"          "1" "$(grep -c '^label create agent-noop' "$T/gh.log")"
+check "noop: comments from a file"       "1" "$(grep -c -- 'issue comment 1393 --body-file' "$T/gh.log")"
+
+cn_run '{"status":"no_work","summary":"","issues":[]}'
+check "empty summary: exits 0"           "0" "$RC"
+check "empty summary: no quote block"    "0" "$(grep -c 'decomposer reported' "$T/comment.md")"
+check "empty summary: generic sentence"  "1" "$(grep -c '^Agent run found no actionable' "$T/comment.md")"
+check "empty summary: still labels"      "1" "$(grep -c -- 'issue edit 1393 --add-label agent-noop' "$T/gh.log")"
+
+cn_run '{"status":"no_work","summary":"   ","issues":[]}'
+check "blank summary: no quote block"    "0" "$(grep -c 'decomposer reported' "$T/comment.md")"
+
+cn_run ''
+check "missing file: exits 0"            "0" "$RC"
+check "missing file: generic sentence"   "1" "$(grep -c '^Agent run found no actionable' "$T/comment.md")"
+check "missing file: no quote block"     "0" "$(grep -c 'decomposer reported' "$T/comment.md")"
+check "missing file: still labels"       "1" "$(grep -c -- 'issue edit 1393 --add-label agent-noop' "$T/gh.log")"
+
+cn_run '{"status":"no_work","summary":"Done.","issues":[]}' fails
+check "label fails: exits 0"             "0" "$RC"
+check "label fails: still removes receipt" "1" "$(grep -c -- 'remove-label agent-in-progress' "$T/gh.log")"
+check "label fails: still comments"      "1" "$(grep -c -- 'issue comment 1393 --body-file' "$T/gh.log")"
+
+# ---------------------------------------------------------------------------
+# deliver and mark_needs_human — what the PR says about undelivered fixes
+# (issues #8 and #9). REAL git against a bare remote, so the lease rule is the one
+# under test. `delivery` is the marker both nodes share: delivered, rejected,
+# pushed_on_stop, not_pushed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "deliver + mark_needs_human (real git)"
+T="$WORK/delivery"; mkdir -p "$T/bin" "$T/fab"
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$*" in
+  "pr view "*"--json state"*)
+    S=$(cat "$GH_STATE/pr_state" 2>/dev/null || echo OPEN)
+    [ "$S" = ERR ] && exit 1
+    echo "$S"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+PATH="$T/bin:$ORIG_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+extract_from "$SHARED" deliver | sed "s#/tmp/fabro#$T/fab#g" > "$T/deliver.sh"
+extract_from "$SHARED" rm_setup | sed "s#/tmp/fabro#$T/fab#g" > "$T/rm_setup.sh"
+extract_from "$SHARED" mark_needs_human | sed "s#/tmp/fabro#$T/fab#g" > "$T/mark.sh"
+for f in deliver rm_setup mark; do
+    if ! sh -n "$T/$f.sh" 2>"$T/$f.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL %s.sh is not valid POSIX sh\n' "$f"; sed 's/^/       /' "$T/$f.syntax"
+    fi
+done
+
+BR="fabro/run/01TEST"
+# $1 = moved: another clone pushes to the PR branch after the run's last push, so
+# the lease push is refused. The run has one review_fix commit and one empty
+# checkpoint commit on top of the branch's tracking ref.
+dl_setup() {
+    rm -rf "$T/up.git" "$T/seed" "$T/wt" "$T/other" "$T/fab"; mkdir -p "$T/fab"
+    git init -q --bare -b main "$T/up.git"
+    git clone -q "$T/up.git" "$T/seed" 2>/dev/null
+    git -C "$T/seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    git -C "$T/seed" push -q origin HEAD:main
+    git clone -q --single-branch --branch main "$T/up.git" "$T/wt"
+    git -C "$T/wt" config user.email t@t
+    git -C "$T/wt" config user.name t
+    git -C "$T/wt" checkout -qb "$BR"
+    echo work > "$T/wt/a.txt"
+    git -C "$T/wt" add -A
+    git -C "$T/wt" commit -qm 'fabro(01TEST): coder (succeeded)'
+    git -C "$T/wt" push -q origin "$BR"
+    # open_pr widens the refspec so the lease has a tracking ref to compare against.
+    git -C "$T/wt" config --add remote.origin.fetch "+refs/heads/$BR:refs/remotes/origin/$BR"
+    git -C "$T/wt" fetch -q origin
+    echo more >> "$T/wt/a.txt"
+    git -C "$T/wt" commit -qam 'fabro(01TEST): review_merge.review_fix (succeeded)'
+    git -C "$T/wt" commit -q --allow-empty -m 'fabro(01TEST): review_merge.refute (succeeded)'
+    if [ "${1:-}" = moved ]; then
+        git clone -q --branch "$BR" "$T/up.git" "$T/other"
+        git -C "$T/other" config user.email t@t
+        git -C "$T/other" config user.name t
+        echo elsewhere > "$T/other/b.txt"
+        git -C "$T/other" add -A
+        git -C "$T/other" commit -qm 'someone else'
+        git -C "$T/other" push -q origin "$BR"
+    fi
+    printf '%s' 7 > "$T/fab/pr_number"
+    echo "$BR" > "$T/fab/head_ref"
+    echo main > "$T/fab/base_ref"
+    echo https://github.com/o/r/pull/7 > "$T/fab/pr_url"
+    printf '%s' '{"url":"https://github.com/o/r/pull/7"}' > "$T/fab/pr.json"
+    printf '%s' '[]' > "$T/fab/linked_issues.json"
+    git -C "$T/wt" rev-parse origin/main | tr -d '\n' > "$T/fab/run_base_sha"
+    rm -f "$T/pr_state"; : > "$T/gh.log"
+}
+
+# deliver: a rejected push says why.
+dl_setup moved; echo MERGED > "$T/pr_state"
+OUT=$( cd "$T/wt" && sh "$T/deliver.sh" 2>&1 )
+check "rejected: delivered=false"          "false" "$(jq -r '.context_updates.delivered' <<<"$(lastjson "$OUT")")"
+check "rejected: marker is rejected"       "rejected" "$(cat "$T/fab/delivery")"
+check "merged: says merged by hand"        "1" "$(grep -c 'merged by hand before the review finished' "$T/fab/merge_block_reason")"
+check "merged: counts one undelivered"     "1" "$(grep -c '1 commit(s) from this review were not delivered' "$T/fab/merge_block_reason")"
+check "merged: lists the review commit"    "1" "$(grep -c 'review_merge.review_fix' "$T/fab/merge_block_reason")"
+check "merged: skips the empty checkpoint" "0" "$(grep -c 'review_merge.refute' "$T/fab/merge_block_reason")"
+check "merged: both reason files agree"    "" "$(diff "$T/fab/merge_block_reason" "$T/fab/needs_human_reason")"
+
+dl_setup moved; echo CLOSED > "$T/pr_state"
+OUT=$( cd "$T/wt" && sh "$T/deliver.sh" 2>&1 )
+check "closed: says closed"                "1" "$(grep -c 'was closed before the review finished' "$T/fab/merge_block_reason")"
+check "closed: both reason files agree"    "" "$(diff "$T/fab/merge_block_reason" "$T/fab/needs_human_reason")"
+
+dl_setup moved; echo OPEN > "$T/pr_state"
+OUT=$( cd "$T/wt" && sh "$T/deliver.sh" 2>&1 )
+check "open: keeps the moved-branch text"  "1" "$(grep -c 'the PR branch moved while this run was working' "$T/fab/merge_block_reason")"
+check "open: delivered=false"              "false" "$(jq -r '.context_updates.delivered' <<<"$(lastjson "$OUT")")"
+check "open: marker is rejected"           "rejected" "$(cat "$T/fab/delivery")"
+
+dl_setup moved; echo ERR > "$T/pr_state"
+OUT=$( cd "$T/wt" && sh "$T/deliver.sh" 2>&1 )
+check "gh error: moved-branch text"        "1" "$(grep -c 'the PR branch moved while this run was working' "$T/fab/merge_block_reason")"
+check "gh error: delivered=false"          "false" "$(jq -r '.context_updates.delivered' <<<"$(lastjson "$OUT")")"
+check "gh error: marker is rejected"       "rejected" "$(cat "$T/fab/delivery")"
+
+dl_setup; echo OPEN > "$T/pr_state"
+OUT=$( cd "$T/wt" && sh "$T/deliver.sh" 2>&1 )
+check "delivered: delivered=true"          "true" "$(jq -r '.context_updates.delivered' <<<"$(lastjson "$OUT")")"
+check "delivered: marker"                  "delivered" "$(cat "$T/fab/delivery")"
+check "delivered: remote is HEAD"          "$(git -C "$T/wt" rev-parse HEAD)" "$(git -C "$T/up.git" rev-parse "$BR")"
+
+# mark_needs_human: a stop before deliver pushes what the run made, or says it did not.
+mh_setup() {  # $1 = moved, as in dl_setup
+    dl_setup "${1:-}"
+    FABRO_AUTO_MERGE=1 sh "$T/rm_setup.sh" >/dev/null 2>&1
+    echo '{"outcome":"fixed","risk":1,"summary":"s","own_findings":[],"fixes_applied":[{"finding_id":"STD-002","axis":"standards","description":"CONTEXT.md doc fix"}],"not_fixed":[]}' > "$T/fab/review/fix_result.json"
+}
+run_mark() { ( cd "$T/wt" && sh "$T/mark.sh" >/dev/null 2>&1 ); }
+
+mh_setup; echo OPEN > "$T/pr_state"
+run_mark
+check "stop pushes: remote is HEAD"        "$(git -C "$T/wt" rev-parse HEAD)" "$(git -C "$T/up.git" rev-parse "$BR")"
+check "stop pushes: marker"                "pushed_on_stop" "$(cat "$T/fab/delivery")"
+check "stop pushes: fixes listed applied"  "1" "$(grep -c '^### Fixes applied$' "$T/fab/pr_comment.md")"
+check "stop pushes: says so"               "1" "$(grep -c 'Pushed to the PR branch when the run stopped' "$T/fab/pr_comment.md")"
+check "stop pushes: commit links present"  "1" "$([ "$(grep -c '/commits/' "$T/fab/pr_comment.md")" -ge 1 ] && echo 1 || echo 0)"
+
+mh_setup; echo MERGED > "$T/pr_state"
+BEFORE=$(git -C "$T/up.git" rev-parse "$BR")
+run_mark
+check "merged: no push"                    "$BEFORE" "$(git -C "$T/up.git" rev-parse "$BR")"
+check "merged: marker not_pushed"          "not_pushed" "$(cat "$T/fab/delivery")"
+check "merged: NOT pushed heading"         "1" "$(grep -c '^### Fixes made in this run but NOT pushed$' "$T/fab/pr_comment.md")"
+check "merged: no applied heading"         "0" "$(grep -c '^### Fixes applied$' "$T/fab/pr_comment.md")"
+check "merged: no commit links"            "0" "$(grep -c '/commits/' "$T/fab/pr_comment.md")"
+
+mh_setup moved; echo OPEN > "$T/pr_state"
+run_mark
+check "stop rejected: marker rejected"     "rejected" "$(cat "$T/fab/delivery")"
+check "stop rejected: remote kept theirs"  "$(git -C "$T/other" rev-parse HEAD)" "$(git -C "$T/up.git" rev-parse "$BR")"
+check "stop rejected: says NOT pushed"     "1" "$(grep -c 'NOT pushed' "$T/fab/pr_comment.md")"
+
+mh_setup; echo OPEN > "$T/pr_state"; echo rejected > "$T/fab/delivery"
+BEFORE=$(git -C "$T/up.git" rev-parse "$BR")
+run_mark
+check "prior rejection: no second push"    "$BEFORE" "$(git -C "$T/up.git" rev-parse "$BR")"
+check "prior rejection: marker kept"       "rejected" "$(cat "$T/fab/delivery")"
+
+mh_setup; echo OPEN > "$T/pr_state"; echo delivered > "$T/fab/delivery"
+BEFORE=$(git -C "$T/up.git" rev-parse "$BR")
+run_mark
+check "prior delivery: no push"            "$BEFORE" "$(git -C "$T/up.git" rev-parse "$BR")"
+check "prior delivery: applied heading"    "1" "$(grep -c '^### Fixes applied$' "$T/fab/pr_comment.md")"
+
+mh_setup; echo ERR > "$T/pr_state"
+BEFORE=$(git -C "$T/up.git" rev-parse "$BR")
+run_mark
+check "gh error: no push"                  "$BEFORE" "$(git -C "$T/up.git" rev-parse "$BR")"
+check "gh error: marker not_pushed"        "not_pushed" "$(cat "$T/fab/delivery")"
+
+# rm_setup clears a marker left by the previous run.
+mh_setup; echo delivered > "$T/fab/delivery"
+FABRO_AUTO_MERGE=1 sh "$T/rm_setup.sh" >/dev/null 2>&1
+check "rm_setup clears a stale marker"     "0" "$([ -e "$T/fab/delivery" ] && echo 1 || echo 0)"
+
+PATH="$ORIG_PATH"
+unset GH_LOG GH_STATE
 
 # ---------------------------------------------------------------------------
 # review-merge render — the Refuter and hygiene rows and sections (ADR 0013 D5)

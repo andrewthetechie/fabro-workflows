@@ -8,6 +8,12 @@ digraph PrReview {
         // timeout the one that fires. See backlog's graph block for the full reasoning
         // and the seven runs it cost.
         stall_timeout="60m",
+        // The failure-signature breaker counts run-wide and never resets on success, and the
+        // default limit is 3. fix_gate prints one fixed line for each bad review_fix result,
+        // and review_fix can run up to three times in one review (the first visit, then up to
+        // two after validate fails), so three identical failures would end the run with no
+        // PR outcome. Every loop in this phase is bounded, so 20 costs nothing.
+        loop_restart_signature_limit=20,
         // Bound the preamble: `compact` (the default) prepends every completed stage,
         // with up to 25 lines of command output each, to every agent prompt. Every
         // prompt here names its inputs by path, so the preamble carries no signal this

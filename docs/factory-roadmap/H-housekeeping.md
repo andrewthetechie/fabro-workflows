@@ -27,6 +27,8 @@ overrides every later rework in the run. **Fix:** `rm -f /tmp/fabro/feedback/res
 20 for the same reason. **Fix:** one attribute, sized above the rework ladder's maximum gate
 visits per run.
 
+**Applied 2026-10-10** (issue #7): `backlog` sets `loop_restart_signature_limit=100`, `pr-review` sets `=20`, and `ops/test-task-gates.sh` checks both.
+
 ## H4 · A pre-push hook
 
 `research_improvements/03` item 5. Pushing to `main` deploys. **Fix:** `.githooks/pre-push`
