@@ -960,6 +960,9 @@ exit 0"]
 B=$(cat /tmp/fabro/base_ref)
 H=$(cat /tmp/fabro/head_ref)
 F=/tmp/fabro/review/ci_fix_result.json
+# Every refusal writes BOTH reason files: merge_block_reason for `blocked`, and
+# needs_human_reason, which mark_needs_human reads if this node fails (invariants-merge).
+block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
 if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then O=invalid; else O=$(jq -r .outcome \"$F\" 2>/dev/null || echo invalid); fi
@@ -967,19 +970,19 @@ SC=$(jq -r .scope \"$F\" 2>/dev/null || echo invalid)
 if [ \"$O\" != fixed ] && [ \"$O\" != cannot_fix ]; then O=invalid; fi
 if [ \"$SC\" != ci_only ]; then SC=invalid; fi
 if [ \"$O\" = invalid ] || [ \"$SC\" = invalid ]; then
-  echo 'The CI-fix report is missing or invalid; the merge is refused rather than trusting it.' > /tmp/fabro/merge_block_reason
+  block 'The CI-fix report is missing or invalid; the merge is refused rather than trusting it.'
   echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
 if [ \"$O\" = cannot_fix ]; then
-  { echo 'The CI-fix agent could not make the failing check pass.'; echo; jq -r '.reason // \"(no reason given)\"' \"$F\" 2>/dev/null || true; } > /tmp/fabro/merge_block_reason
+  block \"The CI-fix agent could not make the failing check pass. $(jq -r '.reason // \"(no reason given)\"' \"$F\" 2>/dev/null || true)\"
   echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
 # scope check from git, not from the agent's claim
 NEW=$(git diff --name-only origin/\"$B\"...HEAD 2>/dev/null | while IFS= read -r f; do grep -qxF \"$f\" /tmp/fabro/review/merge_base_files.txt || echo \"$f\"; done)
 if [ -n \"$NEW\" ]; then
-  echo 'The CI fix touched files outside the reviewed change set; the merge is refused.' > /tmp/fabro/merge_block_reason
+  block 'The CI fix touched files outside the reviewed change set; the merge is refused.'
   echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
@@ -993,21 +996,21 @@ while IFS= read -r f; do
   if grep -qI '<<<<<<< ' \"$f\"; then BAD=1; break; fi
 done < /tmp/fabro/ci_fix_scan.txt
 if [ $BAD -ne 0 ]; then
-  echo 'The CI fix left conflict markers or an in-progress merge; the merge is refused.' > /tmp/fabro/merge_block_reason
+  block 'The CI fix left conflict markers or an in-progress merge; the merge is refused.'
   echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
 sh /tmp/fabro/hygiene.sh > /dev/null 2>&1 || true
 HB=$(jq -r 'if (.blocking | type) == \"array\" then (.blocking | length) else \"bad\" end' /tmp/fabro/review/hygiene.json 2>/dev/null || echo bad)
 if [ \"$HB\" != 0 ]; then
-  { echo 'The CI fix was not pushed: after it, the diff-hygiene counters block the merge.'; cat /tmp/fabro/review/hygiene_reason.txt 2>/dev/null || echo 'The hygiene result is missing or invalid.'; } > /tmp/fabro/merge_block_reason
+  block \"The CI fix was not pushed: after it, the diff-hygiene counters block the merge. $(cat /tmp/fabro/review/hygiene_reason.txt 2>/dev/null || echo 'The hygiene result is missing or invalid.')\"
   echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
   exit 0
 fi
 if git push --force-with-lease origin HEAD:\"$H\"; then
   echo '{\"context_updates\":{\"ci_fix_ok\":true}}'
 else
-  echo 'The CI-fix push was rejected because the branch moved; a human must merge this PR.' > /tmp/fabro/merge_block_reason
+  block 'The CI-fix push was rejected because the branch moved; a human must merge this PR.'
   echo '{\"context_updates\":{\"ci_fix_ok\":false}}'
 fi
 exit 0"]
@@ -1188,18 +1191,20 @@ exit 0"]
         script="B=$(cat /tmp/fabro/base_ref)
 H=$(cat /tmp/fabro/head_ref)
 echo 1 > /tmp/fabro/strict_retry
+# Every refusal writes BOTH reason files, as in ci_fix_gate.
+block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
 git fetch origin \"$B\"
 if git rebase origin/\"$B\"; then
   if git push --force-with-lease origin HEAD:\"$H\"; then
     echo '{\"context_updates\":{\"remerge_ok\":true}}'
   else
     git rebase --abort 2>/dev/null || true
-    echo 'The re-merge push was rejected because the branch moved; a human must merge this PR.' > /tmp/fabro/merge_block_reason
+    block 'The re-merge push was rejected because the branch moved; a human must merge this PR.'
     echo '{\"context_updates\":{\"remerge_ok\":false}}'
   fi
 else
   git rebase --abort 2>/dev/null || true
-  echo 'A conflict appeared after the review; the base moved substantially, and a human must resolve it.' > /tmp/fabro/merge_block_reason
+  block 'A conflict appeared after the review; the base moved substantially, and a human must resolve it.'
   echo '{\"context_updates\":{\"remerge_ok\":false}}'
 fi
 exit 0"]

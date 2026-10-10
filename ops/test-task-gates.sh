@@ -3819,12 +3819,12 @@ check "merged: says merged by hand"        "1" "$(grep -c 'merged by hand before
 check "merged: counts one undelivered"     "1" "$(grep -c '1 commit(s) from this review were not delivered' "$T/fab/merge_block_reason")"
 check "merged: lists the review commit"    "1" "$(grep -c 'review_merge.review_fix' "$T/fab/merge_block_reason")"
 check "merged: skips the empty checkpoint" "0" "$(grep -c 'review_merge.refute' "$T/fab/merge_block_reason")"
-check "merged: both reason files agree"    "" "$(diff "$T/fab/merge_block_reason" "$T/fab/needs_human_reason")"
+check "merged: both reason files agree"    "1" "$(cmp -s "$T/fab/merge_block_reason" "$T/fab/needs_human_reason" && echo 1 || echo 0)"
 
 dl_setup moved; echo CLOSED > "$T/pr_state"
 OUT=$( cd "$T/wt" && sh "$T/deliver.sh" 2>&1 )
 check "closed: says closed"                "1" "$(grep -c 'was closed before the review finished' "$T/fab/merge_block_reason")"
-check "closed: both reason files agree"    "" "$(diff "$T/fab/merge_block_reason" "$T/fab/needs_human_reason")"
+check "closed: both reason files agree"    "1" "$(cmp -s "$T/fab/merge_block_reason" "$T/fab/needs_human_reason" && echo 1 || echo 0)"
 
 dl_setup moved; echo OPEN > "$T/pr_state"
 OUT=$( cd "$T/wt" && sh "$T/deliver.sh" 2>&1 )
@@ -3900,6 +3900,42 @@ check "rm_setup clears a stale marker"     "0" "$([ -e "$T/fab/delivery" ] && ec
 
 PATH="$ORIG_PATH"
 unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
+# ci_fix_gate and remerge_base — a refusal writes BOTH reason files, because a
+# node that fails routes to mark_needs_human, which reads needs_human_reason.
+# ---------------------------------------------------------------------------
+echo ""
+echo "merge-phase refusals write both reason files"
+T="$WORK/bothreasons"; mkdir -p "$T/bin" "$T/fab/review"
+cat > "$T/bin/git" <<'STUB'
+#!/bin/sh
+# Everything succeeds except a rebase, which conflicts.
+case "$1" in rebase) [ "$2" = --abort ] && exit 0; exit 1 ;; esac
+exit 0
+STUB
+chmod +x "$T/bin/git"
+PATH="$T/bin:$ORIG_PATH"
+
+extract_from "$SHARED" ci_fix_gate | sed "s#/tmp/fabro#$T/fab#g" > "$T/ci_fix_gate.sh"
+rm -f "$T/fab/review/ci_fix_result.json"
+OUT=$(sh "$T/ci_fix_gate.sh" 2>&1)
+check "ci_fix: refusal routes ci_fix_ok=false" "false" "$(jq -r '.context_updates.ci_fix_ok' <<<"$(lastjson "$OUT")")"
+check "ci_fix: merge_block_reason written"     "1" "$([ -s "$T/fab/merge_block_reason" ] && echo 1 || echo 0)"
+check "ci_fix: needs_human_reason written"     "1" "$([ -s "$T/fab/needs_human_reason" ] && echo 1 || echo 0)"
+check "ci_fix: no stray backslash in reason" "0" "$(grep -c '\\' "$T/fab/merge_block_reason")"
+check "shared graph: no backslash-quote"     "0" "$(grep -cF "\\'" "$SHARED")"
+check "ci_fix: both reason files agree"        "1" "$(cmp -s "$T/fab/merge_block_reason" "$T/fab/needs_human_reason" && echo 1 || echo 0)"
+
+extract_from "$SHARED" remerge_base | sed "s#/tmp/fabro#$T/fab#g" > "$T/remerge.sh"
+echo main > "$T/fab/base_ref"; echo fabro/run/01TEST > "$T/fab/head_ref"
+rm -f "$T/fab/merge_block_reason" "$T/fab/needs_human_reason"
+OUT=$(sh "$T/remerge.sh" 2>&1)
+check "remerge: conflict routes remerge_ok=false" "false" "$(jq -r '.context_updates.remerge_ok' <<<"$(lastjson "$OUT")")"
+check "remerge: names the conflict"               "1" "$(grep -c 'A conflict appeared' "$T/fab/merge_block_reason")"
+check "remerge: both reason files agree"          "1" "$(cmp -s "$T/fab/merge_block_reason" "$T/fab/needs_human_reason" && echo 1 || echo 0)"
+
+PATH="$ORIG_PATH"
 
 # ---------------------------------------------------------------------------
 # review-merge render — the Refuter and hygiene rows and sections (ADR 0013 D5)
