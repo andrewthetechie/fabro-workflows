@@ -5,6 +5,9 @@ digraph IssueTriage {
         default_fidelity="truncate",
         // Above every node timeout, including the imported phase's 30m agents.
         stall_timeout="60m",
+        // The triage phase's gate-to-agent retry loops count against the run-wide breaker, so
+        // it carries the floor of 20 that every root importing a phase needs (invariants-graph.md).
+        loop_restart_signature_limit=20,
         model_stylesheet="
             *         { model: high-reasoning; }
             .improve  { model: high-reasoning; }
