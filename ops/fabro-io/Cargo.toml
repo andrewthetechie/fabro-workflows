@@ -1,6 +1,6 @@
 [package]
 name = "fabro-io"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 description = "Stage I/O MCP server (ADR 0016): reads a stage's inputs and writes its output contract with an Input receipt"
 license = "MIT"
@@ -17,6 +17,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.151" }
 sha2 = "0.10"
 tokio = { version = "1.53.1", features = ["full"] }
+toml = "0.8"
 
 [profile.release]
 lto = true

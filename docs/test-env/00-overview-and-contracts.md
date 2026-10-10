@@ -69,14 +69,15 @@ PostgreSQL was in the image the whole time (`/usr/local/bin/fabro-pg-ensure`).
 ```toml
 version = 1
 
+# Relative to the checkout root. Made absolute and prepended to PATH in order.
+# Must come before the first table.
+path = ["node_modules/.fabro-node/node-v24.11.0-linux-x64/bin"]
+
 # Literal strings, never expanded. Applied to every prepare entry and target, and printed
 # as exports by `fabro-io test-env`.
 [env]
 POSTGRES_SERVER = "localhost"
 POSTGRES_PORT = "5432"
-
-# Relative to the checkout root. Made absolute and prepended to PATH in order.
-path = ["node_modules/.fabro-node/node-v24.11.0-linux-x64/bin"]
 
 [prepare]
 # Globs relative to the checkout root, hashed into the fingerprint (C3).
