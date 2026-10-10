@@ -1,9 +1,9 @@
 # Dependabot: overview and canonical contracts
 
-**Status:** designed 2026-10-10 (ADR 0022, proposed). No task is started. The operator
-answered Q1-Q19 in a grilling session on 2026-10-10. D20-D25 were drafted while
-planning, from the code and the invariants files, and are open to the operator's veto
-until task 02 lands.
+**Status:** designed 2026-10-10 (ADR 0022, proposed). Task 01 (the spike) is done:
+`spike-2026-10-10.txt`. S1 passed, so the series is not blocked. Tasks 02-09 are in
+progress on `main`. The operator answered Q1-Q19 in a grilling session on 2026-10-10.
+D20-D25 were drafted while planning, and are open to the operator's veto until task 02 lands.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
@@ -100,7 +100,7 @@ Checked on 2026-10-10 against HEAD `8f4782e`, the live GitHub API and the host.
   `gh auth status` shows scopes `admin:public_key, gist, read:org, repo`, and
   `gh api repos/andrewthetechie/jelly-swipe/dependabot/alerts` returns data. The vault's
   `GITHUB_TOKEN` was captured from the same `gh auth token` (`ops/README.md`, *Secrets*).
-  That a **sandbox** gets a token that can read alerts is **not yet verified**: task 01.
+  The sandbox token reads alerts, and reports `push: true`, on jelly-swipe (task 01, S1).
 - **Fabro's run-time permission block takes `vulnerability_alerts = "read"`**
   (`context/fabro/.fabro/workflows/patch-cves/workflow.toml`). It is a request bounded
   by what the token has.
@@ -201,8 +201,13 @@ A PR fixes an alert when all three hold:
 3. The target version `B` is at or above `first_patched`, by the version comparator in
    `match.jq` (task 03: numeric release parts, a pre-release below its release).
 
-Task 01 checks the rule against live and historical data and writes the final map into
-this section. Until then this section is a draft.
+Verified by task 01 (`spike-2026-10-10.txt`, S2-S3). The slug map is `npm_and_yarn`→`npm`,
+`uv`→`pip`, `cargo`→`rust`, `bun`→`npm` (no bun alert in history), and `github_actions`,
+`docker`, `docker_compose`, `pre_commit` map to themselves (no alert in history).
+The directory comes from the title (`in /dir`) or the grouped body (`in the /dir directory`),
+and must agree with the branch prefix `dependabot/<slug>/<dir>/`. Package names compare
+case-insensitively. A requirement-form target (`>=3.3.4,<4.0.0`) uses its `>=` version.
+On history: 0 false matches over 48 PRs and 212 pairs; 132 of 189 alerts matched.
 
 ### C4. Alert groups and `group.json` (written by `pick_group`)
 
@@ -280,7 +285,9 @@ is neither `merged` nor `switch_off` feeds `replaces` in C4.
   4. Closed 3 or more days ago with the alerts still open → reopen it, add
      `needs-human`, comment, and skip (D22).
 
-  How to tell "an open PR links this issue" is task 01's finding.
+  The open-PR test (verified, S4): `gh pr list -R <repo> --state open --json number,closingIssuesReferences`
+  filtered to the PRs whose `closingIssuesReferences` contain the issue number. The
+  link appears within about 20 s of the PR's creation, so a check made at once can miss it.
 
 ### C7. `patch.json`: the patch contract (written by `patch` through `submit`)
 

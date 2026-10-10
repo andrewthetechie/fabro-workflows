@@ -1,0 +1,292 @@
+ADR 0022 task 01: spike results (2026-10-10)
+=============================================
+
+Run from the Mac (gh logged in as andrewthetechie) and on the host (10.10.0.32).
+No token appears in this file. Scratch artefacts are in the working session's
+scratchpad, outside this repository.
+
+Summary
+-------
+S1 PASS   The sandbox token reads Dependabot alerts and reports push: true.
+S2 DONE   Slug map, title forms and grouped-body form recorded below.
+S3 DONE   C3 as drafted, with two corrections (case, requirement form). 0 false matches.
+S4 DONE   The query is `gh pr list --state open --json number,closingIssuesReferences`.
+S5 WAITS  No open jelly-swipe Dependabot PR is behind base. Nothing commented.
+S6 DONE   Merge needs an identity flag; `ci.sh` passed; the restore is clean.
+S7 DONE   Median 1 min, max 7.0 h, all below D22's 3 days. D22 unchanged.
+
+S1. The sandbox token can read alerts, comment and merge
+--------------------------------------------------------
+Package: a single `script` node, outside this repository, copied into the fabro
+container at /tmp/s1 and run once:
+
+    fabro run /tmp/s1 --environment python --auto-approve
+
+workflow.toml permissions, as in the task:
+
+    [run.integrations.github.permissions]
+    vulnerability_alerts = "read"
+    contents = "write"
+    pull_requests = "write"
+    issues = "write"
+    checks = "read"
+
+Node script:
+
+    R=andrewthetechie/jelly-swipe; gh api "repos/$R/dependabot/alerts?state=open&per_page=1" --jq length; echo alerts_rc=$?; gh api repos/$R --jq .permissions; echo perms_rc=$?
+
+Run 01M4M08E5KZ0CRAMB2HKHSYCQQ: SUCCEEDED in 1 s. Output (from the run dump,
+stages/002-probe@1/output.log):
+
+    1
+    alerts_rc=0
+    {"admin":true,"maintain":true,"pull":true,"push":true,"triage":true}
+    perms_rc=0
+
+So the sandbox token reads alerts (a number, not a 403), and `push: true` says
+it can merge. Nothing was merged or commented. The run's package was removed
+from the container afterwards.
+
+Note: `permissions` is the token user's rights on the repository, so the
+sandbox token is at least as strong as the host's `gh` user on these repos.
+
+S2. Branch prefixes, title forms and the grouped body
+-----------------------------------------------------
+Command, per repository:
+
+    gh pr list -R andrewthetechie/$r --author app/dependabot --state all --limit 200 \
+      --json number,title,headRefName,state,mergedAt,body
+
+Counts: jelly-swipe 101, lawncare-saas 30, writers-app 8, womens-fantasy-sports 26.
+
+Branch slug to alert ecosystem (the map for C3):
+
+    npm_and_yarn   -> npm        (seen: root and frontend/)
+    uv             -> pip        (seen: root uv.lock)
+    cargo          -> rust       (no cargo PR in history; the live alert is rust, Cargo.lock)
+    bun            -> npm        (seen on womens-fantasy-sports, 7 PRs; no bun alert in history, see S3)
+    github_actions -> github_actions   (not an alert ecosystem in history; no match possible)
+    docker, docker_compose, pre_commit -> themselves   (no alert ecosystem in history)
+
+Alert ecosystems in the four repositories (fixed and open, all states):
+npm, pip, rust. Nothing else.
+
+Directory in the branch name:
+- A root manifest: `dependabot/uv/urllib3-2.8.0`, `dependabot/npm_and_yarn/brace-expansion-5.0.12`.
+- A subdirectory: `dependabot/npm_and_yarn/frontend/axios-1.18.0`. The first
+  segment after the slug is the directory.
+- Grouped: `dependabot/npm_and_yarn/frontend/npm_and_yarn-569fac0ac0`, and
+  `dependabot/npm_and_yarn/multi-d0c2d048a7` for the root.
+- Ambiguous for scoped packages: `dependabot/npm_and_yarn/frontend/hey-api/openapi-ts-0.97.3`
+  is directory `frontend` plus package `@hey-api/openapi-ts`. The branch alone
+  cannot say where the directory ends.
+
+Finding: C3 takes the directory from the title (`... in /frontend`) or from the
+grouped body (`in the /frontend directory`), and checks that the branch continues
+with `<dir>/`. The branch gives the ecosystem.
+
+Title forms seen (every one in the four repositories):
+- `chore(deps): bump X from A to B` (also `build(deps)`, `deps-dev`, `⬆ Bump X from A to B`)
+- `... bump X from A to B in /dir` and `... in /dir in the docker group across 1 directory`
+- `chore(deps): update X requirement from <constraint> to <constraint>`, pip only:
+  `⬆ Update psycopg[binary] requirement from <4.0.0,>=3.1.13 to >=3.3.4,<4.0.0`.
+  The target is a constraint, not a version (see C3 below).
+- Grouped: `... bump the <group> group across 1 directory with N updates`,
+  `⬆ Bump the npm-packages group with 29 updates`, with no package named in the title.
+- Single-package PRs in some repositories name the package in the title only.
+  Grouped PRs have no `Updates` row unless the body lists them.
+
+Grouped body (one real example, trimmed, from jelly-swipe #431):
+
+    Bumps the npm_and_yarn group with 2 updates in the /frontend directory: [undici](...) ...
+
+    Updates `undici` from 7.29.0 to 7.30.0
+    <details> ...release notes... </details>
+
+    Updates `undici` from 8.10.1 to 8.11.2
+    ...
+
+Each package is an `Updates \`X\` from A to B` line. Single-package PRs in pip and
+the requirement form have no such line, so the title is the source for them.
+
+S3. The match rule against history
+----------------------------------
+Input: every alert with state=fixed in the four repositories (63 + 68 + 13 + 45),
+and every merged Dependabot PR, with its changed files (`gh pr view N --json files`).
+
+Window: merged PRs whose mergedAt falls within 48 h before the alert's fixed_at.
+
+Rule, as implemented in `match.jq` (scratchpad; task 03 writes the same program):
+1. Updates: the body's `Updates \`X\` from A to B` rows if there are any; otherwise
+   the title's `(bump|update) X [requirement] from A to B`.
+2. Target version: B as written, or for a requirement, the `>=` or `==` version
+   in it (`>=3.3.4,<4.0.0` gives 3.3.4). Anything else is no match.
+3. Ecosystem: the branch slug mapped as above. Directory: the title or body
+   directory, verified against the branch.
+4. Package: compared case-insensitively. Scope name `pkg[extra]` gives `pkg`.
+5. Match: same package, same ecosystem, same directory as `dirname(manifest)`,
+   and the target version is at or above first_patched (the comparator tested
+   on the 8 fixture cases in task 03).
+
+Two corrections to C3 as drafted, both found by this run:
+- Case: `PyJWT` in the alert and `pyjwt` in the PR. Without a case-insensitive compare
+  the match count was 110 of 189; with it, 132 of 189. Fixed.
+- Requirement form: `from >=0.53.0 to >=0.54.0` and `from <4.0.0,>=3.1.13 to >=3.3.4,<4.0.0`.
+  Fixed by taking the lower bound.
+- Body capture: `[^ ]+` ran past a line break into the release notes, so
+  the body regex uses `[^[:space:]]+`. Fixed.
+
+Results, after the corrections:
+
+| Repository | Alerts | Matched to one PR | Matched to none | Multi | False |
+|---|---|---|---|---|---|
+| jelly-swipe | 63 | 25 | 38 | 0 | 0 |
+| lawncare-saas | 68 | 62 | 6 | 0 | 0 |
+| writers-app | 13 | 12 | 1 | 0 | 0 |
+| womens-fantasy-sports | 45 | 33 | 12 | 0 | 0 |
+| **Total** | **189** | **132** | **57** | **0** | **0** |
+
+False matches: 0. Each claimed (PR, alert) pair was checked by two tests on the
+PR's diff: the package name appears (48 PRs, 212 pairs), and a `+` line carries
+the PR's target version (48 of 48 PRs). See `verify-claims` in the session notes.
+
+Misses: of the 57 alerts with no PR in the window, 27 are claimed by a merged PR
+at another time, so they are timing misses. The other 30 have no Dependabot PR
+at all in the record (see the list below). Misses are acceptable under the spike's
+rule; the false-match count is what gates C3. Explanations:
+- The frontend npm alerts fixed on 2026-09-03 (undici, browserslist, fast-uri,
+  nanoid, ip-address, postcss, vite, vitest, esbuild, @babel/core) have no grouped PR
+  in the record. They were fixed in one batch by a path the record does not show.
+- A root-directory brace-expansion PR (`dependabot/npm_and_yarn/brace-expansion-5.0.12`)
+  correctly does not match the `frontend/package-lock.json` alerts.
+- A PyJWT alert with first_patched null (womens-fantasy-sports #44) is correctly
+  unmatched: no patched version exists to compare against (D8).
+
+Unmatched alerts (30 with no PR claim at any time):
+- jelly-swipe #14 esbuild fixed-by-none fp=0.25.0
+- jelly-swipe #15 vite fixed-by-none fp=6.4.2
+- jelly-swipe #16 vitest fixed-by-none fp=3.2.6
+- jelly-swipe #17 @babel/core fixed-by-none fp=7.29.6
+- jelly-swipe #18 vite fixed-by-none fp=6.4.3
+- jelly-swipe #19 vite fixed-by-none fp=6.4.3
+- jelly-swipe #27 postcss fixed-by-none fp=8.5.18
+- jelly-swipe #28 postcss fixed-by-none fp=8.5.23
+- jelly-swipe #29 fast-uri fixed-by-none fp=3.1.5
+- jelly-swipe #36 nanoid fixed-by-none fp=3.3.16
+- jelly-swipe #37 tar fixed-by-none fp=7.5.21
+- jelly-swipe #38 brace-expansion fixed-by-none fp=5.0.8
+- jelly-swipe #39 brace-expansion fixed-by-none fp=5.0.9
+- jelly-swipe #43 ip-address fixed-by-none fp=10.2.1
+- jelly-swipe #44 ip-address fixed-by-none fp=10.2.2
+- jelly-swipe #45 ip-address fixed-by-none fp=10.3.1
+- jelly-swipe #46 nanoid fixed-by-none fp=3.3.18
+- jelly-swipe #47 fast-uri fixed-by-none fp=3.1.6
+- jelly-swipe #48 fast-uri fixed-by-none fp=3.1.6
+- jelly-swipe #49 browserslist fixed-by-none fp=4.28.7
+- jelly-swipe #50 browserslist fixed-by-none fp=4.28.7
+- jelly-swipe #51 fast-uri fixed-by-none fp=3.1.6
+- jelly-swipe #52 fast-uri fixed-by-none fp=3.1.6
+- lawncare-saas #26 brace-expansion fixed-by-none fp=5.0.7
+- lawncare-saas #27 brace-expansion fixed-by-none fp=2.1.2
+- lawncare-saas #40 cryptography fixed-by-none fp=50.0.0
+- lawncare-saas #51 @vitest/mocker fixed-by-none fp=4.1.11
+- lawncare-saas #9 @babel/core fixed-by-none fp=7.29.6
+- womens-fantasy-sports #44 PyJWT fixed-by-none fp=null
+- writers-app #6 @tiptap/core fixed-by-none fp=3.30.4
+
+S4. "An open PR links this issue"
+--------------------------------
+Sandbox repository: andrewthetechie/test-private-repo (private, not one of the four).
+Created: issue #1 and a draft PR #2 on branch spike-s4-<ts> whose body is `Resolves #1`.
+
+    gh issue view 1 --json closedByPullRequestsReferences
+    gh pr view 2 --json closingIssuesReferences
+
+Result:
+- Immediately after creation both returned []. GitHub indexes the link a few
+  seconds late. After about 20 s both showed the link, for the draft as well
+  (`isDraft: true`, closing = [1]).
+- `closedByPullRequestsReferences` lists the PR by number, url and repository,
+  with no `state` field. Its openness must come from another call.
+
+Working query (verified with PR #2 open and draft):
+
+    gh pr list -R <repo> --state open --json number,closingIssuesReferences \
+      --jq "[.[] | select(any(.closingIssuesReferences[]; .number == <N>)) | .number]"
+
+It returned [2]. One call answers "is an open PR linked to this issue". C6 names it.
+
+Cleanup: PR #2 closed and its branch deleted. Issue #1 deleted (GraphQL deleteIssue).
+Note: a PR cannot be deleted through the API, so the closed PR #2 remains in
+test-private-repo. It is a closed scratch PR with no content.
+
+S5. `@dependabot rebase` from the token's user
+---------------------------------------------
+Not run. Every open jelly-swipe Dependabot PR on 2026-10-10 is CLEAN, and none
+is BEHIND base:
+
+    gh pr view <n> -R andrewthetechie/jelly-swipe --json mergeStateStatus
+    -> 437 CLEAN, 438 CLEAN, 439 CLEAN, 440 CLEAN, 441 CLEAN, 442 CLEAN
+
+The spec says this part waits for the first hand-fired run in task 10.
+Nothing was commented.
+
+S6. In-place validation leaves no trace
+---------------------------------------
+Image: fabro-python:local on the host. A fresh clone of jelly-swipe in the
+container, PR #442 (sqlalchemy 2.1.0 to 2.1.1), exactly D20's sequence.
+
+First run, as written in the spec (`s6.sh`):
+    identity email=[] name=[]
+    fetch_rc=0  detach_rc=0
+    merge_rc=128
+    Committer identity unknown ... fatal: unable to auto-detect email address
+  The merge failed, and the spec's sequence does not check it. The script went on
+  to run `ci.sh` on plain origin/main (rc=0, 55 s). That run proves nothing about
+  the PR, so it is discarded.
+
+Second run, with the identity flags and an abort on merge failure (`s6b.sh`):
+    B=main
+    fetch_rc=0  detach_rc=0  merge_rc=0
+    merged_head=bc85837  PR files: pyproject.toml uv.lock
+    rc=0  secs=55
+    porcelain_lines=0
+    branch=main
+    MERGE_HEAD present? no
+
+Findings:
+- The plain image has no git identity. The merge needs one, so the node sets
+  `-c user.email=... -c user.name=...` on the merge (and on `sync_base`).
+  In the fabro sandbox the run's identity is already set ("Git identity: ...
+  explicit" in the run log). The node passes its own identity anyway, so it
+  does not depend on that.
+- The node must check the merge's exit status. The spec's sequence does not.
+- Untracked, non-ignored files after `git clean -fdq`: none.
+- Ignored paths left after the clean: .coverage, .pytest_cache/, .venv/,
+  alembic/__pycache__/, frontend/node_modules/, and the package __pycache__ directories.
+  `git clean -fd` does not remove them, and this matches D20's intent (the
+  dependency caches are reused). setup.sh re-syncs .venv from the lockfile.
+  Nothing in the tree is trusted from them. The node keeps `-fd` (no `-x`).
+
+S7. Alert closure lag
+---------------------
+For the 132 alerts with a single matched PR: fixed_at minus the matched PR's mergedAt.
+
+    min    0 h 0 min 4 s
+    median 0 h 1 min
+    max    7.0 h (25242 s)
+    over 3 days: 0
+
+The 48 h window caps the lag by construction, so these figures understate the
+lag a wider window would show. D22's 3-day window is still well above every
+observed value. D22 stays at 3 days; 00 is unchanged on this point.
+
+C3 in 00: final slug map and corrections
+----------------------------------------
+- Slug map: as S2 above.
+- Case-insensitive package compare; requirement lower bound; body regex
+  `[^[:space:]]+`.
+- Directory from the title or grouped body, checked against the branch.
+- False matches on history: 0 (of 48 PRs, 212 pairs).
+
+C6 in 00: the open-PR query is the S4 query above.
