@@ -10,11 +10,20 @@ digraph Dependabot {
         // this many times, and it counts run-wide. The phase's gates print one fixed line on a
         // bad contract, so a few repeats across PRs and groups must not stop the run mid-queue.
         loop_restart_signature_limit=20,
-        // Every class is on glm-5.3-flash (ADR 0022 D14). `.merge-spec` and `.refute` take
-        // their own models in the stylesheet that task 07 adds.
+        // The default and the patch are on glm-5.3-flash, and the merge phase's classes follow pr-review
+        // (ADR 0022 D14), with two differences. `.merge-spec` and `.rebase-t2` are on glm-5.3, as pr-review has
+        // them. `.merge-fix` is on glm-5.3-flash here, by D14, where pr-review has glm-5.3: review_fix's 15m
+        // timeout was measured on glm-5.3, so it is unmeasured for this graph (invariants-graph, Timeouts). Task 10
+        // records the first durations. `.refute` is non-GLM, as in every importing graph.
         model_stylesheet="
             *                 { model: glm-5.3-flash; }
             .dep-patch        { model: glm-5.3-flash; }
+            .merge-standards  { model: glm-5.3-flash; }
+            .merge-spec       { model: glm-5.3; }
+            .merge-fix        { model: glm-5.3-flash; }
+            .ci-fix           { model: glm-5.3-flash; }
+            .rebase-t2        { model: glm-5.3; }
+            .refute           { model: gpt-6.1-sol; }
         "
     ]
     rankdir=LR
@@ -640,6 +649,105 @@ fi
 rm -f $D/stopped_at
 echo blocked"]
 
+    // The patch PR (ADR 0022 D5, D6). The subject is `fix:`, deliberately: release-please cuts a patch release
+    // for a security fix on jelly-swipe and lawncare-saas, which is right. The commit body's marker block holds
+    // `Resolves #N`, which GitHub reads, and the shared phase reads `linked_issues.json` from the link.
+    open_pr [label="Push and open the patch PR", shape=parallelogram, output_schema="routing", timeout="10m",
+        script="echo open_pr > /tmp/fabro/dep/stopped_at
+set -e
+D=/tmp/fabro/dep
+PKG=$(jq -r .package $D/group.json)
+MAN=$(jq -r .manifest $D/group.json)
+N=$(jq -r .issue $D/group.json)
+TO=$(jq -r '.changes[0].to // \"\"' $D/patch.json)
+jq -rn --arg p \"$PKG\" --arg m \"$MAN\" --argjson n \"$N\" '(\"fix(deps): patch \" + $p + \" security alerts in \" + $m) as $t | ($t | if length > (72 - (\" (#\" + ($n | tostring) + \")\" | length)) then (.[0:(72 - (\" (#\" + ($n | tostring) + \")\" | length))] | sub(\" [^ ]*$\"; \"\")) else . end) + \" (#\" + ($n | tostring) + \")\"' > /tmp/fabro/commit_subject.txt
+cp /tmp/fabro/commit_subject.txt /tmp/fabro/pr_title.txt
+{ jq -r '.summary' $D/patch.json | cut -c1-500; echo; echo \"Resolves #$N\"; } > /tmp/fabro/commit_body.md
+{
+  echo '## Summary'
+  echo
+  echo '<!-- fabro:commit-body:start -->'
+  cat /tmp/fabro/commit_body.md
+  echo '<!-- fabro:commit-body:end -->'
+  echo
+  echo '## Alerts'
+  echo
+  jq -r .body /tmp/fabro/issue.json | grep '^|' || true
+  echo
+  echo '## Changes'
+  echo
+  jq -r '.changes[] | \"- \" + .package + \" \" + .from + \" to \" + .to + \" (\" + .manifest + \"; \" + (if .direct then \"direct\" else \"via \" + .parent end) + \")\"' $D/patch.json
+  if [ \"$(jq -r .major $D/patch.json)\" = true ]; then echo; echo '**major: true**'; fi
+  echo
+  echo '## Validation'
+  echo
+  jq -r '.verification[] | \"- `\" + .command + \"`: \" + .result' $D/patch.json
+  echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green before the PR opened'
+  if [ \"$(jq '.replaces | length' $D/group.json)\" -gt 0 ]; then
+    echo
+    echo '## Replaces'
+    echo
+    jq -r '.replaces[] | \"- #\" + tostring' $D/group.json
+  fi
+} > /tmp/fabro/pr_body.md
+grep -q '^fix(deps): ' /tmp/fabro/commit_subject.txt
+grep -q '^Resolves #' /tmp/fabro/commit_body.md
+grep -q 'fabro:commit-body:start' /tmp/fabro/pr_body.md
+B=$(git rev-parse --abbrev-ref HEAD)
+git push -u origin HEAD
+R=\"+refs/heads/$B:refs/remotes/origin/$B\"
+git config --get-all remote.origin.fetch | grep -qxF \"$R\" || git config --add remote.origin.fetch \"$R\"
+git fetch origin \"$R\"
+T=$(cat /tmp/fabro/pr_title.txt)
+PR_URL=$(gh pr view \"$B\" --json url --jq .url 2>/dev/null || true)
+if [ -z \"$PR_URL\" ]; then
+  gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md --label agent-authored --label security --label dependencies
+  PR_URL=$(gh pr view \"$B\" --json url --jq .url)
+fi
+if [ -z \"$PR_URL\" ]; then
+  echo 'no PR is visible for head branch '\"$B\"' after create; refusing to report an empty pr_url' >&2
+  exit 1
+fi
+echo \"$PR_URL\" | sed 's|.*/||' > /tmp/fabro/pr_number
+gh issue edit \"$N\" --add-label Review >/dev/null 2>&1 || true
+rm -f $D/stopped_at
+jq -cn --arg u \"$PR_URL\" '{context_updates: {pr_url: $u}}'"]
+
+    // The contract the shared phase reads (its entry check): pr_number, base_ref, head_ref, pr.json, the linked
+    // issues and run_base_sha. The switch is not read again here (prep already wrote auto_merge_repo).
+    pr_handoff [label="Hand off to review and merge", shape=parallelogram, timeout="5m",
+        script="{dot((T / 'pr_handoff.sh').read_text())}"]
+
+    // The shared review-and-merge phase, spliced unchanged (ADR 0022 D1). Its gates, Refuter, hygiene and merge
+    // gate are the ones every agent change gets. Its report hooks are below.
+    review_merge [import="../_shared/review-merge/review-merge.fabro"]
+
+    // Reads the phase's outcome file. merged: close the Dependabot PRs this patch replaces, each with a comment.
+    // Anything else, or a missing file (the phase failed before it reported): label the tracking issue
+    // needs-human, so the next run skips the group (D16). It always exits 0.
+    after_merge [label="Close superseded PRs or label the issue", shape=parallelogram, timeout="5m",
+        script="echo after_merge > /tmp/fabro/dep/stopped_at
+D=/tmp/fabro/dep
+OUT=$(cat /tmp/fabro/review_merge_outcome 2>/dev/null || echo needs_human)
+ISSUE=$(jq -r .issue $D/group.json 2>/dev/null || echo 0)
+PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+PKG=$(jq -r .package $D/group.json 2>/dev/null || echo '')
+if [ \"$OUT\" = merged ]; then
+  TO=$(jq -r '.changes[0].to // \"\"' $D/patch.json 2>/dev/null || echo '')
+  for P in $(jq -r '.replaces[]?' $D/group.json 2>/dev/null); do
+    gh pr close \"$P\" --comment \"Superseded by #$PR, which patched $PKG to $TO and merged. Closing on behalf of the daily dependabot run (ADR 0022 D4).\" >/dev/null 2>&1 || true
+  done
+else
+  R=$(cat /tmp/fabro/merge_block_reason 2>/dev/null || cat /tmp/fabro/needs_human_reason 2>/dev/null || echo 'the review phase failed before it reported')
+  R=$(printf '%s' \"$R\" | cut -c1-300)
+  if [ \"$ISSUE\" != 0 ]; then
+    gh issue edit \"$ISSUE\" --add-label needs-human >/dev/null 2>&1 || true
+    gh issue comment \"$ISSUE\" --body \"The patch PR ${PR:+#$PR }was not auto-merged: $R\" >/dev/null 2>&1 || true
+  fi
+fi
+rm -f $D/stopped_at
+exit 0"]
+
     // Builds the one-line summary from the files that exist, and always exits 0 (D24).
     // Task 08 gives it its final form.
     summarize [label="Summarize the run", shape=parallelogram, output_schema="routing", timeout="2m",
@@ -686,11 +794,16 @@ exit 0"]
     patch_gate -> patch_validate      [condition="outcome=succeeded && context.patch_status=patched"]
     patch_gate -> patch_blocked       [condition="outcome=succeeded && context.patch_status!=patched"]
     patch_gate -> patch_blocked
-    // open_pr (task 07) does not exist yet: the green edge goes to summarize.
-    patch_validate -> summarize       [condition="outcome=succeeded && context.patch_ci=green"]
+    patch_validate -> open_pr         [condition="outcome=succeeded && context.patch_ci=green"]
     patch_validate -> patch_prep      [condition="outcome=succeeded && context.patch_ci=red && context.patch_retry=yes"]
     patch_validate -> patch_blocked   [condition="outcome=succeeded && context.patch_ci=red && context.patch_retry=no"]
     patch_validate -> patch_blocked
+    open_pr -> pr_handoff             [condition="outcome=succeeded"]
+    open_pr -> summarize
+    pr_handoff -> review_merge        [condition="outcome=succeeded"]
+    pr_handoff -> summarize
+    review_merge -> after_merge
+    after_merge -> summarize
     patch_blocked -> summarize
     summarize -> finish               [condition="outcome=succeeded"]
     summarize -> finish

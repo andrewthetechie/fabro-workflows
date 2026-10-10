@@ -4994,6 +4994,92 @@ check "patch_prep second visit: count is 2" "2" "$(cat "$PB/dep/patch_visits")"
 pg_repo blockedgh lock; pg_contract blocked "" "blocked for a reason" "[]"; pg_run patch_blocked "$PB_STUBS"
 check "patch_blocked, gh failing: exit 0" "0" "$(cat "$PB/patch_blocked.rc")"
 
+
+# ---------------------------------------------------------------------------
+# dependabot — open_pr and after_merge (ADR 0022 task 07). A bare origin and a clone on a run branch;
+# gh is stubbed and logs every call. The PR is created once, and after_merge closes or labels.
+# ---------------------------------------------------------------------------
+echo ""
+echo "dependabot: open_pr, after_merge"
+OP_STUBS="$WORK/op-stubs/bin"; mkdir -p "$OP_STUBS"
+cat > "$OP_STUBS/gh" <<'STUB'
+#!/bin/sh
+echo "gh $*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr view") [ -f "$GH_STATE/created" ] && echo "https://github.com/andrewthetechie/jelly-swipe/pull/412" ;;
+  "pr create") touch "$GH_STATE/created"; echo "https://github.com/andrewthetechie/jelly-swipe/pull/412" ;;
+  *) : ;;
+esac
+[ -n "${GH_FAIL:-}" ] && exit 1
+exit 0
+STUB
+chmod +x "$OP_STUBS/gh"
+
+# $1 case: a bare origin, a clone on run, and the contract files open_pr reads.
+op_repo() {
+    OP="$WORK/op-$1"; mkdir -p "$OP/fab/dep" "$OP/state"
+    git init -q --bare "$OP/origin.git"; git clone -q "$OP/origin.git" "$OP/work" >/dev/null 2>&1
+    git -C "$OP/work" config user.email t@example.test; git -C "$OP/work" config user.name t
+    git -C "$OP/work" checkout -q -b main; echo base > "$OP/work/README"; git -C "$OP/work" add -A; git -C "$OP/work" commit -qm base; git -C "$OP/work" push -q origin main
+    git -C "$OP/work" checkout -q -b run; git -C "$OP/work" commit -q --allow-empty -m 'the patch'
+    jq -cn '{number: 412, package: "urllib3", manifest: "uv.lock", issue: 412, first_patched: "2.8.0", alerts: [72, 73, 74], replaces: [440, 441]}' > "$OP/fab/dep/group.json"
+    jq -cn '{status: "patched", summary: "Bumped urllib3 2.7.1 to 2.8.0 in uv.lock; no API changes.", changes: [{package: "urllib3", from: "2.7.1", to: "2.8.0", manifest: "uv.lock", direct: false, parent: "requests"}], verification: [{command: "./.fabro/ci.sh", result: "pass"}], major: false, blocker: ""}' > "$OP/fab/dep/patch.json"
+    jq -cn '{number: 412, title: "t", body: "| [#72](u) | high | runtime | < 2.8.0 | 2.8.0 | GHSA-x |\n", url: "u", state: "OPEN", labels: []}' > "$OP/fab/issue.json"
+}
+# $1 case, $2 origin-long-name flag (unused by the script; the title comes from group.json).
+op_run() {
+    extract_from "$DEP" "$1" | sed "s#/tmp/fabro#$OP/fab#g" > "$OP/$1.sh"
+    (cd "$OP/work" && PATH="$OP_STUBS:$ORIG_PATH" GH_LOG="$OP/gh.log" GH_STATE="$OP/state" sh "$OP/$1.sh" > "$OP/$1.out" 2> "$OP/$1.err"); echo $? > "$OP/$1.rc"
+}
+
+# 1. open_pr: the subject is conventional and at most 72 characters with the number, the body has the
+#    marker block and Resolves, and the PR is created with its labels. The fixture uses a long package name.
+op_repo open
+jq '.package = "a-very-long-package-name-that-keeps-going-and-going-past-the-limit"' "$OP/fab/dep/group.json" > "$OP/fab/dep/g.tmp" && mv "$OP/fab/dep/g.tmp" "$OP/fab/dep/group.json"
+op_run open_pr
+check "open_pr: exit 0" "0" "$(cat "$OP/open_pr.rc")"
+SUBJ=$(cat "$OP/fab/commit_subject.txt")
+check "open_pr: subject is at most 72 characters" "1" "$([ "${#SUBJ}" -le 72 ] && echo 1 || echo 0)"
+check "open_pr: subject ends with the issue number" "1" "$(grep -c ' (#412)$' <<<"$SUBJ")"
+check "open_pr: subject is conventional" "1" "$(grep -c '^fix(deps): ' <<<"$SUBJ")"
+check "open_pr: commit body ends with Resolves" "1" "$(grep -c '^Resolves #412$' "$OP/fab/commit_body.md")"
+check "open_pr: PR body has the start marker" "1" "$(grep -c 'fabro:commit-body:start' "$OP/fab/pr_body.md")"
+check "open_pr: PR body has the end marker" "1" "$(grep -c 'fabro:commit-body:end' "$OP/fab/pr_body.md")"
+check "open_pr: the pr_create call has all three labels" "1" "$(grep -c 'pr create.*--label agent-authored --label security --label dependencies' "$OP/gh.log")"
+check "open_pr: the tracking issue gets Review" "1" "$(grep -c 'issue edit 412 --add-label Review' "$OP/gh.log")"
+check "open_pr: pr_number is 412" "412" "$(cat "$OP/fab/pr_number")"
+check "open_pr: publishes pr_url" "https://github.com/andrewthetechie/jelly-swipe/pull/412" "$(tail -1 "$OP/open_pr.out" | jq -r .context_updates.pr_url)"
+
+# after_merge: merged closes each replaced PR once, with the comment; needs_human labels the issue.
+op_repo am
+printf '412' > "$OP/fab/pr_number"; echo merged > "$OP/fab/review_merge_outcome"
+op_run after_merge
+check "after_merge merged: exit 0" "0" "$(cat "$OP/after_merge.rc")"
+check "after_merge merged: closes 440" "1" "$(grep -c 'pr close 440 --comment' "$OP/gh.log")"
+check "after_merge merged: closes 441" "1" "$(grep -c 'pr close 441 --comment' "$OP/gh.log")"
+check "after_merge merged: each close comment names the patch" "2" "$(grep -c 'Superseded by #412, which patched urllib3 to 2.8.0' "$OP/gh.log")"
+
+op_repo amh
+printf '412' > "$OP/fab/pr_number"; echo needs_human > "$OP/fab/review_merge_outcome"
+echo 'Could not read the merge gate' > "$OP/fab/needs_human_reason"
+op_run after_merge
+check "after_merge needs_human: adds needs-human to the issue" "1" "$(grep -c 'issue edit 412 --add-label needs-human' "$OP/gh.log")"
+check "after_merge needs_human: the comment quotes the reason" "1" "$(grep -c 'Could not read the merge gate' "$OP/gh.log")"
+check "after_merge needs_human: closes nothing" "0" "$(grep -c 'pr close' "$OP/gh.log")"
+
+# A missing outcome file (the phase failed before it reported) is treated as needs_human.
+op_repo amno
+printf '412' > "$OP/fab/pr_number"
+op_run after_merge
+check "after_merge no outcome file: the issue is labelled" "1" "$(grep -c 'issue edit 412 --add-label needs-human' "$OP/gh.log")"
+check "after_merge no outcome file: the reason is the phase failure" "1" "$(grep -c 'the review phase failed before it reported' "$OP/gh.log")"
+
+# gh failing: the node still exits 0.
+op_repo amfail
+printf '412' > "$OP/fab/pr_number"; echo merged > "$OP/fab/review_merge_outcome"
+GH_FAIL=1 op_run after_merge
+check "after_merge with gh failing: exit 0" "0" "$(cat "$OP/after_merge.rc")"
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
