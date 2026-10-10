@@ -1,0 +1,94 @@
+Task 08 recheck, 2026-10-09 (26 runs; follows result-2026-10-08.txt)
+
+Window: every `backlog` run that finished after the 2026-10-08 recheck: the 2 that were still
+running then (01M4CRH7QR, 01M4CSDPQ2) and the 24 created 2026-10-08 05:34Z to 2026-10-10 00:20Z.
+womens-fantasy-sports 23, lawncare-saas 3, writers-app 0, jelly-swipe 0. Two still running
+(01M4HTC8RC, 01M4HVKKAH) are not counted. Also read: arch-review 01M4FD2QN4 (lawncare). No
+pr-review or issue-triage run in the window.
+Changes inside the window: the ADR 0017 overlay pin (kimi -> openai profile) at 2026-10-08
+05:29Z; 61c1911 (merge_gate check 6) at 06:36Z; ec87712 (open_pr_prep's workflows guard
+ignores merge commits) at 17:31Z. The scheduler fetches .fabro/ at dispatch, so a run uses
+the graph of its dispatch time. No image change.
+Tool: ops/fabro-agent-tools.py with the two metric fixes the 2026-10-08 decision asked for
+(M1 without stdin-filter grep, M3 by bytes and by whole reads >= 12 KB). The older columns
+for those two rows are the 2026-10-08 scratch numbers, which used the same definitions.
+The repo mix is 88% wfs, and writers-app (the source of the reasoning drafts) is absent.
+
+     metric                         baseline (20)    2026-10-08 (49)   now (26)            target      verdict
+M1   code-index share of searches   0.4%             7.6%              9.7% (109/1,128)    >= 25%      miss
+     without stdin-filter grep      0.5%             9.5%              11.2% (109/971)
+M2   read_file bytes per visit      49,077           30,630 (-38%)     31,912 (-35%)       -40%        near
+M3   whole-file share (count)       42.9%            38.1%             25.4%               < 20%       near
+     whole reads >= 12 KB / visit   1.32, 26.7 KB    0.49, 10.5 KB     0.40, 10.1 KB                   -62% bytes vs baseline
+M4   mutating git executed          11 calls         0 (1 blocked)     0 (1 blocked)       0           met
+M5   improve visits that edited     4 of 87          1 of 184          0 of 114            0           met
+M6   sessions loading the guide     0%               86.2%             99.2% (725/731)     100%        met: 685/685 in runs created after the pin
+M7   coder start to first edit      4.7 min          3.1 min           3.1 min (111)       <= 6 min    met; >10 min 15% (17/111)
+M8   first-pass / reworks per task  93.0% / 0.15     92.3% / 0.20      94.7% / 0.32        no worse    first pass met; reworks up, all from validate
+
+(Local-model visits for M1-M3, M5, M7, as before. All models: M1 9.4%, 10.4% without filters.)
+
+M1: unchanged in kind
+- coder 2.7% (9 of 329 searches), improve 13.4% (98 of 731). rg is 169 of the 514 local shell
+  searches. 157 of the 514 read a pipe. Nothing new to decide: the guide reaches every
+  session and the model still picks grep/rg. Issue #3's PATH wrapper is the remaining lever.
+
+M3: the count-based miss was mostly the metric
+- Whole reads are 25.4% by count but 50.5% by bytes: few, but large. Large whole reads (>= 12 KB)
+  are 0.40 per visit (1.32 in the baseline). wfs's React files are small, so the count fell
+  once its reads were split by size.
+
+M6: ADR 0017 is verified live
+- The 6 misses are kimi-k3 `spec`/`extra_decompose` sessions on the anthropic profile in the
+  two runs created before the pin (03:22Z, 03:37Z). A worker builds its catalog at start, so
+  the pin reached them late. All 685 sessions of the 24 later runs loaded the guide.
+- kimi has failed every call since 2026-10-08 06:02Z (`weekly (7-day) usage limit`, 403): 82
+  failovers kimi-k3 -> glm-5.3, about 1 s each. Until the quota resets, `.review-frontier` is
+  glm-5.3 (same family as `.review-task`), and glm-5.3's own fallback (kimi-k3) is dead.
+
+M8: the reworks are formatters
+- 37 entries to rework_router: 35 from validate, 2 from review_gate (2026-10-08: 23 and 13).
+- validate failures by pre-commit hook: ruff format 15, mypy 4, ty 4, ruff check 4, typos 3,
+  biome 2, frontend SDK 1. ruff format, ruff check and biome are machine-fixable.
+- `autofix` printed `no .fabro/fix.sh in this repository` in every visit of every run. Only
+  writers-app has a fix.sh (writers-app#967). wfs and lawncare never got one, though
+  docs/merge-rate decision 8 made it per-repository.
+- lawncare alone: 91% / 0.18.
+
+Run outcomes (26)
+- 4 auto-merged (all wfs). 14 report_blocked, 2 mark_needs_human, 2 human_rescue -> mark_stuck,
+  2 failed, 2 close_noop. All 13 unmerged wfs PRs were then merged by hand (17 wfs PRs in all);
+  the 3 lawncare PRs (`architecture`) are open.
+- First block reason: architecture label 6, merge_gate check 6 3 (all dispatched before
+  61c1911; none since), hygiene asserts_removed 2, Refuter 2 (wfs#1439 unverifiable only,
+  wfs#1443 one not_met), risk > 3 1. The Refuter's verdict was `fail` on 9 of 19 runs that
+  reached it. On the other 7 an earlier check had already blocked, or deliver failed.
+- Lost to fixed bugs: 01M4DKMH50 (wfs#1394, 11 tasks), 01M4DSYPAW (wfs#1391, 6 tasks),
+  01M4E7SM2C (wfs#1363, 2 tasks). All three died at open_pr_prep's workflows guard on the
+  run's own merge commit, dispatched before ec87712. All three issues were re-run and merged.
+  Nothing dispatched after ec87712 has hit that guard.
+
+Defects found (not coder-tweaks; open)
+1. (fabro-workflows#7) backlog has no `loop_restart_signature_limit`. 01M4G6C8MW (wfs#1413, 6.4 h, 8+ approved
+   tasks, no PR) died on the breaker's default of 3. Its validate failures were on different
+   tasks, each repaired by rework_t1 in one pass. They share a signature because the masked
+   output starts with ci.sh's `bun install` preamble. This is
+   docs/research_improvements/01 item 1, now with a cost. wfs#1413 was re-dispatched at
+   2026-10-10 02:52Z (01M4HVKKAH) on the same graph.
+2. (#8) mark_needs_human never pushes. When fix_gate routes there, review_fix's edits stay in the
+   sandbox, yet the comment lists them under "Fixes applied". wfs#1438 lost STD-002.
+3. (#9) deliver's lease-rejection reason says the branch moved. On wfs#1440 the operator had merged
+   the PR 6 minutes before deliver, so review_fix's ADR amendment never reached main.
+4. (#10) close_noop posts a generic "no actionable decomposition" comment and drops the decomposer's
+   summary. On wfs#1393 the summary said that #1426 (sibling #1392) had already delivered all of
+   it. `agent` was re-added by hand twice (2026-10-09 02:45Z, 2026-10-10 03:55Z), so a third
+   no-op run was queued; the issue has since been closed by hand.
+
+Decision (task 08 rules)
+- M4 0, M5 0, M6 met (100% after the pin), M7 met. No revert, and no guard-parser change.
+- M1 still missed with the guide loaded. Unchanged from 2026-10-08: the next lever is issue #3's
+  PATH wrapper, and the 25% target stays under review.
+- M8: first pass is up and reworks are up. Both trace to validate, not the coder. The fix is a
+  .fabro/fix.sh in wfs (ruff check --fix, ruff format, biome --write) and in lawncare, not a
+  coder-tweaks change: womens-fantasy-sports#1450, lawncare-saas#2747.
+- Drafts: writers-app had no run in this window, so the decompose-split idea still has no data.

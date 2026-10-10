@@ -198,6 +198,18 @@ generating — not a **Livelock** or **Stall**, so steering cannot help; the lev
 size (`docs/perf/04`).
 _Avoid_: stuck, too-big, runaway
 
+**Draft turn**:
+A turn in which the coder writes code in its reasoning before its first edit: more than
+2,000 output tokens that hold a code fence. A visit with one is a draft visit. The design
+the turn holds is never checked by a compiler (ADR 0021).
+_Avoid_: planning turn, thinking (reasoning is normal; a draft turn is the oversized kind)
+
+**Core skeleton**:
+The first task of a typed shared abstraction: its types, traits and signatures with stub
+bodies, passing the repository's checks, plus what each port needs from it. The bodies come
+in the next task, and each port uses the skeleton's interface unchanged (ADR 0021).
+_Avoid_: stub task, scaffold, interface task
+
 **Task budget**:
 The most tasks one **Run** implements, from any source: the decomposition, a split, or a
 follow-up from the extra review. Work beyond it becomes a **Remainder issue**. It limits

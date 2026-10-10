@@ -1,0 +1,96 @@
+Measurements taken while planning this series, 2026-10-10. Event files hold issue text and are
+not committed. The scratch scripts are in .scratch/recheck-follow-ups/ (untracked).
+
+1. Issue #5, "Measure first": which writers-app coder visits draft in reasoning?
+
+Source: the event files of the 2026-10-08 recheck (result-2026-10-08.txt), re-read. Window: the
+11 writers-app `backlog` runs created 2026-10-03 22:53Z to 2026-10-08 01:21Z, plus the 4
+writers-app runs of the baseline (2026-09-30 to 2026-10-02) for comparison.
+Definition, as in result-2026-10-08.txt: a coder visit is a draft visit when a turn before its
+first edit_file/write_file has more than 2,000 output+reasoning tokens and holds a code fence.
+Local-model coder visits with at least one edit only.
+Task kind, from the task id and title in the visit's current_task.json (classified by hand):
+  core   the task creates a new shared abstraction (module, core, registry, emitter, seam)
+  port   the task moves existing callers onto an abstraction that a task before it created
+  other  everything else (docs, ADR edits, extra-review follow-ups, test coverage, moves)
+
+                         visits   draft visits     draft tokens       >10 min to first edit
+window (11 runs)             42   19 (45%)         203,556                             9
+  core                        7    5 (71%)          73,628 (36%)                       3
+  port                       12    8 (67%)          97,339 (48%)                       4
+  other                      23    6 (26%)          32,589 (16%)                       2
+baseline (4 runs)            24   15 (63%)         102,436                            10
+  core                        4    4 (100%)         35,467 (35%)                       2
+  port                        3    2 (67%)          17,163 (17%)                       2
+  other                      17    9 (53%)          49,806 (49%)                       6
+
+(One port visit, 01M4AT8SAY coder@2, has a negative start-to-edit time: its first edit belongs
+to an earlier attempt of the same visit id. It is counted as over 10 minutes.)
+
+Answer to #5's question:
+- The drafts are not spread across task kinds. In the window, 13 of the 19 draft visits (68%)
+  and 84% of the draft tokens are core or port tasks, which are 19 of the 42 visits.
+- The ports draft more than the cores: 48% of the draft tokens against 36%. The proposal as
+  filed (split the core into "signatures with stub bodies" and "bodies") addresses the core
+  tasks only.
+- Why the ports draft: in 01M4AT8SAY (writers-app#1024), the core existed when coder@2 started
+  `migrate-scene-path-map-to-core`. The port task asked the coder to "make the core emit the
+  upkeep event". That is an interface change to the core. The coder then spent its reasoning
+  turns (8K-22K tokens each) designing a tracing callsite with a runtime event name. The port
+  drafted because it had to redesign the core, not because the port itself was hard.
+- A counterexample: 01M4AJV4HT (add-insert-sibling-seam and two migrations) drafted in none of
+  its 3 visits, and every first edit came within 3.7 minutes. Its core was small, and the ports
+  used it unchanged.
+- Conclusion: the proposal fits, and it needs one addition. The core's skeleton task must
+  settle every interface that the ports need. A port task must use the core's interface
+  unchanged. ADR 0021 records this.
+
+2. Issue #12: what a stdlib DOT reader sees in today's graphs (HEAD 23c3f03)
+
+A 90-line tokenizer and recursive reader (.scratch/recheck-follow-ups/dotproto.py) reads all
+six .fabro files. After it splices each import (the import node and the phase's start and exit
+are dropped, and their two edges are rewired), its counts equal fabro validate's baselines:
+backlog 69/162, pr-review 34/73, issue-triage 16/36, arch-review 24/54.
+
+#12's seven rules, run with that reader (.scratch/recheck-follow-ups/rules.py):
+- Rule 1 (breaker limit): issue-triage imports the triage phase and sets no
+  loop_restart_signature_limit. backlog 100, pr-review 20, arch-review 20.
+- Rule 2 (stall timeout): every graph has stall_timeout=60m. Above it are backlog `coder` (180m,
+  an agent node, the documented exception) and `human_rescue` (4h, a human gate, which parks the
+  watchdog). No command node is above it.
+- Rule 3 (stylesheet coverage): no gap.
+- Rule 4 (stylesheet syntax): no gap. Every default() uses single quotes. No package binds an
+  input in [run.inputs].
+- Rule 5 (hook matchers): backlog's `discord-rescue` hook uses matcher `human_rescue`, not
+  `^human_rescue$`.
+- Rule 6 (script attributes): a `#` comment line inside script= in five nodes: backlog
+  open_pr_prep, pr-review validate_input, review-merge merge_gate, ci_fix_gate and
+  remerge_base. One backslash other than \" in review-merge (a line continuation at the end of
+  line 917, in watch_checks), and one in a // comment in triage.fabro line 167.
+- Rule 7 (terminal reports): pr-review hooks only report_merged. That is deliberate: its
+  workflow.toml cites operator decision 13 ("a blocked merge is an ordinary outcome reported on
+  the PR"). backlog hooks all three.
+
+fabro parse emits {"name", "statements": [{"GraphAttr": [[k, {"Str"|"Ident": v}]...]},
+{"Node": {"id", "attrs"}}, {"Edge": {"nodes": [ids...], "attrs"}}]} (checked on the host,
+fabro 0.362.0-nightly.0). The reader's output can be compared with it statement by statement.
+
+3. Issue #13 and #14: what the API and the CLI return today
+
+- GET /api/v1/runs pages with page[limit] and page[offset] (60 per page worked), newest first.
+  meta is {"has_more", "total"}. filter[workflow]=backlog is ignored (total unchanged at 230),
+  so a client filters by .workflow.slug itself.
+- A run created by an automation carries automation.workflow_source.resolved_sha (arch-review
+  01M4HZFEKJ: ec87712...). A run created through POST /runs (the scheduler, the two fire
+  scripts) has automation null and no SHA anywhere. Its labels are {"source", "issue"}.
+- The run.created event carries the same labels, so a label added at dispatch reaches the
+  events as well as GET /runs.
+- stage.completed carries properties.context_updates. merge_eligible=false is visible there
+  today, next to "command.output": "blob://sha256/...".
+- fabro dump <run> -o DIR resolves command output. It writes
+  stages/<NNN>-<node>@<visit>/output.log (01M4J4JAGD autofix@1: the fix.sh output and
+  "autofix: .fabro/fix.sh exited 0"), plus events.jsonl, run.json, graph.fabro and
+  checkpoints/. One finished run was 35.5 MB. The answer to #13 item 4 is therefore "yes,
+  fabro dump", and its size makes it a per-run tool, not a recheck default.
+- That dump also shows that womens-fantasy-sports now has a .fabro/fix.sh (the run of
+  2026-10-10 05:58Z reformatted a file), after womens-fantasy-sports#1450.
