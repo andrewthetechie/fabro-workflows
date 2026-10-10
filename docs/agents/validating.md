@@ -21,13 +21,12 @@ second is folded into the first. Prove it exists by validating a scratch copy wi
 `pr_number` literalised: it then warns about `auto_merge`.)
 
 `fabro validate` does NOT catch a routing-schema mismatch on a command node, in
-either direction, and both fail only at runtime, so the routing checker runs as well.
+either direction, and both fail only at runtime. `ops/check-graph-invariants.py` (R8)
+checks it offline, in `make check`: a node that declares `output_schema="routing"` and
+prints no routing object fails deterministically with no retry, which cost run
+`01M2R057XAWN8ZG0A7ZV7YPJXK` at `pr_handoff` with the PR already open.
 
-`ops/check-routing-schemas.py`, deployed alongside the graphs the same way. It exits
-non-zero on any mismatch, so it drops into a pre-push hook. A node that declares
-`output_schema="routing"` and prints no routing object fails deterministically with no
-retry — that cost run `01M2R057XAWN8ZG0A7ZV7YPJXK` at `pr_handoff`, with the PR
-already open.
+`ops/check-graph-invariants.py` (ADR 0019) reads the six `.fabro` files with its own stdlib reader, splices the imports and checks R1-R8: the breaker floor, the stall and timeout durations, the stylesheet classes, the hook matchers, the script and backslash rules, the report hooks and the routing schema. It runs offline in `make check`. `make check-host` proves that its reader agrees with `fabro parse` on the six graphs. It does not run a script, judge a prompt, or check the rows of the invariants files that carry no `Checked by` line; those still need a run or a review.
 
 The Agent profile (ADR 0017) is checked the same way, against the tracked template — and
 in `make verify-host`, against the live overlay.
