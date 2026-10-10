@@ -192,7 +192,7 @@ all three files.
 | 02 | `02-test-env-core.md`: C1 parse, C2, C3 in `fabro-io` | this repo |
 | 03 | `03-run-tests-tool.md`: C4, C5; `fabro-test` | this repo |
 | 04 | `04-images.md`: `fabro-test` in the images, `--check` in the build gate, `make deploy-images`, `min_binary` | this repo + host |
-| 05 | `05-workflow.md`: Agent guide row, coder prompt line, C6 and its fixtures, AGENTS.md invariants | this repo |
+| 05 | `05-workflow.md`: Agent guide row, coder prompt line, C6 and its fixtures, `docs/agents/` invariants | this repo |
 | 06 | `06-womens-fantasy-sports.md`: `test.toml` and `ci.sh` | womens-fantasy-sports |
 | 07 | `07-other-repos.md`: lawncare-saas, then jelly-swipe and writers-app | three target repos |
 | 08 | `08-recheck.md`: recheck over at least 16 runs | this repo + host |

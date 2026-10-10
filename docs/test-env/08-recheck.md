@@ -15,7 +15,7 @@ whether the targets were met.
 ## Acceptance
 - M-env is about 0 on womens-fantasy-sports and lawncare-saas, and M-run is at least 60%.
   If so, mark ADR 0018 accepted. If not, record the causes and the follow-up.
-- AGENTS.md's layout row for `docs/test-env/` carries the result.
+- The `docs/test-env/` row in `docs/README.md` carries the result.
 
 ## Depends on
 05, 06, 07.

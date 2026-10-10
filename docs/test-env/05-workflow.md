@@ -2,8 +2,8 @@
 
 ## Outcome
 The Agent guide and the coder prompt name `run_tests`. The merge phase treats an edit to
-`.fabro/test.toml` or `.fabro/ci.sh` as a config change (C6). AGENTS.md records the new
-invariants.
+`.fabro/test.toml` or `.fabro/ci.sh` as a config change (C6). `docs/agents/` records the
+new invariants.
 
 ## Why
 D6 and D7. A tool the prompt never mentions is used by accident, if at all
@@ -25,10 +25,10 @@ so a branch that edits them changes the rules that judge it.
 4. `ops/test-task-gates.sh`: a real-git fixture each for `.fabro/test.toml` and
    `.fabro/ci.sh` tripping `config_changed`, and one for `.fabro/test.toml.example` not
    tripping it.
-5. AGENTS.md: add deployment invariants for:
-   - the `ci.sh` assignment form (C2),
-   - images before any target repository's `ci.sh` change (D8),
-   - `config_changed` covering three files (C6).
+5. Deployment invariants (one table row each):
+   - the `ci.sh` assignment form (C2): `docs/agents/invariants-graph.md`,
+   - images before any target repository's `ci.sh` change (D8): `docs/agents/invariants-host.md`,
+   - `config_changed` covering three files (C6): `docs/agents/invariants-merge.md`.
 
 ## Acceptance
 - `fabro validate` baselines unchanged in node and edge counts.
