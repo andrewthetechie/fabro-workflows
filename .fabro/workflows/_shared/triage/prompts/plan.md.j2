@@ -61,6 +61,9 @@ wall-clock limit. Measured on this server: a healthy stage runs about 24 minutes
 - Do not pad in the other direction: splitting one small coherent edit into several
   tasks costs a full review-and-integrate cycle each.
 
+A typed shared core is one Task map entry. `decompose` splits it into a skeleton and
+bodies (ADR 0021), so the entry counts once against the split rule below.
+
 Use `id`s in the same form `decompose` uses, because it reuses them: a stable,
 human-readable kebab-case id derived from the title and scope (e.g.
 `add-gameweek-score-column`). The same slice of work must produce the same `id`.

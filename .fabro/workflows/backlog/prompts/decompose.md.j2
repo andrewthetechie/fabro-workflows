@@ -113,6 +113,23 @@ So, before you emit a task:
   what array order is for.
 - A task that introduces a new module *and* migrates every call site to it is two
   tasks: add the module with its tests, then migrate the callers.
+- A task that creates a shared abstraction for two or more callers is decomposed
+  skeleton first (ADR 0021). It applies when the abstraction introduces a type, trait,
+  interface or generic parameter. Otherwise the rule above applies.
+  - **Skeleton task:** the types, traits and signatures, with stub bodies (the stub form
+    for the repository's language). The repository's checks pass. Its body has a section
+    `## What each port needs`, one bullet per later port task, naming the items that port
+    will use. Its acceptance criteria say "compiles; interface only; stub bodies". Without
+    that line the per-task `review` fails the task as incomplete.
+  - **Bodies task:** directly after the skeleton. It implements the bodies against the
+    core's own tests and changes no signature.
+  - **Port tasks:** one caller, or one group of callers, per task. Each lists the core's
+    file in `files`, so `excerpts` copies its signatures into `task-code.md`. Each body
+    says: "Use the core's interface unchanged. You may add a new item to the core if this
+    port cannot work without it. Never change an existing signature. If one is wrong, say
+    so in your summary and keep the port to the current signature."
+  - **Lint:** if the repository denies dead code or unused exports (read `.fabro/ci.sh`),
+    the skeleton body names the narrowest allowance.
 - Do not pad in the other direction. Splitting one small coherent edit into
   several tasks costs a full review-and-integrate cycle each, and the budget is
   generous for genuinely small work.

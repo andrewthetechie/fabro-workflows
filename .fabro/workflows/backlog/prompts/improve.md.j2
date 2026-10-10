@@ -121,6 +121,11 @@ Judge size by the work that remains, not by the size of the body:
   or two is right; more than three is the strongest signal that it should split.
 - A task that adds a new module *and* migrates every call site to it is two
   slices: land the module with its tests, then migrate the callers.
+- A typed shared core for two or more callers splits skeleton first, by the rule in
+  `decompose`: the skeleton, the bodies, then each port, with the core's interface
+  unchanged in every port (ADR 0021). The skeleton, the bodies and two ports are four
+  slices, the most a `split` may return; a core with more than two ports keeps the extra
+  ports in one slice.
 - Weigh what is already done. An earlier task in this run may have completed part
   of this one, which makes what is left small enough to keep whole.
 - Do not split small coherent work. Each extra slice costs a full
