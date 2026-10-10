@@ -1721,6 +1721,112 @@ check "non-executable fix.sh: ran"  "formatted" "$(cat "$T/wt/a.txt")"
 PATH="$SAVED_PATH"
 
 # ---------------------------------------------------------------------------
+# Outcome keys (ADR 0020, #13): the four stop and autofix nodes publish one routing
+# object as the LAST stdout line. Every other line of stdout and stderr is brace-free,
+# because fabro scans both streams for objects. Their gh output and warnings go to
+# report.log, and autofix's fix.sh output goes to autofix.log.
+# ---------------------------------------------------------------------------
+echo ""
+echo "outcome keys: merge_block_reason and autofix_ran / autofix_rc"
+T="$WORK/outcome-keys"; mkdir -p "$T/bin"
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "gh $*"
+if [ -n "${GH_FAIL:-}" ]; then echo '{"gh":"braces"}'; exit 1; fi
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+
+# $1 node, $2 graph file, $3 a fresh directory that stands for /tmp/fabro and the repo.
+# Runs the node's script with gh stubbed and leaves $3.out, $3.err and $3.rc beside it.
+run_node() {
+    local node="$1" graph="$2" dir="$3"
+    mkdir -p "$dir"
+    extract_from "$graph" "$node" | sed "s#/tmp/fabro#$dir#g" > "$dir.sh"
+    if ! sh -n "$dir.sh" 2>"$dir.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$node"; sed 's/^/       /' "$dir.syntax"
+    fi
+    (cd "$dir" && PATH="$T/bin:$ORIG_PATH" sh "$dir.sh" >"$dir.out" 2>"$dir.err"); echo $? >"$dir.rc"
+}
+
+# The routing contract: the last line of stdout is JSON, and no other line of stdout or
+# stderr has a brace. $1 label, $2 dir, $3 jq filter. The filtered value is left in ROUTED.
+routing_check() {
+    local label="$1" dir="$2" filter="$3" last
+    last=$(tail -1 "$dir.out")
+    check "$label: exit 0" "0" "$(cat "$dir.rc")"
+    check "$label: last stdout line is JSON" "0" "$(jq -e . >/dev/null 2>&1 <<<"$last"; echo $?)"
+    check "$label: no other stdout or stderr line has a brace" "0" \
+        "$({ sed '$d' "$dir.out"; cat "$dir.err"; } | grep -c '[{}]')"
+    ROUTED=$(jq -r "$filter" <<<"$last" 2>/dev/null)
+}
+
+# report_blocked: a reason with braces, quotes, a tab and three lines.
+RB="$T/rb"; rm -rf "$RB"; mkdir -p "$RB"
+printf 'risk {x} "q" '"'"'s'"'"'\tt\nline two {y}\nline three\n' > "$RB/merge_block_reason"
+printf '42' > "$RB/pr_number"
+run_node report_blocked "$SHARED" "$RB"
+routing_check "report_blocked, hostile reason" "$RB" '.context_updates.merge_block_reason'
+GOT=$ROUTED
+check "report_blocked: reason is one line" "1" "$(printf '%s\n' "$GOT" | wc -l | tr -d ' ')"
+check "report_blocked: reason under 301 bytes" "1" "$([ "$(printf '%s' "$GOT" | wc -c | tr -d ' ')" -lt 301 ] && echo 1 || echo 0)"
+check "report_blocked: reason keeps the first line" "1" "$(printf '%s' "$GOT" | grep -c 'line two')"
+# No reason file: the node's own fallback.
+RB2="$T/rb2"; rm -rf "$RB2"; mkdir -p "$RB2"; printf '42' > "$RB2/pr_number"
+run_node report_blocked "$SHARED" "$RB2"
+routing_check "report_blocked, no reason file" "$RB2" '.context_updates.merge_block_reason'
+GOT=$ROUTED
+check "report_blocked: fallback text" "The merge was blocked for an unspecified reason." "$GOT"
+# gh prints braces and fails: still one routing object, the braces only in report.log.
+RB3="$T/rb3"; rm -rf "$RB3"; mkdir -p "$RB3"; printf '42' > "$RB3/pr_number"; printf 'why' > "$RB3/merge_block_reason"
+GH_FAIL=1 run_node report_blocked "$SHARED" "$RB3"
+routing_check "report_blocked, gh fails" "$RB3" '.context_updates.merge_block_reason'
+GOT=$ROUTED
+check "report_blocked, gh fails: braces in report.log" "1" "$(grep -c '{"gh":"braces"}' "$RB3/report.log")"
+
+# mark_needs_human: the reason comes from needs_human_reason.
+MN="$T/mn"; rm -rf "$MN"; mkdir -p "$MN"; printf '42' > "$MN/pr_number"
+printf 'Could not read {PR} "42"\n' > "$MN/needs_human_reason"
+run_node mark_needs_human "$SHARED" "$MN"
+routing_check "mark_needs_human" "$MN" '.context_updates.merge_block_reason'
+GOT=$ROUTED
+check "mark_needs_human: reason from needs_human_reason" 'Could not read {PR} "42"' "$GOT"
+
+# mark_needs_human with no PR: still the routing object, and the same key.
+MN2="$T/mn2"; rm -rf "$MN2"; mkdir -p "$MN2"; printf 'no pr' > "$MN2/needs_human_reason"
+run_node mark_needs_human "$SHARED" "$MN2"
+routing_check "mark_needs_human, no PR" "$MN2" '.context_updates.merge_block_reason'
+GOT=$ROUTED
+check "mark_needs_human, no PR: reason" "no pr" "$GOT"
+
+# entry_failed (pr-review): its own fallback when the reason file is missing.
+EF="$T/ef"; rm -rf "$EF"; mkdir -p "$EF"; printf '7' > "$EF/pr_number"
+run_node entry_failed "$PR" "$EF"
+routing_check "entry_failed" "$EF" '.context_updates.merge_block_reason'
+GOT=$ROUTED
+check "entry_failed: fallback text" "The review could not start." "$GOT"
+
+# autofix: no fix.sh, a fix.sh that exits 0 and prints braces, and one that exits 3.
+AF="$T/af0"; rm -rf "$AF"; mkdir -p "$AF/wt"
+run_node autofix "$GRAPH" "$AF"
+routing_check "autofix, no fix.sh" "$AF" '.context_updates | "\(.autofix_ran) \(.autofix_rc)"'
+GOT=$ROUTED
+check "autofix, no fix.sh: false -1" "false -1" "$GOT"
+AF="$T/af1"; rm -rf "$AF"; mkdir -p "$AF/.fabro"
+printf '%s\n' '#!/bin/sh' 'echo {}' > "$AF/.fabro/fix.sh"; chmod +x "$AF/.fabro/fix.sh"
+run_node autofix "$GRAPH" "$AF"
+routing_check "autofix, fix.sh exits 0" "$AF" '.context_updates | "\(.autofix_ran) \(.autofix_rc)"'
+GOT=$ROUTED
+check "autofix, fix.sh exits 0: true 0" "true 0" "$GOT"
+AF="$T/af3"; rm -rf "$AF"; mkdir -p "$AF/.fabro"
+printf '%s\n' '#!/bin/sh' 'echo clippy {x}' 'exit 3' > "$AF/.fabro/fix.sh"; chmod +x "$AF/.fabro/fix.sh"
+run_node autofix "$GRAPH" "$AF"
+routing_check "autofix, fix.sh exits 3" "$AF" '.context_updates | "\(.autofix_ran) \(.autofix_rc)"'
+GOT=$ROUTED
+check "autofix, fix.sh exits 3: true 3" "true 3" "$GOT"
+check "autofix, fix.sh output kept in the tail, braces removed" "1" "$(grep -c 'clippy x' "$AF.out")"
+
+# ---------------------------------------------------------------------------
 # excerpts — the code the task dossier cites, copied for the coder, always exit 0
 # ---------------------------------------------------------------------------
 echo ""

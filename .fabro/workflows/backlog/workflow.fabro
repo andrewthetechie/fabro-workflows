@@ -867,18 +867,25 @@ exit 0"]
     // validate visits failed, mostly on `cargo fmt` diffs and clippy lints, and each one
     // cost a rework_t1 stage plus a second validate.
     //
-    // No output_schema: this node publishes no context key. The `outcome=failed` edge
-    // sends a timeout on to prep_review as well, so a hung formatter costs at most 15m
-    // and never parks the run on human_rescue; the unconditional edge to human_rescue
-    // exists only because every command node must have one.
-    autofix [label="Autofix (formatters and lint --fix)", shape=parallelogram, timeout="15m",
-        script="if [ ! -f ./.fabro/fix.sh ]; then
+    // It publishes `autofix_ran` (true when .fabro/fix.sh was started) and `autofix_rc`
+    // (its exit code, -1 when it did not run), so a recheck reads whether the repository's
+    // fix.sh ran from the events (ADR 0020, #13). The fix.sh output goes to autofix.log,
+    // and only its tail (through tr -d '{}') reaches stdout before the routing object. The
+    // `outcome=failed` edge sends a timeout on to prep_review as well, so a hung formatter
+    // costs at most 15m and never parks the run on human_rescue; the unconditional edge to
+    // human_rescue exists only because every command node must have one.
+    autofix [label="Autofix (formatters and lint --fix)", shape=parallelogram, timeout="15m", output_schema="routing",
+        script="exec 3>&1 >/tmp/fabro/autofix.log 2>&1
+if [ ! -f ./.fabro/fix.sh ]; then
   echo 'autofix: no .fabro/fix.sh in this repository; nothing to do'
-  exit 0
+  RAN=false; RC=-1
+else
+  RAN=true
+  if [ -x ./.fabro/fix.sh ]; then ./.fabro/fix.sh; RC=$?; else bash ./.fabro/fix.sh; RC=$?; fi
+  echo 'autofix: .fabro/fix.sh exited '$RC'; validate is the gate, so this stage succeeds either way'
 fi
-if [ -x ./.fabro/fix.sh ]; then ./.fabro/fix.sh; RC=$?; else bash ./.fabro/fix.sh; RC=$?; fi
-echo 'autofix: .fabro/fix.sh exited '$RC'; validate is the gate, so this stage succeeds either way'
-git status --short 2>/dev/null || true
+{ tail -n 40 /tmp/fabro/autofix.log; git status --short 2>/dev/null || true; } | tr -d '{}' >&3
+jq -nc --argjson ran $RAN --argjson rc $RC '{context_updates:{autofix_ran:$ran,autofix_rc:$rc}}' >&3
 exit 0"]
 
     prep_review [label="Prepare review inputs", shape=parallelogram, output_schema="routing",

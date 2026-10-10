@@ -1234,21 +1234,24 @@ if [ \"$N\" != 0 ]; then
 fi
 echo '{\"context_updates\":{\"pr_url\":\"'$(cat /tmp/fabro/pr_url 2>/dev/null)'\",\"issue_number\":'$N'}}'
 exit 0"]
-    report_blocked [label="Report blocked", shape=parallelogram,
-        script="echo blocked > /tmp/fabro/review_merge_outcome
+    report_blocked [label="Report blocked", shape=parallelogram, output_schema="routing",
+        script="exec 3>&1 >>/tmp/fabro/report.log 2>&1
+echo blocked > /tmp/fabro/review_merge_outcome
 PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
 R=$(cat /tmp/fabro/merge_block_reason 2>/dev/null || echo 'The merge was blocked for an unspecified reason.')
+K=$(printf '%s' \"$R\" | tr '[:cntrl:]' ' ' | head -c 300)
 echo 'Merge blocked for PR '$PR': '$R
-if [ -z \"$PR\" ]; then echo done; exit 0; fi
+if [ -z \"$PR\" ]; then echo done; jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3; exit 0; fi
 if ! sh /tmp/fabro/render_comment.sh blocked > /tmp/fabro/pr_comment.md; then
-  echo 'WARNING: could not render the review comment; falling back to a minimal one.' >&2
+  echo 'WARNING: could not render the review comment; falling back to a minimal one.'
   { echo 'Automated review complete, but the detailed report could not be rendered.'
     echo
     echo '**Reason:** '\"$R\"
   } > /tmp/fabro/pr_comment.md
 fi
-gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the blocked comment.' >&2
+gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the blocked comment.'
 echo done
+jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3
 exit 0"]
     // A stop before `deliver` used to leave review_fix's commits in the sandbox while the
     // comment still listed them as applied (issue #8). When deliver never ran and the PR is
@@ -1258,11 +1261,15 @@ exit 0"]
     // pr-review HEAD carries rebase_check's rebase, possibly agent-resolved, and a stop
     // before any review edit must not force-push that unreviewed onto the author's branch.
     // In backlog the same push would carry only empty checkpoint commits.
-    mark_needs_human [label="Label needs-human", shape=parallelogram,
-        script="echo needs_human > /tmp/fabro/review_merge_outcome
+    mark_needs_human [label="Label needs-human", shape=parallelogram, output_schema="routing",
+        script="exec 3>&1 >>/tmp/fabro/report.log 2>&1
+echo needs_human > /tmp/fabro/review_merge_outcome
+R=$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)
+K=$(printf '%s' \"$R\" | tr '[:cntrl:]' ' ' | head -c 300)
 PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
 if [ -z \"$PR\" ]; then
-  echo 'No PR number was recorded, so there is nothing to label or comment on.' >&2
+  echo 'No PR number was recorded, so there is nothing to label or comment on.'
+  jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3
   exit 0
 fi
 D=$(cat /tmp/fabro/delivery 2>/dev/null || echo '')
@@ -1280,12 +1287,12 @@ elif [ -z \"$D\" ] && [ -n \"$H\" ]; then
   fi
 fi
 if ! sh /tmp/fabro/render_comment.sh needs-human > /tmp/fabro/pr_comment.md; then
-  R=$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)
   { echo 'Automated review could not finish.'; echo; echo 'Reason: '$R; } > /tmp/fabro/pr_comment.md
 fi
-gh pr edit $PR --add-label ai-review-needs-human || echo 'WARNING: could not add the ai-review-needs-human label. Check that the run token has issues:write.' >&2
-gh pr comment $PR --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the needs-human comment.' >&2
-echo done"]
+gh pr edit $PR --add-label ai-review-needs-human || echo 'WARNING: could not add the ai-review-needs-human label. Check that the run token has issues:write.'
+gh pr comment $PR --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the needs-human comment.'
+echo done
+jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3"]
 
     // ---- The single exit funnel ----
     // Every outcome lands here. The import contract allows exactly one exit with one

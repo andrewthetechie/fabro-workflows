@@ -269,14 +269,19 @@ fi"]
     // reporting and cannot be entered partway, so this graph keeps its own terminal.
     // It cannot use render_comment.sh -- that is written inside the import, which has
     // not run yet -- so it posts a plain comment.
-    entry_failed [label="Label needs-human", shape=parallelogram,
-        script="PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+    entry_failed [label="Label needs-human", shape=parallelogram, output_schema="routing",
+        script="exec 3>&1 >>/tmp/fabro/report.log 2>&1
+PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
 R=$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo 'The review could not start.')
-if [ -z \"$PR\" ]; then echo 'no PR number recorded; nothing to label' >&2; exit 0; fi
-gh pr edit $PR --add-label ai-review-needs-human || echo 'WARNING: could not add the ai-review-needs-human label.' >&2
+K=$(printf '%s' \"$R\" | tr '[:cntrl:]' ' ' | head -c 300)
+if [ -z \"$PR\" ]; then echo 'no PR number recorded; nothing to label'; else
+gh pr edit $PR --add-label ai-review-needs-human || echo 'WARNING: could not add the ai-review-needs-human label.'
 { echo 'Automated review could not start.'; echo; echo 'Reason: '\"$R\"; } > /tmp/fabro/entry_failed.md
-gh pr comment $PR --body-file /tmp/fabro/entry_failed.md || echo 'WARNING: could not post the comment.' >&2
-echo done"]
+gh pr comment $PR --body-file /tmp/fabro/entry_failed.md || echo 'WARNING: could not post the comment.'
+fi
+echo done
+jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3
+exit 0"]
 
     // ---- Edges ----
     start -> validate_input
