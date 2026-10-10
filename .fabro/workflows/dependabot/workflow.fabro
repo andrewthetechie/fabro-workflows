@@ -73,17 +73,91 @@ echo \"prep: repo=$NAME merge_enabled=$(cat /tmp/fabro/dep/merge_enabled)\"
 rm -f /tmp/fabro/dep/stopped_at
 echo ready"]
 
-    // Task 02: counts only. Task 03 replaces the body with the alert and PR lists and the match.
+    // Task 03: the open alerts (C1) and the open Dependabot PRs in queue order (C2). `match.jq`
+    // includes `version.jq`, which holds the version comparator and the requirement parser
+    // (task 06's patch_gate loads the same module). Both files are written from these heredocs on
+    // every visit, so this node owns them. A failed `gh` call exits 1 and leaves stopped_at
+    // at `inventory`, and summarize says alerts could not be read (task 08).
     inventory [label="Count the open alerts and Dependabot PRs", shape=parallelogram, output_schema="routing", timeout="5m",
         script="set -e
 echo inventory > /tmp/fabro/dep/stopped_at
 R=$(jq -r .nameWithOwner /tmp/fabro/dep/repo.json)
-A=$(gh api \"repos/$R/dependabot/alerts?state=open&per_page=100\" --paginate | jq -s 'add // [] | length')
-P=$(gh pr list --author app/dependabot --state open --limit 100 --json number | jq 'length')
-echo \"$A\" > /tmp/fabro/dep/alert_count
-echo \"$P\" > /tmp/fabro/dep/dep_pr_count
+cat > /tmp/fabro/dep/version.jq <<'JQ'
+def norm: ltrimstr(\"v\") | split(\"+\") | .[0];
+def vkey:
+  norm as $s
+  | ($s | capture(\"^(?<rel>[0-9.]*)(?<rest>.*)$\")) as $c
+  | {rel: ($c.rel | rtrimstr(\".\") | split(\".\") | map(tonumber? // 0)),
+     pre: ($c.rest | ltrimstr(\"-\"))};
+def vcmp($a; $b):
+  ($a | vkey) as $x
+  | ($b | vkey) as $y
+  | ([$x.rel|length, $y.rel|length] | max) as $n
+  | ($x.rel + [range(0; $n - ($x.rel|length)) | 0]) as $p
+  | ($y.rel + [range(0; $n - ($y.rel|length)) | 0]) as $q
+  | if $p != $q then (if $p < $q then -1 else 1 end)
+    elif $x.pre == $y.pre then 0
+    elif $x.pre == \"\" then 1
+    elif $y.pre == \"\" then -1
+    elif $x.pre < $y.pre then -1
+    else 1 end;
+def target_version:
+  if test(\"^v?[0-9][0-9.a-zA-Z+-]*$\") then .
+  elif test(\">=|==\") then (capture(\"(>=|==)(?<v>[0-9][^,; ]*)\").v)
+  else null end;
+JQ
+cat > /tmp/fabro/dep/match.jq <<'JQ'
+include \"version\";
+def eco_of_slug:
+  . as $k
+  | {\"npm_and_yarn\": \"npm\", \"bun\": \"npm\", \"uv\": \"pip\", \"cargo\": \"rust\"}
+  | .[$k] // $k;
+def adir:
+  if test(\"/\") then (split(\"/\") | .[:-1] | join(\"/\")) else \"\" end;
+def pr_dir:
+  ([(.title | scan(\"in (/[^ ]*)\")), (.body | scan(\"in the (/[^ ]*) directory\"))]
+   | flatten | .[0] // \"/\" | ltrimstr(\"/\"));
+def pr_updates:
+  . as $pr
+  | ($pr.headRefName | split(\"/\")) as $b
+  | ($b[1] | eco_of_slug) as $eco
+  | pr_dir as $dir
+  | ([$pr.body | scan(\"Updates `([^`]+)` from ([^[:space:]]+) to ([^[:space:]]+)\")]
+     | map({package: .[0], to: (.[2] | target_version)})) as $rows
+  | (if ($rows | length) > 0 then $rows
+     else ($pr.title
+           | [capture(\"(?:bump|update) (?<package>[^ ]+) (?:requirement )?from (?<from>[^ ]+) to (?<to>[^ ]+)\"; \"i\")]
+           | map({package: (.package | split(\"[\")[0]), to: (.to | target_version)}))
+     end) as $us
+  | if ($dir != \"\") and ((($b[2:] | join(\"/\")) | startswith($dir + \"/\")) | not)
+    then []
+    else $us | map(. + {eco: $eco, dir: $dir})
+    end;
+def fixes($alerts):
+  . as $pr
+  | ($pr | pr_updates) as $us
+  | [$alerts[]
+     | select(.first_patched != null)
+     | . as $a
+     | select([$us[] | select((.package | ascii_downcase) == ($a.package | ascii_downcase) and .eco == $a.ecosystem
+                              and .dir == ($a.manifest | adir) and .to != null
+                              and vcmp(.to; $a.first_patched) >= 0)] | length > 0)
+     | .number] | sort;
+$prs[0]
+| map(. as $pr | {number, title, head_ref: .headRefName, head_sha: .headRefOid, created_at: .createdAt, url, fixes: ($pr | fixes($alerts[0]))})
+| sort_by([(.fixes | length == 0), .created_at])
+JQ
+gh api \"repos/$R/dependabot/alerts?state=open&per_page=100\" --paginate > /tmp/fabro/dep/alerts_raw.json || { echo 'inventory: the open alerts could not be read' >&2; exit 1; }
+jq -s 'add // [] | [.[] | {number, ecosystem: .dependency.package.ecosystem, package: .dependency.package.name, manifest: .dependency.manifest_path, severity: .security_advisory.severity, scope: (.dependency.scope // \"unknown\"), first_patched: .security_vulnerability.first_patched_version.identifier, ghsa: .security_advisory.ghsa_id, cve: .security_advisory.cve_id, created_at: .created_at, url: .html_url}]' /tmp/fabro/dep/alerts_raw.json > /tmp/fabro/dep/alerts.json
+gh pr list --author app/dependabot --state open --limit 100 --json number,title,headRefName,headRefOid,createdAt,url,body > /tmp/fabro/dep/prs_raw.json
+jq -n -L /tmp/fabro/dep --slurpfile alerts /tmp/fabro/dep/alerts.json --slurpfile prs /tmp/fabro/dep/prs_raw.json -f /tmp/fabro/dep/match.jq > /tmp/fabro/dep/prs.json
+A=$(jq length /tmp/fabro/dep/alerts.json)
+P=$(jq length /tmp/fabro/dep/prs.json)
+echo $A > /tmp/fabro/dep/alert_count
+echo $P > /tmp/fabro/dep/dep_pr_count
 rm -f /tmp/fabro/dep/stopped_at
-jq -cn --argjson a \"$A\" --argjson p \"$P\" '{context_updates: {alert_count: $a, dep_pr_count: $p}}'"]
+jq -cn --argjson a $A --argjson p $P '{context_updates: {alert_count: $a, dep_pr_count: $p}}'
+"]
 
     // Builds the one-line summary from the files that exist, and always exits 0 (D24).
     // Task 08 gives it its final form.
@@ -103,7 +177,9 @@ exit 0"]
     start -> prep
     prep -> inventory                 [condition="outcome=succeeded"]
     prep -> summarize
-    inventory -> summarize            [condition="outcome=succeeded"]
+    // dep_next (task 04) and pick_group (task 05) do not exist yet: both branches go to summarize.
+    inventory -> summarize            [condition="outcome=succeeded && context.dep_pr_count!=0"]
+    inventory -> summarize            [condition="outcome=succeeded && context.dep_pr_count=0"]
     inventory -> summarize
     summarize -> finish               [condition="outcome=succeeded"]
     summarize -> finish

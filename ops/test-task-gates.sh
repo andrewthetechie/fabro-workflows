@@ -4494,6 +4494,105 @@ check "dependabot prep: no stale contract left" "0" "$(ls "$DEP_RESET/dep" | gre
 check "dependabot prep: stopped_at cleared on success" "0" "$(test -e "$DEP_RESET/dep/stopped_at" && echo 1 || echo 0)"
 T="$DEP_SAVED_T"
 
+
+# ---------------------------------------------------------------------------
+# dependabot — inventory (ADR 0022 task 03): the alert list (C1), the PR queue (C2), the match
+# (C3) and the version comparator. gh is stubbed; the fixtures are live 2026-10-10 data
+# (jelly-swipe) plus synthetic PRs and alerts built here.
+# ---------------------------------------------------------------------------
+echo ""
+echo "dependabot: inventory"
+DEP_FIX="$REPO_ROOT/ops/tests/fixtures/dependabot"
+ALERTS_JELLY="$DEP_FIX/jelly-swipe-alerts-open.json"
+PRS_JELLY="$DEP_FIX/jelly-swipe-prs-open.json"
+INV_STUBS="$WORK/dep-inv-stubs"; mkdir -p "$INV_STUBS/bin"
+cat > "$INV_STUBS/bin/gh" <<'STUB'
+#!/bin/sh
+case "$1 $2" in
+  "api "*) [ -n "${GH_API_RC:-}" ] && exit "$GH_API_RC"; cat "$GH_ALERTS" ;;
+  "pr list") cat "$GH_PRS" ;;
+  *) echo "gh $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$INV_STUBS/bin/gh"
+
+# $1 case, $2 alerts file (raw API pages), $3 PR list file, $4 gh api exit status (empty: 0).
+# Leaves the run dir in DEP_DIR; the outputs are $DEP_DIR/dep/*, and $DEP_DIR.rc holds the exit.
+dep_inv_case() {
+    DEP_DIR="$WORK/dep-inv-$1"; mkdir -p "$DEP_DIR/dep"
+    echo '{"nameWithOwner":"andrewthetechie/jelly-swipe","defaultBranchRef":{"name":"main"}}' > "$DEP_DIR/dep/repo.json"
+    export GH_ALERTS="$2" GH_PRS="$3"
+    if [ -n "${4:-}" ]; then export GH_API_RC="$4"; else unset GH_API_RC; fi
+    INV_SAVED_T="$T"; T="$INV_STUBS"
+    run_node inventory "$DEP" "$DEP_DIR"
+    T="$INV_SAVED_T"
+    unset GH_ALERTS GH_PRS GH_API_RC
+}
+
+# $1 title, $2 head branch, $3 PR number, $4 body, $5 output file: one open PR, as gh lists it.
+mk_pr() {
+    jq -cn --arg t "$1" --arg h "$2" --argjson n "$3" --arg b "$4" \
+      '[{number:$n, title:$t, headRefName:$h, headRefOid:"f00d", createdAt:"2026-10-10T06:00:00Z", url:"https://github.com/andrewthetechie/jelly-swipe/pull/\($n)", body:$b}]' > "$5"
+}
+
+# 1. jelly-swipe on 2026-10-10: 5 alerts, 6 PRs, none fixed, oldest PR first.
+dep_inv_case jelly "$ALERTS_JELLY" "$PRS_JELLY"
+check "dependabot inventory: jelly exit 0" "0" "$(cat "$DEP_DIR.rc")"
+check "dependabot inventory: jelly has 5 alerts (C1)" "5" "$(jq length "$DEP_DIR/dep/alerts.json")"
+check "dependabot inventory: jelly alert shape" "urllib3" "$(jq -r '[.[] | select(.number==72)][0].package' "$DEP_DIR/dep/alerts.json")"
+check "dependabot inventory: jelly has 6 PRs (C2)" "6" "$(jq length "$DEP_DIR/dep/prs.json")"
+check "dependabot inventory: jelly fixes are all empty" "0" "$(jq '[.[] | select(.fixes != [])] | length' "$DEP_DIR/dep/prs.json")"
+check "dependabot inventory: jelly PRs oldest first" "437 438 439 440 441 442" "$(jq -r '[.[].number] | map(tostring) | join(" ")' "$DEP_DIR/dep/prs.json")"
+routing_check "dependabot inventory: jelly routing" "$DEP_DIR" '.context_updates.alert_count'
+check "dependabot inventory: jelly routing alert_count" "5" "$ROUTED"
+check "dependabot inventory: jelly routing dep_pr_count" "6" "$(jq -r '.context_updates.dep_pr_count' <<<"$(tail -1 "$DEP_DIR.out")")"
+check "dependabot inventory: stopped_at cleared on success" "0" "$(test -e "$DEP_DIR/dep/stopped_at" && echo 1 || echo 0)"
+
+# 2. A security PR (urllib3 to 2.8.0) fixes alerts 72-74, and it sorts first even though it is newest.
+mk_pr "chore(deps): bump urllib3 from 2.7.1 to 2.8.0" "dependabot/uv/urllib3-2.8.0" 900 "Bumps urllib3." "$WORK/dep-sec.json"
+jq -s 'add' "$PRS_JELLY" "$WORK/dep-sec.json" > "$WORK/dep-sec-all.json"
+dep_inv_case security "$ALERTS_JELLY" "$WORK/dep-sec-all.json"
+check "dependabot inventory: security PR fixes 72,73,74" "72 73 74" "$(jq -r '[.[] | select(.number==900)][0].fixes | map(tostring) | join(" ")' "$DEP_DIR/dep/prs.json")"
+check "dependabot inventory: security PR sorts first" "900" "$(jq -r '.[0].number' "$DEP_DIR/dep/prs.json")"
+
+# 3. The same PR to 2.7.9 is below first_patched (2.8.0): no fix.
+mk_pr "chore(deps): bump urllib3 from 2.7.1 to 2.7.9" "dependabot/uv/urllib3-2.7.9" 901 "x" "$WORK/dep-low.json"
+dep_inv_case low "$ALERTS_JELLY" "$WORK/dep-low.json"
+check "dependabot inventory: 2.7.9 fixes nothing" "[]" "$(jq -c '.[0].fixes' "$DEP_DIR/dep/prs.json")"
+
+# 4. A root-directory brace-expansion PR does not fix the frontend/package-lock.json alert.
+jq -cn '[{number:1, dependency:{package:{ecosystem:"npm",name:"brace-expansion"},manifest_path:"frontend/package-lock.json"}, security_advisory:{severity:"medium"}, security_vulnerability:{first_patched_version:{identifier:"5.0.9"}}, created_at:"2026-10-01T00:00:00Z", html_url:"https://example.test/1"}]' > "$WORK/dep-fe-alert.json"
+mk_pr "chore(deps): bump brace-expansion from 5.0.8 to 5.0.12" "dependabot/npm_and_yarn/brace-expansion-5.0.12" 902 "Bumps brace-expansion." "$WORK/dep-root.json"
+dep_inv_case wrongdir "$WORK/dep-fe-alert.json" "$WORK/dep-root.json"
+check "dependabot inventory: root PR does not fix a frontend alert" "[]" "$(jq -c '.[0].fixes' "$DEP_DIR/dep/prs.json")"
+
+# 5. A grouped PR: the body's Updates row names undici at 8.11.2, which fixes an undici alert at 8.10.2.
+jq -cn '[{number:7, dependency:{package:{ecosystem:"npm",name:"undici"},manifest_path:"frontend/package-lock.json"}, security_advisory:{severity:"medium"}, security_vulnerability:{first_patched_version:{identifier:"8.10.2"}}, created_at:"2026-10-01T00:00:00Z", html_url:"https://example.test/7"}]' > "$WORK/dep-undici.json"
+dep_inv_case grouped "$WORK/dep-undici.json" "$DEP_FIX/jelly-swipe-grouped-431.json"
+check "dependabot inventory: grouped body fixes undici" "[7]" "$(jq -c '.[0].fixes' "$DEP_DIR/dep/prs.json")"
+
+# 6. Paginated: gh prints one array per page, and both pages are read.
+cat "$ALERTS_JELLY" "$ALERTS_JELLY" > "$WORK/dep-two-pages.json"
+dep_inv_case paged "$WORK/dep-two-pages.json" "$PRS_JELLY"
+check "dependabot inventory: two pages give 10 alerts" "10" "$(jq length "$DEP_DIR/dep/alerts.json")"
+
+# 7. The alert read fails: exit 1, and stopped_at names inventory.
+dep_inv_case apifail "$ALERTS_JELLY" "$PRS_JELLY" 1
+check "dependabot inventory: API failure exits 1" "1" "$(cat "$DEP_DIR.rc")"
+check "dependabot inventory: API failure leaves stopped_at at inventory" "inventory" "$(cat "$DEP_DIR/dep/stopped_at")"
+
+# 8. The comparator (task 03's fixtures), loaded from the module the node wrote.
+DEP_CMP="$WORK/dep-cmp"; mkdir -p "$DEP_CMP"; cp "$WORK/dep-inv-jelly/dep/version.jq" "$DEP_CMP/"
+vcmp_check() {
+    check "dependabot comparator: $1" "$2" "$(jq -nr -L "$DEP_CMP" 'include "version"; '"$1" 2>/dev/null)"
+}
+vcmp_check 'vcmp("2.10.0";"2.9.0") > 0 | if . then 1 else 0 end' 1
+vcmp_check 'vcmp("1.0.0-rc1";"1.0.0") < 0 | if . then 1 else 0 end' 1
+vcmp_check 'vcmp("0.23.45";"0.23.45")' 0
+vcmp_check 'vcmp("5.0.12";"5.0.9")' 1
+vcmp_check 'vcmp("v0.16.10";"v0.16.9")' 1
+vcmp_check 'vcmp("2.8.0rc1";"2.8.0")' -1
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
