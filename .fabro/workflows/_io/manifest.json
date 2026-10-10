@@ -1093,6 +1093,9 @@
         "triage_phase": "triage"
       },
       "stages": {}
+    },
+    "dependabot": {
+      "stages": {}
     }
   }
 }

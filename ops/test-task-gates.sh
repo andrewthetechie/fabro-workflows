@@ -58,6 +58,8 @@ ARCH="$REPO_ROOT/.fabro/workflows/arch-review/workflow.fabro"
 [ -f "$ARCH" ] || { echo "ERROR: $ARCH not found" >&2; exit 1; }
 PR="$REPO_ROOT/.fabro/workflows/pr-review/workflow.fabro"
 [ -f "$PR" ] || { echo "ERROR: $PR not found" >&2; exit 1; }
+DEP="$REPO_ROOT/.fabro/workflows/dependabot/workflow.fabro"
+[ -f "$DEP" ] || { echo "ERROR: $DEP not found" >&2; exit 1; }
 INTRIAGE="$REPO_ROOT/.fabro/workflows/issue-triage/workflow.fabro"
 [ -f "$INTRIAGE" ] || { echo "ERROR: $INTRIAGE not found" >&2; exit 1; }
 
@@ -4417,6 +4419,80 @@ else
     unset FABRO_IO_ROOT FABRO_NODE_ID FABRO_IO_MANIFEST
     rm -rf "$TMPIO"
 fi
+
+
+# ---------------------------------------------------------------------------
+# dependabot — prep (ADR 0022 task 02): the per-repository switch and the run-local reset.
+# gh and curl are stubbed; the automation rows come from a file the test writes.
+# ---------------------------------------------------------------------------
+echo ""
+echo "dependabot: prep"
+DEP_STUBS="$WORK/dep-stubs"; mkdir -p "$DEP_STUBS/bin"
+cat > "$DEP_STUBS/bin/gh" <<'STUB'
+#!/bin/sh
+case "$*" in
+  "repo view"*) echo '{"nameWithOwner":"andrewthetechie/jelly-swipe","defaultBranchRef":{"name":"main"}}' ;;
+  *) echo "gh $*" >&2 ;;
+esac
+exit 0
+STUB
+cat > "$DEP_STUBS/bin/curl" <<'STUB'
+#!/bin/sh
+[ -n "${CURL_FAIL:-}" ] && exit 22
+cat "$AUTOROWS"
+STUB
+chmod +x "$DEP_STUBS/bin/gh" "$DEP_STUBS/bin/curl"
+
+# $1 case name, $2 description of the dependabot-jelly-swipe row, $3 FABRO_AUTO_MERGE, $4 curl fails (1 or empty)
+# Runs prep in a fresh git repository standing for the checkout and /tmp/fabro. Leaves the dir in DEP_DIR.
+dep_prep_case() {
+    DEP_DIR="$WORK/dep-$1"; rm -rf "$DEP_DIR"; mkdir -p "$DEP_DIR/dep"
+    git -C "$DEP_DIR" init -q
+    printf '{"data":[{"id":"dependabot-jelly-swipe","workflow":"dependabot","target":{"repo":"andrewthetechie/jelly-swipe"},"description":%s}]}' "$2" > "$DEP_DIR.rows.json"
+    export AUTOROWS="$DEP_DIR.rows.json" FABRO_API_URL=http://fabro.test FABRO_API_TOKEN=test-token FABRO_AUTO_MERGE="$3"
+    if [ -n "$4" ]; then export CURL_FAIL=1; else unset CURL_FAIL; fi
+    run_node prep "$DEP" "$DEP_DIR" 2>/dev/null
+    # run_node runs the script with PATH="$T/bin:..."; the stubs live in DEP_STUBS, so re-run with them first.
+    unset AUTOROWS FABRO_API_URL FABRO_API_TOKEN FABRO_AUTO_MERGE CURL_FAIL
+}
+
+# run_node takes its stub dir from $T; point it at the dependabot stubs for these cases only.
+DEP_SAVED_T="${T:-}"
+T="$DEP_STUBS"
+
+# 1. Empty description, host switch on: merge enabled.
+dep_prep_case on '""' 1 ""
+check "dependabot prep: empty description, host on: exit 0" "0" "$(cat "$DEP_DIR.rc")"
+check "dependabot prep: empty description, host on: merge_enabled 1" "1" "$(cat "$DEP_DIR/dep/merge_enabled")"
+
+# 2. The row says auto_merge=false: off, and the reason names the repository switch.
+dep_prep_case repo-off '"auto_merge=false"' 1 ""
+check "dependabot prep: auto_merge=false: merge_enabled 0" "0" "$(cat "$DEP_DIR/dep/merge_enabled")"
+check "dependabot prep: auto_merge=false: reason names the repository switch" "1" "$(grep -c 'switched off for this repository' "$DEP_DIR/dep/merge_off_reason")"
+
+# 3. The API cannot be read: off, because a switch that cannot be read is not armed.
+dep_prep_case api-down '"auto_merge=true"' 1 1
+check "dependabot prep: curl fails: merge_enabled 0" "0" "$(cat "$DEP_DIR/dep/merge_enabled")"
+
+# 4. Row on, host off: off, and the reason names the host switch.
+dep_prep_case host-off '"auto_merge=true"' 0 ""
+check "dependabot prep: host off: merge_enabled 0" "0" "$(cat "$DEP_DIR/dep/merge_enabled")"
+check "dependabot prep: host off: reason names the host switch" "1" "$(grep -c 'host-wide' "$DEP_DIR/dep/merge_off_reason")"
+
+# 5. The run-local reset: a leftover contract from an earlier run is removed, results.json is []
+#    and stopped_at is cleared on success.
+DEP_RESET="$WORK/dep-reset-stale"; rm -rf "$DEP_RESET"; mkdir -p "$DEP_RESET/dep"
+printf '[{"number":1}]' > "$DEP_RESET/dep/results.json"
+for f in alerts.json prs.json group.json patch.json cur.json cur_result.json; do echo stale > "$DEP_RESET/dep/$f"; done
+git -C "$DEP_RESET" init -q
+printf '{"data":[]}' > "$DEP_RESET.rows.json"
+extract_from "$DEP" prep | sed "s#/tmp/fabro#$DEP_RESET#g" > "$DEP_RESET.sh"
+(cd "$DEP_RESET" && PATH="$DEP_STUBS/bin:$ORIG_PATH" AUTOROWS="$DEP_RESET.rows.json" FABRO_API_URL=http://fabro.test FABRO_API_TOKEN=t FABRO_AUTO_MERGE=1 sh "$DEP_RESET.sh" >/dev/null 2>&1); echo $? > "$DEP_RESET.rc"
+check "dependabot prep: reset run exits 0" "0" "$(cat "$DEP_RESET.rc")"
+check "dependabot prep: results.json is []" "[]" "$(jq -c . "$DEP_RESET/dep/results.json")"
+check "dependabot prep: no stale contract left" "0" "$(ls "$DEP_RESET/dep" | grep -cE '^(alerts|prs|group|patch|cur|cur_result)\.json$')"
+check "dependabot prep: stopped_at cleared on success" "0" "$(test -e "$DEP_RESET/dep/stopped_at" && echo 1 || echo 0)"
+T="$DEP_SAVED_T"
 
 echo ""
 echo "the suite leaves the checkout alone"

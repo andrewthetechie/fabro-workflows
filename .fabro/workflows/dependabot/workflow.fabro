@@ -1,0 +1,111 @@
+digraph Dependabot {
+    graph [
+        goal="Daily Dependabot run: merge the open Dependabot PRs that validate, patch one open alert group through the shared review and merge phase, and report",
+        default_fidelity="truncate",
+        // Above every node timeout in this graph (the longest is 20m). The patch agent runs
+        // with its own 45m timeout; if this were lower, the watchdog would stop the run first.
+        stall_timeout="60m",
+        // The graph has a cycle through command nodes (the merge loop) and will import the
+        // shared review-and-merge phase. Fabro stops a run when one failure signature repeats
+        // this many times, and it counts run-wide. The phase's gates print one fixed line on a
+        // bad contract, so a few repeats across PRs and groups must not stop the run mid-queue.
+        loop_restart_signature_limit=20,
+        // Every class is on glm-5.3-flash (ADR 0022 D14). `.merge-spec` and `.refute` take
+        // their own models in the stylesheet that task 07 adds.
+        model_stylesheet="
+            *                 { model: glm-5.3-flash; }
+            .dep-patch        { model: glm-5.3-flash; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // Resets the run-local files, reads the repository's default branch, and reads this
+    // repository's switch from its `dependabot-<repo>` row (ADR 0022 D17). The switch is read
+    // once, here, so the rest of the run agrees with itself.
+    prep [label="Prepare the workspace", shape=parallelogram,
+        script="set -e
+mkdir -p /tmp/fabro/dep
+echo prep > /tmp/fabro/dep/stopped_at
+rm -f /tmp/fabro/dep/alerts.json /tmp/fabro/dep/prs.json /tmp/fabro/dep/cur.json /tmp/fabro/dep/cur_result.json
+rm -f /tmp/fabro/dep/group.json /tmp/fabro/dep/group_alerts.json /tmp/fabro/dep/patch.json /tmp/fabro/dep/patch_feedback.md
+rm -f /tmp/fabro/dep/no_patch.json /tmp/fabro/dep/skipped_groups.json /tmp/fabro/dep/loop_started /tmp/fabro/dep/cursor
+rm -f /tmp/fabro/dep/run_branch /tmp/fabro/dep/merge_enabled /tmp/fabro/dep/merge_off_reason /tmp/fabro/dep/sync_base_sha
+rm -f /tmp/fabro/dep/stop_reason /tmp/fabro/dep/alert_count /tmp/fabro/dep/dep_pr_count
+rm -f /tmp/fabro/issue.json /tmp/fabro/pr_number /tmp/fabro/review_merge_outcome /tmp/fabro/auto_merge_repo
+date +%s > /tmp/fabro/run_started
+echo '[]' > /tmp/fabro/dep/results.json
+gh repo view --json nameWithOwner,defaultBranchRef > /tmp/fabro/dep/repo.json
+jq -r .defaultBranchRef.name /tmp/fabro/dep/repo.json > /tmp/fabro/base_ref
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index >/dev/null 2>&1; fabro-code map >/dev/null 2>&1 || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi
+if [ -z \"$FABRO_AGENT_GUIDE\" ]; then echo 'agent guide: FABRO_AGENT_GUIDE is empty, nothing installed' >&2
+elif git ls-files --error-unmatch .codex/instructions.md >/dev/null 2>&1; then echo 'agent guide: the repository tracks .codex/instructions.md, left alone' >&2
+elif mkdir -p .codex && printf '%s' \"$FABRO_AGENT_GUIDE\" > .codex/instructions.md; then grep -qx '.codex/instructions.md' .git/info/exclude 2>/dev/null || echo '.codex/instructions.md' >> .git/info/exclude
+else echo 'agent guide: could not write .codex/instructions.md' >&2; fi
+REPO=$(jq -r .nameWithOwner /tmp/fabro/dep/repo.json)
+NAME=${REPO#*/}
+echo 0 > /tmp/fabro/auto_merge_repo
+if [ -n \"${FABRO_API_URL:-}\" ] && [ -n \"${FABRO_API_TOKEN:-}\" ] && curl -fsS -H \"Authorization: Bearer $FABRO_API_TOKEN\" $FABRO_API_URL/automations > /tmp/fabro/autorows.json 2>/dev/null; then
+  D=$(jq -r --arg r \"$REPO\" '[.data[] | select(.workflow == \"dependabot\" and .target.repo == $r)] | .[0].description // \"\"' /tmp/fabro/autorows.json)
+  case \"$D\" in
+    *auto_merge*) T=$(printf '%s' \"$D\" | grep -o 'auto_merge=[A-Za-z0-9_-]*' | tail -1 | cut -d= -f2)
+                  case \"$T\" in true) echo 1 > /tmp/fabro/auto_merge_repo ;; esac ;;
+    *) echo 1 > /tmp/fabro/auto_merge_repo ;;
+  esac
+fi
+AM=$(cat /tmp/fabro/auto_merge_repo)
+H=\"${FABRO_AUTO_MERGE:-0}\"
+case \"$H\" in 1) ;; *) H=0 ;; esac
+if [ \"$AM\" = 1 ] && [ \"$H\" = 1 ]; then
+  echo 1 > /tmp/fabro/dep/merge_enabled
+  : > /tmp/fabro/dep/merge_off_reason
+elif [ \"$AM\" != 1 ]; then
+  echo 0 > /tmp/fabro/dep/merge_enabled
+  echo 'Auto-merge is switched off for this repository. Flip it with ops/fabro-auto-merge-switch.sh.' > /tmp/fabro/dep/merge_off_reason
+else
+  echo 0 > /tmp/fabro/dep/merge_enabled
+  echo 'Auto-merge is switched off host-wide: the FABRO_AUTO_MERGE server variable is not 1. Re-arm it with ops/fabro-auto-merge-switch.sh host on.' > /tmp/fabro/dep/merge_off_reason
+fi
+echo \"prep: repo=$NAME merge_enabled=$(cat /tmp/fabro/dep/merge_enabled)\"
+rm -f /tmp/fabro/dep/stopped_at
+echo ready"]
+
+    // Task 02: counts only. Task 03 replaces the body with the alert and PR lists and the match.
+    inventory [label="Count the open alerts and Dependabot PRs", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="set -e
+echo inventory > /tmp/fabro/dep/stopped_at
+R=$(jq -r .nameWithOwner /tmp/fabro/dep/repo.json)
+A=$(gh api \"repos/$R/dependabot/alerts?state=open&per_page=100\" --paginate | jq -s 'add // [] | length')
+P=$(gh pr list --author app/dependabot --state open --limit 100 --json number | jq 'length')
+echo \"$A\" > /tmp/fabro/dep/alert_count
+echo \"$P\" > /tmp/fabro/dep/dep_pr_count
+rm -f /tmp/fabro/dep/stopped_at
+jq -cn --argjson a \"$A\" --argjson p \"$P\" '{context_updates: {alert_count: $a, dep_pr_count: $p}}'"]
+
+    // Builds the one-line summary from the files that exist, and always exits 0 (D24).
+    // Task 08 gives it its final form.
+    summarize [label="Summarize the run", shape=parallelogram, output_schema="routing", timeout="2m",
+        script="R=$(jq -r .nameWithOwner /tmp/fabro/dep/repo.json 2>/dev/null || echo unknown)
+A=$(cat /tmp/fabro/dep/alert_count 2>/dev/null || echo 0)
+P=$(cat /tmp/fabro/dep/dep_pr_count 2>/dev/null || echo 0)
+S=$(cat /tmp/fabro/dep/stopped_at 2>/dev/null || echo '')
+if [ -n \"$S\" ]; then M=\"Stopped at $S\"; else M=\"$R: $A alerts open, $P Dependabot PRs open (skeleton run; nothing merged or patched)\"; fi
+echo \"$M\"
+jq -cn --arg m \"$M\" --arg s \"$S\" '{context_updates: {dep_summary: $m, stopped_at: $s}}'
+exit 0"]
+
+    // The target of the summary hook (task 08). Exists here so the hook has a stage to fire on.
+    finish [label="Finish", shape=parallelogram, timeout="1m", script="echo done"]
+
+    start -> prep
+    prep -> inventory                 [condition="outcome=succeeded"]
+    prep -> summarize
+    inventory -> summarize            [condition="outcome=succeeded"]
+    inventory -> summarize
+    summarize -> finish               [condition="outcome=succeeded"]
+    summarize -> finish
+    finish -> exit
+}
