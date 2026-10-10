@@ -12,8 +12,12 @@ Definitions (docs/coder-tweaks/00-overview-and-contracts.md, C7):
                   M4 (git), M6 (memory) and M8 (review) always cover every stage.
   M1  code-index share of searches: (code_* tools + shell `fabro-code`) over those
       plus native grep plus shell grep/rg, counted per shell command segment.
+      Also reported without the grep/rg segments that read a pipe (`cargo test |
+      grep ok`): no index can replace a stdin filter. `| xargs grep` still counts.
   M2  read_file output bytes per stage visit.
   M3  share of read_file calls with neither `offset` nor `limit` (whole files).
+      Also reported by bytes, and as whole reads of 12 KB or more per visit: reading
+      a 4 KB file whole is the right call, so the count alone overstates it.
   M4  mutating git run outside the exempt stages (C2's rule). A call whose result is
       an error that names a hook or guard is reported separately as blocked.
   M5  improve visits that edited a tracked file: an edit_file/write_file outside
@@ -84,7 +88,13 @@ def split_segments(command: str) -> list[list[str]]:
     Quote aware: a separator inside quotes, or escaped by a backslash (the `\\|` of a
     grep alternation), does not split. Words keep their quotes stripped.
     """
+    return [s for s, _ in split_segments_piped(command)]
+
+
+def split_segments_piped(command: str) -> list[tuple[list[str], bool]]:
+    """split_segments, with whether each segment reads a single `|` pipe."""
     segs: list[list[str]] = [[]]
+    piped: list[bool] = [False]
     word: list[str] = []
     has_word = False
     quote = ""
@@ -96,10 +106,13 @@ def split_segments(command: str) -> list[list[str]]:
             segs[-1].append("".join(word))
         word, has_word = [], False
 
-    def end_seg() -> None:
+    def end_seg(pipe: bool = False) -> None:
         end_word()
         if segs[-1]:
             segs.append([])
+            piped.append(pipe)
+        else:
+            piped[-1] = piped[-1] or pipe  # `a | (grep x)` and `a |\ngrep x`
 
     while i < n:
         c = command[i]
@@ -123,8 +136,9 @@ def split_segments(command: str) -> list[list[str]]:
             end_seg()
             i += 1
         elif c in "&|":
-            end_seg()
-            if command[i + 1 : i + 2] == c:
+            double = command[i + 1 : i + 2] == c
+            end_seg(pipe=c == "|" and not double)
+            if double:
                 i += 1
         elif c.isspace():
             end_word()
@@ -133,7 +147,7 @@ def split_segments(command: str) -> list[list[str]]:
             has_word = True
         i += 1
     end_word()
-    return [s for s in segs if s]
+    return [(s, p) for s, p in zip(segs, piped) if s]
 
 
 def strip_prefix(words: list[str]) -> list[str]:
@@ -163,15 +177,21 @@ def strip_prefix(words: list[str]) -> list[str]:
 
 def commands(command: str) -> list[list[str]]:
     """The command words of each segment, with prefixes dropped and `cd X` removed."""
+    return [w for w, _ in commands_piped(command)]
+
+
+def commands_piped(command: str) -> list[tuple[list[str], bool]]:
+    """commands, with whether each one filters its stdin: it reads a `|` pipe and is
+    not run by xargs (`find . | xargs grep -l X` searches files, not the pipe)."""
     out = []
-    for seg in split_segments(command):
+    for seg, piped in split_segments_piped(command):
         w = strip_prefix(seg)
         if not w:
             continue
         if w[0].rsplit("/", 1)[-1] == "cd":
             continue
         w[0] = w[0].rsplit("/", 1)[-1]
-        out.append(w)
+        out.append((w, piped and "xargs" not in (x.rsplit("/", 1)[-1] for x in seg[: len(seg) - len(w)])))
     return out
 
 
@@ -232,6 +252,7 @@ def load_run(path: Path, since: str | None):
     edges: list[tuple[str, str]] = []
     memory: list[bool] = []
     created = ""
+    origin = ""
     run_id = path.stem
     with path.open() as fh:
         for line in fh:
@@ -245,6 +266,8 @@ def load_run(path: Path, since: str | None):
             kind = ev.get("event", "")
             if kind == "run.created":
                 created = ev.get("ts", "")
+                git = (ev.get("properties") or {}).get("git") or {}
+                origin = str(git.get("origin_url") or "")
                 continue
             props = ev.get("properties") or {}
             sid = ev.get("stage_id") or props.get("stage_id") or ""
@@ -289,11 +312,57 @@ def load_run(path: Path, since: str | None):
                 memory.append(any(p.endswith(".codex/instructions.md") for p in paths))
     if since and created and created < since:
         return None
-    return {"id": run_id, "visits": list(visits.values()), "edges": edges, "memory": memory}
+    return {"id": run_id, "repo": repo_of(origin), "visits": list(visits.values()), "edges": edges,
+            "memory": memory}
 
 
 def pct(a: float, b: float) -> str:
     return f"{100 * a / b:.1f}%" if b else "n/a"
+
+
+# M-env: a Test environment's service is not running (docs/test-env, C7). Port 5432 is the
+# only port the target repositories' Test environments declare today.
+ENV_RE = re.compile(
+    r"ConftestImportFailure"
+    r"|port 5432 failed: Connection refused"
+    r"|ECONNREFUSED (?:127\.0\.0\.1|localhost):5432"
+    r"|Connect call failed \('(?:127\.0\.0\.1|localhost)', 5432\)"
+)
+
+
+def repo_of(origin: str) -> str:
+    """`owner/name` from a run's origin URL (https or ssh), or `unknown`."""
+    if not origin:
+        return "unknown"
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", origin)
+    return m.group(1) if m else origin
+
+
+def test_kind(words: list[str]) -> str | None:
+    """`test` for a direct test runner (M-run's denominator), `fabro` for the
+    Test environment's own entry points, None otherwise."""
+    head = words[0]
+    if head == "fabro-test" or (head == "fabro-io" and words[1:2] == ["run-tests"]):
+        return "fabro"
+    if head in ("pytest", "vitest") or (head == "npx" and words[1:2] == ["vitest"]):
+        return "test"
+    if head in ("python", "python3") and words[1:3] == ["-m", "pytest"]:
+        return "test"
+    if head == "cargo" and words[1:2] == ["test"]:
+        return "test"
+    if head in ("npm", "bun"):
+        if head == "npm" and words[1:2] == ["test"]:
+            return "test"
+        if "run" in words[1:]:
+            after = words[words.index("run") + 1 :]
+            script = next((w for w in after if not w.startswith("-")), "")
+            if script.startswith("test"):
+                return "test"
+    return None
+
+
+def env_hit(v: Visit) -> bool:
+    return any(ENV_RE.search(t["output"]) for t in v.tools)
 
 
 def report(runs: list[dict], local_only: bool) -> str:
@@ -304,7 +373,7 @@ def report(runs: list[dict], local_only: bool) -> str:
     local_visits = [v for v in all_visits if v.tools and v.local]
 
     # M1 - search share
-    code_idx = native_grep = shell_grep = 0
+    code_idx = native_grep = shell_grep = shell_filter = 0
     shell_words: Counter[str] = Counter()
     native: Counter[str] = Counter()
     for v in scoped:
@@ -315,31 +384,37 @@ def report(runs: list[dict], local_only: bool) -> str:
             elif t["name"] == "grep":
                 native_grep += 1
             elif t["name"] == "shell":
-                for w in commands(str(t["args"].get("command", ""))):
+                for w, filters in commands_piped(str(t["args"].get("command", ""))):
                     shell_words[w[0]] += 1
                     if w[0] == "fabro-code":
                         code_idx += 1
                     elif w[0] in ("grep", "rg", "egrep", "fgrep"):
                         shell_grep += 1
+                        shell_filter += filters
     searches = code_idx + native_grep + shell_grep
     lines += [
         "M1  code-index share of searches",
         f"    code_* + fabro-code {code_idx}; native grep {native_grep}; shell grep/rg {shell_grep}"
-        f" (grep {shell_words['grep']}, rg {shell_words['rg']})",
-        f"    share {pct(code_idx, searches)}",
+        f" (grep {shell_words['grep']}, rg {shell_words['rg']}; {shell_filter} read a pipe)",
+        f"    share {pct(code_idx, searches)}; without pipe filters {pct(code_idx, searches - shell_filter)}",
         "",
     ]
 
     # M2 / M3 - read_file
     reads = [t for v in scoped for t in v.tools if t["name"] == "read_file"]
     rbytes = sum(len(t["output"].encode()) for t in reads)
-    whole = sum(1 for t in reads if "limit" not in t["args"] and "offset" not in t["args"])
+    wholes = [len(t["output"].encode()) for t in reads if "limit" not in t["args"] and "offset" not in t["args"]]
+    big = [b for b in wholes if b >= 12 * 1024]
+    nv = max(len(scoped), 1)
     lines += [
         "M2  read_file bytes per stage visit",
         f"    {len(reads)} calls, {rbytes} bytes over {len(scoped)} stage visits"
-        f" = {rbytes // max(len(scoped), 1)} bytes per visit",
+        f" = {rbytes // nv} bytes per visit",
         "M3  whole-file share of read_file",
-        f"    {whole} of {len(reads)} = {pct(whole, len(reads))}",
+        f"    {len(wholes)} of {len(reads)} = {pct(len(wholes), len(reads))};"
+        f" by bytes {pct(sum(wholes), rbytes)}",
+        f"    whole reads >= 12 KB: {len(big)} = {len(big) / nv:.2f} per visit,"
+        f" {sum(big) // nv} bytes per visit",
         "",
     ]
 
@@ -437,6 +512,55 @@ def report(runs: list[dict], local_only: bool) -> str:
         "M8  review first-pass rate and rework escalations",
         f"    {first_pass} of {tasks} tasks approved at the first review_gate = {pct(first_pass, tasks)}",
         f"    rework visits {dict(sorted(rework.items()))}; per task {sum(rework.values()) / max(tasks, 1):.2f}",
+        "",
+    ]
+
+    # M-env - a Test environment's service refused a connection, per repository
+    lines.append("M-env  Test-environment refusals (port 5432 or ConftestImportFailure) in tool output")
+    per_repo: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0, 0])  # visits hit, visits, runs hit, runs
+    env_stages: Counter[str] = Counter()
+    for r in runs:
+        tooled = [v for v in r["visits"] if v.tools]
+        hits = [v for v in tooled if env_hit(v)]
+        acc = per_repo[r["repo"]]
+        acc[0] += len(hits)
+        acc[1] += len(tooled)
+        acc[2] += bool(hits)
+        acc[3] += 1
+        env_stages.update(v.node for v in hits)
+    all_hits = sum(a[0] for a in per_repo.values())
+    all_tooled = sum(a[1] for a in per_repo.values())
+    lines.append(f"    all repositories: {all_hits} of {all_tooled} stage visit(s) = {pct(all_hits, all_tooled)}")
+    for repo in sorted(per_repo):
+        h, n, hr, nr = per_repo[repo]
+        lines.append(f"    {repo}: {h} of {n} stage visit(s) = {pct(h, n)}; {hr} of {nr} run(s)")
+    lines += [f"    by stage {dict(sorted(env_stages.items()))}", ""]
+
+    # M-run - test invocations that go through run_tests or fabro-test
+    via = total = 0
+    mech: Counter[str] = Counter()
+    for v in all_visits:
+        for t in v.tools:
+            if t["name"] == "run_tests" or (t["name"] == "baseline_check" and t["args"].get("target")):
+                total += 1
+                via += 1
+                mech[t["name"]] += 1
+            elif t["name"] == "shell":
+                for w in commands(str(t["args"].get("command", ""))):
+                    kind = test_kind(w)
+                    if kind is None:
+                        continue
+                    total += 1
+                    if kind == "fabro":
+                        via += 1
+                        mech["fabro-test"] += 1
+                    else:
+                        mech["direct " + w[0]] += 1
+    lines += [
+        "M-run  test invocations that go through run_tests or fabro-test",
+        f"    {via} of {total} = {pct(via, total)}; by entry point {dict(sorted(mech.items()))}",
+        "    test invocations: run_tests, baseline_check with a target, fabro-test, and direct pytest,"
+        " vitest, cargo test, npm/bun test",
         "",
     ]
 
