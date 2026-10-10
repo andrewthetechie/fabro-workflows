@@ -130,6 +130,7 @@ def one($axis):
     else [ ($HG.tamper + ($HG.erosion // {})) | to_entries[] | select(.value > 0) | .key + \" \" + (.value | tostring) ] as $nz
       | (if ($nz | length) == 0 then \"No counter fired.\" else \"Counters: \" + ($nz | join(\", \")) + \". Erosion mode: \" + ($HG.erosion_mode // \"report\") + \".\" end)
         + (if $HG.config == \"invalid\" then \" The base branch .fabro/hygiene.json is not valid, so the defaults were used and the merge is refused.\" else \"\" end)
+        + (if (($HG.tamper.config_changed // 0) > 0) then \" This pull request changes .fabro/hygiene.json, .fabro/test.toml or .fabro/ci.sh, so it is not auto-merged.\" else \"\" end)
         + ( nz($HG.samples) | if length == 0 then \"\"
             else NL + NL + ([ .[] | \"- `\" + .file + (if .line then \":\" + (.line | tostring) else \"\" end) + \"` \" + .counter + \" - `\" + .text + \"`\" ] | join(NL)) end ) end ),
   \"\",
@@ -368,8 +369,9 @@ fi"]
     // copies of it would drift.
     //
     // It reads .fabro/hygiene.json from the BASE branch, never the PR head, and a PR that
-    // touches that file trips `config_changed`: a PR cannot loosen the rules that judge
-    // it. The patterns are written with bracket expressions ([.], [(], [[]) because the
+    // touches .fabro/hygiene.json, .fabro/test.toml or .fabro/ci.sh trips `config_changed`:
+    // a PR cannot loosen the rules that judge it, nor change how its own tests run (ADR
+    // 0018 D7). The patterns are written with bracket expressions ([.], [(], [[]) because the
     // escaped quote is the only backslash a .fabro file may hold. The fixtures in
     // ops/test-task-gates.sh are the contract for what each counter matches
     // (docs/merge-gate/00-overview-and-contracts.md, C5). The sandbox awk is mawk.
@@ -412,7 +414,7 @@ fi
 TP=$(jq -r '.test_paths | map(\"(\" + . + \")\") | join(\"|\")' $W/cfg.json)
 EX=$(jq -r '.exclude_paths | map(\"(\" + . + \")\") | join(\"|\")' $W/cfg.json)
 git diff -U0 --no-color --no-ext-diff \"origin/$B...HEAD\" > $W/diff 2>/dev/null || herr 'git diff against the base failed'
-CC=$(git diff --name-only \"origin/$B...HEAD\" 2>/dev/null | grep -cxF .fabro/hygiene.json || true)
+CC=$(git diff --name-only \"origin/$B...HEAD\" 2>/dev/null | grep -cxE '[.]fabro/(hygiene[.]json|test[.]toml|ci[.]sh)' || true)
 awk -v tp=\"$TP\" -v ex=\"$EX\" '
 function istest(f) { return tp != \"\" && f ~ tp }
 function skipped(f) { return ex != \"\" && f ~ ex }

@@ -55,6 +55,10 @@ These tools answer a code question in one call and return only what you ask for.
 | the tests that import a file | `code_tests` PATHS |
 | whether a failure existed before your change | `baseline_check` COMMAND |
 | to undo your change to one file | `restore_file` PATH |
+| whether your change passes its tests | `run_tests` TARGET [paths] |
+
+If the shell says a test needs a database or a service, use `run_tests`; the repository
+declares how to start it.
 
 If a tool above is not in your tool list, the shell has the same verbs:
 `fabro-code def|show|search|callers|impact|tests ARGS`.

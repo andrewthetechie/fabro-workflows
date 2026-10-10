@@ -127,7 +127,9 @@ test to make a check pass.
   `mark_needs_human`.
 - **Do not run the full test suite.** The `validate` stage runs
   `./.fabro/setup.sh && ./.fabro/ci.sh` next. Run only the narrowest useful check for
-  the surface you changed, and only when a cheap, obvious command exists.
+  the surface you changed: `run_tests TARGET <test files or node ids>`, with TARGET
+  from its list, or through the shell only when `run_tests` reports no targets, and
+  only when a cheap, obvious command exists.
 - Never modify generated files, lockfiles, or CI configuration.
 
 ## Scope discipline

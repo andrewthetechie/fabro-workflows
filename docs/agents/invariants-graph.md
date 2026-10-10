@@ -62,3 +62,9 @@ Every rule here passes `fabro validate` and fails at runtime, usually silently. 
 | `io-guard`, and any hook for a stage in an imported phase, goes into every graph that imports the phase | Like the review-merge report hooks, a hook in one `workflow.toml` does nothing for a run of a graph that imports the phase elsewhere. `io-guard` is wired into the two graphs that run `refute`. |
 | No two agent stages run in parallel while `stage.json` is the stage identity | The `.io/stage.json` staging area is shared state; parallel runs of two stages would fight over it. ADR 0016 D3. |
 | The MCP server's absence is silent in fabro | Fabro logs just one event when an agent tool times out; nothing surfaces that `inputs` did not answer. The receipt check is the only thing that notices, which is why every migrated gate carries it. |
+
+## Test environment (ADR 0018)
+
+| Rule | What happens otherwise |
+|---|---|
+| A `ci.sh` reads its Test environment as `test_env=$(fabro-io test-env); eval "$test_env"`, never `eval "$(fabro-io test-env)"` | `eval "$(cmd)"` ignores a failing `cmd` under `set -euo pipefail`: `bash -c 'set -euo pipefail; eval "$(false)"; echo continued'` prints `continued`. A failed `fabro-io test-env` (a bad `test.toml`, a failed preparation) would then run the checks with no environment and no error. The two-step form exits 1 (verified 2026-10-09). |

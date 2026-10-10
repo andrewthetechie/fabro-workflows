@@ -2965,6 +2965,19 @@ mkdir -p "$T/wt/.fabro"; printf '%s' '{"erosion_mode":"report","erosion_threshol
 check "config_changed: tamper"              "1" "$(hy .tamper.config_changed)"
 check "config_changed: PR config ignored"   "3" "$(hy .erosion_threshold)"
 
+# 13a. C6: .fabro/test.toml and .fabro/ci.sh trip config_changed too (ADR 0018 D7); a
+#      sibling example file does not.
+hy_repo
+mkdir -p "$T/wt/.fabro"; printf '%s\n' 'version = 1' > "$T/wt/.fabro/test.toml"; hy_commit; hy_run
+check "config_changed: test.toml trips"     "1"              "$(hy .tamper.config_changed)"
+check "config_changed: test.toml blocks"    "config_changed" "$(hy '.blocking | join(",")')"
+hy_repo
+mkdir -p "$T/wt/.fabro"; printf '%s\n' 'set -e' > "$T/wt/.fabro/ci.sh"; hy_commit; hy_run
+check "config_changed: ci.sh trips"         "1" "$(hy .tamper.config_changed)"
+hy_repo
+mkdir -p "$T/wt/.fabro"; printf '%s\n' 'version = 1' > "$T/wt/.fabro/test.toml.example"; hy_commit; hy_run
+check "config_changed: example does not"    "0" "$(hy .tamper.config_changed)"
+
 # 14. An invalid base config blocks rather than falling back silently.
 hy_repo '{"erosion_mode":"loud"}'; hy_lint
 check "invalid config: blocks"              "config_invalid" "$(hy '.blocking | join(",")')"
@@ -3650,6 +3663,9 @@ check "render: hygiene error not 'none'"    "0" "$(grep -c 'No counter fired' <<
 echo '{"config":"invalid","tamper":{"skips_added":0},"erosion":{},"erosion_mode":"report","blocking":["config_invalid"],"samples":[]}' > "$T/review/hygiene.json"
 C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
 check "render: invalid config explained"    "1" "$(grep -c 'hygiene.json is not valid' <<<"$C")"
+echo '{"tamper":{"config_changed":1},"erosion":{},"erosion_mode":"report","blocking":["config_changed"],"samples":[]}' > "$T/review/hygiene.json"
+C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
+check "render: config_changed names all three" "1" "$(grep -c '.fabro/hygiene.json, .fabro/test.toml or .fabro/ci.sh' <<<"$C")"
 
 # ---------------------------------------------------------------------------
 # fabro-code — the index wrapper (docs/code-context C1/C2/C3/C4).
