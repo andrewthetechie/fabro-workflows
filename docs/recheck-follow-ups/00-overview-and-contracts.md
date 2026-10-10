@@ -1,6 +1,8 @@
 # Recheck follow-ups: overview and canonical contracts
 
-**Status:** designed 2026-10-10. No task is started. ADRs 0019, 0020 and 0021 are proposed.
+**Status:** designed 2026-10-10. Tasks 01-08 are applied, and task 09's deploys ran on
+2026-10-10 at `466848b`. Task 09's live checks (except `autofix`, verified) and its recheck,
+and task 10, wait for runs. ADRs 0019, 0020 and 0021 are proposed.
 The measurements taken while planning are in `measure-2026-10-10.txt`.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
