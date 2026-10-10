@@ -3739,7 +3739,7 @@ check "label fails: still comments"      "1" "$(grep -c -- 'issue comment 1393 -
 # deliver and mark_needs_human — what the PR says about undelivered fixes
 # (issues #8 and #9). REAL git against a bare remote, so the lease rule is the one
 # under test. `delivery` is the marker both nodes share: delivered, rejected,
-# pushed_on_stop, not_pushed.
+# pushed_on_stop, not_pushed, unchanged.
 # ---------------------------------------------------------------------------
 echo ""
 echo "deliver + mark_needs_human (real git)"
@@ -3848,6 +3848,9 @@ check "delivered: remote is HEAD"          "$(git -C "$T/wt" rev-parse HEAD)" "$
 mh_setup() {  # $1 = moved, as in dl_setup
     dl_setup "${1:-}"
     FABRO_AUTO_MERGE=1 sh "$T/rm_setup.sh" >/dev/null 2>&1
+    # The phase began at the pushed branch tip, before review_fix's commit; rm_setup ran
+    # after dl_setup made that commit, so put the entry tree back where a run has it.
+    git -C "$T/wt" rev-parse "refs/remotes/origin/$BR^{tree}" > "$T/fab/review_entry_tree"
     echo '{"outcome":"fixed","risk":1,"summary":"s","own_findings":[],"fixes_applied":[{"finding_id":"STD-002","axis":"standards","description":"CONTEXT.md doc fix"}],"not_fixed":[]}' > "$T/fab/review/fix_result.json"
 }
 run_mark() { ( cd "$T/wt" && sh "$T/mark.sh" >/dev/null 2>&1 ); }
@@ -3892,6 +3895,29 @@ BEFORE=$(git -C "$T/up.git" rev-parse "$BR")
 run_mark
 check "gh error: no push"                  "$BEFORE" "$(git -C "$T/up.git" rev-parse "$BR")"
 check "gh error: marker not_pushed"        "not_pushed" "$(cat "$T/fab/delivery")"
+
+# A stop before the review changed any file pushes nothing: in pr-review HEAD holds
+# rebase_check's unreviewed rebase, and in backlog only empty checkpoint commits.
+mh_setup; echo OPEN > "$T/pr_state"
+git -C "$T/wt" rev-parse 'HEAD^{tree}' > "$T/fab/review_entry_tree"
+BEFORE=$(git -C "$T/up.git" rev-parse "$BR")
+: > "$T/gh.log"
+run_mark
+check "unchanged: no push"                 "$BEFORE" "$(git -C "$T/up.git" rev-parse "$BR")"
+check "unchanged: marker"                  "unchanged" "$(cat "$T/fab/delivery")"
+check "unchanged: no PR state read"        "0" "$(grep -c 'pr view' "$T/gh.log")"
+check "unchanged: no NOT pushed heading"   "0" "$(grep -c 'NOT pushed' "$T/fab/pr_comment.md")"
+
+# No entry tree recorded: the push still happens, as before the guard existed.
+mh_setup; echo OPEN > "$T/pr_state"; rm -f "$T/fab/review_entry_tree"
+run_mark
+check "no entry tree: pushes"              "$(git -C "$T/wt" rev-parse HEAD)" "$(git -C "$T/up.git" rev-parse "$BR")"
+check "no entry tree: marker"              "pushed_on_stop" "$(cat "$T/fab/delivery")"
+
+# rm_setup records the tree the phase starts from.
+mh_setup
+( cd "$T/wt" && FABRO_AUTO_MERGE=1 sh "$T/rm_setup.sh" >/dev/null 2>&1 )
+check "rm_setup records the entry tree"    "$(git -C "$T/wt" rev-parse 'HEAD^{tree}')" "$(cat "$T/fab/review_entry_tree")"
 
 # rm_setup clears a marker left by the previous run.
 mh_setup; echo delivered > "$T/fab/delivery"

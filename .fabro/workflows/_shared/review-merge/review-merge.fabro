@@ -67,10 +67,11 @@ fi
 echo 0 > /tmp/fabro/fix_attempts
 echo 0 > /tmp/fabro/recheck_done
 rm -f /tmp/fabro/delivery
+git rev-parse 'HEAD^{tree}' > /tmp/fabro/review_entry_tree 2>/dev/null || rm -f /tmp/fabro/review_entry_tree
 cat > /tmp/fabro/render.jq <<'RENDER_JQ'
 def NL: [10] | implode;
 def nz($a): ($a // []);
-def shipped: ($kind != \"needs-human\") or ($delivery == \"delivered\") or ($delivery == \"pushed_on_stop\");
+def shipped: ($kind != \"needs-human\") or ($delivery == \"delivered\") or ($delivery == \"pushed_on_stop\") or ($delivery == \"unchanged\");
 def sev: (.severity // \"info\");
 def loc:
   (nz(.files) | if length > 0 then .[0] else null end) as $f
@@ -1253,6 +1254,10 @@ exit 0"]
     // comment still listed them as applied (issue #8). When deliver never ran and the PR is
     // still open, push them here, so the comment is true. A marker already set by `deliver`
     // is left alone, so a rejected push is not retried. A closed or merged PR is not pushed.
+    // Nor is a tree the review never changed (`review_entry_tree`, from rm_setup): in
+    // pr-review HEAD carries rebase_check's rebase, possibly agent-resolved, and a stop
+    // before any review edit must not force-push that unreviewed onto the author's branch.
+    // In backlog the same push would carry only empty checkpoint commits.
     mark_needs_human [label="Label needs-human", shape=parallelogram,
         script="echo needs_human > /tmp/fabro/review_merge_outcome
 PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
@@ -1262,7 +1267,10 @@ if [ -z \"$PR\" ]; then
 fi
 D=$(cat /tmp/fabro/delivery 2>/dev/null || echo '')
 H=$(cat /tmp/fabro/head_ref 2>/dev/null || echo '')
-if [ -z \"$D\" ] && [ -n \"$H\" ]; then
+E=$(cat /tmp/fabro/review_entry_tree 2>/dev/null || echo '')
+if [ -z \"$D\" ] && [ -n \"$E\" ] && [ \"$(git rev-parse 'HEAD^{tree}' 2>/dev/null)\" = \"$E\" ]; then
+  echo unchanged > /tmp/fabro/delivery
+elif [ -z \"$D\" ] && [ -n \"$H\" ]; then
   S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
   if [ \"$S\" = OPEN ]; then
     if git push --force-with-lease origin HEAD:\"$H\"; then echo pushed_on_stop > /tmp/fabro/delivery
