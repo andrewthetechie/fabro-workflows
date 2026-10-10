@@ -207,7 +207,7 @@ digraph Backlog {
     // directory` and the run parks on human_rescue for 4h holding its coder lease.
     // `ops/test-task-gates.sh` stages this node against a path that does not exist, which
     // is the only way a test can catch it -- neither `fabro validate` nor
-    // ops/check-routing-schemas.py runs a node's shell.
+    // ops/check-graph-invariants.py runs a node's shell.
     //
     // `/tmp/fabro/issue_number` is written BEFORE the label swap and before any network
     // call, because mark_stuck needs it precisely when everything after that line failed.
@@ -1221,6 +1221,12 @@ echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'
     // It runs before the setup/ci loop for the same reason the empty-tree floor does:
     // there is nothing to validate on a branch that cannot be pushed, and this makes the
     // Accept-partial loop cost ~1s instead of 2.8m.
+    // Step 1: the issue title already carries a Conventional Commits prefix; use it as-is
+    // Step 2: a [Bracket] prefix names a type
+    // Step 3: an issue label maps to a type; fabro bookkeeping labels never map
+    // Commit body: the first prose paragraph of the issue body, else Resolves #N: <title>
+    // Assertions: a derivation bug must fail the run into human_rescue, not open an
+    // unmergeable PR. These can only fire on a bug; the derivation always terminates.
     open_pr_prep [label="Final aggregate and PR prep", shape=parallelogram, timeout="20m",
         script="set -e
 git fetch origin main
@@ -1284,9 +1290,7 @@ N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(jq -r .title /tmp/fabro/issue.json | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 CC='^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .'
 S=$T
-# Step 1: the issue title already carries a Conventional Commits prefix; use it as-is
 if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
-  # Step 2: a [Bracket] prefix names a type
   case \"$S\" in
     '['*)
       W=${S#?}
@@ -1310,7 +1314,6 @@ if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
       ;;
   esac
   if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
-    # Step 3: an issue label maps to a type; fabro bookkeeping labels never map
     TYPE=
     L=$(jq -r '[.labels[].name] | join(\",\")' /tmp/fabro/issue.json 2>/dev/null | tr 'A-Z' 'a-z' || true)
     case \",$L,\" in
@@ -1330,7 +1333,6 @@ SUBJ=$(printf '%s' \"$SUBJ\" | sed 's/[[:space:]]*$//')
 printf '%s (#%s)' \"$SUBJ\" \"$N\" > /tmp/fabro/commit_subject.txt
 echo >> /tmp/fabro/commit_subject.txt
 cp /tmp/fabro/commit_subject.txt /tmp/fabro/pr_title.txt
-# Commit body: the first prose paragraph of the issue body, else Resolves #N: <title>
 B=$(jq -r .body /tmp/fabro/issue.json 2>/dev/null || true)
 FIRST=$(printf '%s' \"$B\" | awk 'BEGIN { RS = \"\" } $0 ~ /^[[:space:]]*#/ { next } { para = \"\"; for (i = 1; i <= NF; i++) { line = $i; sub(/^[[:space:]]*[-*+][[:space:]]+/, \"\", line); sub(/^[[:space:]]*[0-9]+[.)][[:space:]]+/, \"\", line); sub(/^[[:space:]]*#+[[:space:]]+/, \"\", line); if (para == \"\") para = line; else para = para \" \" line } if (para != \"\" && length(para) <= 500) { print para; exit } }')
 if [ -n \"$FIRST\" ]; then
@@ -1339,8 +1341,6 @@ else
   echo 'Resolves #'$N': '$T > /tmp/fabro/commit_body.md
 fi
 { echo '## Summary'; echo; echo '<!-- fabro:commit-body:start -->'; cat /tmp/fabro/commit_body.md; echo '<!-- fabro:commit-body:end -->'; echo; cat /tmp/fabro/completed.md 2>/dev/null || true; echo '## Validation'; echo; echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after final merge with origin/main'; } > /tmp/fabro/pr_body.md
-# Assertions: a derivation bug must fail the run into human_rescue, not open an
-# unmergeable PR. These can only fire on a bug; the derivation always terminates.
 grep -qE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .' /tmp/fabro/commit_subject.txt
 grep -q '^Resolves #' /tmp/fabro/commit_body.md
 grep -q 'fabro:commit-body:start' /tmp/fabro/pr_body.md"]

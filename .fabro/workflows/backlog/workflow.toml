@@ -205,7 +205,8 @@ script = "fabro-io guard"
 [[run.hooks]]
 id = "discord-rescue"
 event = "stage_start"
-matcher = "human_rescue"
+# Anchored: human_rescue is a root node of backlog, not an imported one (invariants-graph.md).
+matcher = "^human_rescue$"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh rescue"
