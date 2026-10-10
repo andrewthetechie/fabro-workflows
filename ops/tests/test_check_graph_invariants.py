@@ -3,8 +3,7 @@
     python3.11 -m unittest discover -s ops/tests
 
 The fixtures under fixtures/graph-invariants/ are one package and one phase (`ok`), and each
-`r<N>` breaks exactly rule N. The last tests read the real tree, which has known violations
-until task 07 of docs/recheck-follow-ups fixes them.
+`r<N>` breaks exactly rule N. The real tree must have no violation: `make check` runs the checker on it.
 """
 import importlib.util
 import unittest
@@ -16,20 +15,6 @@ cgi = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cgi)
 FIXTURES = HERE / "fixtures/graph-invariants"
 REAL = HERE.parent.parent
-
-# The violations of the real tree today (measure-2026-10-10.txt, task 06's acceptance).
-KNOWN_VIOLATIONS = sorted([
-    ("issue-triage", "R1", "graph"),
-    ("backlog", "R5", "stage_start human_rescue"),
-    ("backlog", "R6", "open_pr_prep"),
-    ("pr-review", "R6", "validate_input"),
-    ("_shared/review-merge", "R6", "merge_gate"),
-    ("_shared/review-merge", "R6", "ci_fix_gate"),
-    ("_shared/review-merge", "R6", "remerge_base"),
-    ("_shared/review-merge", "R6", "line 917"),
-    ("_shared/triage", "R6", "line 167"),
-])
-
 
 def rules_of(root: Path) -> list[str]:
     return sorted(rule for _, rule, _, _ in cgi.run(root))
@@ -57,13 +42,7 @@ class Counts(unittest.TestCase):
 
 
 class RealTree(unittest.TestCase):
-    def test_real_tree_reports_exactly_the_known_violations(self):
-        got = sorted((pkg, rule, node) for pkg, rule, node, _ in cgi.run(REAL))
-        self.assertEqual(got, KNOWN_VIOLATIONS)
-
-    @unittest.expectedFailure
     def test_real_tree_is_clean(self):
-        # Until task 07 fixes the known violations. Remove the decorator then.
         self.assertEqual(cgi.run(REAL), [])
 
 

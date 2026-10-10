@@ -37,16 +37,8 @@ declare -A BASELINE=(
 say "rsync .fabro/ to $HOST:/tmp/check/"
 rsync -a --delete .fabro/ "$HOST:/tmp/check/"
 
-say "copy the routing-schema checker"
-scp -q ops/check-routing-schemas.py "$HOST:/tmp/check-routing-schemas.py"
-
 say "mount the tree into the fabro container"
 ssh "$HOST" 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp /tmp/check fabro-fabro-1:/tmp/check'
-
-say "ops/check-routing-schemas.py"
-# pipefail: a non-zero exit from python3 (a mismatch) fails the pipeline.
-ssh "$HOST" 'cd ~/fabro && python3 /tmp/check-routing-schemas.py \
-    /tmp/check/workflows/*/workflow.fabro /tmp/check/workflows/_shared/*/*.fabro' | tail -1
 
 say "parity: fabro parse against check-graph-invariants.py --dump, six files (ADR 0019, D2)"
 scp -q ops/check-graph-invariants.py "$HOST:/tmp/check-graph-invariants.py"

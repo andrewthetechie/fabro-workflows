@@ -15,7 +15,7 @@
 # unescapes it the way the DOT parser does, rebases `/tmp/fabro` onto a scratch
 # directory, and runs it against fixtures. It needs no host, no container, no
 # sandbox and no network, which makes it cheap enough for a pre-push hook
-# alongside `check-routing-schemas.py`. It needs only jq, awk and git -- the
+# alongside `check-graph-invariants.py`. It needs only jq, awk and git -- the
 # extractor is awk, not python3, so the suite also runs inside every sandbox
 # profile image, against the mawk and jq the nodes really run under.
 #
@@ -860,7 +860,7 @@ unset GH_LOG GH_STATE
 # now the first node -- still redirected into that directory. Every backlog run
 # died at its second node and parked on human_rescue for 4h holding a coder box,
 # and `fabro-fire-backlog.sh` failed identically. `fabro validate` and
-# check-routing-schemas.py were both green: neither runs a node's shell, and this
+# check-graph-invariants.py were both green: neither runs a node's shell, and this
 # script covered the task-queue gates and open_pr but not claim.
 # ---------------------------------------------------------------------------
 echo ""

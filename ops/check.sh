@@ -108,6 +108,9 @@ if [ "$RUN_CARGO" = 1 ]; then
     (cd ops/fabro-io && cargo test)
 fi
 
-# TODO(#12): the graph-invariants checker slots in here once it exists.
+# 7. The graph invariants (ADR 0019, #12): R1-R8 over every package and shared phase. The
+#    checker reads the .fabro files itself, so it needs no fabro binary and runs on every push.
+say "python3.11 ops/check-graph-invariants.py"
+"$PY" ops/check-graph-invariants.py
 
 printf '\nPASS: make check — all offline gates green\n'
