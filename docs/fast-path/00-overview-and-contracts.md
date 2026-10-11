@@ -2,9 +2,15 @@
 
 **Spike 2026-10-11:** `spike-2026-10-11.txt` answers S1-S9; the corrections are marked *(spike)* below.
 
-**Status:** planned 2026-10-11 against HEAD `35135ee`. Nothing is implemented. ADR 0023 (the
-fast lane) and ADR 0024 (the merge queue) are proposed. The series answers issue #23 with
-the operator's alternative: one label-selected lane per issue instead of a batch lane.
+**Status:** tasks 01-09 implemented and pushed 2026-10-11 (`e0b2203`); `make check` and
+`make check-host` pass (counts in `AGENTS.md`). Deployed the same day: `make deploy`, the four
+`merge-queue-<repo>` rows (schedules still disabled), and the 05:07 retention cron. Task 10:
+step 1 passed; step 2 (quiet sweep) passed, run `01M4PEFW4G6YVTVD3QSG4VM06X`, 4 s to the first
+node and 8 s in total, so S6 needs no `light` environment; step 5 (hand-off) passed, run
+`01M4PEJCY2C51EQT7BFSWAPP2S` on jelly-swipe#453, closed after. Steps 3, 4 and 6 onward are open,
+and the host cap is still 4. ADR 0023 (the fast lane) and ADR 0024 (the merge queue) are
+proposed. The series answers issue #23 with the operator's alternative: one label-selected
+lane per issue instead of a batch lane.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
