@@ -14,7 +14,7 @@ graph = "workflow.fabro"
 # Keys containing a dot MUST be quoted or the TOML parse fails with a 422 at
 # automation fire time.
 [run.model.fallbacks]
-# The scheduler pins a run to one box by naming `coders-a` or `coders-b` in the
+# The scheduler pins a run to one box by naming `coders-a`, `coders-b` or `coders-c` in the
 # run's `coder_pool` input (see the stylesheet). Fallbacks are keyed on the
 # REQUESTED model name, so each pinned group needs its own entry or a pinned run
 # has no fallback at all. The both-boxes `coders` key has no home anymore --
@@ -37,6 +37,7 @@ graph = "workflow.fabro"
 # NOT extend this chain -- every rung must be listed here.
 "coders-a" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
 "coders-b" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
+"coders-c" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
 kimi-for-coding = ["zai:glm-5.3"]
 "glm-5.3" = ["kimi:kimi-k3"]
 # The adversarial reviewer (.refute). Non-GLM, and its fallback is likewise non-GLM:
@@ -48,7 +49,7 @@ kimi-for-coding = ["zai:glm-5.3"]
 # the landing spot for a failed local box. It escalates UP to full glm-5.3 rather
 # than sideways, so a flash outage degrades into a better model and never a worse
 # one. This row applies only to classes that REQUEST flash; the implementer's chain
-# lives in the coders-a/coders-b rows (fallbacks are non-recursive).
+# lives in the coders-a/coders-b/coders-c rows (fallbacks are non-recursive).
 "glm-5.3-flash" = ["zai:glm-5.3"]
 kimi-k3 = ["zai:glm-5.3"]
 long-context = ["kimi:kimi-k3"]

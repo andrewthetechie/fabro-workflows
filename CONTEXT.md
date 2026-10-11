@@ -71,6 +71,8 @@ _Avoid_: coder agent, box, GPU, worker (a fabro worker is a different thing)
 The set of coder instances, and the LiteLLM model group `coders` that fronts all of
 them. After the split there are three groups: `coders-a` and `coders-b` address one
 instance each, `coders` addresses both and is the fallback for anything unpinned.
+Since 2026-10-11 `coders-c` (the spark box, vLLM, 1M context) is a third single-run
+instance, addressed directly on fabro's `spark` provider.
 Saturation is no longer an accepted unknown: two concurrent runs on two single-slot
 instances with no affinity spend roughly half their turns queued behind each other,
 measured at ~1.7x on 2026-09-18.

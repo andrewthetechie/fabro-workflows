@@ -38,7 +38,7 @@ REPO_NAME = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 # `coders`, the load-balanced group over both boxes, is deliberately absent: the
 # scheduler exists precisely to stop relying on the load balancer's choice. It
 # stays defined in LiteLLM as the fallback for unpinned and hand-fired runs.
-DEFAULT_CODER_POOLS = ("coders-a", "coders-b")
+DEFAULT_CODER_POOLS = ("coders-a", "coders-b", "coders-c")
 
 DEFAULT_FABRO_API_URL = "http://10.10.0.32:32276/api/v1"
 DEFAULT_PORT = 32280

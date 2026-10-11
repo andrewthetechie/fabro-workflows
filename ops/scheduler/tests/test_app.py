@@ -95,7 +95,7 @@ def test_health_repo_rows_carry_the_documented_keys(client):
 def test_health_lists_the_two_per_box_pools_and_not_the_load_balanced_one(client):
     # `coders` is the fallback for unpinned runs; dispatching through it would
     # reintroduce the contention the scheduler exists to remove.
-    assert client.get("/health").json()["coder_pools"] == ["coders-a", "coders-b"]
+    assert client.get("/health").json()["coder_pools"] == ["coders-a", "coders-b", "coders-c"]
 
 
 def test_health_reports_a_disabled_row_with_its_flag(tmp_path):
@@ -579,7 +579,7 @@ def test_the_page_flags_an_idle_worker_blocked_by_the_per_repo_guard(config, sto
 
     assert "Idle worker, queue momentarily blocked" in html
     # The free box is named.
-    assert "coders-a is free" in html
+    assert "coders-a, coders-c are free" in html
     # It is framed as transient and self-resolving, not as something to dispatch
     # out of manually.
     assert "self-resolving" in html
@@ -786,7 +786,7 @@ def test_dispatch_once_refuses_the_load_balanced_pool(config, store):
     # `coders` spans both boxes — dispatching through it would put the run back on
     # whichever box LiteLLM picked, which is the contention the scheduler exists
     # to remove.
-    for pool in ("coders", "", "coders-c"):
+    for pool in ("coders", "", "coders-z"):
         response = TestClient(build_app(config, store, fabro_token=FABRO_TOKEN)).post(
             "/api/dispatch-once",
             json={

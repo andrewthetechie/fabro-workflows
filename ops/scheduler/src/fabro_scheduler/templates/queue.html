@@ -70,7 +70,7 @@
 {% if blocked_idle %}
 <div class="mb-6 rounded-md border border-amber-700/60 bg-amber-950 px-4 py-3 text-sm text-amber-100">
   <p><strong class="text-amber-200">Idle worker, queue momentarily blocked</strong> &mdash;
-     {{ idle_pools|join(', ') }} is free, but every queued issue is from a repo that already
+     {{ idle_pools|join(', ') }} {{ 'are' if idle_pools|length > 1 else 'is' }} free, but every queued issue is from a repo that already
      has a run in flight. The dispatch loop fills a free box with a second same-repo run rather
      than idling it, so this is a brief, self-resolving transient: the box clears on the next
      dispatch tick once a non-running issue is available, or on the ~{{ poll_seconds }}s GitHub

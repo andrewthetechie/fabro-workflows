@@ -304,14 +304,14 @@ def test_drain_and_undrain_round_trip(client, store):
 def test_drain_refuses_a_pool_that_is_not_configured(client, store):
     # A `pool_state` row for a name the dispatch loop never walks would report a
     # drain that does nothing, which is worse than a refusal.
-    for pool in ("coders-c", "coders", ""):
+    for pool in ("coders-z", "coders", ""):
         response = client.post(f"/api/pools/{pool}/drain")
         assert response.status_code in (404, 405), pool
     assert store.drained_pools() == set()
 
 
 def test_undrain_refuses_a_pool_that_is_not_configured(client):
-    assert client.post("/api/pools/coders-c/undrain").status_code == 404
+    assert client.post("/api/pools/coders-z/undrain").status_code == 404
 
 
 # --- GET /api/pools -----------------------------------------------------------------
@@ -334,7 +334,7 @@ def test_api_pools_reports_every_pool_with_its_drain_flag_and_lease(client, stor
     # Every configured pool appears, in config order, whether or not it is leased:
     # an absent row and an idle box must not be the same answer, because only one
     # of them is what draft 12 alerts on.
-    assert [row["coder_pool"] for row in body] == ["coders-a", "coders-b"]
+    assert [row["coder_pool"] for row in body] == ["coders-a", "coders-b", "coders-c"]
     assert body[0]["drained"] is True
     assert body[0]["lease"] is None
     assert body[1]["drained"] is False
@@ -352,6 +352,7 @@ def test_api_pools_is_all_null_leases_when_nothing_is_running(client):
     assert [(row["coder_pool"], row["drained"], row["lease"]) for row in body] == [
         ("coders-a", False, None),
         ("coders-b", False, None),
+        ("coders-c", False, None),
     ]
 
 
@@ -369,7 +370,7 @@ def test_cancel_without_a_lease_is_409_and_does_nothing(client, store):
 
 
 def test_cancel_refuses_a_pool_that_is_not_configured(client):
-    assert client.post("/api/pools/coders-c/cancel").status_code == 404
+    assert client.post("/api/pools/coders-z/cancel").status_code == 404
 
 
 @respx.mock
@@ -558,6 +559,7 @@ def test_drain_stops_new_dispatch_and_undrain_resumes_without_a_restart(loop, st
     seed(store, "o/urgent", 1)
     seed(store, "o/normal", 2)
     store.set_drained("coders-a", True)
+    store.set_drained("coders-c", True)
 
     first = loop.tick()
 

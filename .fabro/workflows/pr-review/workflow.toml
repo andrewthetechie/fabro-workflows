@@ -17,7 +17,7 @@ graph = "workflow.fabro"
 # The mechanical-check tier (.merge-standards in the imported review-merge
 # graph). Escalates UP to full glm-5.3, never sideways.
 "glm-5.3-flash" = ["zai:glm-5.3"]
-# The scheduler pins a run to one box by naming `coders-a` or `coders-b` in the
+# The scheduler pins a run to one box by naming `coders-a`, `coders-b` or `coders-c` in the
 # run's `coder_pool` input (see the stylesheet). Fallbacks are keyed on the
 # REQUESTED model name, so each pinned group needs its own entry or a pinned run
 # has no fallback at all. The both-boxes `coders` key has no home anymore --
@@ -26,6 +26,7 @@ graph = "workflow.fabro"
 # first rebase attempt runs on a box.
 "coders-a" = ["zai:glm-5.3"]
 "coders-b" = ["zai:glm-5.3"]
+"coders-c" = ["zai:glm-5.3"]
 kimi-k3 = ["zai:glm-5.3"]
 
 # The run works on the PR head branch, not on fabro/run/<id>.

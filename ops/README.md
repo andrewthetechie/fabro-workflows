@@ -908,7 +908,7 @@ curl -fsS -X POST http://10.10.0.32:32280/api/dispatch-once \
   | jq .
 ```
 
-`coders-a` and `coders-b` are the only accepted pools; `coders` — the load-balanced group
+`coders-a`, `coders-b` and `coders-c` (the spark box, since 2026-10-11) are the only accepted pools; `coders` — the load-balanced group
 over both boxes — is refused with a 422, because dispatching through it would put the run
 back on whichever box LiteLLM picked. `environment_id` is not a parameter: it comes from
 the repo's row in `repos.toml`. Other refusals: `404` for a repo that is not in

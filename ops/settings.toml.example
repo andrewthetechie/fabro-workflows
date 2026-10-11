@@ -81,12 +81,12 @@ url = "http://<HOST>:<FABRO_PORT>"
 # and `[llm.providers.spark] default_model` names that model for the provider.
 
 # One direct provider per Local inference box (ADR 0007, docs/direct-providers/
-# 01-local-boxes-direct.md). `coders-a`/`coders-b`/`long-context` resolve to a
+# 01-local-boxes-direct.md). `coders-a`/`coders-b`/`coders-c`/`long-context` resolve to a
 # provider whose base_url is the box, instead of crossing the LiteLLM ingress. The
 # model ids do not change; the graphs and workflow TOMLs address them by id. Replace
 # <IP>/<PORT> with each box's real address.
 #
-# A run's `coder_pool` input selects `coders-a` or `coders-b` through the root graph's
+# A run's `coder_pool` input selects `coders-a`, `coders-b` or `coders-c` through the root graph's
 # `model_stylesheet`, which is how the scheduler leases a whole llama.cpp box for a
 # run (docs/scheduler/00-overview-and-contracts.md, findings 3 and 4).
 #
@@ -133,6 +133,16 @@ limits = { context_tokens = 1048576, max_output_tokens = 65536 }
 capabilities = { text = true, tools = true, reasoning = true, response_format = { json_object = true, json_schema = true } }
 # Preferred for small utility calls such as generated run titles.
 small_default = true
+
+# coders-c (added 2026-10-11): a third Coder slot on the spark box, leased one run at a time by
+# the coder scheduler like coders-a and coders-b. Same weights as long-context, served by vLLM
+# with a 1M context; checked to return OpenAI tool_calls and reasoning before it was added.
+# vLLM batches, so long-context's utility calls do not queue behind a leased run.
+[llm.providers.spark.models."coders-c"]
+display_name = "Local coders C (spark 10.10.0.30)"
+api_model = "deepseek-v4-flash-0731"
+limits = { context_tokens = 1048576, max_output_tokens = 65536 }
+capabilities = { text = true, tools = true, reasoning = true }
 
 # The hosted models now resolve to their own direct providers (ADR 0007,
 # docs/direct-providers/03-hosted-models-direct.md): glm-4.7/glm-5.3 to `zai`
@@ -215,7 +225,7 @@ enabled = false
 # validates it against the openai endpoint before storing. Two models are used by
 # the factory: `gpt-6.1-sol`, the adversarial reviewer (`backlog`/`pr-review`'s
 # `.refute`), and `gpt-6-luna`, the implementer's final escalation rung
-# (`backlog`'s `coders-a`/`coders-b` fallback chains). Both model names must resolve
+# (`backlog`'s `coders-a`/`coders-b`/`coders-c` fallback chains). Both model names must resolve
 # before the merge gate flips to them; verify with `fabro model test -m gpt-6.1-sol`
 # and `-m gpt-6-luna`, which must report provider `openai`. Take effect with no
 # restart (5s settings poll).

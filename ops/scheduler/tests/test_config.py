@@ -275,7 +275,7 @@ def test_repos_keep_the_order_they_were_written_in(tmp_path):
 def test_defaults_when_the_environment_is_empty(tmp_path):
     cfg = load_config(write(tmp_path, repo()), env={})
     assert cfg.coder_pools == DEFAULT_CODER_POOLS
-    assert cfg.coder_pools == ("coders-a", "coders-b")
+    assert cfg.coder_pools == ("coders-a", "coders-b", "coders-c")
     assert cfg.fabro_api_url == DEFAULT_FABRO_API_URL
     assert cfg.port == DEFAULT_PORT == 32280
     assert cfg.db_path == Path(DEFAULT_DB_PATH) == Path("/data/scheduler.db")
