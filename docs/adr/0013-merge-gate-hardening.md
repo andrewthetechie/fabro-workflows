@@ -153,3 +153,49 @@ be outside GLM. A fallback back to GLM is the single-vendor problem again.
 - The spec reviewer in the merge phase (`spec.md.j2`) still reads `linked_issues.json`,
   which has no issue text (D4). That is a separate defect and it is not fixed here.
   `refute_issues.json` is the file it should read.
+
+## Amendment (2026-10-11): Post-deploy checks are outside the Refuter's input (#28)
+
+**Status:** accepted (operator, session 2026-10-11). This amends D4. The original text above
+is kept as written. Plan: `docs/gate-relief/`.
+
+**Why.** Of 18 Refuter blocks, 8 were `unverifiable` on criteria that only a deployed
+environment can check, such as a sign-in on staging or a check in a real browser build.
+The operator merged all 8 by hand. The Refuter cannot run those
+checks, so each block was a false stop.
+
+**Decision.** Criteria that only a deployed environment can check go under a
+`## Post-deploy checks` heading in the issue body. Each item is one `- [ ]` line. The
+section ends at the next `## ` heading or the end of the body (gate-relief G3).
+- The Refuter never sees them. `refute_prep` strips the section from each issue before
+  it writes `refute_issues.json`, and `refute.md.j2` tells the Refuter to skip such a
+  heading if one survives (G4). A criterion from that section is therefore never counted
+  as `unverifiable`.
+- The human sees them as a checklist in the merge-phase report and in the PR body, under
+  the heading "Not checked by the agents. Verify after deploy."
+- An issue with no such section behaves as before. `unverifiable` still blocks (G5).
+- Triage writes the section. It keeps a criterion as an acceptance criterion whenever it
+  is unsure whether a sandbox can check it, because a refuter block is the safe failure.
+
+## Amendment (2026-10-11): One fix turn after a `not_met` (#29)
+
+**Status:** accepted (operator, session 2026-10-11, "agreed as proposed"). This amends D5.
+The original text above is kept as written. Plan: `docs/gate-relief/`.
+
+**Why.** Ten PRs got a `not_met` from the Refuter, and the operator fixed several of them
+by hand. Across the same period, 50 of 183 PRs had an operator commit.
+
+**Decision.** When `refute.json` has at least one criterion with status `not_met` and no
+fix turn has run yet, the run routes once to `refute_fix`. That stage runs on the run's
+coder pool and receives only the `not_met` criteria (with their evidence) and the
+defects, in `refute_findings.json`. Then the run goes through `validate`, `hygiene`,
+`refute_prep` and `refute` again (G6, G7, G9, G11).
+- *Why this is not the refuted agent arguing.* The fixer changes code and cannot read or
+  write the verdict (`refute.json`, `refute_verdict` and `refute_reason.txt` are sealed
+  paths). The Refuter judges again from scratch, and only its second verdict counts.
+- The counter `refute_fix_attempts` is set to 1 before the fixer runs and is never reset
+  in the run (G8). A second `not_met` goes to a human, as before.
+- `invalid` verdicts, `unverifiable`-only verdicts and defect-only verdicts still block
+  with no fix turn (G6).
+- A failed or invalid fix routes to `deliver`, where the old verdict stands and the merge
+  stays blocked (G10).

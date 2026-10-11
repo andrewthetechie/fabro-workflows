@@ -202,3 +202,34 @@ happened. A repository with no new work still reports "0 filed".
 - The scheduler queue gets as many as 64 new issues per week (8 per run, 8 runs). The scheduler ranks by
   repository priority, then by issue number, so Architecture issues come after older
   human-filed issues unless an issue has the `priority` label.
+
+## Amendment (2026-10-11): An Architecture PR that passes every gate merges automatically (#30)
+
+**Status:** accepted (operator, session 2026-10-11). This amends D8. The original decision
+text above is kept as written. Plan: `docs/gate-relief/`.
+
+**Why.** Between 2026-09-25 and 2026-10-11, 96 of 176 Architecture PRs were merged by the
+operator by hand, not by the merge phase. Their median time to merge was 5.2 hours against
+2.4 hours for other PRs. The operator committed to 24% of Architecture PRs before merging,
+against 31% for the rest. The human step on these PRs was slow and added little, because
+the reviewers had already approved each one.
+
+**Decision (option B).** An `architecture` PR merges like any other PR when every
+`merge_gate` check passes (refuter `pass`, hygiene clean, risk <= 3, and the rest) and no
+hold label is set. The human judgment moves to the issue: promotion from `architecture` to
+`agent` is still the operator's decision, and that is where the choice to build a refactor
+gets made.
+
+**Rejected.**
+- *A: keep D8 as written.* It keeps the delay above and gives no extra safety, since the
+  gates already judge the diff.
+- *C: merge automatically only below a size limit.* No size limit was asked for, and an
+  arbitrary cut would be another rule to maintain. Rejected.
+
+**Human brake.** The `do-not-merge` label holds any PR, Architecture or not, from both
+`merge_gate` and the `merge-queue` guard (gate-relief G2). It is the per-PR override the
+operator uses before a merge that should wait.
+
+**Unchanged.** `open_pr` still copies `architecture` to the PR, and `file_remainder` still
+copies it to the Remainder issue. The label is kept for the scorecard. `arch-review` still
+files issues. Promotion to `agent` is still the human's.
