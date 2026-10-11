@@ -2047,7 +2047,7 @@ echo done"]
     rework_router -> rework_t2      [condition="context.round>=2 && context.round<4"]
     rework_router -> rework_t3      [condition="context.round=4"]
     rework_router -> rework_t4      [condition="context.round=5"]
-    rework_router -> drop_followup  [condition="context.round=6 && context.task_exempt=true"]
+    rework_router -> drop_followup  [condition="context.round=6 && context.task_exempt=true && context.lane!=fast"]
     rework_router -> demote_lane    [condition="context.round=6 && context.lane=fast"]
     rework_router -> rescue_brief
 
