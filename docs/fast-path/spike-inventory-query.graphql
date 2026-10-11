@@ -1,0 +1,9 @@
+query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){
+ number isDraft title body headRefOid baseRefName mergeable mergeStateStatus reviewDecision
+ labels(first:30){nodes{name}}
+ reviewThreads(first:100){nodes{isResolved}}
+ comments(first:100){nodes{author{login} body createdAt}}
+ commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:100){nodes{__typename
+   ... on CheckRun{name status conclusion detailsUrl checkSuite{workflowRun{databaseId}}}
+   ... on StatusContext{context state}}}}}}}
+}}}

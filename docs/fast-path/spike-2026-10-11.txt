@@ -1,0 +1,116 @@
+SPIKE 01 RESULTS, 2026-10-11, HEAD 35135ee. Host fabro 0.362.0-nightly.0 (a192bce 2026-09-20).
+
+CORRECTIONS TO 00 MADE IN THE SAME COMMIT (details under each S):
+  1. C5: updatePullRequestBranch returns the OLD headRefOid, not the new one (S2). The
+     sweeper must re-read headRefOid after the mutation and record that as `to`.
+  2. C8: a rollup can hold the same check name twice (pull_request and push runs on one sha)
+     and can be null while mergeStateStatus is UNSTABLE (S1, S3). Task 06 dedupes by name.
+  3. Guard (task 05): GET /runs ignores workflow=; filter client-side on .automation.id (S4).
+  4. Retention (task 08): `fabro system prune --workflow` exists on 0.362 (S5).
+  5. S2 ran against a SCRATCH repo (operator's choice), with the operator's own gh token,
+     not the host token and not jelly-swipe. Branch protection (BEHIND) was not exercised.
+
+DEVIATIONS: S2 used andrewthetechie/mq-spike-scratch (private) instead of a jelly-swipe PR.
+The PR is closed and the branch deleted. The repo itself could not be deleted (gh token
+lacks delete_repo): the operator should run `gh repo delete andrewthetechie/mq-spike-scratch`.
+S6 was skipped (see S6). The host token's scopes were not read (no host mutation allowed
+and the token lives in the container env); the question stays open (see S2).
+
+== S1. mergeStateStatus per repository ==
+Command: gh api graphql (query in the task) for one open PR per repo.
+  jelly-swipe #436  BLOCKED / MERGEABLE (required check `test` red)
+  jelly-swipe #252  UNKNOWN on the first read, BEHIND / MERGEABLE on the second read
+  writers-app #1027 CLEAN / MERGEABLE
+  womens-fantasy-sports #1904 UNKNOWN on the first read, CLEAN / MERGEABLE on the second
+  lawncare-saas #280 UNSTABLE / MERGEABLE, with statusCheckRollup = null (no checks at all)
+Findings: BEHIND is observed on jelly-swipe as expected. UNKNOWN is common on a first read
+and clears on the next; the plan's `wait` is right, but `act` must not treat one UNKNOWN as
+final. UNSTABLE occurs with a NULL rollup (lawncare #280, a release-please PR): the 00 C8
+row "no checks yet -> wait" precedes "UNSTABLE -> handoff", so such a PR would wait until
+the 2 hour rule... which only applies to PENDING checks. Task 06 must treat "rollup null
+and UNSTABLE" as a hand-off ("a hidden or non-reporting check blocks the merge").
+
+== S2. Rebase through the API ==
+Scratch repo andrewthetechie/mq-spike-scratch: main = initial + c1,c2,c3, then a commit
+`wf` adding .github/workflows/x.yml AFTER the branch point; branch `spike` = main~3 plus one
+commit (author noreply@fabro.sh); draft PR #1. Before: head b738ac3, mergeStateStatus CLEAN
+(no protection on the scratch repo, so the PR was behind but not BEHIND).
+  mutation updatePullRequestBranch(expectedHeadOid=b738ac3, updateMethod=REBASE) returned
+    {"headRefOid":"b738ac3e97676017b734ac4f4b233c7d7c160ade","mergeStateStatus":"UNKNOWN"}
+  => the OLD head. A re-read (about 2 s later) gave headRefOid b68466a.
+  new commit: author noreply@fabro.sh (kept), committer andrewthetechie@users.noreply.github.com
+    (the token's user), parent c840faa (= main tip, which includes the workflows commit),
+    verified=false.
+  second call with the OLD expectedHeadOid:
+    errors[0] = {"type":"UNPROCESSABLE","message":"head sha didn't match the current head ref."}
+  workflow-scope: the rebase SUCCEEDED while main had a .github/workflows/ change since the
+    branch point, using a token with scopes admin:public_key, gist, read:org, repo, workflow.
+    So it is answered for a token WITH `workflow`. The HOST token's scopes are not known;
+    the question stays open for that token. Task 07 handles a refusal as a `retryable:`
+    hand-off and records which method failed.
+  method: REBASE works; MERGE fallback was not needed.
+Consequence for C5: `to` is the headRefOid from a re-read after the mutation (retry the
+read up to 3 times, 2 s apart, until it differs from `from`), not the mutation's return.
+
+== S3. The inventory query ==
+The query is kept in docs/fast-path/spike-inventory-query.graphql. Every field exists:
+  mergeable, mergeStateStatus, reviewDecision (null when no review rule), isDraft, labels,
+  reviewThreads.nodes.isResolved, comments.nodes{author.login body createdAt},
+  commits(last:1).nodes.commit.statusCheckRollup{state contexts.nodes}.
+  CheckRun: name status conclusion detailsUrl checkSuite.workflowRun.databaseId
+  StatusContext: context state
+  Actions run id: detailsUrl is .../actions/runs/<id>/job/<job>; checkSuite.workflowRun.databaseId
+  gives the same <id>. Attempt: `gh run view <id> --json attempt` -> {"attempt":1,...} (checked
+  on jelly-swipe runs 38151799814 and 38151798119, both attempt 1).
+  DUPLICATES: jelly-swipe #436's rollup lists check `test` twice (runs 38151799814 event
+  pull_request and 38151798119 event push) plus `Analyze (actions)`. A rerun adds attempt 2
+  to the same run. Task 06 must group by (name) and judge by the latest run, not by count.
+  Rollup state is a string FAILURE|SUCCESS|PENDING|... and is null when there are no checks.
+
+== S4. GET /runs ==
+Command (on the host, token from /storage/server.dev-token; curl needs -g for page[limit]):
+  curl -g -H "Authorization: Bearer $T" "$A/runs?status=running&status=runnable&status=pending&page[limit]=100"
+Field paths of a row: id = .id; slug = .workflow.slug; repository = .repository.name
+("andrewthetechie/<repo>") and .repository.origin_url; created = .timestamps.created_at;
+status = .lifecycle.status.kind; labels = .labels (scheduler runs carry issue, source,
+workflow_sha); origin = .origin.kind ("api" for everything seen).
+  AUTOMATION RUNS carry .automation = {id, name, trigger_id, workflow_source{repo,branch,resolved_sha}},
+  e.g. id "dependabot-jelly-swipe", trigger_id "daily"|"manual". Scheduler-fired backlog runs
+  have .automation = null. So the guard can tell merge-queue-jelly-swipe from
+  merge-queue-writers-app by .automation.id.
+  workflow= filter: ACCEPTED (200) BUT IGNORED. workflow=zzznone returned the same 50 rows as
+  no filter. Filter client-side. status= filter works (task spec).
+  Page: page[limit]=100 returned rows newest first.
+
+== S5. Retention ==
+`fabro system prune --help` on 0.362: --workflow <WORKFLOW> (substring match), --older-than,
+--before, --label KEY=VALUE, --orphans, --yes (default dry run). Dry run:
+  fabro system prune --workflow dependabot --older-than 30d  ->  "No matching runs to prune."
+`--workflow merge-queue` is a substring match; it would also match any other workflow whose
+name contains "merge-queue" (none today). DELETE /runs/<unknown id> returned HTTP 204
+(not 404), so the fallback is idempotent but cannot distinguish a missing run.
+
+== S6. Cost of one minimal run ==
+SKIPPED. Measuring needs a scratch run in the container, which writes to the host; the
+operator allowed repo files only on the host side. Task 05's first hand-fired merge-queue
+run (task 10) makes the measurement. For reference, live runs now: a backlog run on the
+ts image at 815 MiB RSS.
+
+== S7. Host headroom ==
+Command: ssh host 'free -g; nproc; docker stats --no-stream' with two backlog runs live:
+  Mem: total 30, used 4, free 2, buff/cache 24, available 26; Swap 7 (2 used); nproc 16.
+  fabro-run-...VYND95 131% CPU 816 MiB / 3.726 GiB limit; fabro-run-...FGP9P 2.4% 174 MiB;
+  fabro-fabro-1 739 MiB; scheduler 77 MiB.
+Two more sandboxes of rust-node (cpu=4, mem=8GB) fit: 26 GiB available, 16 cores, 2 live.
+(Note: the live runs show a 3.7 GiB container limit; the 8 GB figure is the rust-node image's.)
+
+== S8. Schedule overlap ==
+Source read at a192bce (the host build): automation_scheduler.rs, the loop
+`for due in planner.tick(&automations, now) { tokio::spawn(fire_scheduled_automation_run(...)) }`
+spawns a run for every due trigger with no check for an active run of that automation.
+CONFIRMED: no overlap policy. Nothing was run on the host.
+
+== S9. Merge queue and auto-merge ==
+gh api repos/andrewthetechie/<repo> -> owner.type "User" for all four; allow_auto_merge false
+for all four; allow_squash_merge true for all four. GitHub's merge queue is not available.
+Private: writers-app, womens-fantasy-sports, lawncare-saas; public: jelly-swipe.

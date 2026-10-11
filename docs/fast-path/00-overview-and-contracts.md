@@ -1,5 +1,7 @@
 # Fast path and merge queue: overview and canonical contracts
 
+**Spike 2026-10-11:** `spike-2026-10-11.txt` answers S1-S9; the corrections are marked *(spike)* below.
+
 **Status:** planned 2026-10-11 against HEAD `35135ee`. Nothing is implemented. ADR 0023 (the
 fast lane) and ADR 0024 (the merge queue) are proposed. The series answers issue #23 with
 the operator's alternative: one label-selected lane per issue instead of a batch lane.
@@ -117,10 +119,10 @@ marked †.
 - **`dep_merge` is the model for a deterministic merge**: re-read state and head, wait for
   `mergeable` to leave `UNKNOWN`, `gh pr merge --squash --delete-branch=false
   --match-head-commit`, and retry "Base branch was modified" 3 times.
-- **† Schedule triggers have no overlap policy.** `fire_scheduled_automation_run` creates a
+- **Schedule triggers have no overlap policy (confirmed at `a192bce`, spike S8).** `fire_scheduled_automation_run` creates a
   run for every due trigger, and the run then queues at the cap
   (`lib/apps/fabro-server/src/server/automation_scheduler.rs`).
-- **† `fabro system prune`** takes `--workflow`, `--older-than` and `--yes`, and is a dry run
+- **`fabro system prune`** (confirmed on 0.362, spike S5; `--workflow` is a substring match) takes `--workflow`, `--older-than` and `--yes`, and is a dry run
   without `--yes` (`lib/apps/fabro-cli/src/commands/system/prune.rs`, `args.rs`
   `RunsPruneArgs`). The server has `DELETE /runs/{id}`.
 - **`GET /runs` paging** uses `page[limit]` (clamped at 100) and `page[offset]`, filters by
@@ -129,6 +131,7 @@ marked †.
   `list_active_runs`, and `ops/fabro-monitor.sh`, C3/C4 notes).
 - **`fabro-monitor.sh` reads one page of 20 runs** for C3 (idle) and C4 (stuck). Its comment
   accepts the gap at "~24 runs/day". The merge queue adds 576 a day.
+- **`GET /runs` ignores `workflow=`** and a run created from an automation carries `.automation.id` (scheduler-fired `backlog` runs carry null), so the guard filters client-side on `.automation.id` *(spike S4)*.
 - **The run id** is the last path segment of the run branch: `file_remainder` takes
   `basename "$(git rev-parse --abbrev-ref HEAD)"`. This needs `[run.run_branch] enabled =
   true`, which `dependabot` sets with `push = false`.
@@ -238,7 +241,7 @@ After a successful `updatePullRequestBranch`, the sweeper posts a comment whose 
 <!-- fabro:merge-queue rebased from=<old head> to=<new head> run=<run id> -->
 ```
 
-`to` is the `headRefOid` that the mutation returns. The comment is retried 3 times, 5 s
+`to` is the PR's `headRefOid` **re-read after the mutation** (the mutation itself returns the OLD head; retry the read 3 times, 2 s apart, until it differs from `from`) *(spike S2)*. The comment is retried 3 times, 5 s
 apart. If it still fails, the next tick hands the PR off (head moved without a record). That
 is a safe failure.
 
@@ -294,6 +297,8 @@ fixtures alone.
 | Checks pending, or no checks yet | `wait` | |
 | Checks green, and `CLEAN` or `HAS_HOOKS` | `merge` (the first `merge_cap`), then `wait` | |
 | Checks green, and `BLOCKED` or `UNSTABLE` | `handoff` | `branch protection or a hidden check blocks the merge: <status>` |
+
+Checks come from the head's `statusCheckRollup`. It can list one name twice (a `pull_request` and a `push` run), so `decide` groups by name and judges the newest run of each, and it can be `null` while `mergeStateStatus` is `UNSTABLE` (a PR with no reporting checks). A null rollup with `UNSTABLE` is a `handoff`: `a hidden or non-reporting check blocks the merge` *(spike S1, S3)*. A first `UNKNOWN` read is common; `inventory` re-reads it before `decide` runs.
 
 A **rebase in flight** is a PR whose head equals the `to` of its newest rebase marker, and
 whose checks are pending.
@@ -352,11 +357,7 @@ outcome, the change, acceptance and tests.
 
 ## Open questions (none blocks task 01)
 
-- Task 01 may find that `updatePullRequestBranch` with `REBASE` fails with this token when
-  `main` has changed a `.github/workflows/` file since the branch point (issue #18). If so,
-  the fallback is `updateMethod: MERGE`, which `merge_gate` check 6 already accepts. Its
-  merge commit is the token user's, and its non-first parent is on base. Task 01 records
-  which method works. Task 07 uses that method.
+- **Answered (spike S2):** `REBASE` succeeded with a `workflow`-scoped token after `main` changed a `.github/workflows/` file. The HOST token's scopes are unverified, so task 07 handles a refusal as a `retryable:` hand-off, and the `MERGE` method (accepted by `merge_gate` check 6) is the fallback if it happens.
 - Ordering of `fast-path` issues in the scheduler's queue is unchanged. A human can add
   `priority` to put them first.
 - #31 (PR shepherd) can later re-review `retryable:` hand-offs from the queue. This series
