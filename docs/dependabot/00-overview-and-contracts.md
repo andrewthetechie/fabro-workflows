@@ -125,6 +125,12 @@ Checked on 2026-10-10 against HEAD `8f4782e`, the live GitHub API and the host.
   `prep` installs the code index and the agent guide, every failure flows to
   `summarize`, and `finish` is the hook target for the summary
   (`.fabro/workflows/arch-review/workflow.fabro`).
+- **No target repository has a `.fabro/hygiene.json`** (checked 2026-10-10: 404 on all four),
+  so the shared phase's default `exclude_paths` applies, and it already drops every lockfile.
+  A repository that adds one with its own `exclude_paths` replaces that list (task 07, step 7).
+- **The sandbox's `/bin/sh` is dash** (the profile images are Debian). `ops/test-task-gates.sh`
+  runs every node under dash when it is installed, because macOS `sh` (bash) accepts bashisms
+  such as `<<<` that dash rejects at parse time.
 - **`check-graph-invariants.py` finds packages by themselves** (any directory with a
   `workflow.toml`). `ops/test-task-gates.sh` and `ops/fabro-io-manifest.py` name each
   workflow explicitly, so each needs an edit.

@@ -380,8 +380,9 @@ jq -cn '{context_updates: {}}'"]
     // Groups the open alerts that have a patched version (C4), drops the ones a PR merged in this run
     // fixed, and ranks the rest by D16. It walks the ranking and takes the first group the tracking-issue
     // rules (C6, D22) do not skip. A group with a switch_off PR is dropped, since that PR will merge.
-    // The issue lookup is by the marker on the first line; `startswith` is exact because the marker
-    // ends in ` -->`. Publishes patch_group (a key or `none`) and writes group.json or skipped_groups.json.
+    // The issue lookup is by the marker on the first line, over every `security` issue; `startswith` is exact
+    // because the marker ends in ` -->`. It does not use `--search`: the search index lags a new issue, and a
+    // miss files a duplicate tracking issue. Publishes patch_group (a key or `none`) and writes group.json or skipped_groups.json.
     pick_group [label="pick_group", shape=parallelogram, timeout="5m", output_schema="routing",
         script="D=/tmp/fabro/dep
 cat > $D/pick.jq <<'JQ'
@@ -427,7 +428,7 @@ CHOSEN=none
 jq -c '.[]' $D/ranked.json > $D/ranked.lines
 while IFS= read -r G; do
   KEY=$(printf '%s' \"$G\" | jq -r .key)
-  gh issue list --state all --label security --search \"fabro:dep-group key=$KEY\" --json number,state,stateReason,closedAt,labels,body > $D/issues.json || stop 'pick_group: could not list the tracking issues'
+  gh issue list --state all --label security --limit 500 --json number,state,stateReason,closedAt,labels,body > $D/issues.json || stop 'pick_group: could not list the tracking issues'
   ISSUE=$(jq -c --arg m \"<!-- fabro:dep-group key=$KEY -->\" '[.[] | select((.body // \"\") | startswith($m))] | .[0] // null' $D/issues.json)
   if [ \"$ISSUE\" = null ]; then
     CHOSEN=$KEY; NUM=0; break
@@ -454,7 +455,7 @@ while IFS= read -r G; do
     if [ $((NOW - CLOSED)) -lt 259200 ]; then
       jq -cn --arg k \"$KEY\" '{key: $k, reason: \"its tracking issue closed completed less than 3 days ago\"}' >> $D/skipped.lines; continue
     fi
-    LIST=$(jq -r '.alerts | map(\"#\" + tostring) | join(\", \")' <<<\"$G\")
+    LIST=$(printf '%s' \"$G\" | jq -r '.alerts | map(\"#\" + tostring) | join(\", \")')
     gh issue reopen \"$NUM\" >/dev/null 2>&1 || true
     gh issue edit \"$NUM\" --add-label needs-human >/dev/null 2>&1 || true
     gh issue comment \"$NUM\" --body \"The patch for this group merged on $CA, but alerts $LIST are still open after 3 days. A human should check whether the fix reached the lockfile.\" >/dev/null 2>&1 || true
@@ -714,9 +715,32 @@ rm -f $D/stopped_at
 jq -cn --arg u \"$PR_URL\" '{context_updates: {pr_url: $u}}'"]
 
     // The contract the shared phase reads (its entry check): pr_number, base_ref, head_ref, pr.json, the linked
-    // issues and run_base_sha. The switch is not read again here (prep already wrote auto_merge_repo).
+    // issues and run_base_sha. The switch is not read again here (prep already wrote auto_merge_repo, and a
+    // second read could disagree within one run). No routing schema: it publishes no key, and it routes on its
+    // outcome alone. run_base_sha is the merge-base with the base, which after sync_base is the base tip, so the
+    // phase's commit list covers the patch only. GitHub links the issue up to about 20 s after the PR opens (S4),
+    // so an empty closingIssuesReferences is read again for up to a minute. The phase accepts `[]`, so a PR that
+    // still links nothing is reviewed without the issue rather than left unreviewed.
     pr_handoff [label="Hand off to review and merge", shape=parallelogram, timeout="5m",
-        script="{dot((T / 'pr_handoff.sh').read_text())}"]
+        script="echo pr_handoff > /tmp/fabro/dep/stopped_at
+stop() { printf '%s' \"$1\" > /tmp/fabro/dep/stop_reason; echo \"$1\" >&2; exit 1; }
+PR=$(cat /tmp/fabro/pr_number)
+i=0
+while :; do
+  gh pr view \"$PR\" --json number,title,body,url,state,isCrossRepository,headRefName,baseRefName,headRefOid,labels,closingIssuesReferences > /tmp/fabro/pr.json || stop \"pr_handoff: could not read PR #$PR\"
+  [ \"$(jq '[.closingIssuesReferences[]?] | length' /tmp/fabro/pr.json)\" -gt 0 ] && break
+  i=$((i + 1))
+  if [ $i -ge ${DEP_LINK_TRIES:-6} ]; then echo \"pr_handoff: PR #$PR links no issue yet; the review runs without it\" >&2; break; fi
+  sleep ${DEP_LINK_WAIT:-10}
+done
+jq -r .baseRefName /tmp/fabro/pr.json > /tmp/fabro/base_ref
+jq -r .headRefName /tmp/fabro/pr.json > /tmp/fabro/head_ref
+jq '[.closingIssuesReferences[]?]' /tmp/fabro/pr.json > /tmp/fabro/linked_issues.json
+B=$(cat /tmp/fabro/base_ref)
+git fetch origin \"$B\" 2>/dev/null || true
+git merge-base origin/\"$B\" HEAD > /tmp/fabro/run_base_sha 2>/dev/null || git rev-parse HEAD > /tmp/fabro/run_base_sha
+rm -f /tmp/fabro/dep/stopped_at
+echo handoff ready"]
 
     // The shared review-and-merge phase, spliced unchanged (ADR 0022 D1). Its gates, Refuter, hygiene and merge
     // gate are the ones every agent change gets. Its report hooks are below.

@@ -78,6 +78,16 @@ REPO_STATE_BEFORE="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$
 # captures that stub too -- which silently turns a section that wants the REAL git
 # into one whose repo setup does nothing and whose checks then fail for the wrong
 # reason. A section that needs real tools restores this.
+#
+# The profile images are Debian, where /bin/sh is dash. On this Mac `sh` is bash in POSIX
+# mode, which accepts bashisms dash rejects at parse time: a `<<<` here-string in
+# dependabot's pick_group passed every check here and would have failed every run. When
+# dash is installed, every `sh` below runs dash.
+if command -v dash >/dev/null; then
+    mkdir -p "$WORK/shbin"; ln -s "$(command -v dash)" "$WORK/shbin/sh"; PATH="$WORK/shbin:$PATH"
+else
+    echo "WARNING: dash is not installed; the gates run under this machine's sh, which may accept bashisms" >&2
+fi
 ORIG_PATH="$PATH"
 
 PASS=0
@@ -5079,6 +5089,52 @@ op_repo amfail
 printf '412' > "$OP/fab/pr_number"; echo merged > "$OP/fab/review_merge_outcome"
 GH_FAIL=1 op_run after_merge
 check "after_merge with gh failing: exit 0" "0" "$(cat "$OP/after_merge.rc")"
+
+# pr_handoff: writes the shared phase's entry contract. Its script was once a leaked template
+# placeholder, which every check above missed because none ran it. GH_LINKED is the number of reads
+# that return no closingIssuesReferences before the link appears (GitHub links it up to ~20 s late).
+PH_STUBS="$WORK/ph-stubs/bin"; mkdir -p "$PH_STUBS"
+cat > "$PH_STUBS/gh" <<'STUB'
+#!/bin/sh
+echo "gh $*" >> "$GH_LOG"
+[ -n "${GH_FAIL:-}" ] && exit 1
+N=$(cat "$GH_STATE/reads" 2>/dev/null || echo 0); echo $((N + 1)) > "$GH_STATE/reads"
+if [ "$N" -lt "${GH_LINKED:-0}" ]; then L='[]'; else L='[{"number":412}]'; fi
+printf '{"number":413,"url":"https://github.com/andrewthetechie/jelly-swipe/pull/413","baseRefName":"main","headRefName":"run","labels":[],"closingIssuesReferences":%s}\n' "$L"
+STUB
+chmod +x "$PH_STUBS/gh"
+ph_run() {
+    op_repo "$1"
+    printf '413' > "$OP/fab/pr_number"
+    extract_from "$DEP" pr_handoff | sed "s#/tmp/fabro#$OP/fab#g" > "$OP/pr_handoff.sh"
+    if ! sh -n "$OP/pr_handoff.sh" 2> "$OP/pr_handoff.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL pr_handoff is not valid POSIX sh\n'; sed 's/^/       /' "$OP/pr_handoff.syntax"
+    fi
+    (cd "$OP/work" && PATH="$PH_STUBS:$ORIG_PATH" GH_LOG="$OP/gh.log" GH_STATE="$OP/state" DEP_LINK_WAIT=0 sh "$OP/pr_handoff.sh" > "$OP/pr_handoff.out" 2> "$OP/pr_handoff.err"); echo $? > "$OP/pr_handoff.rc"
+}
+ph_run ph
+check "pr_handoff: exit 0" "0" "$(cat "$OP/pr_handoff.rc")"
+for f in pr.json base_ref head_ref linked_issues.json run_base_sha; do
+    check "pr_handoff: writes $f" "1" "$([ -s "$OP/fab/$f" ] && echo 1 || echo 0)"
+done
+check "pr_handoff: base_ref from the PR" "main" "$(cat "$OP/fab/base_ref")"
+check "pr_handoff: linked_issues holds the issue" "412" "$(jq -r '.[0].number' "$OP/fab/linked_issues.json")"
+check "pr_handoff: run_base_sha is the base tip" "$(git -C "$OP/work" rev-parse origin/main)" "$(cat "$OP/fab/run_base_sha")"
+check "pr_handoff: stopped_at cleared" "0" "$([ -e "$OP/fab/dep/stopped_at" ] && echo 1 || echo 0)"
+check "pr_handoff: does not re-read the automation rows" "0" "$(grep -c 'automations' "$OP/pr_handoff.sh")"
+
+GH_LINKED=2 ph_run phlate
+check "pr_handoff, link late: exit 0" "0" "$(cat "$OP/pr_handoff.rc")"
+check "pr_handoff, link late: reads the PR until it links" "3" "$(grep -c 'pr view 413' "$OP/gh.log")"
+check "pr_handoff, link late: linked_issues holds the issue" "412" "$(jq -r '.[0].number' "$OP/fab/linked_issues.json")"
+
+GH_LINKED=99 ph_run phnone
+check "pr_handoff, never linked: exit 0" "0" "$(cat "$OP/pr_handoff.rc")"
+check "pr_handoff, never linked: linked_issues is []" "[]" "$(jq -c . "$OP/fab/linked_issues.json")"
+
+GH_FAIL=1 ph_run phfail
+check "pr_handoff, gh failing: exit 1" "1" "$(cat "$OP/pr_handoff.rc")"
+check "pr_handoff, gh failing: stopped_at names it" "pr_handoff" "$(cat "$OP/fab/dep/stopped_at")"
 
 
 # ---------------------------------------------------------------------------
