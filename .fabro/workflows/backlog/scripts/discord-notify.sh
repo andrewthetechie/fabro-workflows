@@ -1,7 +1,7 @@
 #!/bin/sh
 # discord-notify.sh — best-effort Discord notification for fabro runs.
 #
-# Usage: discord-notify.sh <rescue|complete|failed|merged|blocked|needs-human|fallback|triage-question|triage-failed|arch-summary>
+# Usage: discord-notify.sh <rescue|complete|failed|merged|blocked|needs-human|fallback|triage-question|triage-failed|arch-summary|dependabot-summary>
 #
 # Runs as a hook with sandbox = false, i.e. inside the fabro server container
 # (Alpine: /bin/sh + wget, no bash, no curl, no jq). The event context JSON is
@@ -87,6 +87,7 @@ pr_url=""
 triage_questions=""
 issue_newest=""
 arch_summary=""
+dep_summary=""
 if [ -r "$token_file" ]; then
   auth="Authorization: Bearer $(cat "$token_file")"
   repo_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id" 2>/dev/null \
@@ -118,6 +119,10 @@ if [ -r "$token_file" ]; then
   arch_summary=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"arch_summary":"[^"]*"' | tail -1 | cut -d'"' -f4)
   arch_summary=$(printf '%s' "$arch_summary" | sed 's/[\\"]//g' | cut -c1-800)
+  # dependabot-summary (ADR 0022 D19): the one line summarize publishes, read the same way.
+  dep_summary=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"dep_summary":"[^"]*"' | tail -1 | cut -d'"' -f4)
+  dep_summary=$(printf '%s' "$dep_summary" | sed 's/[\\"]//g' | cut -c1-1500)
   # `[^"]*` stops at the first `\"` in the serialized state, which silently dropped
   # the rest of the batch. triage_gate now strips `"` from the value before publishing
   # it, so no escape can appear here. This sed stays as defence in depth for a
@@ -159,7 +164,7 @@ fi
 case "$kind" in
   triage-question|triage-failed)
     issue="$issue_newest" ;;
-  arch-summary)
+  arch-summary|dependabot-summary)
     issue="" ;;
 esac
 
@@ -215,6 +220,11 @@ case "$kind" in
     ;;
   arch-summary)
     msg="🧭 fabro architecture review${subject}\\n${arch_summary}"
+    ;;
+  dependabot-summary)
+    # summarize joins its lines with " | "; the message wants one line each.
+    dep_text=$(printf '%s' "$dep_summary" | sed 's/ | /\\n/g')
+    msg="🛡️ fabro dependabot${subject}\\n${dep_text}"
     ;;
   *)        msg="ℹ️ fabro run ${run_id} notification ($kind)" ;;
 esac

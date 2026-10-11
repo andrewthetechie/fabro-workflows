@@ -5080,6 +5080,97 @@ printf '412' > "$OP/fab/pr_number"; echo merged > "$OP/fab/review_merge_outcome"
 GH_FAIL=1 op_run after_merge
 check "after_merge with gh failing: exit 0" "0" "$(cat "$OP/after_merge.rc")"
 
+
+# ---------------------------------------------------------------------------
+# dependabot — summarize and the dependabot-summary Discord kind (ADR 0022 task 08).
+# ---------------------------------------------------------------------------
+echo ""
+echo "dependabot: summarize"
+# $1 case. Runs summarize in a fresh root; the caller seeds $SM/dep/* first.
+sm_case() {
+    SM="$WORK/sm-$1"; mkdir -p "$SM/dep"
+    echo '{"nameWithOwner":"andrewthetechie/jelly-swipe"}' > "$SM/dep/repo.json"
+    extract_from "$DEP" summarize | sed "s#/tmp/fabro#$SM#g" > "$SM/summarize.sh"
+    (cd "$SM" && PATH="$ORIG_PATH" sh "$SM/summarize.sh" > "$SM/summarize.out" 2> "$SM/summarize.err"); echo $? > "$SM/summarize.rc"
+    tail -1 "$SM/summarize.out" > "$SM/route.json" 2>/dev/null
+}
+sm_summary() { jq -r .context_updates.dep_summary "$SM/route.json"; }
+
+# 1. The full day: six PRs (four merged, one red, one conflicting), a patch that merged, and two alerts
+#    with no patched version, one group skipped. The line matches the shape in ADR 0022 task 08.
+sm_case day
+jq -cn '[{pr:442,outcome:"merged",reason:"",fixes:[]},{pr:441,outcome:"merged",reason:"",fixes:[]},{pr:440,outcome:"merged",reason:"",fixes:[]},{pr:439,outcome:"red",reason:"test",fixes:[]},{pr:438,outcome:"merged",reason:"",fixes:[]},{pr:437,outcome:"conflict",reason:"",fixes:[]}]' > "$SM/dep/results.json"
+jq -cn '[range(6) as $i | {number: (437 + $i), title: "t", head_sha: "x", fixes: []}]' > "$SM/dep/prs.json"
+jq -cn '[{number:72,package:"urllib3",ecosystem:"pip",manifest:"uv.lock",first_patched:"2.8.0"},{number:73,package:"urllib3",ecosystem:"pip",manifest:"uv.lock",first_patched:"2.8.0"},{number:74,package:"urllib3",ecosystem:"pip",manifest:"uv.lock",first_patched:"2.8.0"}]' > "$SM/dep/alerts.json"
+jq -cn '{package:"urllib3",manifest:"uv.lock",alerts:[72,73,74],issue:412,replaces:[]}' > "$SM/dep/group.json"
+jq -cn '[{number:12},{number:15}]' > "$SM/dep/no_patch.json"
+jq -cn '[{key:"npm:frontend/package-lock.json:brace-expansion",reason:"needs-human"}]' > "$SM/dep/skipped_groups.json"
+jq -cn '{status:"patched"}' > "$SM/dep/patch.json"
+SUM_EXPECT='PRs: merged 4 of 6 (#442 #441 #440 #438); #439 red (test); #437 conflict, rebase requested | Patch: urllib3 in uv.lock (3 alerts) -> #445, merged | Left: 2 alerts with no patched version (#12 #15); 1 group skipped (npm:frontend/package-lock.json:brace-expansion: needs-human)'
+# The PR number and the phase outcome are the root files /tmp/fabro/pr_number and review_merge_outcome.
+printf '445' > "$SM/pr_number"; printf 'merged' > "$SM/review_merge_outcome"
+(cd "$SM" && PATH="$ORIG_PATH" sh "$SM/summarize.sh" > "$SM/summarize.out" 2> "$SM/summarize.err"); echo $? > "$SM/summarize.rc"; tail -1 "$SM/summarize.out" > "$SM/route.json"
+check "summarize full day: exit 0" "0" "$(cat "$SM/summarize.rc")"
+check "summarize full day: dep_summary matches the shape" "$SUM_EXPECT" "$(sm_summary)"
+
+# 2. A quiet day: no alerts and no PRs.
+sm_case quiet
+jq -cn '[]' > "$SM/dep/alerts.json"; jq -cn '[]' > "$SM/dep/prs.json"
+(cd "$SM" && PATH="$ORIG_PATH" sh "$SM/summarize.sh" > "$SM/summarize.out" 2> "$SM/summarize.err"); echo $? > "$SM/summarize.rc"; tail -1 "$SM/summarize.out" > "$SM/route.json"
+check "summarize quiet day: the Nothing to do line" "Nothing to do: 0 alerts open, 0 Dependabot PRs open." "$(sm_summary)"
+
+# 3. A stopped run names the node and the reason.
+sm_case stopped
+jq -cn '[{number:72}]' > "$SM/dep/alerts.json"; jq -cn '[]' > "$SM/dep/prs.json"
+printf 'dep_validate' > "$SM/dep/stopped_at"; printf 'the checkout is not clean' > "$SM/dep/stop_reason"
+(cd "$SM" && PATH="$ORIG_PATH" sh "$SM/summarize.sh" > "$SM/summarize.out" 2> "$SM/summarize.err"); echo $? > "$SM/summarize.rc"; tail -1 "$SM/summarize.out" > "$SM/route.json"
+check "summarize stopped: begins with Stopped at dep_validate:" "1" "$(sm_summary | grep -c '^Stopped at dep_validate: ')"
+check "summarize stopped: ends with the reason" "1" "$(sm_summary | grep -c 'the checkout is not clean$')"
+
+# 4. Quotes and backslashes in the reason are stripped; the routing object stays valid JSON.
+sm_case quotes
+jq -cn '[{pr:1,outcome:"red",reason:"a \"quoted\" word and a back\\slash",fixes:[]}]' > "$SM/dep/results.json"
+jq -cn '[{number:1}]' > "$SM/dep/prs.json"; jq -cn '[{number:72}]' > "$SM/dep/alerts.json"
+(cd "$SM" && PATH="$ORIG_PATH" sh "$SM/summarize.sh" > "$SM/summarize.out" 2> "$SM/summarize.err"); echo $? > "$SM/summarize.rc"; tail -1 "$SM/summarize.out" > "$SM/route.json"
+check "summarize quotes: the routing object is valid JSON" "0" "$(jq -e . "$SM/route.json" >/dev/null 2>&1; echo $?)"
+check "summarize quotes: no double quote in dep_summary" "0" "$(sm_summary | grep -c '\"' || true)"
+check "summarize quotes: no backslash in dep_summary" "0" "$(sm_summary | tr -cd "$(awk 'BEGIN{printf "%c", 92}')" | wc -c | tr -d ' ')"
+
+# 5. Length: 100 merged PRs stay under 1,500 bytes, and the routing object is valid.
+sm_case long
+jq -cn '[range(100) as $i | {pr: (1000 + $i), outcome: "merged", reason: "", fixes: []}]' > "$SM/dep/results.json"
+jq -cn '[range(100) as $i | {number: (1000 + $i), title: "t", head_sha: "x", fixes: []}]' > "$SM/dep/prs.json"; jq -cn '[{number:72}]' > "$SM/dep/alerts.json"
+(cd "$SM" && PATH="$ORIG_PATH" sh "$SM/summarize.sh" > "$SM/summarize.out" 2> "$SM/summarize.err"); echo $? > "$SM/summarize.rc"; tail -1 "$SM/summarize.out" > "$SM/route.json"
+check "summarize long: dep_summary is at most 1500 bytes" "1" "$([ "$(sm_summary | wc -c | tr -d ' ')" -le 1500 ] && echo 1 || echo 0)"
+check "summarize long: the routing object is valid JSON" "0" "$(jq -e . "$SM/route.json" >/dev/null 2>&1; echo $?)"
+
+# The dependabot-summary Discord kind: a stubbed wget serves the run state and a stubbed curl captures the
+# payload. The notify script's /storage paths are rewritten to a scratch root.
+echo ""
+echo "dependabot: the dependabot-summary Discord kind"
+NT="$WORK/notify"; mkdir -p "$NT/storage/secrets" "$NT/stub"
+printf 'http://discord.test/hook' > "$NT/storage/secrets/discord_webhook_url"; printf 'tok' > "$NT/storage/server.dev-token"
+sed "s#/storage#$NT/storage#g" "$REPO_ROOT/.fabro/workflows/backlog/scripts/discord-notify.sh" > "$NT/notify.sh"
+cat > "$NT/stub/wget" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *"/state"*) echo '{"dep_summary":"PRs: merged 4 of 6 (#442 #441 #440 #438) | Patch: urllib3 in uv.lock (3 alerts) -> #445, merged | Left: 2 alerts with no patched version (#12 #15)"}' ;;
+  *"/api/v1/runs/"*) echo '{"origin_url":"https://github.com/andrewthetechie/jelly-swipe.git"}' ;;
+esac
+exit 0
+STUB
+cat > "$NT/stub/curl" <<'STUB'
+#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = -d ] && { printf '%s' "$2" > "$NT_PAYLOAD"; }; shift; done
+exit 0
+STUB
+chmod +x "$NT/stub/wget" "$NT/stub/curl"
+NT_PAYLOAD="$NT/payload.json" PATH="$NT/stub:$ORIG_PATH" NT="$NT" sh "$NT/notify.sh" dependabot-summary <<<'{"run_id":"01X"}' > /dev/null 2>&1
+check "notify dependabot-summary: a payload was sent" "1" "$(test -s "$NT/payload.json" && echo 1 || echo 0)"
+check "notify dependabot-summary: the header names the repo" "1" "$(grep -c 'fabro dependabot on andrewthetechie/jelly-swipe' "$NT/payload.json")"
+check "notify dependabot-summary: the header and three summary lines, then the repo link" "4" "$(grep -o '\\n' "$NT/payload.json" | wc -l | tr -d ' ')"
+check "notify dependabot-summary: the payload is valid JSON" "0" "$(jq -e . "$NT/payload.json" >/dev/null 2>&1; echo $?)"
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"

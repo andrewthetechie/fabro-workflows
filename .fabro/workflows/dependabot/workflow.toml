@@ -176,3 +176,14 @@ event = "run_failed"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh failed"
+
+# The dependabot summary (ADR 0022 D19): one message per run. The hook is on `finish`, not on
+# `summarize`, for the reason arch-review gives: `finish` runs after `summarize` has published
+# dep_summary, so the hook can read it from the run state.
+[[run.hooks]]
+id = "discord-dependabot-summary"
+event = "stage_start"
+matcher = "^finish$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh dependabot-summary"

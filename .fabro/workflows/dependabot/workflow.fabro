@@ -91,6 +91,7 @@ echo ready"]
     inventory [label="Count the open alerts and Dependabot PRs", shape=parallelogram, output_schema="routing", timeout="5m",
         script="set -e
 echo inventory > /tmp/fabro/dep/stopped_at
+stop() { printf '%s' \"$1\" > /tmp/fabro/dep/stop_reason; echo \"$1\" >&2; exit 1; }
 R=$(jq -r .nameWithOwner /tmp/fabro/dep/repo.json)
 cat > /tmp/fabro/dep/version.jq <<'JQ'
 def norm: ltrimstr(\"v\") | split(\"+\") | .[0];
@@ -157,9 +158,9 @@ $prs[0]
 | map(. as $pr | {number, title, head_ref: .headRefName, head_sha: .headRefOid, created_at: .createdAt, url, fixes: ($pr | fixes($alerts[0]))})
 | sort_by([(.fixes | length == 0), .created_at])
 JQ
-gh api \"repos/$R/dependabot/alerts?state=open&per_page=100\" --paginate > /tmp/fabro/dep/alerts_raw.json || { echo 'inventory: the open alerts could not be read' >&2; exit 1; }
+gh api \"repos/$R/dependabot/alerts?state=open&per_page=100\" --paginate > /tmp/fabro/dep/alerts_raw.json || stop 'inventory: the open alerts could not be read'
 jq -s 'add // [] | [.[] | {number, ecosystem: .dependency.package.ecosystem, package: .dependency.package.name, manifest: .dependency.manifest_path, severity: .security_advisory.severity, scope: (.dependency.scope // \"unknown\"), first_patched: .security_vulnerability.first_patched_version.identifier, ghsa: .security_advisory.ghsa_id, cve: .security_advisory.cve_id, created_at: .created_at, url: .html_url}]' /tmp/fabro/dep/alerts_raw.json > /tmp/fabro/dep/alerts.json
-gh pr list --author app/dependabot --state open --limit 100 --json number,title,headRefName,headRefOid,createdAt,url,body > /tmp/fabro/dep/prs_raw.json
+gh pr list --author app/dependabot --state open --limit 100 --json number,title,headRefName,headRefOid,createdAt,url,body > /tmp/fabro/dep/prs_raw.json || stop 'inventory: the open Dependabot PRs could not be listed'
 jq -n -L /tmp/fabro/dep --slurpfile alerts /tmp/fabro/dep/alerts.json --slurpfile prs /tmp/fabro/dep/prs_raw.json -f /tmp/fabro/dep/match.jq > /tmp/fabro/dep/prs.json
 A=$(jq length /tmp/fabro/dep/alerts.json)
 P=$(jq length /tmp/fabro/dep/prs.json)
@@ -175,6 +176,7 @@ jq -cn --argjson a $A --argjson p $P '{context_updates: {alert_count: $a, dep_pr
     // written to results.json as skipped_cap. It publishes dep_pr_next on every branch.
     dep_next [label="dep_next", shape=parallelogram, output_schema="routing", timeout="2m",
         script="echo dep_next > /tmp/fabro/dep/stopped_at
+stop() { printf '%s' \"$1\" > /tmp/fabro/dep/stop_reason; echo \"$1\" >&2; exit 1; }
 D=/tmp/fabro/dep
 if [ ! -f $D/loop_started ]; then
   date +%s > $D/loop_started
@@ -183,10 +185,8 @@ if [ ! -f $D/loop_started ]; then
 fi
 RB=$(cat $D/run_branch)
 if [ \"$(git symbolic-ref --short HEAD)\" != \"$RB\" ] || [ -n \"$(git status --porcelain)\" ]; then
-  echo \"dep_next: the checkout is not clean on $RB\" > $D/stop_reason
-  echo \"dep_next: the checkout is not clean on $RB\" >&2
   jq -cn '{context_updates: {dep_pr_next: \"no\"}}'
-  exit 1
+  stop \"dep_next: the checkout is not clean on $RB\"
 fi
 CUR=$(cat $D/cursor)
 N=$(jq length $D/prs.json)
@@ -267,6 +267,7 @@ fi"]
     // The tail of the log is printed with its braces replaced, so fabro's routing scan reads one object.
     dep_validate [label="dep_validate", shape=parallelogram, output_schema="routing", timeout="20m",
         script="echo dep_validate > /tmp/fabro/dep/stopped_at
+stop() { printf '%s' \"$1\" > /tmp/fabro/dep/stop_reason; echo \"$1\" >&2; exit 1; }
 D=/tmp/fabro/dep
 N=$(jq -r .number $D/cur.json)
 SHA=$(jq -r .head_sha $D/cur.json)
@@ -276,9 +277,7 @@ ID=\"-c user.email=noreply@fabro.sh -c user.name=fabro-dependabot\"
 restore() { git merge --abort >/dev/null 2>&1; git checkout -q -f \"$RB\" && git clean -fdq; }
 clean_or_stop() {
   if [ \"$(git symbolic-ref --short HEAD)\" != \"$RB\" ] || [ -n \"$(git status --porcelain)\" ]; then
-    echo \"dep_validate: the checkout is not clean on $RB after restore\" > $D/stop_reason
-    echo \"dep_validate: the checkout is not clean on $RB after restore\" >&2
-    exit 1
+    stop \"dep_validate: the checkout is not clean on $RB after restore\"
   fi
 }
 if ! git fetch -q origin \"$B\" \"pull/$N/head\" >/dev/null 2>&1; then
@@ -417,17 +416,18 @@ $results[0] as $res
 | map(del(.created))
 JQ
 echo pick_group > /tmp/fabro/dep/stopped_at
+stop() { printf '%s' \"$1\" > /tmp/fabro/dep/stop_reason; echo \"$1\" >&2; exit 1; }
 D=/tmp/fabro/dep
 rm -f /tmp/fabro/review_merge_outcome $D/skipped_groups.json
 jq -c '[.[] | select(.first_patched == null)]' $D/alerts.json > $D/no_patch.json
-jq -n -L $D --slurpfile alerts $D/alerts.json --slurpfile prs $D/prs.json --slurpfile results $D/results.json -f $D/pick.jq > $D/ranked.json || { echo 'pick_group: could not rank the groups' >&2; exit 1; }
+jq -n -L $D --slurpfile alerts $D/alerts.json --slurpfile prs $D/prs.json --slurpfile results $D/results.json -f $D/pick.jq > $D/ranked.json || stop 'pick_group: could not rank the groups'
 : > $D/skipped.lines
 NOW=$(date +%s)
 CHOSEN=none
 jq -c '.[]' $D/ranked.json > $D/ranked.lines
 while IFS= read -r G; do
   KEY=$(printf '%s' \"$G\" | jq -r .key)
-  gh issue list --state all --label security --search \"fabro:dep-group key=$KEY\" --json number,state,stateReason,closedAt,labels,body > $D/issues.json || { echo 'pick_group: could not list the tracking issues' >&2; exit 1; }
+  gh issue list --state all --label security --search \"fabro:dep-group key=$KEY\" --json number,state,stateReason,closedAt,labels,body > $D/issues.json || stop 'pick_group: could not list the tracking issues'
   ISSUE=$(jq -c --arg m \"<!-- fabro:dep-group key=$KEY -->\" '[.[] | select((.body // \"\") | startswith($m))] | .[0] // null' $D/issues.json)
   if [ \"$ISSUE\" = null ]; then
     CHOSEN=$KEY; NUM=0; break
@@ -441,7 +441,7 @@ while IFS= read -r G; do
       jq -cn --arg k \"$KEY\" '{key: $k, reason: \"its tracking issue has needs-human\"}' >> $D/skipped.lines; continue
     fi
     if printf '%s' \"$ISSUE\" | jq -e 'any(.labels[]; .name == \"Review\")' >/dev/null; then
-      gh pr list --state open --json number,closingIssuesReferences > $D/open_prs.json || { echo 'pick_group: could not list the open PRs' >&2; exit 1; }
+      gh pr list --state open --json number,closingIssuesReferences > $D/open_prs.json || stop 'pick_group: could not list the open PRs'
       if jq -e --argjson n \"$NUM\" 'any(.[]; any(.closingIssuesReferences[]?; .number == $n))' $D/open_prs.json >/dev/null; then
         jq -cn --arg k \"$KEY\" '{key: $k, reason: \"its patch PR is open\"}' >> $D/skipped.lines; continue
       fi
@@ -478,8 +478,9 @@ jq -cn --arg k \"$CHOSEN\" '{context_updates: {patch_group: $k}}'"]
     // records. An issue closed as completed is reopened here only when the group was chosen anyway (a
     // closed-not-planned issue, for example). The group_alerts.json file is the patch's input (task 06).
     // A failure to file exits 1: a patch with no issue cannot pass merge_gate.
-    track_issue [label="track_issue", shape=parallelogram, timeout="5m",
+    track_issue [label="track_issue", shape=parallelogram, output_schema="routing", timeout="5m",
         script="echo track_issue > /tmp/fabro/dep/stopped_at
+stop() { printf '%s' \"$1\" > /tmp/fabro/dep/stop_reason; echo \"$1\" >&2; exit 1; }
 D=/tmp/fabro/dep
 KEY=$(jq -r .key $D/group.json)
 PKG=$(jq -r .package $D/group.json)
@@ -507,16 +508,16 @@ jq -r -n --arg key \"$KEY\" --arg pkg \"$PKG\" --arg man \"$MAN\" --slurpfile g 
 ' > $D/issue_body.md
 TITLE=$(jq -rn --arg p \"$PKG\" --arg m \"$MAN\" '\"fix(deps): patch \" + $p + \" security alerts in \" + $m | if length > 72 then (.[0:72] | sub(\" [^ ]*$\"; \"\")) else . end')
 if [ \"$NUM\" = 0 ]; then
-  URL=$(gh issue create --title \"$TITLE\" --body-file $D/issue_body.md --label security --label dependencies --label ai-generated) || { echo 'track_issue: could not file the tracking issue' >&2; exit 1; }
+  URL=$(gh issue create --title \"$TITLE\" --body-file $D/issue_body.md --label security --label dependencies --label ai-generated) || stop 'track_issue: could not file the tracking issue'
   NUM=${URL##*/}
 else
-  gh issue edit \"$NUM\" --body-file $D/issue_body.md >/dev/null || { echo 'track_issue: could not update the tracking issue' >&2; exit 1; }
+  gh issue edit \"$NUM\" --body-file $D/issue_body.md >/dev/null || stop 'track_issue: could not update the tracking issue'
   if [ \"$(gh issue view \"$NUM\" --json state --jq .state)\" = CLOSED ]; then gh issue reopen \"$NUM\" >/dev/null 2>&1 || true; fi
 fi
 jq --argjson n \"$NUM\" '. + {issue: $n}' $D/group.json > $D/group.tmp && mv $D/group.tmp $D/group.json
 gh issue view \"$NUM\" --json number,title,body,labels,url,state > /tmp/fabro/issue.json
 rm -f $D/stopped_at
-echo ready"]
+jq -cn --argjson n \"$NUM\" '{context_updates: {issue_number: $n}}'"]
 
     // Merges origin/<base> into the run branch before the patch starts (D21), so the patch sees the
     // Dependabot PRs this run merged. The run branch holds only empty checkpoint commits, so the merge
@@ -524,18 +525,17 @@ echo ready"]
     // resulting HEAD in sync_base_sha for patch_gate (task 06).
     sync_base [label="sync_base", shape=parallelogram, timeout="5m",
         script="echo sync_base > /tmp/fabro/dep/stopped_at
+stop() { printf '%s' \"$1\" > /tmp/fabro/dep/stop_reason; echo \"$1\" >&2; exit 1; }
 D=/tmp/fabro/dep
 B=$(cat /tmp/fabro/base_ref)
-git fetch -q origin \"$B\" || { echo 'sync_base: could not fetch the base' >&2; exit 1; }
+git fetch -q origin \"$B\" || stop 'sync_base: could not fetch the base'
 if ! git -c user.email=noreply@fabro.sh -c user.name=fabro-dependabot merge -q --no-edit \"origin/$B\" >/dev/null 2>&1; then
   git merge --abort >/dev/null 2>&1
-  echo 'sync_base: the run branch conflicts with the base; that should not happen (it holds only checkpoints). A human should look.' >&2
-  exit 1
+  stop 'sync_base: the run branch conflicts with the base; that should not happen (it holds only checkpoints). A human should look.'
 fi
 git rev-parse HEAD > $D/sync_base_sha
 if [ \"$(git symbolic-ref --short HEAD)\" != \"$(cat $D/run_branch)\" ] || [ -n \"$(git status --porcelain)\" ]; then
-  echo 'sync_base: the checkout is not clean on the run branch' >&2
-  exit 1
+  stop 'sync_base: the checkout is not clean on the run branch'
 fi
 rm -f $D/stopped_at
 echo synced"]
@@ -654,6 +654,7 @@ echo blocked"]
     // `Resolves #N`, which GitHub reads, and the shared phase reads `linked_issues.json` from the link.
     open_pr [label="Push and open the patch PR", shape=parallelogram, output_schema="routing", timeout="10m",
         script="echo open_pr > /tmp/fabro/dep/stopped_at
+stop() { printf '%s' \"$1\" > /tmp/fabro/dep/stop_reason; echo \"$1\" >&2; exit 1; }
 set -e
 D=/tmp/fabro/dep
 PKG=$(jq -r .package $D/group.json)
@@ -705,8 +706,7 @@ if [ -z \"$PR_URL\" ]; then
   PR_URL=$(gh pr view \"$B\" --json url --jq .url)
 fi
 if [ -z \"$PR_URL\" ]; then
-  echo 'no PR is visible for head branch '\"$B\"' after create; refusing to report an empty pr_url' >&2
-  exit 1
+  stop \"no PR is visible for head branch $B after create; refusing to report an empty pr_url\"
 fi
 echo \"$PR_URL\" | sed 's|.*/||' > /tmp/fabro/pr_number
 gh issue edit \"$N\" --add-label Review >/dev/null 2>&1 || true
@@ -751,13 +751,53 @@ exit 0"]
     // Builds the one-line summary from the files that exist, and always exits 0 (D24).
     // Task 08 gives it its final form.
     summarize [label="Summarize the run", shape=parallelogram, output_schema="routing", timeout="2m",
-        script="R=$(jq -r .nameWithOwner /tmp/fabro/dep/repo.json 2>/dev/null || echo unknown)
-A=$(cat /tmp/fabro/dep/alert_count 2>/dev/null || echo 0)
-P=$(cat /tmp/fabro/dep/dep_pr_count 2>/dev/null || echo 0)
-S=$(cat /tmp/fabro/dep/stopped_at 2>/dev/null || echo '')
-if [ -n \"$S\" ]; then M=\"Stopped at $S\"; else M=\"$R: $A alerts open, $P Dependabot PRs open (skeleton run; nothing merged or patched)\"; fi
-echo \"$M\"
-jq -cn --arg m \"$M\" --arg s \"$S\" '{context_updates: {dep_summary: $m, stopped_at: $s}}'
+        script="D=/tmp/fabro/dep
+R=$(jq -r .nameWithOwner $D/repo.json 2>/dev/null || echo unknown)
+A=$(jq length $D/alerts.json 2>/dev/null || echo 0)
+P=$(jq length $D/prs.json 2>/dev/null || echo 0)
+S=$(cat $D/stopped_at 2>/dev/null || echo '')
+PARTS=''
+add() { [ -n \"$1\" ] || return 0; if [ -n \"$PARTS\" ]; then PARTS=\"$PARTS | $1\"; else PARTS=\"$1\"; fi; }
+if [ \"$A\" = 0 ] && [ \"$P\" = 0 ] && [ -z \"$S\" ]; then
+  add \"Nothing to do: 0 alerts open, 0 Dependabot PRs open.\"
+else
+  if [ \"$P\" != 0 ]; then
+    NM=$(jq '[.[] | select(.outcome == \"merged\")] | length' $D/results.json 2>/dev/null || echo 0)
+    MG=$(jq -r '[.[] | select(.outcome == \"merged\") | \"#\" + (.pr | tostring)] | join(\" \")' $D/results.json 2>/dev/null)
+    OT=$(jq -r '[.[] | select(.outcome != \"merged\") | \"#\" + (.pr | tostring) + \" \" + (if .outcome == \"conflict\" then \"conflict, rebase requested\" else .outcome + (if (.reason // \"\") != \"\" then \" (\" + (.reason | .[0:60]) + \")\" else \"\" end) end)] | join(\"; \")' $D/results.json 2>/dev/null)
+    LINE=\"PRs: merged $NM of $P\"
+    [ -n \"$MG\" ] && LINE=\"$LINE ($MG)\"
+    [ -n \"$OT\" ] && LINE=\"$LINE; $OT\"
+    add \"$LINE\"
+  fi
+  if [ -f $D/group.json ]; then
+    PK=$(jq -r '.package + \" in \" + .manifest + \" (\" + ((.alerts | length) | tostring) + \" alerts)\"' $D/group.json)
+    PN=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+    RO=$(cat /tmp/fabro/review_merge_outcome 2>/dev/null || echo '')
+    PS=$(jq -r '.status // \"\"' $D/patch.json 2>/dev/null || echo '')
+    if [ -n \"$PN\" ]; then add \"Patch: $PK -> #$PN, ${RO:-not reported}\"
+    elif [ \"$PS\" = blocked ]; then add \"Patch: $PK blocked: $(jq -r '.blocker // \"\"' $D/patch.json | cut -c1-80)\"
+    elif [ \"$(cat $D/patch_status 2>/dev/null)\" = failed ]; then add \"Patch: $PK red after 3 attempts\"
+    else add \"Patch: $PK not opened\"; fi
+  elif [ -z \"$S\" ]; then
+    add \"Patch: no group to patch\"
+  fi
+  NP=$(jq length $D/no_patch.json 2>/dev/null || echo 0)
+  NPL=$(jq -r '[.[] | \"#\" + (.number | tostring)] | join(\" \")' $D/no_patch.json 2>/dev/null)
+  SK=$(jq -r '[.[] | .key + \": \" + .reason] | join(\"; \")' $D/skipped_groups.json 2>/dev/null)
+  LEFT=\"\"
+  [ \"$NP\" != 0 ] && LEFT=\"$NP alerts with no patched version ($NPL)\"
+  if [ -n \"$SK\" ]; then
+    [ -n \"$LEFT\" ] && LEFT=\"$LEFT; \"
+    NS=$(jq length $D/skipped_groups.json); W=groups; [ \"$NS\" = 1 ] && W=group; LEFT=\"$LEFT$NS $W skipped ($SK)\"
+  fi
+  [ -n \"$LEFT\" ] && add \"Left: $LEFT\"
+  if [ -n \"$S\" ]; then add \"Stopped at $S: $(cat $D/stop_reason 2>/dev/null || echo 'no reason recorded')\"; fi
+fi
+BS=$(awk 'BEGIN{printf \"%c\", 92}')
+SUM=$(printf '%s' \"$PARTS\" | tr -d '\"{}' | tr -d \"$BS\" | head -c 1500)
+echo \"$SUM\" | awk 'BEGIN{RS=\" [|] \"} {print}'
+jq -cn --arg m \"$SUM\" --arg s \"$S\" '{context_updates: {dep_summary: $m, stopped_at: $s}}'
 exit 0"]
 
     // The target of the summary hook (task 08). Exists here so the hook has a stage to fire on.
