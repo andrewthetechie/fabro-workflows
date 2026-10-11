@@ -16,6 +16,7 @@ locations instead.
 | File | Purpose |
 |---|---|
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). 0.362 no longer creates `fabro/meta/*`; it still sweeps the ones earlier versions left. Deterministic; see its header comments. |
+| `fabro-run-prune.sh` | Deletes `merge-queue` runs older than 7 days with `fabro system prune --workflow merge-queue` (daily cron; ADR 0024 D8). The merge queue makes 576 runs a day and nothing else deletes them. Dry run unless `DRY_RUN=0`. |
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
 | `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
 | `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
@@ -1113,6 +1114,16 @@ grows: `: > ~/.local/state/fabro-branch-sweep.log`.
 
 04:43 daily, after the branch sweeper rather than alongside it — both are chatty and
 neither is urgent.
+
+```sh
+( crontab -l 2>/dev/null; \
+  echo '07 5 * * * DRY_RUN=0 /home/andrew/bin/fabro-run-prune.sh >> /home/andrew/.local/state/fabro-run-prune.log 2>&1' \
+) | crontab -
+```
+
+05:07 daily (installed by task 09's runbook, not by `make deploy`). It prunes only `merge-queue`
+runs older than 7 days, so the run store does not grow by 576 runs a day. Preview with
+`~/bin/fabro-run-prune.sh` (dry run).
 
 ## Cron — the health monitor
 

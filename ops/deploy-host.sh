@@ -62,7 +62,7 @@ STAMPS='~/.fabro-deploy-stamps'
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
-BIN_SCRIPTS="fabro-branch-sweep.sh fabro-sandbox-sweep.sh fabro-monitor.sh fabro-auto-merge-switch.sh fabro-fire-backlog.sh fabro-automation-schedule.sh"
+BIN_SCRIPTS="fabro-branch-sweep.sh fabro-sandbox-sweep.sh fabro-monitor.sh fabro-auto-merge-switch.sh fabro-fire-backlog.sh fabro-automation-schedule.sh fabro-run-prune.sh"
 # node_modules is the Mac's untracked Tailwind toolchain (build-css.sh); the image never
 # reads it (.dockerignore). Synced, its .bin symlinks never match: macOS gives a symlink
 # mode 0755 and Linux always 0777, so rsync reported a change on every run, which rebuilt

@@ -1,7 +1,7 @@
 #!/bin/sh
 # discord-notify.sh — best-effort Discord notification for fabro runs.
 #
-# Usage: discord-notify.sh <rescue|complete|failed|merged|queued|blocked|needs-human|fallback|triage-question|triage-failed|arch-summary|dependabot-summary>
+# Usage: discord-notify.sh <rescue|complete|failed|merged|queued|blocked|needs-human|fallback|triage-question|triage-failed|arch-summary|dependabot-summary|merge-queue-summary>
 #
 # Runs as a hook with sandbox = false, i.e. inside the fabro server container
 # (Alpine: /bin/sh + wget, no bash, no curl, no jq). The event context JSON is
@@ -88,6 +88,7 @@ triage_questions=""
 issue_newest=""
 arch_summary=""
 dep_summary=""
+mq_summary=""
 if [ -r "$token_file" ]; then
   auth="Authorization: Bearer $(cat "$token_file")"
   repo_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id" 2>/dev/null \
@@ -128,6 +129,10 @@ if [ -r "$token_file" ]; then
   # it, so no escape can appear here. This sed stays as defence in depth for a
   # backslash, and the cut leaves room for the rest of the Discord message (2000
   # characters total).
+  # merge-queue-summary (ADR 0024 D8): the line summarize publishes; empty means a quiet tick.
+  mq_summary=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"mq_summary":"[^"]*"' | tail -1 | cut -d'"' -f4)
+  mq_summary=$(printf '%s' "$mq_summary" | sed 's/[\\"]//g' | cut -c1-1500)
   triage_questions=$(printf '%s' "$triage_questions" | sed 's/[\\"]//g' | cut -c1-800)
 fi
 
@@ -164,7 +169,7 @@ fi
 case "$kind" in
   triage-question|triage-failed)
     issue="$issue_newest" ;;
-  arch-summary|dependabot-summary)
+  arch-summary|dependabot-summary|merge-queue-summary)
     issue="" ;;
 esac
 
@@ -227,6 +232,24 @@ case "$kind" in
     # summarize joins its lines with " | "; the message wants one line each.
     dep_text=$(printf '%s' "$dep_summary" | sed 's/ | /\\n/g')
     msg="🛡️ fabro dependabot${subject}\\n${dep_text}"
+    ;;
+  merge-queue-summary)
+    # A quiet tick publishes nothing and posts nothing. A repeated stop is posted once an hour
+    # per repository: the text and its epoch live in /storage/state/merge-queue-<repo>.last.
+    [ -n "$mq_summary" ] || exit 0
+    case "$mq_summary" in
+      "Stopped at "*)
+        now="${MQ_NOTIFY_NOW:-$(date +%s)}"
+        sfile="/storage/state/merge-queue-$(printf '%s' "$repo_name" | tr '/' '-').last"
+        if [ -f "$sfile" ]; then
+          last_at=$(cut -d' ' -f1 "$sfile"); last_text=$(cut -d' ' -f2- "$sfile")
+          if [ "$last_text" = "$mq_summary" ] && [ $((now - last_at)) -lt 3600 ]; then exit 0; fi
+        fi
+        mkdir -p /storage/state 2>/dev/null && printf '%s %s\n' "$now" "$mq_summary" > "$sfile" 2>/dev/null
+        ;;
+    esac
+    mq_text=$(printf '%s' "$mq_summary" | sed 's/ | /\\n/g')
+    msg="🔀 fabro merge queue${subject}\\n${mq_text}"
     ;;
   *)        msg="ℹ️ fabro run ${run_id} notification ($kind)" ;;
 esac

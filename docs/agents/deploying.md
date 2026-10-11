@@ -81,7 +81,8 @@ scp ops/docker-compose.yaml andrew@10.10.0.32:~/fabro/docker-compose.yaml
 scp ops/fabro-branch-sweep.sh andrew@10.10.0.32:~/bin/fabro-branch-sweep.sh
 scp ops/fabro-sandbox-sweep.sh andrew@10.10.0.32:~/bin/fabro-sandbox-sweep.sh
 scp ops/fabro-monitor.sh andrew@10.10.0.32:~/bin/fabro-monitor.sh
-ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-monitor.sh'
+scp ops/fabro-run-prune.sh andrew@10.10.0.32:~/bin/fabro-run-prune.sh
+ssh andrew@10.10.0.32 'chmod +x ~/bin/fabro-monitor.sh ~/bin/fabro-run-prune.sh'
 
 # the auto-merge kill switch. It talks to the API over the network and runs fine from
 # this checkout, but an incident that starts with an ssh session should not also need
@@ -114,6 +115,7 @@ nothing:
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-branch-sweep.sh' | diff - ops/fabro-branch-sweep.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-sandbox-sweep.sh' | diff - ops/fabro-sandbox-sweep.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-monitor.sh' | diff - ops/fabro-monitor.sh
+ssh andrew@10.10.0.32 'cat ~/bin/fabro-run-prune.sh' | diff - ops/fabro-run-prune.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-auto-merge-switch.sh' | diff - ops/fabro-auto-merge-switch.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-fire-backlog.sh' | diff - ops/fabro-fire-backlog.sh
 ssh andrew@10.10.0.32 'cat ~/bin/fabro-automation-schedule.sh' | diff - ops/fabro-automation-schedule.sh

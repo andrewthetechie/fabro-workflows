@@ -3,6 +3,7 @@
 #
 # Usage:
 #   ops/fabro-export-runs.sh --since ISO [--until ISO] [--workflow NAME|all] [--status terminal|all] [OUTDIR]
+#   (`--workflow all` skips merge-queue runs; name `merge-queue` to include them.)
 #
 # --since is inclusive and --until exclusive, by creation time. A bound given to the minute
 # (2026-10-10T00:20Z) covers that whole minute, so --until 00:20Z keeps a run created at 00:20:57.
@@ -110,7 +111,7 @@ index_rows() {
         map(select(.timestamps.created_at[0:19] >= $since))
         | map(select($until == "" or (if $minute then .timestamps.created_at[0:16] <= $until
                                       else .timestamps.created_at[0:19] < $until end)))
-        | map(select($wf == "all" or .workflow.slug == $wf))
+        | map(select(if $wf == "all" then .workflow.slug != "merge-queue" else .workflow.slug == $wf end))
         | map(select($status == "all" or .timestamps.completed_at != null))
         | sort_by(.timestamps.created_at)
         | .[]

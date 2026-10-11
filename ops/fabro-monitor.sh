@@ -14,8 +14,10 @@
 #   C1 container-down   container not running, or healthcheck not healthy   🔴 4h
 #   C2 api-unreachable  system/info fails, times out (10s), or 401s         🔴 4h
 #   C3 dead-scheduler   any schedule enabled AND newest run > IDLE_HOURS old 🔴 4h
-#                       (arch-review schedules excluded, ADR 0012)
+#                       (arch-review schedules excluded, ADR 0012; merge-queue runs
+#                       are skipped when finding the newest run, ADR 0024)
 #   C4 stuck-run        non-terminal run older than STUCK_HOURS             🔴 4h
+#                       (MQ_STUCK_MINUTES for a merge-queue run)
 #                       (ARCH_STUCK_HOURS for an arch-review run)
 #   C5 starvation       zero open agent-labeled issues across the repos     🟡 7d
 #   C6 disk-pressure    df / use >= DISK_PCT                                🟠 24h
@@ -41,17 +43,17 @@
 #
 # Probed against the live server 2026-09-16 (fabro 0.354.0-nightly.0); the
 # parser depends only on what the probes proved:
-#   GET /api/v1/runs      -> {data: [...], meta: {has_more, total}}. The page
-#                            is FIXED at 20 rows — `?limit=` is ignored — and
-#                            meta.total counts only the visible filter, not
-#                            the store (probe: system/info said total=7 while
-#                            meta.total said 190). Rows are newest-first by
-#                            timestamps.created_at (verified across a full
-#                            page); the monitor takes the max anyway. Only the
-#                            newest page is read, so a stuck run that falls
-#                            off page 1 (>20 newer runs) is invisible — the
-#                            factory does ~24 runs/day at peak, 3h is ~3 runs
-#                            of headroom, and the gap is accepted here.
+#   GET /api/v1/runs      -> {data: [...], meta: {has_more, total}}. The bare
+#                            default page is 20 rows and `?limit=` is ignored;
+#                            `page[limit]` (clamped at 100) and `page[offset]` page
+#                            it (curl needs -g), and `status=` filters by board
+#                            column. Rows are newest-first by timestamps.created_at.
+#                            The merge queue (ADR 0024) adds 576 runs a day, so no
+#                            fixed newest page is safe: C3 pages up to 5x100 rows and
+#                            skips `merge-queue` rows, and C4 reads every non-terminal
+#                            run by status filter (the columns list_active_runs uses),
+#                            up to 10x100, with its own MQ_STUCK_MINUTES limit. The old
+#                            accepted gap (a stuck run falling off page 1) is closed.
 #   run rows              -> carry timestamps.created_at (RFC3339, fractional
 #                            seconds) and lifecycle.status.kind. Statuses
 #                            observed: succeeded, failed. Terminal set is
@@ -98,6 +100,8 @@
 #   IDLE_HOURS=2                  C3: newest run older than this with a
 #                                 schedule enabled  -> dead scheduler
 #   STUCK_HOURS=3                 C4: non-terminal run older than this
+#   MQ_STUCK_MINUTES=30           C4: the limit for a merge-queue sweep, which ends in
+#                                 seconds (ADR 0024 D8)
 #   ARCH_STUCK_HOURS=9            C4: the same limit for an arch-review run, which
 #                                 triages up to 18 issues and stops starting new
 #                                 ones at 6h (ADR 0012)
@@ -125,6 +129,7 @@ DRY_RUN="${DRY_RUN:-1}"
 IDLE_HOURS="${IDLE_HOURS:-2}"
 STUCK_HOURS="${STUCK_HOURS:-3}"
 ARCH_STUCK_HOURS="${ARCH_STUCK_HOURS:-9}"
+MQ_STUCK_MINUTES="${MQ_STUCK_MINUTES:-30}"
 DISK_PCT="${DISK_PCT:-85}"
 FABRO_HOST="${FABRO_HOST:-10.10.0.32}"
 FABRO_PORT="${FABRO_PORT:-32276}"
@@ -342,7 +347,7 @@ if [ "$api_ok" = 1 ]; then
   else
     # arch-review runs twice a week per repo (ADR 0012), so its enabled schedules
     # must not arm a 2-hour idle alarm meant for the backlog cadence.
-    enabled_schedules="$(jq '[.data[] | select(.workflow != "arch-review") | .triggers[]? | select(.type == "schedule" and .enabled == true)] | length' "$tmp/autos.json" 2>/dev/null)"
+    enabled_schedules="$(jq '[.data[] | select(.workflow != "arch-review" and .workflow != "merge-queue") | .triggers[]? | select(.type == "schedule" and .enabled == true)] | length' "$tmp/autos.json" 2>/dev/null)"
     if ! printf '%s' "$enabled_schedules" | grep -Eq '^[0-9]+$'; then
       warn "automations response unparseable — C3 unevaluable"
       eval_failed=1
@@ -352,86 +357,126 @@ if [ "$api_ok" = 1 ]; then
 fi
 
 if [ "$api_ok" = 1 ]; then
-  # ---- C3 + C4 share the runs page ----------------------------------------
-  http="$(curl -sS -o "$tmp/runs.json" -w '%{http_code}' -m 10 \
-    -H "Authorization: Bearer $token" "$API/runs" 2>/dev/null)" || http=000
-  if [ "$http" != 200 ] || ! jq -e '.data | type == "array"' "$tmp/runs.json" >/dev/null 2>&1; then
-    warn "GET runs failed or was unparseable (HTTP $http) — C3/C4 unevaluable"
-    eval_failed=1
-  else
+  # ---- C3 and C4 read different run sets (ADR 0024 D8, rule 6) ------------
+  # merge-queue sweeps (576 a day) would fill any fixed-size newest page, so C3 skips them and
+  # pages past them, and C4 reads the non-terminal runs by status filter instead of the newest page.
+  # C3: newest non-merge-queue run, pages of 100 newest-first, up to 5 pages.
+  c3_ok=1
+  : > "$tmp/c3.tsv"
+  c3_floor=0
+  off=0
+  page_n=0
+  while [ "$page_n" -lt 5 ]; do
+    http="$(curl -sSg -o "$tmp/runs.json" -w '%{http_code}' -m 10 \
+      -H "Authorization: Bearer $token" "$API/runs?page[limit]=100&page[offset]=$off" 2>/dev/null)" || http=000
+    if [ "$http" != 200 ] || ! jq -e '.data | type == "array"' "$tmp/runs.json" >/dev/null 2>&1; then
+      warn "GET runs failed or was unparseable (HTTP $http) — C3 unevaluable"
+      c3_ok=0; eval_failed=1; break
+    fi
+    jq -r '.data[] | select((.workflow.slug // "") != "merge-queue") | [(.id // ""), (.timestamps.created_at // ""), (.lifecycle.status.kind // ""), (.workflow.slug // "")] | @tsv' \
+      "$tmp/runs.json" >> "$tmp/c3.tsv" 2>/dev/null || { warn "could not extract run rows — C3 unevaluable"; c3_ok=0; eval_failed=1; break; }
+    [ -s "$tmp/c3.tsv" ] && break
+    n="$(jq '.data | length' "$tmp/runs.json")"
+    c3_floor="$(jq -r '.data[-1].timestamps.created_at // ""' "$tmp/runs.json")"
+    [ "${n:-0}" -gt 0 ] && [ "$(jq '.meta.has_more // false' "$tmp/runs.json")" = true ] || break
+    off=$(( off + n )); page_n=$(( page_n + 1 ))
+  done
+
+  # C4: every non-terminal run, by the status filters list_active_runs uses (a stuck run cannot
+  # fall off a page). Up to 10 pages of 100.
+  c4_ok=1
+  : > "$tmp/c4.tsv"
+  off=0
+  page_n=0
+  while [ "$page_n" -lt 10 ]; do
+    http="$(curl -sSg -o "$tmp/active.json" -w '%{http_code}' -m 10 \
+      -H "Authorization: Bearer $token" "$API/runs?status=pending&status=runnable&status=initializing&status=running&status=blocked&status=removing&page[limit]=100&page[offset]=$off" 2>/dev/null)" || http=000
+    if [ "$http" != 200 ] || ! jq -e '.data | type == "array"' "$tmp/active.json" >/dev/null 2>&1; then
+      warn "GET active runs failed or was unparseable (HTTP $http) — C4 unevaluable"
+      c4_ok=0; eval_failed=1; break
+    fi
     jq -r '.data[] | [(.id // ""), (.timestamps.created_at // ""), (.lifecycle.status.kind // ""), (.workflow.slug // "")] | @tsv' \
-      "$tmp/runs.json" > "$tmp/runs.tsv" 2>/dev/null || {
-      warn "could not extract run rows — C3/C4 unevaluable"; eval_failed=1; }
+      "$tmp/active.json" >> "$tmp/c4.tsv" 2>/dev/null || { warn "could not extract run rows — C4 unevaluable"; c4_ok=0; eval_failed=1; break; }
+    n="$(jq '.data | length' "$tmp/active.json")"
+    [ "${n:-0}" -gt 0 ] && [ "$(jq '.meta.has_more // false' "$tmp/active.json")" = true ] || break
+    off=$(( off + n )); page_n=$(( page_n + 1 ))
+  done
 
-    if [ -f "$tmp/runs.tsv" ]; then
-      # C4's answer comes from the runs page alone; it is definitive even
-      # when the C3 gate could not be read.
-      mark_evaluated C4
-
-      # C3: newest run across the page vs IDLE_HOURS, only when the gate is
-      # known (a missing gate means "unevaluable", never "resolved").
-      if [ -n "$enabled_schedules" ]; then
-        mark_evaluated C3
-        newest=0
-        newest_id=""
-        while IFS="$(printf '\t')" read -r rid created kind slug; do
-          [ -n "$rid" ] || continue
-          e="$(run_epoch "$created" "$rid")"
-          [ -n "$e" ] || { warn "run $rid has no usable timestamp; row skipped"; continue; }
-          if [ "$e" -gt "$newest" ]; then newest="$e"; newest_id="$rid"; fi
-        done < "$tmp/runs.tsv"
-
-        if [ "$enabled_schedules" -gt 0 ] && [ "$newest" -gt 0 ] \
-          && [ $(( now - newest )) -gt $(( IDLE_HOURS * 3600 )) ]; then
-          fire C3 "$ALERT_SECONDS" "🔴" \
-            "dead-scheduler — $enabled_schedules schedule(s) enabled but no run for $(( (now - newest) / 3600 ))h (newest run $newest_id, limit ${IDLE_HOURS}h)"
-        elif [ "$enabled_schedules" -eq 0 ]; then
-          printf 'ok    C3 dead-scheduler: inert, no enabled schedules\n'
-        else
-          printf 'ok    C3 dead-scheduler: newest run %smin ago within %sh limit (%s enabled)\n' \
-            $(( (now - newest) / 60 )) "$IDLE_HOURS" "$enabled_schedules"
-        fi
-      else
-        printf 'skip  C3 dead-scheduler: schedule gate unreadable\n'
-      fi
-
-      # C4: any non-terminal run older than STUCK_HOURS. Multiple stuck runs
-      # coalesce into ONE fire (the oldest is named) so the per-condition
-      # dedup stamp cannot multiply messages.
-      stuck_n=0
-      stuck_oldest_e=0
-      stuck_rid=""
-      stuck_kind=""
-      stuck_age=0
-      stuck_lim="$STUCK_HOURS"
+  if [ "$c3_ok" = 1 ]; then
+    # C3: newest run vs IDLE_HOURS, only when the gate is known (a missing gate means
+    # "unevaluable", never "resolved").
+    if [ -n "$enabled_schedules" ]; then
+      mark_evaluated C3
+      newest=0
+      newest_id=""
       while IFS="$(printf '\t')" read -r rid created kind slug; do
         [ -n "$rid" ] || continue
-        case "$TERMINAL" in
-          *" $kind "*) continue ;;
-        esac
         e="$(run_epoch "$created" "$rid")"
-        [ -n "$e" ] || continue
-        age=$(( now - e ))
-        lim="$STUCK_HOURS"
-        [ "$slug" = arch-review ] && lim="$ARCH_STUCK_HOURS"
-        if [ "$age" -gt $(( lim * 3600 )) ]; then
-          stuck_n=$(( stuck_n + 1 ))
-          if [ "$stuck_oldest_e" = 0 ] || [ "$e" -lt "$stuck_oldest_e" ]; then
-            stuck_oldest_e="$e"; stuck_rid="$rid"; stuck_kind="$kind"; stuck_age="$age"; stuck_lim="$lim"
-          fi
-        fi
-      done < "$tmp/runs.tsv"
-      if [ "$stuck_n" -gt 0 ]; then
-        if [ "$stuck_n" -eq 1 ]; then
-          fire C4 "$ALERT_SECONDS" "🔴" \
-            "stuck-run — run $stuck_rid status='${stuck_kind:-unknown}' age $(( stuck_age / 3600 ))h (limit ${stuck_lim}h)"
-        else
-          fire C4 "$ALERT_SECONDS" "🔴" \
-            "stuck-run — $stuck_n runs older than ${STUCK_HOURS}h, oldest $stuck_rid status='${stuck_kind:-unknown}' age $(( stuck_age / 3600 ))h"
-        fi
-      else
-        printf 'ok    C4 stuck-run: no non-terminal runs on the page\n'
+        [ -n "$e" ] || { warn "run $rid has no usable timestamp; row skipped"; continue; }
+        if [ "$e" -gt "$newest" ]; then newest="$e"; newest_id="$rid"; fi
+      done < "$tmp/c3.tsv"
+      # 500 merge-queue rows and nothing else: the newest other run is at least as old as the
+      # oldest row read, so that row's age is a lower bound.
+      if [ "$newest" = 0 ] && [ -n "$c3_floor" ]; then
+        e="$(run_epoch "$c3_floor" "")"
+        if [ -n "$e" ]; then newest="$e"; newest_id="(none in the newest 500 runs)"; fi
       fi
+
+      if [ "$enabled_schedules" -gt 0 ] && [ "$newest" -gt 0 ] \
+        && [ $(( now - newest )) -gt $(( IDLE_HOURS * 3600 )) ]; then
+        fire C3 "$ALERT_SECONDS" "🔴" \
+          "dead-scheduler — $enabled_schedules schedule(s) enabled but no run for $(( (now - newest) / 3600 ))h (newest run $newest_id, limit ${IDLE_HOURS}h)"
+      elif [ "$enabled_schedules" -eq 0 ]; then
+        printf 'ok    C3 dead-scheduler: inert, no enabled schedules\n'
+      else
+        printf 'ok    C3 dead-scheduler: newest run %smin ago within %sh limit (%s enabled)\n' \
+          $(( (now - newest) / 60 )) "$IDLE_HOURS" "$enabled_schedules"
+      fi
+    else
+      printf 'skip  C3 dead-scheduler: schedule gate unreadable\n'
+    fi
+  fi
+
+  if [ "$c4_ok" = 1 ]; then
+    # C4's answer comes from the active-run list alone; it is definitive even when the C3 gate
+    # could not be read.
+    mark_evaluated C4
+    # Any non-terminal run older than its limit. Multiple stuck runs coalesce into ONE fire (the
+    # oldest is named) so the per-condition dedup stamp cannot multiply messages.
+    stuck_n=0
+    stuck_oldest_e=0
+    stuck_rid=""
+    stuck_kind=""
+    stuck_age=0
+    stuck_lim_s=$(( STUCK_HOURS * 3600 ))
+    while IFS="$(printf '\t')" read -r rid created kind slug; do
+      [ -n "$rid" ] || continue
+      case "$TERMINAL" in
+        *" $kind "*) continue ;;
+      esac
+      e="$(run_epoch "$created" "$rid")"
+      [ -n "$e" ] || continue
+      age=$(( now - e ))
+      lim_s=$(( STUCK_HOURS * 3600 ))
+      [ "$slug" = arch-review ] && lim_s=$(( ARCH_STUCK_HOURS * 3600 ))
+      [ "$slug" = merge-queue ] && lim_s=$(( MQ_STUCK_MINUTES * 60 ))
+      if [ "$age" -gt "$lim_s" ]; then
+        stuck_n=$(( stuck_n + 1 ))
+        if [ "$stuck_oldest_e" = 0 ] || [ "$e" -lt "$stuck_oldest_e" ]; then
+          stuck_oldest_e="$e"; stuck_rid="$rid"; stuck_kind="$kind"; stuck_age="$age"; stuck_lim_s="$lim_s"
+        fi
+      fi
+    done < "$tmp/c4.tsv"
+    if [ "$stuck_n" -gt 0 ]; then
+      if [ "$stuck_n" -eq 1 ]; then
+        fire C4 "$ALERT_SECONDS" "🔴" \
+          "stuck-run — run $stuck_rid status='${stuck_kind:-unknown}' age $(( stuck_age / 60 ))min (limit $(( stuck_lim_s / 60 ))min)"
+      else
+        fire C4 "$ALERT_SECONDS" "🔴" \
+          "stuck-run — $stuck_n runs over their limit, oldest $stuck_rid status='${stuck_kind:-unknown}' age $(( stuck_age / 60 ))min"
+      fi
+    else
+      printf 'ok    C4 stuck-run: no non-terminal runs over their limit\n'
     fi
   fi
 fi

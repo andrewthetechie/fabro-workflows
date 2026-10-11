@@ -42,3 +42,15 @@ event = "run_failed"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh failed"
+
+# The merge-queue summary (ADR 0024 D8): one message per sweep that changed something. The hook is
+# on `finish`, not on `summarize`, because `finish` runs after `summarize` has published
+# mq_summary, so the hook can read it from the run state. A quiet tick publishes an empty
+# summary and the script posts nothing.
+[[run.hooks]]
+id = "discord-merge-queue-summary"
+event = "stage_start"
+matcher = "^finish$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh merge-queue-summary"

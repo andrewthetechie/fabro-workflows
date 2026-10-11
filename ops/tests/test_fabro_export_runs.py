@@ -60,6 +60,19 @@ class Export(unittest.TestCase):
                          ["RUN4", "2026-10-09T02:00:00.000Z", "pr-review", "andrewthetechie/womens-fantasy-sports",
                           "succeeded", "7", sha])
 
+    def test_all_skips_merge_queue_runs_but_naming_them_includes_them(self):
+        import json
+        page = self.fx / "page-0.json"
+        doc = json.loads(page.read_text())
+        row = json.loads(json.dumps(doc["data"][0]))
+        row["id"], row["workflow"]["slug"] = "MQRUN", "merge-queue"
+        doc["data"].insert(0, row)
+        page.write_text(json.dumps(doc))
+        p = self.export(*WINDOW, "--workflow", "all", "--status", "all")
+        self.assertNotIn("MQRUN", [r[0] for r in self.rows(p)])
+        p = self.export(*WINDOW, "--workflow", "merge-queue", "--status", "all")
+        self.assertEqual([r[0] for r in self.rows(p)], ["MQRUN"])
+
     def test_since_is_inclusive_and_until_is_exclusive(self):
         p = self.export("--since", "2026-10-08T06:00Z", "--until", "2026-10-09T02:00:00Z",
                         "--workflow", "all", "--status", "all")

@@ -6163,6 +6163,196 @@ mqa_setup empty "[]"
 mqa_run ""
 check "merge-queue act: an empty plan: exit 0, empty results" "0|[]" "$(cat "$MQA.rc")|$(jq -c . "$MQA/mq/results.json")"
 
+# ---------------------------------------------------------------------------
+# merge-queue — summarize (fast-path series, task 08): the one-line summary, empty for a quiet tick.
+# ---------------------------------------------------------------------------
+echo ""
+echo "merge-queue: summarize"
+mqs_run() { # $1 case, $2 results.json ('' for none), $3 skip_reason, $4 stop_reason, $5 stopped_at
+    MQS="$WORK/mqs-$1"; rm -rf "$MQS" "$MQS.sh"; mkdir -p "$MQS/mq"
+    [ -n "$2" ] && printf '%s' "$2" > "$MQS/mq/results.json"
+    [ -n "$3" ] && printf '%s' "$3" > "$MQS/mq/skip_reason"
+    [ -n "$4" ] && printf '%s' "$4" > "$MQS/mq/stop_reason"
+    [ -n "$5" ] && printf '%s' "$5" > "$MQS/mq/stopped_at"
+    extract_from "$MQ" summarize | sed "s#/tmp/fabro#$MQS#g" > "$MQS.sh"
+    if ! sh -n "$MQS.sh" 2>"$MQS.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL merge-queue summarize is not valid POSIX sh\n'; sed 's/^/       /' "$MQS.syntax"
+    fi
+    (cd "$MQS" && sh "$MQS.sh" </dev/null >"$MQS.out" 2>"$MQS.err"); echo $? > "$MQS.rc"
+    MQS_SUM=$(tail -1 "$MQS.out" | jq -r .context_updates.mq_summary)
+}
+mqs_run a '[{"number":1,"action":"merge","outcome":"merged","detail":""},{"number":2,"action":"merge","outcome":"merged","detail":""},{"number":3,"action":"handoff","outcome":"handed_off","detail":"retryable: CI failed after one rerun: test"},{"number":4,"action":"wait","outcome":"waiting","detail":""},{"number":5,"action":"wait","outcome":"waiting","detail":""},{"number":6,"action":"wait","outcome":"waiting","detail":""}]' '' '' ''
+check "merge-queue summarize: 2 merged, 1 handed off, 3 waiting" "0|Merged #1, #2 | Handed off #3 (retryable: CI failed after one rerun: test) | Waiting: 3" "$(cat "$MQS.rc")|$MQS_SUM"
+mqs_run b '[{"number":4,"action":"wait","outcome":"waiting","detail":""},{"number":5,"action":"wait","outcome":"skipped_cap","detail":""}]' '' '' ''
+check "merge-queue summarize: only waiting entries: empty summary" "|0" "$MQS_SUM|$(cat "$MQS.rc")"
+mqs_run c '' 'auto-merge is off for this repository (pr-review row)' '' ''
+check "merge-queue summarize: a switch that is off: empty summary" "" "$MQS_SUM"
+mqs_run d '' 'could not list active runs' '' ''
+check "merge-queue summarize: could not list active runs is a stop line" "Stopped at prep: could not list active runs" "$MQS_SUM"
+mqs_run e '' '' 'inventory: GraphQL failed' inventory
+check "merge-queue summarize: a stop_reason names the node" "Stopped at inventory: inventory: GraphQL failed" "$MQS_SUM"
+mqs_run f '[{"number":1,"action":"merge","outcome":"merged","detail":""}]' '' 'act: plan.json is missing or unreadable' act
+check "merge-queue summarize: a stop keeps earlier results" "Stopped at act: act: plan.json is missing or unreadable | Merged #1" "$MQS_SUM"
+mqs_run g '[{"number":9,"action":"rebase","outcome":"rebased","detail":""},{"number":10,"action":"rerun","outcome":"reran","detail":""},{"number":11,"action":"merge","outcome":"failed","detail":"Base branch was modified"}]' '' '' ''
+check "merge-queue summarize: rebased, reran, failed lines in order" "Rebased #9 | Reran CI on #10 | Failed #11 (Base branch was modified)" "$MQS_SUM"
+mqs_run h '' '' '' ''
+check "merge-queue summarize: nothing at all: empty summary, exit 0" "|0" "$MQS_SUM|$(cat "$MQS.rc")"
+check "merge-queue summarize: the routing object is the last line and valid JSON" "0" "$(tail -1 "$MQS.out" | jq -e . >/dev/null 2>&1; echo $?)"
+
+# ---------------------------------------------------------------------------
+# merge-queue-summary Discord kind (task 08): quiet tick posts nothing, a repeated Stopped line posts once an hour.
+# ---------------------------------------------------------------------------
+echo ""
+echo "merge-queue: the merge-queue-summary Discord kind"
+MN="$WORK/mqnotify"; rm -rf "$MN"; mkdir -p "$MN/storage/secrets" "$MN/stub"
+printf 'http://discord.test/hook' > "$MN/storage/secrets/discord_webhook_url"; printf 'tok' > "$MN/storage/server.dev-token"
+sed "s#/storage#$MN/storage#g" "$REPO_ROOT/.fabro/workflows/backlog/scripts/discord-notify.sh" > "$MN/notify.sh"
+cat > "$MN/stub/wget" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *"/state"*) printf '{"mq_summary":"%s"}' "$MQ_SUMMARY" ;;
+  *"/api/v1/runs/"*) echo '{"origin_url":"https://github.com/andrewthetechie/jelly-swipe.git"}' ;;
+esac
+exit 0
+STUB
+cat > "$MN/stub/curl" <<'STUB'
+#!/bin/sh
+echo call >> "$MN_CALLS"
+while [ $# -gt 0 ]; do [ "$1" = -d ] && printf '%s' "$2" > "$MN_PAYLOAD"; shift; done
+exit 0
+STUB
+chmod +x "$MN/stub/wget" "$MN/stub/curl"
+mn_run() { # $1 summary, $2 fake now
+    env PATH="$MN/stub:$ORIG_PATH" MN_CALLS="$MN/calls" MN_PAYLOAD="$MN/payload.json" MQ_SUMMARY="$1" MQ_NOTIFY_NOW="$2" \
+        sh "$MN/notify.sh" merge-queue-summary <<<'{"run_id":"01X"}' >/dev/null 2>&1
+}
+mn_calls() { test -e "$MN/calls" && wc -l < "$MN/calls" | tr -d ' ' || echo 0; }
+mn_run "" 1000
+check "notify merge-queue-summary: an empty mq_summary posts nothing" "0" "$(mn_calls)"
+mn_run "Merged #7 | Waiting: 2" 1000
+check "notify merge-queue-summary: a Merged summary posts" "1" "$(mn_calls)"
+check "notify merge-queue-summary: header, one line per part" "1|1" "$(grep -c 'fabro merge queue on andrewthetechie/jelly-swipe' "$MN/payload.json")|$(grep -c 'Merged #7' "$MN/payload.json")"
+check "notify merge-queue-summary: the payload is valid JSON" "0" "$(jq -e . "$MN/payload.json" >/dev/null 2>&1; echo $?)"
+mn_run "Merged #7 | Waiting: 2" 1001
+check "notify merge-queue-summary: a Merged summary always posts" "2" "$(mn_calls)"
+mn_run "Stopped at prep: could not list active runs" 2000
+check "notify merge-queue-summary: the first Stopped line posts" "3" "$(mn_calls)"
+mn_run "Stopped at prep: could not list active runs" 2100
+check "notify merge-queue-summary: the same Stopped line within an hour does not post" "3" "$(mn_calls)"
+mn_run "Stopped at inventory: other" 2200
+check "notify merge-queue-summary: a different Stopped line posts" "4" "$(mn_calls)"
+mn_run "Stopped at inventory: other" 5801
+check "notify merge-queue-summary: the same Stopped line after 3601 s posts again" "5" "$(mn_calls)"
+
+# ---------------------------------------------------------------------------
+# fabro-run-prune.sh (task 08): the command line, and the fallback never deletes a live run.
+# ---------------------------------------------------------------------------
+echo ""
+echo "merge-queue: fabro-run-prune.sh"
+RP="$WORK/runprune"; rm -rf "$RP"; mkdir -p "$RP/bin" "$RP/fabro"
+cat > "$RP/bin/docker" <<'STUB'
+#!/bin/sh
+echo "docker $*" >> "$RP_LOG"
+case "$*" in
+  *"system prune --help"*) [ -n "${RP_NOFLAG:-}" ] && echo "Options: --older-than" || echo "Options: --workflow --older-than --yes" ;;
+  "exec "*"server.dev-token") echo tok ;;
+esac
+exit 0
+STUB
+cat > "$RP/bin/curl" <<'STUB'
+#!/bin/sh
+echo "curl $*" >> "$RP_LOG"
+case "$*" in
+  *"-X DELETE"*) exit 0 ;;
+  *"page[offset]=0"*) cat "$RP_PAGE" ;;
+  *) printf '{"data":[],"meta":{"has_more":false}}' ;;
+esac
+STUB
+chmod +x "$RP/bin/docker" "$RP/bin/curl"
+rp_run() { : > "$RP/log"; env PATH="$RP/bin:$ORIG_PATH" RP_LOG="$RP/log" RP_PAGE="$RP/page.json" FABRO_DIR="$RP/fabro" "$@" sh "$REPO_ROOT/ops/fabro-run-prune.sh" >"$RP/out" 2>&1; }
+rp_run DRY_RUN=0
+check "fabro-run-prune: the command line" "1" "$(grep -c 'docker compose exec -T fabro fabro system prune --workflow merge-queue --older-than 7d --yes' "$RP/log")"
+rp_run DRY_RUN=1
+check "fabro-run-prune: the default is a dry run (no --yes)" "0|1" "$(grep -c -- '--yes' "$RP/log")|$(grep -c 'system prune --workflow merge-queue --older-than 7d' "$RP/log")"
+jq -cn '{data: [
+  {id: "OLDDONE", workflow: {slug: "merge-queue"}, lifecycle: {status: {kind: "succeeded"}}, timestamps: {created_at: "2020-01-01T00:00:00.000Z"}},
+  {id: "OLDLIVE", workflow: {slug: "merge-queue"}, lifecycle: {status: {kind: "running"}}, timestamps: {created_at: "2020-01-01T00:00:00.000Z"}},
+  {id: "OLDOTHER", workflow: {slug: "backlog"}, lifecycle: {status: {kind: "succeeded"}}, timestamps: {created_at: "2020-01-01T00:00:00.000Z"}},
+  {id: "NEWDONE", workflow: {slug: "merge-queue"}, lifecycle: {status: {kind: "succeeded"}}, timestamps: {created_at: "2999-01-01T00:00:00.000Z"}}
+], meta: {has_more: false}}' > "$RP/page.json"
+rp_run DRY_RUN=0 RP_NOFLAG=1
+check "fabro-run-prune: fallback deletes only the old terminal merge-queue run" "1|1" "$(grep -c 'X DELETE.*runs/OLDDONE' "$RP/log")|$(grep -c 'X DELETE' "$RP/log")"
+check "fabro-run-prune: fallback never deletes a non-terminal run" "0" "$(grep -c 'DELETE.*OLDLIVE' "$RP/log")"
+
+# ---------------------------------------------------------------------------
+# fabro-monitor.sh C3/C4 (task 08): merge-queue runs neither hide a stuck run nor reset the idle clock.
+# docker, curl, df and gh are stubs. Only the C3 and C4 lines of the DRY_RUN output are read.
+# ---------------------------------------------------------------------------
+echo ""
+echo "merge-queue: fabro-monitor.sh C3/C4"
+MM="$WORK/monitor"; rm -rf "$MM"; mkdir -p "$MM/bin"
+cat > "$MM/bin/docker" <<'STUB'
+#!/bin/sh
+case "$*" in
+  "inspect "*) echo "running healthy" ;;
+  "exec "*"server.dev-token") echo tok ;;
+  *) exit 0 ;;
+esac
+STUB
+cat > "$MM/bin/curl" <<'STUB'
+#!/bin/sh
+out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; http*) url="$1" ;; esac; shift; done
+case "$url" in
+  */system/info) body='{"runs":{"total":1}}' ;;
+  */automations) body=$(cat "$MM_AUTOS") ;;
+  */runs\?status=*) body=$(cat "$MM_ACTIVE") ;;
+  */runs\?*) body=$(cat "$MM_NEWEST") ;;
+  *) printf '000'; exit 22 ;;
+esac
+[ -n "$out" ] && printf '%s' "$body" > "$out" || printf '%s' "$body"
+printf '200'
+STUB
+# the monitor targets GNU date (`date -d ISO +%s`); BSD date on a Mac has no -d, so stub just that form.
+cat > "$MM/bin/date" <<'STUB'
+#!/bin/sh
+if [ "$1" = -d ] && [ "$3" = +%s ]; then
+    python3 -c 'import sys,datetime as d; print(int(d.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")).timestamp()))' "$2"
+else exec /bin/date "$@"; fi
+STUB
+chmod +x "$MM/bin/date"
+printf '#!/bin/sh\necho "Filesystem 1K Used Avail Use%% Mounted\n/dev/x 100 10 90 10%% /"\n' > "$MM/bin/df"
+printf '#!/bin/sh\nexit 1\n' > "$MM/bin/gh"
+chmod +x "$MM/bin/docker" "$MM/bin/curl" "$MM/bin/df" "$MM/bin/gh"
+mm_ago() { date -u -r $(( $(date +%s) - $1 )) +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$(( $(date +%s) - $1 ))" +%Y-%m-%dT%H:%M:%S.000Z; }
+mm_row() { jq -cn --arg id "$1" --arg slug "$2" --arg kind "$3" --arg at "$4" '{id: $id, workflow: {slug: $slug}, lifecycle: {status: {kind: $kind}}, timestamps: {created_at: $at}}'; }
+printf '{"data":[{"name":"backlog-x","workflow":"backlog","triggers":[{"type":"schedule","id":"s","enabled":true}]}]}' > "$MM/autos.json"
+mm_run() {
+    env PATH="$MM/bin:$ORIG_PATH" MM_AUTOS="$MM/autos.json" MM_ACTIVE="$MM/active.json" MM_NEWEST="$MM/newest.json" \
+        DRY_RUN=1 FABRO_MONITOR_STATE="$MM/state" FABRO_MONITOR_REPOS="" SCHEDULER_URL=http://127.0.0.1:1 \
+        sh "$REPO_ROOT/ops/fabro-monitor.sh" >"$MM/out" 2>"$MM/err" </dev/null
+}
+# 30 fresh merge-queue rows on top, and a backlog run non-terminal for 5 hours: C4 fires.
+{ for i in $(seq 1 30); do mm_row "MQ$i" merge-queue running "$(mm_ago 60)"; done; mm_row BL1 backlog running "$(mm_ago 18000)"; } | jq -cs '{data: ., meta: {has_more: false}}' > "$MM/active.json"
+{ for i in $(seq 1 30); do mm_row "MQ$i" merge-queue succeeded "$(mm_ago 60)"; done; mm_row BL1 backlog running "$(mm_ago 18000)"; } | jq -cs '{data: ., meta: {has_more: false}}' > "$MM/newest.json"
+mm_run
+check "monitor C4: 30 newer merge-queue rows do not hide a 5 hour backlog run" "1" "$(grep -c 'stuck-run — run BL1' "$MM/out")"
+# a merge-queue sweep still running after 40 minutes is stuck (MQ_STUCK_MINUTES=30)
+mm_row MQSTUCK merge-queue running "$(mm_ago 2400)" | jq -cs '{data: ., meta: {has_more: false}}' > "$MM/active.json"
+mm_run
+check "monitor C4: a merge-queue sweep over 30 minutes is stuck" "1" "$(grep -c 'stuck-run — run MQSTUCK' "$MM/out")"
+mm_row MQFINE merge-queue running "$(mm_ago 600)" | jq -cs '{data: ., meta: {has_more: false}}' > "$MM/active.json"
+mm_run
+check "monitor C4: a 10 minute merge-queue sweep is fine" "0" "$(grep -c 'stuck-run — ' "$MM/out")"
+# C3: the only recent runs are merge-queue rows, the newest other run is 5 hours old: C3 fires.
+{ for i in $(seq 1 30); do mm_row "MQ$i" merge-queue succeeded "$(mm_ago 60)"; done; mm_row BL1 backlog succeeded "$(mm_ago 18000)"; } | jq -cs '{data: ., meta: {has_more: false}}' > "$MM/newest.json"
+printf '{"data":[],"meta":{"has_more":false}}' > "$MM/active.json"
+mm_run
+check "monitor C3: only merge-queue rows are recent, so the scheduler is dead" "1" "$(grep -c 'dead-scheduler' "$MM/out")"
+{ for i in $(seq 1 30); do mm_row "MQ$i" merge-queue succeeded "$(mm_ago 60)"; done; mm_row BL1 backlog succeeded "$(mm_ago 600)"; } | jq -cs '{data: ., meta: {has_more: false}}' > "$MM/newest.json"
+mm_run
+check "monitor C3: a recent backlog run keeps it quiet" "0|1" "$(grep -c 'DRY.*dead-scheduler' "$MM/out")|$(grep -c 'ok    C3' "$MM/out")"
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
