@@ -9,7 +9,7 @@ graph = "workflow.fabro"
 # Quoted keys are mandatory where the name contains a dot, or TOML builds a
 # nested table and the automation fire returns 422.
 [run.model.fallbacks]
-"glm-5.3" = ["kimi:kimi-k3"]
+"glm-5.3" = ["kimi:kimi-k3", "orfallback:hy4-preview"]
 # The adversarial reviewer (.refute) in the imported review-merge graph. Non-GLM,
 # and its fallback is likewise non-GLM (the sibling openai model), so a refute
 # outage degrades to gpt-6-luna rather than back into the reviewer family.
@@ -27,7 +27,10 @@ graph = "workflow.fabro"
 "coders-a" = ["zai:glm-5.3"]
 "coders-b" = ["zai:glm-5.3"]
 "coders-c" = ["zai:glm-5.3"]
-kimi-k3 = ["zai:glm-5.3"]
+# kimi-k3 spends Kimi's 7-day quota mid-week (78 of 176 runs failed over, 09-25..10-11).
+# hy4-preview (OpenRouter, provider `orfallback`) keeps the reviewer non-GLM; glm-5.3
+# is the last rung if OpenRouter fails too.
+kimi-k3 = ["orfallback:hy4-preview", "zai:glm-5.3"]
 
 # The run works on the PR head branch, not on fabro/run/<id>.
 #   enabled = true  -> checkpoints still commit between stages, onto the PR branch

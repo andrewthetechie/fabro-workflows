@@ -63,7 +63,9 @@ Checked on 2026-09-18, because the list below had drifted from the host:
 
 - `~/.fabro-deploy/env` on the Mac (chmod 600) holds `KIMI_API_KEY`, `ZAI_API_KEY` and
   `FABRO_LITELLM_KEY` — **not** `GITHUB_TOKEN`, `SESSION_SECRET` or `FABRO_DEV_TOKEN`.
-- The fabro vault holds `FABRO_API_TOKEN`, `GITHUB_TOKEN` and `LITELLM_API_KEY`. It is
+- The fabro vault holds `FABRO_API_TOKEN`, `GITHUB_TOKEN` and `LITELLM_API_KEY`, and since
+  2026-10-11 `ORFALLBACK_API_KEY` (the OpenRouter key for hy4-preview; its source copy is the
+  untracked `.scratch/openrouter-api-token.txt` in the working checkout). It is
   write-only in practice: `fabro secret` is `list`/`set`/`rm`, so a value that goes in
   cannot be read back out. Copy from wherever it came from instead.
 - `GITHUB_TOKEN` also lives in `~/fabro/scheduler.env` on the host, for the coder

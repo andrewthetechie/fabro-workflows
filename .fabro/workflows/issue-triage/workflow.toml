@@ -7,7 +7,9 @@ graph = "workflow.fabro"
 # direct-providers task 03). When z.ai is rate-limited or errors, the overflow
 # that used to live inside LiteLLM now falls back here, to Kimi's kimi-k3.
 [run.model.fallbacks]
-high-reasoning = ["kimi:kimi-k3"]
+# hy4-preview (OpenRouter, provider `orfallback`) is the rung after kimi-k3, for the weeks
+# Kimi's 7-day coding-plan quota is spent: a non-GLM model instead of a failed stage.
+high-reasoning = ["kimi:kimi-k3", "orfallback:hy4-preview"]
 
 # Triage reads code and writes issues. It never writes code, so `contents` is "read".
 # `issues` must be "write": the run creates labels (needs-info, triage-in-progress,
