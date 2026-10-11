@@ -81,13 +81,219 @@ else
   echo '{\"context_updates\":{\"sweep\":\"run\"}}'
 fi"]
 
-    // Placeholders: tasks 06 (inventory, decide), 07 (act) and 08 (summarize) replace them.
+    // Reads every open PR that carries merge-on-green (at most 4 pages of 50) and writes one
+    // normalised record per PR to prs.json (task 06, 00 C7/C8). norm.jq keeps only the markers
+    // that the run's own token wrote (C7), judges each check name by its newest run (a rollup can
+    // list a name twice, spike S3), and leaves a failing Actions run's attempt for `gh run view`.
+    // An UNKNOWN mergeStateStatus is re-read up to 3 times (spike S1). Zero PRs is a valid result.
+    // A query failure writes stop_reason and exits 1.
     inventory [label="Inventory the queued PRs", shape=parallelogram, timeout="3m",
-        script="echo 'inventory: placeholder (task 06)'"]
+        script="set -e
+MQ=/tmp/fabro/mq
+stop() { printf '%s' \"$1\" > $MQ/stop_reason; echo \"$1\" >&2; exit 1; }
+REPO=$(jq -r .repo $MQ/env.json)
+LOGIN=$(jq -r .login $MQ/env.json)
+OWNER=${REPO%/*}
+NAME=${REPO#*/}
+cat > $MQ/query.graphql <<'GQL'
+query($o: String!, $r: String!, $after: String) {
+  repository(owner: $o, name: $r) {
+    pullRequests(states: OPEN, labels: [\"merge-on-green\"], first: 50, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number id title body isDraft headRefOid mergeable mergeStateStatus reviewDecision
+        labels(first: 50) { nodes { name } }
+        reviewThreads(first: 100) { nodes { isResolved } }
+        comments(last: 100) { nodes { author { login } body createdAt } }
+        commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { nodes {
+          __typename
+          ... on CheckRun { name status conclusion detailsUrl startedAt checkSuite { workflowRun { databaseId } } }
+          ... on StatusContext { context state createdAt }
+        } } } } } }
+      }
+    }
+  }
+}
+GQL
+cat > $MQ/norm.jq <<'NORM_JQ'
+def nl: [10] | implode;
+def marker($login):
+  select((.author.login // \"\" | ascii_downcase) == ($login | ascii_downcase))
+  | (.body // \"\" | split(nl)[0]) as $l
+  | if ($l | test(\"^<!-- fabro:merge-queue approved head=[0-9a-f]{40} run=\")) then
+      {kind: \"approved\", head: ($l | capture(\"head=(?<h>[0-9a-f]{40})\").h), at: .createdAt}
+    elif ($l | test(\"^<!-- fabro:merge-queue rebased from=[0-9a-f]{40} to=[0-9a-f]{40} run=\")) then
+      ($l | capture(\"from=(?<f>[0-9a-f]{40}) to=(?<t>[0-9a-f]{40})\")) as $m
+      | {kind: \"rebased\", from: $m.f, to: $m.t, at: .createdAt}
+    else empty end;
+def ctxname: if .__typename == \"CheckRun\" then .name else .context end;
+def ctxtime: (.startedAt // .createdAt // \"\");
+def bucket:
+  if .__typename == \"CheckRun\" then
+    if .status != \"COMPLETED\" then \"pending\"
+    elif .conclusion == \"SUCCESS\" then \"pass\"
+    elif .conclusion == \"NEUTRAL\" or .conclusion == \"SKIPPED\" then \"skip\"
+    else \"fail\" end
+  else
+    if .state == \"SUCCESS\" then \"pass\"
+    elif .state == \"PENDING\" or .state == \"EXPECTED\" then \"pending\"
+    else \"fail\" end
+  end;
+def checks:
+  (.commits.nodes[0].commit.statusCheckRollup.contexts.nodes // []) as $all
+  | ($all | group_by(ctxname) | map(sort_by(ctxtime) | last)) as $latest
+  | {total: ($latest | length),
+     fail: [$latest[] | select(bucket == \"fail\") | {name: ctxname, run_id: (.checkSuite.workflowRun.databaseId // null), attempt: null}],
+     pending: [$latest[] | select(bucket == \"pending\") | ctxname],
+     pass: ([$latest[] | select(bucket == \"pass\")] | length),
+     skip: ([$latest[] | select(bucket == \"skip\")] | length)};
+def block:
+  (.body // \"\" | split(nl)) as $L
+  | ([range(0; ($L | length)) | select($L[.] | test(\"fabro:commit-body:start\"))] | first) as $s
+  | ([range(0; ($L | length)) | select($L[.] | test(\"fabro:commit-body:end\"))] | first) as $e
+  | if $s != null and $e != null and $e > $s then $L[($s + 1):$e] | join(nl) else \"\" end;
+[ .[]
+  | {number, id, title, head: .headRefOid, draft: .isDraft,
+     merge_state: .mergeStateStatus, review_decision: .reviewDecision,
+     labels: [.labels.nodes[].name],
+     unresolved_threads: ([.reviewThreads.nodes[] | select(.isResolved | not)] | length),
+     body_block: block,
+     markers: [.comments.nodes[] | marker($login)],
+     checks: checks} ]
+NORM_JQ
+fetch() {
+  AFTER=''
+  PAGE=0
+  echo '[]' > $MQ/nodes.json
+  while [ \"$PAGE\" -lt 4 ]; do
+    if [ -n \"$AFTER\" ]; then
+      gh api graphql -F query=@$MQ/query.graphql -f o=\"$OWNER\" -f r=\"$NAME\" -f after=\"$AFTER\" > $MQ/page.json || return 1
+    else
+      gh api graphql -F query=@$MQ/query.graphql -f o=\"$OWNER\" -f r=\"$NAME\" > $MQ/page.json || return 1
+    fi
+    jq -e '.data.repository.pullRequests.nodes | type == \"array\"' $MQ/page.json > /dev/null || return 1
+    jq -s '.[0] + .[1].data.repository.pullRequests.nodes' $MQ/nodes.json $MQ/page.json > $MQ/nodes.new || return 1
+    mv $MQ/nodes.new $MQ/nodes.json
+    [ \"$(jq -r '.data.repository.pullRequests.pageInfo.hasNextPage' $MQ/page.json)\" = true ] || break
+    AFTER=$(jq -r '.data.repository.pullRequests.pageInfo.endCursor' $MQ/page.json)
+    PAGE=$((PAGE + 1))
+  done
+  jq --arg login \"$LOGIN\" -f $MQ/norm.jq $MQ/nodes.json > $MQ/prs.json || return 1
+}
+fetch || stop 'inventory: could not read the merge-on-green PRs'
+TRY=0
+while [ \"$TRY\" -lt 3 ] && [ \"$(jq '[.[] | select(.merge_state == \"UNKNOWN\")] | length' $MQ/prs.json)\" != 0 ]; do
+  sleep 4
+  TRY=$((TRY + 1))
+  fetch || stop 'inventory: could not read the merge-on-green PRs'
+done
+jq -r '[.[].checks.fail[].run_id | select(. != null)] | unique[]' $MQ/prs.json > $MQ/runids.txt
+echo '[]' > $MQ/attempts.json
+while read -r ID; do
+  A=$(gh run view \"$ID\" --json attempt --jq .attempt 2>/dev/null || true)
+  case \"$A\" in ''|*[!0-9]*) continue ;; esac
+  jq --argjson id \"$ID\" --argjson a \"$A\" '. + [[$id, $a]]' $MQ/attempts.json > $MQ/attempts.new
+  mv $MQ/attempts.new $MQ/attempts.json
+done < $MQ/runids.txt
+jq --slurpfile at $MQ/attempts.json '($at[0] | map({key: (.[0] | tostring), value: .[1]}) | from_entries) as $m | map(.checks.fail |= map(if .run_id != null then .attempt = ($m[(.run_id | tostring)] // null) else . end))' $MQ/prs.json > $MQ/prs.new
+mv $MQ/prs.new $MQ/prs.json
+echo \"inventory: $(jq length $MQ/prs.json) merge-on-green PRs\""]
 
-    decide [label="Decide each PR's action", shape=parallelogram, timeout="1m",
-        script="echo 'decide: placeholder (task 06)'"]
+    // Pure jq over prs.json and env.json: no network call, so the whole rule table of C8 is tested
+    // with fixtures (ops/test-task-gates.sh). The first matching row wins; the merge cap and the
+    // single queue rebase (P6) are applied after the rows.
+    decide [label="Decide each PR's action", shape=parallelogram, output_schema="routing", timeout="1m",
+        script="set -e
+MQ=/tmp/fabro/mq
+cat > $MQ/decide.jq <<'DECIDE_JQ'
+def cc: \"^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .\";
+def nl: [10] | implode;
+def chain:
+  . as $p
+  | [range(0; ($p.markers | length)) | select($p.markers[.].kind == \"approved\")] | last as $ai
+  | if $ai == null then null
+    else
+      reduce $p.markers[($ai + 1):][] as $m
+        ({head: $p.markers[$ai].head, at: $p.markers[$ai].at};
+         if $m.kind == \"rebased\" and $m.from == .head then {head: $m.to, at: $m.at} else . end)
+      | . + {approved_at: $p.markers[$ai].at}
+    end;
+def inflight:
+  . as $p
+  | ([$p.markers[] | select(.kind == \"rebased\")] | last) as $r
+  | $r != null and $p.head == $r.to and (($p.checks.pending | length) > 0);
+def names($f): [$f[].name] | unique | join(\", \");
+def verdict($env; $c):
+  . as $p
+  | def hand($r): {action: \"handoff\", reason: $r};
+    if $c == null then hand(\"the PR carries merge-on-green but no approval from the merge phase\")
+    elif $p.head != $c.head then hand(\"the head moved after the merge phase approved it; the new commits were not reviewed\")
+    elif $p.draft then hand(\"The PR is not open or is still a draft, so it cannot be auto-merged.\")
+    elif ($p.labels | index(\"architecture\")) != null then hand(\"This PR implements an Architecture issue (label architecture). ADR 0012 requires a human to merge it.\")
+    elif ($p.labels | index(\"ai-review-needs-human\")) != null then hand(\"The PR is labelled ai-review-needs-human, so a human must merge it.\")
+    elif ($p.labels | index(\"agent-authored\")) == null then hand(\"The PR does not carry the agent-authored label, so it is not eligible for automatic merge.\")
+    elif $p.review_decision == \"CHANGES_REQUESTED\" then hand(\"Reviewers have requested changes on this PR.\")
+    elif $p.unresolved_threads > 0 then hand(\"There are unresolved review conversations on this PR.\")
+    elif ($p.title | test(cc) | not) then hand(\"The PR title is not a Conventional Commit, so it cannot be auto-merged.\")
+    elif (($p.body_block // \"\") | split(nl) | map(select(startswith(\"Resolves #\"))) | length) == 0 then hand(\"The PR description has no valid fabro commit-body block; a human must merge this PR.\")
+    elif $p.merge_state == \"DIRTY\" then hand(\"retryable: the PR conflicts with \" + $env.base)
+    elif $p.merge_state == \"UNKNOWN\" then {action: \"wait\", reason: \"\"}
+    elif $p.merge_state == \"BEHIND\" then {action: \"behind\", reason: \"\"}
+    elif ($p.checks.fail | length) > 0 then
+      if ([$p.checks.fail[] | select(.run_id == null or .attempt == null)] | length) > 0
+      then hand(\"CI failed and the failing check cannot be rerun: \" + names($p.checks.fail))
+      elif ([$p.checks.fail[] | select(.attempt != 1)] | length) > 0
+      then hand(\"retryable: CI failed after one rerun: \" + names($p.checks.fail))
+      else {action: \"rerun\", reason: \"\", rerun_ids: ([$p.checks.fail[].run_id] | unique)}
+      end
+    elif ($p.checks.pending | length) > 0 then
+      if ($env.now - ($c.at | fromdateiso8601)) > 7200 then hand(\"retryable: CI on the head did not settle in 2 hours\")
+      else {action: \"wait\", reason: \"\"}
+      end
+    elif $p.checks.total == 0 then
+      if $p.merge_state == \"UNSTABLE\" then hand(\"branch protection or a hidden check blocks the merge: UNSTABLE (the head reports no checks)\")
+      else {action: \"wait\", reason: \"\"}
+      end
+    elif $p.merge_state == \"CLEAN\" or $p.merge_state == \"HAS_HOOKS\" then {action: \"merge\", reason: \"\"}
+    else hand(\"branch protection or a hidden check blocks the merge: \" + $p.merge_state)
+    end;
 
+$env[0] as $env
+| $prs[0] as $prs
+| ($prs | map(inflight) | any) as $busy
+| [ $prs[]
+    | chain as $c
+    | verdict($env; $c) as $v
+    | {number, head, subject: .title,
+       action: $v.action, reason: $v.reason,
+       approved_at: ($c.approved_at // \"\"),
+       rerun_ids: ($v.rerun_ids // [])}
+  ]
+| sort_by(.approved_at, .number)
+| (reduce .[] as $e ({done: false, out: []};
+     if $e.action == \"behind\" then
+       if $busy or .done then .out += [$e + {action: \"wait\", reason: \"another rebase is waiting for CI\"}]
+       else .done = true | .out += [$e + {action: \"rebase\"}]
+       end
+     else .out += [$e]
+     end) | .out)
+| (reduce .[] as $e ({n: 0, out: []};
+     if $e.action == \"merge\" then
+       if .n < $env.merge_cap then .n += 1 | .out += [$e]
+       else .out += [$e + {action: \"wait\", reason: (\"merge cap of \" + ($env.merge_cap | tostring) + \" per tick reached\")}]
+       end
+     else .out += [$e]
+     end) | .out)
+| map(. + {retryable: (.reason | startswith(\"retryable: \"))})
+DECIDE_JQ
+if ! jq -n --slurpfile prs $MQ/prs.json --slurpfile env $MQ/env.json -f $MQ/decide.jq > $MQ/plan.json; then
+  printf '%s' 'decide: the decision program failed' > $MQ/stop_reason
+  echo 'decide: the decision program failed' >&2
+  exit 1
+fi
+jq -c '{context_updates: {plan_merge: ([.[] | select(.action == \"merge\")] | length), plan_rebase: ([.[] | select(.action == \"rebase\")] | length), plan_rerun: ([.[] | select(.action == \"rerun\")] | length), plan_handoff: ([.[] | select(.action == \"handoff\")] | length), plan_wait: ([.[] | select(.action == \"wait\")] | length)}}' $MQ/plan.json"]
+
+    // Placeholders: tasks 07 (act) and 08 (summarize) replace them.
     act [label="Merge, rebase, rerun or hand off", shape=parallelogram, timeout="8m",
         script="echo 'act: placeholder (task 07)'"]
 

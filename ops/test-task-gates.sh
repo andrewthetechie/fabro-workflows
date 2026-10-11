@@ -5788,6 +5788,218 @@ done; done; done
 check "no state matches two conditional edges out of rework_router" "1" "$RR_WORST"
 check "rework_router: round 6 fast demotes, standard exempt drops, standard otherwise rescues" "" "$RR_BAD"
 
+# ---------------------------------------------------------------------------
+# merge-queue — decide and inventory (fast-path series, task 06). decide is pure jq: every row of
+# 00 C8 is a fixture. inventory runs with gh stubbed, so norm.jq, the marker filter, the check
+# dedupe and the attempt lookup are tested on a GraphQL response shaped like the live one.
+# ---------------------------------------------------------------------------
+echo ""
+echo "merge-queue: decide"
+MQ_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+MQ_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+MQ_C=cccccccccccccccccccccccccccccccccccccccc
+MQ_NOW=$(jq -n '"2026-10-12T12:00:00Z" | fromdateiso8601')
+MQ_BASE='{id: "", title: "fix: a thing", head: "'$MQ_A'", draft: false, merge_state: "CLEAN", review_decision: null,
+  labels: ["agent-authored", "merge-on-green"], unresolved_threads: 0, body_block: "Resolves #5",
+  markers: [{kind: "approved", head: "'$MQ_A'", at: "2026-10-12T10:00:00Z"}],
+  checks: {total: 1, fail: [], pending: [], pass: 1, skip: 0}}'
+# $1 number, $2 a jq filter applied to the default good PR ("." for none).
+mq_pr() { jq -cn --argjson n "$1" "$MQ_BASE | .number = \$n | .id = \"PR_\" + (\$n | tostring) | $2"; }
+# $1 case, $2 the prs.json array. Runs the real decide node script; plan.json is $MQD/mq/plan.json.
+mq_dec() {
+    MQD="$WORK/mqd-$1"; rm -rf "$MQD" "$MQD.sh"; mkdir -p "$MQD/mq"
+    printf '%s' "$2" > "$MQD/mq/prs.json"
+    jq -n --argjson now "$MQ_NOW" '{repo: "andrewthetechie/jelly-swipe", base: "main", login: "fabro-bot", run: "01R", now: $now, merge_cap: 5}' > "$MQD/mq/env.json"
+    extract_from "$MQ" decide | sed "s#/tmp/fabro#$MQD#g" > "$MQD.sh"
+    if ! sh -n "$MQD.sh" 2>"$MQD.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL merge-queue decide is not valid POSIX sh\n'; sed 's/^/       /' "$MQD.syntax"
+    fi
+    (cd "$MQD" && sh "$MQD.sh" </dev/null >"$MQD.out" 2>"$MQD.err"); echo $? > "$MQD.rc"
+}
+mq_plan() { jq -r '[.[] | (.number | tostring) + ":" + .action] | join(",")' "$MQD/mq/plan.json"; }
+mq_field() { jq -r "$1" "$MQD/mq/plan.json"; }
+
+mq_dec good "[$(mq_pr 1 .)]"
+routing_check "merge-queue decide, one good PR" "$MQD" '.context_updates | [.plan_merge, .plan_rebase, .plan_rerun, .plan_handoff, .plan_wait] | join(",")'
+check "merge-queue decide: 1. approved head, green, CLEAN: merge" "1:merge" "$(mq_plan)"
+check "merge-queue decide: routing counts" "1,0,0,0,0" "$ROUTED"
+check "merge-queue decide: plan record shape" "action,approved_at,head,number,reason,rerun_ids,retryable,subject" "$(mq_field '.[0] | keys | join(",")')"
+
+mq_dec noappr "[$(mq_pr 1 '.markers = []')]"
+check "merge-queue decide: 2. no approval marker: handoff" "1:handoff" "$(mq_plan)"
+check "merge-queue decide: 2. its reason is not retryable" "the PR carries merge-on-green but no approval from the merge phase|false" "$(mq_field '.[0] | .reason + "|" + (.retryable | tostring)')"
+mq_dec moved "[$(mq_pr 1 ".head = \"$MQ_B\"")]"
+check "merge-queue decide: 4. head differs from the approved head: handoff" "1:handoff" "$(mq_plan)"
+check "merge-queue decide: 4. reason says the head moved" "1" "$(mq_field '.[0].reason | startswith("the head moved") | if . then 1 else 0 end')"
+RB="{kind: \"rebased\", from: \"$MQ_A\", to: \"$MQ_B\", at: \"2026-10-12T10:20:00Z\"}"
+mq_dec rebased "[$(mq_pr 1 ".head = \"$MQ_B\" | .markers += [$RB]")]"
+check "merge-queue decide: 5. approved A, rebased A to B, head B: merge" "1:merge" "$(mq_plan)"
+mq_dec rebased-c "[$(mq_pr 1 ".head = \"$MQ_C\" | .markers += [$RB]")]"
+check "merge-queue decide: 6. approved A, rebased A to B, head C: handoff" "1:handoff" "$(mq_plan)"
+mq_dec rebased-other "[$(mq_pr 1 ".head = \"$MQ_B\" | .markers += [{kind: \"rebased\", from: \"$MQ_C\", to: \"$MQ_B\", at: \"2026-10-12T10:20:00Z\"}]")]"
+check "merge-queue decide: 6. a rebase marker whose from is not the chain's link is not a link: handoff" "1:handoff" "$(mq_plan)"
+mq_dec twice "[$(mq_pr 1 ".head = \"$MQ_B\" | .markers = [{kind: \"approved\", head: \"$MQ_A\", at: \"2026-10-12T09:00:00Z\"}, {kind: \"approved\", head: \"$MQ_B\", at: \"2026-10-12T10:00:00Z\"}]")]"
+check "merge-queue decide: 7. a newer approval supersedes the older one: merge" "1:merge" "$(mq_plan)"
+
+for CASE in 'draft|.draft = true' 'architecture|.labels += ["architecture"]' 'needs-human|.labels += ["ai-review-needs-human"]' \
+            'no-agent|.labels = ["merge-on-green"]' 'changes|.review_decision = "CHANGES_REQUESTED"' 'thread|.unresolved_threads = 1' \
+            'title|.title = "Fix the thing"' 'no-resolves|.body_block = "just text"' 'empty-block|.body_block = ""'; do
+    mq_dec "h-${CASE%%|*}" "[$(mq_pr 1 "${CASE#*|}")]"
+    check "merge-queue decide: 8/9. ${CASE%%|*}: handoff, not retryable" "1:handoff|false" "$(mq_plan)|$(mq_field '.[0].retryable')"
+done
+
+mq_dec dirty "[$(mq_pr 1 '.merge_state = "DIRTY"')]"
+check "merge-queue decide: 10. DIRTY: retryable handoff naming the base" "1:handoff|retryable: the PR conflicts with main|true" "$(mq_plan)|$(mq_field '.[0].reason')|$(mq_field '.[0].retryable')"
+mq_dec unknown "[$(mq_pr 1 '.merge_state = "UNKNOWN"')]"
+check "merge-queue decide: 11. UNKNOWN: wait" "1:wait" "$(mq_plan)"
+
+BH='.merge_state = "BEHIND"'
+mq_dec behind2 "[$(mq_pr 2 "$BH | .markers[0].at = \"2026-10-12T10:05:00Z\""),$(mq_pr 1 "$BH")]"
+check "merge-queue decide: 12. two BEHIND: the older rebases, the newer waits" "1:rebase,2:wait" "$(mq_plan)"
+check "merge-queue decide: 12. the waiting one says why" "another rebase is waiting for CI" "$(mq_field '.[1].reason')"
+FL="$(mq_pr 3 ".head = \"$MQ_C\" | .markers += [{kind: \"rebased\", from: \"$MQ_A\", to: \"$MQ_C\", at: \"2026-10-12T11:50:00Z\"}] | .markers[0].at = \"2026-10-12T10:10:00Z\" | .checks.pending = [\"test\"] | .checks.pass = 0")"
+mq_dec inflight "[$(mq_pr 1 "$BH"),$(mq_pr 2 "$BH | .markers[0].at = \"2026-10-12T10:05:00Z\""),$FL]"
+check "merge-queue decide: 13. a rebase is in flight: both BEHIND wait, and so does the pending one" "1:wait,2:wait,3:wait" "$(mq_plan)"
+
+mq_dec red1 "[$(mq_pr 1 '.checks.fail = [{name: "test", run_id: 123, attempt: 1}] | .checks.pass = 0')]"
+check "merge-queue decide: 14. red, Actions, attempt 1: rerun with its run id" "1:rerun|[123]" "$(mq_plan)|$(mq_field '.[0].rerun_ids | tojson')"
+mq_dec red2 "[$(mq_pr 1 '.checks.fail = [{name: "test", run_id: 123, attempt: 2}] | .checks.pass = 0')]"
+check "merge-queue decide: 14. red, attempt 2: retryable handoff after one rerun" "1:handoff|retryable: CI failed after one rerun: test" "$(mq_plan)|$(mq_field '.[0].reason')"
+mq_dec red3 "[$(mq_pr 1 '.checks.fail = [{name: "ext", run_id: null, attempt: null}] | .checks.pass = 0')]"
+check "merge-queue decide: 14. red, not an Actions run: handoff, not retryable" "1:handoff|CI failed and the failing check cannot be rerun: ext|false" "$(mq_plan)|$(mq_field '.[0].reason')|$(mq_field '.[0].retryable')"
+mq_dec red4 "[$(mq_pr 1 '.checks.fail = [{name: "a", run_id: 1, attempt: 1}, {name: "b", run_id: 2, attempt: 1}, {name: "c", run_id: 1, attempt: 1}] | .checks.pass = 0')]"
+check "merge-queue decide: 14. several failing checks: one rerun per unique run id" "1:rerun|[1,2]" "$(mq_plan)|$(mq_field '.[0].rerun_ids | tojson')"
+mq_dec red5 "[$(mq_pr 1 '.checks.fail = [{name: "a", run_id: 1, attempt: null}] | .checks.pass = 0')]"
+check "merge-queue decide: 14. attempt unknown (the lookup failed): cannot be rerun" "1:handoff|false" "$(mq_plan)|$(mq_field '.[0].retryable')"
+
+mq_dec pend-new "[$(mq_pr 1 '.checks.pending = ["test"] | .checks.pass = 0 | .markers[0].at = "2026-10-12T10:01:00Z"')]"
+check "merge-queue decide: 15. pending, marker 1h59m old: wait" "1:wait" "$(mq_plan)"
+mq_dec pend-old "[$(mq_pr 1 '.checks.pending = ["test"] | .checks.pass = 0 | .markers[0].at = "2026-10-12T09:59:00Z"')]"
+check "merge-queue decide: 15. pending, marker 2h01m old: retryable handoff" "1:handoff|retryable: CI on the head did not settle in 2 hours" "$(mq_plan)|$(mq_field '.[0].reason')"
+mq_dec pend-chain "[$(mq_pr 1 ".head = \"$MQ_B\" | .checks.pending = [\"test\"] | .checks.pass = 0 | .markers += [{kind: \"rebased\", from: \"$MQ_A\", to: \"$MQ_B\", at: \"2026-10-12T11:30:00Z\"}]")]"
+check "merge-queue decide: 15. the pending clock starts at the newest marker in the chain: wait" "1:wait" "$(mq_plan)"
+
+mq_dec nochecks "[$(mq_pr 1 '.checks = {total: 0, fail: [], pending: [], pass: 0, skip: 0} | .markers[0].at = "2026-10-12T11:50:00Z"')]"
+check "merge-queue decide: 16. no checks yet, marker 10 minutes old: wait" "1:wait" "$(mq_plan)"
+mq_dec unstable-none "[$(mq_pr 1 '.checks = {total: 0, fail: [], pending: [], pass: 0, skip: 0} | .merge_state = "UNSTABLE"')]"
+check "merge-queue decide: spike S1. no checks and UNSTABLE: handoff" "1:handoff" "$(mq_plan)"
+
+mq_dec blocked "[$(mq_pr 1 '.merge_state = "BLOCKED"')]"
+check "merge-queue decide: 17. green and BLOCKED: handoff naming the status" "1:handoff|branch protection or a hidden check blocks the merge: BLOCKED" "$(mq_plan)|$(mq_field '.[0].reason')"
+mq_dec unstable "[$(mq_pr 1 '.merge_state = "UNSTABLE"')]"
+check "merge-queue decide: 17. green and UNSTABLE: handoff" "1:handoff" "$(mq_plan)"
+mq_dec hooks "[$(mq_pr 1 '.merge_state = "HAS_HOOKS"')]"
+check "merge-queue decide: 17. green and HAS_HOOKS: merge" "1:merge" "$(mq_plan)"
+mq_dec skips "[$(mq_pr 1 '.checks = {total: 2, fail: [], pending: [], pass: 1, skip: 1}')]"
+check "merge-queue decide: skipped checks do not block: merge" "1:merge" "$(mq_plan)"
+
+SEVEN=$(for N in 7 3 1 5 2 6 4; do mq_pr $N ".markers[0].at = \"2026-10-12T10:0${N}:00Z\""; done | jq -cs .)
+mq_dec cap "$SEVEN"
+check "merge-queue decide: 18. seven green PRs: the five oldest merge, the other two wait" "1:merge,2:merge,3:merge,4:merge,5:merge,6:wait,7:wait" "$(mq_plan)"
+check "merge-queue decide: 18. the cap is the reason" "merge cap of 5 per tick reached" "$(mq_field '.[5].reason')"
+mq_dec cap-hand "[$(mq_pr 1 '.markers = []'),$(mq_pr 2 .)]"
+check "merge-queue decide: a handoff does not use up the cap, and is listed first (no approval time)" "1:handoff,2:merge" "$(mq_plan)"
+
+mq_dec empty '[]'
+routing_check "merge-queue decide, no PRs" "$MQD" '.context_updates | [.plan_merge, .plan_rebase, .plan_rerun, .plan_handoff, .plan_wait] | join(",")'
+check "merge-queue decide: 19. no PRs: []" "[]" "$(jq -c . "$MQD/mq/plan.json")"
+check "merge-queue decide: 19. every count is 0" "0,0,0,0,0" "$ROUTED"
+mq_dec garbage 'not json'
+check "merge-queue decide: an unreadable inventory exits 1 and writes stop_reason" "1|decide: the decision program failed" "$(cat "$MQD.rc")|$(cat "$MQD/mq/stop_reason")"
+check "merge-queue: decide declares routing; inventory does not" "1|0" "$(grep -c 'decide \[.*output_schema="routing"' "$MQ")|$(grep -c 'inventory \[.*output_schema' "$MQ")"
+
+echo ""
+echo "merge-queue: inventory"
+MQI_STUBS="$WORK/mqi-stubs"; mkdir -p "$MQI_STUBS/bin"
+cat > "$MQI_STUBS/bin/gh" <<'STUB'
+#!/bin/sh
+case "$1 $2" in
+  "api graphql")
+      N=$(cat "$MQI_STATE/calls" 2>/dev/null || echo 0); N=$((N + 1)); echo "$N" > "$MQI_STATE/calls"
+      [ -n "${MQI_FAIL:-}" ] && exit 1
+      if [ -f "$MQI_GQL.$N" ]; then cat "$MQI_GQL.$N"; else cat "$MQI_GQL"; fi ;;
+  "run view")
+      case "$3" in 111) echo 1 ;; 222) echo 2 ;; *) exit 1 ;; esac ;;
+  *) echo "gh $*" >&2 ;;
+esac
+STUB
+printf '#!/bin/sh\nexit 0\n' > "$MQI_STUBS/bin/sleep"
+chmod +x "$MQI_STUBS/bin/gh" "$MQI_STUBS/bin/sleep"
+# $1 case, $2 the GraphQL response file, $3 env prefix words. Leaves the dir in MQD.
+mq_inv() {
+    MQD="$WORK/mqi-$1"; rm -rf "$MQD" "$MQD.sh"; mkdir -p "$MQD/mq" "$MQD/state"
+    jq -n '{repo: "andrewthetechie/jelly-swipe", base: "main", login: "fabro-bot", run: "01R", now: 1, merge_cap: 5}' > "$MQD/mq/env.json"
+    extract_from "$MQ" inventory | sed "s#/tmp/fabro#$MQD#g" > "$MQD.sh"
+    if ! sh -n "$MQD.sh" 2>"$MQD.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL merge-queue inventory is not valid POSIX sh\n'; sed 's/^/       /' "$MQD.syntax"
+    fi
+    (cd "$MQD" && env PATH="$MQI_STUBS/bin:$ORIG_PATH" MQI_STATE="$MQD/state" MQI_GQL="$2" $3 sh "$MQD.sh" </dev/null >"$MQD.out" 2>"$MQD.err"); echo $? > "$MQD.rc"
+}
+mqi_comment() { jq -cn --arg l "$1" --arg b "$2" --arg at "$3" '{author: {login: $l}, body: $b, createdAt: $at}'; }
+mqi_pr() {  # $1 number, $2 merge state, $3 comments array, $4 rollup (JSON or null)
+    jq -cn --argjson n "$1" --arg ms "$2" --argjson cm "$3" --argjson ru "$4" \
+      '{number: $n, id: ("PR_" + ($n | tostring)), title: "fix: a thing", body: "intro\n<!-- fabro:commit-body:start -->\nfix: a thing\n\nResolves #5\n<!-- fabro:commit-body:end -->\nfooter",
+        isDraft: false, headRefOid: "'$MQ_A'", mergeable: "MERGEABLE", mergeStateStatus: $ms, reviewDecision: null,
+        labels: {nodes: [{name: "agent-authored"}, {name: "merge-on-green"}]},
+        reviewThreads: {nodes: [{isResolved: true}, {isResolved: false}]},
+        comments: {nodes: $cm},
+        commits: {nodes: [{commit: {statusCheckRollup: (if $ru == null then null else {state: "FAILURE", contexts: {nodes: $ru}} end)}}]}}'
+}
+mqi_resp() { jq -cn --argjson nodes "$1" --argjson more "${2:-false}" '{data: {repository: {pullRequests: {pageInfo: {hasNextPage: $more, endCursor: "CUR"}, nodes: $nodes}}}}'; }
+CMS=$(jq -cn --argjson a "$(mqi_comment fabro-bot "<!-- fabro:merge-queue approved head=$MQ_A run=01X -->
+## AI PR review complete" 2026-10-12T10:00:00Z)" \
+  --argjson b "$(mqi_comment someone-else "<!-- fabro:merge-queue approved head=$MQ_B run=01Y -->" 2026-10-12T10:01:00Z)" \
+  --argjson c "$(mqi_comment fabro-bot "<!-- fabro:merge-queue rebased from=$MQ_A to=$MQ_B run=01Z -->" 2026-10-12T10:30:00Z)" \
+  --argjson d "$(mqi_comment fabro-bot "<!-- fabro:merge-queue handoff head=$MQ_B run=01W -->
+stopped" 2026-10-12T10:40:00Z)" \
+  --argjson e "$(mqi_comment fabro-bot "approved head=$MQ_A, but only in prose" 2026-10-12T10:50:00Z)" '[$a, $b, $c, $d, $e]')
+RU='[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-12T10:00:00Z","checkSuite":{"workflowRun":{"databaseId":999}}},
+     {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-12T10:10:00Z","checkSuite":{"workflowRun":{"databaseId":998}}},
+     {"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-12T10:10:00Z","checkSuite":{"workflowRun":{"databaseId":222}}},
+     {"__typename":"CheckRun","name":"unit","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-12T10:10:00Z","checkSuite":{"workflowRun":{"databaseId":111}}},
+     {"__typename":"CheckRun","name":"ext","status":"COMPLETED","conclusion":"TIMED_OUT","startedAt":"2026-10-12T10:10:00Z","checkSuite":{"workflowRun":null}},
+     {"__typename":"CheckRun","name":"slow","status":"IN_PROGRESS","conclusion":null,"startedAt":"2026-10-12T10:10:00Z","checkSuite":{"workflowRun":{"databaseId":5}}},
+     {"__typename":"CheckRun","name":"docs","status":"COMPLETED","conclusion":"SKIPPED","startedAt":"2026-10-12T10:10:00Z","checkSuite":{"workflowRun":{"databaseId":6}}},
+     {"__typename":"StatusContext","context":"ci/x","state":"PENDING","createdAt":"2026-10-12T10:10:00Z"},
+     {"__typename":"StatusContext","context":"ci/y","state":"ERROR","createdAt":"2026-10-12T10:10:00Z"}]'
+mqi_resp "[$(mqi_pr 11 BEHIND "$CMS" "$RU"),$(mqi_pr 12 UNSTABLE '[]' null)]" > "$WORK/mqi-main.json"
+mq_inv main "$WORK/mqi-main.json" ""
+P="$MQD/mq/prs.json"
+check "merge-queue inventory: exits 0 and reads two PRs" "0|2" "$(cat "$MQD.rc")|$(jq length "$P")"
+check "merge-queue inventory: record keys" "body_block,checks,draft,head,id,labels,markers,merge_state,number,review_decision,title,unresolved_threads" "$(jq -r '.[0] | keys | join(",")' "$P")"
+check "merge-queue inventory: only the token's own marker comments count (not another login, a handoff or prose)" "approved:$MQ_A,rebased:$MQ_B" "$(jq -r '.[0].markers | map(.kind + ":" + (.head // .to)) | join(",")' "$P")"
+check "merge-queue inventory: markers keep the comment time" "2026-10-12T10:00:00Z" "$(jq -r '.[0].markers[0].at' "$P")"
+check "merge-queue inventory: body_block, threads, labels, state" "fix: a thing
+
+Resolves #5|1|agent-authored,merge-on-green|BEHIND" "$(jq -r '.[0] | .body_block + "|" + (.unresolved_threads | tostring) + "|" + (.labels | join(",")) + "|" + .merge_state' "$P")"
+check "merge-queue inventory: a check name is judged by its newest run (test failed, then passed: pass)" "1" "$(jq '[.[0].checks.fail[].name] | index("test") | if . == null then 1 else 0 end' "$P")"
+check "merge-queue inventory: failing checks, with run ids" "ci/y:null,ext:null,lint:222,unit:111" "$(jq -r '.[0].checks.fail | sort_by(.name) | map(.name + ":" + (.run_id | tostring)) | join(",")' "$P")"
+check "merge-queue inventory: attempts come from gh run view; a failed lookup and a non-Actions check leave null" "ci/y:null,ext:null,lint:2,unit:1" "$(jq -r '.[0].checks.fail | sort_by(.name) | map(.name + ":" + (.attempt | tostring)) | join(",")' "$P")"
+check "merge-queue inventory: pending, pass, skip, total" "ci/x,slow|1|1|8" "$(jq -r '.[0].checks | (.pending | sort | join(",")) + "|" + (.pass | tostring) + "|" + (.skip | tostring) + "|" + (.total | tostring)' "$P")"
+check "merge-queue inventory: a null rollup is zero checks" "0|UNSTABLE" "$(jq -r '.[1].checks.total | tostring' "$P")|$(jq -r '.[1].merge_state' "$P")"
+check "merge-queue inventory: no stdout or stderr line has a brace" "0" "$({ cat "$MQD.out" "$MQD.err"; } | grep -c '[{}]')"
+
+mqi_resp "[$(mqi_pr 20 UNKNOWN '[]' null)]" > "$WORK/mqi-unk.json"
+mqi_resp "[$(mqi_pr 20 CLEAN '[]' null)]" > "$WORK/mqi-unk.json.2"
+mq_inv unknown "$WORK/mqi-unk.json" ""
+check "merge-queue inventory: UNKNOWN is re-read, and the answer replaces it" "CLEAN|2" "$(jq -r '.[0].merge_state' "$MQD/mq/prs.json")|$(cat "$MQD/state/calls")"
+mqi_resp "[$(mqi_pr 21 UNKNOWN '[]' null)]" > "$WORK/mqi-stuck.json"
+mq_inv stuck "$WORK/mqi-stuck.json" ""
+check "merge-queue inventory: a PR that stays UNKNOWN is re-read 3 times, then passed on as UNKNOWN" "0|UNKNOWN|4" "$(cat "$MQD.rc")|$(jq -r '.[0].merge_state' "$MQD/mq/prs.json")|$(cat "$MQD/state/calls")"
+mqi_resp "[$(mqi_pr 30 CLEAN '[]' null)]" true > "$WORK/mqi-page.json"
+mqi_resp "[$(mqi_pr 31 CLEAN '[]' null)]" > "$WORK/mqi-page.json.2"
+mq_inv paged "$WORK/mqi-page.json" ""
+check "merge-queue inventory: a second page is read and appended" "30,31" "$(jq -r 'map(.number | tostring) | join(",")' "$MQD/mq/prs.json")"
+mqi_resp '[]' > "$WORK/mqi-none.json"
+mq_inv none "$WORK/mqi-none.json" ""
+check "merge-queue inventory: zero PRs is []" "0|[]" "$(cat "$MQD.rc")|$(jq -c . "$MQD/mq/prs.json")"
+mq_inv fail "$WORK/mqi-none.json" "MQI_FAIL=1"
+check "merge-queue inventory: a failed query exits 1 and writes stop_reason" "1|inventory: could not read the merge-on-green PRs" "$(cat "$MQD.rc")|$(cat "$MQD/mq/stop_reason")"
+echo '{"data":null}' > "$WORK/mqi-bad.json"
+mq_inv bad "$WORK/mqi-bad.json" ""
+check "merge-queue inventory: a response without the PR list exits 1" "1" "$(cat "$MQD.rc")"
+check "merge-queue: inventory -> decide needs success; both reach summarize" "1|1|1" "$(grep -c '^    inventory -> decide .*outcome=succeeded' "$MQ")|$(grep -c '^    inventory -> summarize$' "$MQ")|$(grep -c '^    decide -> summarize$' "$MQ")"
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
