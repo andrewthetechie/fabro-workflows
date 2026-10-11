@@ -2377,7 +2377,7 @@ check "PR open: [X] keeps it"              "yes" "$(rs_has 'PR #1319 stays open'
 rs_setup 6 5 t6
 printf '%s' '{"number":1279,"labels":[{"name":"architecture"}]}' > "$FAB/issue.json"
 FABRO_AUTO_MERGE=1 rs_run ''
-check "architecture: a human merges"       "yes" "$(rs_has 'labelled architecture')"
+check "architecture: no hold, default sentence" "yes" "$(rs_has 'every merge gate passes')"
 rs_setup 6 5 t6; echo 0 > "$FAB/auto_merge_repo"; FABRO_AUTO_MERGE=1 rs_run ''
 check "repo switch off: a human merges"    "yes" "$(rs_has 'off for this repository')"
 
@@ -3018,10 +3018,10 @@ PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
 # ---------------------------------------------------------------------------
-# review-merge merge_gate — an Architecture PR is never auto-merged (ADR 0012 D8)
+# review-merge merge_gate — the do-not-merge hold label (ADR 0012 D8 amendment, gate-relief G2)
 # ---------------------------------------------------------------------------
 echo ""
-echo "review-merge merge_gate architecture"
+echo "review-merge merge_gate do-not-merge"
 PATH="$ORIG_PATH"
 SAVED_PATH="$PATH"
 T="$WORK/mgate"; mkdir -p "$T/bin" "$T/review"
@@ -3035,6 +3035,7 @@ cat > "$T/bin/gh" <<'STUB'
 #!/bin/sh
 echo "$*" >> "$GH_LOG"
 if [ "$1 $2" = "pr view" ]; then
+  case "$*" in *do-not-merge*) [ -n "$GH_FAIL_DN" ] && exit 1 ;; esac
   J=""; P=""
   for a in "$@"; do [ "$P" = "--jq" ] && J="$a"; P="$a"; done
   if [ -n "$J" ]; then jq -r "$J" "$GH_STATE/pr.fixture.json"; else cat "$GH_STATE/pr.fixture.json"; fi
@@ -3047,19 +3048,27 @@ PATH="$T/bin:$SAVED_PATH"
 export GH_LOG="$T/gh.log" GH_STATE="$T"
 echo 1 > "$T/auto_merge"; echo 5 > "$T/pr_number"
 
-# 1. agent-authored and architecture: blocked, with the reason.
-echo '{"labels":[{"name":"agent-authored"},{"name":"architecture"}],"state":"OPEN","isDraft":false}' > "$T/pr.fixture.json"
+# 1. do-not-merge, with agent-authored: blocked, with the reason.
+echo '{"labels":[{"name":"agent-authored"},{"name":"do-not-merge"}],"state":"OPEN","isDraft":false}' > "$T/pr.fixture.json"
 rm -f "$T/merge_block_reason"
 OUT=$(sh "$T/merge_gate.sh" 2>&1); RC=$?
-check "arch PR: exit 0"                "0"     "$RC"
-check "arch PR: not eligible"          "false" "$(jq -r '.context_updates.merge_eligible' <<<"$(lastjson "$OUT")")"
-check "arch PR: reason names it"       "1"     "$(grep -c 'Architecture issue' "$T/merge_block_reason")"
+check "hold: exit 0"                   "0"     "$RC"
+check "hold: not eligible"             "false" "$(jq -r '.context_updates.merge_eligible' <<<"$(lastjson "$OUT")")"
+check "hold: reason names the label"   "1"     "$(grep -c 'do-not-merge label' "$T/merge_block_reason")"
 
-# 2. No architecture label: this check passes, and a later one decides.
-echo '{"labels":[{"name":"agent-authored"}],"state":"CLOSED","isDraft":false}' > "$T/pr.fixture.json"
+# 2. architecture alone: check 2b does not hold it.
+echo '{"labels":[{"name":"agent-authored"},{"name":"architecture"}],"state":"CLOSED","isDraft":false}' > "$T/pr.fixture.json"
 rm -f "$T/merge_block_reason"
 sh "$T/merge_gate.sh" >/dev/null 2>&1
-check "plain PR: not blocked by 2b"    "0"     "$(grep -c 'Architecture issue' "$T/merge_block_reason")"
+check "architecture: not held by 2b"   "0"     "$(grep -c 'do-not-merge' "$T/merge_block_reason")"
+
+# 3. gh fails reading the label: the check fails closed.
+echo '{"labels":[{"name":"agent-authored"}],"state":"OPEN","isDraft":false}' > "$T/pr.fixture.json"
+rm -f "$T/merge_block_reason"
+OUT=$(GH_FAIL_DN=1 sh "$T/merge_gate.sh" 2>&1); RC=$?
+check "gh error on hold check: exit 0" "0"     "$RC"
+check "gh error on hold check: not eligible" "false" "$(jq -r '.context_updates.merge_eligible' <<<"$(lastjson "$OUT")")"
+check "gh error on hold check: reason" "1"     "$(grep -c 'do-not-merge label' "$T/merge_block_reason")"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
@@ -3269,7 +3278,7 @@ PATH="$SAVED_PATH"
 # ---------------------------------------------------------------------------
 # review-merge merge_gate — hygiene and Refuter checks (ADR 0013 D1, D5)
 # ---------------------------------------------------------------------------
-# The architecture section above stops at check 2b. These cases need a PR that
+# The hold-label section above stops at check 2b. These cases need a PR that
 # passes checks 1 to 12, so the stub also answers the GraphQL thread count and the
 # fixture carries a Conventional title and a commit-body block.
 echo ""
@@ -3319,6 +3328,17 @@ mg_run() { OUT=$( cd "$T" && sh "$T/merge_gate.sh" 2>&1 ); jq -r '.context_updat
 # 1. The all-green fixture really is eligible, so every block below is the new check.
 mg_green
 check "all green: eligible"                 "true"  "$(mg_run)"
+
+# 1b. An architecture PR with every other check passing merges: the label does not hold it.
+mg_green
+jq '.labels += [{name:"architecture"}]' "$T/pr.fixture.json" > "$T/pr.fixture.tmp" && mv "$T/pr.fixture.tmp" "$T/pr.fixture.json"
+check "architecture, all green: eligible"   "true"  "$(mg_run)"
+
+# 1c. do-not-merge holds an otherwise green PR, and the reason says so.
+mg_green
+jq '.labels += [{name:"do-not-merge"}]' "$T/pr.fixture.json" > "$T/pr.fixture.tmp" && mv "$T/pr.fixture.tmp" "$T/pr.fixture.json"
+check "do-not-merge, all green: not eligible" "false" "$(mg_run)"
+check "do-not-merge, all green: reason"       "1"     "$(grep -c 'do-not-merge label' "$T/merge_block_reason")"
 
 # 2. Check 13 blocks on a non-empty `blocking`, with the counters' own reason.
 mg_green
@@ -5841,12 +5861,15 @@ check "merge-queue decide: 6. a rebase marker whose from is not the chain's link
 mq_dec twice "[$(mq_pr 1 ".head = \"$MQ_B\" | .markers = [{kind: \"approved\", head: \"$MQ_A\", at: \"2026-10-12T09:00:00Z\"}, {kind: \"approved\", head: \"$MQ_B\", at: \"2026-10-12T10:00:00Z\"}]")]"
 check "merge-queue decide: 7. a newer approval supersedes the older one: merge" "1:merge" "$(mq_plan)"
 
-for CASE in 'draft|.draft = true' 'architecture|.labels += ["architecture"]' 'needs-human|.labels += ["ai-review-needs-human"]' \
+for CASE in 'draft|.draft = true' 'do-not-merge|.labels += ["do-not-merge"]' 'needs-human|.labels += ["ai-review-needs-human"]' \
             'no-agent|.labels = ["merge-on-green"]' 'changes|.review_decision = "CHANGES_REQUESTED"' 'thread|.unresolved_threads = 1' \
             'title|.title = "Fix the thing"' 'no-resolves|.body_block = "just text"' 'empty-block|.body_block = ""'; do
     mq_dec "h-${CASE%%|*}" "[$(mq_pr 1 "${CASE#*|}")]"
     check "merge-queue decide: 8/9. ${CASE%%|*}: handoff, not retryable" "1:handoff|false" "$(mq_plan)|$(mq_field '.[0].retryable')"
 done
+
+mq_dec arch "[$(mq_pr 1 '.labels += ["architecture"]')]"
+check "merge-queue decide: 2b. architecture alone does not hold: merge" "1:merge" "$(mq_plan)"
 
 mq_dec dirty "[$(mq_pr 1 '.merge_state = "DIRTY"')]"
 check "merge-queue decide: 10. DIRTY: retryable handoff naming the base" "1:handoff|retryable: the PR conflicts with main|true" "$(mq_plan)|$(mq_field '.[0].reason')|$(mq_field '.[0].retryable')"

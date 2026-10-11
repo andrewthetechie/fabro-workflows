@@ -1806,9 +1806,7 @@ if [ -n \"$CUR\" ] && [ $ROUND -gt 0 ] && [ -s $F/feedback/rework.md ]; then
 fi
 WF=''
 if grep -q '[.]github/workflows' $F/rescue_findings.cut 2>/dev/null; then WF=yes; fi
-if jq -e '[.labels[]?.name] | index(\"architecture\") != null' $F/issue.json >/dev/null 2>&1; then
-  MERGE='A human merges it, because the issue is labelled architecture.'
-elif [ \"${FABRO_AUTO_MERGE:-0}\" != 1 ]; then
+if [ \"${FABRO_AUTO_MERGE:-0}\" != 1 ]; then
   MERGE='Auto-merge is off on this host, so a human merges it.'
 elif [ \"$(cat $F/auto_merge_repo 2>/dev/null)\" = 0 ]; then
   MERGE='Auto-merge is off for this repository, so a human merges it.'

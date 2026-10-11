@@ -703,7 +703,7 @@ fi"]
     // prints its own SHA as its parent list.
     // 1. kill switch file
     // 2. agent-authored label
-    // 2b. architecture label: a human merges it (ADR 0012 D8)
+    // 2b. no do-not-merge label (ADR 0012 D8 amendment)
     // 3. open and not draft
     // 4. no requested changes
     // 5. no unresolved review threads (GraphQL; gh pr view has no reviewThreads field)
@@ -728,8 +728,8 @@ if [ \"$E\" = true ]; then
   if [ \"$L\" != true ]; then fail 'The PR does not carry the agent-authored label, so it is not eligible for automatic merge.'; fi
 fi
 if [ \"$E\" = true ]; then
-  AR=$(gh pr view \"$PR\" --json labels --jq '[.labels[].name] | index(\"architecture\") != null' 2>/dev/null || echo bad)
-  if [ \"$AR\" != false ]; then fail 'This PR implements an Architecture issue (label architecture). ADR 0012 requires a human to merge it.'; fi
+  DN=$(gh pr view \"$PR\" --json labels --jq '[.labels[].name] | index(\"do-not-merge\") != null' 2>/dev/null || echo bad)
+  if [ \"$DN\" != false ]; then fail 'The PR carries the do-not-merge label, so a human merges it.'; fi
 fi
 if [ \"$E\" = true ]; then
   S=$(gh pr view \"$PR\" --json state,isDraft 2>/dev/null || echo '{\"state\":\"bad\"}')

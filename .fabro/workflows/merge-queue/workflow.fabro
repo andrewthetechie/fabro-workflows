@@ -229,7 +229,7 @@ def verdict($env; $c):
     if $c == null then hand(\"the PR carries merge-on-green but no approval from the merge phase\")
     elif $p.head != $c.head then hand(\"the head moved after the merge phase approved it; the new commits were not reviewed\")
     elif $p.draft then hand(\"The PR is not open or is still a draft, so it cannot be auto-merged.\")
-    elif ($p.labels | index(\"architecture\")) != null then hand(\"This PR implements an Architecture issue (label architecture). ADR 0012 requires a human to merge it.\")
+    elif ($p.labels | index(\"do-not-merge\")) != null then hand(\"The PR carries the do-not-merge label, so a human merges it.\")
     elif ($p.labels | index(\"ai-review-needs-human\")) != null then hand(\"The PR is labelled ai-review-needs-human, so a human must merge it.\")
     elif ($p.labels | index(\"agent-authored\")) == null then hand(\"The PR does not carry the agent-authored label, so it is not eligible for automatic merge.\")
     elif $p.review_decision == \"CHANGES_REQUESTED\" then hand(\"Reviewers have requested changes on this PR.\")
