@@ -4583,6 +4583,7 @@ check "dependabot inventory: root PR does not fix a frontend alert" "[]" "$(jq -
 jq -cn '[{number:7, dependency:{package:{ecosystem:"npm",name:"undici"},manifest_path:"frontend/package-lock.json"}, security_advisory:{severity:"medium"}, security_vulnerability:{first_patched_version:{identifier:"8.10.2"}}, created_at:"2026-10-01T00:00:00Z", html_url:"https://example.test/7"}]' > "$WORK/dep-undici.json"
 dep_inv_case grouped "$WORK/dep-undici.json" "$DEP_FIX/jelly-swipe-grouped-431.json"
 check "dependabot inventory: grouped body fixes undici" "[7]" "$(jq -c '.[0].fixes' "$DEP_DIR/dep/prs.json")"
+check "dependabot inventory: grouped PR keeps its update list (pick_group reads it)" "true" "$(jq '[.[0].updates[] | select(.package == "undici" and .eco == "npm")] | length > 0' "$DEP_DIR/dep/prs.json")"
 
 # 6. Paginated: gh prints one array per page, and both pages are read.
 cat "$ALERTS_JELLY" "$ALERTS_JELLY" > "$WORK/dep-two-pages.json"
@@ -4906,6 +4907,21 @@ U_OLD=$(jq -cn '[{number: 7, state: "CLOSED", stateReason: "COMPLETED", closedAt
 pt_seed window4 '[]' "$U_OLD"; pt_run pick_group window4
 check "pick_group D22 past 3 days: issue reopened" "1" "$(grep -c 'issue reopen 7' "$PT/gh.log")"
 check "pick_group D22 past 3 days: needs-human added and commented" "2" "$(grep -cE 'issue (edit 7 --add-label needs-human|comment 7)' "$PT/gh.log")"
+
+# A merged Dependabot PR that updated brace-expansion in frontend/ but matched no alert (fixes []) still
+# skips that group for the day; urllib3, which it did not touch, is unaffected.
+pt_seed touched '[{"pr":900,"outcome":"merged","reason":"","fixes":[]},{"pr":901,"outcome":"red","reason":"x","fixes":[]}]' "$ISSUE_NONE"
+jq '. + [{number: 900, fixes: [], updates: [{package: "Brace-Expansion", eco: "npm", dir: "frontend"}]}, {number: 901, fixes: [], updates: [{package: "urllib3", eco: "pip", dir: ""}]}]' "$PT/dep/prs.json" > "$PT/dep/p.tmp" && mv "$PT/dep/p.tmp" "$PT/dep/prs.json"
+jq '[.[] | select(.package == "brace-expansion")]' "$PT/dep/alerts.json" > "$PT/dep/a.tmp" && mv "$PT/dep/a.tmp" "$PT/dep/alerts.json"
+pt_run pick_group touched
+check "pick_group touched by a merged PR: patch_group none" "none" "$(tail -1 "$PT/pick_group.out" | jq -r .context_updates.patch_group)"
+check "pick_group touched by a merged PR: the skip says why" "1" "$(jq '[.[] | select(.key == "npm:frontend/package-lock.json:brace-expansion" and (.reason | test("merged in this run")))] | length' "$PT/dep/skipped_groups.json")"
+pt_seed untouched '[{"pr":901,"outcome":"red","reason":"x","fixes":[]}]' "$ISSUE_NONE"
+jq '. + [{number: 901, fixes: [], updates: [{package: "brace-expansion", eco: "npm", dir: "frontend"}]}]' "$PT/dep/prs.json" > "$PT/dep/p.tmp" && mv "$PT/dep/p.tmp" "$PT/dep/prs.json"
+jq '[.[] | select(.package == "brace-expansion")]' "$PT/dep/alerts.json" > "$PT/dep/a.tmp" && mv "$PT/dep/a.tmp" "$PT/dep/alerts.json"
+pt_run pick_group untouched
+check "pick_group, a red PR updated it: still picked" "npm:frontend/package-lock.json:brace-expansion" "$(tail -1 "$PT/pick_group.out" | jq -r .context_updates.patch_group)"
+check "pick_group: group.json has no touched field" "null" "$(pt_group .touched)"
 
 pt_seed replaces '[{"pr":440,"outcome":"red","reason":"x","fixes":[72]}]' "$ISSUE_NONE"; jq 'map(if .number == 440 then .fixes = [72] else . end)' "$PT/dep/prs.json" > "$PT/dep/p.tmp" && mv "$PT/dep/p.tmp" "$PT/dep/prs.json"; pt_run pick_group replaces
 check "pick_group replaces: a red PR that fixes 72 is replaced" "[440]" "$(pt_group '.replaces | tostring')"

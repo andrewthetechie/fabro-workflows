@@ -195,6 +195,10 @@ the path under `/tmp/fabro/`.
   number,title,headRefName,headRefOid,createdAt,url,body`.
 - `fixes` lists the C1 alert numbers this PR fixes, by the matching rule that task 01
   fixes (C3). It is `[]` for a pure version update.
+- `updates` lists every `{package, eco, dir}` the PR changes (C3's update list). `pick_group`
+  skips, for the day, a group whose package a PR merged in this run updated, even when
+  `fixes` missed its alerts (jelly-swipe #450, 2026-10-10: a title naming 2.1.7 also moved
+  the 5.x copy).
 - Order: `fixes` non-empty first, then `created_at` ascending (D12).
 
 ### C3. The PR-to-alert matching rule

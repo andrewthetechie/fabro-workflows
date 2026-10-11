@@ -158,7 +158,7 @@ def fixes($alerts):
                               and vcmp(.to; $a.first_patched) >= 0)] | length > 0)
      | .number] | sort;
 $prs[0]
-| map(. as $pr | {number, title, head_ref: .headRefName, head_sha: .headRefOid, created_at: .createdAt, url, fixes: ($pr | fixes($alerts[0]))})
+| map(. as $pr | {number, title, head_ref: .headRefName, head_sha: .headRefOid, created_at: .createdAt, url, fixes: ($pr | fixes($alerts[0])), updates: ($pr | pr_updates | map({package, eco, dir}))})
 | sort_by([(.fixes | length == 0), .created_at])
 JQ
 gh api \"repos/$R/dependabot/alerts?state=open&per_page=100\" --paginate > /tmp/fabro/dep/alerts_raw.json || stop 'inventory: the open alerts could not be read'
@@ -399,7 +399,10 @@ jq -cn '{context_updates: {}}'"]
 
     // Groups the open alerts that have a patched version (C4), drops the ones a PR merged in this run
     // fixed, and ranks the rest by D16. It walks the ranking and takes the first group the tracking-issue
-    // rules (C6, D22) do not skip. A group with a switch_off PR is dropped, since that PR will merge.
+    // rules (C6, D22) do not skip. A group with a switch_off PR is dropped, since that PR will merge. A group
+    // whose package a Dependabot PR merged in this run updated (same ecosystem and directory) is skipped for the
+    // day even when C3 matched none of its alerts: jelly-swipe #450's title named 2.1.7, so it matched alert 70
+    // only, but it also moved the 5.x copy past alert 69, and the patch agent then found nothing to do.
     // The issue lookup is by the marker on the first line, over every `security` issue; `startswith` is exact
     // because the marker ends in ` -->`. It does not use `--search`: the search index lags a new issue, and a
     // miss files a duplicate tracking issue. Publishes patch_group (a key or `none`) and writes group.json or skipped_groups.json.
@@ -409,10 +412,13 @@ cat > $D/pick.jq <<'JQ'
 include \"version\";
 def sevrank: {\"critical\": 0, \"high\": 1, \"medium\": 2, \"low\": 3}[.] // 4;
 def scoperank: if . == \"runtime\" then 0 else 1 end;
+def adir: if test(\"/\") then (split(\"/\") | .[:-1] | join(\"/\")) else \"\" end;
 $results[0] as $res
 | $prs[0] as $pl
 | ([$res[] | select(.outcome == \"merged\") | .fixes[]]) as $merged
 | ([$res[] | select(.outcome == \"switch_off\") | .fixes[]]) as $held
+| ([$res[] | select(.outcome == \"merged\") | .pr]) as $mprs
+| ([$pl[] | select(.number as $n | $mprs | index($n)) | .updates[]?]) as $mup
 | [$alerts[0][] | select(.first_patched != null) | select(.number as $n | ([$merged[] | select(. == $n)] | length) == 0)] as $live
 | [$live | group_by([.ecosystem, .manifest, .package])[]
    | . as $g
@@ -424,6 +430,7 @@ $results[0] as $res
        alerts: ($g | map(.number) | sort),
        first_patched: ($g | map(.first_patched) | reduce .[] as $v (null; if . == null then $v elif vcmp($v; .) > 0 then $v else . end)),
        created: ($g | map(.created_at) | min),
+       touched: any($mup[]; (.package | ascii_downcase) == ($g[0].package | ascii_downcase) and .eco == $g[0].ecosystem and .dir == ($g[0].manifest | adir)),
        held: ([$g[] | .number as $n | select(([$held[] | select(. == $n)] | length) > 0)] | length > 0),
        replaces: [$pl[] as $p
                   | select(([$p.fixes[] as $f | select(([$g[] | select(.number == $f)] | length) > 0)] | length) > 0)
@@ -448,6 +455,9 @@ CHOSEN=none
 jq -c '.[]' $D/ranked.json > $D/ranked.lines
 while IFS= read -r G; do
   KEY=$(printf '%s' \"$G\" | jq -r .key)
+  if [ \"$(printf '%s' \"$G\" | jq -r .touched)\" = true ]; then
+    jq -cn --arg k \"$KEY\" '{key: $k, reason: \"a Dependabot PR merged in this run updated it; Dependabot rescans first\"}' >> $D/skipped.lines; continue
+  fi
   gh issue list --state all --label security --limit 500 --json number,state,stateReason,closedAt,labels,body > $D/issues.json || stop 'pick_group: could not list the tracking issues'
   ISSUE=$(jq -c --arg m \"<!-- fabro:dep-group key=$KEY -->\" '[.[] | select((.body // \"\") | startswith($m))] | .[0] // null' $D/issues.json)
   if [ \"$ISSUE\" = null ]; then
@@ -490,7 +500,7 @@ if [ \"$CHOSEN\" = none ]; then
   jq -cn '{context_updates: {patch_group: \"none\"}}'
   exit 0
 fi
-jq -c --arg k \"$CHOSEN\" --argjson n \"$NUM\" '[.[] | select(.key == $k)] | .[0] + {issue: $n}' $D/ranked.json > $D/group.json
+jq -c --arg k \"$CHOSEN\" --argjson n \"$NUM\" '[.[] | select(.key == $k)] | .[0] + {issue: $n} | del(.touched)' $D/ranked.json > $D/group.json
 jq -s '.' $D/skipped.lines > $D/skipped_groups.json
 rm -f $D/stopped_at
 jq -cn --arg k \"$CHOSEN\" '{context_updates: {patch_group: $k}}'"]
