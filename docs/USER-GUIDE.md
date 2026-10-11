@@ -10,7 +10,7 @@ the operator runbook", that's where they live.
 
 ## What this factory does
 
-Three workflows, four repositories, one pipeline:
+Five workflows, four repositories, one pipeline:
 
 ```
 issue labeled needs-triage
@@ -174,3 +174,16 @@ Pointers, not duplication — the kill switches and how to use them live in
   Breaking it fails every backlog run closed — nothing opens, nothing merges. For
   when you want the factory *stopped*, not just unmerged; how, in the operator
   runbook.
+
+## The daily Dependabot run
+
+The `dependabot` workflow runs once a day per repository, at 05:00 to 06:00 host time. It merges
+the open Dependabot PRs whose checks pass and validate on the merged tree, at most five per run.
+Then it patches one open alert group, through the same review and merge phase every agent change
+gets, and posts one summary line to Discord. A run with nothing to do says so.
+
+To stop it for one repository, flip its switch: `ops/fabro-auto-merge-switch.sh --workflow dependabot
+<owner/repo> off`. The run still validates and opens patch PRs, and merges nothing. To stop every
+auto-merge on the host, set `FABRO_AUTO_MERGE` to `0`. To stop the runs, turn the schedule off with
+`ops/fabro-automation-schedule.sh dependabot-<repo> off`.
+

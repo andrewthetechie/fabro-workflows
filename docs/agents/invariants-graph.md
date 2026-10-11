@@ -1,6 +1,6 @@
 # Invariants: graphs, scripts, hooks and packages
 
-Read before changing any `.fabro` graph, prompt, hook, or `workflow.toml`, in any of the four workflows or the `_shared/` phases.
+Read before changing any `.fabro` graph, prompt, hook, or `workflow.toml`, in any of the five workflows or the `_shared/` phases.
 
 Every rule here passes `fabro validate` and fails at runtime, usually silently. Each one cost a live incident or was found before it could. Moved verbatim from `AGENTS.md` on 2026-10-09; the area files are siblings of this one.
 

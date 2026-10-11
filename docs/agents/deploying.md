@@ -16,7 +16,10 @@ commands below are what it runs, and the escape hatch when it cannot.
 
 **Workflow changes need no deploy.** Every automation resolves
 `.fabro/workflows/**` from `main` at fire time, so a merged graph or prompt is live
-on the next run with nothing to copy.
+on the next run with nothing to copy. The `dependabot` package is a workflow too: its graph and
+prompt need no deploy. Its schedules are the four `dependabot-<repo>` rows, which
+`ops/provision-server-state.sh` creates. `backlog/scripts/discord-notify.sh` changed for the
+`dependabot-summary` kind (ADR 0022 task 08), so the next deploy must run `make deploy-notify`.
 
 **`ops/` changes do.** Nothing syncs that tree; the host keeps its own copies. After
 a merge that touches `ops/` or `backlog/scripts/`, deploy what changed:

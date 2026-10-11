@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Four production Fabro workflows and the ops tooling for the host that runs them.
+Five production Fabro workflows and the ops tooling for the host that runs them.
 
 ## Pushing to `main` deploys
 
@@ -23,7 +23,7 @@ actually lives.
 
 | Path | What it is |
 |---|---|
-| `.fabro/workflows/<name>/` | **The only tree the automations read.** Four runnable packages — `backlog`, `pr-review`, `issue-triage`, `arch-review` — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog` and `pr-review` splice in, and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
+| `.fabro/workflows/<name>/` | **The only tree the automations read.** Five runnable packages — `backlog`, `pr-review`, `issue-triage`, `arch-review`, `dependabot` — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in, and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
 | `.fabro/workflows/_io/` | The **Stage manifest** and output schemas (ADR 0016): the only source of every `FABRO_IO_MANIFEST` block, generated into each `workflow.toml`. Never hand-edit the generated blocks; `check` fails on drift. |
 | `ops/` | Host replication: compose, the coder scheduler, profile images, provisioning, sweepers, and the offline checkers. No automation reads this tree. `ops/README.md` has its contents table and the runbooks. |
 | `docs/` | `docs/adr/` holds the decisions; every other folder is a task series or a set of design records. `docs/README.md` indexes them with their status. |
@@ -55,6 +55,8 @@ writes it, is the most common way to break one of these.
   and the auto-merge switches.
 - `docs/agents/invariants-host.md`: stylesheet models and fallbacks, the settings overlay
   and providers, and the profile images.
+- `docs/agents/invariants-dependabot.md`: the `dependabot` package: the merge loop's checkout,
+  the patch path, and the tracking issue.
 
 ## Validating
 
@@ -81,6 +83,8 @@ one warning, `pr_number` unbound in `validate_input`; `IssueTriage (16 nodes, 36
 and `ArchReview (24 nodes, 54 edges)` clean. Both warnings are deliberate: never bind
 those inputs in `[run.inputs]`. `make check-host` compares `fabro validate`'s node and
 edge counts against these.
+
+Dependabot (N nodes, M edges): placeholder until task 10 records the `fabro validate` baseline.
 
 `docs/agents/validating.md` says what each gate covers and misses, why the warnings are
 deliberate, and why `fabro preflight` is not an offline check.
@@ -110,7 +114,8 @@ ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro events <
 `fabro events -p` shows which edge was selected and why, which is where a wrong-route
 bug surfaces. The coder scheduler is the only producer of `backlog` runs. Fire a run by
 hand only with `~/bin/fabro-fire-pr-review.sh <owner/repo> <pr>` or
-`~/bin/fabro-fire-backlog.sh <owner/repo> <issue>`. `docs/agents/server.md` says why the
+`~/bin/fabro-fire-backlog.sh <owner/repo> <issue>`. A `dependabot-<repo>` run fires through
+its `api:manual` trigger (task 10 records the command). `docs/agents/server.md` says why the
 automation endpoint cannot carry the input, and covers the scheduler.
 
 The operational history is `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md` on the Mac,

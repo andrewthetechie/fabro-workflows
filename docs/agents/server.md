@@ -52,3 +52,5 @@ The coder scheduler: an external service that owns admission to the two llama.cp
 
 `ops/README.md` has the environments and automations tables, which schedules are
 enabled, host rebuild, the profile images, and the branch sweeper.
+
+`dependabot` runs come only from the four `dependabot-<repo>` schedules and from each row's `api:manual` trigger. They take no input. The coder scheduler does not see them, so a `dependabot` run never takes a coder slot or blocks a `backlog` dispatch (ADR 0022 D10). Its per-repository switch is the `auto_merge` token in the row's description, read once in `prep` (`ops/fabro-auto-merge-switch.sh --workflow dependabot <owner/repo> on|off`).

@@ -4468,7 +4468,7 @@ check "dependabot prep: empty description, host on: merge_enabled 1" "1" "$(cat 
 # 2. The row says auto_merge=false: off, and the reason names the repository switch.
 dep_prep_case repo-off '"auto_merge=false"' 1 ""
 check "dependabot prep: auto_merge=false: merge_enabled 0" "0" "$(cat "$DEP_DIR/dep/merge_enabled")"
-check "dependabot prep: auto_merge=false: reason names the repository switch" "1" "$(grep -c 'switched off for this repository' "$DEP_DIR/dep/merge_off_reason")"
+check "dependabot prep: auto_merge=false: reason names the dependabot-<repo> row" "1" "$(grep -c 'switched off for dependabot-jelly-swipe. Flip it with ops/fabro-auto-merge-switch.sh dependabot-jelly-swipe on' "$DEP_DIR/dep/merge_off_reason")"
 
 # 3. The API cannot be read: off, because a switch that cannot be read is not armed.
 dep_prep_case api-down '"auto_merge=true"' 1 1

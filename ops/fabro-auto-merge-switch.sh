@@ -1,7 +1,9 @@
 #!/bin/sh
 # fabro-auto-merge-switch.sh — flip an auto-merge kill switch.
 #
-# Usage: fabro-auto-merge-switch.sh <owner/repo | automation-id | host> <on|off>
+# Usage: fabro-auto-merge-switch.sh [--workflow dependabot] <owner/repo | automation-id | host> <on|off>
+#   --workflow dependabot selects the dependabot-<repo> row by its repository (ADR 0022 D17). Without it,
+#   owner/repo selects the pr-review-<repo> row. An automation id may be either row's id.
 #
 # `host` flips the host-wide switch; anything else flips that one repository's.
 # Auto-merge happens only when both read enabled, and neither undoes a merge that has
@@ -45,7 +47,17 @@ DRY_RUN="${DRY_RUN:-1}"
 
 die() { printf '%s\n' "$1" >&2; exit 1; }
 
-[ "$#" -eq 2 ] || die "usage: fabro-auto-merge-switch.sh <owner/repo|automation-id|host> <on|off>"
+WORKFLOW=pr-review
+if [ "${1:-}" = "--workflow" ]; then
+  [ "$#" -ge 2 ] || die "usage: fabro-auto-merge-switch.sh [--workflow dependabot] <owner/repo|automation-id|host> <on|off>"
+  WORKFLOW="$2"
+  shift 2
+fi
+case "$WORKFLOW" in
+  pr-review | dependabot) ;;
+  *) die "--workflow must be pr-review or dependabot, got '$WORKFLOW'" ;;
+esac
+[ "$#" -eq 2 ] || die "usage: fabro-auto-merge-switch.sh [--workflow dependabot] <owner/repo|automation-id|host> <on|off>"
 TARGET_ARG="$1"
 WANT_ARG="$2"
 
@@ -109,8 +121,8 @@ esac
 case "$TARGET_ARG" in
   */*)
     jq --arg repo "$TARGET_ARG" \
-      '[.data[] | select(.workflow == "pr-review" and .target.repo == $repo)]' \
-      "$tmp/list.json" > "$tmp/match.json" \
+      '[.data[] | select(.workflow == $wf and .target.repo == $repo)]' \
+      --arg wf "$WORKFLOW" "$tmp/list.json" > "$tmp/match.json" \
       || die "could not parse the automations response"
     ;;
   *)
@@ -133,8 +145,8 @@ desc="$(jq -r '.[0].description // ""' "$tmp/match.json")"
 old_tok="$(printf '%s' "$desc" | grep -o 'auto_merge=[A-Za-z0-9_-]*' | tail -1 | cut -d= -f2)"
 
 case "$id" in
-  pr-review-*) ;;
-  *) die "$id is not a pr-review automation; a backlog row has no auto-merge switch" ;;
+  pr-review-*|dependabot-*) ;;
+  *) die "$id is not a pr-review or dependabot automation; a backlog row has no auto-merge switch" ;;
 esac
 
 # --------------------------------------------------------- 2. rewrite the token ----
@@ -142,7 +154,10 @@ esac
 # stomping the prose to store one token would be a poor trade.
 case "$desc" in
   *auto_merge=*) new_desc="$(printf '%s' "$desc" | sed 's/auto_merge=[A-Za-z0-9_-]*/auto_merge='"$want"'/g')" ;;
-  '') new_desc="pr-review config-only row (never fired). auto_merge=$want" ;;
+  '') case "$id" in
+    dependabot-*) new_desc="dependabot daily run (switch only). auto_merge=$want" ;;
+    *) new_desc="pr-review config-only row (never fired). auto_merge=$want" ;;
+    esac ;;
   *) new_desc="$desc auto_merge=$want" ;;
 esac
 

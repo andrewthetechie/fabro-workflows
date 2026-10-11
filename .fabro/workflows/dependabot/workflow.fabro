@@ -74,7 +74,7 @@ if [ \"$AM\" = 1 ] && [ \"$H\" = 1 ]; then
   : > /tmp/fabro/dep/merge_off_reason
 elif [ \"$AM\" != 1 ]; then
   echo 0 > /tmp/fabro/dep/merge_enabled
-  echo 'Auto-merge is switched off for this repository. Flip it with ops/fabro-auto-merge-switch.sh.' > /tmp/fabro/dep/merge_off_reason
+  echo \"Auto-merge is switched off for dependabot-$NAME. Flip it with ops/fabro-auto-merge-switch.sh dependabot-$NAME on.\" > /tmp/fabro/dep/merge_off_reason
 else
   echo 0 > /tmp/fabro/dep/merge_enabled
   echo 'Auto-merge is switched off host-wide: the FABRO_AUTO_MERGE server variable is not 1. Re-arm it with ops/fabro-auto-merge-switch.sh host on.' > /tmp/fabro/dep/merge_off_reason

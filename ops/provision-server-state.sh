@@ -1,7 +1,7 @@
 #!/bin/sh
 # Provision the server-side automation state a freshly rebuilt fabro host needs:
-# one automation per in-scope target repo for both the backlog and pr-review
-# workflows. Each repo runs in an image that can build that repo
+# one automation per in-scope target repo for the backlog, pr-review, arch-review and
+# dependabot workflows. Each repo runs in an image that can build that repo
 # (buildpack-deps:noble has no cargo / bun and would fail CI on two of the four
 # repos), which is why there is one automation per repo with a specific
 # environment_id.
@@ -206,7 +206,7 @@ provision_variable() {
 }
 
 # provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty> [schedule_expr] [auto_merge] [schedule_enabled]
-#   - workflow is "backlog", "pr-review", "issue-triage" or "arch-review"; all live in
+#   - workflow is "backlog", "pr-review", "issue-triage", "arch-review" or "dependabot"; all live in
 #     andrewthetechie/fabro-workflows@main.
 #   - schedule_id, when non-empty, adds a DISABLED schedule row for operator
 #     convenience, using schedule_expr. The four backlog schedules are staggered
@@ -250,7 +250,7 @@ provision_automation() {
       DRIFT_FOUND=1
     fi
     check_triggers "$id" "$schedule_id" "$schedule_expr"
-    if [ "$workflow" = "pr-review" ]; then
+    if [ "$workflow" = "pr-review" ] || [ "$workflow" = "dependabot" ]; then
       existing_desc=$(jq -r --arg id "$id" \
         '.data[]? | select(.id == $id) | .description // ""' /tmp/provision_list.json)
       # Passed as an argument, not piped: description_auto_merge reads "$1", and a
@@ -282,6 +282,9 @@ provision_automation() {
   # JSON syntax into this string.
   if [ "$workflow" = "pr-review" ]; then
     description_field="\"description\":\"pr-review config-only row for $repo (never fired). auto_merge=$auto_merge\","
+  elif [ "$workflow" = "dependabot" ]; then
+    # The per-repository switch the dependabot run reads in prep (ADR 0022 D17).
+    description_field="\"description\":\"dependabot daily run for $repo. auto_merge=$auto_merge\","
   else
     description_field=""
   fi
@@ -342,12 +345,21 @@ provision_automation issue-triage-writers-app rust-node andrewthetechie/writers-
 
 # arch-review (ADR 0012 D7): created with the schedule ENABLED, the only rows that are.
 # Two fixed weekdays per repo, 3 or 4 days apart, and never two repos in the same hour
-# of the same day. The `true` before it is auto_merge, which only pr-review rows read.
+# of the same day. The `true` before it is auto_merge, which only pr-review and dependabot rows read.
 echo "Provisioning arch-review automations..."
 provision_automation arch-review-jelly-swipe python andrewthetechie/jelly-swipe arch-review twice-weekly "0 4 * * 1,4" true true || FAILED=$((FAILED+1))
 provision_automation arch-review-lawncare-saas python-node andrewthetechie/lawncare-saas arch-review twice-weekly "0 4 * * 2,5" true true || FAILED=$((FAILED+1))
 provision_automation arch-review-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports arch-review twice-weekly "0 4 * * 3,6" true true || FAILED=$((FAILED+1))
 provision_automation arch-review-writers-app rust-node andrewthetechie/writers-app arch-review twice-weekly "0 5 * * 0,3" true true || FAILED=$((FAILED+1))
+
+# dependabot (ADR 0022 D8, D10): one daily run per repository, created with the schedule ENABLED, at
+# staggered host times. Each row's auto_merge token is the per-repository switch; the host switch is
+# FABRO_AUTO_MERGE. Flip a row with ops/fabro-auto-merge-switch.sh dependabot-<repo> on|off.
+echo "Provisioning dependabot automations..."
+provision_automation dependabot-jelly-swipe python andrewthetechie/jelly-swipe dependabot daily "0 5 * * *" true true || FAILED=$((FAILED+1))
+provision_automation dependabot-lawncare-saas python-node andrewthetechie/lawncare-saas dependabot daily "20 5 * * *" true true || FAILED=$((FAILED+1))
+provision_automation dependabot-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports dependabot daily "40 5 * * *" true true || FAILED=$((FAILED+1))
+provision_automation dependabot-writers-app rust-node andrewthetechie/writers-app dependabot daily "0 6 * * *" true true || FAILED=$((FAILED+1))
 
 if [ "$FAILED" -ne 0 ]; then
   echo "$FAILED automation(s) could not be created; see the errors above." >&2
@@ -359,4 +371,4 @@ if [ "$DRIFT_FOUND" -ne 0 ]; then
   exit 2
 fi
 
-echo "Done. Backlog and issue-triage schedules are created disabled; enable them if this was a rebuild. arch-review schedules are created enabled (ADR 0012)."
+echo "Done. Backlog and issue-triage schedules are created disabled; enable them if this was a rebuild. arch-review schedules are created enabled (ADR 0012). dependabot schedules are created enabled (ADR 0022 D10)."
