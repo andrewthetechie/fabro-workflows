@@ -7,7 +7,7 @@
 `merge-queue-<repo>` rows (schedules still disabled), and the 05:07 retention cron. Task 10:
 step 1 passed; step 2 (quiet sweep) passed, run `01M4PEFW4G6YVTVD3QSG4VM06X`, 4 s to the first
 node and 8 s in total, so S6 needs no `light` environment; step 5 (hand-off) passed, run
-`01M4PEJCY2C51EQT7BFSWAPP2S` on jelly-swipe#453, closed after. Steps 3, 4 and 6 onward are open,
+`01M4PEJCY2C51EQT7BFSWAPP2S` on jelly-swipe#453, closed after. Step 4 (strict repository) passed on jelly-swipe: #454 -> PR #456 (run `01M4PFJP7BFA50A1022D7P8DVW`, 15.2 min, lease 15.3 min) merged by sweep `01M4PH696HFRZDPPKJFSGN20BB`; #455 -> PR #457 (run `01M4PGF0M471YCZV1VS2J311N4`, 12.2 min) went BEHIND, was rebased by `01M4PH897893XQC28P53XW45DK` (REBASE method, author kept, committer the token user) and merged by `01M4PHCWR236ZMRNHPQN1KW95G`. Steps 3a-e also hold on #454; step 3 proper (wfs#1834, lawncare#2764) and 6 onward are open,
 and the host cap is 8 (restarted 21:44Z). ADR 0023 (the fast lane) and ADR 0024 (the merge queue) are
 proposed. The series answers issue #23 with the operator's alternative: one label-selected
 lane per issue instead of a batch lane.
