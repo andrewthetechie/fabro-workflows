@@ -26,9 +26,9 @@ HOST=${HOST:-andrew@10.10.0.32}
 say() { builtin printf '\n== %s ==\n' "$*"; }
 
 # The AGENTS.md *Validating* node/edge baselines, keyed by package name. fabro
-# validate prints `Workflow: Backlog (69 nodes, 162 edges)`; match on the counts.
+# validate prints `Workflow: Backlog (69 nodes, 163 edges)`; match on the counts.
 declare -A BASELINE=(
-    [backlog]="69 nodes, 162 edges"
+    [backlog]="69 nodes, 163 edges"
     [pr-review]="34 nodes, 73 edges"
     [issue-triage]="16 nodes, 36 edges"
     [arch-review]="24 nodes, 54 edges"

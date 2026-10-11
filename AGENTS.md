@@ -77,7 +77,7 @@ The offline gates need only jq, awk, git, python3.11 and, when `ops/fabro-io/` o
 `_io/schemas/` changed, cargo. `git push --no-verify` skips the hook. There is no `fabro`
 binary on this Mac, so graph validation happens in the container via `make check-host`.
 
-Baselines (as of 2026-10-02, fabro 0.362.0-nightly.0): `Backlog (69 nodes, 162 edges)`
+Baselines (as of 2026-10-02, fabro 0.362.0-nightly.0): `Backlog (69 nodes, 163 edges)`
 with one warning, `issue_number` unbound in `claim`; `PrReview (34 nodes, 73 edges)` with
 one warning, `pr_number` unbound in `validate_input`; `IssueTriage (16 nodes, 36 edges)`
 and `ArchReview (24 nodes, 54 edges)` clean; `Dependabot (46 nodes, 101 edges)` clean

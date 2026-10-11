@@ -957,7 +957,14 @@ fi
 echo '{\"context_updates\":{\"review_decision\":\"'$D'\"}}'"]
 
     integrate [label="Integrate task", shape=parallelogram,
-        script="T=$(jq -r .title /tmp/fabro/current_task.json)
+        script="WFB=$(for C in $(git rev-list --no-merges origin/main..HEAD 2>/dev/null); do git diff-tree --no-commit-id --name-only -r \"$C\" -- .github/workflows/ | sed 's/^/'$C' /'; done)
+if [ -n \"$WFB\" ]; then
+  echo 'refusing to integrate: a commit of this task changes a file under .github/workflows/, which no agent may edit.' >&2
+  echo 'the sandbox token lacks the `workflow` scope, so the branch could never be pushed. commits whose own diff touches it:' >&2
+  echo \"$WFB\" | while read -r C F; do echo \"  $(git log -1 --format='%h %s' $C)\" >&2; echo \"    $F\" >&2; done
+  exit 1
+fi
+T=$(jq -r .title /tmp/fabro/current_task.json)
 S=$(jq -r '.summary // empty' /tmp/fabro/review/verdict.json 2>/dev/null || true)
 { echo '### Task: '$T; echo '- Review: '$S; echo; } >> /tmp/fabro/completed.md
 echo integrated"]
@@ -1204,6 +1211,52 @@ echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'
     // 3.5 hours behind the sandbox, and cost two `[P] Accept partial` answers before the
     // loop was recognised. 98 commits and 71 files of real work sat only in the sandbox.
     //
+    // The check walks `git rev-list --no-merges origin/main..HEAD` and reads each commit's
+    // OWN diff with `git diff-tree`, not a two-dot `git diff`: the rejection is evaluated
+    // against the COMMITS in the push, so a branch that edits a workflow file and reverts
+    // it later still fails, and a net-diff test would call that branch clean. Merge
+    // commits are skipped on purpose. A run's `git merge origin/main` creates a merge
+    // commit that a path-limited `git log` lists whenever main changed a workflow file,
+    // and the delta in it came entirely from main (issue #18; runs 01M4DKMH501PBVGDWXX15QSE4E,
+    // 01M4DSYPAWDMJB68CCX5HM3M56, 01M4E7SM2CQP3AAA4V7AJ4TTRC, womens-fantasy-sports,
+    // 2026-10-08: every task done, then refused, each holding a coder lease for hours).
+    // The old list printed those merges with an empty `files:` section. This list prints
+    // only the commit and file that matched. The same check runs in `integrate`, so a
+    // task commit that edits a workflow file stops the run at the end of that task.
+    //
+    // It runs before the setup/ci loop, not after: there is nothing to validate on a tree
+    // that equals main, and the loop is two full CI runs on a 20m budget.
+    //
+    // `exit 1` takes the unconditional edge back to `human_rescue`, which is deliberate
+    // rather than a route to `mark_stuck`: this node declares no routing schema, and an
+    // operator who answers `[P]` a second time gets the same refusal rather than a PR.
+    // The message names `[X] Abandon` because that is the answer that does the label
+    // cleanup -- `agent-in-progress` off, `agent-stuck` on -- instead of leaving the
+    // issue mid-flight.
+    //
+    // The SECOND floor is `.github/workflows/`. An agent that edits one poisons the whole
+    // branch: the sandbox pushes over HTTPS with an OAuth App token (`gho_`), and GitHub
+    // refuses any push whose new commits create or update a workflow file unless that
+    // token carries the `workflow` scope. The host token does not -- its scopes are
+    // `admin:public_key, gist, read:org, repo` -- and `repo` does not imply it.
+    //
+    // Everything about that failure is quiet until it is terminal. The checkpoint push
+    // after every stage only WARNS (`Failed to push run branch ... [git_push_failed]`),
+    // so the run keeps going with the remote branch frozen; `open_pr` is the first node
+    // that cares, and it dies on `git push -u origin HEAD` under `set -e` in ~1s with
+    // no routing schema and therefore `unknown error`. It then takes its unconditional
+    // edge to `human_rescue`, whose `[P] Accept partial` leads straight back to THIS
+    // node -- an unbounded loop through 2.8m of aggregate and CI, ending in the same
+    // deterministic rejection every pass.
+    //
+    // Cost, run 01M33SDMZF55NAEV8JV29A8EA4 on 2026-09-22, womens-fantasy-sports#1201:
+    // the `coder` stage on task 7 of 7 deleted one clause from a five-line YAML COMMENT
+    // in `.github/workflows/test-backend.yml` -- seven lines, zero workflow semantics,
+    // and the task's own reviewer flagged it as a nit to revert. That one commit
+    // (7e0503d) rejected 17 of the run's 96 checkpoint pushes, froze the remote branch
+    // 3.5 hours behind the sandbox, and cost two `[P] Accept partial` answers before the
+    // loop was recognised. 98 commits and 71 files of real work sat only in the sandbox.
+    //
     // The check is `git log --no-merges origin/main..HEAD -- .github/workflows/`, not a
     // two-dot `git diff`: the rejection is evaluated against the COMMITS in the push, so a
     // branch that edits a workflow file and reverts it later still fails, and a net-diff
@@ -1244,17 +1297,16 @@ if git diff --quiet origin/main HEAD; then
   echo 'answer [X] Abandon at the rescue gate unless the run can be made to do the work.' >&2
   exit 1
 fi
-if [ -n \"$(git log --no-merges --format=%H origin/main..HEAD -- .github/workflows/ | head -1)\" ]; then
+WFB=$(for C in $(git rev-list --no-merges origin/main..HEAD); do git diff-tree --no-commit-id --name-only -r \"$C\" -- .github/workflows/ | sed 's/^/'$C' /'; done)
+if [ -n \"$WFB\" ]; then
   echo 'refusing to open a PR: a commit on this branch changes a file under .github/workflows/.' >&2
   echo 'the sandbox pushes over HTTPS with an OAuth App token. GitHub rejects any push whose' >&2
   echo 'new commits create or update a workflow file unless that token carries the `workflow`' >&2
   echo 'scope, and this one does not -- the push fails with:' >&2
   echo '  ! [remote rejected] (refusing to allow an OAuth App to create or update workflow' >&2
   echo '    `.github/workflows/...` without `workflow` scope)' >&2
-  echo 'commits that touch it:' >&2
-  git log --oneline origin/main..HEAD -- .github/workflows/ | sed 's/^/  /' >&2
-  echo 'files:' >&2
-  git diff --name-only origin/main HEAD -- .github/workflows/ | sed 's/^/  /' >&2
+  echo 'commits whose own diff touches it (merge commits are not listed):' >&2
+  echo \"$WFB\" | while read -r C F; do echo \"  $(git log -1 --format='%h %s' $C)\" >&2; echo \"    $F\" >&2; done
   echo 'this is NOT recoverable by answering [P] Accept partial again: the rejection is' >&2
   echo 'deterministic and every later checkpoint push on this branch fails the same way.' >&2
   echo 'the operator fixes it one of two ways, both outside this run:' >&2
@@ -1690,7 +1742,7 @@ if [ ! -s $F/issue.json ]; then
   P='The run never read the issue, so there is no PR to open. You come back here.'
 elif git diff --quiet origin/main HEAD 2>/dev/null; then
   P='The branch changes no file, so open_pr_prep refuses: a PR would claim work that does not exist. You come back here.'
-elif [ -n \"$(git log --no-merges --format=%H origin/main..HEAD -- .github/workflows/ 2>/dev/null | head -1)\" ]; then
+elif [ -n \"$(for C in $(git rev-list --no-merges origin/main..HEAD 2>/dev/null); do git diff-tree --no-commit-id --name-only -r \"$C\" -- .github/workflows/; done)\" ]; then
   P='A commit on this branch changes .github/workflows/, which the sandbox token cannot push, so open_pr_prep refuses. You come back here.'
 else
   if [ -n \"$PR\" ]; then
@@ -1892,7 +1944,8 @@ echo done"]
     review_gate -> rework_router    [condition="context.review_decision=changes_requested"]
     review_gate -> rescue_brief
 
-    integrate -> next_task
+    integrate -> next_task          [condition="outcome=succeeded"]
+    integrate -> rescue_brief
 
     rework_router -> rework_t1      [condition="context.round<2"]
     rework_router -> rework_t2      [condition="context.round>=2 && context.round<4"]

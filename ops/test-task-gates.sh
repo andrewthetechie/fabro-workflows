@@ -1423,7 +1423,7 @@ check "workflow file names the scope" "1" "$(grep -c 'workflow. scope' <<<"$OUT"
 check "workflow file lists the commit" "1" \
     "$(grep -c 'coder (succeeded)' <<<"$OUT")"
 check "workflow file lists the file" "1" \
-    "$(grep -c '  .github/workflows/test-backend.yml' <<<"$OUT")"
+    "$(grep -c '^    .github/workflows/test-backend.yml' <<<"$OUT")"
 check "workflow file says [P] will not help" "1" \
     "$(grep -c 'NOT recoverable by answering' <<<"$OUT")"
 check "workflow file runs no CI" "0" "$(wc -l < "$T/opp.log" | tr -d ' ')"
@@ -1461,8 +1461,54 @@ check "workflow change from main still runs CI" "2" "$(wc -l < "$T/opp.log" | tr
 #     workflow commits, which tests 7 and 8 still catch. Grepping the extracted script is
 #     the binding contract test: a revert to plain `git log` re-opens this bug and fails
 #     here even though no fixture can cheaply rebuild the historical 3-way merge state.
-check "guard excludes merge commits" "1" "$(grep -c -- 'git log --no-merges' "$T/open_pr_prep.sh")"
+check "guard excludes merge commits" "1" "$(grep -c -- 'rev-list --no-merges' "$T/open_pr_prep.sh")"
+check "guard reads each commit's own diff" "1" "$(grep -c -- 'diff-tree --no-commit-id' "$T/open_pr_prep.sh")"
 check "guard still scopes to workflows path" "1" "$(grep -q -- '-- .github/workflows/' "$T/open_pr_prep.sh" && echo 1 || echo 0)"
+
+# 11. Issue #18. A real merge of a main that changed a workflow file, on a branch
+#     with a stage checkpoint after it: the PR opens, and the checkpoint is not
+#     blamed. (Test 9 covers the merge; this adds the commit after it.)
+opp_repo work
+mkdir -p "$T/up/.github/workflows"
+printf '%s\n' 'name: t' 'on: push' 'jobs: {}' > "$T/up/.github/workflows/test-backend.yml"
+git -C "$T/up" add -A
+git -C "$T/up" commit -qm 'main changes its own CI'
+git -C "$T/wt" fetch -q origin main
+git -C "$T/wt" merge -q --no-edit origin/main
+git -C "$T/wt" commit -q --allow-empty -m 'fabro(01TEST): next_task (succeeded)'
+OUT=$(opp_run); RC=$?
+check "merged main workflow change opens the PR" "0" "$RC"
+
+# 12. The message names only the offending commit and file, never a merge commit.
+opp_repo workflow
+git -C "$T/up" commit -q --allow-empty -m 'main moves on'
+OUT=$(opp_run); RC=$?
+check "workflow after a merge still refused" "1" "$RC"
+check "workflow message names no merge commit" "0" "$(grep -c "Merge remote-tracking" <<<"$OUT")"
+check "workflow message names the commit" "1" "$(grep -c '^  [0-9a-f]* fabro(01TEST): coder' <<<"$OUT")"
+
+# 13. `integrate` refuses at the end of the task whose commit edited a workflow file,
+#     and passes a task whose branch only merged one in from main.
+stage integrate
+printf '%s' '{"title":"t"}' > "$T/current_task.json"
+mkdir -p "$T/review"; : > "$T/completed.md"
+integrate_run() { ( cd "$T/wt" && sh "$T/integrate.sh" 2>&1 ); }
+opp_repo workflow
+mkdir -p "$T/review"; printf '%s' '{"title":"t"}' > "$T/current_task.json"
+OUT=$(integrate_run); RC=$?
+check "integrate refuses a task workflow edit" "1" "$RC"
+check "integrate names the commit" "1" "$(grep -c '^  [0-9a-f]* fabro(01TEST): coder' <<<"$OUT")"
+check "integrate names the file" "1" "$(grep -c '^    .github/workflows/test-backend.yml' <<<"$OUT")"
+check "integrate records nothing on refusal" "absent" \
+    "$([ -s "$T/completed.md" ] && echo present || echo absent)"
+opp_repo work
+mkdir -p "$T/up/.github/workflows"
+printf '%s\n' 'name: t' 'on: push' 'jobs: {}' > "$T/up/.github/workflows/test-backend.yml"
+git -C "$T/up" add -A; git -C "$T/up" commit -qm 'main changes its own CI'
+git -C "$T/wt" fetch -q origin main; git -C "$T/wt" merge -q --no-edit origin/main
+mkdir -p "$T/review"; printf '%s' '{"title":"t"}' > "$T/current_task.json"
+OUT=$(integrate_run); RC=$?
+check "integrate passes a merge of main" "0" "$RC"
 
 PATH="$SAVED_PATH"
 
@@ -2179,6 +2225,8 @@ case "$1 $2" in
   "diff --quiet") [ -f "$GIT_STATE/empty_diff" ] && exit 0; exit 1 ;;
   "log --format=%H") [ -f "$GIT_STATE/wf_commit" ] && echo deadbeef ;;
   "log --no-merges") [ -f "$GIT_STATE/wf_commit" ] && echo deadbeef ;;
+  "rev-list --no-merges") echo deadbeef ;;
+  "diff-tree --no-commit-id") [ -f "$GIT_STATE/wf_commit" ] && echo .github/workflows/ci.yml ;;
   "rev-parse --abbrev-ref") echo "fabro/run/01TESTRUN" ;;
 esac
 exit 0
