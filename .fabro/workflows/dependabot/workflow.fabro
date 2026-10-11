@@ -31,8 +31,10 @@ digraph Dependabot {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    // Resets the run-local files, reads the repository's default branch, and reads this
-    // repository's switch from its `dependabot-<repo>` row (ADR 0022 D17). The switch is read
+    // Resets the run-local files, records the run branch, reads the repository's default branch, and reads this
+    // repository's switch from its `dependabot-<repo>` row (ADR 0022 D17). The run branch is recorded here, not
+    // in dep_next: a repository with no Dependabot PR never visits dep_next, and sync_base needs it (the first
+    // lawncare-saas run, 01M4M6TEY2QGCQBCAQ103RECX8, stopped there). The switch is read
     // once, here, so the rest of the run agrees with itself.
     prep [label="Prepare the workspace", shape=parallelogram,
         script="set -e
@@ -46,6 +48,7 @@ rm -f /tmp/fabro/dep/stop_reason /tmp/fabro/dep/alert_count /tmp/fabro/dep/dep_p
 rm -f /tmp/fabro/issue.json /tmp/fabro/pr_number /tmp/fabro/review_merge_outcome /tmp/fabro/auto_merge_repo
 rm -f /tmp/fabro/dep/patch_visits /tmp/fabro/dep/patch_feedback.md /tmp/fabro/dep/patch.json /tmp/fabro/dep/patch_status
 date +%s > /tmp/fabro/run_started
+git symbolic-ref --short HEAD > /tmp/fabro/dep/run_branch
 echo '[]' > /tmp/fabro/dep/results.json
 gh repo view --json nameWithOwner,defaultBranchRef > /tmp/fabro/dep/repo.json
 jq -r .defaultBranchRef.name /tmp/fabro/dep/repo.json > /tmp/fabro/base_ref
@@ -181,7 +184,7 @@ D=/tmp/fabro/dep
 if [ ! -f $D/loop_started ]; then
   date +%s > $D/loop_started
   echo 0 > $D/cursor
-  git symbolic-ref --short HEAD > $D/run_branch
+  [ -s $D/run_branch ] || git symbolic-ref --short HEAD > $D/run_branch
 fi
 RB=$(cat $D/run_branch)
 if [ \"$(git symbolic-ref --short HEAD)\" != \"$RB\" ] || [ -n \"$(git status --porcelain)\" ]; then

@@ -4502,6 +4502,9 @@ check "dependabot prep: reset run exits 0" "0" "$(cat "$DEP_RESET.rc")"
 check "dependabot prep: results.json is []" "[]" "$(jq -c . "$DEP_RESET/dep/results.json")"
 check "dependabot prep: no stale contract left" "0" "$(ls "$DEP_RESET/dep" | grep -cE '^(alerts|prs|group|patch|cur|cur_result)\.json$')"
 check "dependabot prep: stopped_at cleared on success" "0" "$(test -e "$DEP_RESET/dep/stopped_at" && echo 1 || echo 0)"
+# A repository with no Dependabot PR goes from inventory straight to pick_group, so dep_next never runs:
+# prep must record the run branch for sync_base.
+check "dependabot prep: records the run branch" "$(git -C "$DEP_RESET" symbolic-ref --short HEAD)" "$(cat "$DEP_RESET/dep/run_branch" 2>/dev/null)"
 T="$DEP_SAVED_T"
 
 
