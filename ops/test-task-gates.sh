@@ -5088,6 +5088,13 @@ check "open_pr: the tracking issue gets Review" "1" "$(grep -c 'issue edit 412 -
 check "open_pr: pr_number is 412" "412" "$(cat "$OP/fab/pr_number")"
 check "open_pr: publishes pr_url" "https://github.com/andrewthetechie/jelly-swipe/pull/412" "$(tail -1 "$OP/open_pr.out" | jq -r .context_updates.pr_url)"
 
+# A manifest path with no spaces is never cut mid-path into an empty "in": the subject falls back to the
+# manifest's basename, then drops " in <manifest>" (jelly-swipe issue #448 was titled "... security alerts in").
+op_repo opdir
+jq '.package = "source-map-js" | .manifest = "frontend/package-lock.json"' "$OP/fab/dep/group.json" > "$OP/fab/dep/g.tmp" && mv "$OP/fab/dep/g.tmp" "$OP/fab/dep/group.json"
+op_run open_pr
+check "open_pr, a long manifest path: the subject drops the manifest whole" "fix(deps): patch source-map-js security alerts (#412)" "$(cat "$OP/fab/commit_subject.txt")"
+
 # after_merge: merged closes each replaced PR once, with the comment; needs_human labels the issue.
 op_repo am
 printf '412' > "$OP/fab/pr_number"; echo merged > "$OP/fab/review_merge_outcome"

@@ -527,7 +527,7 @@ jq -r -n --arg key \"$KEY\" --arg pkg \"$PKG\" --arg man \"$MAN\" --slurpfile g 
     ($al | sort_by(.number) | .[] | \"| [#\" + (.number | tostring) + \"](\" + .html_url + \") | \" + .security_advisory.severity + \" | \" + (.dependency.scope // \"unknown\") + \" | \" + (.security_vulnerability.vulnerable_version_range // \"\") + \" | \" + (.security_vulnerability.first_patched_version.identifier // \"\") + \" | \" + .security_advisory.ghsa_id + (if .security_advisory.cve_id then \" / \" + .security_advisory.cve_id else \"\" end) + \" |\"),
     (if ($g[0].replaces | length) > 0 then \"\", \"Replaces:\", ($g[0].replaces[] as $r | ($pr[0] | map(select(.number == $r)) | .[0].url) as $u | \"- [#\" + ($r | tostring) + \"](\" + $u + \")\") else empty end)
 ' > $D/issue_body.md
-TITLE=$(jq -rn --arg p \"$PKG\" --arg m \"$MAN\" '\"fix(deps): patch \" + $p + \" security alerts in \" + $m | if length > 72 then (.[0:72] | sub(\" [^ ]*$\"; \"\")) else . end')
+TITLE=$(jq -rn --arg p \"$PKG\" --arg m \"$MAN\" 'def ttl($p; $m; $lim): (\"fix(deps): patch \" + $p + \" security alerts\") as $h | [$h + \" in \" + $m, $h + \" in \" + ($m | split(\"/\") | last), $h] | map(select(length <= $lim)) | .[0] // ((\"fix(deps): patch \" + $p) | .[0:$lim]); ttl($p; $m; 72)')
 if [ \"$NUM\" = 0 ]; then
   URL=$(gh issue create --title \"$TITLE\" --body-file $D/issue_body.md --label security --label dependencies --label ai-generated) || stop 'track_issue: could not file the tracking issue'
   NUM=${URL##*/}
@@ -682,7 +682,7 @@ PKG=$(jq -r .package $D/group.json)
 MAN=$(jq -r .manifest $D/group.json)
 N=$(jq -r .issue $D/group.json)
 TO=$(jq -r '.changes[0].to // \"\"' $D/patch.json)
-jq -rn --arg p \"$PKG\" --arg m \"$MAN\" --argjson n \"$N\" '(\"fix(deps): patch \" + $p + \" security alerts in \" + $m) as $t | ($t | if length > (72 - (\" (#\" + ($n | tostring) + \")\" | length)) then (.[0:(72 - (\" (#\" + ($n | tostring) + \")\" | length))] | sub(\" [^ ]*$\"; \"\")) else . end) + \" (#\" + ($n | tostring) + \")\"' > /tmp/fabro/commit_subject.txt
+jq -rn --arg p \"$PKG\" --arg m \"$MAN\" --argjson n \"$N\" 'def ttl($p; $m; $lim): (\"fix(deps): patch \" + $p + \" security alerts\") as $h | [$h + \" in \" + $m, $h + \" in \" + ($m | split(\"/\") | last), $h] | map(select(length <= $lim)) | .[0] // ((\"fix(deps): patch \" + $p) | .[0:$lim]); (\" (#\" + ($n | tostring) + \")\") as $s | ttl($p; $m; 72 - ($s | length)) + $s' > /tmp/fabro/commit_subject.txt
 cp /tmp/fabro/commit_subject.txt /tmp/fabro/pr_title.txt
 { jq -r '.summary' $D/patch.json | cut -c1-500; echo; echo \"Resolves #$N\"; } > /tmp/fabro/commit_body.md
 {
