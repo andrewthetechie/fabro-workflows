@@ -1040,6 +1040,38 @@ S=$(jq -r '.summary // empty' /tmp/fabro/review/verdict.json 2>/dev/null || true
 { echo '### Dropped follow-up: '$T; echo '- Not in this PR. The extra-review follow-up `'$I'` was still rejected after every rework tier, so its changes were reverted. It needs a human.'; echo '- Last review: '$S; echo; } >> /tmp/fabro/completed.md
 echo 'dropped follow-up '$I': tree restored to the task base '$BASE"]
 
+    // A fast-lane task that the whole rework ladder could not land. The label was wrong:
+    // the issue is bigger than one commit, so it goes back to the queue for the standard
+    // lane (decompose, improve) instead of waiting 4h at human_rescue on a held coder box.
+    //
+    // The ORDER of the label calls is load-bearing. `fast-path` comes off first, and the
+    // node stops if that fails or if a re-read still shows it. Only then does `agent` go
+    // back on. An issue that kept `fast-path` and got `agent` back would be dispatched
+    // into the fast lane again and demoted again, without end. `agent` is added in the same
+    // call that removes `agent-in-progress` (the receipt), so an interruption cannot leave
+    // the issue with neither label (dispatch.py explains this order). The comment comes
+    // last and is best effort. Rounds above 6 (after a human's guidance) keep the old
+    // route to rescue_brief: only `round=6 && lane=fast` comes here.
+    demote_lane [label="Demote the fast-path issue to the standard lane", shape=parallelogram, timeout="2m",
+        script="F=/tmp/fabro
+N=$(jq -r .number $F/issue.json 2>/dev/null || true)
+case \"$N\" in '' | *[!0-9]*) N=$(cat $F/issue_number 2>/dev/null || true) ;; esac
+case \"$N\" in '' | *[!0-9]* | 0) echo 'demote_lane: no issue number' >&2; exit 1 ;; esac
+gh issue edit $N --remove-label fast-path || { echo 'demote_lane: could not remove fast-path' >&2; exit 1; }
+LBL=$(gh issue view $N --json labels --jq '.labels[].name') || { echo 'demote_lane: could not re-read the labels' >&2; exit 1; }
+if echo \"$LBL\" | grep -qx 'fast-path'; then echo 'demote_lane: fast-path is still on the issue' >&2; exit 1; fi
+{
+  echo 'The fast path could not land this issue: the task failed validate or review at every rework tier. fast-path was removed and the issue is back in the queue for the standard lane, which decomposes it first.'
+  if [ -s $F/feedback/rework.md ]; then
+    echo; echo '```'
+    awk 'BEGIN { e = sprintf(\"%c\", 27) } { gsub(e \"[[][0-9;]*[A-Za-z]\", \"\"); gsub(/[[:cntrl:]]/, \"\"); if ($0 ~ /^[ ]*$/) next; if (++n > 20) exit; print substr($0, 1, 400) }' $F/feedback/rework.md
+    echo '```'
+  fi
+} > $F/demote_comment.md
+gh issue edit $N --add-label agent --remove-label agent-in-progress || true
+gh issue comment $N --body-file $F/demote_comment.md || true
+echo demoted"]
+
     rework_t1 [label="Rework (tier 1: coders)", class="coder", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
     rework_t2 [label="Rework (tier 2: glm-5.3-flash)", class="coder-t2", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
     rework_t3 [label="Rework (tier 3: kimi-for-coding)", class="coder-t3", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
@@ -2016,8 +2048,11 @@ echo done"]
     rework_router -> rework_t3      [condition="context.round=4"]
     rework_router -> rework_t4      [condition="context.round=5"]
     rework_router -> drop_followup  [condition="context.round=6 && context.task_exempt=true"]
+    rework_router -> demote_lane    [condition="context.round=6 && context.lane=fast"]
     rework_router -> rescue_brief
 
+    demote_lane -> exit             [condition="outcome=succeeded"]
+    demote_lane -> rescue_brief
     drop_followup -> next_task      [condition="outcome=succeeded"]
     drop_followup -> rescue_brief
 

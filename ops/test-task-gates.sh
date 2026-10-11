@@ -2826,6 +2826,14 @@ check "asplit no number: nonzero"      "1" "$([ $RC -ne 0 ] && echo 1 || echo 0)
 check "asplit no number: 1 create"     "1" "$(grep -c '^issue create' "$AS/gh.log")"
 check "asplit no number: no link"      "0" "$(grep -c -- 'sub_issues -F sub_issue_id' "$AS/gh.log")"
 
+# fast-path never reaches a child (ADR 0023 D1); the other labels still do.
+as_reset
+printf '{"number":7,"title":"Parent","labels":[{"name":"needs-triage"},{"name":"agent"},{"name":"fast-path"},{"name":"area:keep"}],"body":"parent body"}' > "$AS/issue.json"
+sh "$AS/apply_split.sh" >/dev/null 2>&1
+check "asplit fast-path parent: 3 creates"      "3" "$(grep -c '^issue create' "$AS/gh.log")"
+check "asplit fast-path parent: no child carries fast-path" "0" "$(grep '^issue create' "$AS/gh.log" | grep -c 'fast-path')"
+check "asplit fast-path parent: other labels kept" "3" "$(grep '^issue create' "$AS/gh.log" | grep -c -- '--label=area:keep')"
+
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
@@ -5585,6 +5593,80 @@ for n in next_task route_lane resolve_merge_gate; do
 done
 check "no state matches two conditional edges out of next_task, route_lane or resolve_merge_gate" "1" "$FL_WORST"
 check "every published state has a matching conditional edge (standard next_task falls to improve)" "" "$FL_ZERO"
+
+# 9. demote_lane (task 04).
+extract demote_lane | sed "s#/tmp/fabro#$FL/dl#g" > "$FL/demote_lane.sh"
+sh -n "$FL/demote_lane.sh" 2>"$FL/demote.syntax" || { FAIL=$((FAIL + 1)); printf '  FAIL demote_lane is not valid POSIX sh\n'; }
+cat > "$FL/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$FL_LOG"
+case "$1 $2" in
+  "issue edit")
+    case "$*" in *"--remove-label fast-path"*) [ -f "$FL_DIR/edit_fail" ] && exit 1 ;; esac
+    exit 0 ;;
+  "issue view") if [ -f "$FL_DIR/still_there" ]; then printf 'agent-in-progress\nfast-path\n'; else printf 'agent-in-progress\n'; fi; exit 0 ;;
+  "issue comment") for a in "$@"; do p="$q"; q="$a"; [ "$p" = "--body-file" ] && cp "$a" "$FL_DIR/comment.md"; done; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$FL/bin/gh"
+export FL_DIR="$FL"
+fl_demote() { # <number in issue.json or -> -> FLRC
+    rm -rf "$FL/dl" "$FL/comment.md" "$FL/edit_fail" "$FL/still_there"; mkdir -p "$FL/dl/feedback"; : > "$FL_LOG"
+    [ "$1" = - ] || echo "{\"number\":$1}" > "$FL/dl/issue.json"
+    printf '## Review findings to fix\n\n\033[31mfirst finding\033[0m\n- second\n' > "$FL/dl/feedback/rework.md"
+}
+fl_demote_run() { PATH="$FL/bin:$SAVED_PATH" sh "$FL/demote_lane.sh" > "$FL/out" 2> "$FL/err"; FLRC=$?; }
+fl_demote 42; fl_demote_run
+check "demote_lane: exit 0" "0" "$FLRC"
+check "demote_lane: prints demoted" "demoted" "$(tail -1 "$FL/out")"
+check "demote_lane: call order" "1 2 3 4" "$(grep -n -e 'remove-label fast-path' -e 'issue view' -e 'add-label agent --remove-label agent-in-progress' -e 'issue comment' "$FL_LOG" | cut -d: -f1 | tr '\n' ' ' | sed 's/ $//')"
+check "demote_lane: comment has the fixed sentence" "1" "$(grep -c '^The fast path could not land this issue' "$FL/comment.md")"
+check "demote_lane: comment has the findings, without escapes" "1 0" "$(grep -c 'first finding' "$FL/comment.md") $(grep -c "$(printf '\033')" "$FL/comment.md")"
+fl_demote 42; touch "$FL/edit_fail"; fl_demote_run
+check "demote_lane remove fails: exit 1" "1" "$FLRC"
+check "demote_lane remove fails: no add-label agent" "0" "$(grep -c -- '--add-label agent' "$FL_LOG")"
+fl_demote 42; touch "$FL/still_there"; fl_demote_run
+check "demote_lane label still there: exit 1" "1" "$FLRC"
+check "demote_lane label still there: no add-label agent" "0" "$(grep -c -- '--add-label agent' "$FL_LOG")"
+fl_demote -; fl_demote_run
+check "demote_lane no number: exit 1" "1" "$FLRC"
+check "demote_lane no number: no gh call" "0" "$(wc -l < "$FL_LOG" | tr -d ' ')"
+fl_demote -; echo 77 > "$FL/dl/issue_number"; fl_demote_run
+check "demote_lane falls back to issue_number" "0 1" "$FLRC $(grep -c 'issue edit 77 --remove-label fast-path' "$FL_LOG")"
+fl_demote 42; rm -f "$FL/dl/feedback/rework.md"; fl_demote_run
+check "demote_lane without rework.md: still demotes" "0 1" "$FLRC $(grep -c 'add-label agent' "$FL_LOG")"
+# rework_router exclusivity: at most one conditional edge matches each (round, lane, task_exempt).
+rr_matches() { # <round> <lane> <task_exempt>
+    awk -v r="$1" -v ln="$2" -v ex="$3" '
+    BEGIN { v["round"] = r; v["lane"] = ln; v["task_exempt"] = ex }
+    $1 == "rework_router" && $2 == "->" && match($0, /condition="[^"]*"/) {
+        c = substr($0, RSTART + 11, RLENGTH - 12); n = split(c, cl, / && /); ok = 1
+        for (i = 1; i <= n && ok; i++) {
+            if (!match(cl[i], /^context[.][a-z_]+(>=|<=|!=|=|<|>)[A-Za-z0-9_]+$/)) { ok = 0; break }
+            t = cl[i]; sub(/^context[.]/, "", t); match(t, /(>=|<=|!=|=|<|>)/)
+            k = substr(t, 1, RSTART - 1); op = substr(t, RSTART, RLENGTH); val = substr(t, RSTART + RLENGTH)
+            x = v[k]
+            if (op == "=") g = (x == val); else if (op == "!=") g = (x != val)
+            else if (op == "<") g = (x + 0 < val + 0); else if (op == ">") g = (x + 0 > val + 0)
+            else if (op == ">=") g = (x + 0 >= val + 0); else g = (x + 0 <= val + 0)
+            if (!g) ok = 0
+        }
+        if (ok) m++
+    }
+    END { print m + 0 }' "$GRAPH"
+}
+RR_WORST=0; RR_BAD=""
+for r in 1 2 3 4 5 6 7; do for ln in fast standard; do for ex in true false; do
+    # fast + task_exempt is unreachable: a fast task's source is fast-path, never extra-review.
+    [ "$ln$ex" = fasttrue ] && continue
+    m=$(rr_matches "$r" "$ln" "$ex"); [ "$m" -gt "$RR_WORST" ] && RR_WORST=$m
+    # round 1..5 climb the ladder; round 6 has one conditional route; 7 falls to rescue_brief (zero matches).
+    case "$r:$ln:$ex" in 6:fast:*|6:standard:true) want=1 ;; 6:standard:false|7:*) want=0 ;; *) want=1 ;; esac
+    [ "$m" -eq "$want" ] || RR_BAD="$RR_BAD $r/$ln/$ex=$m"
+done; done; done
+check "no state matches two conditional edges out of rework_router" "1" "$RR_WORST"
+check "rework_router: round 6 fast demotes, standard exempt drops, standard otherwise rescues" "" "$RR_BAD"
 
 echo ""
 echo "the suite leaves the checkout alone"
