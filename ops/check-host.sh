@@ -26,13 +26,13 @@ HOST=${HOST:-andrew@10.10.0.32}
 say() { builtin printf '\n== %s ==\n' "$*"; }
 
 # The AGENTS.md *Validating* node/edge baselines, keyed by package name. fabro
-# validate prints `Workflow: Backlog (69 nodes, 163 edges)`; match on the counts.
+# validate prints `Workflow: Backlog (70 nodes, 166 edges)`; match on the counts.
 declare -A BASELINE=(
-    [backlog]="69 nodes, 163 edges"
-    [pr-review]="34 nodes, 73 edges"
+    [backlog]="70 nodes, 166 edges"
+    [pr-review]="35 nodes, 76 edges"
     [issue-triage]="16 nodes, 36 edges"
     [arch-review]="24 nodes, 54 edges"
-    [dependabot]="46 nodes, 101 edges"
+    [dependabot]="47 nodes, 104 edges"
 )
 
 say "rsync .fabro/ to $HOST:/tmp/check/"

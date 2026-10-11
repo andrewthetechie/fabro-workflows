@@ -1,7 +1,7 @@
 #!/bin/sh
 # discord-notify.sh — best-effort Discord notification for fabro runs.
 #
-# Usage: discord-notify.sh <rescue|complete|failed|merged|blocked|needs-human|fallback|triage-question|triage-failed|arch-summary|dependabot-summary>
+# Usage: discord-notify.sh <rescue|complete|failed|merged|queued|blocked|needs-human|fallback|triage-question|triage-failed|arch-summary|dependabot-summary>
 #
 # Runs as a hook with sandbox = false, i.e. inside the fabro server container
 # (Alpine: /bin/sh + wget, no bash, no curl, no jq). The event context JSON is
@@ -193,6 +193,8 @@ case "$kind" in
   # `issue_number` as context_updates precisely so the enrichment above (unchanged)
   # fills in `$subject` and the PR link on this line.
   merged)   msg="🚀 fabro squash-merged a PR${subject}" ;;
+  # Queue mode (ADR 0024): approved, labelled merge-on-green, merge left to the merge queue.
+  queued)   msg="🕒 fabro approved a PR and queued it to merge on green${subject}" ;;
   # The two ways the imported review-merge phase stops without merging. Two kinds and
   # not one, because they ask the operator for different things: `blocked` is the
   # expected outcome of the eligibility gate -- the kill switch, a reviewer verdict,

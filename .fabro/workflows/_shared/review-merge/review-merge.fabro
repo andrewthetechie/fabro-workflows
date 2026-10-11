@@ -19,10 +19,13 @@ digraph ReviewMerge {
     //   /tmp/fabro/run_base_sha     commit the run started from, for the commit list
     //   the PR head branch checked out, with full history (clone depth 0)
     //   FABRO_AUTO_MERGE in the environment
+    //   /tmp/fabro/merge_mode       OPTIONAL: `queue` or `watch`. Anything else, or absent, is
+    //                               `watch` (ADR 0024). `queue` makes a passing `merge_gate`
+    //                               end in `report_queued` instead of `watch_checks`.
     //
     // ## Exit contract
     //
-    //   context.review_merge_outcome = merged | blocked | needs_human
+    //   context.review_merge_outcome = merged | blocked | needs_human | queued
     //
     // The importing graph routes on that key after the placeholder. It cannot route
     // into the middle of this subgraph, so its own earlier failures need their own
@@ -67,6 +70,10 @@ fi
 echo 0 > /tmp/fabro/fix_attempts
 echo 0 > /tmp/fabro/recheck_done
 rm -f /tmp/fabro/delivery
+MM=$(cat /tmp/fabro/merge_mode 2>/dev/null || echo watch)
+case \"$MM\" in queue) ;; *) MM=watch ;; esac
+echo \"$MM\" > /tmp/fabro/merge_mode
+gh pr edit \"$PR\" --remove-label merge-on-green >/dev/null 2>&1 || true
 git rev-parse 'HEAD^{tree}' > /tmp/fabro/review_entry_tree 2>/dev/null || rm -f /tmp/fabro/review_entry_tree
 cat > /tmp/fabro/render.jq <<'RENDER_JQ'
 def NL: [10] | implode;
@@ -91,6 +98,9 @@ def one($axis):
        + (if ($F.risk // null) != null then \" - risk \" + ($F.risk|tostring) + \"/5\" else \"\" end)
     elif $kind == \"needs-human\"
     then \"## AI PR review stopped - human needed\"
+    elif $kind == \"queued\"
+    then \"## AI PR review complete - queued to merge on green\"
+       + (if ($F.risk // null) != null then \" - risk \" + ($F.risk|tostring) + \"/5\" else \"\" end)
     else \"## AI PR review complete\"
        + (if ($F.risk // null) != null then \" - risk \" + ($F.risk|tostring) + \"/5\" else \"\" end) end ),
   \"\",
@@ -142,6 +152,10 @@ def one($axis):
         + ( nz($HG.samples) | if length == 0 then \"\"
             else NL + NL + ([ .[] | \"- `\" + .file + (if .line then \":\" + (.line | tostring) else \"\" end) + \"` \" + .counter + \" - `\" + .text + \"`\" ] | join(NL)) end ) end ),
   \"\",
+  ( if $kind == \"queued\"
+    then [ \"### Merge queue\", \"\",
+           \"Every merge gate passed. This run did not wait for CI. The merge queue (ADR 0024) squash-merges this PR when the checks on head `\" + $qhead[0:8] + \"` are green and GitHub reports it mergeable. If CI fails, the queue reruns the failed jobs once, then labels the PR `ai-review-needs-human`. Any push that the queue did not make cancels this approval.\", \"\" ] | join(NL)
+    else empty end ),
   \"### Commits with changes\", \"\",
   ( $C | if length == 0 then \"_This review made no file changes._\"
          else [ .[] | (if shipped then \"- [`\" + .short + \"`](\" + $prurl + \"/commits/\" + .sha + \")\" else \"- `\" + .short + \"`\" end)
@@ -193,9 +207,9 @@ if [ -n \"$BASE\" ]; then
   done
 fi
 jq -s . $T/cm.ndjson > $T/cm.json
-jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\"
+jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\" --arg qhead \"${2:-}\"
 RENDER_SH
-echo '{\"context_updates\":{\"review_merge_outcome\":\"needs_human\"}}'"]
+echo '{\"context_updates\":{\"review_merge_outcome\":\"needs_human\",\"merge_mode\":\"'$MM'\"}}'"]
 
     // ---- Review inputs ----
     // Clearing the three review contracts here is what stops a stale file from a
@@ -1313,6 +1327,36 @@ gh pr comment $PR --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could n
 echo done
 jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3"]
 
+    // Queue mode ending (ADR 0024 D2). The approval marker is C4 of docs/fast-path/00: it
+    // is posted BEFORE the label, and only this node adds `merge-on-green`. Any failure
+    // writes both reason files and exits 1, so the unconditional edge lands on
+    // `mark_needs_human`. Prints only its routing object on fd 3.
+    report_queued [label="Report queued", shape=parallelogram, output_schema="routing", timeout="2m",
+        script="exec 3>&1 >>/tmp/fabro/report.log 2>&1
+echo queued > /tmp/fabro/review_merge_outcome
+fail() {
+  printf '%s' \"$1\" > /tmp/fabro/needs_human_reason
+  printf '%s' \"$1\" > /tmp/fabro/merge_block_reason
+  echo \"report_queued: $1\"
+  exit 1
+}
+PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+H=$(gh pr view \"$PR\" --json headRefOid --jq .headRefOid 2>/dev/null || echo '')
+test -n \"$H\" || fail 'Could not read the PR head from GitHub, so the PR was not queued.'
+if ! git cat-file -e \"$H^{commit}\" 2>/dev/null; then git fetch origin \"$H\" || true; fi
+T1=$(git rev-parse \"$H^{tree}\" 2>/dev/null || echo none)
+T2=$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)
+[ \"$T1\" = \"$T2\" ] || fail 'The PR head on GitHub is not the tree this review approved, so the PR was not queued.'
+RUN=$(basename \"$(git rev-parse --abbrev-ref HEAD)\")
+sh /tmp/fabro/render_comment.sh queued \"$H\" > /tmp/fabro/pr_comment.body || fail 'Could not render the review comment, so the PR was not queued.'
+{ echo \"<!-- fabro:merge-queue approved head=$H run=$RUN -->\"; cat /tmp/fabro/pr_comment.body; } > /tmp/fabro/pr_comment.md
+gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || fail 'Could not post the approval comment, so the PR was not queued.'
+gh label create merge-on-green --color 0E8A16 --description 'Approved by the fabro merge phase; the merge queue merges it when CI is green (ADR 0024)' 2>/dev/null || true
+gh pr edit \"$PR\" --add-label merge-on-green || fail 'Could not add the merge-on-green label, so the PR was not queued.'
+N=$(jq -r '.[0].number // 0' /tmp/fabro/linked_issues.json 2>/dev/null || echo 0)
+jq -nc --arg h \"$H\" --arg u \"$(cat /tmp/fabro/pr_url 2>/dev/null || true)\" --argjson n \"$N\" '{context_updates:{merge_mode:\"queue\",queued_head:$h,pr_url:$u,issue_number:$n}}' >&3
+exit 0"]
+
     // ---- The single exit funnel ----
     // Every outcome lands here. The import contract allows exactly one exit with one
     // incoming edge, so the three terminal reports converge before leaving, and the
@@ -1323,7 +1367,7 @@ jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3"]
     // reached here without setting it.
     done [label="Review and merge complete", shape=parallelogram, output_schema="routing",
         script="O=$(cat /tmp/fabro/review_merge_outcome 2>/dev/null || echo needs_human)
-case \"$O\" in merged|blocked|needs_human) ;; *) O=needs_human ;; esac
+case \"$O\" in merged|blocked|needs_human|queued) ;; *) O=needs_human ;; esac
 echo 'review-merge outcome: '$O
 echo '{\"context_updates\":{\"review_merge_outcome\":\"'$O'\"}}'"]
 
@@ -1370,7 +1414,8 @@ echo '{\"context_updates\":{\"review_merge_outcome\":\"'$O'\"}}'"]
     deliver -> merge_gate              [condition="context.delivered=true"]
     deliver -> mark_needs_human
 
-    merge_gate    -> watch_checks      [condition="context.merge_eligible=true", weight=10]
+    merge_gate    -> watch_checks      [condition="context.merge_eligible=true && context.merge_mode!=queue", weight=10]
+    merge_gate    -> report_queued     [condition="context.merge_eligible=true && context.merge_mode=queue", weight=10]
     merge_gate    -> report_blocked    [condition="context.merge_eligible=false"]
     merge_gate    -> mark_needs_human
 
@@ -1404,6 +1449,8 @@ echo '{\"context_updates\":{\"review_merge_outcome\":\"'$O'\"}}'"]
     remerge_base  -> report_blocked    [condition="context.remerge_ok=false"]
     remerge_base  -> mark_needs_human
 
+    report_queued    -> done              [condition="outcome=succeeded"]
+    report_queued    -> mark_needs_human
     report_merged    -> done
     report_blocked   -> done
     mark_needs_human -> done

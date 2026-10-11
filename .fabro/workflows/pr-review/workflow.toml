@@ -222,6 +222,16 @@ blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh merged"
 
+# Queue mode ends in `report_queued` (ADR 0024). Only backlog's fast lane writes `queue`; the hook
+# is here so R7 stays uniform and the notice works if another graph ever does.
+[[run.hooks]]
+id = "discord-queued"
+event = "checkpoint_saved"
+matcher = "(^|[.])report_queued$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh queued"
+
 # Model escalation: alert when a rebase leaves the local coder box for a hosted
 # model. Two stages qualify: `rebase_agent_t2` (the rebase ladder's glm-5.3 tier)
 # and `ci_fix_t2` (the imported review-merge CI-fix ladder's glm-5.3 tier, which

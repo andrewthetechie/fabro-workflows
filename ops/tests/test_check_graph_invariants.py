@@ -50,12 +50,12 @@ class Fixtures(unittest.TestCase):
 class Counts(unittest.TestCase):
     def test_spliced_counts_match_the_agents_baselines(self):
         self.assertEqual(cgi.spliced_counts(REAL), {
-            "backlog": (69, 163),
-            "pr-review": (34, 73),
+            "backlog": (70, 166),
+            "pr-review": (35, 76),
             "issue-triage": (16, 36),
             "arch-review": (24, 54),
             # Task 02 skeleton (ADR 0022). Task 10 records the `fabro validate` baseline.
-            "dependabot": (46, 101),
+            "dependabot": (47, 104),
         })
 
 

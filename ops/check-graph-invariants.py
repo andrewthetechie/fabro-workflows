@@ -38,7 +38,7 @@ R7_EXCEPTIONS = {
     ("pr-review", "mark_needs_human"): "pr-review omits it: operator decision 13 in pr-review/workflow.toml",
 }
 # The review-merge report nodes a checkpoint_saved hook must cover (invariants-merge.md, Reporting).
-REPORT_NODES = ("report_merged", "report_blocked", "mark_needs_human")
+REPORT_NODES = ("report_merged", "report_blocked", "mark_needs_human", "report_queued")
 
 # R2 exemptions: an agent emits an event per stream delta, and the watchdog parks during a
 # human wait. Only command nodes are compared against stall_timeout.

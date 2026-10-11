@@ -5367,6 +5367,84 @@ check "notify dependabot-summary: the header names the repo" "1" "$(grep -c 'fab
 check "notify dependabot-summary: the header and three summary lines, then the repo link" "4" "$(grep -o '\\n' "$NT/payload.json" | wc -l | tr -d ' ')"
 check "notify dependabot-summary: the payload is valid JSON" "0" "$(jq -e . "$NT/payload.json" >/dev/null 2>&1; echo $?)"
 
+# ---------------------------------------------------------------------------
+# review-merge queue mode (fast-path task 02): rm_setup's merge_mode, report_queued's
+# marker-before-label order and tree check, done accepting `queued`, and the two
+# merge_gate edges being exclusive.
+# ---------------------------------------------------------------------------
+echo ""
+echo "review-merge — queue mode"
+QM="$WORK/queuemode"; rm -rf "$QM"; mkdir -p "$QM/bin" "$QM/repo"
+extract_from "$SHARED" rm_setup | sed "s#/tmp/fabro#$QM/fab#g" > "$QM/rm_setup.sh"
+extract_from "$SHARED" report_queued | sed "s#/tmp/fabro#$QM/fab#g" > "$QM/report_queued.sh"
+extract_from "$SHARED" done | sed "s#/tmp/fabro#$QM/fab#g" > "$QM/done.sh"
+for f in rm_setup report_queued done; do
+    sh -n "$QM/$f.sh" 2>"$QM/$f.syntax" || { FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$f"; }
+done
+cat > "$QM/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$QM_LOG"
+case "$1 $2" in
+  "pr view") cat "$QM_HEAD_FILE"; exit 0 ;;
+  "pr comment") [ -n "$QM_FAIL_COMMENT" ] && exit 1; cp "$5" "$QM_COMMENT_COPY"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$QM/bin/gh"
+git -C "$QM/repo" init -q -b main
+git -C "$QM/repo" config user.email t@t; git -C "$QM/repo" config user.name t
+echo a > "$QM/repo/a"; git -C "$QM/repo" add a; git -C "$QM/repo" commit -qm one
+git -C "$QM/repo" checkout -q -b fabro/run/01QUEUETEST
+QHEAD=$(git -C "$QM/repo" rev-parse HEAD)
+export QM_LOG="$QM/gh.log" QM_HEAD_FILE="$QM/head" QM_COMMENT_COPY="$QM/comment.md"
+qm_run() { # <script> -> sets QOUT, QRC; runs in the scratch repo with the stub gh
+    (cd "$QM/repo" && PATH="$QM/bin:$SAVED_PATH" sh "$QM/$1.sh") > "$QM/out" 2> "$QM/err"; QRC=$?; QOUT=$(cat "$QM/out")
+}
+qm_reset() {
+    rm -rf "$QM/fab"; mkdir -p "$QM/fab"; : > "$QM_LOG"; rm -f "$QM_COMMENT_COPY"; unset QM_FAIL_COMMENT
+    echo 55 > "$QM/fab/pr_number"; echo main > "$QM/fab/base_ref"; echo fast > "$QM/fab/head_ref"
+    echo '{"url":"u","labels":[]}' > "$QM/fab/pr.json"; echo '[{"number":9}]' > "$QM/fab/linked_issues.json"
+    git -C "$QM/repo" rev-parse HEAD > "$QM/fab/run_base_sha"
+    echo "$QHEAD" > "$QM/head"
+}
+# 1-2. rm_setup: the mode, and the label removal on every entry.
+qm_reset; qm_run rm_setup
+check "rm_setup, no file: watch" "watch" "$(jq -r '.context_updates.merge_mode' <<<"$(lastjson "$QOUT")")"
+check "rm_setup removes merge-on-green" "1" "$(grep -c 'pr edit 55 --remove-label merge-on-green' "$QM_LOG")"
+qm_reset; echo queue > "$QM/fab/merge_mode"; qm_run rm_setup
+check "rm_setup, queue: queue" "queue" "$(jq -r '.context_updates.merge_mode' <<<"$(lastjson "$QOUT")")"
+qm_reset; echo QUEUE > "$QM/fab/merge_mode"; qm_run rm_setup
+check "rm_setup, QUEUE: watch" "watch" "$(jq -r '.context_updates.merge_mode' <<<"$(lastjson "$QOUT")")"
+check "rm_setup writes the normalised mode back" "watch" "$(cat "$QM/fab/merge_mode")"
+# 3. report_queued, head equal to HEAD.
+qm_reset; qm_run rm_setup; qm_run report_queued
+check "report_queued exits 0" "0" "$QRC"
+check "report_queued: first line is the approval marker" "1" "$(head -1 "$QM_COMMENT_COPY" | grep -Ec "^<!-- fabro:merge-queue approved head=[0-9a-f]{40} run=01QUEUETEST -->$")"
+check "report_queued: comment before label" "pr comment pr edit" "$(grep -E '^pr (comment|edit) ' "$QM_LOG" | grep -v remove-label | awk '{printf "%s%s %s", sep, $1, $2; sep=" "}')"
+check "report_queued: outcome file" "queued" "$(cat "$QM/fab/review_merge_outcome")"
+check "report_queued: stdout is one JSON object" "1" "$(printf '%s\n' "$QOUT" | grep -c .)"
+check "report_queued: stdout carries merge_mode queue" "queue" "$(jq -r '.context_updates.merge_mode' <<<"$QOUT")"
+check "report_queued: renders the queued heading" "1" "$(grep -c 'queued to merge on green' "$QM_COMMENT_COPY")"
+# 4. a head whose tree differs.
+qm_reset; qm_run rm_setup
+echo b > "$QM/repo/b"; git -C "$QM/repo" add b; git -C "$QM/repo" commit -qm two
+git -C "$QM/repo" rev-parse HEAD > "$QM/head"; git -C "$QM/repo" reset -q --hard HEAD~1
+qm_run report_queued
+check "report_queued, other tree: exit 1" "1" "$QRC"
+check "report_queued, other tree: both reasons" "1" "$([ -s "$QM/fab/needs_human_reason" ] && [ -s "$QM/fab/merge_block_reason" ] && echo 1 || echo 0)"
+check "report_queued, other tree: no label" "0" "$(grep -c 'add-label' "$QM_LOG")"
+# 5. a failing comment.
+qm_reset; qm_run rm_setup; QM_FAIL_COMMENT=1; export QM_FAIL_COMMENT; qm_run report_queued
+check "report_queued, comment fails: exit 1" "1" "$QRC"
+check "report_queued, comment fails: no label" "0" "$(grep -c 'add-label' "$QM_LOG")"
+check "report_queued, comment fails: both reasons" "1" "$([ -s "$QM/fab/needs_human_reason" ] && [ -s "$QM/fab/merge_block_reason" ] && echo 1 || echo 0)"
+unset QM_FAIL_COMMENT
+# 6. done.
+qm_reset; echo queued > "$QM/fab/review_merge_outcome"; qm_run done
+check "done publishes queued" "queued" "$(jq -r '.context_updates.review_merge_outcome' <<<"$(lastjson "$QOUT")")"
+# 7. merge_gate edges: exclusive.
+check "merge_gate: the two eligible edges split on merge_mode" "1 1" "$(grep -E 'merge_gate +-> +(watch_checks|report_queued) ' "$SHARED" | awk '/merge_mode!=queue/{a=1} /context.merge_mode=queue/{b=1} END{print a, b}')"
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
