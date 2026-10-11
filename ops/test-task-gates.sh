@@ -1804,7 +1804,7 @@ run_node() {
     if ! sh -n "$dir.sh" 2>"$dir.syntax"; then
         FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$node"; sed 's/^/       /' "$dir.syntax"
     fi
-    (cd "$dir" && PATH="$T/bin:$ORIG_PATH" sh "$dir.sh" >"$dir.out" 2>"$dir.err"); echo $? >"$dir.rc"
+    (cd "$dir" && PATH="$T/bin:$ORIG_PATH" sh "$dir.sh" </dev/null >"$dir.out" 2>"$dir.err"); echo $? >"$dir.rc"
 }
 
 # The routing contract: the last line of stdout is JSON, and no other line of stdout or
@@ -1856,6 +1856,39 @@ run_node mark_needs_human "$SHARED" "$MN2"
 routing_check "mark_needs_human, no PR" "$MN2" '.context_updates.merge_block_reason'
 GOT=$ROUTED
 check "mark_needs_human, no PR: reason" "no pr" "$GOT"
+
+# mark_needs_human, issue #19: a node that FAILS into it (an agent timeout, a provider
+# error) writes no reason of its own. The engine's `failure_signature`
+# (`node|class|reason`, on stdin via stdin_source) names the stage, so the reason is
+# built from it; a transient failure carries the `retryable:` prefix the PR shepherd
+# (#31) reads; and a reason file left by an earlier stage is never reused for it.
+mn_sig() { # mn_sig <dir> <signature> [stale reason]: run the node, leave the reason in $GOT
+    local d="$1"; rm -rf "$d"; mkdir -p "$d"; printf '42' > "$d/pr_number"
+    [ -n "${3:-}" ] && printf '%s' "$3" > "$d/needs_human_reason"
+    extract_from "$SHARED" mark_needs_human | sed "s#/tmp/fabro#$d#g" > "$d.sh"
+    (cd "$d" && printf '%s' "$2" | PATH="$T/bin:$ORIG_PATH" sh "$d.sh" >"$d.out" 2>"$d.err")
+    GOT=$(tail -1 "$d.out" | jq -r '.context_updates.merge_block_reason' 2>/dev/null)
+}
+mn_sig "$T/mn3" 'review_fix|transient_infra|handler timed out after 900000ms'
+check "mark_needs_human timeout: names the stage" "1" "$(grep -c 'review_fix' <<<"$GOT")"
+check "mark_needs_human timeout: says timed out" "1" "$(grep -c 'timed out' <<<"$GOT")"
+check "mark_needs_human timeout: retryable prefix" "retryable: " "${GOT:0:11}"
+check "mark_needs_human timeout: never unspecified" "0" "$(grep -c unspecified <<<"$GOT")"
+check "mark_needs_human timeout: needs_human_reason written" "$GOT" "$(cat "$T/mn3/needs_human_reason")"
+mn_sig "$T/mn9" 'review_merge.review_fix|transient_infra|handler timed out after 900000ms' 'earlier stage'
+check "mark_needs_human spliced node id: names the bare stage" "retryable: review_fix failed (transient_infra): timed out" "$GOT"
+mn_sig "$T/mn4" 'review_fix|transient_infra|handler timed out after 900000ms' 'validate placeholder from an earlier stage'
+check "mark_needs_human timeout: stale reason not reused" "0" "$(grep -c 'earlier stage' <<<"$GOT")"
+mn_sig "$T/mn5" 'standards|deterministic|agent session failed' 'old reason'
+check "mark_needs_human agent failure: names the stage" "1" "$(grep -c 'standards failed (deterministic)' <<<"$GOT")"
+check "mark_needs_human agent failure: stale reason not reused" "0" "$(grep -c 'old reason' <<<"$GOT")"
+check "mark_needs_human agent failure: not retryable" "0" "$(grep -c '^retryable:' <<<"$GOT")"
+mn_sig "$T/mn6" 'merge|deterministic|script failed with exit code: 1' 'branch protection forbids it'
+check "mark_needs_human command failure: keeps its own reason" "branch protection forbids it" "$GOT"
+mn_sig "$T/mn7" 'merge|deterministic|script failed with exit code: 1'
+check "mark_needs_human command failure, no reason: names the stage" "1" "$(grep -c 'merge failed (deterministic)' <<<"$GOT")"
+mn_sig "$T/mn8" '' 'fix agent asked for a human'
+check "mark_needs_human gate route: keeps the gate's reason" "fix agent asked for a human" "$GOT"
 
 # entry_failed (pr-review): its own fallback when the reason file is missing.
 EF="$T/ef"; rm -rf "$EF"; mkdir -p "$EF"; printf '7' > "$EF/pr_number"
@@ -4019,7 +4052,7 @@ mh_setup() {  # $1 = moved, as in dl_setup
     git -C "$T/wt" rev-parse "refs/remotes/origin/$BR^{tree}" > "$T/fab/review_entry_tree"
     echo '{"outcome":"fixed","risk":1,"summary":"s","own_findings":[],"fixes_applied":[{"finding_id":"STD-002","axis":"standards","description":"CONTEXT.md doc fix"}],"not_fixed":[]}' > "$T/fab/review/fix_result.json"
 }
-run_mark() { ( cd "$T/wt" && sh "$T/mark.sh" >/dev/null 2>&1 ); }
+run_mark() { ( cd "$T/wt" && sh "$T/mark.sh" </dev/null >/dev/null 2>&1 ); }
 
 mh_setup; echo OPEN > "$T/pr_state"
 run_mark
@@ -4159,6 +4192,14 @@ check "render: invalid config explained"    "1" "$(grep -c 'hygiene.json is not 
 echo '{"tamper":{"config_changed":1},"erosion":{},"erosion_mode":"report","blocking":["config_changed"],"samples":[]}' > "$T/review/hygiene.json"
 C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
 check "render: config_changed names all three" "1" "$(grep -c '.fabro/hygiene.json, .fabro/test.toml or .fabro/ci.sh' <<<"$C")"
+
+# Issue #19: the reason mark_needs_human builds from a failure signature is what the
+# needs-human comment shows, instead of "unspecified".
+rm -f "$T/merge_block_reason"
+printf '%s' 'retryable: review_fix failed (transient_infra): timed out' > "$T/needs_human_reason"
+C=$( cd "$T" && sh "$T/render_comment.sh" needs-human 2>&1 )
+check "render: needs-human shows the failed stage"  "1" "$(grep -c 'retryable: review_fix failed (transient_infra): timed out' <<<"$C")"
+check "render: needs-human is not unspecified"      "0" "$(grep -c unspecified <<<"$C")"
 
 # ---------------------------------------------------------------------------
 # fabro-code — the index wrapper (docs/code-context C1/C2/C3/C4).

@@ -525,6 +525,28 @@ def r8_routing(nodes_raw: dict[str, dict[str, str]]) -> list[tuple]:
     return out
 
 
+def r9_needs_human_reason(graph: Graph) -> list[tuple]:
+    """R9: every edge into mark_needs_human lands on a node that records a reason for the stage
+    that failed into it. A failed agent node writes none, so the sink derives it from the
+    engine's failure_signature (stdin_source) and writes both reason files (issue #19,
+    invariants-merge.md). A sink that does not leaves the PR labelled with `unspecified`.
+    """
+    sinks = {b for _, b, _ in graph.edges if b.rsplit(".", 1)[-1] == "mark_needs_human"}
+    out = []
+    for nid in sorted(sinks):
+        attrs = graph.nodes.get(nid, {})
+        script = attrs.get("script", "")
+        derives = (attrs.get("stdin_source") == "failure_signature"
+                   and "$SIG" in script
+                   and "> /tmp/fabro/needs_human_reason" in script
+                   and "> /tmp/fabro/merge_block_reason" in script)
+        if not derives:
+            out.append(("R9", nid, "has edges into it but does not derive a reason from "
+                                   'stdin_source="failure_signature" and write needs_human_reason '
+                                   "and merge_block_reason"))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Drivers
 # ---------------------------------------------------------------------------
@@ -547,6 +569,7 @@ def phase_violations(package: str, path: Path) -> list[tuple]:
                                                   (graph.nodes.items() if graph else []) if "script" in v}, raw)]
     if graph:
         out += [(package, *v) for v in r8_routing(graph.nodes)]
+        out += [(package, *v) for v in r9_needs_human_reason(graph)]
     return out
 
 
@@ -595,6 +618,7 @@ def package_violations(pkg_dir: Path, workflows: Path) -> tuple[list[tuple], int
     out += [(package, *v) for v in r7_checkpoint_hooks(
         package, phase_graphs, {x: phases[p].name for x, p in imports if p in phases}, hooks)]
     out += [(package, *v) for v in r8_routing(root.nodes)]
+    out += [(package, *v) for v in r9_needs_human_reason(root)]
     return out, len(nodes)
 
 

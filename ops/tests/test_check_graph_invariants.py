@@ -27,7 +27,7 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(cgi.run(FIXTURES / "ok"), [])
 
     def test_each_break_reports_its_rule_and_nothing_else(self):
-        for n in range(1, 9):
+        for n in range(1, 10):
             with self.subTest(rule=f"R{n}"):
                 found = rules_of(FIXTURES / f"r{n}")
                 self.assertEqual(found, [f"R{n}"], found)

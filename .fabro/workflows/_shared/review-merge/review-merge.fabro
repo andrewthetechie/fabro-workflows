@@ -1261,8 +1261,28 @@ exit 0"]
     // before any review edit must not force-push that unreviewed onto the author's branch.
     // In backlog the same push would carry only empty checkpoint commits.
     mark_needs_human [label="Label needs-human", shape=parallelogram, output_schema="routing",
-        script="exec 3>&1 >>/tmp/fabro/report.log 2>&1
+        stdin_source="failure_signature",
+        script="SIG=$(head -c 600)
+exec 3>&1 >>/tmp/fabro/report.log 2>&1
 echo needs_human > /tmp/fabro/review_merge_outcome
+if [ -n \"$SIG\" ]; then
+  FN=${SIG%%|*}
+  FN=${FN##*.}
+  FR=${SIG#*|}
+  FC=${FR%%|*}
+  FM=${FR#*|}
+  case \" $FN \" in
+    *' standards '*|*' spec '*|*' review_fix '*|*' refute '*|*' ci_fix_t1 '*|*' ci_fix_t2 '*) FA=yes ;;
+    *) FA=no ;;
+  esac
+  if [ \"$FA\" = yes ] || [ \"$FC\" = transient_infra ] || [ ! -s /tmp/fabro/needs_human_reason ]; then
+    RE=\"$FN failed ($FC)\"
+    case \"$FM\" in *'timed out'*) RE=\"$RE: timed out\" ;; esac
+    if [ \"$FC\" = transient_infra ]; then RE=\"retryable: $RE\"; fi
+    printf '%s' \"$RE\" > /tmp/fabro/needs_human_reason
+    printf '%s' \"$RE\" > /tmp/fabro/merge_block_reason
+  fi
+fi
 R=$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)
 K=$(printf '%s' \"$R\" | tr '[:cntrl:]' ' ' | head -c 300)
 PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
