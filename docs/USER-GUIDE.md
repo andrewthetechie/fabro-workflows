@@ -175,6 +175,19 @@ Pointers, not duplication — the kill switches and how to use them live in
   when you want the factory *stopped*, not just unmerged; how, in the operator
   runbook.
 
+## The fast path and `merge-on-green`
+
+Add the `fast-path` label beside `agent` to an issue that is a one-commit change. `backlog` then
+skips `decompose`, `improve` and the extra review; the per-task review, the rework ladder, the
+merge-phase review and the Refuter still run. If the PR passes `merge_gate`, the run labels it
+`merge-on-green` and ends without waiting for CI. The merge queue (every 10 minutes) then merges
+it once checks are green. A change over 200 lines or 10 files, or one that takes the partial
+path, merges the standard way instead. A fast task that reaches rework round 6 is demoted: it
+loses `fast-path`, gets `agent` back, and has no PR.
+
+To stop one queued PR, remove the `merge-on-green` label, or push a commit (that cancels the
+approval and the queue hands the PR off with `ai-review-needs-human`).
+
 ## The daily Dependabot run
 
 The `dependabot` workflow runs once a day per repository, at 05:00 to 06:00 host time. It merges

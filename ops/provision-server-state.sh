@@ -206,7 +206,7 @@ provision_variable() {
 }
 
 # provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty> [schedule_expr] [auto_merge] [schedule_enabled]
-#   - workflow is "backlog", "pr-review", "issue-triage", "arch-review" or "dependabot"; all live in
+#   - workflow is "backlog", "pr-review", "issue-triage", "arch-review", "dependabot" or "merge-queue"; all live in
 #     andrewthetechie/fabro-workflows@main.
 #   - schedule_id, when non-empty, adds a DISABLED schedule row for operator
 #     convenience, using schedule_expr. The four backlog schedules are staggered
@@ -361,6 +361,17 @@ provision_automation dependabot-lawncare-saas python-node andrewthetechie/lawnca
 provision_automation dependabot-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports dependabot daily "40 5 * * *" true true || FAILED=$((FAILED+1))
 provision_automation dependabot-writers-app rust-node andrewthetechie/writers-app dependabot daily "0 6 * * *" true true || FAILED=$((FAILED+1))
 
+# merge-queue (ADR 0024 D1, P4): one sweep per repository every 10 minutes, staggered by 2-3 minutes.
+# The schedule is created DISABLED (the last argument defaults to false): the operator enables it
+# with ops/fabro-automation-schedule.sh once the first hand-fired run is verified (task 10). The
+# switches live on the pr-review-<repo> row (P10), so these rows carry no auto_merge token; the
+# `true` below is ignored for this workflow.
+echo "Provisioning merge-queue automations..."
+provision_automation merge-queue-jelly-swipe python andrewthetechie/jelly-swipe merge-queue sweep "0-59/10 * * * *" true || FAILED=$((FAILED+1))
+provision_automation merge-queue-lawncare-saas python-node andrewthetechie/lawncare-saas merge-queue sweep "2-59/10 * * * *" true || FAILED=$((FAILED+1))
+provision_automation merge-queue-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports merge-queue sweep "5-59/10 * * * *" true || FAILED=$((FAILED+1))
+provision_automation merge-queue-writers-app rust-node andrewthetechie/writers-app merge-queue sweep "7-59/10 * * * *" true || FAILED=$((FAILED+1))
+
 if [ "$FAILED" -ne 0 ]; then
   echo "$FAILED automation(s) could not be created; see the errors above." >&2
   exit 1
@@ -371,4 +382,4 @@ if [ "$DRIFT_FOUND" -ne 0 ]; then
   exit 2
 fi
 
-echo "Done. Backlog and issue-triage schedules are created disabled; enable them if this was a rebuild. arch-review schedules are created enabled (ADR 0012). dependabot schedules are created enabled (ADR 0022 D10)."
+echo "Done. Backlog and issue-triage schedules are created disabled; enable them if this was a rebuild. arch-review schedules are created enabled (ADR 0012). dependabot schedules are created enabled (ADR 0022 D10). merge-queue schedules are created disabled (ADR 0024)."

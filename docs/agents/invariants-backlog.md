@@ -4,6 +4,17 @@ Read before changing `backlog`'s issue selection, queue labels, Child issues (`_
 
 Every rule here passes `fabro validate` and fails at runtime, usually silently. Each one cost a live incident or was found before it could. Moved verbatim from `AGENTS.md` on 2026-10-09; the area files are siblings of this one.
 
+## The fast lane (ADR 0023)
+
+| Rule | What happens otherwise |
+|---|---|
+| `route_lane` writes `lane=fast` only when `issue.json` labels contain `fast-path` exactly, and writes the one-task `tasks.json` itself | A malformed file must exit 1 to `rescue_brief`; guessing a lane would send a standard issue down the short path. |
+| `next_task` prints `rebase_failed:false` on its done branch, and every standard edge it shares with a fast edge carries `lane!=fast` | Two matching conditional edges: the cascade picks by weight, not by what you meant. |
+| `rework_router` round 6: `demote_lane` (lane=fast) and `drop_followup` (task_exempt, lane!=fast) are exclusive | The fast task would be dropped instead of demoted. |
+| `demote_lane` removes `fast-path` first, then adds `agent`, then comments | Adding `agent` first would leave an issue the scheduler can pick up again in the fast lane. |
+| `apply_split` never copies `fast-path` to a child | A split child would skip decomposition it needs. |
+| `pr_handoff` writes `queue` only for the fast lane, no `remainder_kind`, inside 200 lines / 10 files | Over the ceiling the PR waits for CI like any other. |
+
 ## Issue selection and queue labels
 
 | Rule | What happens otherwise |

@@ -4,6 +4,14 @@ Read before changing `_shared/review-merge/` (imported by `backlog` and `pr-revi
 
 Every rule here passes `fabro validate` and fails at runtime, usually silently. Each one cost a live incident or was found before it could. Moved verbatim from `AGENTS.md` on 2026-10-09; the area files are siblings of this one.
 
+## Queue mode
+
+| Rule | What happens otherwise |
+|---|---|
+| Only `report_queued` adds `merge-on-green`, and only after its approval-marker comment posted | A label without a marker is handed off by the queue; the order (comment, then label) makes a failure between them leave a safe, visible PR. |
+| `rm_setup` removes `merge-on-green` on every entry to the phase | A second review of a PR that is already queued would leave the old approval live while the new one runs. |
+| `/tmp/fabro/merge_mode` is `queue` only when the importing graph wrote exactly that | Anything else is `watch`; `pr-review` and `dependabot` never write it. |
+
 ## The merge decision
 
 | Rule | What happens otherwise |
