@@ -1,0 +1,44 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+# merge-queue (ADR 0024): no agent stage, so there is no model, no fallbacks, no MCP server and
+# no FABRO_IO_MANIFEST / FABRO_AGENT_GUIDE block (ops/fabro-io-manifest.py WF_ORDER leaves this
+# package out for that reason). It merges, rebases and reruns through the GitHub API.
+#
+# The run branch exists for one reason: `enabled = true` is what gives the run its id through
+# the branch name (`basename "$(git rev-parse --abbrev-ref HEAD)"`). `push = false`, because 576
+# runs a day must not push 576 branches (00, rule 4: the queue never pushes).
+[run.run_branch]
+enabled = true
+push = false
+
+# GitHub permissions for the token, with the use each one serves:
+# - contents: write. `gh pr merge` squash-merges, and updatePullRequestBranch rebases.
+# - pull_requests: write. Labels, the approval/rebase/hand-off comments, `gh pr merge`.
+# - issues: write. The issue's `Review` label on a hand-off.
+# - actions: write. `gh run rerun --failed` on a red check.
+# - checks: read. The inventory reads statusCheckRollup.
+[run.integrations.github.permissions]
+contents = "write"
+pull_requests = "write"
+issues = "write"
+actions = "write"
+checks = "read"
+
+# `{{ vars.X }}` only, and no `id` key (invariants-graph, Packages). FABRO_API_TOKEN and
+# FABRO_API_URL read the pr-review-<repo> row and list the active runs for the overlap guard.
+[run.environment.env]
+FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
+FABRO_API_URL = "{{ vars.FABRO_API_URL }}"
+FABRO_AUTO_MERGE = "{{ vars.FABRO_AUTO_MERGE }}"
+
+# Discord. Hooks run with sandbox = false, inside the fabro server container, and read the
+# webhook URL from /storage/secrets/discord_webhook_url. Task 08 adds the summary hook.
+[[run.hooks]]
+id = "discord-failed"
+event = "run_failed"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh failed"

@@ -4606,6 +4606,126 @@ T="$DEP_SAVED_T"
 
 
 # ---------------------------------------------------------------------------
+# merge-queue — prep (fast-path series, task 05): the switches, the overlap guard and env.json.
+# gh and curl are stubbed. The stubs read the automation rows, the active-run pages and the
+# failure switches from the environment, so one script serves every case.
+# ---------------------------------------------------------------------------
+echo ""
+echo "merge-queue: prep"
+MQ="$REPO_ROOT/.fabro/workflows/merge-queue/workflow.fabro"
+MQ_STUBS="$WORK/mq-stubs"; mkdir -p "$MQ_STUBS/bin"
+cat > "$MQ_STUBS/bin/gh" <<'STUB'
+#!/bin/sh
+case "$*" in
+  "repo view --json nameWithOwner"*) echo andrewthetechie/jelly-swipe ;;
+  "repo view --json defaultBranchRef"*) echo main ;;
+  "api user"*) printf '%s\n' "${MQ_LOGIN-fabro-bot}" ;;
+  *) echo "gh $*" >&2 ;;
+esac
+exit 0
+STUB
+cat > "$MQ_STUBS/bin/curl" <<'STUB'
+#!/bin/sh
+for a in "$@"; do case "$a" in http*) URL="$a" ;; esac; done
+case "$URL" in
+  */automations) [ -n "${MQ_FAIL_AUTO:-}" ] && exit 22; cat "$MQ_AUTOROWS" ;;
+  */runs?*) [ -n "${MQ_FAIL_RUNS:-}" ] && exit 22; cat "$MQ_RUNS" ;;
+  *) exit 22 ;;
+esac
+STUB
+chmod +x "$MQ_STUBS/bin/gh" "$MQ_STUBS/bin/curl"
+
+# A run row as GET /runs returns it (spike S4): $1 id, $2 repo, $3 created_at, $4 automation id or empty.
+mq_run() {
+    jq -cn --arg id "$1" --arg repo "andrewthetechie/$2" --arg at "$3" --arg auto "$4" \
+        '{id: $id, workflow: {slug: "merge-queue"}, repository: {name: $repo}, timestamps: {created_at: $at},
+          automation: (if $auto == "" then null else {id: $auto} end)}'
+}
+
+# $1 case name, $2 pr-review row description (or "-" for no row), $3 FABRO_AUTO_MERGE, $4 JSON array of run rows,
+# $5 env prefix words (MQ_FAIL_AUTO=1, MQ_FAIL_RUNS=1, MQ_LOGIN=). Leaves the dir in MQ_DIR.
+mq_prep_case() {
+    MQ_DIR="$WORK/mq-$1"; rm -rf "$MQ_DIR" "$MQ_DIR.sh"; mkdir -p "$MQ_DIR/mq"
+    git -C "$MQ_DIR" init -q -b fabro/run/01RUNME
+    git -C "$MQ_DIR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    if [ "$2" = "-" ]; then printf '{"data":[]}' > "$MQ_DIR.rows.json"
+    else printf '{"data":[{"id":"pr-review-jelly-swipe","workflow":"pr-review","target":{"repo":"andrewthetechie/jelly-swipe"},"description":%s}]}' "$2" > "$MQ_DIR.rows.json"; fi
+    printf '{"data":%s,"meta":{"has_more":false}}' "$4" > "$MQ_DIR.runs.json"
+    extract_from "$MQ" prep | sed "s#/tmp/fabro#$MQ_DIR#g" > "$MQ_DIR.sh"
+    if ! sh -n "$MQ_DIR.sh" 2>"$MQ_DIR.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL merge-queue prep is not valid POSIX sh\n'; sed 's/^/       /' "$MQ_DIR.syntax"
+    fi
+    (cd "$MQ_DIR" && env PATH="$MQ_STUBS/bin:$ORIG_PATH" MQ_AUTOROWS="$MQ_DIR.rows.json" MQ_RUNS="$MQ_DIR.runs.json" \
+        FABRO_API_URL=http://fabro.test/api/v1 FABRO_API_TOKEN=test-token FABRO_AUTO_MERGE="$3" $5 \
+        sh "$MQ_DIR.sh" </dev/null >"$MQ_DIR.out" 2>"$MQ_DIR.err"); echo $? > "$MQ_DIR.rc"
+}
+
+NONE='[]'
+# 1. Both switches on, no other run.
+mq_prep_case on '""' 1 "$NONE" ""
+routing_check "merge-queue prep, both on" "$MQ_DIR" '.context_updates.sweep'
+check "merge-queue prep: both on: sweep=run" "run" "$ROUTED"
+check "merge-queue prep: env.json has every key" "base,login,merge_cap,now,repo,run" "$(jq -r 'keys | join(",")' "$MQ_DIR/mq/env.json")"
+check "merge-queue prep: env.json values" "main fabro-bot 01RUNME andrewthetechie/jelly-swipe 5" \
+    "$(jq -r '[.base, .login, .run, .repo, (.merge_cap|tostring)] | join(" ")' "$MQ_DIR/mq/env.json")"
+check "merge-queue prep: env.json now is a number" "number" "$(jq -r '.now | type' "$MQ_DIR/mq/env.json")"
+check "merge-queue prep: no skip_reason" "0" "$(test -e "$MQ_DIR/mq/skip_reason" && echo 1 || echo 0)"
+
+# 2. The host switch is off.
+mq_prep_case host-off '""' 0 "$NONE" ""
+routing_check "merge-queue prep, host off" "$MQ_DIR" '.context_updates.sweep'
+check "merge-queue prep: FABRO_AUTO_MERGE=0: skip" "skip" "$ROUTED"
+check "merge-queue prep: FABRO_AUTO_MERGE=0: reason names the host switch" "1" "$(grep -c 'host-wide' "$MQ_DIR/mq/skip_reason")"
+mq_prep_case host-unset '""' "" "$NONE" ""
+check "merge-queue prep: FABRO_AUTO_MERGE empty: skip" "skip" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+
+# 3. The pr-review row.
+mq_prep_case row-off '"auto_merge=false"' 1 "$NONE" ""
+check "merge-queue prep: auto_merge=false: skip" "skip" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+check "merge-queue prep: auto_merge=false: reason names the pr-review row" "1" "$(grep -c 'pr-review-jelly-swipe row' "$MQ_DIR/mq/skip_reason")"
+mq_prep_case row-notoken '"just a description"' 1 "$NONE" ""
+check "merge-queue prep: no token: run" "run" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+mq_prep_case row-missing "-" 1 "$NONE" ""
+check "merge-queue prep: no row at all: run (an absent token means on, as in pr_handoff)" "run" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+mq_prep_case row-true '"x auto_merge=true"' 1 "$NONE" ""
+check "merge-queue prep: auto_merge=true: run" "run" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+mq_prep_case api-down '"auto_merge=true"' 1 "$NONE" "MQ_FAIL_AUTO=1"
+check "merge-queue prep: automations API fails: skip" "skip" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+
+# 4. The overlap guard. This run is 01RUNME, created 10:05.
+THIS=$(mq_run 01RUNME jelly-swipe 2026-10-12T10:05:00.000Z merge-queue-jelly-swipe)
+OLDER=$(mq_run 01OLDER jelly-swipe 2026-10-12T09:55:00.000Z merge-queue-jelly-swipe)
+mq_prep_case older "\"\"" 1 "[$THIS,$OLDER]" ""
+check "merge-queue prep: older run, same repo: skip" "skip" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+check "merge-queue prep: older run: the reason names its id" "an older merge-queue run (01OLDER) is still active" "$(cat "$MQ_DIR/mq/skip_reason")"
+OTHER=$(mq_run 01OTHER writers-app 2026-10-12T09:55:00.000Z merge-queue-writers-app)
+mq_prep_case other-repo "\"\"" 1 "[$THIS,$OTHER]" ""
+check "merge-queue prep: older run, another repo: run" "run" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+NEWER=$(mq_run 01NEWER jelly-swipe 2026-10-12T10:15:00.000Z merge-queue-jelly-swipe)
+mq_prep_case newer "\"\"" 1 "[$THIS,$NEWER]" ""
+check "merge-queue prep: newer run, same repo: run" "run" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+BACKLOG=$(jq -cn '{id: "01BACK", workflow: {slug: "backlog"}, repository: {name: "andrewthetechie/jelly-swipe"}, timestamps: {created_at: "2026-10-12T09:00:00.000Z"}, automation: null}')
+mq_prep_case backlog "\"\"" 1 "[$THIS,$BACKLOG]" ""
+check "merge-queue prep: an older backlog run does not count: run" "run" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+mq_prep_case self-only "\"\"" 1 "[$THIS]" ""
+check "merge-queue prep: this run alone: run" "run" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+mq_prep_case no-self "\"\"" 1 "[$NEWER]" ""
+check "merge-queue prep: this run not listed, another active: skip (cannot order, so do not act)" "skip" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+mq_prep_case runs-down "\"\"" 1 "$NONE" "MQ_FAIL_RUNS=1"
+check "merge-queue prep: GET /runs fails: skip" "skip" "$(tail -1 "$MQ_DIR.out" | jq -r .context_updates.sweep)"
+check "merge-queue prep: GET /runs fails: reason" "could not list active runs" "$(cat "$MQ_DIR/mq/skip_reason")"
+
+# 5. A missing fact stops the sweep.
+mq_prep_case no-login "\"\"" 1 "$NONE" "MQ_LOGIN="
+check "merge-queue prep: no token login: exit 1" "1" "$(cat "$MQ_DIR.rc")"
+check "merge-queue prep: no token login: stop_reason written" "prep could not read the token login" "$(cat "$MQ_DIR/mq/stop_reason")"
+
+# 6. The graph shape: prep's two edges are exclusive on sweep, and every node reaches summarize.
+check "merge-queue: prep -> inventory needs sweep=run" "1" "$(grep -c 'prep -> inventory .*context.sweep=run' "$MQ")"
+check "merge-queue: prep has an unconditional edge to summarize" "1" "$(grep -c '^    prep -> summarize$' "$MQ")"
+
+
+# ---------------------------------------------------------------------------
 # dependabot — inventory (ADR 0022 task 03): the alert list (C1), the PR queue (C2), the match
 # (C3) and the version comparator. gh is stubbed; the fixtures are live 2026-10-10 data
 # (jelly-swipe) plus synthetic PRs and alerts built here.

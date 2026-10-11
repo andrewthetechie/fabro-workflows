@@ -1,0 +1,110 @@
+digraph MergeQueue {
+    graph [
+        goal="Merge queue: merge the PRs the review-merge phase approved (label merge-on-green) once their checks are green, rebase the ones behind their base, and hand the rest to a human",
+        // Nothing is spliced in and there is no stylesheet: the graph has no agent stage. It has no
+        // cycle and imports nothing, so R1 (loop_restart_signature_limit) does not apply.
+        default_fidelity="truncate",
+        // Above every command node's timeout in this graph (the longest is act at 8m), so R2 holds.
+        stall_timeout="15m"
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // Resets /tmp/fabro/mq, reads the repository, the base branch, the token's login and the run
+    // id, writes env.json, reads both auto-merge switches (ADR 0024 D3, P10) and runs the overlap
+    // guard (rule 5). The switches are read once, here. The guard lists the active runs with
+    // bracketed paging (curl -g), because GET /runs ignores a workflow= filter (spike S4), and
+    // keeps the merge-queue runs of this repository that are older than this one. A sweep that
+    // cannot see the others does not act. An unreadable switch is off. A skip writes skip_reason
+    // and prints sweep=skip; a missing fact writes stop_reason and exits 1. summarize tells them
+    // apart (task 08).
+    prep [label="Prepare the sweep", shape=parallelogram, output_schema="routing", timeout="2m",
+        script="set -e
+rm -rf /tmp/fabro/mq
+mkdir -p /tmp/fabro/mq
+stop() { printf '%s' \"$1\" > /tmp/fabro/mq/stop_reason; echo \"$1\" >&2; exit 1; }
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
+BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null || true)
+LOGIN=$(gh api user --jq .login 2>/dev/null || true)
+RUN=$(basename \"$(git rev-parse --abbrev-ref HEAD 2>/dev/null)\" 2>/dev/null || true)
+[ -n \"$REPO\" ] || stop 'prep could not read the repository'
+[ -n \"$BASE\" ] || stop 'prep could not read the default branch'
+[ -n \"$LOGIN\" ] || stop 'prep could not read the token login'
+[ -n \"$RUN\" ] || stop 'prep could not read the run id'
+jq -n --arg repo \"$REPO\" --arg base \"$BASE\" --arg login \"$LOGIN\" --arg run \"$RUN\" --argjson now \"$(date +%s)\" '{repo: $repo, base: $base, login: $login, run: $run, now: $now, merge_cap: 5}' > /tmp/fabro/mq/env.json
+NAME=${REPO#*/}
+AM=0
+if [ -n \"${FABRO_API_URL:-}\" ] && [ -n \"${FABRO_API_TOKEN:-}\" ] && curl -fsS -H \"Authorization: Bearer $FABRO_API_TOKEN\" $FABRO_API_URL/automations > /tmp/fabro/mq/autorows.json 2>/dev/null; then
+  D=$(jq -r --arg r \"$REPO\" '[.data[] | select(.workflow == \"pr-review\" and .target.repo == $r)] | .[0].description // \"\"' /tmp/fabro/mq/autorows.json)
+  case \"$D\" in
+    *auto_merge*) T=$(printf '%s' \"$D\" | grep -o 'auto_merge=[A-Za-z0-9_-]*' | tail -1 | cut -d= -f2)
+                  case \"$T\" in true) AM=1 ;; esac ;;
+    *) AM=1 ;;
+  esac
+fi
+H=\"${FABRO_AUTO_MERGE:-0}\"
+case \"$H\" in 1) ;; *) H=0 ;; esac
+if [ \"$H\" != 1 ]; then
+  printf '%s' 'auto-merge is off host-wide (FABRO_AUTO_MERGE is not 1)' > /tmp/fabro/mq/skip_reason
+elif [ \"$AM\" != 1 ]; then
+  printf '%s' \"auto-merge is off for this repository (pr-review-$NAME row)\" > /tmp/fabro/mq/skip_reason
+else
+  LIST=0
+  OFFSET=0
+  PAGES=0
+  echo '[]' > /tmp/fabro/mq/active.json
+  while [ \"$PAGES\" -lt 10 ]; do
+    if ! curl -fsS -g -H \"Authorization: Bearer $FABRO_API_TOKEN\" \"$FABRO_API_URL/runs?status=pending&status=runnable&status=initializing&status=running&status=blocked&status=removing&page[limit]=100&page[offset]=$OFFSET\" > /tmp/fabro/mq/page.json 2>/dev/null; then LIST=1; break; fi
+    if ! jq -s '.[0] + (.[1].data // [])' /tmp/fabro/mq/active.json /tmp/fabro/mq/page.json > /tmp/fabro/mq/active.new 2>/dev/null; then LIST=1; break; fi
+    mv /tmp/fabro/mq/active.new /tmp/fabro/mq/active.json
+    N=$(jq '.data | length' /tmp/fabro/mq/page.json)
+    HM=$(jq -r '.meta.has_more // false' /tmp/fabro/mq/page.json)
+    [ \"$HM\" = true ] && [ \"$N\" -gt 0 ] || break
+    OFFSET=$((OFFSET + N))
+    PAGES=$((PAGES + 1))
+  done
+  if [ \"$LIST\" = 1 ]; then
+    printf '%s' 'could not list active runs' > /tmp/fabro/mq/skip_reason
+  else
+    MINE=$(jq -r --arg run \"$RUN\" '[.[] | select(.id == $run)] | .[0].timestamps.created_at // \"\"' /tmp/fabro/mq/active.json)
+    OLDER=$(jq -r --arg run \"$RUN\" --arg repo \"$REPO\" --arg mine \"$MINE\" '[.[] | select(.id != $run and .repository.name == $repo and ((.workflow.slug == \"merge-queue\") or ((.automation.id // \"\") | startswith(\"merge-queue-\"))) and ($mine == \"\" or [.timestamps.created_at, .id] < [$mine, $run]))] | sort_by(.timestamps.created_at, .id) | .[0].id // \"\"' /tmp/fabro/mq/active.json)
+    if [ -n \"$OLDER\" ]; then printf '%s' \"an older merge-queue run ($OLDER) is still active\" > /tmp/fabro/mq/skip_reason; fi
+  fi
+fi
+if [ -e /tmp/fabro/mq/skip_reason ]; then
+  echo \"prep: skip: $(cat /tmp/fabro/mq/skip_reason)\" >&2
+  echo '{\"context_updates\":{\"sweep\":\"skip\"}}'
+else
+  echo \"prep: repo=$NAME run=$RUN\" >&2
+  echo '{\"context_updates\":{\"sweep\":\"run\"}}'
+fi"]
+
+    // Placeholders: tasks 06 (inventory, decide), 07 (act) and 08 (summarize) replace them.
+    inventory [label="Inventory the queued PRs", shape=parallelogram, timeout="3m",
+        script="echo 'inventory: placeholder (task 06)'"]
+
+    decide [label="Decide each PR's action", shape=parallelogram, timeout="1m",
+        script="echo 'decide: placeholder (task 06)'"]
+
+    act [label="Merge, rebase, rerun or hand off", shape=parallelogram, timeout="8m",
+        script="echo 'act: placeholder (task 07)'"]
+
+    summarize [label="Summarize the sweep", shape=parallelogram, timeout="1m",
+        script="echo 'summarize: placeholder (task 08)'"]
+
+    // The target of the summary hook (task 08).
+    finish [label="Finish", shape=parallelogram, timeout="1m", script="echo done"]
+
+    start -> prep
+    prep -> inventory      [condition="outcome=succeeded && context.sweep=run"]
+    prep -> summarize
+    inventory -> decide    [condition="outcome=succeeded"]
+    inventory -> summarize
+    decide -> act          [condition="outcome=succeeded"]
+    decide -> summarize
+    act -> summarize
+    summarize -> finish
+    finish -> exit
+}

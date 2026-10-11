@@ -56,6 +56,8 @@ class Counts(unittest.TestCase):
             "arch-review": (24, 54),
             # Task 02 skeleton (ADR 0022). Task 10 records the `fabro validate` baseline.
             "dependabot": (47, 104),
+            # Task 05 skeleton (fast-path series): no agent stage. Expected, unverified until check-host.
+            "merge-queue": (8, 10),
         })
 
 

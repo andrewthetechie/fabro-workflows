@@ -23,7 +23,7 @@ actually lives.
 
 | Path | What it is |
 |---|---|
-| `.fabro/workflows/<name>/` | **The only tree the automations read.** Five runnable packages — `backlog`, `pr-review`, `issue-triage`, `arch-review`, `dependabot` — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in, and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
+| `.fabro/workflows/<name>/` | **The only tree the automations read.** Six runnable packages — `backlog`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue` — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in, and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
 | `.fabro/workflows/_io/` | The **Stage manifest** and output schemas (ADR 0016): the only source of every `FABRO_IO_MANIFEST` block, generated into each `workflow.toml`. Never hand-edit the generated blocks; `check` fails on drift. |
 | `ops/` | Host replication: compose, the coder scheduler, profile images, provisioning, sweepers, and the offline checkers. No automation reads this tree. `ops/README.md` has its contents table and the runbooks. |
 | `docs/` | `docs/adr/` holds the decisions; every other folder is a task series or a set of design records. `docs/README.md` indexes them with their status. |
@@ -85,6 +85,7 @@ and `ArchReview (24 nodes, 54 edges)` clean; `Dependabot (47 nodes, 104 edges)` 
 The three importing graphs gained `report_queued` (+1 node, +3 edges) in the fast-path series, task 02: those counts are expected, unverified by `fabro validate` until `make check-host` runs.
 Task 03 added `route_lane` and six edges to `backlog` (+1 node, +6 edges, to 71 and 172): `prep -> route_lane` replaced `prep -> decompose`; `route_lane` has 3 edges; `next_task` gained `open_pr_prep` and `coder`; `resolve_merge_gate` gained `coder`. Also expected, unverified until `make check-host`.
 Task 04 added `demote_lane` and three edges to `backlog` (+1 node, +3 edges, to 72 and 175): `rework_router -> demote_lane`, `demote_lane -> exit` and `demote_lane -> rescue_brief`. Also expected, unverified until `make check-host`.
+Task 05 added the sixth package, `merge-queue`: `MergeQueue (8 nodes, 10 edges)`, expected clean, unverified until `make check-host`.
 `make check-host` compares `fabro validate`'s node and edge counts against these.
 
 `docs/agents/validating.md` says what each gate covers and misses, why the warnings are

@@ -7,7 +7,7 @@
 # operator with LAN access runs `make check-host`; a pre-push hook never does.
 #
 # It rsyncs `.fabro/` up, runs the routing-schema checker in the container, and
-# runs `fabro validate` on all five packages, comparing each node/edge count to
+# runs `fabro validate` on all six packages, comparing each node/edge count to
 # the AGENTS.md *Validating* baselines (the one place to update them). It also
 # checks the live settings overlay for the openai Agent profile (ADR 0017).
 #
@@ -33,6 +33,7 @@ declare -A BASELINE=(
     [issue-triage]="16 nodes, 36 edges"
     [arch-review]="24 nodes, 54 edges"
     [dependabot]="47 nodes, 104 edges"
+    [merge-queue]="8 nodes, 10 edges"
 )
 
 say "rsync .fabro/ to $HOST:/tmp/check/"
@@ -41,12 +42,12 @@ rsync -a --delete .fabro/ "$HOST:/tmp/check/"
 say "mount the tree into the fabro container"
 ssh "$HOST" 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp /tmp/check fabro-fabro-1:/tmp/check'
 
-say "parity: fabro parse against check-graph-invariants.py --dump, seven files (ADR 0019, D2)"
+say "parity: fabro parse against check-graph-invariants.py --dump, eight files (ADR 0019, D2)"
 scp -q ops/check-graph-invariants.py "$HOST:/tmp/check-graph-invariants.py"
 PARITY_BAD=0
 for f in workflows/backlog/workflow.fabro workflows/pr-review/workflow.fabro \
          workflows/issue-triage/workflow.fabro workflows/arch-review/workflow.fabro \
-         workflows/dependabot/workflow.fabro \
+         workflows/dependabot/workflow.fabro workflows/merge-queue/workflow.fabro \
          workflows/_shared/review-merge/review-merge.fabro workflows/_shared/triage/triage.fabro; do
     # Both sides are normalized on the host: fabro's {"Str": v} wrappers, and the reader's plain strings.
     if ssh "$HOST" "cd ~/fabro && docker compose exec -T fabro fabro parse /tmp/check/$f </dev/null \
@@ -65,8 +66,8 @@ if [ "$PARITY_BAD" -ne 0 ]; then
     exit 1
 fi
 
-say "fabro validate on all five packages (node/edge vs AGENTS.md baselines)"
-for w in backlog pr-review issue-triage arch-review dependabot; do
+say "fabro validate on all six packages (node/edge vs AGENTS.md baselines)"
+for w in backlog pr-review issue-triage arch-review dependabot merge-queue; do
     OUT=$(ssh "$HOST" "cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/$w/workflow.toml" 2>&1)
     LINE=$(printf '%s\n' "$OUT" | grep -E '^Workflow: ' | head -1)
     echo "  $LINE"

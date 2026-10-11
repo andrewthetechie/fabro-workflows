@@ -34,6 +34,7 @@ SCHEMAS = IO / "schemas"
 SOURCE = IO / "manifest.json"
 
 # Deterministic emit order.
+# merge-queue is deliberately absent: it has no agent stage, so it has no Stage I/O manifest block.
 WF_ORDER = ["backlog", "pr-review", "arch-review", "issue-triage", "dependabot"]
 
 # The exact markers C2 specifies.
