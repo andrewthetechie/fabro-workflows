@@ -1,10 +1,13 @@
 # Dependabot: overview and canonical contracts
 
-**Status:** designed 2026-10-10 (ADR 0022, proposed). Tasks 01-09 are implemented, one
-commit each, on local `main` (unpushed, pending review; no deploy). Task 01 is
-`spike-2026-10-10.txt`; S1 passed, so the series is not blocked. Task 10 (validate on the
-host, create the rows, hand-fire, enable the schedules) is the operator's and has not started.
-`fabro validate` in the container passes: `Dependabot (46 nodes, 101 edges)`, no warnings.
+**Status:** live since 2026-10-11 (ADR 0022, accepted). Tasks 01-09 landed 2026-10-10. Task 10
+ran the same night: review fixes, `make check` and `make check-host` green
+(`Dependabot (46 nodes, 101 edges)`, no warnings), the rows created, five hand-fired runs
+(jelly-swipe 01M4M56X29CTWX3S4YCZMRW1PT, 01M4M6THS62P3EBBHZ3SVX274C, 01M4M8840H6RM8EJFYM8EKDV13;
+lawncare-saas 01M4M6TEY2QGCQBCAQ103RECX8, 01M4M73MMBHWDCGHAT7VMDN96B), and the four schedules
+enabled at 01:3xZ on 2026-10-11. Live: 3 Dependabot PRs merged (2 by D26's `--admin`), 3 patch PRs
+merged (jelly-swipe #445, #449; lawncare-saas #2783). S5 (`@dependabot rebase` on a behind PR) is
+superseded by D26. Step 9 (`result-<date>.txt`) is due 2026-10-18.
 The operator answered Q1-Q19 in a grilling session on 2026-10-10.
 D20-D25 were drafted while planning, and are open to the operator's veto until task 02 lands.
 

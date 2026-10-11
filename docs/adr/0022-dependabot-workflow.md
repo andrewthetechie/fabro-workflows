@@ -1,7 +1,8 @@
 # A daily `dependabot` run per repository merges Dependabot PRs and patches open alerts
 
-**Status:** proposed (2026-10-10). The operator settled the decisions in a grilling session
-on 2026-10-10. The task series is `docs/dependabot/`.
+**Status:** accepted (2026-10-11; proposed 2026-10-10). The operator settled the decisions in a
+grilling session on 2026-10-10, and added D26 (`--admin` for a behind-base Dependabot PR) during
+go-live. The task series is `docs/dependabot/`.
 
 Dependabot security updates are on in all four target repositories, yet on 2026-10-10
 eleven alerts were open and **none** had a Dependabot PR: jelly-swipe 5 (urllib3 runtime,
