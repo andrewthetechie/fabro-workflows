@@ -334,7 +334,7 @@ def test_api_pools_reports_every_pool_with_its_drain_flag_and_lease(client, stor
     # Every configured pool appears, in config order, whether or not it is leased:
     # an absent row and an idle box must not be the same answer, because only one
     # of them is what draft 12 alerts on.
-    assert [row["coder_pool"] for row in body] == ["coders-a", "coders-b", "coders-c"]
+    assert [row["coder_pool"] for row in body] == ["coders-a", "coders-b", "coders-c", "coders-d"]
     assert body[0]["drained"] is True
     assert body[0]["lease"] is None
     assert body[1]["drained"] is False
@@ -353,6 +353,7 @@ def test_api_pools_is_all_null_leases_when_nothing_is_running(client):
         ("coders-a", False, None),
         ("coders-b", False, None),
         ("coders-c", False, None),
+        ("coders-d", False, None),
     ]
 
 
@@ -560,6 +561,7 @@ def test_drain_stops_new_dispatch_and_undrain_resumes_without_a_restart(loop, st
     seed(store, "o/normal", 2)
     store.set_drained("coders-a", True)
     store.set_drained("coders-c", True)
+    store.set_drained("coders-d", True)
 
     first = loop.tick()
 

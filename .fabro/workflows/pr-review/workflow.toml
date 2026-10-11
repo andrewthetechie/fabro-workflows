@@ -17,7 +17,7 @@ graph = "workflow.fabro"
 # The mechanical-check tier (.merge-standards in the imported review-merge
 # graph). Escalates UP to full glm-5.3, never sideways.
 "glm-5.3-flash" = ["zai:glm-5.3"]
-# The scheduler pins a run to one box by naming `coders-a`, `coders-b` or `coders-c` in the
+# The scheduler pins a run to one box by naming `coders-a` to `coders-d` in the
 # run's `coder_pool` input (see the stylesheet). Fallbacks are keyed on the
 # REQUESTED model name, so each pinned group needs its own entry or a pinned run
 # has no fallback at all. The both-boxes `coders` key has no home anymore --
@@ -27,6 +27,7 @@ graph = "workflow.fabro"
 "coders-a" = ["zai:glm-5.3"]
 "coders-b" = ["zai:glm-5.3"]
 "coders-c" = ["zai:glm-5.3"]
+"coders-d" = ["zai:glm-5.3"]
 # kimi-k3 spends Kimi's 7-day quota mid-week (78 of 176 runs failed over, 09-25..10-11).
 # hy4-preview (OpenRouter, provider `orfallback`) keeps the reviewer non-GLM; glm-5.3
 # is the last rung if OpenRouter fails too.

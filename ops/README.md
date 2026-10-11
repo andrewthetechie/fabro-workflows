@@ -65,7 +65,8 @@ Checked on 2026-09-18, because the list below had drifted from the host:
   `FABRO_LITELLM_KEY` — **not** `GITHUB_TOKEN`, `SESSION_SECRET` or `FABRO_DEV_TOKEN`.
 - The fabro vault holds `FABRO_API_TOKEN`, `GITHUB_TOKEN` and `LITELLM_API_KEY`, and since
   2026-10-11 `ORFALLBACK_API_KEY` (the OpenRouter key for hy4-preview; its source copy is the
-  untracked `.scratch/openrouter-api-token.txt` in the working checkout). It is
+  untracked `.scratch/openrouter-api-token.txt` in the working checkout) and `FREELLM_API_KEY`
+  (coders-d; source `.scratch/freellm-api-keys.txt`, line 1). It is
   write-only in practice: `fabro secret` is `list`/`set`/`rm`, so a value that goes in
   cannot be read back out. Copy from wherever it came from instead.
 - `GITHUB_TOKEN` also lives in `~/fabro/scheduler.env` on the host, for the coder
@@ -910,7 +911,7 @@ curl -fsS -X POST http://10.10.0.32:32280/api/dispatch-once \
   | jq .
 ```
 
-`coders-a`, `coders-b` and `coders-c` (the spark box, since 2026-10-11) are the only accepted pools; `coders` — the load-balanced group
+`coders-a`, `coders-b`, `coders-c` (the spark box) and `coders-d` (the freellm router over free coding plans, both since 2026-10-11) are the only accepted pools; `coders` — the load-balanced group
 over both boxes — is refused with a 422, because dispatching through it would put the run
 back on whichever box LiteLLM picked. `environment_id` is not a parameter: it comes from
 the repo's row in `repos.toml`. Other refusals: `404` for a repo that is not in

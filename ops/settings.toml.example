@@ -86,7 +86,7 @@ url = "http://<HOST>:<FABRO_PORT>"
 # model ids do not change; the graphs and workflow TOMLs address them by id. Replace
 # <IP>/<PORT> with each box's real address.
 #
-# A run's `coder_pool` input selects `coders-a`, `coders-b` or `coders-c` through the root graph's
+# A run's `coder_pool` input selects `coders-a` to `coders-d` through the root graph's
 # `model_stylesheet`, which is how the scheduler leases a whole llama.cpp box for a
 # run (docs/scheduler/00-overview-and-contracts.md, findings 3 and 4).
 #
@@ -142,6 +142,23 @@ small_default = true
 display_name = "Local coders C (spark 10.10.0.30)"
 api_model = "deepseek-v4-flash-0731"
 limits = { context_tokens = 1048576, max_output_tokens = 65536 }
+capabilities = { text = true, tools = true, reasoning = true }
+
+# coders-d (2026-10-11): a fourth Coder slot, leased one run at a time by the coder scheduler.
+# freellm is a LAN router (OpenAI-compatible) over free coding plans; its `auto` model routes
+# each request to the best available free model, so consecutive turns can come from different
+# models and the endpoint can be unstable. Context is capped at 256k on purpose: /v1/models
+# reports 1M for `auto`, but some models behind it have far less. A custom provider (not a
+# built-in name), so it owns only this row; the key is FREELLM_API_KEY in the vault.
+[llm.providers.freellm]
+display_name = "freellm router (free coding plans)"
+base_url = "https://<FREELLM_HOST>/v1"
+auth = { type = "bearer" }
+
+[llm.providers.freellm.models."coders-d"]
+display_name = "Local coders D (freellm auto)"
+api_model = "auto"
+limits = { context_tokens = 262144, max_output_tokens = 32768 }
 capabilities = { text = true, tools = true, reasoning = true }
 
 # The hosted models now resolve to their own direct providers (ADR 0007,

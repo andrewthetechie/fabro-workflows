@@ -53,7 +53,7 @@ from .store import RunOutcome, Store
 class Lease:
     """One coder instance, held for one queue item's run."""
 
-    coder_pool: str  # "coders-a" | "coders-b" | "coders-c"
+    coder_pool: str  # "coders-a" .. "coders-d"
     repo: str
     issue_number: int
     run_id: str

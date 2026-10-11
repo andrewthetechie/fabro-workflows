@@ -519,8 +519,8 @@ def test_a_single_repo_fills_both_boxes_then_the_box_parks(loop, store, leases):
 
 @respx.mock
 def test_the_loop_parks_itself_once_every_box_is_leased(loop, store):
-    # What makes leaving this running tolerable before draft 09: three boxes means at
-    # most three leases, so there is no way to leak a fourth run and nothing spins.
+    # What makes leaving this running tolerable before draft 09: four boxes means at
+    # most four leases, so there is no way to leak a fifth run and nothing spins.
     recorder = Recorder()
     install_labels(recorder)
     install_fabro(recorder)
@@ -529,10 +529,10 @@ def test_the_loop_parks_itself_once_every_box_is_leased(loop, store):
     seed(store, LAWN, 3)
     seed(store, LAWN, 4)
 
-    assert len(loop.tick()) == 3
+    assert len(loop.tick()) == 4
     assert loop.tick() == []
     assert loop.tick() == []
-    assert len(recorder.made("POST", "/api/v1/runs")) == 3
+    assert len(recorder.made("POST", "/api/v1/runs")) == 4
 
 
 @respx.mock
@@ -541,6 +541,7 @@ def test_a_drained_box_takes_no_new_work(loop, store):
     # box from `free_pools` and does nothing else.
     store.set_drained("coders-a", True)
     store.set_drained("coders-c", True)
+    store.set_drained("coders-d", True)
     recorder = Recorder()
     install_labels(recorder)
     install_fabro(recorder)
