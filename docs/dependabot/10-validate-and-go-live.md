@@ -51,9 +51,13 @@ container's copy contains `dependabot-summary`.
 ```sh
 ops/provision-server-state.sh            # creates the four dependabot-* rows, schedules ENABLED (C10)
 for r in jelly-swipe lawncare-saas womens-fantasy-sports writers-app; do
-  ops/fabro-automation-schedule.sh dependabot-$r off
+  DRY_RUN=0 ops/fabro-automation-schedule.sh dependabot-$r off
 done
 ```
+
+`fabro-automation-schedule.sh` defaults to `DRY_RUN=1` and only prints the PUT it would send.
+Without `DRY_RUN=0` the schedules stay **enabled** (2026-10-10: the first attempt did exactly
+that). Both scripts read `FABRO_API_URL` (with `/api/v1`) and `FABRO_DEV_TOKEN`.
 
 Do both in one sitting, **before the next 05:00**, so no scheduled run fires before
 the hand-fired ones pass. Then check that the rows list `auto_merge=true`, and that
@@ -102,7 +106,7 @@ Check (d)-(i) again. In particular, the diff adds no lockfile, and
 
 ```sh
 for r in jelly-swipe lawncare-saas womens-fantasy-sports writers-app; do
-  ops/fabro-automation-schedule.sh dependabot-$r on
+  DRY_RUN=0 ops/fabro-automation-schedule.sh dependabot-$r on
 done
 ```
 
