@@ -80,11 +80,9 @@ binary on this Mac, so graph validation happens in the container via `make check
 Baselines (as of 2026-10-02, fabro 0.362.0-nightly.0): `Backlog (69 nodes, 162 edges)`
 with one warning, `issue_number` unbound in `claim`; `PrReview (34 nodes, 73 edges)` with
 one warning, `pr_number` unbound in `validate_input`; `IssueTriage (16 nodes, 36 edges)`
-and `ArchReview (24 nodes, 54 edges)` clean. Both warnings are deliberate: never bind
-those inputs in `[run.inputs]`. `make check-host` compares `fabro validate`'s node and
-edge counts against these.
-
-Dependabot (N nodes, M edges): placeholder until task 10 records the `fabro validate` baseline.
+and `ArchReview (24 nodes, 54 edges)` clean; `Dependabot (46 nodes, 101 edges)` clean
+(2026-10-10). Both warnings are deliberate: never bind those inputs in `[run.inputs]`.
+`make check-host` compares `fabro validate`'s node and edge counts against these.
 
 `docs/agents/validating.md` says what each gate covers and misses, why the warnings are
 deliberate, and why `fabro preflight` is not an offline check.
