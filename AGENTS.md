@@ -79,16 +79,14 @@ The offline gates need only jq, awk, git, python3.11 and, when `ops/fabro-io/` o
 `_io/schemas/` changed, cargo. `git push --no-verify` skips the hook. There is no `fabro`
 binary on this Mac, so graph validation happens in the container via `make check-host`.
 
-Baselines (as of 2026-10-02, fabro 0.362.0-nightly.0): `Backlog (72 nodes, 175 edges)`
-with one warning, `issue_number` unbound in `claim`; `PrReview (35 nodes, 76 edges)` with
-one warning, `pr_number` unbound in `validate_input`; `IssueTriage (16 nodes, 36 edges)`
-and `ArchReview (24 nodes, 54 edges)` clean; `Dependabot (47 nodes, 104 edges)` clean
-(2026-10-10). Both warnings are deliberate: never bind those inputs in `[run.inputs]`.
-The three importing graphs gained `report_queued` (+1 node, +3 edges) in the fast-path series, task 02: those counts are expected, unverified by `fabro validate` until `make check-host` runs.
-Task 03 added `route_lane` and six edges to `backlog` (+1 node, +6 edges, to 71 and 172): `prep -> route_lane` replaced `prep -> decompose`; `route_lane` has 3 edges; `next_task` gained `open_pr_prep` and `coder`; `resolve_merge_gate` gained `coder`. Also expected, unverified until `make check-host`.
-Task 04 added `demote_lane` and three edges to `backlog` (+1 node, +3 edges, to 72 and 175): `rework_router -> demote_lane`, `demote_lane -> exit` and `demote_lane -> rescue_brief`. Also expected, unverified until `make check-host`.
-Task 05 added the sixth package, `merge-queue`: `MergeQueue (8 nodes, 10 edges)`, expected clean, unverified until `make check-host`.
-`make check-host` compares `fabro validate`'s node and edge counts against these.
+Baselines (as of 2026-10-11, fabro 0.362.0-nightly.0, verified by `make check-host`):
+`Backlog (72 nodes, 175 edges)` with one warning, `issue_number` unbound in `claim`;
+`PrReview (35 nodes, 76 edges)` with one warning, `pr_number` unbound in `validate_input`;
+`IssueTriage (16 nodes, 36 edges)`, `ArchReview (24 nodes, 54 edges)`,
+`Dependabot (47 nodes, 104 edges)` and `MergeQueue (8 nodes, 10 edges)` clean. Both
+warnings are deliberate: never bind those inputs in `[run.inputs]`. The fast-path series
+added `report_queued` to the three importing graphs (+1 node, +3 edges each), and
+`route_lane` and `demote_lane` to `backlog`. `make check-host` compares `fabro validate`'s node and edge counts against these.
 
 `docs/agents/validating.md` says what each gate covers and misses, why the warnings are
 deliberate, and why `fabro preflight` is not an offline check.
