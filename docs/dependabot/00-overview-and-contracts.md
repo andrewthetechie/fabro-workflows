@@ -1,8 +1,11 @@
 # Dependabot: overview and canonical contracts
 
-**Status:** designed 2026-10-10 (ADR 0022, proposed). Task 01 (the spike) is done:
-`spike-2026-10-10.txt`. S1 passed, so the series is not blocked. Tasks 02-09 are in
-progress on `main`. The operator answered Q1-Q19 in a grilling session on 2026-10-10.
+**Status:** designed 2026-10-10 (ADR 0022, proposed). Tasks 01-09 are implemented, one
+commit each, on local `main` (unpushed, pending review; no deploy). Task 01 is
+`spike-2026-10-10.txt`; S1 passed, so the series is not blocked. Task 10 (validate on the
+host, create the rows, hand-fire, enable the schedules) is the operator's and has not started.
+`fabro validate` in the container passes: `Dependabot (46 nodes, 101 edges)`, no warnings.
+The operator answered Q1-Q19 in a grilling session on 2026-10-10.
 D20-D25 were drafted while planning, and are open to the operator's veto until task 02 lands.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
