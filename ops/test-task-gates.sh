@@ -4621,6 +4621,9 @@ case "$1 $2" in
   "pr merge")
     n=$(cat "$GH_LOG.merges" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$GH_LOG.merges"
     if [ -n "${GH_MERGE_FAIL_ONCE:-}" ] && [ "$n" -eq 1 ]; then echo "Base branch was modified. Review and try the merge again." >&2; exit 1; fi
+    case " $* " in *" --admin "*) ;; *) if [ -n "${GH_MERGE_BEHIND:-}" ]; then
+      echo "X Pull request o/r#7 is not mergeable: the head branch is not up to date with the base branch." >&2
+      echo "To use administrator privileges to immediately merge the pull request, add the \`--admin\` flag." >&2; exit 1; fi ;; esac
     echo merged ;;
   "api user") echo '{"login":"fabro-bot"}' ;;
   *) : ;;
@@ -4788,6 +4791,28 @@ export GH_COMMENTS="[{\"author\":{\"login\":\"fabro-bot\"},\"body\":\"@dependabo
 loop_run dep_merge rebase2
 unset GH_COMMENTS
 check "dep_merge conflict with a recent comment: no new comment" "0" "$(grep -c '^gh pr comment' "$WORK/loop-rebase2/gh.log")"
+
+# 11b. Branch protection that requires an up-to-date branch (jelly-swipe): the plain merge is refused as
+#      behind. With the base tip still the validated commit, it retries once with --admin and records merged.
+#      With the base moved since the validation, it records merge_failed and never uses --admin.
+loop_repo behind clean
+jq -cn --arg s "$(cat "$WORK/loop-behind/pr_sha")" '{number: 7, head_sha: $s, fixes: []}' > "$WORK/loop-behind/fab/dep/cur.json"
+git -C "$WORK/loop-behind/work" rev-parse origin/main > "$WORK/loop-behind/fab/dep/validated_base"
+export DEP_MERGE_WAIT=0 GH_MERGE_BEHIND=1
+loop_run dep_merge behind
+check "dep_merge behind, base unchanged: records merged" "merged" "$(jq -r '.[-1].outcome' "$WORK/loop-behind/fab/dep/results.json")"
+check "dep_merge behind, base unchanged: two merge calls" "2" "$(grep -c '^gh pr merge' "$WORK/loop-behind/gh.log")"
+check "dep_merge behind, base unchanged: the second uses --admin and the head match" "1" "$(grep '^gh pr merge' "$WORK/loop-behind/gh.log" | tail -1 | grep -c -- '--match-head-commit .* --admin')"
+check "dep_merge behind, base unchanged: the reason says --admin" "1" "$(jq -r '.[-1].reason' "$WORK/loop-behind/fab/dep/results.json" | grep -c 'merged with --admin')"
+loop_repo behind2 clean
+jq -cn --arg s "$(cat "$WORK/loop-behind2/pr_sha")" '{number: 7, head_sha: $s, fixes: []}' > "$WORK/loop-behind2/fab/dep/cur.json"
+echo 0000000000000000000000000000000000000000 > "$WORK/loop-behind2/fab/dep/validated_base"
+loop_run dep_merge behind2
+unset DEP_MERGE_WAIT GH_MERGE_BEHIND
+check "dep_merge behind, base moved: records merge_failed" "merge_failed" "$(jq -r '.[-1].outcome' "$WORK/loop-behind2/fab/dep/results.json")"
+check "dep_merge behind, base moved: never uses --admin" "0" "$(grep -c -- '--admin' "$WORK/loop-behind2/gh.log")"
+check "dep_merge behind, base moved: the reason says the base moved" "1" "$(jq -r '.[-1].reason' "$WORK/loop-behind2/fab/dep/results.json" | grep -c 'moved after the validation')"
+check "dep_validate green: records the validated base" "$(git -C "$WORK/loop-green/work" rev-parse origin/main)" "$(cat "$WORK/loop-green/fab/dep/validated_base")"
 
 # 12. dep_checks: stale, red, no checks and pending.
 loop_repo chk clean

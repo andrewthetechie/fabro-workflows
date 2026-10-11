@@ -73,6 +73,7 @@ graph's own check watch is the only gate. All four have `allow_squash_merge: tru
 | D22 | *(drafted)* A group's tracking issue closed **completed** less than 3 days ago, with its alerts still open, is skipped (Dependabot closes alerts some time after the fix lands). After 3 days, the run reopens the issue with `needs-human` and a comment that the patch merged but the alerts stayed open. | planning |
 | D23 | *(drafted)* A Dependabot PR with no checks at all is not merged. This matches the shared phase's "no CI checks were reported" block. | planning |
 | D24 | *(drafted)* Every command-node failure routes to `summarize`, as in `arch-review`, so a run always reports. The summary names the node where the run stopped. | planning |
+| D26 | A Dependabot PR that GitHub refuses **only** because its branch is behind base (jelly-swipe's protection requires an up-to-date branch, so every PR after a run's first merge is behind) is merged with `gh pr merge --admin`, and only while the base tip is still the commit `dep_validate` validated it on (`validated_base`). If the base moved, it is `merge_failed`. The first live run merged 1 of 5 for want of this. | operator, 2026-10-10 |
 | D25 | *(drafted)* The patch path gives the agent one retry after a red `setup.sh && ci.sh` (`patch_validate`), so a red patch never opens a PR. | planning |
 
 ## Verified facts (sources)
@@ -253,7 +254,7 @@ A group is the open alerts that share `(ecosystem, manifest, package)`. Its key 
 
 | Outcome | Meaning |
 |---|---|
-| `merged` | All checks passed and the PR was squash-merged. |
+| `merged` | All checks passed and the PR was squash-merged (with `--admin` under D26; `reason` then says so). |
 | `switch_off` | All checks passed, but D17 forbids the merge. |
 | `red` | A GitHub check failed. |
 | `pending` | Checks were still pending after 15 minutes. |

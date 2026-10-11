@@ -202,7 +202,7 @@ fi
 if [ \"$CUR\" -lt \"$N\" ]; then
   jq -c --argjson c \"$CUR\" '.[$c]' $D/prs.json > $D/cur.json
   echo $((CUR + 1)) > $D/cursor
-  rm -f $D/cur_result.json
+  rm -f $D/cur_result.json $D/validated_base
   jq -cn '{context_updates: {dep_pr_next: \"yes\"}}'
 else
   jq -cn '{context_updates: {dep_pr_next: \"no\"}}'
@@ -263,6 +263,7 @@ fi"]
     // The D20 sequence, in this checkout: merge the PR head into origin/<base>, run setup.sh and ci.sh
     // under an inner `timeout` (DEP_VALIDATE_TIMEOUT, default 1020 s, below this node's 20m), then restore
     // the run branch and clean the tree. The identity is passed on the merge only: the plain image has none.
+    // validated_base records the base commit the PR was validated on, for dep_merge's --admin rule.
     // The restore runs whatever the outcome; a dirty checkout afterwards exits 1 without publishing dep_valid.
     // The tail of the log is printed with its braces replaced, so fabro's routing scan reads one object.
     dep_validate [label="dep_validate", shape=parallelogram, output_schema="routing", timeout="20m",
@@ -287,6 +288,7 @@ if ! git fetch -q origin \"$B\" \"pull/$N/head\" >/dev/null 2>&1; then
   jq -cn '{context_updates: {dep_valid: \"fail\"}}'
   exit 0
 fi
+git rev-parse \"origin/$B\" > $D/validated_base
 git checkout -q --detach \"origin/$B\"
 if ! git $ID merge -q --no-edit --no-ff \"$SHA\" > $D/merge_$N.log 2>&1; then
   restore; clean_or_stop
@@ -319,7 +321,12 @@ jq -cn --arg v \"$V\" '{context_updates: {dep_valid: $v}}'"]
     // checks or validation stopped records that outcome and is not merged. A conflict first gets one
     // `@dependabot rebase` comment, unless this token already posted one in the last 24 hours. A merge
     // needs the merge switch on (merge_enabled from prep); otherwise the PR records switch_off.
-    // The merge re-reads the head (invariants-merge, Merging) and retries once on "Base branch was modified".
+    // The merge re-reads the head (invariants-merge, Merging) and retries on "Base branch was modified".
+    // A branch protection that requires an up-to-date branch (jelly-swipe) refuses every PR after the first
+    // merge of a run, because the base moved. That refusal alone is retried with --admin, and only while the
+    // base tip is still validated_base: dep_validate already ran setup.sh and ci.sh on this head merged into
+    // that commit, which is what the protection asks for, and dep_checks saw the checks green (operator
+    // decision, 2026-10-10). If the base moved since, nothing validated the result, so it is merge_failed.
     dep_merge [label="dep_merge", shape=parallelogram, output_schema="routing", timeout="10m",
         script="echo dep_merge > /tmp/fabro/dep/stopped_at
 D=/tmp/fabro/dep
@@ -359,18 +366,28 @@ else
       gh pr view \"$N\" --json state,headRefOid,mergeable > $D/pr_now.json 2>/dev/null || echo '{}' > $D/pr_now.json
       i=$((i + 1))
     done
+    B=$(cat /tmp/fabro/base_ref)
     ATTEMPT=0
     OK=0
+    ADMIN=''
+    WHY=''
     while [ $ATTEMPT -lt 3 ]; do
       ATTEMPT=$((ATTEMPT + 1))
-      if gh pr merge \"$N\" --squash --delete-branch=false --match-head-commit \"$SHA\" > $D/merge_$N.out 2>&1; then OK=1; break; fi
+      if gh pr merge \"$N\" --squash --delete-branch=false --match-head-commit \"$SHA\" $ADMIN > $D/merge_$N.out 2>&1; then OK=1; break; fi
+      if [ -z \"$ADMIN\" ] && grep -q 'not up to date with the base branch' $D/merge_$N.out; then
+        TIP=$(git ls-remote origin \"refs/heads/$B\" 2>/dev/null | cut -f1)
+        if [ -n \"$TIP\" ] && [ \"$TIP\" = \"$(cat $D/validated_base 2>/dev/null)\" ]; then ADMIN=--admin; continue; fi
+        WHY=\"the branch is behind $B, and $B moved after the validation\"
+        break
+      fi
       grep -q 'Base branch was modified' $D/merge_$N.out || break
       sleep ${DEP_RETRY_WAIT:-10}
     done
     if [ $OK = 1 ]; then
-      record merged \"\"
+      if [ -n \"$ADMIN\" ]; then record merged \"merged with --admin: behind $B, validated on $(cut -c1-12 $D/validated_base)\"; else record merged \"\"; fi
     else
-      record merge_failed \"$(tail -n 1 $D/merge_$N.out | cut -c1-300)\"
+      [ -n \"$WHY\" ] || WHY=$(grep -v '^[[:space:]]*$' $D/merge_$N.out | head -n 1 | cut -c1-300)
+      record merge_failed \"$WHY\"
     fi
   fi
 fi
