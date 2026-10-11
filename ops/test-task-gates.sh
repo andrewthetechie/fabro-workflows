@@ -5445,6 +5445,147 @@ check "done publishes queued" "queued" "$(jq -r '.context_updates.review_merge_o
 # 7. merge_gate edges: exclusive.
 check "merge_gate: the two eligible edges split on merge_mode" "1 1" "$(grep -E 'merge_gate +-> +(watch_checks|report_queued) ' "$SHARED" | awk '/merge_mode!=queue/{a=1} /context.merge_mode=queue/{b=1} END{print a, b}')"
 
+# ---------------------------------------------------------------------------
+# backlog fast lane (fast-path task 03, ADR 0023): route_lane, next_task's reset of
+# rebase_failed, the diff ceiling in pr_handoff, and the exclusivity of the edges that
+# the lane adds.
+# ---------------------------------------------------------------------------
+echo ""
+echo "backlog — fast lane"
+FL="$WORK/fastlane"; rm -rf "$FL"; mkdir -p "$FL/bin"
+extract route_lane | sed "s#/tmp/fabro#$FL/fab#g" > "$FL/route_lane.sh"
+extract pr_handoff | sed "s#/tmp/fabro#$FL/fab#g" > "$FL/pr_handoff.sh"
+for f in route_lane pr_handoff; do
+    sh -n "$FL/$f.sh" 2>"$FL/$f.syntax" || { FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$f"; }
+done
+fl_issue() { # <labels json> <body> -> issue.json
+    jq -n --argjson l "$1" --arg b "$2" '{number: 42, title: "Fix the thing", body: $b, labels: ($l | map({name: .}))}' > "$FL/fab/issue.json"
+}
+fl_route() { rm -rf "$FL/fab"; mkdir -p "$FL/fab"; fl_issue "$1" "$2"; FLOUT=$(sh "$FL/route_lane.sh" 2>"$FL/err"); FLRC=$?; }
+# 1. fast.
+fl_route '["agent-in-progress","fast-path"]' 'Do it carefully.'
+check "route_lane fast: exit 0" "0" "$FLRC"
+check "route_lane fast: lane" "fast" "$(jq -r '.context_updates.lane' <<<"$(lastjson "$FLOUT")")"
+check "route_lane fast: lane file" "fast" "$(cat "$FL/fab/lane")"
+check "route_lane fast: one task" "1" "$(jq length "$FL/fab/tasks.json")"
+check "route_lane fast: task source" "fast-path" "$(jq -r '.[0].source' "$FL/fab/tasks.json")"
+check "route_lane fast: task title and body" "Fix the thing|Do it carefully." "$(jq -r '.[0].title + "|" + .[0].body' "$FL/fab/tasks.json")"
+check "route_lane fast: task_index 0" "0" "$(cat "$FL/fab/task_index")"
+# 2. standard, and near misses.
+for lbl in '["agent-in-progress"]' '["Fast-Path"]' '["fast-path-x"]' '[]'; do
+    fl_route "$lbl" 'b'
+    check "route_lane $lbl: standard" "standard" "$(jq -r '.context_updates.lane' <<<"$(lastjson "$FLOUT")")"
+    check "route_lane $lbl: tasks.json untouched" "absent" "$([ -e "$FL/fab/tasks.json" ] && echo present || echo absent)"
+done
+# 3. an empty (or blank) body.
+fl_route '["fast-path"]' ''
+check "route_lane empty body" "Resolve issue #42: Fix the thing" "$(jq -r '.[0].body' "$FL/fab/tasks.json")"
+fl_route '["fast-path"]' '   '
+check "route_lane blank body" "Resolve issue #42: Fix the thing" "$(jq -r '.[0].body' "$FL/fab/tasks.json")"
+# 4. no issue.json, and one without labels: exit 1, no routing object.
+rm -rf "$FL/fab"; mkdir -p "$FL/fab"; FLOUT=$(sh "$FL/route_lane.sh" 2>/dev/null); FLRC=$?
+check "route_lane, no issue.json: exit 1" "1" "$FLRC"
+check "route_lane, no issue.json: no routing object" "" "$(lastjson "$FLOUT")"
+echo '{"number":1,"title":"t","body":"b"}' > "$FL/fab/issue.json"; FLOUT=$(sh "$FL/route_lane.sh" 2>/dev/null); FLRC=$?
+check "route_lane, no labels key: exit 1" "1" "$FLRC"
+check "route_lane, no labels key: no routing object" "" "$(lastjson "$FLOUT")"
+# 5. next_task resets rebase_failed on the done branch (both of its done lines).
+T="$WORK/fl_nt"; rm -rf "$T"; mkdir -p "$T"; stage next_task
+printf '%s' '[{"id":"a","title":"A","body":"b"}]' > "$T/tasks.json"; echo 1 > "$T/task_index"
+check "next_task done: rebase_failed false" 'false' "$(jq -r '.context_updates.rebase_failed' <<<"$(lastjson "$(sh "$T/next_task.sh" 2>/dev/null)")")"
+check "next_task done: tasks_done true" 'true' "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$(sh "$T/next_task.sh" 2>/dev/null)")")"
+echo 8 > "$T/tasks_coded"; printf '%s' '[{"id":"a","title":"A","body":"b"},{"id":"b","title":"B","body":"b"}]' > "$T/tasks.json"; echo 1 > "$T/task_index"
+check "next_task done after the budget move: rebase_failed false" 'false' "$(jq -r '.context_updates.rebase_failed' <<<"$(lastjson "$(sh "$T/next_task.sh" 2>/dev/null)")")"
+# 6. the ceiling's exclude list equals the hygiene counters' default.
+XP_HANDOFF=$(sed -n "s/.*XP='\(\[.*\]\)'.*/\1/p" "$GRAPH")
+XP_HYGIENE=$(sed -n 's/.*exclude_paths:\(\[.*\]\)}.*/\1/p' "$SHARED")
+check "pr_handoff's exclude list is non-empty" "1" "$([ -n "$XP_HANDOFF" ] && echo 1 || echo 0)"
+check "pr_handoff's exclude list equals hygiene's default.json" "$XP_HYGIENE" "$XP_HANDOFF"
+# 7. pr_handoff: the merge mode, in a scratch repository with a bare origin.
+cat > "$FL/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$FL_LOG"
+case "$1 $2" in
+  "pr view") echo '{"number":7,"title":"t","body":"b","url":"u","state":"OPEN","isCrossRepository":false,"headRefName":"run","baseRefName":"main","headRefOid":"x","labels":[],"closingIssuesReferences":[]}'; exit 0 ;;
+  "repo view") exit 1 ;;
+esac
+exit 0
+STUB
+chmod +x "$FL/bin/gh"
+export FL_LOG="$FL/gh.log"
+git init -q --bare -b main "$FL/origin.git"
+git clone -q "$FL/origin.git" "$FL/repo" 2>/dev/null
+git -C "$FL/repo" config user.email t@t; git -C "$FL/repo" config user.name t
+echo base > "$FL/repo/base"; git -C "$FL/repo" add base; git -C "$FL/repo" commit -qm base; git -C "$FL/repo" push -q origin main
+fl_handoff() { # <lane|-> <setup cmd> -> FLMM, FLCOMMENTS
+    git -C "$FL/repo" checkout -q main; git -C "$FL/repo" branch -q -D run 2>/dev/null; git -C "$FL/repo" checkout -q -b run
+    rm -rf "$FL/fab"; mkdir -p "$FL/fab"; : > "$FL_LOG"; echo 7 > "$FL/fab/pr_number"
+    [ "$1" = - ] || echo "$1" > "$FL/fab/lane"
+    ( cd "$FL/repo" && eval "$2" && git add -A && git commit -qm change )
+    ( cd "$FL/repo" && PATH="$FL/bin:$SAVED_PATH" sh "$FL/pr_handoff.sh" ) > "$FL/out" 2> "$FL/err"; FLRC=$?
+    FLMM=$(cat "$FL/fab/merge_mode" 2>/dev/null); FLCOMMENTS=$(grep -c 'pr comment' "$FL_LOG")
+}
+fl_handoff fast 'seq 1 30 > code.txt'
+check "pr_handoff fast, 30 lines: exit 0" "0" "$FLRC"
+check "pr_handoff fast, 30 lines: queue" "queue" "$FLMM"
+check "pr_handoff fast, 30 lines: no comment" "0" "$FLCOMMENTS"
+check "pr_handoff keeps printing handoff ready" "handoff ready" "$(tail -1 "$FL/out")"
+fl_handoff fast 'seq 1 201 > code.txt'
+check "pr_handoff fast, 201 lines: watch" "watch" "$FLMM"
+check "pr_handoff fast, 201 lines: one comment naming the size" "1 1" "$FLCOMMENTS $(grep -c '201 lines' "$FL_LOG")"
+fl_handoff fast 'seq 1 30 > code.txt; seq 1 5000 > package-lock.json'
+check "pr_handoff fast, 30 lines + 5000-line lockfile: queue" "queue" "$FLMM"
+fl_handoff fast 'mkdir -p dist; seq 1 5000 > dist/bundle.js; seq 1 3 > code.txt'
+check "pr_handoff fast, a dist/ file at the top level is excluded: queue" "queue" "$FLMM"
+fl_handoff fast 'i=1; while [ $i -le 11 ]; do echo x > f$i; i=$((i+1)); done'
+check "pr_handoff fast, 11 one-line files: watch" "watch" "$FLMM"
+fl_handoff fast 'i=1; while [ $i -le 10 ]; do echo x > f$i; i=$((i+1)); done'
+check "pr_handoff fast, 10 one-line files: queue" "queue" "$FLMM"
+fl_handoff fast 'seq 1 30 > code.txt; echo partial > /dev/null'
+echo partial > "$FL/fab/remainder_kind"
+( cd "$FL/repo" && PATH="$FL/bin:$SAVED_PATH" sh "$FL/pr_handoff.sh" ) > "$FL/out" 2> "$FL/err"
+check "pr_handoff fast with remainder_kind: watch" "watch" "$(cat "$FL/fab/merge_mode")"
+check "pr_handoff fast with remainder_kind: no comment" "0" "$(grep -c 'pr comment' "$FL_LOG")"
+fl_handoff standard 'seq 1 30 > code.txt'
+check "pr_handoff standard: watch" "watch" "$FLMM"
+fl_handoff - 'seq 1 30 > code.txt'
+check "pr_handoff with no lane file: watch" "watch" "$FLMM"
+fl_handoff fast 'seq 1 30 > code.txt'
+git -C "$FL/repo" update-ref -d refs/remotes/origin/main; git -C "$FL/repo" remote set-url origin "$FL/nowhere.git"
+( cd "$FL/repo" && PATH="$FL/bin:$SAVED_PATH" sh "$FL/pr_handoff.sh" ) > "$FL/out" 2> "$FL/err"
+check "pr_handoff fast, the base cannot be diffed: watch" "watch" "$(cat "$FL/fab/merge_mode")"
+# 8. edge exclusivity: at most one conditional edge matches each state that a node can publish.
+fl_matches() { # <node> <lane> <tasks_done> <rebase_failed> <merge_ok> -> count of matching evaluable conditional edges
+    awk -v node="$1" -v lane="$2" -v td="$3" -v rf="$4" -v mo="$5" '
+    BEGIN { v["lane"] = lane; v["tasks_done"] = td; v["rebase_failed"] = rf; v["merge_ok"] = mo }
+    $1 == node && $2 == "->" && match($0, /condition="[^"]*"/) {
+        c = substr($0, RSTART + 11, RLENGTH - 12); n = split(c, cl, / && /); ok = 1
+        for (i = 1; i <= n && ok; i++) {
+            if (cl[i] !~ /^context[.][a-z_]+!?=[A-Za-z0-9_]+$/) { ok = 0; break }
+            ne = (cl[i] ~ /!=/); split(cl[i], kv, /!?=/); k = kv[1]; sub(/^context[.]/, "", k)
+            if (!(k in v)) { ok = 0; break }
+            if (ne ? (v[k] == kv[2]) : (v[k] != kv[2])) ok = 0
+        }
+        if (ok) m++
+    }
+    END { print m + 0 }' "$GRAPH"
+}
+FL_WORST=0; FL_ZERO=""
+for n in next_task route_lane resolve_merge_gate; do
+  for ln in fast standard; do for td in true false; do for rf in true false; do for mo in true false; do
+    [ "$td" = true ] && [ "$rf" = true ] && continue
+    [ "$n" = route_lane ] && [ "$td$rf$mo" != falsefalsefalse ] && continue
+    [ "$n" = resolve_merge_gate ] && { [ "$td$rf" != falsefalse ] || [ "$mo" != true ]; } && continue
+    m=$(fl_matches "$n" "$ln" "$td" "$rf" "$mo")
+    [ "$m" -gt "$FL_WORST" ] && FL_WORST=$m
+    # next_task keeps improve as its unconditional edge; every other published state needs exactly one match.
+    if [ "$n" = next_task ] && [ "$td$rf" = falsefalse ] && [ "$ln" = standard ]; then continue; fi
+    [ "$m" -eq 0 ] && FL_ZERO="$FL_ZERO $n/$ln/$td/$rf/$mo"
+  done; done; done; done
+done
+check "no state matches two conditional edges out of next_task, route_lane or resolve_merge_gate" "1" "$FL_WORST"
+check "every published state has a matching conditional edge (standard next_task falls to improve)" "" "$FL_ZERO"
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"

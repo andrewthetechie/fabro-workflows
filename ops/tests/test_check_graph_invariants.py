@@ -50,7 +50,7 @@ class Fixtures(unittest.TestCase):
 class Counts(unittest.TestCase):
     def test_spliced_counts_match_the_agents_baselines(self):
         self.assertEqual(cgi.spliced_counts(REAL), {
-            "backlog": (70, 166),
+            "backlog": (71, 172),
             "pr-review": (35, 76),
             "issue-triage": (16, 36),
             "arch-review": (24, 54),

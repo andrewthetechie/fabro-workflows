@@ -312,6 +312,34 @@ elif git ls-files --error-unmatch .codex/instructions.md >/dev/null 2>&1; then e
 elif mkdir -p .codex && printf '%s' \"$FABRO_AGENT_GUIDE\" > .codex/instructions.md; then grep -qx '.codex/instructions.md' .git/info/exclude 2>/dev/null || echo '.codex/instructions.md' >> .git/info/exclude
 else echo 'agent guide: could not write .codex/instructions.md' >&2; fi"]
 
+    // ---- The lane (ADR 0023) ----
+    // An issue labelled `fast-path` beside `agent` was chosen by a human as a one-commit
+    // change (operator decision O1/O2). The label is read from /tmp/fabro/issue.json, which
+    // `claim` wrote with `gh issue view --json ...,labels`, so this node makes no network
+    // call. It never guesses: a file it cannot read, or one without a `labels` array, exits
+    // 1 and the unconditional edge goes to rescue_brief.
+    //
+    // The lane is exactly the label `fast-path`: `Fast-Path` and `fast-path-x` are standard.
+    // In the fast lane the node writes the one task that `decompose` would have written, so
+    // `next_task` and the coder run unchanged: no decompose, no improve, no excerpts, no
+    // extra review. An empty issue body becomes `Resolve issue #N: <title>`, because the
+    // coder needs a non-empty body. In the standard lane it writes only /tmp/fabro/lane
+    // and leaves tasks.json for `decompose`.
+    route_lane [label="Choose the lane", shape=parallelogram, output_schema="routing", timeout="1m",
+        script="set -e
+F=/tmp/fabro/issue.json
+jq -e '(.labels | type) == \"array\"' $F >/dev/null || exit 1
+if jq -e '[.labels[].name] | index(\"fast-path\") != null' $F >/dev/null; then
+  jq '[{id: \"fast-path\", title: .title, body: (if ((.body // \"\") | gsub(\"[[:space:]]\"; \"\")) == \"\" then \"Resolve issue #\" + (.number | tostring) + \": \" + .title else .body end), files: [], covers: [], source: \"fast-path\"}]' $F > /tmp/fabro/tasks.new.json
+  mv /tmp/fabro/tasks.new.json /tmp/fabro/tasks.json
+  echo 0 > /tmp/fabro/task_index
+  echo fast > /tmp/fabro/lane
+  echo '{\"context_updates\":{\"lane\":\"fast\"}}'
+else
+  echo standard > /tmp/fabro/lane
+  echo '{\"context_updates\":{\"lane\":\"standard\"}}'
+fi"]
+
     // ---- Decomposition (agent writes file; gate validates) ----
     // `max_retries=1` on every agent node in this graph, for the reason spelled out on
     // `coder` below: a provider stream that stalls without erroring is invisible to the
@@ -400,7 +428,7 @@ rm -rf /tmp/fabro/base-tree
 git worktree prune >/dev/null 2>&1
 IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 0)
 COUNT=$(jq length /tmp/fabro/tasks.json)
-if [ $IDX -ge $COUNT ]; then echo '{\"context_updates\":{\"tasks_done\":true}}'; exit 0; fi
+if [ $IDX -ge $COUNT ]; then echo '{\"context_updates\":{\"tasks_done\":true,\"rebase_failed\":false}}'; exit 0; fi
 TCD=$(cat /tmp/fabro/tasks_coded 2>/dev/null || echo 0)
 case \"$TCD\" in ''|*[!0-9]*) TCD=0 ;; esac
 if [ $TCD -ge 8 ]; then
@@ -414,7 +442,7 @@ if [ $TCD -ge 8 ]; then
     COUNT=$(jq length /tmp/fabro/tasks.json)
     echo 'task budget of 8 decomposed tasks spent: '$MOVED' task(s) moved to the remainder, which file_remainder files as one issue after open_pr'
   fi
-  if [ $IDX -ge $COUNT ]; then echo '{\"context_updates\":{\"tasks_done\":true}}'; exit 0; fi
+  if [ $IDX -ge $COUNT ]; then echo '{\"context_updates\":{\"tasks_done\":true,\"rebase_failed\":false}}'; exit 0; fi
 fi
 jq '.['$IDX']' /tmp/fabro/tasks.json > /tmp/fabro/current_task.json
 echo $((IDX+1)) > /tmp/fabro/task_index
@@ -1583,6 +1611,14 @@ echo 'remainder filed as #'$M"]
     // used to read it; this does now, so the switch keeps working unchanged. An absent
     // token means ON (decision 10); anything present that is not `true` means OFF, and an
     // unreachable API means OFF, because a switch that cannot be read is not armed.
+    //
+    // The merge mode (ADR 0023 D5/D6, contracts C3 and C9): `queue` only for a fast-lane
+    // run without `remainder_kind` (the [P] Accept partial path) whose diff against the
+    // base is at most 200 changed lines in at most 10 files, counting neither the paths
+    // the hygiene counters exclude (XP below is a copy of `exclude_paths` in the
+    // review-merge `hygiene` node's default.json, kept equal by ops/test-task-gates.sh) nor
+    // a binary file's lines. Anything else, and any failure to compute the diff, writes
+    // `watch`, the mode that waits for CI. Over the ceiling it posts one PR comment.
     pr_handoff [label="Hand off to review and merge", shape=parallelogram,
         script="set -e
 PR=$(cat /tmp/fabro/pr_number)
@@ -1605,6 +1641,17 @@ if [ -n \"$REPO\" ] && [ -n \"${FABRO_API_URL:-}\" ] && [ -n \"${FABRO_API_TOKEN
     esac
   fi
 fi
+MM=watch
+if [ \"$(cat /tmp/fabro/lane 2>/dev/null || echo standard)\" = fast ] && [ ! -e /tmp/fabro/remainder_kind ]; then
+  XP='[\"(^|/)(package-lock[.]json|yarn[.]lock|pnpm-lock[.]yaml|bun[.]lockb?|Cargo[.]lock|poetry[.]lock|uv[.]lock)$\", \"[.]min[.](js|css)$\", \"(^|/)(dist|build|vendor|node_modules)/\"]'
+  EX=$(printf '%s' \"$XP\" | jq -r 'map(\"(\" + . + \")\") | join(\"|\")')
+  if git diff --numstat --no-renames \"origin/$B...HEAD\" > /tmp/fabro/numstat.txt 2>/dev/null && RES=$(awk -v ex=\"$EX\" '{ p = $0; sub(/^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+/, \"\", p); if (ex != \"\" && p ~ ex) next; n++; if ($1 != \"-\") l += $1 + $2 } END { print l + 0, n + 0 }' /tmp/fabro/numstat.txt); then
+    FL=${RES% *}; FF=${RES#* }
+    if [ \"$FL\" -le 200 ] && [ \"$FF\" -le 10 ]; then MM=queue
+    else gh pr comment $PR --body \"fast-path: this change is $FL lines in $FF files, over the fast-lane ceiling of 200 lines or 10 files, so this run merges it after CI instead of queueing it.\" || true; fi
+  fi
+fi
+echo $MM > /tmp/fabro/merge_mode
 echo handoff ready"]
 
     review_merge [import="../_shared/review-merge/review-merge.fabro"]
@@ -1872,8 +1919,15 @@ echo done"]
     start -> claim
     claim -> prep                   [condition="outcome=succeeded"]
     claim -> rescue_brief
-    prep -> decompose               [condition="outcome=succeeded"]
+    prep -> route_lane              [condition="outcome=succeeded"]
     prep -> rescue_brief
+
+    // ADR 0023: a `fast-path` issue skips decompose, improve, excerpts and the extra
+    // review; every other stage, the per-task review and the rework ladder included, runs
+    // as in the standard lane. `route_lane` publishes `lane` on every run.
+    route_lane -> next_task         [condition="context.lane=fast"]
+    route_lane -> decompose         [condition="context.lane=standard"]
+    route_lane -> rescue_brief
 
     decompose -> decompose_gate     [condition="outcome=succeeded"]
     decompose -> rescue_brief
@@ -1888,8 +1942,15 @@ echo done"]
     decompose_gate -> mark_stuck    [condition="context.decomp_status=needs_human_review"]
     decompose_gate -> rescue_brief
 
-    next_task -> extra_prep         [condition="context.tasks_done=true"]
+    // ADR 0023. extra_prep (the extra review) is skipped in the fast lane: tasks_done goes
+    // straight to open_pr_prep. The coder edge skips improve, improve_gate and excerpts.
+    // `next_task` writes `rebase_failed` on every branch, so on tasks_done=true only one of
+    // these matches; resolve_merge keeps its own edge, and improve stays the standard
+    // lane's unconditional fallthrough.
+    next_task -> extra_prep         [condition="context.tasks_done=true && context.lane!=fast"]
+    next_task -> open_pr_prep       [condition="context.tasks_done=true && context.lane=fast"]
     next_task -> resolve_merge      [condition="context.rebase_failed=true"]
+    next_task -> coder              [condition="context.tasks_done=false && context.rebase_failed=false && context.lane=fast"]
     next_task -> improve
 
     // A failed node still routes: resolve_merge's unconditional edge leads to its
@@ -1898,7 +1959,10 @@ echo done"]
     // retry edge after a successful second attempt.
     resolve_merge -> resolve_merge_gate [condition="outcome=succeeded"]
     resolve_merge -> resolve_merge_gate
-    resolve_merge_gate -> improve       [condition="context.merge_ok=true", weight=10]
+    // ADR 0023: after a resolved mainline merge the fast lane goes to the coder, skipping
+    // improve; the standard lane is unchanged.
+    resolve_merge_gate -> improve       [condition="context.merge_ok=true && context.lane!=fast", weight=10]
+    resolve_merge_gate -> coder         [condition="context.merge_ok=true && context.lane=fast", weight=10]
     resolve_merge_gate -> resolve_merge [condition="context.merge_attempts=1"]
     resolve_merge_gate -> rescue_brief
 
