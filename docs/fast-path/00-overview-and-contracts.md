@@ -8,7 +8,7 @@
 step 1 passed; step 2 (quiet sweep) passed, run `01M4PEFW4G6YVTVD3QSG4VM06X`, 4 s to the first
 node and 8 s in total, so S6 needs no `light` environment; step 5 (hand-off) passed, run
 `01M4PEJCY2C51EQT7BFSWAPP2S` on jelly-swipe#453, closed after. Steps 3, 4 and 6 onward are open,
-and the host cap is still 4. ADR 0023 (the fast lane) and ADR 0024 (the merge queue) are
+and the host cap is 8 (restarted 21:44Z). ADR 0023 (the fast lane) and ADR 0024 (the merge queue) are
 proposed. The series answers issue #23 with the operator's alternative: one label-selected
 lane per issue instead of a batch lane.
 
@@ -82,7 +82,7 @@ PR [merge-on-green]
 | P5 | The queue merges only the approved head, or the head that its own recorded rebases reached from it. | 0024 D3 | 06 |
 | P6 | At most 5 merges per tick per repository. At most one queue rebase waiting for CI per repository. | 0024 D4, D5 | 06, 07 |
 | P7 | Hand off a PR whose head checks have been pending for 2 hours. | 0024 D4 | 06 |
-| P8 | `max_concurrent_runs` goes from 4 to 6. | 0024 D8 | 09 |
+| P8 | `max_concurrent_runs` goes from 4 to 8 (operator, 2026-10-11; the draft said 6). | 0024 D8 | 09 |
 | P9 | Retention: prune `merge-queue` runs older than 7 days, daily. | 0024 D8 | 08 |
 | P10 | The merge-queue switches are the existing ones: host `FABRO_AUTO_MERGE` plus the `auto_merge` token on `pr-review-<repo>`. Pausing the queue alone means disabling its schedules. | 0024 D3 | 05 |
 

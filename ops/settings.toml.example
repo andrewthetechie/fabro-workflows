@@ -46,11 +46,12 @@ enabled = false
 # copied out **once at startup**: edit this overlay at /storage/.home/settings.toml in
 # the container and `docker compose restart fabro` — a restart that fails every
 # in-flight run. Editing the overlay without restarting leaves the reported cap and the
-# enforced cap disagreeing; `README.md` has the check. Raised from 4 to 6 for the merge
-# queue (ADR 0024 D8, P8): its short sweeps share the cap with the coder runs, and the
-# coder pools (not this cap) still bound `backlog` concurrency.
+# enforced cap disagreeing; `README.md` has the check. Raised from 4 to 8 on 2026-10-11
+# for the merge queue (ADR 0024 D8, P8): its short sweeps share the cap with the coder
+# runs. The operator chose 8 over the drafted 6 so the coder fleet (B5 D7) needs no second
+# restart. The coder pools, not this cap, still bound `backlog` concurrency.
 [server.scheduler]
-max_concurrent_runs = 6
+max_concurrent_runs = 8
 
 [server.slatedb]
 prefix = "slatedb"

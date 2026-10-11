@@ -737,7 +737,7 @@ self-releases.** The container starts the 5-second dispatch loop, the 60s invent
 and the 15s release poll as soon as it is up, so a deploy labels issues, starts real runs,
 and keeps starting them as boxes free up — the acceptance run *is* the deploy. The only
 things bounding it are one in-flight run per repo, one lease per coder instance, and
-fabro's own `max_concurrent_runs` backstop of 4. Draft 11 adds the mutation controls to
+fabro's own `max_concurrent_runs` backstop (8 since 2026-10-11). Draft 11 adds the mutation controls to
 the page, which is the point of the draft and also the sharpest edge in the service: they
 are unauthenticated on a LAN page and one of them cancels a running job. Deploy only with
 the operator watching, and prefer draining a misbehaving box to cancel-cycling it.
@@ -1221,7 +1221,7 @@ branches get the short `RUN_GRACE_HOURS` (24 default). Only `refs/heads/fabro/ru
 ## The merge queue's footprint (ADR 0024)
 
 - `merge-queue-<repo>` fires every 10 minutes per repository, 576 runs a day in all. The host
-  runs `max_concurrent_runs = 6` (was 4) so sweeps do not starve the coder runs. The cap is read
+  runs `max_concurrent_runs = 8` (4 until 2026-10-11) so sweeps do not starve the coder runs. The cap is read
   once at startup: raising it needs the drain-and-restart procedure above, and the container's
   `StartedAt` must be later than the overlay's mtime.
 - Spike S7 (2026-10-11, two `backlog` runs live): 26 GiB available of 30, 16 cores. Two more
