@@ -6000,6 +6000,169 @@ mq_inv bad "$WORK/mqi-bad.json" ""
 check "merge-queue inventory: a response without the PR list exits 1" "1" "$(cat "$MQD.rc")"
 check "merge-queue: inventory -> decide needs success; both reach summarize" "1|1|1" "$(grep -c '^    inventory -> decide .*outcome=succeeded' "$MQ")|$(grep -c '^    inventory -> summarize$' "$MQ")|$(grep -c '^    decide -> summarize$' "$MQ")"
 
+# ---------------------------------------------------------------------------
+# merge-queue — act (fast-path series, task 07): each action of plan.json through a gh stub that
+# answers from per-case fixture files and logs every call (and the first line of every comment).
+# ---------------------------------------------------------------------------
+echo ""
+echo "merge-queue: act"
+MQA_STUBS="$WORK/mqa-stubs"; mkdir -p "$MQA_STUBS/bin"
+cat > "$MQA_STUBS/bin/gh" <<'STUB'
+#!/bin/sh
+S="$MQA_STUB"
+echo "gh $*" >> "$S/calls.log"
+bodyfile() { while [ $# -gt 0 ]; do [ "$1" = "--body-file" ] && { echo "$2"; return; }; shift; done; }
+case "$1 $2" in
+  "pr view")
+    case "$*" in
+      *headRefOid\ --jq*) cat "$S/newhead" 2>/dev/null ;;
+      *) cat "$S/live.json" ;;
+    esac ;;
+  "pr merge")
+    n=$(cat "$S/merge.count" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$S/merge.count"
+    f="$S/merge.$n"; [ -f "$f" ] || f="$S/merge.last"
+    rc=$(cut -d'|' -f1 "$f"); cut -d'|' -f2- "$f" >&2; exit "$rc" ;;
+  "pr comment")
+    b=$(bodyfile "$@"); if [ -n "$b" ]; then echo "COMMENT $(head -n 1 "$b")" >> "$S/calls.log"
+    else while [ $# -gt 0 ]; do [ "$1" = "--body" ] && echo "COMMENT $2" >> "$S/calls.log"; shift; done; fi
+    [ -f "$S/comment_fail" ] && exit 1; exit 0 ;;
+  "pr edit") [ -f "$S/edit_fail" ] && { echo "label failed" >&2; exit 1; }; exit 0 ;;
+  "issue edit") exit 0 ;;
+  "run rerun") for a in "$@"; do [ -f "$S/rerun_fail.$a" ] && { echo "run $a cannot be rerun" >&2; exit 1; }; done; exit 0 ;;
+  "api graphql") [ -f "$S/gql_err" ] && { cat "$S/gql_err" >&2; exit 1; }; echo '{"data":{"updatePullRequestBranch":{"pullRequest":{"headRefOid":"OLD"}}}}'; exit 0 ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac
+exit 0
+STUB
+chmod +x "$MQA_STUBS/bin/gh"
+MQA_OLD=1111111111111111111111111111111111111111
+MQA_NEW=2222222222222222222222222222222222222222
+# $1 case. $2 plan.json. Leaves MQA (dir), MQA_STUB (stub dir). The caller then writes fixtures and calls mqa_run.
+mqa_setup() {
+    MQA="$WORK/mqa-$1"; MQA_STUB="$MQA.stub"; rm -rf "$MQA" "$MQA_STUB" "$MQA.sh"; mkdir -p "$MQA/mq" "$MQA_STUB"
+    printf '%s' "$2" > "$MQA/mq/plan.json"
+    jq -cn '[{number: 7, id: "PR_7"}, {number: 8, id: "PR_8"}, {number: 9, id: "PR_9"}]' > "$MQA/mq/prs.json"
+    jq -n '{repo: "andrewthetechie/jelly-swipe", base: "main", login: "fabro-bot", run: "01RUN", now: 0, merge_cap: 5}' > "$MQA/mq/env.json"
+    extract_from "$MQ" act | sed "s#/tmp/fabro#$MQA#g" > "$MQA.sh"
+    if ! sh -n "$MQA.sh" 2>"$MQA.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL merge-queue act is not valid POSIX sh\n'; sed 's/^/       /' "$MQA.syntax"
+    fi
+}
+# $1 extra env words
+mqa_run() {
+    (cd "$MQA" && env PATH="$MQA_STUBS/bin:$ORIG_PATH" MQA_STUB="$MQA_STUB" MQ_REREAD_WAIT=0 MQ_MARKER_WAIT=0 MQ_RETRY_WAIT=0 $1 \
+        sh "$MQA.sh" </dev/null >"$MQA.out" 2>"$MQA.err"); echo $? > "$MQA.rc"
+}
+mqa_plan() { jq -cn --argjson n "$1" --arg h "$2" --arg a "$3" --arg r "${4:-}" --argjson ids "${5:-[]}" '[{number: $n, head: $h, action: $a, reason: $r, retryable: false, approved_at: "", subject: "s", rerun_ids: $ids}]'; }
+# $1 state, $2 head, $3 mergeStateStatus, $4 title
+mqa_live() {
+    jq -cn --arg s "$1" --arg h "$2" --arg m "$3" --arg t "$4" \
+        '{state: $s, headRefOid: $h, mergeStateStatus: $m, title: $t, body: "intro\n<!-- fabro:commit-body:start -->\nDid the thing.\n\nResolves #5\n<!-- fabro:commit-body:end -->\n"}' > "$MQA_STUB/live.json"
+}
+mqa_outcomes() { jq -r '[.[] | .outcome] | join(",")' "$MQA/mq/results.json"; }
+mqa_calls() { grep -c -e "$1" "$MQA_STUB/calls.log" 2>/dev/null || true; }
+echo "0|" > /dev/null
+
+# 1. merge, unchanged PR.
+mqa_setup m1 "$(mqa_plan 7 $MQA_OLD merge)"; mqa_live OPEN $MQA_OLD CLEAN 'fix: a thing'; echo '0|' > "$MQA_STUB/merge.last"
+mqa_run ""
+check "merge-queue act: 1. exit 0 and one merged result" "0|merged" "$(cat "$MQA.rc")|$(mqa_outcomes)"
+check "merge-queue act: 1. one gh pr merge with --match-head-commit, --squash, --delete-branch=false, the live title" "1" "$(grep -c "^gh pr merge 7 --squash --delete-branch=false --match-head-commit $MQA_OLD --subject fix: a thing --body-file" "$MQA_STUB/calls.log")"
+check "merge-queue act: 1. no --admin" "0" "$(mqa_calls ' --admin')"
+check "merge-queue act: 1. the merge body is the commit-body block" "Did the thing." "$(head -n 1 "$MQA/mq/block_7.md")"
+check "merge-queue act: 1. the resolved issue loses Review, then the comment" "gh issue edit 5 --remove-label Review|COMMENT Merged by the merge queue (run 01RUN): checks green on 1111111." \
+    "$(grep -E '^gh issue edit|^COMMENT' "$MQA_STUB/calls.log" | paste -sd'|' -)"
+
+# 2. merge, already MERGED.
+mqa_setup m2 "$(mqa_plan 7 $MQA_OLD merge)"; mqa_live MERGED $MQA_OLD CLEAN 'fix: a thing'
+mqa_run ""
+check "merge-queue act: 2. MERGED: merged, already merged, no merge call" "merged|already merged|0" "$(mqa_outcomes)|$(jq -r '.[0].detail' "$MQA/mq/results.json")|$(mqa_calls 'gh pr merge')"
+# 3. merge, new head.
+mqa_setup m3 "$(mqa_plan 7 $MQA_OLD merge)"; mqa_live OPEN $MQA_NEW CLEAN 'fix: a thing'
+mqa_run ""
+check "merge-queue act: 3. a new head: waiting, no merge call" "waiting|0" "$(mqa_outcomes)|$(mqa_calls 'gh pr merge')"
+# 4. merge, BEHIND.
+mqa_setup m4 "$(mqa_plan 7 $MQA_OLD merge)"; mqa_live OPEN $MQA_OLD BEHIND 'fix: a thing'
+mqa_run ""
+check "merge-queue act: 4. BEHIND: waiting with the status, no merge call" "waiting|1|0" "$(mqa_outcomes)|$(jq -r '.[0].detail | contains("BEHIND") | if . then 1 else 0 end' "$MQA/mq/results.json")|$(mqa_calls 'gh pr merge')"
+# 5. merge, retry on Base branch was modified.
+mqa_setup m5 "$(mqa_plan 7 $MQA_OLD merge)"; mqa_live OPEN $MQA_OLD CLEAN 'fix: a thing'
+echo '1|Base branch was modified. Review and try the merge again.' > "$MQA_STUB/merge.1"; echo '0|' > "$MQA_STUB/merge.last"
+mqa_run ""
+check "merge-queue act: 5. Base branch was modified, then success: merged with 2 merge calls" "merged|2" "$(mqa_outcomes)|$(mqa_calls 'gh pr merge')"
+# 6. merge, other failure.
+mqa_setup m6 "$(mqa_plan 7 $MQA_OLD merge)"; mqa_live OPEN $MQA_OLD CLEAN 'fix: a thing'; echo '1|X is blocked by policy' > "$MQA_STUB/merge.last"
+mqa_run ""
+check "merge-queue act: 6. another merge error: failed, 1 merge call, no label change, no hand-off" "failed|1|0|0" "$(mqa_outcomes)|$(mqa_calls 'gh pr merge')|$(mqa_calls 'remove-label')|$(mqa_calls 'gh pr edit')"
+check "merge-queue act: 6. the detail is the last gh line" "X is blocked by policy" "$(jq -r '.[0].detail' "$MQA/mq/results.json")"
+# 6b. merge, live title is not a Conventional Commit: hand-off, no merge.
+mqa_setup m7 "$(mqa_plan 7 $MQA_OLD merge)"; mqa_live OPEN $MQA_OLD CLEAN 'a thing'
+mqa_run ""
+check "merge-queue act: 6b. a bad live title: handed_off, no merge call" "handed_off|0" "$(mqa_outcomes)|$(mqa_calls 'gh pr merge')"
+
+# 7. rebase success.
+mqa_setup r1 "$(mqa_plan 8 $MQA_OLD rebase)"; echo $MQA_NEW > "$MQA_STUB/newhead"
+mqa_run ""
+check "merge-queue act: 7. rebase: rebased, detail old -> new" "rebased|1111111 -> 2222222" "$(mqa_outcomes)|$(jq -r '.[0].detail' "$MQA/mq/results.json")"
+check "merge-queue act: 7. the C5 marker has from= and to= (the re-read head)" "1" "$(grep -c "^COMMENT <!-- fabro:merge-queue rebased from=$MQA_OLD to=$MQA_NEW run=01RUN -->\$" "$MQA_STUB/calls.log")"
+check "merge-queue act: 7. the mutation passes the old head as expectedHeadOid and the PR id" "1" "$(grep -c "^gh api graphql .* id=PR_8 -f h=$MQA_OLD" "$MQA_STUB/calls.log")"
+# 7b. rebase requested but the head does not change.
+mqa_setup r1b "$(mqa_plan 8 $MQA_OLD rebase)"; echo $MQA_OLD > "$MQA_STUB/newhead"
+mqa_run ""
+check "merge-queue act: 7b. head never changes: failed, no marker" "failed|0" "$(mqa_outcomes)|$(mqa_calls '^COMMENT')"
+# 7c. marker cannot be posted.
+mqa_setup r1c "$(mqa_plan 8 $MQA_OLD rebase)"; echo $MQA_NEW > "$MQA_STUB/newhead"; touch "$MQA_STUB/comment_fail"
+mqa_run ""
+check "merge-queue act: 7c. marker fails 3 times: failed" "failed|3" "$(mqa_outcomes)|$(mqa_calls '^COMMENT')"
+# 8. rebase, stale expected head.
+mqa_setup r2 "$(mqa_plan 8 $MQA_OLD rebase)"; echo "gh: head sha didn't match the current head ref." > "$MQA_STUB/gql_err"
+mqa_run ""
+check "merge-queue act: 8. stale expectedHeadOid: waiting, no comment" "waiting|0" "$(mqa_outcomes)|$(mqa_calls '^COMMENT')"
+# 9. rebase, conflict.
+mqa_setup r3 "$(mqa_plan 8 $MQA_OLD rebase)"; echo "gh: Merge conflict between base and head" > "$MQA_STUB/gql_err"
+mqa_run ""
+check "merge-queue act: 9. a conflict: handed_off, the C6 comment starts retryable:, and the label swap" "handed_off|1|1" \
+    "$(mqa_outcomes)|$(grep -c '^COMMENT <!-- fabro:merge-queue handoff head=' "$MQA_STUB/calls.log")|$(grep -c 'gh pr edit 8 --remove-label merge-on-green --add-label ai-review-needs-human' "$MQA_STUB/calls.log")"
+check "merge-queue act: 9. the hand-off reason starts with retryable:" "1" "$(grep -c '\*\*The merge queue stopped on this PR.\*\* retryable: the queue could not rebase this PR on main: gh: Merge conflict' "$MQA/mq/handoff_8.md")"
+
+# 10. rerun with two ids, one fails.
+mqa_setup rr "$(mqa_plan 9 $MQA_OLD rerun '' '[111,222]')"; touch "$MQA_STUB/rerun_fail.222"
+mqa_run ""
+check "merge-queue act: 10. two ids, one fails: reran, 2 rerun calls" "reran|2" "$(mqa_outcomes)|$(mqa_calls 'gh run rerun')"
+mqa_setup rr2 "$(mqa_plan 9 $MQA_OLD rerun '' '[222]')"; touch "$MQA_STUB/rerun_fail.222"
+mqa_run ""
+check "merge-queue act: 10b. every rerun fails: failed with the first error" "failed|run 222 cannot be rerun" "$(mqa_outcomes)|$(jq -r '.[0].detail' "$MQA/mq/results.json")"
+
+# 11. handoff: comment before label.
+mqa_setup h1 "$(mqa_plan 9 $MQA_OLD handoff 'the head moved after the merge phase approved it; the new commits were not reviewed')"
+mqa_run ""
+check "merge-queue act: 11. hand-off: handed_off" "handed_off" "$(mqa_outcomes)"
+check "merge-queue act: 11. the comment call comes before the label call" "1" "$(c=$(grep -n '^COMMENT' "$MQA_STUB/calls.log" | head -n 1 | cut -d: -f1); e=$(grep -n '^gh pr edit' "$MQA_STUB/calls.log" | head -n 1 | cut -d: -f1); [ -n "$c" ] && [ -n "$e" ] && [ "$c" -lt "$e" ] && echo 1 || echo 0)"
+check "merge-queue act: 11. the first line is the C6 marker" "1" "$(grep -c "^COMMENT <!-- fabro:merge-queue handoff head=$MQA_OLD run=01RUN -->\$" "$MQA_STUB/calls.log")"
+mqa_setup h2 "$(mqa_plan 9 $MQA_OLD handoff 'why')"; touch "$MQA_STUB/edit_fail"
+mqa_run ""
+check "merge-queue act: 11b. the label call fails: failed (the next tick plans it again)" "failed" "$(mqa_outcomes)"
+mqa_setup h3 "$(mqa_plan 9 $MQA_OLD wait 'checks pending')"
+mqa_run ""
+check "merge-queue act: 11c. wait: waiting with the reason, no gh call" "waiting|checks pending|0" "$(mqa_outcomes)|$(jq -r '.[0].detail' "$MQA/mq/results.json")|$(test -e "$MQA_STUB/calls.log" && echo 1 || echo 0)"
+
+# 12. budget.
+mqa_setup b1 "$(jq -cn --arg h $MQA_OLD '[{number: 7, head: $h, action: "merge", reason: "", rerun_ids: []}, {number: 8, head: $h, action: "rebase", reason: "", rerun_ids: []}, {number: 9, head: $h, action: "handoff", reason: "x", rerun_ids: []}]')"
+mqa_run "MQ_BUDGET_SECONDS=0"
+check "merge-queue act: 12. budget 0: three skipped_cap, no gh call" "skipped_cap,skipped_cap,skipped_cap|no calls" "$(mqa_outcomes)|$(test -e "$MQA_STUB/calls.log" && echo calls || echo 'no calls')"
+# 13. one result per plan entry, in order, in a mixed plan.
+mqa_setup x1 "$(jq -cn --arg h $MQA_OLD '[{number: 7, head: $h, action: "wait", reason: "a", rerun_ids: []}, {number: 8, head: $h, action: "bogus", reason: "", rerun_ids: []}, {number: 9, head: $h, action: "wait", reason: "b", rerun_ids: []}]')"
+mqa_run ""
+check "merge-queue act: 13. one result per plan entry, in plan order, unknown action failed" "7,8,9|waiting,failed,waiting" "$(jq -r '[.[].number | tostring] | join(",")' "$MQA/mq/results.json")|$(mqa_outcomes)"
+# bad plan
+mqa_setup bad "not json"
+mqa_run ""
+check "merge-queue act: an unreadable plan exits 1 and writes stop_reason" "1|act: plan.json is missing or unreadable" "$(cat "$MQA.rc")|$(cat "$MQA/mq/stop_reason")"
+# empty plan
+mqa_setup empty "[]"
+mqa_run ""
+check "merge-queue act: an empty plan: exit 0, empty results" "0|[]" "$(cat "$MQA.rc")|$(jq -c . "$MQA/mq/results.json")"
+
 echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"

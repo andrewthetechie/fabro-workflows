@@ -293,9 +293,157 @@ if ! jq -n --slurpfile prs $MQ/prs.json --slurpfile env $MQ/env.json -f $MQ/deci
 fi
 jq -c '{context_updates: {plan_merge: ([.[] | select(.action == \"merge\")] | length), plan_rebase: ([.[] | select(.action == \"rebase\")] | length), plan_rerun: ([.[] | select(.action == \"rerun\")] | length), plan_handoff: ([.[] | select(.action == \"handoff\")] | length), plan_wait: ([.[] | select(.action == \"wait\")] | length)}}' $MQ/plan.json"]
 
-    // Placeholders: tasks 07 (act) and 08 (summarize) replace them.
+    // Carries out plan.json through the GitHub API alone: no checkout, no push, no waiting for CI (rules 4, 5).
+    // Every action carries the head it was decided for, so GitHub refuses it when the head moved. A failure on
+    // one PR is recorded and the loop goes on. updatePullRequestBranch returns the OLD head (spike S2), so the
+    // rebase marker's `to` is a re-read. MQ_* waits and MQ_BUDGET_SECONDS are test hooks. Task 08 replaces summarize.
     act [label="Merge, rebase, rerun or hand off", shape=parallelogram, timeout="8m",
-        script="echo 'act: placeholder (task 07)'"]
+        script="D=/tmp/fabro/mq
+if ! jq -e 'type == \"array\"' $D/plan.json >/dev/null 2>&1; then
+  printf '%s' 'act: plan.json is missing or unreadable' > $D/stop_reason
+  echo 'act: plan.json is missing or unreadable' >&2
+  exit 1
+fi
+RUN=$(jq -r '.run' $D/env.json)
+BASE=$(jq -r '.base' $D/env.json)
+echo '[]' > $D/results.json
+START=$(date +%s)
+BUDGET=${MQ_BUDGET_SECONDS:-420}
+record() {
+  DET=$(printf '%s' \"$4\" | head -c 300)
+  jq -c --argjson n \"$1\" --arg a \"$2\" --arg o \"$3\" --arg d \"$DET\" '. + [{number: $n, action: $a, outcome: $o, detail: $d}]' $D/results.json > $D/results.tmp && mv $D/results.tmp $D/results.json
+}
+lastline() { grep -v '^[[:space:]]*$' \"$1\" 2>/dev/null | tail -n 1 | cut -c1-300; }
+firstline() { cat \"$@\" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1 | cut -c1-300; }
+handoff() {
+  {
+    echo \"<!-- fabro:merge-queue handoff head=$2 run=$RUN -->\"
+    echo \"**The merge queue stopped on this PR.** $3\"
+    echo
+    echo 'A human can merge this PR by hand once the checks are green, or re-run the review.'
+  } > $D/handoff_$1.md
+  if ! gh pr comment \"$1\" --body-file $D/handoff_$1.md > $D/handoff_$1.out 2>&1; then return 1; fi
+  if ! gh pr edit \"$1\" --remove-label merge-on-green --add-label ai-review-needs-human >> $D/handoff_$1.out 2>&1; then return 1; fi
+  return 0
+}
+do_handoff() {
+  if handoff \"$1\" \"$2\" \"$3\"; then record \"$1\" \"$4\" handed_off \"$3\"; else record \"$1\" \"$4\" failed \"hand-off failed: $(lastline $D/handoff_$1.out)\"; fi
+}
+jq -c '.[]' $D/plan.json > $D/plan.lines
+while IFS= read -r E <&3; do
+  N=$(printf '%s' \"$E\" | jq -r '.number')
+  HEAD=$(printf '%s' \"$E\" | jq -r '.head')
+  ACT=$(printf '%s' \"$E\" | jq -r '.action')
+  REASON=$(printf '%s' \"$E\" | jq -r '.reason')
+  if [ $(( $(date +%s) - START )) -ge \"$BUDGET\" ]; then
+    record \"$N\" \"$ACT\" skipped_cap \"the run's time budget ran out\"
+    continue
+  fi
+  case \"$ACT\" in
+  wait)
+    record \"$N\" wait waiting \"$REASON\"
+    ;;
+  handoff)
+    do_handoff \"$N\" \"$HEAD\" \"$REASON\" handoff
+    ;;
+  rerun)
+    OK=0
+    ERR=''
+    for ID in $(printf '%s' \"$E\" | jq -r '.rerun_ids[]'); do
+      if gh run rerun \"$ID\" --failed > $D/rerun_$N.out 2>&1; then OK=$((OK + 1)); elif [ -z \"$ERR\" ]; then ERR=$(lastline $D/rerun_$N.out); fi
+    done
+    if [ $OK -gt 0 ]; then record \"$N\" rerun reran \"reran $OK Actions run(s)\"; else record \"$N\" rerun failed \"${ERR:-no run id to rerun}\"; fi
+    ;;
+  rebase)
+    ID=$(jq -r --argjson n \"$N\" '[.[] | select(.number == $n)][0].id // \"\"' $D/prs.json)
+    if [ -z \"$ID\" ]; then record \"$N\" rebase failed 'the PR id is missing from the inventory'; continue; fi
+    if gh api graphql -f query='mutation($id:ID!,$h:GitObjectID!){updatePullRequestBranch(input:{pullRequestId:$id,expectedHeadOid:$h,updateMethod:REBASE}){pullRequest{headRefOid}}}' -f id=\"$ID\" -f h=\"$HEAD\" > $D/rebase_$N.out 2> $D/rebase_$N.err </dev/null; then
+      NEW=''
+      i=0
+      while [ $i -lt 3 ]; do
+        sleep ${MQ_REREAD_WAIT:-2}
+        NEW=$(gh pr view \"$N\" --json headRefOid --jq .headRefOid 2>/dev/null </dev/null)
+        [ -n \"$NEW\" ] && [ \"$NEW\" != \"$HEAD\" ] && break
+        i=$((i + 1))
+      done
+      if [ -z \"$NEW\" ] || [ \"$NEW\" = \"$HEAD\" ]; then
+        record \"$N\" rebase failed 'the rebase was requested but the new head is not visible yet'
+      else
+        {
+          echo \"<!-- fabro:merge-queue rebased from=$HEAD to=$NEW run=$RUN -->\"
+          echo \"The merge queue rebased this PR on $BASE through the GitHub API. The approval carries over to the rebased head.\"
+        } > $D/rebase_$N.md
+        POSTED=0
+        i=0
+        while [ $i -lt 3 ]; do
+          if gh pr comment \"$N\" --body-file $D/rebase_$N.md >/dev/null 2>&1 </dev/null; then POSTED=1; break; fi
+          i=$((i + 1))
+          sleep ${MQ_MARKER_WAIT:-5}
+        done
+        if [ $POSTED = 1 ]; then
+          record \"$N\" rebase rebased \"$(printf '%s' \"$HEAD\" | cut -c1-7) -> $(printf '%s' \"$NEW\" | cut -c1-7)\"
+        else
+          record \"$N\" rebase failed 'rebased, but the rebase marker could not be posted; the next tick hands the PR off'
+        fi
+      fi
+    else
+      if cat $D/rebase_$N.out $D/rebase_$N.err | grep -q \"head sha didn't match\"; then
+        record \"$N\" rebase waiting 'the head moved before the rebase'
+      else
+        WHY=$(firstline $D/rebase_$N.err $D/rebase_$N.out)
+        do_handoff \"$N\" \"$HEAD\" \"retryable: the queue could not rebase this PR on $BASE: $WHY\" rebase
+      fi
+    fi
+    ;;
+  merge)
+    if ! gh pr view \"$N\" --json state,headRefOid,mergeStateStatus,title,body > $D/live_$N.json 2> $D/live_$N.err </dev/null; then
+      record \"$N\" merge failed \"could not read the PR: $(lastline $D/live_$N.err)\"
+      continue
+    fi
+    ST=$(jq -r '.state // \"\"' $D/live_$N.json)
+    LH=$(jq -r '.headRefOid // \"\"' $D/live_$N.json)
+    MS=$(jq -r '.mergeStateStatus // \"\"' $D/live_$N.json)
+    TITLE=$(jq -r '.title // \"\"' $D/live_$N.json)
+    if [ \"$ST\" = MERGED ]; then record \"$N\" merge merged 'already merged'; continue; fi
+    if [ \"$ST\" != OPEN ] || [ \"$LH\" != \"$HEAD\" ]; then record \"$N\" merge waiting 'the PR changed since the plan; the next tick decides again'; continue; fi
+    if [ \"$MS\" != CLEAN ] && [ \"$MS\" != HAS_HOOKS ]; then record \"$N\" merge waiting \"merge state is $MS; the next tick decides again\"; continue; fi
+    jq -r '.body // \"\"' $D/live_$N.json > $D/body_$N.md
+    awk '/fabro:commit-body:start/{f=1;next} /fabro:commit-body:end/{f=0} f' $D/body_$N.md > $D/block_$N.md
+    if ! printf '%s' \"$TITLE\" | grep -qE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .'; then
+      do_handoff \"$N\" \"$HEAD\" 'The PR title is not a Conventional Commit, so it cannot be auto-merged.' merge
+      continue
+    fi
+    if [ ! -s $D/block_$N.md ] || ! grep -q '^Resolves #' $D/block_$N.md; then
+      do_handoff \"$N\" \"$HEAD\" 'The PR description has no valid fabro commit-body block; a human must merge this PR.' merge
+      continue
+    fi
+    ATTEMPT=0
+    OK=0
+    while [ $ATTEMPT -lt 3 ]; do
+      ATTEMPT=$((ATTEMPT + 1))
+      if gh pr merge \"$N\" --squash --delete-branch=false --match-head-commit \"$HEAD\" --subject \"$TITLE\" --body-file $D/block_$N.md > $D/merge_$N.out 2>&1 </dev/null; then OK=1; break; fi
+      grep -q 'Base branch was modified' $D/merge_$N.out || break
+      sleep ${MQ_RETRY_WAIT:-10}
+    done
+    if [ $OK = 1 ]; then
+      record \"$N\" merge merged ''
+      for IS in $(grep -o '^Resolves #[0-9]*' $D/block_$N.md | tr -d 'A-Za-z# '); do
+        gh issue edit \"$IS\" --remove-label Review >/dev/null 2>&1 </dev/null || true
+      done
+      gh pr comment \"$N\" --body \"Merged by the merge queue (run $RUN): checks green on $(printf '%s' \"$HEAD\" | cut -c1-7).\" >/dev/null 2>&1 </dev/null || true
+    else
+      record \"$N\" merge failed \"$(lastline $D/merge_$N.out)\"
+    fi
+    ;;
+  *)
+    record \"$N\" \"$ACT\" failed \"unknown action $ACT\"
+    ;;
+  esac
+done 3< $D/plan.lines
+echo \"act: $(jq length $D/results.json) result(s)\"
+exit 0"]
+
+    // Placeholder: task 08 replaces it.
 
     summarize [label="Summarize the sweep", shape=parallelogram, timeout="1m",
         script="echo 'summarize: placeholder (task 08)'"]
