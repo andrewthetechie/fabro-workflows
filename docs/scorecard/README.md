@@ -1,7 +1,8 @@
 # Factory scorecard
 
-**Status:** built 2026-10-12 for issue #22 (roadmap B1, reduced). The scheduler's
-collector backfills every released run on its first start.
+**Status:** deployed 2026-10-12 06:11Z (`eb369f2`) for issue #22 (roadmap B1, reduced). The
+production collector backfilled all of `run_history` within about 90 minutes, and its retro
+window matches the staging run below line for line.
 
 The 2026-10-11 retro was assembled by hand from four sources, and exporting raw events
 for it filled the Mac's disk. The scorecard computes the same numbers continuously, on the
@@ -96,7 +97,7 @@ Two differences are explained:
 - **Hosted agents** counts every agent stage off the coder pool outside the merge phase
   (`spec`, `extra_decompose`, task reviews), not only the task reviews.
 
-Collection cost: about 5 s per run summarized, 90 MB of memory, and 3 GitHub requests per PR.
+Collection cost: about 5 s per run summarized (in production, two runs per 30 s tick), 90 MB of memory, and 3 GitHub requests per PR.
 
 ## Not built
 
