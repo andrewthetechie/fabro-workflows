@@ -1,6 +1,6 @@
 # Gate relief: overview and canonical contracts
 
-**Status:** implemented locally 2026-10-11, not pushed (operator reviews before push). Issues #28, #29, #30. Commits on `main`: 01 `7771b52`, 02 `485cc94`, 03 `0c3256e`, 04 `6d55e1e`, 05 `b6552d0`; 06 is the next commit (docs, baselines).
+**Status:** deployed 2026-10-12 (pushed to `main`). Issues #28, #29, #30. Commits: 01 `7771b52`, 02 `485cc94`, 03 `0c3256e`, 04 `6d55e1e`, 05 `b6552d0`, 06 `6b84733`, and a review fix `3ba8912` (a failed `refute_fix` turn is reset before `deliver` pushes; see `docs/agents/invariants-merge.md`). Task 07 (measurement) is due 2026-10-19.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
