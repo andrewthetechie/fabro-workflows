@@ -80,13 +80,13 @@ The offline gates need only jq, awk, git, python3.11 and, when `ops/fabro-io/` o
 binary on this Mac, so graph validation happens in the container via `make check-host`.
 
 Baselines (as of 2026-10-11, fabro 0.362.0-nightly.0, verified by `make check-host`):
-`Backlog (72 nodes, 175 edges)` with one warning, `issue_number` unbound in `claim`;
-`PrReview (35 nodes, 76 edges)` with one warning, `pr_number` unbound in `validate_input`;
+`Backlog (74 nodes, 180 edges)` with one warning, `issue_number` unbound in `claim`;
+`PrReview (37 nodes, 81 edges)` with one warning, `pr_number` unbound in `validate_input`;
 `IssueTriage (16 nodes, 36 edges)`, `ArchReview (24 nodes, 54 edges)`,
-`Dependabot (47 nodes, 104 edges)` and `MergeQueue (8 nodes, 10 edges)` clean. Both
+`Dependabot (49 nodes, 109 edges)` and `MergeQueue (8 nodes, 10 edges)` clean. Both
 warnings are deliberate: never bind those inputs in `[run.inputs]`. The fast-path series
 added `report_queued` to the three importing graphs (+1 node, +3 edges each), and
-`route_lane` and `demote_lane` to `backlog`. `make check-host` compares `fabro validate`'s node and edge counts against these.
+`route_lane` and `demote_lane` to `backlog`. The gate-relief series (#29) added `refute_fix` and `refute_fix_gate` to the three importing graphs (+2 nodes, +5 edges each). `make check-host` compares `fabro validate`'s node and edge counts against these.
 
 `docs/agents/validating.md` says what each gate covers and misses, why the warnings are
 deliberate, and why `fabro preflight` is not an offline check.

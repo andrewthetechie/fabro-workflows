@@ -1,6 +1,6 @@
 # Gate relief: overview and canonical contracts
 
-**Status:** planned 2026-10-11. Nothing implemented. Issues #28, #29, #30.
+**Status:** implemented locally 2026-10-11, not pushed (operator reviews before push). Issues #28, #29, #30. Commits on `main`: 01 `7771b52`, 02 `485cc94`, 03 `0c3256e`, 04 `6d55e1e`, 05 `b6552d0`; 06 is the next commit (docs, baselines).
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
