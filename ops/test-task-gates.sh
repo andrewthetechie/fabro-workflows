@@ -3666,6 +3666,13 @@ echo '[{"number":7}]' > "$T/linked_issues.json"
 check "refute_prep: no section, no checklist file" "absent" "$([ -f "$T/review/post_deploy.md" ] && echo present || echo absent)"
 check "refute_prep: no section, body byte-identical" '{"number":7,"title":"T","body":"- [ ] it works"}' "$(jq -c '.[0]' "$T/review/refute_issues.json")"
 
+# 6. ADR 0013 D5 amendment (gate-relief G8): the fix-turn counter is never reset in the run,
+#    so refute_prep must leave it alone.
+echo 1 > "$T/refute_fix_attempts"
+( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" >/dev/null 2>&1 )
+check "refute_prep: fix counter kept"          "1" "$(cat "$T/refute_fix_attempts")"
+rm -f "$T/refute_fix_attempts"
+
 PATH="$SAVED_PATH"
 
 # ---------------------------------------------------------------------------
@@ -3723,6 +3730,88 @@ OUT=$(sh "$T/refute_gate.sh" 2>&1); RC=$?
 check "refute_gate: missing stage is a repair"      "1"    "$RC"
 check "refute_gate: missing stage is never pass"    "0"    "$(grep -c '"refute_verdict":"pass"' <<<"$OUT")"
 
+# 6. The fix turn (ADR 0013 D5 amendment, gate-relief G6-G8). The context keys decide the
+#    edge (refute_verdict=fail, refute_not_met=true, refute_fix_attempts=0), and the counter
+#    is written only when that route is taken.
+rg_run() { OUT=$(sh "$T/refute_gate.sh" 2>&1); RC=$?; J=$(lastjson "$OUT"); }
+rgc() { jq -r ".context_updates.$1" <<<"$J"; }
+FAILF="$FIX_DIR/refute-fail.json"
+# a fixture whose not_met criteria are unverifiable, and one with defects but nothing not_met
+jq '.criteria |= map(if .status == "not_met" then .status = "unverifiable" else . end)' "$FAILF" > "$T/unverifiable.json"
+jq '.criteria |= map(.status = "met")' "$FAILF" > "$T/defects-only.json"
+
+rg_stage; cp "$FAILF" "$T/review/refute.json"
+echo 0 > "$T/refute_attempts"; echo 0 > "$T/refute_fix_attempts"; rm -f "$T/review/refute_findings.json"
+rg_run
+check "fix: one not_met takes the fix route"    "true" "$(rgc refute_not_met)"
+check "fix: first pass counter is 0 on the edge" "0"   "$(rgc refute_fix_attempts)"
+check "fix: the counter is written to 1"        "1"    "$(cat "$T/refute_fix_attempts")"
+check "fix: findings name the criterion"        "1"    "$(jq '.not_met | length' "$T/review/refute_findings.json")"
+check "fix: findings carry the evidence"        "1"    "$(jq -r '.not_met[0].evidence' "$T/review/refute_findings.json" | grep -c .)"
+check "fix: findings carry the defects"         "1"    "$(jq '.defects | length' "$T/review/refute_findings.json")"
+
+rg_stage; cp "$T/unverifiable.json" "$T/review/refute.json"
+echo 0 > "$T/refute_fix_attempts"; rm -f "$T/review/refute_findings.json"
+rg_run
+check "fix: unverifiable only is not a fix route" "false" "$(rgc refute_not_met)"
+check "fix: unverifiable only leaves the counter" "0"     "$(cat "$T/refute_fix_attempts")"
+check "fix: unverifiable only has no not_met" "0" "$(jq '.not_met | length' "$T/review/refute_findings.json")"
+
+rg_stage; cp "$T/defects-only.json" "$T/review/refute.json"
+echo 0 > "$T/refute_fix_attempts"
+rg_run
+check "fix: defects only is not a fix route"     "false" "$(rgc refute_not_met)"
+check "fix: defects only is still fail"          "fail"  "$(rgc refute_verdict)"
+check "fix: defects only leaves the counter"     "0"     "$(cat "$T/refute_fix_attempts")"
+
+# the second not_met: the counter is already 1, so the edge cannot match and the run goes to deliver
+rg_stage; cp "$FAILF" "$T/review/refute.json"
+echo 1 > "$T/refute_fix_attempts"
+rg_run
+check "fix: second not_met carries attempts 1"   "1"     "$(rgc refute_fix_attempts)"
+check "fix: second not_met still says not_met"   "true"  "$(rgc refute_not_met)"
+check "fix: second not_met does not rewrite it"  "1"     "$(cat "$T/refute_fix_attempts")"
+
+rg_stage; cp "$FIX_DIR/refute-pass.json" "$T/review/refute.json"
+echo 0 > "$T/refute_fix_attempts"; rm -f "$T/review/refute_findings.json"
+rg_run
+check "fix: pass is not a fix route"             "false" "$(rgc refute_not_met)"
+check "fix: pass writes no findings"             "absent" "$([ -f "$T/review/refute_findings.json" ] && echo present || echo absent)"
+
+# an invalid verdict (twice) is never a fix route, and its context keys are written too
+rg_stage; printf '%s' '{"summary":"s","criteria":[{"criterion":"a","status":"met","evidence":"x"}],"defects":[]}' > "$T/review/refute.json"
+echo 0 > "$T/refute_attempts"; echo 0 > "$T/refute_fix_attempts"
+sh "$T/refute_gate.sh" >/dev/null 2>&1
+rg_run
+check "fix: invalid is not a fix route"          "false" "$(rgc refute_not_met)"
+check "fix: invalid keeps attempts 0"            "0"     "$(rgc refute_fix_attempts)"
+rm -f "$T/refute_fix_attempts"
+
+# review-merge refute_fix_gate — the fix turn's receipt check (ADR 0013 D5 amendment, G10).
+# A fix turn that did not submit writes no receipt: the gate fails, and the run goes to deliver.
+# The gate writes no counter (G8) and prints no routing object.
+echo ""
+echo "review-merge refute_fix_gate"
+extract_from "$SHARED" refute_fix_gate | sed "s#/tmp/fabro#$T#g" > "$T/refute_fix_gate.sh"
+if ! sh -n "$T/refute_fix_gate.sh" 2>"$T/refute_fix_gate.syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL refute_fix_gate is not valid POSIX sh\n'
+fi
+rfg_stage() { printf '%s' "{\"workflow\":\"backlog\",\"node\":\"review_merge.refute_fix\",\"visit\":\"$FV\",\"started\":\"2026-10-11T00:00:00Z\"}" > "$T/.io/stage.json"; }
+rfg_stage; rm -f "$T/review/refute_fix.json" "$T/refute_fix_attempts"
+sh "$T/refute_fix_gate.sh" >/dev/null 2>&1; RC=$?
+check "refute_fix_gate: no file fails"          "1" "$RC"
+printf '%s' '{"summary":"s","addressed":[],"not_addressed":[]}' > "$T/review/refute_fix.json"
+sh "$T/refute_fix_gate.sh" >/dev/null 2>&1; RC=$?
+check "refute_fix_gate: no receipt fails"       "1" "$RC"
+printf '%s' "{\"_io\":{\"visit\":\"ffffffffffffffffffffffffffffffff\"},\"summary\":\"s\",\"addressed\":[],\"not_addressed\":[]}" > "$T/review/refute_fix.json"
+sh "$T/refute_fix_gate.sh" >/dev/null 2>&1; RC=$?
+check "refute_fix_gate: stale receipt fails"    "1" "$RC"
+printf '%s' "{\"_io\":{\"visit\":\"$FV\"},\"summary\":\"s\",\"addressed\":[],\"not_addressed\":[]}" > "$T/review/refute_fix.json"
+OUT=$(sh "$T/refute_fix_gate.sh" 2>&1); RC=$?
+check "refute_fix_gate: good receipt passes"    "0" "$RC"
+check "refute_fix_gate: writes no counter"      "absent" "$([ -f "$T/refute_fix_attempts" ] && echo present || echo absent)"
+check "refute_fix_gate: prints no routing"      "0" "$(grep -c 'context_updates' <<<"$OUT")"
+
 # ---------------------------------------------------------------------------
 # review-merge refute guard — Sealed paths block the refuter's reads (ADR 0016
 # D8). Needs fabro-io on PATH; SKIPs otherwise (present in profile images).
@@ -3751,6 +3840,19 @@ else
     export FABRO_HOOK_CONTEXT='{"tool_input":{"path":"/tmp/fabro/review/standards.json"}}'
     fabro-io guard >/dev/null 2>&1; RC=$?
     check "refute guard: unsealed node proceeds"     "0" "$RC"
+    # refute_fix (ADR 0013 D5 amendment, gate-relief G7): the fixer is denied the verdict
+    # files and the hygiene counters, and may read its own findings. The Refuter is denied the
+    # fixer's report and the findings it wrote itself, so it judges again from scratch.
+    GUARD_MAN=$(grep '^FABRO_IO_MANIFEST' "$(cd "$(dirname "$0")/.." && pwd)/.fabro/workflows/backlog/workflow.toml" | sed -e 's/^[^{]*//' -e 's/[^}]*$//')
+    guard_as() { # guard_as <node> <path> -> RC
+        printf '%s' "{\"workflow\":\"backlog\",\"node\":\"$1\",\"visit\":\"fac3fac3fac3fac3fac3fac3fac3fac3\"}" > "$T/.io/stage.json"
+        FABRO_IO_MANIFEST="$GUARD_MAN" FABRO_HOOK_CONTEXT="{\"tool_input\":{\"path\":\"$2\"}}" fabro-io guard >/dev/null 2>&1; echo $?
+    }
+    check "refute_fix guard: verdict file blocked"      "2" "$(guard_as review_merge.refute_fix /tmp/fabro/review/refute.json)"
+    check "refute_fix guard: hygiene counters blocked"  "2" "$(guard_as review_merge.refute_fix /tmp/fabro/review/hygiene.json)"
+    check "refute_fix guard: its findings readable"     "0" "$(guard_as review_merge.refute_fix /tmp/fabro/review/refute_findings.json)"
+    check "refute guard: the fixer report blocked"      "2" "$(guard_as review_merge.refute /tmp/fabro/review/refute_fix.json)"
+    check "refute guard: its own findings blocked"      "2" "$(guard_as review_merge.refute /tmp/fabro/review/refute_findings.json)"
     unset FABRO_IO_ROOT FABRO_IO_MANIFEST FABRO_HOOK_CONTEXT
     rm -rf "$T"
 fi
@@ -4345,6 +4447,14 @@ check "render: post-deploy caveat"             "1" "$(grep -c 'Not checked by th
 rm -f "$T/review/post_deploy.md"
 C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
 check "render: no checklist, no heading"       "0" "$(grep -c '^### Post-deploy checks$' <<<"$C")"
+
+# ADR 0013 D5 amendment (gate-relief step 8): one line when the fix turn ran.
+echo '{"summary":"s","addressed":[{"criterion":"logout works","change":"auth.py:9"}],"not_addressed":[{"criterion":"x","why":"y"}]}' > "$T/review/refute_fix.json"
+C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
+check "render: fix turn line"                  "1" "$(grep -c "One fix turn ran after the refuter's first verdict: 1 addressed, 1 not." <<<"$C")"
+rm -f "$T/review/refute_fix.json"
+C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
+check "render: no fix turn, no line"           "0" "$(grep -c "One fix turn ran" <<<"$C")"
 
 # ---------------------------------------------------------------------------
 # fabro-code — the index wrapper (docs/code-context C1/C2/C3/C4).

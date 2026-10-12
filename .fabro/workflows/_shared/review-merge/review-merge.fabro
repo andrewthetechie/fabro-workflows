@@ -142,6 +142,10 @@ def one($axis):
          + [ (nz($RF.defects) | .[]) | \"- **defect** - \" + .file + (if (.line | type) == \"number\" then \":\" + (.line | tostring) else \"\" end) + \" - \" + .scenario ] )
          | join(NL) end ),
   \"\",
+  ( ($rfx[0] // {}) as $RFX
+    | if ($RFX.addressed | type) == \"array\"
+      then \"One fix turn ran after the refuter's first verdict: \" + (($RFX.addressed | length) | tostring) + \" addressed, \" + ((nz($RFX.not_addressed) | length) | tostring) + \" not.\"
+      else empty end ),
   ( if ($pd | length) > 0
     then [ \"### Post-deploy checks\", \"\", \"Not checked by the agents. Verify after deploy.\", \"\", ($pd | rtrimstr(NL)), \"\" ] | join(NL)
     else empty end ),
@@ -194,7 +198,7 @@ K=\"${1:-complete}\"
 R=/tmp/fabro/review
 T=/tmp/fabro/_render
 rm -rf $T && mkdir -p $T
-for f in standards spec fix_result ci_fix_result refute hygiene; do
+for f in standards spec fix_result ci_fix_result refute refute_fix hygiene; do
   if [ -s \"$R/$f.json\" ] && jq -e 'type == \"object\"' \"$R/$f.json\" >/dev/null 2>&1; then cp \"$R/$f.json\" \"$T/$f.json\"; else echo '{}' > \"$T/$f.json\"; fi
 done
 if [ -s \"$R/post_deploy.md\" ]; then cp \"$R/post_deploy.md\" $T/post_deploy.md; else : > $T/post_deploy.md; fi
@@ -211,7 +215,7 @@ if [ -n \"$BASE\" ]; then
   done
 fi
 jq -s . $T/cm.ndjson > $T/cm.json
-jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --rawfile pd $T/post_deploy.md --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\" --arg qhead \"${2:-}\"
+jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile rfx $T/refute_fix.json --rawfile pd $T/post_deploy.md --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\" --arg qhead \"${2:-}\"
 RENDER_SH
 echo '{\"context_updates\":{\"review_merge_outcome\":\"needs_human\",\"merge_mode\":\"'$MM'\"}}'"]
 
@@ -639,12 +643,16 @@ echo 'refuter inputs: '$(jq length $R/refute_issues.json)' linked issue(s), '$SI
     // Validates refute.json with one repair turn, the same pattern as standards_gate, and
     // then COMPUTES the verdict: `pass` only when every criterion is `met` and there are no
     // defects. The agent writes no verdict of its own. Twice-invalid output is `invalid`,
-    // which blocks like `fail`. Neither routes back to review_fix: the model whose work was
-    // refuted does not get to argue with the refutation.
+    // which blocks like `fail`. A `fail` with at least one not_met criterion takes one fix
+    // turn (ADR 0013 D5 amendment, gate-relief G6-G8): refute_fix changes the code, and the
+    // Refuter judges it again from scratch. The route is taken only while
+    // refute_fix_attempts is 0; this gate writes the counter to 1 when it takes the route, and
+    // nothing resets it in the run. Every other fail, and every invalid result, goes to deliver.
     refute_gate [label="Validate refuter output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/refute.json
 R=/tmp/fabro/review
 A=$(cat /tmp/fabro/refute_attempts 2>/dev/null || echo 0)
+FA=$(cat /tmp/fabro/refute_fix_attempts 2>/dev/null || echo 0)
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
 if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
@@ -653,16 +661,37 @@ if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
   echo invalid > $R/refute_verdict
   echo 'The refuter wrote an invalid result twice, so it has no verdict and the merge is refused.' > $R/refute_reason.txt
-  echo '{\"context_updates\":{\"refute_verdict\":\"invalid\"}}'
+  echo '{\"context_updates\":{\"refute_verdict\":\"invalid\",\"refute_not_met\":false,\"refute_fix_attempts\":'$FA'}}'
   exit 0
 fi
 echo 0 > /tmp/fabro/refute_attempts
 V=$(jq -r 'if ([.criteria[] | select(.status != \"met\")] | length) == 0 and (.defects | length) == 0 then \"pass\" else \"fail\" end' $F)
 echo $V > $R/refute_verdict
+NM=$(jq '[.criteria[] | select(.status == \"not_met\")] | length' $F)
+NOT=false
 if [ \"$V\" = fail ]; then
   jq -r '\"The refuter could not confirm the work is done: \" + ([.criteria[] | select(.status != \"met\") | .status + \": \" + .criterion] + [.defects[] | \"defect at \" + .file + (if (.line | type) == \"number\" then \":\" + (.line | tostring) else \"\" end) + \": \" + .scenario] | .[:5] | join(\"; \")) + \".\"' $F > $R/refute_reason.txt
+  jq -c '{not_met: [.criteria[] | select(.status == \"not_met\") | {criterion, evidence}], defects: (.defects // [])}' $F > $R/refute_findings.json
+  if [ \"$NM\" -gt 0 ]; then NOT=true; fi
+else
+  rm -f $R/refute_findings.json
 fi
-echo '{\"context_updates\":{\"refute_verdict\":\"'$V'\"}}'"]
+if [ \"$NOT\" = true ] && [ \"$FA\" = 0 ]; then echo 1 > /tmp/fabro/refute_fix_attempts; fi
+echo '{\"context_updates\":{\"refute_verdict\":\"'$V'\",\"refute_not_met\":'$NOT',\"refute_fix_attempts\":'$FA'}}'"]
+
+    // The fix turn (gate-relief G9-G11). refute_fix runs on the run's coder pool in backlog and
+    // pr-review, and on glm-5.3-flash in dependabot (the stylesheet rows). A failed or invalid
+    // turn goes to deliver, where the old verdict stands and check 14 blocks the merge.
+    refute_fix [label="Fix the criteria not met", class="refute-fix", timeout="45m", max_retries=1, prompt="@prompts/refute_fix.md.j2"]
+
+    // Checks the fixer's Input receipt and runs nothing else. The change is committed by fabro's
+    // checkpoint at this node's end, as review_fix's is: no node in this graph runs git commit.
+    // A missing receipt fails the gate, and the run goes to deliver with the old verdict standing.
+    refute_fix_gate [label="Check the fix turn", shape=parallelogram, timeout="5m",
+        script="F=/tmp/fabro/review/refute_fix.json
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then echo 'refute_fix.json has no valid Input receipt, so the fix turn did not finish' >&2; exit 1; fi"]
 
     // A rejected lease push used to say only "the branch moved", even when a human had
     // merged or closed the PR and the review's commits never reached it (issue #9). It now
@@ -1433,6 +1462,11 @@ echo '{\"context_updates\":{\"review_merge_outcome\":\"'$O'\"}}'"]
     refute -> deliver
     refute_gate -> refute              [condition="outcome=failed", weight=10]
     refute_gate -> deliver
+    refute_gate -> refute_fix          [condition="context.refute_verdict=fail && context.refute_not_met=true && context.refute_fix_attempts=0", weight=5]
+    refute_fix -> refute_fix_gate      [condition="outcome=succeeded"]
+    refute_fix -> deliver
+    refute_fix_gate -> validate        [condition="outcome=succeeded"]
+    refute_fix_gate -> deliver
 
     deliver -> merge_gate              [condition="context.delivered=true"]
     deliver -> mark_needs_human

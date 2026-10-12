@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "refute_fix",
+  "title": "refute_fix — the fix turn after a refuter not_met (#29)",
+  "description": "The coder's fix turn after the Refuter's first verdict (ADR 0013 D5 amendment, gate-relief G10). refute_fix_gate checks the Input receipt. The fixer never sees the verdict, and the Refuter judges the new code again from scratch. _io is stamped by the server and is not part of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "addressed", "not_addressed"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Two sentences: what you changed and what you left."
+    },
+    "addressed": {
+      "type": "array",
+      "description": "One entry per criterion you changed the code for.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "change"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "change": { "type": "string", "minLength": 1, "description": "What you changed, with path:line." }
+        }
+      }
+    },
+    "not_addressed": {
+      "type": "array",
+      "description": "One entry per criterion you did not change the code for.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "why"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "why": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

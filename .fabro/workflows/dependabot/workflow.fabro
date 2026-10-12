@@ -24,6 +24,7 @@ digraph Dependabot {
             .ci-fix           { model: glm-5.3-flash; }
             .rebase-t2        { model: glm-5.3; }
             .refute           { model: gpt-6.1-sol; }
+            .refute-fix       { model: glm-5.3-flash; }
         "
     ]
     rankdir=LR

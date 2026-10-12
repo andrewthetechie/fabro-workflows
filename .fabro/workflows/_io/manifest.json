@@ -217,7 +217,57 @@
           "/tmp/fabro/review/spec.json",
           "/tmp/fabro/review/fix_result.json",
           "/tmp/fabro/review/ci_fix_result.json",
-          "/tmp/fabro/feedback/**"
+          "/tmp/fabro/feedback/**",
+          "/tmp/fabro/review/refute_fix.json",
+          "/tmp/fabro/review/refute_findings.json"
+        ],
+        "also": []
+      },
+      "refute_fix": {
+        "live": true,
+        "prompt": ".fabro/workflows/_shared/review-merge/prompts/refute_fix.md.j2",
+        "inputs": [
+          {
+            "name": "repomap.md",
+            "path": "/tmp/fabro/repomap.md",
+            "required": false,
+            "about": "a ranked outline of this checkout; can be missing, continue without it",
+            "absent": "the repository map is missing; proceed without it"
+          },
+          {
+            "name": "refute_findings.json",
+            "path": "/tmp/fabro/review/refute_findings.json",
+            "required": true,
+            "about": "the criteria the Refuter found not met, each with its evidence, and its blocking defects"
+          },
+          {
+            "name": "issues",
+            "path": "/tmp/fabro/review/refute_issues.json",
+            "required": true,
+            "about": "the issues this PR closes, each with number, title and body; may be []"
+          },
+          {
+            "name": "pr",
+            "path": "/tmp/fabro/pr.json",
+            "required": true,
+            "about": "the PR number, title, body, refs and labels"
+          },
+          {
+            "name": "diff",
+            "path": "/tmp/fabro/review/refute_diff.patch",
+            "required": true,
+            "about": "the diff of the PR against its base, smallest files first, cut off at about 300 KB"
+          }
+        ],
+        "output": {
+          "path": "/tmp/fabro/review/refute_fix.json",
+          "schema": "refute_fix"
+        },
+        "sealed": [
+          "/tmp/fabro/review/refute.json",
+          "/tmp/fabro/review/refute_verdict",
+          "/tmp/fabro/review/refute_reason.txt",
+          "/tmp/fabro/review/hygiene.json"
         ],
         "also": []
       },
