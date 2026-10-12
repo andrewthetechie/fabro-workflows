@@ -1389,6 +1389,16 @@ check "real work derives a CC subject" "1" \
     "$(grep -cE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)(\(.*\))?!?: ' "$T/commit_subject.txt")"
 check "real work resolves the issue" "1" "$(grep -c '^Resolves #1205' "$T/pr_body.md")"
 
+# 4b. A Post-deploy checks section in the issue body reaches the PR body after the
+#     commit-body block, and never the commit body (ADR 0013 D4 amendment).
+opp_repo work
+printf '%s' '{"number":1205,"title":"month_played_and_crowned","body":"Prose here.\n\n## Post-deploy checks\n\n- [ ] Sign in on staging\n\n## Notes\n\nkept","labels":[]}' > "$T/issue.json"
+OUT=$(opp_run); RC=$?
+check "post-deploy PR body: exit 0"            "0" "$RC"
+check "post-deploy PR body: heading"           "1" "$(grep -c '^## Post-deploy checks$' "$T/pr_body.md")"
+check "post-deploy PR body: checkbox"          "1" "$(grep -c '^- [[] []] Sign in on staging$' "$T/pr_body.md")"
+check "post-deploy PR body: not in commit body" "0" "$(grep -c 'Sign in on staging' "$T/commit_body.md")"
+
 # 5. The case no reviewer would think of: the run's work was already on main, so
 #    after `git merge origin/main` the branch adds nothing. That is still a PR
 #    that would claim to resolve the issue, so the floor has to hold there too --
@@ -3628,6 +3638,34 @@ echo '[]' > "$T/linked_issues.json"
 ( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" >/dev/null 2>&1 )
 check "refute_prep: no issues is []"        "[]" "$(jq -c . "$T/review/refute_issues.json")"
 
+# 5. ADR 0013 D4 amendment (gate-relief G3/G4): the Post-deploy checks section is cut
+#    from the body the Refuter reads, and its checklist goes to post_deploy.md. Issue 6
+#    has the section; issue 7 has none and must come through unchanged.
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+case "$3" in
+  99) exit 1 ;;
+  6) printf '{"number":6,"title":"T","body":"criteria\\n\\n## Post-deploy checks\\n\\n- [ ] Sign in on staging\\n- [ ] Reload settings\\n\\n## Notes\\n\\nkept"}' ;;
+  *) printf '{"number":%s,"title":"T","body":"- [ ] it works"}' "$3" ;;
+esac
+STUB
+echo '[{"number":6},{"number":7}]' > "$T/linked_issues.json"
+( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" >/dev/null 2>&1 )
+check "refute_prep: section cut from the body" "0" "$(jq -r '.[0].body' "$T/review/refute_issues.json" | grep -c 'Post-deploy')"
+check "refute_prep: text above it kept"        "1" "$(jq -r '.[0].body' "$T/review/refute_issues.json" | grep -c '^criteria$')"
+check "refute_prep: text below it kept"        "1" "$(jq -r '.[0].body' "$T/review/refute_issues.json" | grep -c '^kept$')"
+check "refute_prep: checklist written"         "1" "$(grep -c '^- [[] []] Sign in on staging$' "$T/review/post_deploy.md")"
+check "refute_prep: two issues, a heading"     "1" "$(grep -c '^#6$' "$T/review/post_deploy.md")"
+check "refute_prep: no-section issue unchanged" '{"number":7,"title":"T","body":"- [ ] it works"}' "$(jq -c '.[1]' "$T/review/refute_issues.json")"
+echo '[{"number":6}]' > "$T/linked_issues.json"
+( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" >/dev/null 2>&1 )
+check "refute_prep: one issue, no heading"     "0" "$(grep -c '^#6$' "$T/review/post_deploy.md")"
+check "refute_prep: one issue, checklist kept" "2" "$(grep -c '^- [[] []] ' "$T/review/post_deploy.md")"
+echo '[{"number":7}]' > "$T/linked_issues.json"
+( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" >/dev/null 2>&1 )
+check "refute_prep: no section, no checklist file" "absent" "$([ -f "$T/review/post_deploy.md" ] && echo present || echo absent)"
+check "refute_prep: no section, body byte-identical" '{"number":7,"title":"T","body":"- [ ] it works"}' "$(jq -c '.[0]' "$T/review/refute_issues.json")"
+
 PATH="$SAVED_PATH"
 
 # ---------------------------------------------------------------------------
@@ -4297,6 +4335,16 @@ printf '%s' 'retryable: review_fix failed (transient_infra): timed out' > "$T/ne
 C=$( cd "$T" && sh "$T/render_comment.sh" needs-human 2>&1 )
 check "render: needs-human shows the failed stage"  "1" "$(grep -c 'retryable: review_fix failed (transient_infra): timed out' <<<"$C")"
 check "render: needs-human is not unspecified"      "0" "$(grep -c unspecified <<<"$C")"
+
+# ADR 0013 D4 amendment (gate-relief G3): the checklist is shown to the human, never judged.
+echo '- [ ] Sign in on staging' > "$T/review/post_deploy.md"
+C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
+check "render: post-deploy heading shown"      "1" "$(grep -c '^### Post-deploy checks$' <<<"$C")"
+check "render: post-deploy item verbatim"      "1" "$(grep -c '^- [[] []] Sign in on staging$' <<<"$C")"
+check "render: post-deploy caveat"             "1" "$(grep -c 'Not checked by the agents. Verify after deploy.' <<<"$C")"
+rm -f "$T/review/post_deploy.md"
+C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
+check "render: no checklist, no heading"       "0" "$(grep -c '^### Post-deploy checks$' <<<"$C")"
 
 # ---------------------------------------------------------------------------
 # fabro-code — the index wrapper (docs/code-context C1/C2/C3/C4).

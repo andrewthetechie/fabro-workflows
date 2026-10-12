@@ -142,6 +142,9 @@ def one($axis):
          + [ (nz($RF.defects) | .[]) | \"- **defect** - \" + .file + (if (.line | type) == \"number\" then \":\" + (.line | tostring) else \"\" end) + \" - \" + .scenario ] )
          | join(NL) end ),
   \"\",
+  ( if ($pd | length) > 0
+    then [ \"### Post-deploy checks\", \"\", \"Not checked by the agents. Verify after deploy.\", \"\", ($pd | rtrimstr(NL)), \"\" ] | join(NL)
+    else empty end ),
   \"### Diff hygiene\", \"\",
   ( if ($HG.tamper | type) != \"object\" then \"_The counters did not run._\"
     elif ($HG.error | type) == \"string\" then \"_The counters could not be computed: \" + $HG.error + \"._\"
@@ -194,6 +197,7 @@ rm -rf $T && mkdir -p $T
 for f in standards spec fix_result ci_fix_result refute hygiene; do
   if [ -s \"$R/$f.json\" ] && jq -e 'type == \"object\"' \"$R/$f.json\" >/dev/null 2>&1; then cp \"$R/$f.json\" \"$T/$f.json\"; else echo '{}' > \"$T/$f.json\"; fi
 done
+if [ -s \"$R/post_deploy.md\" ]; then cp \"$R/post_deploy.md\" $T/post_deploy.md; else : > $T/post_deploy.md; fi
 PR_URL=$(cat /tmp/fabro/pr_url 2>/dev/null || echo '')
 BASE=$(cat /tmp/fabro/run_base_sha 2>/dev/null || echo '')
 : > $T/cm.ndjson
@@ -207,7 +211,7 @@ if [ -n \"$BASE\" ]; then
   done
 fi
 jq -s . $T/cm.ndjson > $T/cm.json
-jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\" --arg qhead \"${2:-}\"
+jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --rawfile pd $T/post_deploy.md --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\" --arg qhead \"${2:-}\"
 RENDER_SH
 echo '{\"context_updates\":{\"review_merge_outcome\":\"needs_human\",\"merge_mode\":\"'$MM'\"}}'"]
 
@@ -572,18 +576,37 @@ jq -r '\"diff hygiene: config \" + .config + \", blocking [\" + (.blocking | joi
     // fit are listed by name and changed-line count, and the agent can read them in the
     // checkout. It also clears every contract file the Refuter and its gate write, so a
     // stale verdict from an earlier pass can never be read as this one.
+    // Post-deploy checks (ADR 0013 D4 amendment, gate-relief G3/G4) are cut from each
+    // issue body here, so the Refuter never reads them. Their checklist goes to
+    // post_deploy.md for the report and the PR body. An issue with no such section is
+    // written exactly as before.
     refute_prep [label="Prepare refuter inputs", shape=parallelogram, timeout="5m",
         script="set -e
 B=$(cat /tmp/fabro/base_ref)
 R=/tmp/fabro/review
 mkdir -p $R
-rm -f $R/refute.json $R/refute_verdict $R/refute_reason.txt $R/refute_issues.ndjson $R/refute_diff.patch $R/refute_omitted.txt $R/refute.draft.json /tmp/fabro/refute_attempts
+rm -f $R/refute.json $R/refute_verdict $R/refute_reason.txt $R/refute_issues.ndjson $R/refute_diff.patch $R/refute_omitted.txt $R/refute.draft.json /tmp/fabro/refute_attempts $R/post_deploy.md $R/post_items.txt $R/refute_body.txt $R/refute_issue.line
 : > $R/refute_issues.ndjson
-for N in $(jq -r '.[]?.number // empty' /tmp/fabro/linked_issues.json 2>/dev/null | head -3); do
+LINKED=$(jq -r '.[]?.number // empty' /tmp/fabro/linked_issues.json 2>/dev/null | head -3)
+NL=$(echo \"$LINKED\" | grep -c . || true)
+for N in $LINKED; do
   case \"$N\" in '' | *[!0-9]*) continue ;; esac
-  gh issue view \"$N\" --json number,title,body > $R/refute_issue.json 2>/dev/null && jq -c . $R/refute_issue.json >> $R/refute_issues.ndjson || jq -nc --argjson n \"$N\" '{number:$n, title:null, body:null, error:\"could not be read\"}' >> $R/refute_issues.ndjson
+  if gh issue view \"$N\" --json number,title,body > $R/refute_issue.json 2>/dev/null && jq -c . $R/refute_issue.json > $R/refute_issue.line; then
+    if jq -r '.body // \"\"' $R/refute_issue.json | grep -q '^## Post-deploy checks$'; then
+      jq -r '.body // \"\"' $R/refute_issue.json | awk '/^## Post-deploy checks$/{s=1; next} s && /^## /{s=0} !s{print}' > $R/refute_body.txt
+      jq -r '.body // \"\"' $R/refute_issue.json | awk '/^## Post-deploy checks$/{s=1; next} s && /^## /{s=0} s && /^- [[] []] /{print}' > $R/post_items.txt
+      if [ -s $R/post_items.txt ]; then
+        if [ \"$NL\" -gt 1 ]; then echo \"#$N\" >> $R/post_deploy.md; fi
+        cat $R/post_items.txt >> $R/post_deploy.md
+      fi
+      jq -c --rawfile b $R/refute_body.txt '.body = $b' $R/refute_issue.json > $R/refute_issue.line
+    fi
+    cat $R/refute_issue.line >> $R/refute_issues.ndjson
+  else
+    jq -nc --argjson n \"$N\" '{number:$n, title:null, body:null, error:\"could not be read\"}' >> $R/refute_issues.ndjson
+  fi
 done
-rm -f $R/refute_issue.json
+rm -f $R/refute_issue.json $R/refute_issue.line $R/refute_body.txt $R/post_items.txt
 jq -s . $R/refute_issues.ndjson > $R/refute_issues.json
 rm -f $R/refute_issues.ndjson
 git diff --numstat --no-renames \"origin/$B...HEAD\" | awk 'BEGIN { FS = sprintf(\"%c\", 9) } { n = ($1 == \"-\" ? 0 : $1) + ($2 == \"-\" ? 0 : $2); print n \" \" $3 }' | sort -n > $R/refute_files.txt

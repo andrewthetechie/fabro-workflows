@@ -1453,6 +1453,8 @@ else
   echo 'Resolves #'$N': '$T > /tmp/fabro/commit_body.md
 fi
 { echo '## Summary'; echo; echo '<!-- fabro:commit-body:start -->'; cat /tmp/fabro/commit_body.md; echo '<!-- fabro:commit-body:end -->'; echo; cat /tmp/fabro/completed.md 2>/dev/null || true; echo '## Validation'; echo; echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after final merge with origin/main'; } > /tmp/fabro/pr_body.md
+jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Post-deploy checks$/{s=1; next} s && /^## /{s=0} s && /^- [[] []] /{print}' > /tmp/fabro/post_items.txt
+if [ -s /tmp/fabro/post_items.txt ]; then { echo; echo '## Post-deploy checks'; echo; echo 'Not checked by the agents. Verify after deploy.'; echo; cat /tmp/fabro/post_items.txt; } >> /tmp/fabro/pr_body.md; fi
 grep -qE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .' /tmp/fabro/commit_subject.txt
 grep -q '^Resolves #' /tmp/fabro/commit_body.md
 grep -q 'fabro:commit-body:start' /tmp/fabro/pr_body.md"]
