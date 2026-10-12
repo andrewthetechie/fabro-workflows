@@ -43,8 +43,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .github import Issue
+from .prfacts import PrFacts
+from .summary import RunSummary
 
 log = logging.getLogger(__name__)
+
+# How many times the collector tries to summarize a run whose events could not be
+# read before it gives up on it. A 404 is not retried at all (`missing`).
+SUMMARY_MAX_ATTEMPTS = 3
 
 # `first_seen` is set once, on the first sighting, and never updated. `last_seen`
 # is the observation time of the most recent sighting; both are ISO-8601 UTC.
@@ -192,6 +198,72 @@ CREATE TABLE IF NOT EXISTS run_history (
   local_cost_usd_micros  INTEGER,
   hosted_cost_usd_micros INTEGER
 );
+
+-- Issue #22, the scorecard. Four tables the collector fills after a run is released
+-- (`collector.py`), and nothing else writes. They are derived data: dropping them
+-- loses nothing that the fabro run store and GitHub cannot rebuild, which the
+-- collector does on its own (every `run_history` row without a summary is work).
+--
+-- `run_summary` is one row per summarized run, and its `status` is the collector's
+-- bookkeeping: `ok`, `missing` (fabro answered 404, so the run was pruned; never
+-- retried) or `error` (retried up to `attempts` times).
+CREATE TABLE IF NOT EXISTS run_summary (
+  run_id        TEXT PRIMARY KEY,
+  status        TEXT    NOT NULL,
+  attempts      INTEGER NOT NULL DEFAULT 1,
+  summarized_at TEXT    NOT NULL,  -- ISO-8601 UTC
+  terminal_node TEXT,              -- the last node the run started, other than exit
+  path          TEXT,              -- JSON array of "from>to": the run's last edges
+  refute        TEXT,              -- JSON array of {verdict, not_met}, in order
+  events        INTEGER,
+  error         TEXT
+);
+
+-- One row per node per run: every visit's totals. `box_ms` is the part of
+-- `wall_ms` spent on the run's coder pool (`summary.CODER_MODEL_PREFIX`).
+CREATE TABLE IF NOT EXISTS run_stage_stats (
+  run_id   TEXT    NOT NULL,
+  node_id  TEXT    NOT NULL,
+  handler  TEXT    NOT NULL,
+  visits   INTEGER NOT NULL,
+  wall_ms  INTEGER NOT NULL,
+  box_ms   INTEGER NOT NULL,
+  timeouts INTEGER NOT NULL,
+  failures TEXT    NOT NULL,       -- JSON object, failure category -> count
+  PRIMARY KEY (run_id, node_id)
+);
+
+CREATE TABLE IF NOT EXISTS run_failovers (
+  run_id     TEXT    NOT NULL,
+  node_id    TEXT    NOT NULL,
+  from_model TEXT    NOT NULL,     -- "kimi/kimi-k3"
+  to_model   TEXT    NOT NULL,     -- "zai/glm-5.3"
+  error_kind TEXT    NOT NULL,     -- the provider error's llm_kind: "access_denied"
+  count      INTEGER NOT NULL,
+  PRIMARY KEY (run_id, node_id, from_model, to_model, error_kind)
+);
+
+-- What became of each factory PR (`prfacts.py`). Refetched while `state` is
+-- `open`; a merged or closed PR is final and is not fetched again.
+CREATE TABLE IF NOT EXISTS pr_facts (
+  repo             TEXT    NOT NULL,
+  pr_number        INTEGER NOT NULL,
+  fetched_at       TEXT    NOT NULL,  -- ISO-8601 UTC
+  state            TEXT    NOT NULL,  -- "open" | "merged" | "closed"
+  created_at       TEXT,
+  merged_at        TEXT,
+  closed_at        TEXT,
+  labels           TEXT    NOT NULL,  -- JSON array of label names
+  additions        INTEGER NOT NULL,
+  deletions        INTEGER NOT NULL,
+  commits          INTEGER NOT NULL,
+  operator_commits INTEGER NOT NULL,
+  report           TEXT,              -- the last merge-phase report's kind
+  reason           TEXT,              -- its **Reason:** line, when it has one
+  queue_approved   INTEGER NOT NULL,  -- 0 | 1: the merge phase queued it (ADR 0024)
+  queue_handoff    INTEGER NOT NULL,  -- 0 | 1: the merge queue then handed it off
+  PRIMARY KEY (repo, pr_number)
+);
 """
 
 # Columns added to `run_history` after the table already exists. `CREATE TABLE IF
@@ -251,6 +323,17 @@ class RunOutcome:
     hosted_tokens: int | None = None
     local_cost_usd_micros: int | None = None
     hosted_cost_usd_micros: int | None = None
+
+
+@dataclass(frozen=True)
+class ScorecardRows:
+    """The raw rows one scorecard window is computed from (`scorecard.compute`)."""
+
+    history: list[sqlite3.Row]
+    summaries: list[sqlite3.Row]
+    stages: list[sqlite3.Row]
+    failovers: list[sqlite3.Row]
+    prs: list[sqlite3.Row]
 
 
 @dataclass(frozen=True)
@@ -928,6 +1011,196 @@ class Store:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    # --- scorecard (issue #22) ----------------------------------------------------
+
+    def runs_to_summarize(
+        self,
+        *,
+        finished_before: datetime,
+        retry_before: datetime,
+        limit: int,
+        max_attempts: int = SUMMARY_MAX_ATTEMPTS,
+    ) -> list[str]:
+        """Released runs the collector has not summarized yet, newest first.
+
+        Newest first so the current week fills before the backfill reaches old ones.
+        A run is left alone until `finished_before`, giving fabro a moment to
+        write its last events. An `error` row is retried once its last attempt is
+        older than `retry_before`, up to `max_attempts`; a `missing` row never is.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT h.run_id FROM run_history h "
+                "LEFT JOIN run_summary s ON s.run_id = h.run_id "
+                "WHERE h.finished_at <= ? AND ("
+                "  s.run_id IS NULL OR "
+                "  (s.status = 'error' AND s.attempts < ? AND s.summarized_at <= ?)"
+                ") ORDER BY h.finished_at DESC, h.run_id DESC LIMIT ?",
+                (finished_before.isoformat(), max_attempts, retry_before.isoformat(), limit),
+            ).fetchall()
+        return [row["run_id"] for row in rows]
+
+    def save_run_summary(self, summary: RunSummary, *, at: datetime | None = None) -> None:
+        """Replace one run's summary rows, in one transaction."""
+        stamp = _stamp(at)
+        refute = [
+            {"verdict": verdict.verdict, "not_met": verdict.not_met}
+            for verdict in summary.refute
+        ]
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM run_stage_stats WHERE run_id = ?", (summary.run_id,))
+            self._conn.execute("DELETE FROM run_failovers WHERE run_id = ?", (summary.run_id,))
+            self._conn.executemany(
+                "INSERT INTO run_stage_stats (run_id, node_id, handler, visits, wall_ms,"
+                " box_ms, timeouts, failures) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        summary.run_id,
+                        stat.node_id,
+                        stat.handler,
+                        stat.visits,
+                        stat.wall_ms,
+                        stat.box_ms,
+                        stat.timeouts,
+                        json.dumps(dict(sorted(stat.failures.items()))),
+                    )
+                    for stat in summary.stages.values()
+                ],
+            )
+            self._conn.executemany(
+                "INSERT INTO run_failovers (run_id, node_id, from_model, to_model,"
+                " error_kind, count) VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (summary.run_id, node, src, dst, kind, count)
+                    for (node, src, dst, kind), count in summary.failovers.items()
+                ],
+            )
+            self._conn.execute(
+                "INSERT INTO run_summary (run_id, status, attempts, summarized_at,"
+                " terminal_node, path, refute, events, error)"
+                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL) "
+                "ON CONFLICT(run_id) DO UPDATE SET status = 'ok',"
+                "  attempts = run_summary.attempts + 1, summarized_at = excluded.summarized_at,"
+                "  terminal_node = excluded.terminal_node, path = excluded.path,"
+                "  refute = excluded.refute, events = excluded.events, error = NULL",
+                (
+                    summary.run_id,
+                    stamp,
+                    summary.terminal_node,
+                    json.dumps(summary.path),
+                    json.dumps(refute),
+                    summary.events,
+                ),
+            )
+
+    def save_summary_failure(
+        self, run_id: str, status: str, error: str, *, at: datetime | None = None
+    ) -> None:
+        """Record that a run could not be summarized: `missing` or `error`."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO run_summary (run_id, status, attempts, summarized_at, error)"
+                " VALUES (?, ?, 1, ?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET status = excluded.status,"
+                "  attempts = run_summary.attempts + 1,"
+                "  summarized_at = excluded.summarized_at, error = excluded.error",
+                (run_id, status, _stamp(at), error[:500]),
+            )
+
+    def prs_to_refresh(self, *, stale_before: datetime, limit: int) -> list[tuple[str, int]]:
+        """Factory PRs whose facts are missing, or open and older than `stale_before`.
+
+        Never-fetched PRs first, then the stalest open ones. A merged or closed PR
+        is final and is never returned again.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT h.repo, h.pr_number, MAX(h.finished_at) AS last_finished,"
+                "  f.fetched_at FROM run_history h "
+                "LEFT JOIN pr_facts f ON f.repo = h.repo AND f.pr_number = h.pr_number "
+                "WHERE h.pr_lookup = 'found' AND h.pr_number IS NOT NULL "
+                "  AND (f.repo IS NULL OR (f.state = 'open' AND f.fetched_at <= ?)) "
+                "GROUP BY h.repo, h.pr_number "
+                "ORDER BY f.fetched_at IS NOT NULL, f.fetched_at, last_finished DESC "
+                "LIMIT ?",
+                (stale_before.isoformat(), limit),
+            ).fetchall()
+        return [(row["repo"], row["pr_number"]) for row in rows]
+
+    def save_pr_facts(
+        self, repo: str, number: int, facts: PrFacts, *, at: datetime | None = None
+    ) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO pr_facts (repo, pr_number, fetched_at, state, created_at,"
+                " merged_at, closed_at, labels, additions, deletions, commits,"
+                " operator_commits, report, reason, queue_approved, queue_handoff)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(repo, pr_number) DO UPDATE SET"
+                "  fetched_at = excluded.fetched_at, state = excluded.state,"
+                "  created_at = excluded.created_at, merged_at = excluded.merged_at,"
+                "  closed_at = excluded.closed_at, labels = excluded.labels,"
+                "  additions = excluded.additions, deletions = excluded.deletions,"
+                "  commits = excluded.commits, operator_commits = excluded.operator_commits,"
+                "  report = excluded.report, reason = excluded.reason,"
+                "  queue_approved = excluded.queue_approved,"
+                "  queue_handoff = excluded.queue_handoff",
+                (
+                    repo,
+                    number,
+                    _stamp(at),
+                    facts.state,
+                    facts.created_at,
+                    facts.merged_at,
+                    facts.closed_at,
+                    json.dumps(list(facts.labels)),
+                    facts.additions,
+                    facts.deletions,
+                    facts.commits,
+                    facts.operator_commits,
+                    facts.report,
+                    facts.reason,
+                    int(facts.queue_approved),
+                    int(facts.queue_handoff),
+                ),
+            )
+
+    def scorecard_rows(self, start: datetime, end: datetime) -> ScorecardRows:
+        """Everything the scorecard reads for runs dispatched in `[start, end)`.
+
+        Five SELECTs under one lock, so the window is one consistent snapshot.
+        """
+        bounds = (start.isoformat(), end.isoformat())
+        in_window = "SELECT run_id FROM run_history WHERE dispatched_at >= ? AND dispatched_at < ?"
+        with self._lock:
+            history = self._conn.execute(
+                "SELECT * FROM run_history WHERE dispatched_at >= ? AND dispatched_at < ? "
+                "ORDER BY dispatched_at",
+                bounds,
+            ).fetchall()
+            summaries = self._conn.execute(
+                f"SELECT * FROM run_summary WHERE run_id IN ({in_window})", bounds
+            ).fetchall()
+            stages = self._conn.execute(
+                f"SELECT * FROM run_stage_stats WHERE run_id IN ({in_window})", bounds
+            ).fetchall()
+            failovers = self._conn.execute(
+                f"SELECT * FROM run_failovers WHERE run_id IN ({in_window})", bounds
+            ).fetchall()
+            prs = self._conn.execute(
+                "SELECT f.* FROM pr_facts f WHERE EXISTS (SELECT 1 FROM run_history h"
+                "  WHERE h.repo = f.repo AND h.pr_number = f.pr_number"
+                "  AND h.dispatched_at >= ? AND h.dispatched_at < ?)",
+                bounds,
+            ).fetchall()
+        return ScorecardRows(history, summaries, stages, failovers, prs)
+
+    def first_dispatch(self) -> datetime | None:
+        """When the oldest `run_history` row was dispatched, or None if there is none."""
+        with self._lock:
+            row = self._conn.execute("SELECT MIN(dispatched_at) AS d FROM run_history").fetchone()
+        return _parse_or_none(row["d"]) if row is not None else None
 
     # --- internals --------------------------------------------------------------
 

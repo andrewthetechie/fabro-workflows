@@ -52,13 +52,14 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
 
-from . import __version__
+from . import __version__, charts, scorecard
+from .collector import ScorecardCollector
 from .config import ConfigError, SchedulerConfig, load_config
 from .dispatch import DispatchLoop
 from .fabro import FabroClient, FabroError, RunNotStarted
@@ -150,6 +151,7 @@ def build_app(
     run_probe: RunProbe | None = None,
     start_poller: bool = False,
     start_dispatch_loop: bool = False,
+    start_collector: bool = False,
 ) -> FastAPI:
     """The ASGI app for an already-validated config and an open store.
 
@@ -224,6 +226,18 @@ def build_app(
             # reads fabro and writes the same GitHub labels.
             releaser = ReleasePoller(config, store, leases, client, github_token)
 
+    # Issue #22. A read-only observer like the probe: it needs a fabro client to
+    # stream events, and reads PRs only when there is a GitHub token.
+    collector: ScorecardCollector | None = None
+    if start_collector and client is not None:
+        collector = ScorecardCollector(
+            store,
+            client,
+            github_token,
+            config.automation_author,
+            interval_seconds=config.scorecard_seconds,
+        )
+
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["duration"] = humanise_duration
     templates.env.filters["compact_ts"] = compact_timestamp
@@ -260,9 +274,13 @@ def build_app(
         # dispatch loop, so a page is live even when automatic dispatch is off.
         if probe is not None and client is not None:
             probe.start()
+        if collector is not None:
+            collector.start()
         try:
             yield
         finally:
+            if collector is not None:
+                collector.stop()
             if probe is not None and client is not None:
                 probe.stop()
             if dispatcher is not None:
@@ -453,6 +471,36 @@ def build_app(
             for row in store.history_rows(
                 sort=column, descending=descending, limit=capped
             )
+        ]
+
+    @app.get("/api/scorecard", response_model=None)
+    def api_scorecard(
+        request: Request,
+    ) -> dict[str, object] | PlainTextResponse:
+        """The scorecard for one window. `?from=&to=` are dates, both inclusive.
+
+        `?format=md` answers the weekly table as Markdown, which is what
+        `ops/fabro-scorecard.sh` prints. The default window is the last 7 days.
+        """
+        params = request.query_params
+        start, end = _window(params.get("from"), params.get("to"), params.get("days"))
+        card = scorecard.compute(store.scorecard_rows(start, end), start, end)
+        if (params.get("format") or "").lower() in ("md", "markdown"):
+            return PlainTextResponse(scorecard.to_markdown(card), media_type="text/markdown")
+        return scorecard.to_json(card)
+
+    @app.get("/api/scorecard/weeks")
+    def api_scorecard_weeks(weeks: str | None = None) -> list[dict[str, object]]:
+        """One scorecard per ISO week (Monday 00:00 UTC), oldest first, the last partial."""
+        return [
+            scorecard.to_json(card)
+            for card in _weekly(_weeks(weeks))
+        ]
+
+    def _weekly(count: int) -> list[scorecard.Scorecard]:
+        return [
+            scorecard.compute(store.scorecard_rows(start, end), start, end)
+            for start, end in scorecard.week_windows(datetime.now(UTC), count)
         ]
 
     @app.post("/api/dispatch-once")
@@ -931,7 +979,130 @@ def build_app(
             },
         )
 
+    @app.get("/metrics", response_class=HTMLResponse)
+    def metrics_page(request: Request) -> HTMLResponse:
+        """The scorecard as a page: trends by week, then one window in detail.
+
+        No meta-refresh: the numbers move when the collector summarizes a run,
+        minutes apart, and a reload would lose the operator's window.
+        """
+        params = request.query_params
+        start, end = _window(params.get("from"), params.get("to"), params.get("days"))
+        card = scorecard.compute(store.scorecard_rows(start, end), start, end)
+        weekly = _weekly(_weeks(params.get("weeks")))
+        return templates.TemplateResponse(
+            request,
+            "metrics.html",
+            {
+                "card": card,
+                "weekly": weekly,
+                "trends": _trend_charts(weekly),
+                "detail": _detail_charts(card),
+                "window_from": start.date().isoformat(),
+                "window_to": (end - timedelta(seconds=1)).date().isoformat(),
+                "weeks": len(weekly),
+                "collecting": collector is not None,
+                "lease_categories": scorecard.LEASE_CATEGORIES,
+                "idle_categories": scorecard.IDLE_CATEGORIES,
+            },
+        )
+
     return app
+
+
+# The default window, and the bounds on `?days=` and `?weeks=`.
+DEFAULT_WINDOW_DAYS = 7
+MAX_WINDOW_DAYS = 400
+DEFAULT_TREND_WEEKS = 12
+MAX_TREND_WEEKS = 52
+
+
+def _window(
+    date_from: str | None, date_to: str | None, days: str | None
+) -> tuple[datetime, datetime]:
+    """`[start, end)` in UTC from URL values. Never raises, like `_history_query`.
+
+    `from` and `to` are dates and both are inclusive, so `to` becomes the next
+    midnight. Without `from`, the window is the `days` (default 7) up to and
+    including `to` (default today). A value that does not parse is ignored.
+    """
+    today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = (_parse_date(date_to) or today) + timedelta(days=1)
+    start = _parse_date(date_from)
+    if start is None or start >= end:
+        try:
+            span = int(days) if days else DEFAULT_WINDOW_DAYS
+        except ValueError:
+            span = DEFAULT_WINDOW_DAYS
+        span = span if 0 < span <= MAX_WINDOW_DAYS else DEFAULT_WINDOW_DAYS
+        start = end - timedelta(days=span)
+    return start, end
+
+
+def _parse_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.strptime(value.strip(), "%Y-%m-%d")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC)
+
+
+def _weeks(value: str | None) -> int:
+    try:
+        weeks = int(value) if value else DEFAULT_TREND_WEEKS
+    except ValueError:
+        return DEFAULT_TREND_WEEKS
+    return weeks if 0 < weeks <= MAX_TREND_WEEKS else DEFAULT_TREND_WEEKS
+
+
+def _trend_charts(weekly: Sequence[scorecard.Scorecard]) -> dict[str, object]:
+    """The four week-by-week charts, with their legends."""
+    labels = [card.start.strftime("%m-%d") for card in weekly]
+    rates = [
+        charts.Series("all PRs", [c.merge_rate for c in weekly], 1),
+        charts.Series("non-architecture", [c.other_merge_rate for c in weekly], 2),
+        charts.Series("architecture", [c.architecture_merge_rate for c in weekly], 3),
+    ]
+    outcomes = [
+        charts.Series("merged by the workflow", [c.merged_workflow for c in weekly], 1),
+        charts.Series("merged by the operator", [c.merged_operator for c in weekly], 2),
+        charts.Series("open", [c.open for c in weekly], 3),
+        charts.Series("closed", [c.closed for c in weekly], 4),
+        charts.Series("not read yet", [c.unknown for c in weekly], 5),
+    ]
+    per_merge = [charts.Series("box-hours per merged PR", [c.box_hours_per_merge for c in weekly], 1)]
+    lease = [
+        charts.Series(name, [c.lease_hours[name] for c in weekly], slot)
+        for slot, name in enumerate(scorecard.LEASE_CATEGORIES, start=1)
+    ]
+    return {
+        "labels": labels,
+        "rates": charts.line_chart(labels, rates, y_max=1.0, fmt=lambda v: f"{v * 100:.0f}%"),
+        "rates_legend": charts.legend(rates),
+        "outcomes": charts.stacked_columns(labels, outcomes),
+        "outcomes_legend": charts.legend(outcomes),
+        "per_merge": charts.line_chart(labels, per_merge, fmt=lambda v: f"{v:.0f}"),
+        "lease": charts.stacked_columns(
+            labels, lease, normalize=True, fmt=lambda v: f"{v:.1f} h"
+        ),
+        "lease_legend": charts.legend(lease),
+    }
+
+
+def _detail_charts(card: scorecard.Scorecard) -> dict[str, object]:
+    """The one-window charts: what held PRs, where runs timed out or stopped."""
+    return {
+        "held": charts.bars([(name, n, str(n)) for name, n in card.held.items()], slot=2),
+        "timeouts": charts.bars([(node, n, str(n)) for node, n in card.timeouts.items()], slot=4),
+        "no_pr": charts.bars(
+            [(line.terminal_node, line.box_hours, f"{line.box_hours:.1f} h, {line.runs} runs")
+             for line in card.no_pr],
+            slot=8,
+        ),
+        "endings": charts.bars([(name, n, str(n)) for name, n in card.endings.items()], slot=1),
+    }
 
 
 def estimate_remaining(
@@ -1330,6 +1501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             fabro_token=os.environ.get("FABRO_API_TOKEN", ""),
             start_poller=True,
             start_dispatch_loop=True,
+            start_collector=True,
         ),
         host="0.0.0.0",  # decision 16: LAN-only, published by compose
         port=config.port,

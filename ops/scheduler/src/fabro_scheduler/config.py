@@ -62,6 +62,16 @@ DEFAULT_GITHUB_POLL_SECONDS = 60
 # this is the handle an operator thins it with.
 DEFAULT_RUN_PROBE_SECONDS = 30
 
+# The scorecard collector's beat (issue #22, `collector.py`): each tick summarizes
+# a couple of released runs and reads up to ten PRs.
+DEFAULT_SCORECARD_SECONDS = 30
+
+# The identities the factory commits as, comma-separated: GitHub logins, or whole
+# email addresses. A PR commit by anyone else is an operator commit on the
+# scorecard (`prfacts.is_automation_commit`). Runs before the run identity was set
+# committed as `Fabro <noreply@fabro.sh>`.
+DEFAULT_AUTOMATION_AUTHOR = "andrews-ai-agent,noreply@fabro.sh"
+
 # Every key a `[[repo]]` table may carry. Unknown keys are errors rather than
 # warnings: `priorty = 0` would otherwise be silently ignored and the row would
 # sort by whatever the default turned out to be.
@@ -104,6 +114,8 @@ class SchedulerConfig:
     github_poll_seconds: int = DEFAULT_GITHUB_POLL_SECONDS
     # Cached per-lease task count and current stage; see `probe.py`.
     run_probe_seconds: int = DEFAULT_RUN_PROBE_SECONDS
+    scorecard_seconds: int = DEFAULT_SCORECARD_SECONDS
+    automation_author: str = DEFAULT_AUTOMATION_AUTHOR
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -171,6 +183,12 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
         ),
         run_probe_seconds=_env_positive_int(
             environ, "SCHEDULER_RUN_PROBE_SECONDS", DEFAULT_RUN_PROBE_SECONDS
+        ),
+        scorecard_seconds=_env_positive_int(
+            environ, "SCHEDULER_SCORECARD_SECONDS", DEFAULT_SCORECARD_SECONDS
+        ),
+        automation_author=_env_str(
+            environ, "SCHEDULER_AUTOMATION_AUTHOR", DEFAULT_AUTOMATION_AUTHOR
         ),
     )
 

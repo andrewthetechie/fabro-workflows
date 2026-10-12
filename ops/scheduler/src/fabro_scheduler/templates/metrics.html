@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{# No meta-refresh: the collector moves these numbers minutes apart, and a reload
+   would discard the operator's window. Issue #22. #}
+<title>fabro coder scheduler &middot; metrics</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  /* The categorical slots for this page's one surface (slate-900, #0f172a).
+     Validated with the dataviz palette checker on 2026-10-12: lightness band,
+     chroma floor, adjacent CVD (worst 8.4) and normal-vision (worst 19.3)
+     separation, and 3:1 contrast all pass. Assigned per entity in this order and
+     never cycled. charts.py references them as var(--sN). */
+  .viz-root {
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  }
+</style>
+</head>
+<body class="viz-root min-h-screen bg-slate-950 text-slate-200 antialiased">
+
+<div class="mx-auto w-full max-w-7xl px-4 py-6 sm:px-8 sm:py-8">
+
+{% set here = 'metrics' %}
+{% include "_nav.html" with context %}
+
+<h1 class="mt-6 text-xl font-semibold text-slate-100">Factory metrics</h1>
+<p class="mt-1 max-w-prose text-sm leading-6 text-slate-400">
+  The scorecard from issue #22. A window holds the runs <em>dispatched</em> in it, and
+  each PR belongs to the run that opened it and shows what GitHub says about it now, so
+  a recent week's merge rate rises as its PRs merge. "Merged by the workflow" is the
+  merge phase or the merge queue; every other merge is the operator's.
+</p>
+
+<form method="get" action="/metrics" class="mt-4 flex flex-wrap items-end gap-3 text-sm">
+  <label class="flex flex-col gap-1 text-xs text-slate-400">From
+    <input type="date" name="from" value="{{ window_from }}" class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-200">
+  </label>
+  <label class="flex flex-col gap-1 text-xs text-slate-400">To
+    <input type="date" name="to" value="{{ window_to }}" class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-200">
+  </label>
+  <label class="flex flex-col gap-1 text-xs text-slate-400">Trend weeks
+    <input type="number" name="weeks" min="1" max="52" value="{{ weeks }}" class="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-200">
+  </label>
+  <button type="submit" class="rounded border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-700">Show</button>
+  <span class="flex gap-2 text-xs text-slate-500">
+    {% for d in [7, 14, 28, 90] %}<a class="text-sky-400 hover:underline" href="/metrics?days={{ d }}&weeks={{ weeks }}">last {{ d }} days</a>{% endfor %}
+  </span>
+</form>
+
+{% if not collecting %}
+<div class="mt-4 rounded-md border border-amber-700/60 bg-amber-950/40 px-4 py-3 text-sm text-amber-200">
+  The scorecard collector is not running (it needs <code>FABRO_API_TOKEN</code>), so no run is
+  being summarized. The numbers below are whatever is already stored.
+</div>
+{% endif %}
+
+{% if card.runs_summarized < card.runs or card.unknown %}
+<p class="mt-4 text-xs text-slate-500">
+  Coverage: {{ card.runs_summarized }} of {{ card.runs }} runs summarized{% if card.unknown %}, {{ card.unknown }} PR(s) not read from GitHub yet{% endif %}.
+  The collector catches up a few runs every 30 seconds; the lease share, timeouts, failovers
+  and terminal nodes count only summarized runs.
+</p>
+{% endif %}
+
+{# ---- the window in numbers ---- #}
+<h2 class="mb-3 mt-8 text-xs font-semibold uppercase tracking-wider text-slate-500">{{ window_from }} to {{ window_to }}</h2>
+{% set tiles = [
+  ('PRs opened', card.prs ~ '', card.runs ~ ' runs, ' ~ '%.0f'|format(card.box_hours) ~ ' box-hours'),
+  ('Merged by the workflow', ('%.0f%%'|format(card.merge_rate * 100)) if card.merge_rate is not none else 'n/a', card.merged_workflow ~ ' of ' ~ card.prs),
+  ('Non-architecture merged', ('%.0f%%'|format(card.other_merge_rate * 100)) if card.other_merge_rate is not none else 'n/a', card.other_merged_workflow ~ ' of ' ~ card.other_prs),
+  ('Box-hours per merged PR', ('%.1f'|format(card.box_hours_per_merge)) if card.box_hours_per_merge is not none else 'n/a', 'lease time / workflow merges'),
+  ('Operator commits', ('%.0f%%'|format(card.operator_commit_rate * 100)) if card.operator_commit_rate is not none else 'n/a', card.operator_commit_prs ~ ' PRs, ' ~ card.operator_commits ~ ' commits'),
+  ('Runs with no PR', card.no_pr|sum(attribute='runs') ~ '', '%.0f'|format(card.no_pr|sum(attribute='box_hours')) ~ ' box-hours'),
+] %}
+<div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+  {% for label, value, sub in tiles %}
+  <div class="rounded-lg border border-slate-800 bg-slate-900 px-4 py-3 shadow-sm">
+    <div class="text-xs text-slate-400">{{ label }}</div>
+    <div class="mt-1 text-2xl font-semibold text-slate-100">{{ value }}</div>
+    <div class="mt-0.5 text-xs text-slate-500">{{ sub }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+{# ---- trends ---- #}
+<h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Week by week (ISO weeks, Monday UTC; the last is partial)</h2>
+<div class="grid gap-4 lg:grid-cols-2">
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
+    <h3 class="text-sm font-medium text-slate-200">Share of PRs merged by the workflow</h3>
+    <p class="mb-2 text-xs text-slate-500">Architecture PRs auto-merge since 2026-10-12 (gate relief, #30).</p>
+    {{ trends.rates_legend }}
+    <div class="mt-2">{{ trends.rates }}</div>
+    <details class="mt-2 text-xs text-slate-400"><summary class="cursor-pointer text-slate-500">Table</summary>
+      <table class="mt-2 w-full tabular-nums"><thead class="text-slate-500"><tr><th class="text-left">Week</th><th class="text-right">All</th><th class="text-right">Non-arch</th><th class="text-right">Arch</th></tr></thead><tbody>
+      {% for c in weekly %}<tr><td>{{ c.start.date() }}</td>
+        {% for r in [c.merge_rate, c.other_merge_rate, c.architecture_merge_rate] %}<td class="text-right">{{ ('%.0f%%'|format(r * 100)) if r is not none else 'n/a' }}</td>{% endfor %}</tr>{% endfor %}
+      </tbody></table></details>
+  </section>
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
+    <h3 class="text-sm font-medium text-slate-200">PRs opened, by what became of them</h3>
+    <p class="mb-2 text-xs text-slate-500">Each PR in the week of the run that opened it.</p>
+    {{ trends.outcomes_legend }}
+    <div class="mt-2">{{ trends.outcomes }}</div>
+    <details class="mt-2 text-xs text-slate-400"><summary class="cursor-pointer text-slate-500">Table</summary>
+      <table class="mt-2 w-full tabular-nums"><thead class="text-slate-500"><tr><th class="text-left">Week</th><th class="text-right">Opened</th><th class="text-right">Workflow</th><th class="text-right">Operator</th><th class="text-right">Open</th><th class="text-right">Closed</th></tr></thead><tbody>
+      {% for c in weekly %}<tr><td>{{ c.start.date() }}</td><td class="text-right">{{ c.prs }}</td><td class="text-right">{{ c.merged_workflow }}</td><td class="text-right">{{ c.merged_operator }}</td><td class="text-right">{{ c.open }}</td><td class="text-right">{{ c.closed }}</td></tr>{% endfor %}
+      </tbody></table></details>
+  </section>
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
+    <h3 class="text-sm font-medium text-slate-200">Box-hours per PR merged by the workflow</h3>
+    <p class="mb-2 text-xs text-slate-500">Coder-box lease time over workflow merges. Lower is better; a gap is a week with no merge.</p>
+    <div class="mt-2">{{ trends.per_merge }}</div>
+    <details class="mt-2 text-xs text-slate-400"><summary class="cursor-pointer text-slate-500">Table</summary>
+      <table class="mt-2 w-full tabular-nums"><thead class="text-slate-500"><tr><th class="text-left">Week</th><th class="text-right">Box-hours</th><th class="text-right">Merges</th><th class="text-right">Per merge</th></tr></thead><tbody>
+      {% for c in weekly %}<tr><td>{{ c.start.date() }}</td><td class="text-right">{{ '%.1f'|format(c.box_hours) }}</td><td class="text-right">{{ c.merged_workflow }}</td><td class="text-right">{{ ('%.1f'|format(c.box_hours_per_merge)) if c.box_hours_per_merge is not none else 'n/a' }}</td></tr>{% endfor %}
+      </tbody></table></details>
+  </section>
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
+    <h3 class="text-sm font-medium text-slate-200">Where the leased box time went</h3>
+    <p class="mb-2 text-xs text-slate-500">Writing code and improve run on the box; the rest is the box idle while the run is elsewhere.</p>
+    {{ trends.lease_legend }}
+    <div class="mt-2">{{ trends.lease }}</div>
+    <details class="mt-2 text-xs text-slate-400"><summary class="cursor-pointer text-slate-500">Table</summary>
+      <table class="mt-2 w-full tabular-nums"><thead class="text-slate-500"><tr><th class="text-left">Week</th>{% for name in lease_categories %}<th class="text-right">{{ name }}</th>{% endfor %}</tr></thead><tbody>
+      {% for c in weekly %}{% set share = c.lease_share() %}<tr><td>{{ c.start.date() }}</td>{% for name in lease_categories %}<td class="text-right">{{ '%.0f%%'|format(share[name] * 100) }}</td>{% endfor %}</tr>{% endfor %}
+      </tbody></table></details>
+  </section>
+</div>
+
+{# ---- the window in detail ---- #}
+<h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">This window in detail</h2>
+<div class="grid gap-4 lg:grid-cols-2">
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
+    <h3 class="text-sm font-medium text-slate-200">Held PRs, by reason</h3>
+    <p class="mb-2 text-xs text-slate-500">PRs the workflow did not merge, by the last merge-phase report's <strong>Reason</strong>.</p>
+    {{ detail.held }}
+  </section>
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
+    <h3 class="text-sm font-medium text-slate-200">Runs with no PR, by where they stopped</h3>
+    <p class="mb-2 text-xs text-slate-500">Box-hours spent on runs that never opened a PR, by their last node.</p>
+    {{ detail.no_pr }}
+  </section>
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
+    <h3 class="text-sm font-medium text-slate-200">Stage timeouts, by node</h3>
+    <p class="mb-2 text-xs text-slate-500">Every timed-out attempt, retried ones included.</p>
+    {{ detail.timeouts }}
+  </section>
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
+    <h3 class="text-sm font-medium text-slate-200">Run endings</h3>
+    <p class="mb-2 text-xs text-slate-500">How each released run ended.</p>
+    {{ detail.endings }}
+  </section>
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
+    <h3 class="text-sm font-medium text-slate-200">The refuter</h3>
+    <p class="mb-2 text-xs text-slate-500">First verdicts, and the fix turn after a <code>not_met</code> (gate relief, #29). "Fail, before #29" is a fail recorded before the gate said whether a criterion was not met.</p>
+    {% set r = card.refute %}
+    <table class="w-full text-sm tabular-nums"><tbody class="divide-y divide-slate-800">
+      {% for label, value in [
+        ('Runs the refuter judged', r.runs),
+        ('First verdict pass', r.first_pass),
+        ('First verdict fail with a not_met', r.first_fail_not_met),
+        ('First verdict fail, unverifiable or defects only', r.first_fail_other),
+        ('First verdict fail, before #29', r.first_fail_unknown),
+        ('First verdict invalid', r.first_invalid),
+        ('Fix turns taken', r.fix_turns),
+        ('Fix turns the second verdict passed', r.fix_cleared),
+      ] %}<tr><td class="py-1.5 text-slate-400">{{ label }}</td><td class="py-1.5 text-right text-slate-200">{{ value }}</td></tr>{% endfor %}
+    </tbody></table>
+  </section>
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
+    <h3 class="text-sm font-medium text-slate-200">PR open to merge</h3>
+    <p class="mb-2 text-xs text-slate-500">Hours from the PR opening to its merge, by anyone.</p>
+    <table class="w-full text-sm tabular-nums"><thead class="text-xs text-slate-500"><tr><th class="text-left font-medium">PRs</th><th class="text-right font-medium">Merged</th><th class="text-right font-medium">p50</th><th class="text-right font-medium">p90</th></tr></thead>
+    <tbody class="divide-y divide-slate-800">
+      {% for name in ['architecture', 'other'] %}{% set p = card.time_to_merge_hours[name] %}
+      <tr><td class="py-1.5 text-slate-400">{{ name }}</td><td class="py-1.5 text-right">{{ p.count }}</td>
+        <td class="py-1.5 text-right">{{ ('%.1f h'|format(p.p50)) if p.p50 is not none else 'n/a' }}</td>
+        <td class="py-1.5 text-right">{{ ('%.1f h'|format(p.p90)) if p.p90 is not none else 'n/a' }}</td></tr>{% endfor %}
+    </tbody></table>
+  </section>
+</div>
+
+<h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Provider failovers</h2>
+{% if card.failovers %}
+<div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
+<table class="w-full text-sm">
+  <thead class="bg-slate-900/60 text-slate-400"><tr>
+    <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Node</th>
+    <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">From</th>
+    <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">To</th>
+    <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Error</th>
+    <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Runs</th>
+  </tr></thead>
+  <tbody class="divide-y divide-slate-800">
+  {% for f in card.failovers %}
+    <tr><td class="whitespace-nowrap px-4 py-3 font-mono text-[0.85em]">{{ f.node }}</td><td class="whitespace-nowrap px-4 py-3">{{ f.from_model }}</td><td class="whitespace-nowrap px-4 py-3">{{ f.to_model }}</td><td class="whitespace-nowrap px-4 py-3 text-slate-400">{{ f.error_kind }}</td><td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ f.runs }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="text-sm text-slate-500">No failovers in this window.</p>
+{% endif %}
+
+<h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">By repository</h2>
+<div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
+<table class="w-full text-sm">
+  <thead class="bg-slate-900/60 text-slate-400"><tr>
+    <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Repository</th>
+    <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Runs</th>
+    <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Box-hours</th>
+    <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">PRs</th>
+    <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Merged by the workflow</th>
+  </tr></thead>
+  <tbody class="divide-y divide-slate-800">
+  {% for line in card.repos %}
+    <tr><td class="whitespace-nowrap px-4 py-3"><a class="text-sky-400 hover:underline" href="https://github.com/{{ line.repo }}">{{ line.repo }}</a></td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ line.runs }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ '%.1f'|format(line.box_hours) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ line.prs }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ line.merged_workflow }}</td></tr>
+  {% else %}
+    <tr><td colspan="5" class="px-4 py-3 text-right text-slate-500">No runs in this window.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<p class="mt-8 text-xs text-slate-500">
+  JSON: <a class="text-sky-400 hover:underline" href="/api/scorecard?from={{ window_from }}&to={{ window_to }}">/api/scorecard</a>,
+  <a class="text-sky-400 hover:underline" href="/api/scorecard/weeks?weeks={{ weeks }}">/api/scorecard/weeks</a>.
+  The weekly table: <a class="text-sky-400 hover:underline" href="/api/scorecard?from={{ window_from }}&to={{ window_to }}&format=md">Markdown</a>,
+  or <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">ops/fabro-scorecard.sh</code>.
+</p>
+
+</div>
+</body>
+</html>

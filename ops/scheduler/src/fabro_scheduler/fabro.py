@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
@@ -420,6 +420,68 @@ def last_failure_category(
     return None
 
 
+# `GET /runs/{id}/events` caps `limit` at 1000. `since_seq` is the cursor and is
+# inclusive (verified on 0.362, 2026-10-12): the next page starts at the last seq
+# plus one. A run is a few thousand events, so the page cap only guards a server
+# that answers `has_more` forever.
+EVENTS_PAGE_SIZE = 1000
+MAX_EVENT_PAGES = 200
+
+
+def iter_events(
+    api: str,
+    token: str,
+    run_id: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> Iterator[dict]:
+    """Yield every event of a run, oldest first, fetching one page at a time.
+
+    A run's events are 5 to 25 MB, so nothing here collects them: the caller
+    reduces them as they arrive (`summary.summarize`). Raises `FabroError` on a
+    non-2xx, including the `404` of a run fabro no longer has.
+    """
+    owned = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        since = 1
+        for _ in range(MAX_EVENT_PAGES):
+            body = _request(
+                "GET",
+                api,
+                f"/runs/{run_id}/events",
+                token,
+                params={"limit": EVENTS_PAGE_SIZE, "since_seq": since},
+                client=http,
+                timeout=timeout,
+            )
+            page = body.get("data")
+            if not isinstance(page, list) or not page:
+                return
+            last: int | None = None
+            for event in page:
+                if isinstance(event, dict):
+                    yield event
+                    seq = event.get("seq")
+                    if isinstance(seq, int) and (last is None or seq > last):
+                        last = seq
+            meta = body.get("meta")
+            # A page whose seqs do not reach the cursor cannot move it: stop rather
+            # than ask for the same page again.
+            if not (isinstance(meta, Mapping) and meta.get("has_more")):
+                return
+            if last is None or last < since:
+                return
+            since = last + 1
+        raise FabroError(
+            f"GET /runs/{run_id}/events: more than {MAX_EVENT_PAGES} pages, stopped"
+        )
+    finally:
+        if owned:
+            http.close()
+
+
 # The `status` filter on `GET /runs` takes `BoardColumn`, which is not the status
 # *kind*: eleven kinds fold onto nine columns (`submitted` arrives under `pending`,
 # verified live on 2026-09-19; `starting` under `initializing`, `paused` under
@@ -786,6 +848,18 @@ class FabroClient:
         return last_failure_category(
             self._api, self._token, run_id, timeout=self._call_timeout
         )
+
+    def summary_stages(self, run_id: str) -> list[dict]:
+        """The stage list for the scorecard summarizer, with the normal timeout.
+
+        `get_stages` keeps a 5-second timeout for the probe's beat; a finished run
+        of 160 stages is a larger answer, and the collector is not on a page's path.
+        """
+        return get_stages(self._api, self._token, run_id, timeout=self._call_timeout)
+
+    def iter_events(self, run_id: str) -> Iterator[dict]:
+        """Every event of a run, oldest first, one page at a time. See `iter_events`."""
+        return iter_events(self._api, self._token, run_id, timeout=self._call_timeout)
 
     def run_usage(self, run_id: str) -> object:
         """The raw `GET /runs/{id}/usage` body; opaque `object` to this client.

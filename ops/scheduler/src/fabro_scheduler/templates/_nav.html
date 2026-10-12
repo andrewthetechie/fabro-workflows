@@ -1,16 +1,13 @@
-{# Two pages, and the current one is text rather than a link: a nav item that
+{# Three pages, and the current one is text rather than a link: a nav item that
    reloads the page you are on is a small lie about what clicking does. `here` is
    passed as a literal by each includer -- there is no route-introspection here
-   because two pages do not need one. #}
+   because three pages do not need one. #}
 <nav class="flex items-center gap-2 text-sm">
-  {% if here == 'queue' %}
-    <span class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 font-medium text-slate-100 shadow-sm">Queue</span>
+  {% for page, href, label in [('queue', '/', 'Queue'), ('history', '/history', 'Run history'), ('metrics', '/metrics', 'Metrics')] %}
+  {% if here == page %}
+    <span class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 font-medium text-slate-100 shadow-sm">{{ label }}</span>
   {% else %}
-    <a class="rounded-md px-3 py-1.5 text-slate-400 hover:bg-slate-900 hover:text-slate-100" href="/">Queue</a>
+    <a class="rounded-md px-3 py-1.5 text-slate-400 hover:bg-slate-900 hover:text-slate-100" href="{{ href }}">{{ label }}</a>
   {% endif %}
-  {% if here == 'history' %}
-    <span class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 font-medium text-slate-100 shadow-sm">Run history</span>
-  {% else %}
-    <a class="rounded-md px-3 py-1.5 text-slate-400 hover:bg-slate-900 hover:text-slate-100" href="/history">Run history</a>
-  {% endif %}
+  {% endfor %}
 </nav>
