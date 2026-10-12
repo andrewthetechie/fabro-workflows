@@ -676,22 +676,30 @@ if [ \"$V\" = fail ]; then
 else
   rm -f $R/refute_findings.json
 fi
-if [ \"$NOT\" = true ] && [ \"$FA\" = 0 ]; then echo 1 > /tmp/fabro/refute_fix_attempts; fi
+if [ \"$NOT\" = true ] && [ \"$FA\" = 0 ]; then echo 1 > /tmp/fabro/refute_fix_attempts; git rev-parse HEAD > /tmp/fabro/refute_fix_base 2>/dev/null || rm -f /tmp/fabro/refute_fix_base; fi
 echo '{\"context_updates\":{\"refute_verdict\":\"'$V'\",\"refute_not_met\":'$NOT',\"refute_fix_attempts\":'$FA'}}'"]
 
     // The fix turn (gate-relief G9-G11). refute_fix runs on the run's coder pool in backlog and
-    // pr-review, and on glm-5.3-flash in dependabot (the stylesheet rows). A failed or invalid
-    // turn goes to deliver, where the old verdict stands and check 14 blocks the merge.
+    // pr-review, and on glm-5.3-flash in dependabot (the stylesheet rows). Both of its outcomes go
+    // to refute_fix_gate, so a failed turn's edits are reverted before deliver pushes.
     refute_fix [label="Fix the criteria not met", class="refute-fix", timeout="45m", max_retries=1, prompt="@prompts/refute_fix.md.j2"]
 
-    // Checks the fixer's Input receipt and runs nothing else. The change is committed by fabro's
-    // checkpoint at this node's end, as review_fix's is: no node in this graph runs git commit.
-    // A missing receipt fails the gate, and the run goes to deliver with the old verdict standing.
+    // Checks the fixer's Input receipt. The change is committed by fabro's checkpoint, as
+    // review_fix's is: no node in this graph runs git commit. A missing receipt (a failed, timed-out
+    // or unsubmitted turn) resets the checkout to refute_fix_base, the HEAD refute_gate recorded
+    // when it took the route, and fails the gate: the run goes to deliver with the old verdict
+    // standing over the tree it judged. Without the reset, deliver would push the fixer's partial
+    // edits, never run through validate, to the PR.
     refute_fix_gate [label="Check the fix turn", shape=parallelogram, timeout="5m",
         script="F=/tmp/fabro/review/refute_fix.json
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
-if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then echo 'refute_fix.json has no valid Input receipt, so the fix turn did not finish' >&2; exit 1; fi"]
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
+  echo 'refute_fix.json has no valid Input receipt, so the fix turn did not finish' >&2
+  P=$(cat /tmp/fabro/refute_fix_base 2>/dev/null || true)
+  if [ -n \"$P\" ]; then git reset -q --hard \"$P\" && git clean -fdq || echo 'could not reset the fix turn edits' >&2; fi
+  exit 1
+fi"]
 
     // A rejected lease push used to say only "the branch moved", even when a human had
     // merged or closed the PR and the review's commits never reached it (issue #9). It now
@@ -1464,7 +1472,7 @@ echo '{\"context_updates\":{\"review_merge_outcome\":\"'$O'\"}}'"]
     refute_gate -> deliver
     refute_gate -> refute_fix          [condition="context.refute_verdict=fail && context.refute_not_met=true && context.refute_fix_attempts=0", weight=5]
     refute_fix -> refute_fix_gate      [condition="outcome=succeeded"]
-    refute_fix -> deliver
+    refute_fix -> refute_fix_gate
     refute_fix_gate -> validate        [condition="outcome=succeeded"]
     refute_fix_gate -> deliver
 

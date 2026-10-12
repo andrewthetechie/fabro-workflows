@@ -3746,6 +3746,7 @@ rg_run
 check "fix: one not_met takes the fix route"    "true" "$(rgc refute_not_met)"
 check "fix: first pass counter is 0 on the edge" "0"   "$(rgc refute_fix_attempts)"
 check "fix: the counter is written to 1"        "1"    "$(cat "$T/refute_fix_attempts")"
+check "fix: the base HEAD is recorded"          "$(git rev-parse HEAD)" "$(cat "$T/refute_fix_base")"
 check "fix: findings name the criterion"        "1"    "$(jq '.not_met | length' "$T/review/refute_findings.json")"
 check "fix: findings carry the evidence"        "1"    "$(jq -r '.not_met[0].evidence' "$T/review/refute_findings.json" | grep -c .)"
 check "fix: findings carry the defects"         "1"    "$(jq '.defects | length' "$T/review/refute_findings.json")"
@@ -3785,7 +3786,7 @@ sh "$T/refute_gate.sh" >/dev/null 2>&1
 rg_run
 check "fix: invalid is not a fix route"          "false" "$(rgc refute_not_met)"
 check "fix: invalid keeps attempts 0"            "0"     "$(rgc refute_fix_attempts)"
-rm -f "$T/refute_fix_attempts"
+rm -f "$T/refute_fix_attempts" "$T/refute_fix_base"
 
 # review-merge refute_fix_gate — the fix turn's receipt check (ADR 0013 D5 amendment, G10).
 # A fix turn that did not submit writes no receipt: the gate fails, and the run goes to deliver.
@@ -3797,20 +3798,42 @@ if ! sh -n "$T/refute_fix_gate.sh" 2>"$T/refute_fix_gate.syntax"; then
     FAIL=$((FAIL + 1)); printf '  FAIL refute_fix_gate is not valid POSIX sh\n'
 fi
 rfg_stage() { printf '%s' "{\"workflow\":\"backlog\",\"node\":\"review_merge.refute_fix\",\"visit\":\"$FV\",\"started\":\"2026-10-11T00:00:00Z\"}" > "$T/.io/stage.json"; }
-rfg_stage; rm -f "$T/review/refute_fix.json" "$T/refute_fix_attempts"
-sh "$T/refute_fix_gate.sh" >/dev/null 2>&1; RC=$?
+# Every case runs inside a throwaway repo: a gate with no receipt runs git reset --hard and
+# git clean, and in this checkout's cwd that would wipe the working tree.
+rfg_git() { git -C "$T/rfg" -c user.email=t@t -c user.name=t "$@"; }
+rfg_run() { OUT=$( cd "$T/rfg" && sh "$T/refute_fix_gate.sh" 2>&1 ); RC=$?; }
+rm -rf "$T/rfg"; git init -q "$T/rfg" && rfg_git commit -q --allow-empty -m base
+rfg_stage; rm -f "$T/review/refute_fix.json" "$T/refute_fix_attempts" "$T/refute_fix_base"
+rfg_run
 check "refute_fix_gate: no file fails"          "1" "$RC"
 printf '%s' '{"summary":"s","addressed":[],"not_addressed":[]}' > "$T/review/refute_fix.json"
-sh "$T/refute_fix_gate.sh" >/dev/null 2>&1; RC=$?
+rfg_run
 check "refute_fix_gate: no receipt fails"       "1" "$RC"
 printf '%s' "{\"_io\":{\"visit\":\"ffffffffffffffffffffffffffffffff\"},\"summary\":\"s\",\"addressed\":[],\"not_addressed\":[]}" > "$T/review/refute_fix.json"
-sh "$T/refute_fix_gate.sh" >/dev/null 2>&1; RC=$?
+rfg_run
 check "refute_fix_gate: stale receipt fails"    "1" "$RC"
 printf '%s' "{\"_io\":{\"visit\":\"$FV\"},\"summary\":\"s\",\"addressed\":[],\"not_addressed\":[]}" > "$T/review/refute_fix.json"
-OUT=$(sh "$T/refute_fix_gate.sh" 2>&1); RC=$?
+rfg_run
 check "refute_fix_gate: good receipt passes"    "0" "$RC"
 check "refute_fix_gate: writes no counter"      "absent" "$([ -f "$T/refute_fix_attempts" ] && echo present || echo absent)"
 check "refute_fix_gate: prints no routing"      "0" "$(grep -c 'context_updates' <<<"$OUT")"
+
+# A turn with no receipt (failed, timed out, never submitted) is reset to refute_fix_base
+# before deliver pushes, so its partial edits never reach the PR.
+echo kept > "$T/rfg/a.txt"; rfg_git add a.txt; rfg_git commit -q -m a
+rfg_git rev-parse HEAD > "$T/refute_fix_base"
+echo partial > "$T/rfg/a.txt"; echo stray > "$T/rfg/new.txt"; rfg_git commit -q -am checkpoint
+rm -f "$T/review/refute_fix.json"
+rfg_run
+check "refute_fix_gate: no receipt still fails"   "1"       "$RC"
+check "refute_fix_gate: no receipt resets HEAD"   "$(cat "$T/refute_fix_base")" "$(rfg_git rev-parse HEAD)"
+check "refute_fix_gate: no receipt restores file" "kept"    "$(cat "$T/rfg/a.txt")"
+check "refute_fix_gate: no receipt cleans strays" "absent"  "$([ -f "$T/rfg/new.txt" ] && echo present || echo absent)"
+echo partial > "$T/rfg/a.txt"
+printf '%s' "{\"_io\":{\"visit\":\"$FV\"},\"summary\":\"s\",\"addressed\":[],\"not_addressed\":[]}" > "$T/review/refute_fix.json"
+rfg_run
+check "refute_fix_gate: good receipt keeps edits" "partial" "$(cat "$T/rfg/a.txt")"
+rm -f "$T/refute_fix_base"
 
 # ---------------------------------------------------------------------------
 # review-merge refute guard — Sealed paths block the refuter's reads (ADR 0016
