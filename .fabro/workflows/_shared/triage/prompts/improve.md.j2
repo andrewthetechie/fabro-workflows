@@ -65,6 +65,22 @@ something is unused, or before you delete or rename it, confirm with
 - Keep the sections `## Decisions made during triage`, `## Proposed task map` and
   `## Split into` word for word, and keep a first-line `<!-- fabro:... -->` marker
   in place. The workflow owns them; do not rewrite or move them.
+- The workflow owns `## Post-deploy checks` too. Do not write that heading in `body`.
+
+## Post-deploy checks
+
+Some acceptance criteria can only be checked in a deployed environment: a sign-in on
+staging, a real browser build, real client traffic, external credentials, or an
+external answer. No sandbox can check them, so the refuter would block the work on them.
+
+- Move each such criterion out of the body's acceptance criteria and into
+  `post_deploy_checks`, one short line per item. Never keep it in both places.
+- When you are unsure whether a sandbox can check a criterion, keep it as an acceptance
+  criterion. A refuter block is the safe failure.
+- Keep an item already listed under `## Post-deploy checks` in the body by moving it
+  into `post_deploy_checks`, so the workflow does not drop it.
+- `post_deploy_checks` is `[]` when no criterion qualifies. It must be `[]` when
+  `status` is `unchanged`, because an unchanged body is not rewritten.
 
 ## Decision rules
 
@@ -83,6 +99,7 @@ write is refused.
 - `body` is the **whole** revised issue body in Markdown — not a diff or a patch;
   `improve_gate` writes it verbatim over the issue.
 - `reason` is one or two sentences on what changed and why, or why nothing did.
+- `post_deploy_checks` is an array of strings, one line each, and may be empty.
 
 The Conventional Commits `title` is written by the terminal nodes from the triage
 contract; it is recorded here but not applied. After `submit` writes your result,

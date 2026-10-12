@@ -5,11 +5,12 @@
   "description": "The triage improve agent's output (docs/stage-io, task 10). improve_gate writes the body verbatim over the issue. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "title", "body", "reason"],
+  "required": ["status", "title", "body", "reason", "post_deploy_checks"],
   "properties": {
     "status": { "enum": ["improved", "unchanged"] },
     "title": { "type": "string", "description": "A clearer plain-English title, or the original unchanged." },
     "body": { "type": "string", "description": "The complete revised issue body in Markdown; written verbatim over the issue." },
-    "reason": { "type": "string", "description": "One or two sentences on what changed and why, or why nothing did." }
+    "reason": { "type": "string", "description": "One or two sentences on what changed and why, or why nothing did." },
+    "post_deploy_checks": { "type": "array", "items": { "type": "string" }, "description": "Acceptance criteria only a deployed environment can check, moved out of body. One line each; [] when none. Must be [] with status unchanged." }
   }
 }

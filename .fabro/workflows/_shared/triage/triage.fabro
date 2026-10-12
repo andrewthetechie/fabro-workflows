@@ -75,6 +75,10 @@ jq -nc --arg n \"$N\" --arg u \"$U\" '{context_updates:{issue_number:$n,issue_ur
     // fallback chain, so the node timeout is the only backstop.
     improve [label="Improve the issue body", class="improve", prompt="@prompts/improve.md.j2", timeout="30m", max_retries=1]
 
+    // The Post-deploy checks section is written here, and only here, from
+    // post_deploy_checks: criteria only a deployed environment can check, kept out of
+    // the refuter's input (ADR 0013 D4 amendment, gate-relief G3). Any such heading the
+    // agent wrote in body is dropped first, so the section is never duplicated.
     // Applies the body only. A second invalid improve.json exits ZERO on purpose and
     // takes the succeeded edge to `triage`: improving the body is best effort, the
     // triage verdict is the value.
@@ -90,6 +94,8 @@ RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
 RM=0; if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then RM=1; S=invalid; else S=$(jq -r '.status // \"invalid\"' $F 2>/dev/null || echo invalid); fi
 N=$(jq -r .number /tmp/fabro/issue.json)
 if [ \"$S\" != improved ] && [ \"$S\" != unchanged ]; then S=invalid; fi
+if [ \"$S\" != invalid ] && ! jq -e '(.post_deploy_checks | type) == \"array\" and all(.post_deploy_checks[]; type == \"string\" and length > 0 and ((explode | any(. == 10)) == false))' $F >/dev/null 2>&1; then S=invalid; fi
+if [ \"$S\" = unchanged ] && [ \"$(jq '(.post_deploy_checks // []) | length' $F 2>/dev/null || echo 99)\" != 0 ]; then S=invalid; fi
 if [ \"$S\" = improved ]; then
   B=$(jq -r '.body // \"\"' $F 2>/dev/null || echo '')
   if [ -z \"$B\" ]; then S=invalid; fi
@@ -109,6 +115,10 @@ if [ \"$S\" = improved ]; then
     { echo \"$MK\"; echo; grep -vF \"$MK\" /tmp/fabro/improved_body.md; } > /tmp/fabro/improved_body.next
     mv /tmp/fabro/improved_body.next /tmp/fabro/improved_body.md
   fi
+  awk '/^## Post-deploy checks$/{s=1; next} s && /^## /{s=0} !s{print}' /tmp/fabro/improved_body.md > /tmp/fabro/improved_body.next
+  PD=$(jq -r '.post_deploy_checks[]? | \"- [ ] \" + .' $F)
+  if [ -n \"$PD\" ]; then { echo; echo '## Post-deploy checks'; echo; echo \"$PD\"; } >> /tmp/fabro/improved_body.next; fi
+  mv /tmp/fabro/improved_body.next /tmp/fabro/improved_body.md
   gh issue edit $N --body-file /tmp/fabro/improved_body.md
   gh issue view $N --json number,title,body,labels,comments,url > /tmp/fabro/issue.next.json && mv /tmp/fabro/issue.next.json /tmp/fabro/issue.json
 fi
@@ -432,7 +442,8 @@ while [ $I -lt $CN ]; do
       echo
       jq -r '.criteria[]? | \"- \" + .' /tmp/fabro/child.json
       echo
-      jq -r .task_map /tmp/fabro/child.json ; } > /tmp/fabro/child_body.md
+      jq -r .task_map /tmp/fabro/child.json
+      if [ $I -eq $((CN - 1)) ]; then echo; jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Post-deploy checks$/{s=1; print; next} s && /^## /{s=0} s{print}'; fi ; } > /tmp/fabro/child_body.md
     URL=$(gh issue create --title \"$CT\" --body-file /tmp/fabro/child_body.md --label $CL $PL)
     C=$(printf '%s' \"$URL\" | sed 's|.*/||')
     case \"$C\" in ''|0|*[!0-9]*) echo \"child $I: gh issue create returned no issue number: $URL\" >&2; exit 1 ;; esac

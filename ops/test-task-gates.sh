@@ -2458,7 +2458,7 @@ echo "triage phase"
 PATH="$ORIG_PATH"
 SAVED_PATH="$PATH"
 T="$WORK/triage"; mkdir -p "$T/bin"
-for n in claim triage_gate post_questions release done apply_ready improve_gate plan_gate; do
+for n in claim triage_gate post_questions release done apply_ready improve_gate plan_gate apply_split; do
     extract_from "$SHARED_TRIAGE" "$n" | sed "s#/tmp/fabro#$T#g" > "$T/$n.sh"
     if ! sh -n "$T/$n.sh" 2>"$T/$n.syntax"; then
         FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$n"
@@ -2606,7 +2606,7 @@ check "decided: drops the old entry"   "0" "$(grep -c '^- old$' "$T/decided_body
 MKR='<!-- fabro:arch-candidate slug=room-deck -->'
 ig_run() { # ig_run <improved body>
     jq -n --arg m "$MKR" '{number:7,labels:[],body:($m + "\n\nold body")}' > "$T/issue.json"
-    jq -n --arg b "$1" '{status:"improved",body:$b,_io:{visit:"ok1"}}' > "$T/improve.json"
+    jq -n --arg b "$1" '{status:"improved",body:$b,post_deploy_checks:[],_io:{visit:"ok1"}}' > "$T/improve.json"
     echo 0 > "$T/improve_attempts"; : > "$T/gh.log"; rm -f "$T/improved_body.md"
     (cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 }
@@ -2618,10 +2618,79 @@ ig_run "$(printf 'top\n%s\nrest' "$MKR")"
 check "marker moved: back on line 1"   "$MKR" "$(head -1 "$T/improved_body.md")"
 check "marker moved: only once"        "1" "$(grep -cF "$MKR" "$T/improved_body.md")"
 jq -n '{number:7,labels:[],body:"a human report"}' > "$T/issue.json"
-jq -n '{status:"improved",body:"better report",_io:{visit:"ok1"}}' > "$T/improve.json"
+jq -n '{status:"improved",body:"better report",post_deploy_checks:[],_io:{visit:"ok1"}}' > "$T/improve.json"
 echo 0 > "$T/improve_attempts"; rm -f "$T/improved_body.md"
 (cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1
 check "no marker: body untouched"      "better report" "$(cat "$T/improved_body.md")"
+
+# 17. improve_gate writes the Post-deploy checks section from post_deploy_checks, and
+#     only there (gate-relief G3/G4): one heading, a checkbox per item, the text under
+#     the next heading kept, and a malformed or unchanged-with-checks result refused.
+pd_run() { # pd_run <status> <body> <post_deploy_checks json>
+    jq -n '{number:7,labels:[],body:"old"}' > "$T/issue.json"
+    jq -n --arg s "$1" --arg b "$2" --argjson c "$3" '{status:$s,title:"t",reason:"r",body:$b,post_deploy_checks:$c,_io:{visit:"ok1"}}' > "$T/improve.json"
+    echo 0 > "$T/improve_attempts"; rm -f "$T/improved_body.md"
+    (cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1; PD_RC=$?
+}
+pd_run improved "$(printf 'criteria\n\n## Post-deploy checks\n\n- [ ] old item\n\n## Notes\n\nkept')" '["Sign in on staging returns 201"]'
+check "post-deploy: exit 0"                 "0" "$PD_RC"
+check "post-deploy: one heading"            "1" "$(grep -c '^## Post-deploy checks$' "$T/improved_body.md")"
+check "post-deploy: a checkbox per item"    "1" "$(grep -c '^- [[] []] Sign in on staging returns 201$' "$T/improved_body.md")"
+check "post-deploy: old item replaced"      "0" "$(grep -c 'old item' "$T/improved_body.md")"
+check "post-deploy: next section kept"      "1" "$(grep -c '^kept$' "$T/improved_body.md")"
+pd_run improved 'plain body' '[]'
+check "no checks: exit 0"                   "0" "$PD_RC"
+check "no checks: no section"               "0" "$(grep -c 'Post-deploy' "$T/improved_body.md")"
+jq -n '{status:"improved",title:"t",reason:"r",body:"b",_io:{visit:"ok1"}}' > "$T/improve.json"
+echo 0 > "$T/improve_attempts"; rm -f "$T/improved_body.md"
+(cd "$T" && sh "$T/improve_gate.sh") >/dev/null 2>&1; PD_RC=$?
+check "missing field: first attempt refused" "1" "$PD_RC"
+check "missing field: body not written"     "no" "$([ -f "$T/improved_body.md" ] && echo yes || echo no)"
+pd_run improved 'b' '[1]'
+check "non-string item: refused"            "1" "$PD_RC"
+pd_run improved 'b' '[""]'
+check "empty item: refused"                 "1" "$PD_RC"
+pd_run improved 'b' '["one\ntwo"]'
+check "item with a newline: refused"        "1" "$PD_RC"
+pd_run unchanged 'b' '["x"]'
+check "unchanged with checks: refused"      "1" "$PD_RC"
+pd_run unchanged 'b' '[]'
+check "unchanged, no checks: exit 0"        "0" "$PD_RC"
+
+# 18. apply_split: the last child carries the parent's Post-deploy checks, the others do
+#     not, and the section ends at the next heading (gate-relief step 6). Its own stub and
+#     directory, so the tests above keep theirs.
+mkdir -p "$T/sp/bin"
+extract_from "$SHARED_TRIAGE" apply_split | sed "s#/tmp/fabro#$T/sp#g" > "$T/sp/apply_split.sh"
+cat > "$T/sp/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+if [ "$1 $2" = "issue create" ]; then
+  N=$(cat "$GH_STATE/next" 2>/dev/null || echo 201); echo $((N + 1)) > "$GH_STATE/next"
+  B=""; P=""
+  for a in "$@"; do [ "$P" = "--body-file" ] && B="$a"; P="$a"; done
+  cp "$B" "$GH_STATE/body-$N.md"
+  echo "https://github.com/o/r/issues/$N"; exit 0
+fi
+if [ "$1" = api ]; then
+  case "$*" in
+    *"--jq .id"*) echo 9000; exit 0 ;;
+    *) echo '[]'; exit 0 ;;
+  esac
+fi
+exit 0
+STUB
+chmod +x "$T/sp/bin/gh"
+printf '%s' '{"number":7,"title":"Parent","body":"summary\n\n## Acceptance criteria\n\n- a\n\n## Post-deploy checks\n\n- [ ] Sign in on staging\n- [ ] Reload settings\n\n## Notes\n\nkept\n","labels":[{"name":"needs-triage"}]}' > "$T/sp/issue.json"
+printf '%s' '{"title":"feat: parent","labels":[],"decisions":[]}' > "$T/sp/triage.json"
+printf '%s' '[{"title":"feat: first slice","summary":"First.","criteria":["c1"],"task_map":"## Proposed task map","after":null},{"title":"feat: second slice","summary":"Second.","criteria":["c2"],"task_map":"## Proposed task map","after":0}]' > "$T/sp/split_children.json"
+rm -f "$T/sp"/body-*.md "$T/sp/next" "$T/sp/gh.log"
+(cd "$T/sp" && PATH="$T/sp/bin:$PATH" GH_LOG="$T/sp/gh.log" GH_STATE="$T/sp" sh "$T/sp/apply_split.sh") >/dev/null 2>&1
+check "split: two children created"          "2" "$(ls "$T"/sp/body-*.md 2>/dev/null | wc -l | tr -d ' ')"
+check "split: first child has no checks"     "0" "$(grep -c 'Post-deploy' "$T/sp/body-201.md")"
+check "split: last child has the heading"    "1" "$(grep -c '^## Post-deploy checks$' "$T/sp/body-202.md")"
+check "split: last child has both checks"    "2" "$(grep -c '^- [[] []] ' "$T/sp/body-202.md")"
+check "split: section ends at the next heading" "0" "$(grep -c '^kept$' "$T/sp/body-202.md")"
 
 # --- plan_gate (ADR 0015 C1/C4) ---
 mkreadok ok1 issue.json
