@@ -506,7 +506,7 @@
               "name": "current_task.json",
               "path": "/tmp/fabro/current_task.json",
               "required": true,
-              "about": "the task that starts once the merge lands, for intent"
+              "about": "the task that starts once the merge lands, or the last task when every task has landed; for intent"
             },
             {
               "name": "issue.json",

@@ -34,8 +34,14 @@ glm-5.3 with four simultaneous decompose stages. (Range-step form, not
 The offsets live in the automation rows themselves and in `ops/provision-server-state.sh`,
 which drift-checks the expressions. Two active runs
 in the same repo on different issues is accepted: the `agent-in-progress` label prevents
-same-issue collisions, and the mainline-merge discipline in `next_task`/`open_pr_prep`
+same-issue collisions, and the mainline-merge discipline in `next_task`/`final_merge`
 handles the branch collision.
+
+**Amended 2026-10-12:** until this date only `next_task` actually handled a conflicting
+mainline merge. `open_pr_prep` ran the final one bare under `set -e`, so a collision
+that surfaced there committed conflict markers and looped the rescue gate (wfs#1834,
+wfs#1747). The final merge is now its own node, `final_merge`, which routes a conflict
+to `resolve_merge` the same way.
 
 ## Consequences
 

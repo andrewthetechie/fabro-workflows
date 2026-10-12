@@ -427,6 +427,8 @@ echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT',\"o
         script="git worktree remove --force /tmp/fabro/base-tree >/dev/null 2>&1
 rm -rf /tmp/fabro/base-tree
 git worktree prune >/dev/null 2>&1
+rm -f /tmp/fabro/final_merge_conflict
+echo 0 > /tmp/fabro/merge_attempts
 IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 0)
 COUNT=$(jq length /tmp/fabro/tasks.json)
 if [ $IDX -ge $COUNT ]; then echo '{\"context_updates\":{\"tasks_done\":true,\"rebase_failed\":false}}'; exit 0; fi
@@ -450,7 +452,6 @@ echo $((IDX+1)) > /tmp/fabro/task_index
 echo 0 > /tmp/fabro/round
 echo 0 > /tmp/fabro/review_attempts
 echo 0 > /tmp/fabro/improve_attempts
-echo 0 > /tmp/fabro/merge_attempts
 rm -f /tmp/fabro/improve_result.json /tmp/fabro/improve_touched_tree
 rm -f /tmp/fabro/task-context.md /tmp/fabro/task-code.md
 git rev-parse HEAD > /tmp/fabro/pre_merge_sha
@@ -467,7 +468,8 @@ else
 fi"]
 
     // ---- Mainline conflict resolution ----
-    // next_task aborted the failed merge and left a clean tree. A conflicted merge
+    // next_task (before a task) or final_merge (before the PR) aborted the failed merge
+    // and left a clean tree. A conflicted merge
     // cannot cross a stage boundary: fabro's checkpoint would `git add -A` the
     // conflict-marked files, which git treats as resolved, and commit markers onto
     // the run branch. So the agent performs the merge itself, in one stage, and
@@ -479,6 +481,11 @@ fi"]
     // next checkpoint would `git add -A` — rather than the whole worktree, which
     // would walk build output and would fire on any repository that legitimately
     // commits a conflict-marker fixture.
+    //
+    // `merge_return` says where a resolved merge goes: `pr` back to final_merge when
+    // /tmp/fabro/final_merge_conflict exists, `task` on to the next task otherwise. It is
+    // written on both branches. next_task deletes that file and resets merge_attempts on
+    // every entry, its done branches included, so the final merge starts with both clean.
     resolve_merge_gate [label="Verify the mainline merge", shape=parallelogram, output_schema="routing",
         script="PRE=$(cat /tmp/fabro/pre_merge_sha 2>/dev/null || echo '')
 A=$(cat /tmp/fabro/merge_attempts 2>/dev/null || echo 0)
@@ -501,16 +508,18 @@ while IFS= read -r f; do
   if grep -qI '<<<<<<< ' \"$f\"; then BAD=1; fi
 done < /tmp/fabro/merge_scan.txt
 if ! git merge-base --is-ancestor origin/main HEAD; then BAD=1; fi
+MR=task
+if [ -s /tmp/fabro/final_merge_conflict ]; then MR=pr; fi
 if [ $BAD -ne 0 ]; then
   git merge --abort 2>/dev/null || true
   if [ -n \"$PRE\" ]; then git reset --hard \"$PRE\" || true; fi
   A=$((A+1))
   echo $A > /tmp/fabro/merge_attempts
   echo 'The merge agent left conflict markers, an in-progress merge, or a branch that still does not contain origin/main.' > /tmp/fabro/needs_human_reason
-  echo '{\"context_updates\":{\"merge_ok\":false,\"merge_attempts\":'$A'}}'
+  echo '{\"context_updates\":{\"merge_ok\":false,\"merge_attempts\":'$A',\"merge_return\":\"'$MR'\"}}'
 else
   git rev-parse HEAD > /tmp/fabro/task_base_sha
-  echo '{\"context_updates\":{\"merge_ok\":true,\"merge_attempts\":'$A'}}'
+  echo '{\"context_updates\":{\"merge_ok\":true,\"merge_attempts\":'$A',\"merge_return\":\"'$MR'\"}}'
 fi"]
 
     // Review-class agent nodes carry timeout="15m", not the 30m they had. The 30m was
@@ -1177,6 +1186,52 @@ fi
 echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'}}'"]
 
     // ---- Delivery ----
+    // final_merge brings main into the branch before open_pr_prep builds the PR, and hands
+    // a conflict to resolve_merge the way next_task does before a task. It used to be the
+    // first two lines of open_pr_prep: a bare `git merge` under `set -e`. A conflict failed
+    // that node with the merge still in the tree, the checkpoint's `git add -A` marked the
+    // conflicted file resolved and committed the markers as a merge commit, and from then
+    // on every `[P] Accept partial` found main "Already up to date", ran CI on the
+    // markers, failed, and came back to the gate -- the bare-merge version of the rule
+    // that a conflicted merge never crosses a stage boundary.
+    //
+    // It happened twice on womens-fantasy-sports, both times because another PR landed
+    // the same lines mid-run: #1834 (run 01M4PF5JV0FHXNV5TA0PC8TV3E, 2026-10-11, the
+    // operator's cluster PR #1918) and #1747 (run 01M4S16BRA0W1J3W32S6ENJBXH, 2026-10-12,
+    // sibling issue #1746's PR #1958 merged 11 minutes in; three trips through the gate).
+    //
+    // A fetch failure exits 1 to rescue_brief: resolve_merge may not fetch, so it could
+    // not start the merge. A merge that fails with no unmerged path is not a conflict and
+    // exits 1 the same way, with the tree reset. The conflicted paths go to
+    // /tmp/fabro/final_merge_conflict: resolve_merge_gate reads it to route back here
+    // instead of to the next task, and rescue_brief reads it to say why the run stopped.
+    // next_task deletes it, so a task-time conflict never reads as this one. pre_merge_sha
+    // is where resolve_merge_gate resets the branch when it rejects the agent's merge.
+    // After a resolved merge this node runs again, a no-op unless main moved meanwhile.
+    // It prints no file names: fabro scans stdout and stderr for brace-balanced objects.
+    final_merge [label="Merge main before the PR", shape=parallelogram, timeout="5m", output_schema="routing",
+        script="F=/tmp/fabro
+mkdir -p $F
+rm -f $F/final_merge_conflict $F/final_merge_conflict.new
+git fetch origin main || { echo 'final_merge: git fetch origin main failed; nothing was merged' >&2; exit 1; }
+git rev-parse HEAD > $F/pre_merge_sha
+if git merge --no-edit origin/main; then
+  echo '{\"context_updates\":{\"final_conflict\":false}}'
+  exit 0
+fi
+git diff --name-only --diff-filter=U > $F/final_merge_conflict.new
+git merge --abort || true
+PRE=$(cat $F/pre_merge_sha)
+if [ -e .git/MERGE_HEAD ] || [ \"$(git rev-parse HEAD)\" != \"$PRE\" ] || ! git diff --quiet HEAD; then git reset --hard \"$PRE\"; fi
+if [ ! -s $F/final_merge_conflict.new ]; then
+  rm -f $F/final_merge_conflict.new
+  echo 'final_merge: git merge origin/main failed with no conflicted path; the branch is back at '$PRE >&2
+  exit 1
+fi
+mv $F/final_merge_conflict.new $F/final_merge_conflict
+echo 'final_merge: main conflicts with this branch in '$(wc -l < $F/final_merge_conflict)' file(s); the merge was aborted so no checkpoint commits markers, and resolve_merge redoes it'
+echo '{\"context_updates\":{\"final_conflict\":true}}'"]
+
     // This node re-runs the SAME `setup.sh && ci.sh` that `validate` already ran, and the
     // two treat a failure completely differently: `validate` writes
     // /tmp/fabro/feedback/rework.md and takes `validate -> rework_router` into the
@@ -1234,8 +1289,8 @@ echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'
     //
     // Two-dot `git diff --quiet origin/main HEAD` -- does the head TREE equal main's --
     // rather than three-dot, because it says the thing that matters regardless of how the
-    // branch got there. The merge immediately above makes the two forms equivalent here
-    // anyway, since it moves the merge base onto `origin/main`. `--quiet` exits 1 when a
+    // branch got there. final_merge, the node before this one, makes the two forms
+    // equivalent here anyway, since it moves the merge base onto `origin/main`. `--quiet` exits 1 when a
     // difference EXISTS, which is why the check is the `if` condition and the failure is
     // the true branch; `set -e` does not fire on a condition's exit status.
     //
@@ -1335,6 +1390,12 @@ echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'
     // It runs before the setup/ci loop for the same reason the empty-tree floor does:
     // there is nothing to validate on a branch that cannot be pushed, and this makes the
     // Accept-partial loop cost ~1s instead of 2.8m.
+    //
+    // The THIRD floor is conflict markers. final_merge keeps a conflicted merge out of
+    // the checkpoint, so this fires only on a branch poisoned some other way -- a run from
+    // before final_merge existed, or an agent that wrote them -- and it says so in one
+    // line instead of 13 lint errors. It reads only lines this branch ADDS, so a
+    // repository that commits a conflict-marker fixture on main does not trip it.
     // Step 1: the issue title already carries a Conventional Commits prefix; use it as-is
     // Step 2: a [Bracket] prefix names a type
     // Step 3: an issue label maps to a type; fabro bookkeeping labels never map
@@ -1343,8 +1404,6 @@ echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'
     // unmergeable PR. These can only fire on a bug; the derivation always terminates.
     open_pr_prep [label="Final aggregate and PR prep", shape=parallelogram, timeout="20m",
         script="set -e
-git fetch origin main
-git merge --no-edit origin/main
 if git diff --quiet origin/main HEAD; then
   echo 'refusing to open a PR: the branch tree is identical to origin/main, so this run changed nothing.' >&2
   echo 'every commit on this branch is a fabro stage checkpoint touching no repository file.' >&2
@@ -1376,6 +1435,15 @@ if [ -n \"$WFB\" ]; then
   echo '  2. land the branch on the remote over SSH, which has no such restriction. Once' >&2
   echo '     the offending commits are on the remote, later pushes carry only new commits' >&2
   echo '     and are accepted.' >&2
+  exit 1
+fi
+CMF=$(git diff origin/main HEAD | awk '/^[+][+][+] b[/]/ { f = substr($0, 7) } /^[+](<<<<<<<|>>>>>>>)/ { print f }' | sort -u)
+if [ -n \"$CMF\" ]; then
+  echo 'refusing to open a PR: the branch adds unresolved conflict markers (lines starting <<<<<<< or >>>>>>>) in:' >&2
+  echo \"$CMF\" | sed 's/^/  /' >&2
+  echo 'a conflicted merge reached a stage checkpoint, whose git add -A recorded the file as resolved.' >&2
+  echo 'answering [P] Accept partial again cannot remove them. Type guidance for the rework agent' >&2
+  echo 'to remove them, or answer [X] Abandon.' >&2
   exit 1
 fi
 A=1
@@ -1461,7 +1529,7 @@ grep -q '^Resolves #' /tmp/fabro/commit_body.md
 grep -q 'fabro:commit-body:start' /tmp/fabro/pr_body.md"]
 
     // `open_pr` is the only node that opens a PR, including on the
-    // human_rescue -> [P] Accept partial -> open_pr_prep -> open_pr path, so it is the
+    // human_rescue -> [P] Accept partial -> final_merge -> open_pr_prep -> open_pr path, so it is the
     // single place that has to publish the PR number for the trigger that follows.
     //
     // The trigger cannot read `pr_url` back out of the context: command `script`
@@ -1753,8 +1821,15 @@ echo done"]
     // routed here on a success: a `round` of 6 or more means the rework ladder ran out,
     // anything else is a gate that rejected its agent's output.
     //
-    // The [P] text mirrors open_pr_prep's two refusals and partial_remainder below; the
-    // [X] text mirrors mark_stuck. Change them together. The node never fails: a missing
+    // The [P] text mirrors open_pr_prep's three refusals and partial_remainder below; the
+    // [X] text mirrors mark_stuck. Change them together. Two cases read files rather than
+    // the signature. /tmp/fabro/final_merge_conflict means final_merge handed a conflict to
+    // resolve_merge and its gate gave up: [P] runs the merge agent once more, and guidance
+    // cannot help because the rework agent may not run git. Landed tasks on a tree equal to
+    // main means main already made the change (wfs#1834 and #1747 both ended there), so the
+    // brief lists main's commits since the run's first commit that touch the files the run
+    // changed, and leaves closing the issue to the operator: a resolver that wrongly took
+    // main's side everywhere produces the same empty tree. The node never fails: a missing
     // file reads as "nothing", and if it did fail its unconditional edge still reaches
     // the gate, which then shows what it showed before this node existed. It prints
     // nothing but the routing object, on one line: fabro scans stdout and stderr together
@@ -1789,11 +1864,26 @@ PR=$(cat $F/pr_number 2>/dev/null)
 case \"$PR\" in *[!0-9]*) PR='' ;; esac
 STG=$(jq -r '.node // empty' $F/.io/stage.json 2>/dev/null)
 DIFF=$(git diff --shortstat origin/main HEAD 2>/dev/null | sed 's/^ *//')
+MC=$(awk 'NR <= 10 { printf \"%s%s\", (NR > 1 ? \" \" : \"\"), $0 }' $F/final_merge_conflict 2>/dev/null)
+CM=''
+if git diff origin/main HEAD 2>/dev/null | grep -qE '^[+](<<<<<<<|>>>>>>>)'; then CM=yes; fi
+SUP=''
+rm -f $F/rescue_main.txt
+if [ $LANDED -gt 0 ] && [ -s $F/issue.json ] && git diff --quiet origin/main HEAD 2>/dev/null; then
+  SUP=yes
+  SUPF=$(git log --format= --name-only --no-merges origin/main..HEAD 2>/dev/null | sort -u | head -20)
+  SINCE=$(git log --format=%cI --reverse --no-merges origin/main..HEAD 2>/dev/null | head -1)
+  if [ -n \"$SUPF\" ] && [ -n \"$SINCE\" ]; then
+    git log --format='%h %s' --no-merges --since=\"$SINCE\" origin/main -- $SUPF 2>/dev/null | head -5 | sed 's/^/- /' > $F/rescue_main.txt
+  fi
+fi
 NODE=''
 if [ -n \"$SIG\" ]; then
   NODE=${SIG%%|*}
   REST=${SIG#*|}
   WHAT=\"$NODE failed (${REST%%|*}): ${REST#*|}\"
+elif [ -n \"$MC\" ]; then
+  WHAT=\"main changed the same lines as this branch before the PR was built, and resolve_merge_gate rejected the merge agent's resolution. Conflicting files: $MC\"
 elif [ $ROUND -ge 6 ] && [ -n \"$CUR\" ]; then
   WHAT=\"the rework ladder ran out. Task $CUR failed validate or review at every tier ($ROUND rounds).\"
 else
@@ -1824,6 +1914,10 @@ elif git diff --quiet origin/main HEAD 2>/dev/null; then
   P='The branch changes no file, so open_pr_prep refuses: a PR would claim work that does not exist. You come back here.'
 elif [ -n \"$(for C in $(git rev-list --no-merges origin/main..HEAD 2>/dev/null); do git diff-tree --no-commit-id --name-only -r \"$C\" -- .github/workflows/; done)\" ]; then
   P='A commit on this branch changes .github/workflows/, which the sandbox token cannot push, so open_pr_prep refuses. You come back here.'
+elif [ -n \"$CM\" ]; then
+  P='The branch adds unresolved conflict markers (lines starting <<<<<<< or >>>>>>>), so open_pr_prep refuses. You come back here.'
+elif [ -n \"$MC\" ]; then
+  P='Runs the merge agent once more on the same conflict. If it resolves it, the PR is built as usual; if not, you come back here.'
 else
   if [ -n \"$PR\" ]; then
     P=\"PR #$PR is already open. Main is merged in, setup and CI run again, and the PR goes through the merge phase again.\"
@@ -1848,6 +1942,8 @@ fi
 X=\"$X The gate does this by itself when its 4h timeout ends.\"
 if [ \"$NODE\" = open_pr_prep ]; then
   G='The tier-4 rework agent gets your text and the final validation failure, then validate and review run again.'
+elif [ -n \"$MC\" ]; then
+  G='Cannot help: guidance goes to the rework agent, which may not run git, so it cannot finish a merge. Choose [P] for one more merge attempt, or [X].'
 elif [ -n \"$WF\" ]; then
   G='Cannot help: the findings need a change under .github/workflows/, which no agent may make. Choose [P] and make that edit yourself, or [X].'
 elif [ -n \"$CUR\" ]; then
@@ -1866,6 +1962,18 @@ fi
   fi
   if [ -n \"$DIFF\" ]; then echo \"- Branch against main: $DIFF\"; fi
   if [ -n \"$PR\" ]; then echo \"- PR: #$PR\"; fi
+  if [ -n \"$SUP\" ]; then
+    echo
+    echo \"**Main already has this change:** $LANDED task(s) landed on this branch, but with main merged in it changes no file. Another PR most likely made the same change while this run worked.\"
+    if [ -s $F/rescue_main.txt ]; then
+      echo
+      echo 'Commits on main since the run started that touch the files this run changed:'
+      echo
+      cat $F/rescue_main.txt
+    fi
+    echo
+    echo \"If one of them resolves #$N, choose [X] Abandon, then close #$N as completed by it.\"
+  fi
   if [ -s $F/rescue_findings.cut ]; then
     echo
     echo \"**Last findings for task $CUR:**\"
@@ -1976,12 +2084,12 @@ echo done"]
     decompose_gate -> rescue_brief
 
     // ADR 0023. extra_prep (the extra review) is skipped in the fast lane: tasks_done goes
-    // straight to open_pr_prep. The coder edge skips improve, improve_gate and excerpts.
+    // straight to final_merge. The coder edge skips improve, improve_gate and excerpts.
     // `next_task` writes `rebase_failed` on every branch, so on tasks_done=true only one of
     // these matches; resolve_merge keeps its own edge, and improve stays the standard
     // lane's unconditional fallthrough.
     next_task -> extra_prep         [condition="context.tasks_done=true && context.lane!=fast"]
-    next_task -> open_pr_prep       [condition="context.tasks_done=true && context.lane=fast"]
+    next_task -> final_merge        [condition="context.tasks_done=true && context.lane=fast"]
     next_task -> resolve_merge      [condition="context.rebase_failed=true"]
     next_task -> coder              [condition="context.tasks_done=false && context.rebase_failed=false && context.lane=fast"]
     next_task -> improve
@@ -1993,9 +2101,11 @@ echo done"]
     resolve_merge -> resolve_merge_gate [condition="outcome=succeeded"]
     resolve_merge -> resolve_merge_gate
     // ADR 0023: after a resolved mainline merge the fast lane goes to the coder, skipping
-    // improve; the standard lane is unchanged.
-    resolve_merge_gate -> improve       [condition="context.merge_ok=true && context.lane!=fast", weight=10]
-    resolve_merge_gate -> coder         [condition="context.merge_ok=true && context.lane=fast", weight=10]
+    // improve; the standard lane is unchanged. A merge final_merge handed over goes back
+    // to final_merge in either lane; the three success edges are exclusive on merge_return.
+    resolve_merge_gate -> final_merge   [condition="context.merge_ok=true && context.merge_return=pr", weight=10]
+    resolve_merge_gate -> improve       [condition="context.merge_ok=true && context.merge_return=task && context.lane!=fast", weight=10]
+    resolve_merge_gate -> coder         [condition="context.merge_ok=true && context.merge_return=task && context.lane=fast", weight=10]
     resolve_merge_gate -> resolve_merge [condition="context.merge_attempts=1"]
     resolve_merge_gate -> rescue_brief
 
@@ -2073,7 +2183,7 @@ echo done"]
     rework_t4 -> autofix            [condition="outcome=succeeded"]
     rework_t4 -> rescue_brief
 
-    extra_prep -> open_pr_prep      [condition="context.extra_done=true"]
+    extra_prep -> final_merge       [condition="context.extra_done=true"]
     extra_prep -> standards
 
     standards -> standards_gate     [condition="outcome=succeeded"]
@@ -2099,8 +2209,11 @@ echo done"]
     extra_gate -> extra_decompose   [condition="outcome=failed"]
     extra_gate -> next_task         [condition="context.new_tasks>0"]
     extra_gate -> rescue_brief      [condition="context.followup_status=needs_human_review"]
-    extra_gate -> open_pr_prep
+    extra_gate -> final_merge
 
+    final_merge -> open_pr_prep     [condition="outcome=succeeded && context.final_conflict=false"]
+    final_merge -> resolve_merge    [condition="outcome=succeeded && context.final_conflict=true"]
+    final_merge -> rescue_brief
     open_pr_prep -> open_pr         [condition="outcome=succeeded"]
     open_pr_prep -> rescue_brief
     open_pr -> file_remainder       [condition="outcome=succeeded"]
@@ -2135,7 +2248,7 @@ echo recorded"]
     record_guidance -> rework_t4
     human_rescue -> partial_remainder [label="[P] Accept partial: open a PR with what landed, file the rest"]
     human_rescue -> mark_stuck      [label="[X] Abandon: label the issue agent-stuck, open no PR"]
-    partial_remainder -> open_pr_prep [condition="outcome=succeeded"]
+    partial_remainder -> final_merge [condition="outcome=succeeded"]
     partial_remainder -> rescue_brief
 
     mark_stuck -> exit

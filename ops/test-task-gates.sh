@@ -1305,7 +1305,7 @@ echo ""
 echo "open_pr_prep"
 SAVED_PATH="$PATH"
 PATH="$ORIG_PATH"
-T="$WORK/prep"; mkdir -p "$T"; stage open_pr_prep
+T="$WORK/prep"; mkdir -p "$T"; stage open_pr_prep; stage final_merge
 
 # A fresh upstream + clone per case. $1 is the run branch's content disposition:
 # "empty" leaves the tree equal to main, "work" puts a real change on it.
@@ -1358,7 +1358,9 @@ opp_repo() {
     printf '%s' '{"number":1205,"title":"month_played_and_crowned","body":"","labels":[]}' > "$T/issue.json"
 }
 
-opp_run() { ( cd "$T/wt" && OPP_LOG="$T/opp.log" sh "$T/open_pr_prep.sh" 2>&1 ); }
+# final_merge brings main in first, as the graph does; every case here merges cleanly.
+opp_run() { ( cd "$T/wt" && sh "$T/final_merge.sh" >/dev/null 2>&1 && OPP_LOG="$T/opp.log" sh "$T/open_pr_prep.sh" 2>&1 ); }
+fm_run() { ( cd "$T/wt" && sh "$T/final_merge.sh" 2>&1 ); }
 
 # 1. The regression itself. A branch carrying only checkpoint commits must not
 #    become a PR, and must say so rather than failing obscurely.
@@ -1519,6 +1521,68 @@ git -C "$T/wt" fetch -q origin main; git -C "$T/wt" merge -q --no-edit origin/ma
 mkdir -p "$T/review"; printf '%s' '{"title":"t"}' > "$T/current_task.json"
 OUT=$(integrate_run); RC=$?
 check "integrate passes a merge of main" "0" "$RC"
+
+# 14. final_merge on a conflict. open_pr_prep used to run this merge bare under
+#     `set -e`: the conflict failed the node with the merge left in the tree, the
+#     checkpoint committed the markers, and every [P] Accept partial looped on them
+#     (wfs#1834 run 01M4PF5JV0FHXNV5TA0PC8TV3E, wfs#1747 run 01M4S16BRA0W1J3W32S6ENJBXH).
+fm_conflict() { # a branch whose work and main's edit touch the same line
+    opp_repo work
+    echo other >> "$T/up/a.txt"
+    git -C "$T/up" commit -qam 'main edits the same line'
+}
+fm_conflict
+PRE=$(git -C "$T/wt" rev-parse HEAD)
+OUT=$(fm_run); RC=$?; J=$(lastjson "$OUT")
+check "final_merge conflict: routes, exits 0"      "0" "$RC"
+check "final_merge conflict: final_conflict true"  "true" "$(jq -r '.context_updates.final_conflict' <<<"$J")"
+check "final_merge conflict: names the file"       "a.txt" "$(cat "$T/final_merge_conflict")"
+check "final_merge conflict: pre_merge_sha"        "$PRE" "$(cat "$T/pre_merge_sha")"
+check "final_merge conflict: HEAD unchanged"       "$PRE" "$(git -C "$T/wt" rev-parse HEAD)"
+check "final_merge conflict: no merge in progress" "absent" "$([ -e "$T/wt/.git/MERGE_HEAD" ] && echo present || echo absent)"
+check "final_merge conflict: clean tree"           "" "$(git -C "$T/wt" status --porcelain)"
+check "final_merge conflict: no markers in tree"   "0" "$(grep -c '^<<<<<<<' "$T/wt/a.txt")"
+check "final_merge conflict: one routing object"   "1" "$(grep -c '{' <<<"$OUT")"
+
+# 15. After resolve_merge lands the merge, final_merge runs again: a no-op that routes on
+#     and clears the conflict file resolve_merge_gate reads.
+git -C "$T/wt" merge -q --no-edit origin/main >/dev/null 2>&1
+printf '%s\n' base implemented other > "$T/wt/a.txt"
+git -C "$T/wt" add a.txt
+GIT_EDITOR=true git -C "$T/wt" merge --continue >/dev/null 2>&1
+OUT=$(fm_run); RC=$?; J=$(lastjson "$OUT")
+check "final_merge after resolve: exits 0"           "0" "$RC"
+check "final_merge after resolve: final_conflict false" "false" "$(jq -r '.context_updates.final_conflict' <<<"$J")"
+check "final_merge after resolve: conflict file gone" "absent" "$([ -e "$T/final_merge_conflict" ] && echo present || echo absent)"
+
+# 16. A failed fetch is not a conflict: resolve_merge may not fetch, so exit 1.
+opp_repo work
+git -C "$T/wt" remote set-url origin "$T/nowhere"
+OUT=$(fm_run); RC=$?
+check "final_merge fetch failure: exits 1"          "1" "$RC"
+check "final_merge fetch failure: no conflict file" "absent" "$([ -e "$T/final_merge_conflict" ] && echo present || echo absent)"
+
+# 17. The incident's branch, rebuilt: a conflicted merge committed by a checkpoint.
+#     final_merge finds main "Already up to date", and open_pr_prep must refuse in one
+#     line before CI rather than run CI on the markers.
+fm_conflict
+git -C "$T/wt" fetch -q origin main
+git -C "$T/wt" merge -q --no-edit origin/main >/dev/null 2>&1
+git -C "$T/wt" add -A
+git -C "$T/wt" commit -qm 'fabro(01TEST): open_pr_prep (failed)'
+OUT=$(opp_run); RC=$?
+check "committed markers: refused"           "1" "$RC"
+check "committed markers: names the cause"   "1" "$(grep -c 'adds unresolved conflict markers' <<<"$OUT")"
+check "committed markers: names the file"    "1" "$(grep -c '^  a.txt$' <<<"$OUT")"
+check "committed markers: [P] will not help" "1" "$(grep -c 'cannot remove them' <<<"$OUT")"
+check "committed markers: runs no CI"        "0" "$(wc -l < "$T/opp.log" | tr -d ' ')"
+
+# 18. Markers that main carries (a fixture) are not this branch's, and do not trip it.
+opp_repo work
+printf '%s\n' '<<<<<<< HEAD' 'x' '=======' 'y' '>>>>>>> other' > "$T/up/fixture.txt"
+git -C "$T/up" add -A; git -C "$T/up" commit -qm 'main adds a conflict fixture'
+OUT=$(opp_run); RC=$?
+check "markers from main: PR still opens" "0" "$RC"
 
 PATH="$SAVED_PATH"
 
@@ -2271,6 +2335,10 @@ case "$1 $2" in
   "rev-list --no-merges") echo deadbeef ;;
   "diff-tree --no-commit-id") [ -f "$GIT_STATE/wf_commit" ] && echo .github/workflows/ci.yml ;;
   "rev-parse --abbrev-ref") echo "fabro/run/01TESTRUN" ;;
+  "diff origin/main") [ -f "$GIT_STATE/markers" ] && echo '+<<<<<<< HEAD' ;;
+  "log --format=") echo frontend/src/x.test.tsx ;;
+  "log --format=%cI") echo 2026-10-12T21:44:44Z ;;
+  "log --format=%h %s") echo 'ca63aaa refactor: the same change (#1746)' ;;
 esac
 exit 0
 STUB
@@ -2300,7 +2368,7 @@ rs_tasks() { # rs_tasks N -> t1..tN
     printf '[%s]' "${out%,}"
 }
 rs_setup() { # rs_setup <task_index> <landed> <current id>: 7 tasks
-    rm -rf "$FAB" "$T/empty_diff" "$T/wf_commit" "$T/pr_comment.txt"; mkdir -p "$FAB/feedback" "$FAB/.io"; : > "$T/gh.log"
+    rm -rf "$FAB" "$T/empty_diff" "$T/wf_commit" "$T/markers" "$T/pr_comment.txt"; mkdir -p "$FAB/feedback" "$FAB/.io"; : > "$T/gh.log"
     printf '%s' '{"number":1279,"title":"Cut over to session auth","labels":[{"name":"agent-in-progress"}]}' > "$FAB/issue.json"
     rs_tasks 7 > "$FAB/tasks.json"
     echo "$1" > "$FAB/task_index"
@@ -2383,6 +2451,31 @@ rs_setup 7 7 t7; echo 1319 > "$FAB/pr_number"; rs_run 'review_merge|deterministi
 check "PR open: [P] reuses it"             "yes" "$(rs_has 'PR #1319 is already open')"
 check "PR open: [X] keeps it"              "yes" "$(rs_has 'PR #1319 stays open')"
 
+# 6b. The final merge conflicted and resolve_merge_gate gave up: no signature, a file.
+rs_setup 7 7 t7; printf '%s\n' frontend/src/x.test.tsx > "$FAB/final_merge_conflict"; rs_run ''
+check "final conflict: says why"           "yes" "$(rs_has 'main changed the same lines as this branch before the PR was built')"
+check "final conflict: names the file"     "yes" "$(rs_has 'Conflicting files: frontend/src/x.test.tsx')"
+check "final conflict: [P] retries merge"  "yes" "$(rs_has 'Runs the merge agent once more on the same conflict')"
+check "final conflict: guidance cannot"    "yes" "$(rs_has 'which may not run git')"
+check "final conflict: prints only object" "1" "$(printf '%s\n' "$OUT" | grep -c .)"
+
+# 6c. Committed conflict markers: [P] cannot get past open_pr_prep.
+rs_setup 7 7 t7; : > "$T/markers"; rs_run 'open_pr_prep|deterministic|script failed with exit code: <n>'
+check "markers: [P] refused"               "yes" "$(rs_has 'adds unresolved conflict markers')"
+check "markers: no [P] PR promise"         "no" "$(rs_has 'Opens a PR')"
+
+# 6d. Landed tasks on a tree equal to main: main already has the change.
+rs_setup 7 7 t7; : > "$T/empty_diff"; rs_run 'open_pr_prep|deterministic|script failed with exit code: <n>'
+check "superseded: says so"                "yes" "$(rs_has 'Main already has this change')"
+check "superseded: lists main's commit"    "yes" "$(rs_has '- ca63aaa refactor: the same change (#1746)')"
+check "superseded: closing is the human's" "yes" "$(rs_has 'close #1279 as completed by it')"
+check "superseded: prints only object"     "1" "$(printf '%s\n' "$OUT" | grep -c .)"
+rm -rf "$FAB"; mkdir -p "$FAB/feedback"
+printf '%s' '{"number":1279,"title":"t","labels":[]}' > "$FAB/issue.json"; rs_tasks 2 > "$FAB/tasks.json"
+: > "$T/empty_diff"; rs_run 'open_pr_prep|deterministic|script failed with exit code: <n>'
+check "superseded: not without a landed task" "no" "$(rs_has 'Main already has this change')"
+rm -f "$T/empty_diff"
+
 # 7. The auto-merge sentence follows the same switches the merge phase reads.
 rs_setup 6 5 t6
 printf '%s' '{"number":1279,"labels":[{"name":"architecture"}]}' > "$FAB/issue.json"
@@ -2418,8 +2511,11 @@ check "partial: moves task 6 and 7"        "t6,t7" "$(jq -r 'map(.id) | join(","
 check "partial: tasks.json keeps 5"        "5" "$(jq length "$FAB/tasks.json")"
 check "partial: marks the kind"            "partial" "$(cat "$FAB/remainder_kind")"
 check "partial: says so"                   "1" "$(grep -c '2 unfinished task(s) moved' <<<"$OUT")"
+echo a.txt > "$FAB/final_merge_conflict"; echo 2 > "$FAB/merge_attempts"
 OUT=$(sh "$T/next_task.sh" 2>&1)
 check "partial: next_task starts nothing"  "true" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
+check "next_task done: clears the final conflict" "absent" "$([ -e "$FAB/final_merge_conflict" ] && echo present || echo absent)"
+check "next_task done: resets merge_attempts"     "0" "$(cat "$FAB/merge_attempts")"
 
 # 11. The current task already landed: only the unstarted ones move.
 rs_setup 6 6 t6
@@ -4091,6 +4187,13 @@ rc_served() { # $1 visit $2 parts of issue.json $3 served list of issue.json
 rc_repo; rc_served fac3fac3fac3fac3fac3fac3fac3fac3 1 '[1]'
 rc_gate "$GRAPH" resolve_merge_gate
 check "resolve_merge: complete read, clean merge" "true"  "$(jq -r .context_updates.merge_ok <<<"$J")"
+check "resolve_merge: a task merge returns to the task" "task" "$(jq -r .context_updates.merge_return <<<"$J")"
+rc_repo; rc_served fac3fac3fac3fac3fac3fac3fac3fac3 1 '[1]'; echo a.txt > "$T/final_merge_conflict"
+rc_gate "$GRAPH" resolve_merge_gate
+check "resolve_merge: a final merge returns to final_merge" "pr" "$(jq -r .context_updates.merge_return <<<"$J")"
+rc_repo; rc_served ffffffffffffffffffffffffffffffff 1 '[1]'; echo a.txt > "$T/final_merge_conflict"
+rc_gate "$GRAPH" resolve_merge_gate
+check "resolve_merge: merge_return on the failure branch too" "pr" "$(jq -r .context_updates.merge_return <<<"$J")"
 rc_repo; rc_served ffffffffffffffffffffffffffffffff 1 '[1]'
 rc_gate "$GRAPH" resolve_merge_gate
 check "resolve_merge: stale served visit fails"   "false" "$(jq -r .context_updates.merge_ok <<<"$J")"
@@ -5953,9 +6056,9 @@ git -C "$FL/repo" update-ref -d refs/remotes/origin/main; git -C "$FL/repo" remo
 ( cd "$FL/repo" && PATH="$FL/bin:$SAVED_PATH" sh "$FL/pr_handoff.sh" ) > "$FL/out" 2> "$FL/err"
 check "pr_handoff fast, the base cannot be diffed: watch" "watch" "$(cat "$FL/fab/merge_mode")"
 # 8. edge exclusivity: at most one conditional edge matches each state that a node can publish.
-fl_matches() { # <node> <lane> <tasks_done> <rebase_failed> <merge_ok> -> count of matching evaluable conditional edges
-    awk -v node="$1" -v lane="$2" -v td="$3" -v rf="$4" -v mo="$5" '
-    BEGIN { v["lane"] = lane; v["tasks_done"] = td; v["rebase_failed"] = rf; v["merge_ok"] = mo }
+fl_matches() { # <node> <lane> <tasks_done> <rebase_failed> <merge_ok> <merge_return> -> count of matching evaluable conditional edges
+    awk -v node="$1" -v lane="$2" -v td="$3" -v rf="$4" -v mo="$5" -v mr="$6" '
+    BEGIN { v["lane"] = lane; v["tasks_done"] = td; v["rebase_failed"] = rf; v["merge_ok"] = mo; v["merge_return"] = mr }
     $1 == node && $2 == "->" && match($0, /condition="[^"]*"/) {
         c = substr($0, RSTART + 11, RLENGTH - 12); n = split(c, cl, / && /); ok = 1
         for (i = 1; i <= n && ok; i++) {
@@ -5970,16 +6073,17 @@ fl_matches() { # <node> <lane> <tasks_done> <rebase_failed> <merge_ok> -> count 
 }
 FL_WORST=0; FL_ZERO=""
 for n in next_task route_lane resolve_merge_gate; do
-  for ln in fast standard; do for td in true false; do for rf in true false; do for mo in true false; do
+  for ln in fast standard; do for td in true false; do for rf in true false; do for mo in true false; do for mr in task pr; do
     [ "$td" = true ] && [ "$rf" = true ] && continue
     [ "$n" = route_lane ] && [ "$td$rf$mo" != falsefalsefalse ] && continue
     [ "$n" = resolve_merge_gate ] && { [ "$td$rf" != falsefalse ] || [ "$mo" != true ]; } && continue
-    m=$(fl_matches "$n" "$ln" "$td" "$rf" "$mo")
+    [ "$n" != resolve_merge_gate ] && [ "$mr" = pr ] && continue
+    m=$(fl_matches "$n" "$ln" "$td" "$rf" "$mo" "$mr")
     [ "$m" -gt "$FL_WORST" ] && FL_WORST=$m
     # next_task keeps improve as its unconditional edge; every other published state needs exactly one match.
     if [ "$n" = next_task ] && [ "$td$rf" = falsefalse ] && [ "$ln" = standard ]; then continue; fi
-    [ "$m" -eq 0 ] && FL_ZERO="$FL_ZERO $n/$ln/$td/$rf/$mo"
-  done; done; done; done
+    [ "$m" -eq 0 ] && FL_ZERO="$FL_ZERO $n/$ln/$td/$rf/$mo/$mr"
+  done; done; done; done; done
 done
 check "no state matches two conditional edges out of next_task, route_lane or resolve_merge_gate" "1" "$FL_WORST"
 check "every published state has a matching conditional edge (standard next_task falls to improve)" "" "$FL_ZERO"

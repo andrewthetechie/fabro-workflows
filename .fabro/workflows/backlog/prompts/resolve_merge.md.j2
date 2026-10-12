@@ -1,9 +1,10 @@
 # Merge mainline into the run branch
 
-You are the merge agent for this run. Before starting the next task, `next_task`
-fetched `origin/main` and tried a plain `git merge --no-edit origin/main` so the run
-branch accumulates mainline while tasks land. That merge hit conflicts, so it was
-aborted before you started. The working tree is clean and no merge is in progress.
+You are the merge agent for this run. The run fetches `origin/main` and tries a plain
+`git merge --no-edit origin/main` at two points: in `next_task`, before each task
+starts, so the run branch accumulates mainline while tasks land; and in `final_merge`,
+after every task has landed and before the PR is built. That merge hit conflicts, so it
+was aborted before you started. The working tree is clean and no merge is in progress.
 
 You must perform the whole merge yourself, from scratch, in this one stage.
 
@@ -46,7 +47,8 @@ the command that needs it.
 
 Call `inputs` first. It returns `pre_merge_sha` (the commit the run branch was on
 before the failed merge), `current_task.json` (the task that starts once the merge
-lands, for intent when both sides touch the same code) and `issue.json` (the parent
+lands or, when every task has landed, the last task the run worked; for intent when
+both sides touch the same code) and `issue.json` (the parent
 issue, supplemental). When it ends with `MORE:` lines, request each of those parts
 before continuing.
 
@@ -63,6 +65,10 @@ The repository checkout in the current working directory is your workspace. The
    updates where the two do not overlap. Remove code that becomes duplicated when the
    sides are combined. Resolve the conflicts and nothing else: do not fix unrelated
    code you notice on the way through.
+   If mainline already makes the change the branch makes (another PR fixed the same
+   thing while this run worked), take mainline's version and drop the branch's
+   now-redundant code instead of layering one fix on the other. The run notices on its
+   own when the branch then adds nothing.
 3. `git add <file>`, then `GIT_EDITOR=true git merge --continue`. Repeat until the
    merge completes.
 4. Run the narrowest validation that exercises what you touched, and only when a
