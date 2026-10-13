@@ -51,13 +51,14 @@ class Counts(unittest.TestCase):
     def test_spliced_counts_match_the_agents_baselines(self):
         self.assertEqual(cgi.spliced_counts(REAL), {
             # gate-relief task 05 (#29): refute_fix and refute_fix_gate, +2 nodes and +5 edges in
-            # each importer of _shared/review-merge. `fabro validate` (check-host) confirms it.
-            "backlog": (75, 184),
-            "pr-review": (37, 81),
+            # each importer of _shared/review-merge. #37: resolve_base and resolve_base_gate, +2 nodes
+            # and +6 edges in each importer. `fabro validate` (check-host) confirms them.
+            "backlog": (77, 190),
+            "pr-review": (39, 87),
             "issue-triage": (16, 36),
             "arch-review": (24, 54),
             # Task 02 skeleton (ADR 0022). Task 10 records the `fabro validate` baseline.
-            "dependabot": (49, 109),
+            "dependabot": (51, 115),
             # Task 05 skeleton (fast-path series): no agent stage. Expected, unverified until check-host.
             "merge-queue": (8, 10),
         })

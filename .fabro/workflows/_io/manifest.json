@@ -271,6 +271,46 @@
         ],
         "also": []
       },
+      "resolve_base": {
+        "live": true,
+        "git": "write",
+        "prompt": ".fabro/workflows/_shared/review-merge/prompts/resolve_base.md.j2",
+        "inputs": [
+          {
+            "name": "base_ref",
+            "path": "/tmp/fabro/base_ref",
+            "required": true,
+            "about": "the name of the base branch; origin/<base> is already fetched"
+          },
+          {
+            "name": "resolve_base_pre",
+            "path": "/tmp/fabro/resolve_base_pre",
+            "required": true,
+            "about": "the commit the branch was on before the merge; on abort, HEAD must be back here"
+          },
+          {
+            "name": "resolve_conflicts.txt",
+            "path": "/tmp/fabro/review/resolve_conflicts.txt",
+            "required": true,
+            "about": "the files the aborted rebase stopped on, one per line; the merge may conflict in others; may be empty"
+          },
+          {
+            "name": "pr",
+            "path": "/tmp/fabro/pr.json",
+            "required": true,
+            "about": "the PR number, title, body, refs and labels; for the branch's intent"
+          },
+          {
+            "name": "issues",
+            "path": "/tmp/fabro/review/refute_issues.json",
+            "required": false,
+            "about": "the issues this PR closes, each with number, title and body; supplemental",
+            "absent": "the linked issues are missing; use the PR description for intent"
+          }
+        ],
+        "sealed": [],
+        "also": []
+      },
       "ci_fix_t1": {
         "live": true,
         "prompt": ".fabro/workflows/_shared/review-merge/prompts/ci_fix.md.j2",

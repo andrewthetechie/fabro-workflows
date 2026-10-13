@@ -15,6 +15,7 @@ digraph Dependabot {
         // them. `.merge-fix` is on glm-5.3-flash here, by D14, where pr-review has glm-5.3: review_fix's 15m
         // timeout was measured on glm-5.3, so it is unmeasured for this graph (invariants-graph, Timeouts). Task 10
         // records the first durations. `.refute` is non-GLM, as in every importing graph.
+        // `.merge-resolve` (resolve_base, #37) resolves a conflict with the base, so it is on glm-5.3 with `.rebase-t2`.
         model_stylesheet="
             *                 { model: glm-5.3-flash; }
             .dep-patch        { model: glm-5.3-flash; }
@@ -25,6 +26,7 @@ digraph Dependabot {
             .rebase-t2        { model: glm-5.3; }
             .refute           { model: gpt-6.1-sol; }
             .refute-fix       { model: glm-5.3-flash; }
+            .merge-resolve    { model: glm-5.3; }
         "
     ]
     rankdir=LR

@@ -69,7 +69,7 @@ else
 fi
 echo 0 > /tmp/fabro/fix_attempts
 echo 0 > /tmp/fabro/recheck_done
-rm -f /tmp/fabro/delivery
+rm -f /tmp/fabro/delivery /tmp/fabro/review/resolve_base.md /tmp/fabro/review/resolve_conflicts.txt
 MM=$(cat /tmp/fabro/merge_mode 2>/dev/null || echo watch)
 case \"$MM\" in queue) ;; *) MM=watch ;; esac
 echo \"$MM\" > /tmp/fabro/merge_mode
@@ -176,6 +176,9 @@ def one($axis):
                    else ($X.summary // \"(no summary given)\") end ) ) ]
              | join(NL)
     else empty end ),
+  ( if ($rb | length) > 0
+    then [ \"\", \"### Base re-merge\", \"\", ($rb | rtrimstr(NL)) ] | join(NL)
+    else empty end ),
   ( if $kind == \"merged\"
     then [ \"\", \"### Merged\", \"\",
            \"Squash-merged as `\" + $subject + \"`.\"
@@ -202,6 +205,7 @@ for f in standards spec fix_result ci_fix_result refute refute_fix hygiene; do
   if [ -s \"$R/$f.json\" ] && jq -e 'type == \"object\"' \"$R/$f.json\" >/dev/null 2>&1; then cp \"$R/$f.json\" \"$T/$f.json\"; else echo '{}' > \"$T/$f.json\"; fi
 done
 if [ -s \"$R/post_deploy.md\" ]; then cp \"$R/post_deploy.md\" $T/post_deploy.md; else : > $T/post_deploy.md; fi
+if [ -s \"$R/resolve_base.md\" ]; then cp \"$R/resolve_base.md\" $T/resolve_base.md; else : > $T/resolve_base.md; fi
 PR_URL=$(cat /tmp/fabro/pr_url 2>/dev/null || echo '')
 BASE=$(cat /tmp/fabro/run_base_sha 2>/dev/null || echo '')
 : > $T/cm.ndjson
@@ -215,7 +219,7 @@ if [ -n \"$BASE\" ]; then
   done
 fi
 jq -s . $T/cm.ndjson > $T/cm.json
-jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile rfx $T/refute_fix.json --rawfile pd $T/post_deploy.md --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\" --arg qhead \"${2:-}\"
+jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile rfx $T/refute_fix.json --rawfile pd $T/post_deploy.md --rawfile rb $T/resolve_base.md --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\" --arg qhead \"${2:-}\"
 RENDER_SH
 echo '{\"context_updates\":{\"review_merge_outcome\":\"needs_human\",\"merge_mode\":\"'$MM'\"}}'"]
 
@@ -1267,26 +1271,97 @@ echo 'The branch is still behind the base after a re-merge attempt; a human must
 echo '{\"context_updates\":{\"merge_state\":\"blocked\"}}'
 exit 0"]
     // Every refusal writes BOTH reason files, as in ci_fix_gate.
+    //
+    // A rebase conflict is handed to resolve_base once per run (#37): the conflicted files go
+    // to review/resolve_conflicts.txt, HEAD to resolve_base_pre, and resolve_base_attempts is
+    // written to 1 before the agent runs, as refute_fix_attempts is. It is the bound, not
+    // strict_retry: merge_gate resets strict_retry to 0 every time it approves, and a resolved
+    // PR passes merge_gate again, so strict_retry alone would let a base that keeps moving loop
+    // resolve -> merge -> resolve. The rebase is aborted first: a conflicted rebase must not
+    // cross a stage boundary, so the agent redoes the work as a merge inside its own stage.
+    // remerge_conflict is written on every branch.
     remerge_base [label="Re-merge base tip", shape=parallelogram, output_schema="routing",
         script="B=$(cat /tmp/fabro/base_ref)
 H=$(cat /tmp/fabro/head_ref)
+RA=$(cat /tmp/fabro/resolve_base_attempts 2>/dev/null || echo 0)
 echo 1 > /tmp/fabro/strict_retry
 block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
 git fetch origin \"$B\"
 if git rebase origin/\"$B\"; then
   if git push --force-with-lease origin HEAD:\"$H\"; then
-    echo '{\"context_updates\":{\"remerge_ok\":true}}'
+    echo '{\"context_updates\":{\"remerge_ok\":true,\"remerge_conflict\":false}}'
   else
     git rebase --abort 2>/dev/null || true
     block 'The re-merge push was rejected because the branch moved; a human must merge this PR.'
-    echo '{\"context_updates\":{\"remerge_ok\":false}}'
+    echo '{\"context_updates\":{\"remerge_ok\":false,\"remerge_conflict\":false}}'
   fi
 else
+  git diff --name-only --diff-filter=U > /tmp/fabro/review/resolve_conflicts.txt 2>/dev/null || : > /tmp/fabro/review/resolve_conflicts.txt
   git rebase --abort 2>/dev/null || true
-  block 'A conflict appeared after the review; the base moved substantially, and a human must resolve it.'
-  echo '{\"context_updates\":{\"remerge_ok\":false}}'
+  if [ \"$RA\" = 0 ]; then
+    echo 1 > /tmp/fabro/resolve_base_attempts
+    git rev-parse HEAD > /tmp/fabro/resolve_base_pre
+    echo 'remerge_base: the rebase onto origin/'$B' conflicted in '$(grep -c . /tmp/fabro/review/resolve_conflicts.txt)' file(s); aborted, and resolve_base redoes it as a merge'
+    echo '{\"context_updates\":{\"remerge_ok\":false,\"remerge_conflict\":true}}'
+  else
+    block 'A conflict appeared after the review; the base moved substantially, and a human must resolve it.'
+    echo '{\"context_updates\":{\"remerge_ok\":false,\"remerge_conflict\":false}}'
+  fi
 fi
 exit 0"]
+
+    // The base moved after the review and conflicts with the branch (#37). The agent merges
+    // origin/<base> into the branch and resolves the conflicts inside this one stage, as
+    // backlog's resolve_merge does; it is the third git exception ("git": "write" in the Stage
+    // manifest). A resolution is code nobody reviewed, so resolve_base_gate sends it back
+    // through validate, hygiene and the refuter before deliver and merge_gate see it again.
+    resolve_base [label="Resolve the base merge", class="merge-resolve", timeout="30m", max_retries=1, prompt="@prompts/resolve_base.md.j2"]
+
+    // Verifies the merge from git, not from the agent's account: the Input receipt (every
+    // required input read), no merge in progress, no unmerged path, no conflict marker in a file
+    // the merge can have touched, and origin/<base> an ancestor of HEAD. HEAD always differs from
+    // resolve_base_pre after the stage (the checkpoint commit is --allow-empty), so an aborted
+    // merge is caught by the ancestor check. A refusal resets the checkout to resolve_base_pre
+    // and blocks; deliver never runs, so the PR keeps the reviewed head. resolve_ok is written on
+    // both branches. Both of resolve_base's outcomes come here, as refute_fix's go to its gate.
+    resolve_base_gate [label="Verify the base merge", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="B=$(cat /tmp/fabro/base_ref)
+PRE=$(cat /tmp/fabro/resolve_base_pre 2>/dev/null || echo '')
+CF=$(paste -s -d ',' /tmp/fabro/review/resolve_conflicts.txt 2>/dev/null | sed 's/,/, /g')
+block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
+rm -f /tmp/fabro/review/resolve_base.md
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"base_ref\",\"resolve_base_pre\",\"resolve_conflicts.txt\",\"pr\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+WHY=''
+if [ \"$ROK\" != yes ]; then WHY='the merge agent did not finish (no Input receipt)'; fi
+if [ -z \"$WHY\" ] && [ -e .git/MERGE_HEAD ]; then WHY='a merge was left in progress'; fi
+if [ -z \"$WHY\" ] && git diff --name-only --diff-filter=U | grep -q . ; then WHY='unmerged paths remain'; fi
+if [ -z \"$WHY\" ]; then
+  : > /tmp/fabro/resolve_scan.txt
+  if [ -n \"$PRE\" ]; then git diff --name-only \"$PRE\" HEAD >> /tmp/fabro/resolve_scan.txt 2>/dev/null || true; fi
+  git diff --name-only HEAD >> /tmp/fabro/resolve_scan.txt 2>/dev/null || true
+  git ls-files --others --exclude-standard >> /tmp/fabro/resolve_scan.txt 2>/dev/null || true
+  while IFS= read -r f; do
+    [ -f \"$f\" ] || continue
+    if grep -qI '<<<<<<< ' \"$f\"; then WHY=\"conflict markers were left in $f\"; break; fi
+  done < /tmp/fabro/resolve_scan.txt
+fi
+if [ -z \"$WHY\" ] && ! git merge-base --is-ancestor origin/\"$B\" HEAD 2>/dev/null; then WHY='the branch still does not contain origin/'\"$B\"' (the agent aborted the merge)'; fi
+if [ -n \"$WHY\" ]; then
+  git merge --abort 2>/dev/null || true
+  if [ -n \"$PRE\" ]; then git reset -q --hard \"$PRE\" && git clean -fdq || echo 'could not reset the merge agent edits' >&2; fi
+  block \"A conflict appeared after the review (in: $CF), and the merge agent could not resolve it: $WHY. The branch was left at the reviewed head; a human must resolve it.\"
+  echo '{\"context_updates\":{\"resolve_ok\":false}}'
+else
+  printf '%s' \"The base moved after the review and conflicted with this branch (in: $CF). A merge agent merged origin/$B into the branch and resolved the conflict; validate, the diff-hygiene counters and the refuter then ran again on the result.\" > /tmp/fabro/review/resolve_base.md
+  echo '{\"context_updates\":{\"resolve_ok\":true}}'
+fi"]
+
     // Both terminal reporting nodes post the review comment, rendered by the
     // `merged` and `blocked` kinds in render.jq. There is nothing appended in shell
     // any more: the outcome section is part of the one render, so the report cannot
@@ -1515,9 +1590,16 @@ echo '{\"context_updates\":{\"review_merge_outcome\":\"'$O'\"}}'"]
     merge         -> report_blocked    [condition="context.merge_state=closed || context.merge_state=blocked"]
     merge         -> mark_needs_human
 
+    remerge_base  -> resolve_base      [condition="context.remerge_conflict=true", weight=20]
     remerge_base  -> watch_checks      [condition="context.remerge_ok=true", weight=10]
     remerge_base  -> report_blocked    [condition="context.remerge_ok=false"]
     remerge_base  -> mark_needs_human
+
+    resolve_base      -> resolve_base_gate [condition="outcome=succeeded"]
+    resolve_base      -> resolve_base_gate
+    resolve_base_gate -> validate          [condition="context.resolve_ok=true", weight=10]
+    resolve_base_gate -> report_blocked    [condition="context.resolve_ok=false"]
+    resolve_base_gate -> mark_needs_human
 
     report_queued    -> done              [condition="outcome=succeeded"]
     report_queued    -> mark_needs_human

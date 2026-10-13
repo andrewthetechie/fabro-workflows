@@ -79,6 +79,7 @@ digraph PrReview {
             .ci-fix           { model: glm-5.3-flash; }
             .refute           { model: gpt-6.1-sol; }
             .refute-fix       { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .merge-resolve    { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
         "
     ]
     rankdir=LR

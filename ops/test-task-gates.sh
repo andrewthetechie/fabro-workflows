@@ -3965,6 +3965,133 @@ rfg_run
 check "refute_fix_gate: good receipt keeps edits" "partial" "$(cat "$T/rfg/a.txt")"
 rm -f "$T/refute_fix_base"
 
+# review-merge remerge_base and resolve_base_gate — a conflict with a base that moved after the
+# review goes to resolve_base once per run (#37). Real git: a bare origin, a PR branch `feature`
+# and a base `main` that moves under it. Every case runs in a throwaway clone, because both nodes
+# rebase, reset and clean the checkout they run in.
+echo ""
+echo "review-merge remerge_base / resolve_base_gate"
+extract_from "$SHARED" remerge_base | sed "s#/tmp/fabro#$T#g" > "$T/remerge_base.sh"
+extract_from "$SHARED" resolve_base_gate | sed "s#/tmp/fabro#$T#g" > "$T/resolve_base_gate.sh"
+for n in remerge_base resolve_base_gate; do
+    if ! sh -n "$T/$n.sh" 2>"$T/$n.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL %s is not valid POSIX sh\n' "$n"
+    fi
+done
+rb_git() { git -C "$T/rb/w" -c user.email=t@t -c user.name=t "$@"; }
+# $1: the file main changes after the branch point (a.txt conflicts, b.txt does not)
+rb_repo() {
+    rm -rf "$T/rb"; mkdir -p "$T/rb"
+    git init -q --bare -b main "$T/rb/o.git"
+    git clone -q "$T/rb/o.git" "$T/rb/w" 2>/dev/null
+    git -C "$T/rb/w" config user.email t@t; git -C "$T/rb/w" config user.name t
+    rb_git checkout -q -b main
+    echo one > "$T/rb/w/a.txt"; echo one > "$T/rb/w/b.txt"; rb_git add .; rb_git commit -q -m base
+    rb_git push -q origin main
+    rb_git checkout -q -b feature
+    echo feature > "$T/rb/w/a.txt"; rb_git commit -q -am feature
+    rb_git push -q origin feature
+    rb_git checkout -q main
+    echo main > "$T/rb/w/$1"; rb_git commit -q -am moved
+    rb_git push -q origin main
+    rb_git checkout -q feature
+    echo main > "$T/base_ref"; echo feature > "$T/head_ref"
+    rm -f "$T/resolve_base_attempts" "$T/resolve_base_pre" "$T/strict_retry" "$T/merge_block_reason" "$T/needs_human_reason" "$T/review/resolve_conflicts.txt" "$T/review/resolve_base.md"
+}
+rb_run()  { OUT=$( cd "$T/rb/w" && sh "$T/remerge_base.sh" 2>&1 ); RC=$?; J=$(lastjson "$OUT"); }
+rbg_run() { OUT=$( cd "$T/rb/w" && sh "$T/resolve_base_gate.sh" 2>&1 ); RC=$?; J=$(lastjson "$OUT"); }
+rbc() { jq -r ".context_updates.$1" <<<"$J"; }
+RB_IN="base_ref resolve_base_pre resolve_conflicts.txt pr"
+
+# 1. A conflicting rebase, first time: the resolve route, with the pre-merge HEAD and the files.
+rb_repo a.txt
+H0=$(rb_git rev-parse HEAD)
+rb_run
+check "remerge_base: conflict takes the resolve route" "true"  "$(rbc remerge_conflict)"
+check "remerge_base: conflict is not remerge_ok"       "false" "$(rbc remerge_ok)"
+check "remerge_base: conflict writes the counter"      "1"     "$(cat "$T/resolve_base_attempts")"
+check "remerge_base: conflict records the pre HEAD"    "$H0"   "$(cat "$T/resolve_base_pre")"
+check "remerge_base: conflict lists the file"          "a.txt" "$(cat "$T/review/resolve_conflicts.txt")"
+check "remerge_base: conflict leaves no rebase"        "absent" "$([ -d "$T/rb/w/.git/rebase-merge" ] || [ -d "$T/rb/w/.git/rebase-apply" ] && echo present || echo absent)"
+check "remerge_base: conflict leaves HEAD alone"       "$H0"   "$(rb_git rev-parse HEAD)"
+check "remerge_base: conflict sets strict_retry"       "1"     "$(cat "$T/strict_retry")"
+check "remerge_base: conflict writes no block reason"  "absent" "$([ -f "$T/merge_block_reason" ] && echo present || echo absent)"
+
+# 2. A second conflict in the same run: the counter is 1, so a human, with both reason files.
+rb_run
+check "remerge_base: second conflict is no resolve route" "false" "$(rbc remerge_conflict)"
+check "remerge_base: second conflict is not ok"           "false" "$(rbc remerge_ok)"
+check "remerge_base: second conflict block reason"        "1" "$(grep -c 'A conflict appeared after the review' "$T/merge_block_reason")"
+check "remerge_base: second conflict needs-human reason"  "1" "$(grep -c 'A conflict appeared after the review' "$T/needs_human_reason")"
+check "remerge_base: second conflict keeps the counter"   "1" "$(cat "$T/resolve_base_attempts")"
+
+# 3. A base that moved without conflicting: rebased, pushed, and no resolve route.
+rb_repo b.txt
+rb_run
+check "remerge_base: clean rebase is ok"            "true"  "$(rbc remerge_ok)"
+check "remerge_base: clean rebase is no conflict"   "false" "$(rbc remerge_conflict)"
+check "remerge_base: clean rebase leaves the counter" "absent" "$([ -f "$T/resolve_base_attempts" ] && echo present || echo absent)"
+check "remerge_base: clean rebase pushed the branch" "$(rb_git rev-parse HEAD)" "$(git -C "$T/rb/o.git" rev-parse feature)"
+
+# resolve_base_gate. Each case starts from case 1's state: a conflicting base, aborted, counter 1.
+rb_conflicted() { rb_repo a.txt; rb_run; }
+# the agent's merge, resolved to keep both lines, then fabro's checkpoint commit
+rb_resolve() {
+    rb_git fetch -q origin
+    rb_git merge -q origin/main >/dev/null 2>&1
+    printf 'feature\nmain\n' > "$T/rb/w/a.txt"; rb_git add a.txt
+    GIT_EDITOR=true rb_git merge --continue >/dev/null 2>&1
+    rb_git commit -q --allow-empty -m checkpoint
+}
+
+# 4. A good merge with a receipt: resolve_ok, the report note, and no block reason.
+rb_conflicted; rb_resolve; H1=$(rb_git rev-parse HEAD)
+mkreadok "$FV" $RB_IN
+rbg_run
+check "resolve_base_gate: good merge passes"          "true" "$(rbc resolve_ok)"
+check "resolve_base_gate: good merge keeps HEAD"      "$H1"  "$(rb_git rev-parse HEAD)"
+check "resolve_base_gate: good merge writes the note" "1"    "$(grep -c 'conflicted with this branch (in: a.txt)' "$T/review/resolve_base.md")"
+check "resolve_base_gate: good merge writes no block" "absent" "$([ -f "$T/merge_block_reason" ] && echo present || echo absent)"
+
+# 5. The same merge without a receipt: refused, reset to the pre-merge HEAD, both reasons.
+rb_conflicted; P=$(cat "$T/resolve_base_pre"); rb_resolve
+printf '%s' '{"visit":"ffffffffffffffffffffffffffffffff","inputs":{}}' > "$T/.io/served.json"
+rbg_run
+check "resolve_base_gate: no receipt is refused"     "false" "$(rbc resolve_ok)"
+check "resolve_base_gate: no receipt resets HEAD"    "$P"    "$(rb_git rev-parse HEAD)"
+check "resolve_base_gate: no receipt block reason"   "1"     "$(grep -c 'no Input receipt' "$T/merge_block_reason")"
+check "resolve_base_gate: no receipt needs-human"    "1"     "$(grep -c 'no Input receipt' "$T/needs_human_reason")"
+check "resolve_base_gate: no receipt writes no note" "absent" "$([ -f "$T/review/resolve_base.md" ] && echo present || echo absent)"
+
+# 6. The agent aborted (only the checkpoint commit): origin/main is not an ancestor.
+rb_conflicted; P=$(cat "$T/resolve_base_pre"); rb_git commit -q --allow-empty -m checkpoint
+mkreadok "$FV" $RB_IN
+rbg_run
+check "resolve_base_gate: an abort is refused"       "false" "$(rbc resolve_ok)"
+check "resolve_base_gate: an abort names the cause"  "1"     "$(grep -c 'still does not contain origin/main' "$T/merge_block_reason")"
+check "resolve_base_gate: an abort resets HEAD"      "$P"    "$(rb_git rev-parse HEAD)"
+
+# 7. Markers committed by the checkpoint (git add -A marks a conflicted file resolved).
+rb_conflicted; P=$(cat "$T/resolve_base_pre")
+rb_git fetch -q origin; rb_git merge -q origin/main >/dev/null 2>&1
+rb_git add -A; rb_git commit -q -m checkpoint
+mkreadok "$FV" $RB_IN
+rbg_run
+check "resolve_base_gate: markers are refused"       "false" "$(rbc resolve_ok)"
+check "resolve_base_gate: markers name the file"     "1"     "$(grep -c 'conflict markers were left in a.txt' "$T/merge_block_reason")"
+check "resolve_base_gate: markers reset HEAD"        "$P"    "$(rb_git rev-parse HEAD)"
+check "resolve_base_gate: markers restore the file"  "feature" "$(cat "$T/rb/w/a.txt")"
+
+# 8. A merge left in progress: refused, aborted and reset.
+rb_conflicted; P=$(cat "$T/resolve_base_pre")
+rb_git fetch -q origin; rb_git merge -q origin/main >/dev/null 2>&1
+mkreadok "$FV" $RB_IN
+rbg_run
+check "resolve_base_gate: a merge in progress is refused" "false" "$(rbc resolve_ok)"
+check "resolve_base_gate: a merge in progress is aborted" "absent" "$([ -f "$T/rb/w/.git/MERGE_HEAD" ] && echo present || echo absent)"
+check "resolve_base_gate: a merge in progress resets HEAD" "$P" "$(rb_git rev-parse HEAD)"
+rm -rf "$T/rb" "$T/resolve_base_attempts" "$T/resolve_base_pre" "$T/strict_retry" "$T/base_ref" "$T/head_ref" "$T/merge_block_reason" "$T/needs_human_reason"
+
 # ---------------------------------------------------------------------------
 # review-merge refute guard — Sealed paths block the refuter's reads (ADR 0016
 # D8). Needs fabro-io on PATH; SKIPs otherwise (present in profile images).
@@ -4552,6 +4679,8 @@ check "ci_fix: both reason files agree"        "1" "$(cmp -s "$T/fab/merge_block
 extract_from "$SHARED" remerge_base | sed "s#/tmp/fabro#$T/fab#g" > "$T/remerge.sh"
 echo main > "$T/fab/base_ref"; echo fabro/run/01TEST > "$T/fab/head_ref"
 rm -f "$T/fab/merge_block_reason" "$T/fab/needs_human_reason"
+# the resolve turn already ran in this run (#37), so this conflict is the one that blocks
+echo 1 > "$T/fab/resolve_base_attempts"
 OUT=$(sh "$T/remerge.sh" 2>&1)
 check "remerge: conflict routes remerge_ok=false" "false" "$(jq -r '.context_updates.remerge_ok' <<<"$(lastjson "$OUT")")"
 check "remerge: names the conflict"               "1" "$(grep -c 'A conflict appeared' "$T/fab/merge_block_reason")"
@@ -4604,6 +4733,15 @@ C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
 check "render: post-deploy heading shown"      "1" "$(grep -c '^### Post-deploy checks$' <<<"$C")"
 check "render: post-deploy item verbatim"      "1" "$(grep -c '^- [[] []] Sign in on staging$' <<<"$C")"
 check "render: post-deploy caveat"             "1" "$(grep -c 'Not checked by the agents. Verify after deploy.' <<<"$C")"
+
+# #37: a base merge resolved after the review is shown, and rm_setup clears a stale note.
+check "render: no base re-merge section by default" "0" "$(grep -c '^### Base re-merge$' <<<"$C")"
+printf '%s' 'The base moved after the review and conflicted with this branch (in: a.txt).' > "$T/review/resolve_base.md"
+C=$( cd "$T" && sh "$T/render_comment.sh" merged 2>&1 )
+check "render: base re-merge heading"          "1" "$(grep -c '^### Base re-merge$' <<<"$C")"
+check "render: base re-merge note verbatim"    "1" "$(grep -c '^The base moved after the review and conflicted with this branch (in: a.txt).$' <<<"$C")"
+FABRO_AUTO_MERGE=1 sh "$T/rm_setup.sh" >/dev/null 2>&1
+check "render: rm_setup clears the note"       "absent" "$([ -f "$T/review/resolve_base.md" ] && echo present || echo absent)"
 rm -f "$T/review/post_deploy.md"
 C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
 check "render: no checklist, no heading"       "0" "$(grep -c '^### Post-deploy checks$' <<<"$C")"
