@@ -4366,6 +4366,7 @@ check "resolve_merge: incomplete input fails"     "false" "$(jq -r .context_upda
 rc_repo; echo '{"_io":{"visit":"fac3fac3fac3fac3fac3fac3fac3fac3"}}' > "$T/rebase_result.json"
 rc_gate "$PR" rebase_gate
 check "rebase: valid receipt, clean rebase"       "true"  "$(jq -r .context_updates.rebase_ok <<<"$J")"
+check "rebase: ok records the rebased head"       "$(git -C "$T/wt" rev-parse HEAD)" "$(cat "$T/run_base_sha" 2>/dev/null)"
 rc_repo; echo '{"_io":{"visit":"ffffffffffffffffffffffffffffffff"}}' > "$T/rebase_result.json"
 rc_gate "$PR" rebase_gate
 check "rebase: stale receipt exits 0 (routes)"    "0"     "$RC"
@@ -4753,6 +4754,50 @@ check "render: fix turn line"                  "1" "$(grep -c "One fix turn ran 
 rm -f "$T/review/refute_fix.json"
 C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
 check "render: no fix turn, no line"           "0" "$(grep -c "One fix turn ran" <<<"$C")"
+
+# ---------------------------------------------------------------------------
+# the report's commit list (real git): only the review's own commits. pr-review's
+# rebase_check moved run_base_sha past the rebase, and the render excludes
+# origin/<base>, so neither a rebase nor resolve_base's merge (#37) lists base commits.
+# ---------------------------------------------------------------------------
+echo ""
+echo "report commit list (real git)"
+PATH="$ORIG_PATH"
+T="$WORK/cmlist"; rm -rf "$T"; mkdir -p "$T/fab/review"
+git init -q --bare -b main "$T/up.git"
+git clone -q "$T/up.git" "$T/seed" 2>/dev/null
+for d in seed; do git -C "$T/$d" config user.email t@t; git -C "$T/$d" config user.name t; done
+echo a > "$T/seed/a.txt"; git -C "$T/seed" add -A; git -C "$T/seed" commit -qm init; git -C "$T/seed" push -q origin main
+git clone -q "$T/up.git" "$T/wt"
+git -C "$T/wt" config user.email t@t; git -C "$T/wt" config user.name t
+git -C "$T/wt" checkout -qb pr
+echo p > "$T/wt/p.txt"; git -C "$T/wt" add -A; git -C "$T/wt" commit -qm 'the pr change'
+echo m > "$T/seed/m.txt"; git -C "$T/seed" add -A; git -C "$T/seed" commit -qm 'main moved'; git -C "$T/seed" push -q origin main
+echo 5 > "$T/fab/pr_number"; echo main > "$T/fab/base_ref"; echo pr > "$T/fab/head_ref"
+echo '{"url":"https://github.com/o/r/pull/5"}' > "$T/fab/pr.json"; echo '[]' > "$T/fab/linked_issues.json"
+git -C "$T/wt" rev-parse HEAD > "$T/fab/run_base_sha"
+extract_from "$PR" rebase_check | sed "s#/tmp/fabro#$T/fab#g" > "$T/rebase_check.sh"
+OUT=$( cd "$T/wt" && sh "$T/rebase_check.sh" 2>&1 )
+check "cmlist: the pr rebases clean"            "clean" "$(jq -r .context_updates.rebase_state <<<"$(lastjson "$OUT")")"
+check "cmlist: rebase_check moves run_base_sha" "$(git -C "$T/wt" rev-parse HEAD)" "$(cat "$T/fab/run_base_sha")"
+extract_from "$SHARED" rm_setup | sed "s#/tmp/fabro#$T/fab#g" > "$T/rm_setup.sh"
+( cd "$T/wt" && FABRO_AUTO_MERGE=1 sh "$T/rm_setup.sh" >/dev/null 2>&1 )
+echo f > "$T/wt/f.txt"; git -C "$T/wt" add -A; git -C "$T/wt" commit -qm 'fabro(01TEST): review_merge.review_fix (succeeded)'
+git -C "$T/wt" commit -q --allow-empty -m 'fabro(01TEST): review_merge.refute (succeeded)'
+C=$( cd "$T/wt" && sh "$T/fab/render_comment.sh" merged 2>&1 )
+check "cmlist: lists the review's commit"       "1" "$(grep -c 'review_merge.review_fix' <<<"$C")"
+check "cmlist: skips the empty checkpoint"      "0" "$(grep -c 'review_merge.refute' <<<"$C")"
+check "cmlist: no base commit after a rebase"   "0" "$(grep -c 'main moved' <<<"$C")"
+check "cmlist: not the pr's own commit"         "0" "$(grep -c 'the pr change' <<<"$C")"
+echo m2 > "$T/seed/m2.txt"; git -C "$T/seed" add -A; git -C "$T/seed" commit -qm 'main moved again'; git -C "$T/seed" push -q origin main
+git -C "$T/wt" fetch -q origin main
+git -C "$T/wt" merge -q --no-edit origin/main
+C=$( cd "$T/wt" && sh "$T/fab/render_comment.sh" merged 2>&1 )
+check "cmlist: no base commit after a merge"    "0" "$(grep -c 'main moved again' <<<"$C")"
+check "cmlist: still lists the review's commit" "1" "$(grep -c 'review_merge.review_fix' <<<"$C")"
+echo gone > "$T/fab/base_ref"
+C=$( cd "$T/wt" && sh "$T/fab/render_comment.sh" merged 2>&1 )
+check "cmlist: a missing base ref still lists"  "1" "$(grep -c 'review_merge.review_fix' <<<"$C")"
 
 # ---------------------------------------------------------------------------
 # fabro-code — the index wrapper (docs/code-context C1/C2/C3/C4).

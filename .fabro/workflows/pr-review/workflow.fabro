@@ -179,6 +179,11 @@ B=$(cat /tmp/fabro/base_ref)
 echo '{\"context_updates\":{\"base_ref\":\"'$B'\"}}'"]
 
     // ---- Rebase ladder ----
+    // A rebase moves the run's starting point: claim recorded the PR head as
+    // `run_base_sha`, and after a rebase `run_base_sha..HEAD` holds every base commit
+    // the rebase brought in, which the report then listed as this review's changes.
+    // So a successful rebase (clean here, or verified in rebase_gate) records the
+    // rebased head again. The review has made no commits yet at either point.
     rebase_check [label="Rebase onto base tip", shape=parallelogram, timeout="10m", output_schema="routing",
         script="B=$(cat /tmp/fabro/base_ref)
 rm -f /tmp/fabro/rebase_result.json
@@ -190,6 +195,7 @@ if git merge-base --is-ancestor origin/\"$B\" HEAD; then
   exit 0
 fi
 if git rebase origin/\"$B\"; then
+  git rev-parse HEAD > /tmp/fabro/run_base_sha
   echo '{\"context_updates\":{\"rebase_state\":\"clean\"}}'
   exit 0
 fi
@@ -256,6 +262,7 @@ if [ $BAD -ne 0 ]; then
   fi
   echo '{\"context_updates\":{\"rebase_ok\":false,\"rebase_attempts\":'$A'}}'
 else
+  git rev-parse HEAD > /tmp/fabro/run_base_sha
   echo '{\"context_updates\":{\"rebase_ok\":true,\"rebase_attempts\":'$A'}}'
 fi"]
 

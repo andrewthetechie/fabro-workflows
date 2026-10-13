@@ -16,7 +16,8 @@ digraph ReviewMerge {
     //   /tmp/fabro/head_ref         the PR head branch name
     //   /tmp/fabro/pr.json          `gh pr view` json, with .url and .labels
     //   /tmp/fabro/linked_issues.json  `[.closingIssuesReferences[]?]`, may be `[]`
-    //   /tmp/fabro/run_base_sha     commit the run started from, for the commit list
+    //   /tmp/fabro/run_base_sha     commit the run started from, for the commit list (after any
+    //                               rebase the importing graph does before this phase)
     //   the PR head branch checked out, with full history (clone depth 0)
     //   FABRO_AUTO_MERGE in the environment
     //   /tmp/fabro/merge_mode       OPTIONAL: `queue` or `watch`. Anything else, or absent, is
@@ -45,6 +46,9 @@ digraph ReviewMerge {
     // Builds the report renderer and resolves the auto-merge switches. In pr-review
     // these lived in `validate_input`, which also parsed the `pr_number` input; only
     // the half that this phase owns came across, so the subgraph is self-contained.
+    // The report's commit list is `run_base_sha..HEAD`, minus commits on origin/<base>:
+    // resolve_base merges the base into the branch (#37), and without the exclusion
+    // every base commit that merge brought in was listed as one of the review's changes.
     rm_setup [label="Prepare review and merge", shape=parallelogram, output_schema="routing",
         script="set -e
 mkdir -p /tmp/fabro /tmp/fabro/review /tmp/fabro/feedback
@@ -208,9 +212,12 @@ if [ -s \"$R/post_deploy.md\" ]; then cp \"$R/post_deploy.md\" $T/post_deploy.md
 if [ -s \"$R/resolve_base.md\" ]; then cp \"$R/resolve_base.md\" $T/resolve_base.md; else : > $T/resolve_base.md; fi
 PR_URL=$(cat /tmp/fabro/pr_url 2>/dev/null || echo '')
 BASE=$(cat /tmp/fabro/run_base_sha 2>/dev/null || echo '')
+B=$(cat /tmp/fabro/base_ref 2>/dev/null || echo '')
+X=''
+if [ -n \"$B\" ] && git rev-parse -q --verify \"origin/$B^{commit}\" >/dev/null 2>&1; then X=\"^origin/$B\"; fi
 : > $T/cm.ndjson
 if [ -n \"$BASE\" ]; then
-  for c in $(git rev-list --reverse \"$BASE\"..HEAD 2>/dev/null); do
+  for c in $(git rev-list --reverse \"$BASE\"..HEAD $X 2>/dev/null); do
     git diff-tree --no-commit-id --name-only -r \"$c\" 2>/dev/null | grep -q . || continue
     SHORT=$(git rev-parse --short=8 \"$c\")
     STAT=$(git show --stat --format= \"$c\" | tail -1 | sed 's/^ *//')
