@@ -861,6 +861,31 @@ op_setup
 sh "$T/open_pr.sh" >/dev/null 2>&1
 check "plain PR: not labelled"     "0" "$(grep -c 'add-label architecture' "$T/gh.log")"
 
+# 5. #35: the same tree failed the final validation again. The PR opens as a draft so
+#    the reviewed work is not lost, the issue is not handed to review, and the reason
+#    mark_stuck posts names the PR and the failing tests.
+op_setup pr_draft; rm -f "$T/draft_reason.md"
+printf '%s\n' 'FAILED tests/test_api.py::test_patch_profile' > "$T/final_failures.txt"
+OUT=$(sh "$T/open_pr.sh" 2>&1); RC=$?
+check "draft: exit 0"                  "0" "$RC"
+check "draft: created as a draft"      "1" "$(grep -c -- "^pr create --head $BR .*--draft" "$T/gh.log")"
+check "draft: routes as a draft"       "true" "$(jq -r '.context_updates.pr_draft' <<<"$(lastjson "$OUT")")"
+check "draft: no Review label"         "0" "$(grep -c 'add-label Review' "$T/gh.log")"
+check "draft: no run-complete comment" "0" "$(grep -c 'Agent run complete' "$T/gh.log")"
+check "draft: reason names the PR"     "1" "$(grep -c 'https://github.com/andrewthetechie/jelly-swipe/pull/123' "$T/draft_reason.md")"
+check "draft: reason names the tests"  "1" "$(grep -c 'test_patch_profile' "$T/draft_reason.md")"
+op_setup pr_exists; : > "$T/pr_draft"
+OUT=$(sh "$T/open_pr.sh" 2>&1)
+check "draft, PR open: back to draft"  "1" "$(grep -c "^pr ready $BR --undo" "$T/gh.log")"
+check "draft, PR open: body replaced"  "1" "$(grep -c "^pr edit $BR --body-file" "$T/gh.log")"
+rm -f "$T/pr_draft"
+op_setup; echo stale > "$T/draft_reason.md"
+OUT=$(sh "$T/open_pr.sh" 2>&1)
+check "not a draft: routes false"      "false" "$(jq -r '.context_updates.pr_draft' <<<"$(lastjson "$OUT")")"
+check "not a draft: no stale reason"   "absent" "$([ -e "$T/draft_reason.md" ] && echo present || echo absent)"
+check "not a draft: plain create"      "0" "$(grep -c -- '--draft' "$T/gh.log")"
+rm -f "$T/final_failures.txt"
+
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
 
@@ -1009,7 +1034,7 @@ PATH="$T/bin:$SAVED_PATH"
 export GH_LOG="$T/gh.log" GH_STATE="$T"
 stage_into mark_stuck "$FAB"
 
-ms_setup() { : > "$T/gh.log"; rm -f "$FAB/issue.json" "$FAB/issue_number" "$FAB/stuck_reason.md" "$FAB/stuck_comment.md"; }
+ms_setup() { : > "$T/gh.log"; rm -f "$FAB/issue.json" "$FAB/issue_number" "$FAB/stuck_reason.md" "$FAB/stuck_comment.md" "$FAB/draft_reason.md"; }
 
 ms_setup
 printf '%s' '{"number":356}' > "$FAB/issue.json"
@@ -1046,6 +1071,17 @@ echo 2277 > "$FAB/issue_number"
 OUT=$(sh "$T/mark_stuck.sh" 2>&1)
 check "null number falls back too"    "1" \
     "$(grep -c -- 'issue edit 2277 --remove-label agent-in-progress' "$T/gh.log")"
+
+# #35: the draft path. open_pr wrote the reason, which names the draft PR.
+ms_setup
+printf '%s' '{"number":2733}' > "$FAB/issue.json"
+printf '%s\n' 'Draft PR https://github.com/o/r/pull/9 holds the reviewed work.' > "$FAB/draft_reason.md"
+OUT=$(sh "$T/mark_stuck.sh" 2>&1); RC=$?
+check "draft: exits 0"                "0" "$RC"
+check "draft: swaps the label"        "1" "$(grep -c -- 'issue edit 2733 --remove-label agent-in-progress --add-label agent-stuck' "$T/gh.log")"
+check "draft: comment is the reason"  "1" "$(grep -c 'pull/9 holds the reviewed work' "$FAB/stuck_comment.md")"
+check "draft: not the generic line"   "0" "$(grep -c 'gave up' "$FAB/stuck_comment.md")"
+check "draft: Review label removed"   "1" "$(grep -c -- 'issue edit 2733 --remove-label Review' "$T/gh.log")"
 
 # Nothing to name at all: say nothing to GitHub rather than edit issue 0.
 ms_setup
@@ -1473,8 +1509,8 @@ check "workflow change from main still runs CI" "2" "$(wc -l < "$T/opp.log" | tr
 #     workflow commits, which tests 7 and 8 still catch. Grepping the extracted script is
 #     the binding contract test: a revert to plain `git log` re-opens this bug and fails
 #     here even though no fixture can cheaply rebuild the historical 3-way merge state.
-check "guard excludes merge commits" "1" "$(grep -c -- 'rev-list --no-merges' "$T/open_pr_prep.sh")"
-check "guard reads each commit's own diff" "1" "$(grep -c -- 'diff-tree --no-commit-id' "$T/open_pr_prep.sh")"
+check "guard excludes merge commits" "1" "$(grep -c -- 'rev-list --no-merges origin/main..HEAD' "$T/open_pr_prep.sh")"
+check "guard reads each commit's own diff" "1" "$(grep -c -- 'diff-tree --no-commit-id --name-only -r .* -- .github/workflows/' "$T/open_pr_prep.sh")"
 check "guard still scopes to workflows path" "1" "$(grep -q -- '-- .github/workflows/' "$T/open_pr_prep.sh" && echo 1 || echo 0)"
 
 # 11. Issue #18. A real merge of a main that changed a workflow file, on a branch
@@ -1507,8 +1543,10 @@ mkdir -p "$T/review"; : > "$T/completed.md"
 integrate_run() { ( cd "$T/wt" && sh "$T/integrate.sh" 2>&1 ); }
 opp_repo workflow
 mkdir -p "$T/review"; printf '%s' '{"title":"t"}' > "$T/current_task.json"
+rm -f "$T/reviewed_sha"
 OUT=$(integrate_run); RC=$?
 check "integrate refuses a task workflow edit" "1" "$RC"
+check "integrate records no reviewed commit on refusal" "absent" "$([ -e "$T/reviewed_sha" ] && echo present || echo absent)"
 check "integrate names the commit" "1" "$(grep -c '^  [0-9a-f]* fabro(01TEST): coder' <<<"$OUT")"
 check "integrate names the file" "1" "$(grep -c '^    .github/workflows/test-backend.yml' <<<"$OUT")"
 check "integrate records nothing on refusal" "absent" \
@@ -1521,6 +1559,8 @@ git -C "$T/wt" fetch -q origin main; git -C "$T/wt" merge -q --no-edit origin/ma
 mkdir -p "$T/review"; printf '%s' '{"title":"t"}' > "$T/current_task.json"
 OUT=$(integrate_run); RC=$?
 check "integrate passes a merge of main" "0" "$RC"
+check "integrate records the reviewed commit (#35)" "$(git -C "$T/wt" rev-parse HEAD)" "$(cat "$T/reviewed_sha" 2>/dev/null)"
+rm -f "$T/reviewed_sha"
 
 # 14. final_merge on a conflict. open_pr_prep used to run this merge bare under
 #     `set -e`: the conflict failed the node with the merge left in the tree, the
@@ -1583,6 +1623,203 @@ printf '%s\n' '<<<<<<< HEAD' 'x' '=======' 'y' '>>>>>>> other' > "$T/up/fixture.
 git -C "$T/up" add -A; git -C "$T/up" commit -qm 'main adds a conflict fixture'
 OUT=$(opp_run); RC=$?
 check "markers from main: PR still opens" "0" "$RC"
+
+# ---------------------------------------------------------------------------
+# #35: a red final validation routes instead of failing. The policy, in order:
+# unreviewed edits on a branch with no PR are dropped (drop); the first failure in a
+# run goes to one fix turn (fix); a tree's first failure after that goes to the gate
+# (rescue); the same tree failing again opens a draft PR instead of the gate (draft).
+# ---------------------------------------------------------------------------
+# A red ci.sh: test-runner summaries from vitest, pytest, cargo and go, plus a line
+# with braces that must never reach stdout. Written over the clone's tracked ci.sh.
+opp_red() {
+    cat > "$T/wt/.fabro/ci.sh" <<'RED'
+#!/bin/sh
+echo ci >> "$OPP_LOG"
+echo 'render {"props":{"a":1}}'
+printf '\033[31m FAIL \033[39m src/components/Form.test.tsx > BusinessDetailsForm > patches the profile\n'
+echo ' FAIL  src/components/Form.test.tsx > BusinessDetailsForm > patches the profile'
+echo 'FAILED tests/test_api.py::test_patch_profile - AssertionError'
+echo 'test api::tests::patches ... FAILED'
+echo '--- FAIL: TestPatchProfile (0.00s)'
+echo ' Test Files  2 failed | 40 passed'
+exit 1
+RED
+    chmod +x "$T/wt/.fabro/ci.sh"
+    git -C "$T/wt" update-index --assume-unchanged .fabro/ci.sh
+}
+opp_route() { jq -r '.context_updates.final_route' <<<"$(lastjson "$OUT")"; }
+rm -f "$T/final_fix_attempts" "$T/final_fail_keys" "$T/reviewed_sha" "$T/pr_number" "$T/pr_draft" "$T/final_stop" "$T/partial_unreviewed"
+# The key final_fail_keys holds: the patch-id of the run's own change on top of main.
+opp_key() { git -C "$T/wt" diff origin/main HEAD | git patch-id --stable | cut -d' ' -f1; }
+
+# 19. The first red final validation goes to the one fix turn, not the gate.
+opp_repo work; opp_red
+OUT=$(opp_run); RC=$?
+check "red final: routes, exits 0"           "0" "$RC"
+check "red final: first failure is fix"      "fix" "$(opp_route)"
+check "red final: fix counted"               "1" "$(cat "$T/final_fix_attempts" 2>/dev/null)"
+check "red final: retried once"              "4" "$(wc -l < "$T/opp.log" | tr -d ' ')"
+check "red final: only the routing braces"   "1" "$(grep -c '[{}]' <<<"$OUT")"
+check "red final: names the vitest test"     "1" "$(grep -c '^FAIL  src/components/Form.test.tsx > BusinessDetailsForm > patches the profile$' "$T/final_failures.txt")"
+check "red final: names the pytest test"     "1" "$(grep -c '^FAILED tests/test_api.py::test_patch_profile' "$T/final_failures.txt")"
+check "red final: names the cargo test"      "1" "$(grep -c '^test api::tests::patches ... FAILED$' "$T/final_failures.txt")"
+check "red final: names the go test"         "1" "$(grep -c '^--- FAIL: TestPatchProfile' "$T/final_failures.txt")"
+check "red final: no ANSI in the names"      "0" "$(grep -c "$(printf '\033')" "$T/final_failures.txt")"
+check "red final: rework.md has the validate shape" "1" "$(head -1 "$T/feedback/rework.md" | grep -c '^## Validation failed')"
+check "red final: rework.md lists the tests first" "1" "$(head -8 "$T/feedback/rework.md" | grep -c '^FAILED tests/test_api.py::test_patch_profile')"
+check "red final: no PR body"                "absent" "$([ -f "$T/pr_body.md" ] && echo present || echo absent)"
+check "red final: fix records the code"      "$(opp_key)" "$(cat "$T/final_fail_keys")"
+
+# 20. The fix turn changed the code and it is still red: the gate, which records it.
+echo fixed >> "$T/wt/a.txt"; git -C "$T/wt" commit -qam 'fabro(01TEST): rework_t4 (succeeded)'
+OUT=$(opp_run); RC=$?
+check "red again: routes, exits 0"           "0" "$RC"
+check "red again: goes to the gate"          "rescue" "$(opp_route)"
+check "red again: code recorded"             "$(opp_key)" "$(tail -1 "$T/final_fail_keys")"
+check "red again: final_stop names the tests" "1" "$(grep -c 'test_patch_profile' "$T/final_stop")"
+
+# 21. The same code failing again never returns to the gate: a draft PR is built.
+OUT=$(opp_run); RC=$?
+check "same tree: routes, exits 0"           "0" "$RC"
+check "same tree: draft"                     "draft" "$(opp_route)"
+check "same tree: draft marker"              "present" "$([ -f "$T/pr_draft" ] && echo present || echo absent)"
+check "same tree: body derived"              "1" "$(grep -c 'fabro:commit-body:start' "$T/pr_body.md")"
+check "same tree: body says validation failed" "1" "$(grep -c 'failed after the final merge with origin/main' "$T/pr_body.md")"
+check "same tree: body names the tests"      "1" "$(grep -c 'test_patch_profile' "$T/pr_body.md")"
+check "same tree: body does not claim green" "0" "$(grep -c 'green after final merge' "$T/pr_body.md")"
+check "same tree: subject derived"           "1" "$(grep -c '(#1205)$' "$T/commit_subject.txt")"
+
+# 22. Main moving underneath is not a code change of this run's: still a draft, not the
+#     gate (the gate's 4h wait is long enough for main to move on a busy repo).
+echo moved > "$T/up/m.txt"; git -C "$T/up" add -A; git -C "$T/up" commit -qm 'main moves'
+OUT=$(opp_run)
+check "main moved: still the same code"      "draft" "$(opp_route)"
+# A change to the run's own code is new code: the gate again.
+echo again >> "$T/wt/a.txt"; git -C "$T/wt" commit -qam 'fabro(01TEST): rework_t4 (succeeded)'
+OUT=$(opp_run)
+check "new code: gate again"                 "rescue" "$(opp_route)"
+check "new code: no draft marker"            "absent" "$([ -f "$T/pr_draft" ] && echo present || echo absent)"
+check "new code: three keys recorded"        "3" "$(wc -l < "$T/final_fail_keys" | tr -d ' ')"
+
+# 23. [P] brought unreviewed edits after the last integrate, and no PR yet: drop them
+#     first, even before the fix turn.
+rm -f "$T/final_fix_attempts" "$T/final_fail_keys" "$T/pr_draft" "$T/final_stop"
+opp_repo work; git -C "$T/wt" rev-parse HEAD > "$T/reviewed_sha"
+echo half > "$T/wt/b.txt"; git -C "$T/wt" add -A; git -C "$T/wt" commit -qm 'fabro(01TEST): coder (partially_succeeded)'
+git -C "$T/wt" commit -q --allow-empty -m 'fabro(01TEST): partial_remainder (succeeded)'
+opp_red
+OUT=$(opp_run)
+check "unreviewed, no [P] marker: not dropped" "fix" "$(opp_route)"
+rm -f "$T/final_fix_attempts" "$T/final_fail_keys"
+: > "$T/partial_unreviewed"
+OUT=$(opp_run)
+check "unreviewed: dropped first"            "drop" "$(opp_route)"
+check "unreviewed: fix turn kept"            "absent" "$([ -f "$T/final_fix_attempts" ] && echo present || echo absent)"
+
+# 24. With a PR open, commits after the last integrate are the merge phase's: no drop.
+echo 42 > "$T/pr_number"
+OUT=$(opp_run)
+check "PR open: no drop"                     "fix" "$(opp_route)"
+rm -f "$T/pr_number"
+
+# 25. Only empty checkpoints and merges after the last integrate: nothing to drop,
+#     even with the [P] marker.
+rm -f "$T/final_fix_attempts" "$T/final_fail_keys"; : > "$T/partial_unreviewed"
+opp_repo work; git -C "$T/wt" rev-parse HEAD > "$T/reviewed_sha"
+git -C "$T/wt" commit -q --allow-empty -m 'fabro(01TEST): extra_prep (succeeded)'
+opp_red
+OUT=$(opp_run)
+check "reviewed only: fix, not drop"         "fix" "$(opp_route)"
+
+# 25b. drop_unreviewed puts the branch back on the last reviewed commit. A reset, not
+#      a restore: the commits after it include main's merges, and restoring the old
+#      tree on top would revert main's changes in the PR. final_merge merges main again.
+stage drop_unreviewed
+opp_repo work; RS=$(git -C "$T/wt" rev-parse HEAD); echo "$RS" > "$T/reviewed_sha"; : > "$T/partial_unreviewed"
+printf '### Task: T1\n- Review: ok\n\n' > "$T/completed.md"
+printf '%s' '{"id":"t2","title":"Wire the profile form"}' > "$T/current_task.json"
+echo moved > "$T/up/m.txt"; git -C "$T/up" add -A; git -C "$T/up" commit -qm 'main moves'
+git -C "$T/wt" fetch -q origin main; git -C "$T/wt" merge -q --no-edit origin/main
+echo half > "$T/wt/b.txt"; git -C "$T/wt" add -A; git -C "$T/wt" commit -qm 'fabro(01TEST): coder (partially_succeeded)'
+OUT=$( cd "$T/wt" && sh "$T/drop_unreviewed.sh" 2>&1 ); RC=$?
+check "drop: exits 0"                        "0" "$RC"
+check "drop: HEAD is the reviewed commit"    "$RS" "$(git -C "$T/wt" rev-parse HEAD)"
+check "drop: unreviewed file gone"           "absent" "$([ -e "$T/wt/b.txt" ] && echo present || echo absent)"
+check "drop: reviewed work kept"             "1" "$(grep -c implemented "$T/wt/a.txt")"
+check "drop: clean tree"                     "" "$(git -C "$T/wt" status --porcelain)"
+check "drop: PR body says what was dropped"  "1" "$(grep -c '^### Dropped: the unreviewed edits of Wire the profile form$' "$T/completed.md")"
+check "drop: no task line added"             "1" "$(grep -c '^### Task: ' "$T/completed.md")"
+check "drop: [P] marker consumed"            "absent" "$([ -e "$T/partial_unreviewed" ] && echo present || echo absent)"
+rm -f "$T/reviewed_sha"
+OUT=$( cd "$T/wt" && sh "$T/drop_unreviewed.sh" 2>&1 ); RC=$?
+check "drop: no reviewed commit fails"       "1" "$RC"
+rm -f "$T/completed.md" "$T/current_task.json"
+
+# 25c. record_guidance: guidance after a final-validation stop goes through
+#      final_fix_prep, so the reviewer judges the fix and not main's merge.
+stage record_guidance
+mkdir -p "$T/feedback"; rm -f "$T/final_stop"
+OUT=$(printf 'mock the PATCH call' | sh "$T/record_guidance.sh" 2>&1)
+check "guidance: recorded"                   "mock the PATCH call" "$(cat "$T/feedback/rescue.md")"
+check "guidance: not a final stop"           "false" "$(jq -r '.context_updates.guidance_final' <<<"$(lastjson "$OUT")")"
+check "guidance: only the routing braces"    "1" "$(grep -c '[{}]' <<<"$OUT")"
+echo 'FAILED x' > "$T/final_stop"
+OUT=$(printf 'mock it' | sh "$T/record_guidance.sh" 2>&1)
+check "guidance: after a final stop"         "true" "$(jq -r '.context_updates.guidance_final' <<<"$(lastjson "$OUT")")"
+rm -f "$T/final_stop" "$T/feedback/rescue.md"
+
+# 25d. final_fix_prep turns the failure into a task the ladder can review: a task
+#      appended to tasks.json and selected, with the merged HEAD as its diff base.
+stage final_fix_prep
+opp_repo work
+printf '%s' '[{"id":"t1","title":"T1","body":"b"},{"id":"t2","title":"T2","body":"b"}]' > "$T/tasks.json"
+echo 2 > "$T/task_index"; jq '.[1]' "$T/tasks.json" > "$T/current_task.json"
+echo 3 > "$T/round"; echo 1 > "$T/review_attempts"; echo ctx > "$T/task-context.md"; echo code > "$T/task-code.md"; echo x > "$T/final_stop"
+printf '%s\n' 'FAILED tests/test_api.py::test_patch_profile' > "$T/final_failures.txt"
+OUT=$( cd "$T/wt" && sh "$T/final_fix_prep.sh" 2>&1 ); RC=$?
+check "fix prep: exits 0"                    "0" "$RC"
+check "fix prep: task appended"              "3" "$(jq length "$T/tasks.json")"
+check "fix prep: task marked"                "final-fix true" "$(jq -r '.[2] | "\(.id) \(.final_fix)"' "$T/tasks.json")"
+check "fix prep: task selected"              "final-fix" "$(jq -r .id "$T/current_task.json")"
+check "fix prep: task names the tests"       "1" "$(jq -r .body "$T/current_task.json" | grep -c 'test_patch_profile')"
+check "fix prep: task_index past it"         "3" "$(cat "$T/task_index")"
+check "fix prep: diff base is the merged HEAD" "$(git -C "$T/wt" rev-parse HEAD)" "$(cat "$T/task_base_sha")"
+check "fix prep: one rework, then the gate"  "6" "$(cat "$T/round")"
+check "fix prep: review attempts reset"      "0" "$(cat "$T/review_attempts")"
+check "fix prep: stale dossier gone"         "absent" "$([ -e "$T/task-context.md" ] || [ -e "$T/task-code.md" ] && echo present || echo absent)"
+check "fix prep: final_stop consumed"        "absent" "$([ -e "$T/final_stop" ] && echo present || echo absent)"
+OUT=$( cd "$T/wt" && sh "$T/final_fix_prep.sh" 2>&1 ); RC=$?
+check "fix prep again: no second task"       "3" "$(jq length "$T/tasks.json")"
+check "fix prep again: same index"           "3" "$(cat "$T/task_index")"
+rm -f "$T/tasks.json" "$T/task_index" "$T/current_task.json" "$T/round" "$T/review_attempts" "$T/task_base_sha" "$T/final_failures.txt"
+
+# 26. Green clears what a red visit left, and routes to the PR.
+opp_repo work; echo stale > "$T/pr_draft"; echo stale > "$T/final_stop"
+OUT=$(opp_run); RC=$?
+check "green: exits 0"                       "0" "$RC"
+check "green: routes to the PR"              "pr" "$(opp_route)"
+check "green: stale draft marker cleared"    "absent" "$([ -f "$T/pr_draft" ] && echo present || echo absent)"
+check "green: stale final_stop cleared"      "absent" "$([ -f "$T/final_stop" ] && echo present || echo absent)"
+check "green: only the routing braces"       "1" "$(grep -c '[{}]' <<<"$OUT")"
+rm -f "$T/final_fix_attempts" "$T/final_fail_keys" "$T/reviewed_sha" "$T/partial_unreviewed"
+
+# 27. The routes are only as good as the edges that read them. Read the parsed graph.
+EDG=$(python3.11 "$REPO_ROOT/ops/check-graph-invariants.py" --dump "$GRAPH" | jq -r '.statements[] | select(.Edge) | .Edge | (([(.attrs // [])[] | select(.[0] == "condition") | .[1]] | .[0]) // "") as $c | .nodes as $n | range(0; ($n | length) - 1) | "\($n[.])->\($n[. + 1]) \($c)"')
+for e in 'open_pr_prep->open_pr outcome=succeeded && context.final_route=pr' \
+         'open_pr_prep->open_pr outcome=succeeded && context.final_route=draft' \
+         'open_pr_prep->drop_unreviewed outcome=succeeded && context.final_route=drop' \
+         'open_pr_prep->final_fix_prep outcome=succeeded && context.final_route=fix' \
+         'open_pr_prep->rescue_brief ' \
+         'drop_unreviewed->final_merge outcome=succeeded' \
+         'final_fix_prep->rework_t4 outcome=succeeded' \
+         'file_remainder->mark_stuck outcome=succeeded && context.pr_draft=true' \
+         'file_remainder->pr_handoff outcome=succeeded && context.pr_draft=false' \
+         'record_guidance->final_fix_prep outcome=succeeded && context.guidance_final=true' \
+         'record_guidance->rework_t4 '; do
+    check "edge: $e" "1" "$(grep -cxF -- "$e" <<<"$EDG")"
+done
+check "edge: open_pr_prep has no other exit" "5" "$(grep -c '^open_pr_prep->' <<<"$EDG")"
 
 PATH="$SAVED_PATH"
 
@@ -2511,6 +2748,7 @@ check "partial: moves task 6 and 7"        "t6,t7" "$(jq -r 'map(.id) | join(","
 check "partial: tasks.json keeps 5"        "5" "$(jq length "$FAB/tasks.json")"
 check "partial: marks the kind"            "partial" "$(cat "$FAB/remainder_kind")"
 check "partial: says so"                   "1" "$(grep -c '2 unfinished task(s) moved' <<<"$OUT")"
+check "partial: marks unreviewed edits"    "present" "$([ -e "$FAB/partial_unreviewed" ] && echo present || echo absent)"
 echo a.txt > "$FAB/final_merge_conflict"; echo 2 > "$FAB/merge_attempts"
 OUT=$(sh "$T/next_task.sh" 2>&1)
 check "partial: next_task starts nothing"  "true" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
@@ -2521,6 +2759,7 @@ check "next_task done: resets merge_attempts"     "0" "$(cat "$FAB/merge_attempt
 rs_setup 6 6 t6
 sh "$T/partial_remainder.sh" >/dev/null 2>&1
 check "landed current: moves only t7"      "t7" "$(jq -r 'map(.id) | join(",")' "$FAB/remainder.json")"
+check "landed current: nothing unreviewed" "absent" "$([ -e "$FAB/partial_unreviewed" ] && echo present || echo absent)"
 
 # 12. A budget remainder already holds t7: no duplicate.
 rs_setup 6 5 t6
@@ -2552,6 +2791,43 @@ check "partial filing: body says why"      "1" "$(grep -c 'an operator chose Acc
 check "partial filing: no budget claim"    "0" "$(grep -c 'task budget' "$FAB/remainder_body.md")"
 check "partial filing: lists both tasks"   "2" "$(grep -c '^### T' "$FAB/remainder_body.md")"
 check "partial filing: PR comment says why" "1" "$(grep -c 'chose Accept partial' "$T/pr_comment.txt")"
+
+# 16. #35: the final validation failed twice after the fix turn. No signature, and
+#     final_stop (written by open_pr_prep) holds the failing tests.
+rs_setup 7 7 t7; printf '%s\n' 'FAIL  src/Form.test.tsx > patches the profile' 'FAILED tests/test_api.py::test_patch' > "$FAB/final_stop"
+rs_run ''
+check "final red: says why"                "yes" "$(rs_has 'the final validation (./.fabro/setup.sh && ./.fabro/ci.sh after main was merged in) failed twice')"
+check "final red: names a test"            "yes" "$(rs_has 'FAIL  src/Form.test.tsx > patches the profile')"
+check "final red: names the other"         "yes" "$(rs_has 'FAILED tests/test_api.py::test_patch')"
+check "final red: [P] says a draft is next" "yes" "$(rs_has 'opens a draft PR with the 7 task(s) that passed review')"
+check "final red: [P] not back here"       "yes" "$(rs_has 'instead of coming back here')"
+check "final red: guidance is a fix task"  "yes" "$(rs_has 'as a new task to make the final validation pass')"
+check "final red: prints only the object"  "1" "$(printf '%s\n' "$OUT" | grep -c .)"
+rs_run 'final_merge|deterministic|script failed'
+check "final red: a later signature wins"  "yes" "$(rs_has 'final_merge failed (deterministic)')"
+check "final red: not the final text then" "no" "$(rs_has 'failed twice')"
+check "final red: outranked stop cleared"  "absent" "$([ -e "$FAB/final_stop" ] && echo present || echo absent)"
+rm -f "$FAB/final_stop"
+
+# 17. Mid-task [P] says a red final validation drops the unreviewed edits.
+rs_setup 6 5 t6; rs_run ''
+check "partial: [P] says red edits are dropped" "yes" "$(rs_has 'If setup or CI fails with them, they are dropped')"
+
+# 18. The final-fix task is the unfinished one: it is never a task to file.
+rs_setup 8 7 t7
+jq '. + [{"id":"final-fix","title":"Make the final validation pass","body":"b","final_fix":true}]' "$FAB/tasks.json" > "$FAB/t.json" && mv "$FAB/t.json" "$FAB/tasks.json"
+jq '.[7]' "$FAB/tasks.json" > "$FAB/current_task.json"; echo 7 > "$FAB/round"
+printf '%s\n' '## Validation failed (exit 1): ./.fabro/setup.sh && ./.fabro/ci.sh' 'still red' > "$FAB/feedback/rework.md"
+rs_run ''
+check "fix task: says the fix turn failed" "yes" "$(rs_has 'the fix turn for the final validation failed validate or review.')"
+check "fix task: not filed"                "no" "$(rs_has 'remainder issue')"
+printf '%s\n' 'FAILED tests/test_api.py::test_patch' > "$FAB/final_failures.txt"; rs_run ''
+check "fix task: repeats the final tests"  "yes" "$(rs_has 'Failing tests in the final validation, before the fix turn')"
+check "fix task: names the test"           "yes" "$(rs_has 'FAILED tests/test_api.py::test_patch')"
+OUT=$(sh "$T/partial_remainder.sh" 2>&1); RC=$?
+check "fix task: partial exits 0"          "0" "$RC"
+check "fix task: nothing moves"            "absent" "$([ -e "$FAB/remainder.json" ] && echo present || echo absent)"
+check "fix task: its edits are unreviewed" "present" "$([ -e "$FAB/partial_unreviewed" ] && echo present || echo absent)"
 
 PATH="$SAVED_PATH"
 unset GIT_STATE GH_LOG GH_STATE

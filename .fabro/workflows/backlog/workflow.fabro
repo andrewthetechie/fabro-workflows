@@ -1006,6 +1006,7 @@ fi
 T=$(jq -r .title /tmp/fabro/current_task.json)
 S=$(jq -r '.summary // empty' /tmp/fabro/review/verdict.json 2>/dev/null || true)
 { echo '### Task: '$T; echo '- Review: '$S; echo; } >> /tmp/fabro/completed.md
+git rev-parse HEAD > /tmp/fabro/reviewed_sha
 echo integrated"]
 
     // `task_exempt` says whether the current task is an extra-review follow-up (or a
@@ -1250,9 +1251,28 @@ echo '{\"context_updates\":{\"final_conflict\":true}}'"]
     // nothing at the gate could fix it.
     //
     // So the suite is retried once before the node gives up. A flake passes on the second
-    // run; a real failure fails twice and still reaches the gate, now with
-    // /tmp/fabro/feedback/rework.md written so the human sees which of the four things
-    // this node does actually broke.
+    // run. A real failure fails twice and ROUTES (#35); it no longer exits 1. Before that,
+    // the failure was classed transient_infra, the gate showed the first 600 bytes of the
+    // log (a DOM dump on lawncare-saas#2733), and [P] Accept partial replayed the same tree
+    // into the same failure until someone chose [X] (run 01M4PP2M37CPE6Q1874V6FBEM5).
+    // The failing test names (vitest/jest FAIL, pytest FAILED/ERROR, cargo `... FAILED`,
+    // go `--- FAIL:`) go to final_failures.txt and the top of feedback/rework.md, which
+    // keeps the `## Validation failed` shape rework.md.j2 knows. Then `final_route`:
+    //   drop    [P] brought edits no reviewer passed (partial_remainder's
+    //           partial_unreviewed, and non-merge commits that change files after
+    //           `reviewed_sha`) and no PR yet: drop_unreviewed resets to the reviewed work.
+    //   draft   this code already failed here: the PR opens as a draft (pr_draft) and the
+    //           run ends at mark_stuck instead of returning to the gate.
+    //   fix     the run's first red final validation (`final_fix_attempts`, never reset):
+    //           final_fix_prep -> rework_t4 -> validate -> review, then back here.
+    //   rescue  later red on code that has not failed here: the gate, tests in final_stop.
+    //   pr      green.
+    // "This code" is the patch-id of `git diff origin/main HEAD` -- the run's own change on
+    // top of main, which ignores line shifts -- kept in final_fail_keys by fix and rescue.
+    // Not the tree: main moves on a busy repo during the gate's 4h wait, and a tree key
+    // would let the same failing code reach the gate on every [P].
+    // The log never reaches stdout: this node now routes, and fabro scans stdout and
+    // stderr for brace-balanced objects.
     //
     // The rest of the node derives the Conventional Commits subject, in three steps the
     // script marks inline. Two notes that do not fit on one line:
@@ -1299,7 +1319,7 @@ echo '{\"context_updates\":{\"final_conflict\":true}}'"]
     // that equals main, and the loop is two full CI runs on a 20m budget.
     //
     // `exit 1` takes the unconditional edge back to `human_rescue`, which is deliberate
-    // rather than a route to `mark_stuck`: this node declares no routing schema, and an
+    // rather than a route to `mark_stuck`: a refusal publishes no `final_route`, and an
     // operator who answers `[P]` a second time gets the same refusal rather than a PR.
     // The message names `[X] Abandon` because that is the answer that does the label
     // cleanup -- `agent-in-progress` off, `agent-stuck` on -- instead of leaving the
@@ -1345,7 +1365,7 @@ echo '{\"context_updates\":{\"final_conflict\":true}}'"]
     // that equals main, and the loop is two full CI runs on a 20m budget.
     //
     // `exit 1` takes the unconditional edge back to `human_rescue`, which is deliberate
-    // rather than a route to `mark_stuck`: this node declares no routing schema, and an
+    // rather than a route to `mark_stuck`: a refusal publishes no `final_route`, and an
     // operator who answers `[P]` a second time gets the same refusal rather than a PR.
     // The message names `[X] Abandon` because that is the answer that does the label
     // cleanup -- `agent-in-progress` off, `agent-stuck` on -- instead of leaving the
@@ -1403,8 +1423,9 @@ echo '{\"context_updates\":{\"final_conflict\":true}}'"]
     // Commit body: the first prose paragraph of the issue body, else Resolves #N: <title>
     // Assertions: a derivation bug must fail the run into human_rescue, not open an
     // unmergeable PR. These can only fire on a bug; the derivation always terminates.
-    open_pr_prep [label="Final aggregate and PR prep", shape=parallelogram, timeout="20m",
+    open_pr_prep [label="Final aggregate and PR prep", shape=parallelogram, timeout="20m", output_schema="routing",
         script="set -e
+rm -f /tmp/fabro/pr_draft /tmp/fabro/final_stop /tmp/fabro/final_failures.txt
 if git diff --quiet origin/main HEAD; then
   echo 'refusing to open a PR: the branch tree is identical to origin/main, so this run changed nothing.' >&2
   echo 'every commit on this branch is a fabro stage checkpoint touching no repository file.' >&2
@@ -1449,25 +1470,57 @@ if [ -n \"$CMF\" ]; then
 fi
 A=1
 while :; do
-  if ./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1; then
-    tail -c 4000 /tmp/fabro/validate_output.log
-    break
-  fi
-  if [ $A -ge 2 ]; then
-    tail -c 4000 /tmp/fabro/validate_output.log
-    mkdir -p /tmp/fabro/feedback
-    echo '## Final validation failed twice after merging origin/main' > /tmp/fabro/feedback/rework.md
-    echo >> /tmp/fabro/feedback/rework.md
-    echo 'This ran after every task passed its own validate, so it is either a change' >> /tmp/fabro/feedback/rework.md
-    echo 'merged from main or a flaky test. The second attempt failed too.' >> /tmp/fabro/feedback/rework.md
-    echo >> /tmp/fabro/feedback/rework.md
-    tail -c 6000 /tmp/fabro/validate_output.log >> /tmp/fabro/feedback/rework.md
-    exit 1
-  fi
+  RC=0
+  ./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1 || RC=$?
+  if [ $RC = 0 ]; then echo 'final validation passed on attempt '$A; break; fi
+  if [ $A -ge 2 ]; then break; fi
   echo '## final validation attempt '$A' failed; retrying once in case it is a flake'
   A=$((A + 1))
   sleep 5
 done
+ROUTE=pr
+if [ $RC != 0 ]; then
+  awk 'BEGIN { e = sprintf(\"%c\", 27) } { gsub(e \"[[][0-9;]*[A-Za-z]\", \"\"); gsub(/[[:cntrl:]]/, \"\"); sub(/^[[:space:]]+/, \"\"); sub(/[[:space:]]+$/, \"\") } /^FAIL[[:space:]]/ || /^FAILED[[:space:]]/ || /^ERROR[[:space:]]/ || /^--- FAIL: / || /^test .* [.][.][.] FAILED$/ { if (!seen[$0]++) print substr($0, 1, 200) }' /tmp/fabro/validate_output.log | head -30 > /tmp/fabro/final_failures.txt
+  mkdir -p /tmp/fabro/feedback
+  {
+    echo '## Validation failed (exit '$RC'): ./.fabro/setup.sh && ./.fabro/ci.sh'
+    echo
+    echo 'This is the final validation, run after every task passed its own validate and origin/main was merged in. It failed twice, so it is not a flake.'
+    echo
+    if [ -s /tmp/fabro/final_failures.txt ]; then echo 'Failing tests:'; echo; cat /tmp/fabro/final_failures.txt; else echo 'No failing test name was recognised in the output; the log tail is below.'; fi
+    echo
+    tail -c 6000 /tmp/fabro/validate_output.log
+  } > /tmp/fabro/feedback/rework.md
+  KEY=$(git diff origin/main HEAD | git patch-id --stable 2>/dev/null | cut -d' ' -f1)
+  if [ -z \"$KEY\" ]; then KEY=$(git rev-parse 'HEAD^{tree}'); fi
+  RS=$(cat /tmp/fabro/reviewed_sha 2>/dev/null || true)
+  UNREV=''
+  if [ -e /tmp/fabro/partial_unreviewed ] && [ -n \"$RS\" ] && [ ! -s /tmp/fabro/pr_number ] && git cat-file -e \"$RS^{commit}\" 2>/dev/null; then
+    for C in $(git rev-list --no-merges \"$RS\"..HEAD); do
+      if [ -n \"$(git diff-tree --no-commit-id --name-only -r \"$C\")\" ]; then UNREV=yes; break; fi
+    done
+  fi
+  FA=$(cat /tmp/fabro/final_fix_attempts 2>/dev/null || echo 0)
+  case \"$FA\" in '' | *[!0-9]*) FA=0 ;; esac
+  if [ -n \"$UNREV\" ]; then
+    ROUTE=drop
+  elif grep -qxF \"$KEY\" /tmp/fabro/final_fail_keys 2>/dev/null; then
+    ROUTE=draft
+    : > /tmp/fabro/pr_draft
+  elif [ \"$FA\" = 0 ]; then
+    ROUTE=fix
+    echo 1 > /tmp/fabro/final_fix_attempts
+    echo \"$KEY\" >> /tmp/fabro/final_fail_keys
+  else
+    ROUTE=rescue
+    echo \"$KEY\" >> /tmp/fabro/final_fail_keys
+    if [ -s /tmp/fabro/final_failures.txt ]; then cp /tmp/fabro/final_failures.txt /tmp/fabro/final_stop
+    else echo 'No failing test name was recognised; feedback/rework.md has the log tail.' > /tmp/fabro/final_stop; fi
+  fi
+  echo 'final validation failed twice; route '$ROUTE'. Failing tests:'
+  tr -d '{}' < /tmp/fabro/final_failures.txt
+  if [ $ROUTE != draft ]; then echo '{\"context_updates\":{\"final_route\":\"'$ROUTE'\"}}'; exit 0; fi
+fi
 N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(jq -r .title /tmp/fabro/issue.json | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 CC='^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .'
@@ -1522,12 +1575,79 @@ if [ -n \"$FIRST\" ]; then
 else
   echo 'Resolves #'$N': '$T > /tmp/fabro/commit_body.md
 fi
-{ echo '## Summary'; echo; echo '<!-- fabro:commit-body:start -->'; cat /tmp/fabro/commit_body.md; echo '<!-- fabro:commit-body:end -->'; echo; cat /tmp/fabro/completed.md 2>/dev/null || true; echo '## Validation'; echo; echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after final merge with origin/main'; } > /tmp/fabro/pr_body.md
+if [ -e /tmp/fabro/pr_draft ]; then
+  { echo '- ./.fabro/setup.sh && ./.fabro/ci.sh failed after the final merge with origin/main, on a tree whose failure a human had already seen. This draft holds the reviewed work so it is not lost; a human makes CI pass.'; if [ -s /tmp/fabro/final_failures.txt ]; then echo; echo 'Failing tests:'; echo; echo '```'; cat /tmp/fabro/final_failures.txt; echo '```'; fi; } > /tmp/fabro/validation.md
+else
+  echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after final merge with origin/main' > /tmp/fabro/validation.md
+fi
+{ echo '## Summary'; echo; echo '<!-- fabro:commit-body:start -->'; cat /tmp/fabro/commit_body.md; echo '<!-- fabro:commit-body:end -->'; echo; cat /tmp/fabro/completed.md 2>/dev/null || true; echo '## Validation'; echo; cat /tmp/fabro/validation.md; } > /tmp/fabro/pr_body.md
 jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Post-deploy checks$/{s=1; next} s && /^## /{s=0} s && /^- [[] []] /{print}' > /tmp/fabro/post_items.txt
 if [ -s /tmp/fabro/post_items.txt ]; then { echo; echo '## Post-deploy checks'; echo; echo 'Not checked by the agents. Verify after deploy.'; echo; cat /tmp/fabro/post_items.txt; } >> /tmp/fabro/pr_body.md; fi
 grep -qE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .' /tmp/fabro/commit_subject.txt
 grep -q '^Resolves #' /tmp/fabro/commit_body.md
-grep -q 'fabro:commit-body:start' /tmp/fabro/pr_body.md"]
+grep -q 'fabro:commit-body:start' /tmp/fabro/pr_body.md
+echo '{\"context_updates\":{\"final_route\":\"'$ROUTE'\"}}'"]
+
+    // drop_unreviewed: open_pr_prep routes here when the final validation failed on a
+    // branch that carries edits no reviewer passed -- [P] brought an unfinished task
+    // (partial_remainder writes partial_unreviewed) and non-merge commits change files
+    // after `reviewed_sha`, which `integrate` writes -- and no PR exists yet (#35). The
+    // marker keeps a drop_followup revert or CI output a checkpoint committed from
+    // reading as unreviewed work. That is
+    // the `[P] Accept partial` path: it ships the unfinished task's edits, which are the
+    // likeliest thing to fail, and before this node every later [P] replayed the same
+    // failure (run 01M4PP2M37CPE6Q1874V6FBEM5, lawncare-saas#2733). The unfinished task is
+    // already in remainder.json, so dropping its edits loses nothing that is not redone.
+    //
+    // A reset, not `git restore`: the commits after reviewed_sha include main's merges
+    // (next_task, final_merge), and restoring the reviewed tree on top would revert main's
+    // changes in the PR. final_merge merges main again next. Rewinding is safe only
+    // because nothing has been pushed: backlog pushes first in open_pr, and open_pr_prep
+    // routes here only when no pr_number exists. After the reset there is nothing
+    // unreviewed left, so open_pr_prep cannot route here twice for the same edits.
+    drop_unreviewed [label="Drop the edits no reviewer passed", shape=parallelogram,
+        script="set -e
+F=/tmp/fabro
+RS=$(cat $F/reviewed_sha)
+git cat-file -e \"$RS^{commit}\"
+git reset --hard \"$RS\"
+git clean -fdq
+rm -f $F/partial_unreviewed
+T=$(jq -r '.title // \"the unfinished task\"' $F/current_task.json 2>/dev/null || echo 'the unfinished task')
+{ echo '### Dropped: the unreviewed edits of '$T; echo '- Not in this PR. The final validation failed with these edits, which no reviewer had passed, so the branch went back to the last reviewed task. The unfinished task is in the remainder issue.'; echo; } >> $F/completed.md
+echo 'dropped the unreviewed edits: branch reset to the last reviewed commit '$RS"]
+
+    // final_fix_prep: the one automatic fix turn for a red final validation (#35), and the
+    // route human guidance takes after one. The failure becomes a task the existing ladder
+    // can work: appended to tasks.json and selected the way next_task selects one, so
+    // integrate records it, rescue_brief counts it, and next_task finds every task done
+    // after it. `final_fix` marks it, so partial_remainder never files it as unfinished
+    // work. The diff base is the merged HEAD: the reviewer judges the fix alone, not main's
+    // merge against the last task's spec. `round` starts at 6, so a red validate or a
+    // rejected review after the tier-4 turn goes to rescue_brief (round 7), never to
+    // drop_followup or demote_lane, which act only on round 6. A second visit (guidance
+    // after the fix task) reuses the task. The previous task's dossier is deleted, and
+    // final_stop with it, so a later stop is not read as this one.
+    final_fix_prep [label="Make the final validation failure a task", shape=parallelogram,
+        script="set -e
+F=/tmp/fabro
+if [ \"$(jq -r '.final_fix // false' $F/current_task.json 2>/dev/null)\" != true ]; then
+  L=$(sed 's/^/- /' $F/final_failures.txt 2>/dev/null | head -30)
+  if [ -z \"$L\" ]; then L='- no test name was recognised; feedback/rework.md has the log tail'; fi
+  B=\"The final validation (./.fabro/setup.sh && ./.fabro/ci.sh) failed twice on this branch, after every task passed review and origin/main was merged in. Make it pass with the smallest change. Fix the code or the test that is wrong; never skip, delete or weaken a test to make it pass.
+
+Failing tests:
+$L\"
+  jq --arg b \"$B\" '. + [{id: \"final-fix\", title: \"Make the final validation pass\", body: $b, files: [], covers: [], source: \"final-fix\", final_fix: true}]' $F/tasks.json > $F/tasks.fix.json
+  mv $F/tasks.fix.json $F/tasks.json
+  jq '.[-1]' $F/tasks.json > $F/current_task.json
+  jq length $F/tasks.json > $F/task_index
+fi
+git rev-parse HEAD > $F/task_base_sha
+echo 6 > $F/round
+echo 0 > $F/review_attempts
+rm -f $F/task-context.md $F/task-code.md $F/final_stop
+echo 'final-fix task '$(cat $F/task_index)' selected; diff base '$(cat $F/task_base_sha)"]
 
     // `open_pr` is the only node that opens a PR, including on the
     // human_rescue -> [P] Accept partial -> final_merge -> open_pr_prep -> open_pr path, so it is the
@@ -1586,10 +1706,20 @@ git config --get-all remote.origin.fetch | grep -qxF \"$R\" || git config --add 
 git fetch origin \"$R\"
 N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(cat /tmp/fabro/pr_title.txt)
+rm -f /tmp/fabro/draft_reason.md
+DRAFT=false
+if [ -e /tmp/fabro/pr_draft ]; then DRAFT=true; fi
 PR_URL=$(gh pr view \"$B\" --json url --jq .url 2>/dev/null || true)
 if [ -z \"$PR_URL\" ]; then
-  gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md --label agent-authored
+  if [ $DRAFT = true ]; then
+    gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md --label agent-authored --draft
+  else
+    gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md --label agent-authored
+  fi
   PR_URL=$(gh pr view \"$B\" --json url --jq .url)
+elif [ $DRAFT = true ]; then
+  gh pr ready \"$B\" --undo || echo 'could not turn the open PR back into a draft' >&2
+  gh pr edit \"$B\" --body-file /tmp/fabro/pr_body.md || echo 'could not update the PR body' >&2
 fi
 if [ -z \"$PR_URL\" ]; then
   echo 'no PR is visible for head branch '\"$B\"' after create; refusing to report an empty pr_url' >&2
@@ -1600,9 +1730,13 @@ if jq -e '[.labels[]?.name] | index(\"architecture\") != null' /tmp/fabro/issue.
   gh pr edit \"$B\" --add-label architecture
 fi
 echo $PR_URL | sed 's|.*/||' > /tmp/fabro/pr_number
-gh issue edit $N --remove-label agent-in-progress --add-label Review || true
-gh issue comment $N --body 'Agent run complete. PR: '$PR_URL || true
-echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\"}}'"]
+if [ $DRAFT = true ]; then
+  { echo 'The final validation failed twice on the same code, so this run stopped before review and merge. Draft PR '$PR_URL' holds the work that passed review; a human makes CI pass and marks it ready for review.'; if [ -s /tmp/fabro/final_failures.txt ]; then echo; echo 'Failing tests:'; echo; echo '```'; cat /tmp/fabro/final_failures.txt; echo '```'; fi; } > /tmp/fabro/draft_reason.md
+else
+  gh issue edit $N --remove-label agent-in-progress --add-label Review || true
+  gh issue comment $N --body 'Agent run complete. PR: '$PR_URL || true
+fi
+echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\",\"pr_draft\":'$DRAFT'}}'"]
 
     // file_remainder: the decomposed tasks this run did not start because its task
     // budget of 8 was spent (ADR 0011 D6; `next_task` moved them to /tmp/fabro/remainder.json)
@@ -1830,7 +1964,14 @@ echo done"]
     // main means main already made the change (wfs#1834 and #1747 both ended there), so the
     // brief lists main's commits since the run's first commit that touch the files the run
     // changed, and leaves closing the issue to the operator: a resolver that wrongly took
-    // main's side everywhere produces the same empty tree. The node never fails: a missing
+    // main's side everywhere produces the same empty tree. /tmp/fabro/final_stop means
+    // open_pr_prep's final validation failed after the fix turn (#35): the brief names the
+    // failing tests, and [P] says the same failure on the same code opens a draft PR
+    // instead of coming back here. A signature or a merge conflict outranks it, and then
+    // this node deletes final_stop, so record_guidance (which routes on that file) agrees
+    // with the cause the gate showed. A `final_fix` current task is never counted as a
+    // task to file, and when it is the one that failed, the brief repeats the tests the
+    // final validation failed before it. The node never fails: a missing
     // file reads as "nothing", and if it did fail its unconditional edge still reaches
     // the gate, which then shows what it showed before this node existed. It prints
     // nothing but the routing object, on one line: fabro scans stdout and stderr together
@@ -1861,6 +2002,7 @@ CT=$(jq -r '.title // empty' $F/current_task.json 2>/dev/null)
 LAST=$(grep '^### Task: ' $F/completed.md 2>/dev/null | tail -1 | cut -c11-)
 CUR=''
 if [ $IDX -gt 0 ] && [ -n \"$CT\" ] && [ \"$CT\" != \"$LAST\" ]; then CUR=$IDX; fi
+FF=$(jq -r '.final_fix // false' $F/current_task.json 2>/dev/null)
 PR=$(cat $F/pr_number 2>/dev/null)
 case \"$PR\" in *[!0-9]*) PR='' ;; esac
 STG=$(jq -r '.node // empty' $F/.io/stage.json 2>/dev/null)
@@ -1878,6 +2020,8 @@ if [ $LANDED -gt 0 ] && [ -s $F/issue.json ] && git diff --quiet origin/main HEA
     git log --format='%h %s' --no-merges --since=\"$SINCE\" origin/main -- $SUPF 2>/dev/null | head -5 | sed 's/^/- /' > $F/rescue_main.txt
   fi
 fi
+FS=''
+if [ -z \"$SIG\" ] && [ -z \"$MC\" ] && [ -s $F/final_stop ]; then FS=yes; else rm -f $F/final_stop; fi
 NODE=''
 if [ -n \"$SIG\" ]; then
   NODE=${SIG%%|*}
@@ -1885,6 +2029,10 @@ if [ -n \"$SIG\" ]; then
   WHAT=\"$NODE failed (${REST%%|*}): ${REST#*|}\"
 elif [ -n \"$MC\" ]; then
   WHAT=\"main changed the same lines as this branch before the PR was built, and resolve_merge_gate rejected the merge agent's resolution. Conflicting files: $MC\"
+elif [ -n \"$FS\" ]; then
+  WHAT=\"the final validation (./.fabro/setup.sh && ./.fabro/ci.sh after main was merged in) failed twice on this branch, after the run's one automatic fix turn.\"
+elif [ $ROUND -ge 6 ] && [ -n \"$CUR\" ] && [ \"$FF\" = true ]; then
+  WHAT='the fix turn for the final validation failed validate or review.'
 elif [ $ROUND -ge 6 ] && [ -n \"$CUR\" ]; then
   WHAT=\"the rework ladder ran out. Task $CUR failed validate or review at every tier ($ROUND rounds).\"
 else
@@ -1908,7 +2056,7 @@ else
   MERGE='If every merge gate passes, the merge phase merges it with no human.'
 fi
 MOVE=$LEFT
-if [ -n \"$CUR\" ]; then MOVE=$((LEFT + 1)); fi
+if [ -n \"$CUR\" ] && [ \"$FF\" != true ]; then MOVE=$((LEFT + 1)); fi
 if [ ! -s $F/issue.json ]; then
   P='The run never read the issue, so there is no PR to open. You come back here.'
 elif git diff --quiet origin/main HEAD 2>/dev/null; then
@@ -1919,6 +2067,8 @@ elif [ -n \"$CM\" ]; then
   P='The branch adds unresolved conflict markers (lines starting <<<<<<< or >>>>>>>), so open_pr_prep refuses. You come back here.'
 elif [ -n \"$MC\" ]; then
   P='Runs the merge agent once more on the same conflict. If it resolves it, the PR is built as usual; if not, you come back here.'
+elif [ -n \"$FS\" ]; then
+  P=\"Main is merged in and setup and CI run again. If they fail the same way on the same code, the run opens a draft PR with the $LANDED task(s) that passed review, files the rest, and labels #$N agent-stuck, instead of coming back here.\"
 else
   if [ -n \"$PR\" ]; then
     P=\"PR #$PR is already open. Main is merged in, setup and CI run again, and the PR goes through the merge phase again.\"
@@ -1926,10 +2076,11 @@ else
     P=\"Opens a PR with the $LANDED task(s) that passed review\"
     if [ -n \"$CUR\" ]; then P=\"$P and the unreviewed edits of task $CUR\"; fi
     P=\"$P, after main is merged in and setup and CI pass.\"
+    if [ -n \"$CUR\" ] && [ $LANDED -gt 0 ]; then P=\"$P If setup or CI fails with them, they are dropped and the PR holds only the reviewed tasks.\"; fi
   fi
   if [ $MOVE -gt 0 ]; then
     P=\"$P The $MOVE task(s) not done\"
-    if [ -n \"$CUR\" ]; then P=\"$P (task $CUR included)\"; fi
+    if [ -n \"$CUR\" ] && [ \"$FF\" != true ]; then P=\"$P (task $CUR included)\"; fi
     P=\"$P go to one held remainder issue, which the scheduler queues when the PR merges.\"
   fi
   P=\"$P $MERGE\"
@@ -1941,8 +2092,10 @@ elif [ $LANDED -gt 0 ]; then
   X=\"$X No PR is opened and the branch exists only in this sandbox, so the $LANDED task(s) that passed review are lost.\"
 fi
 X=\"$X The gate does this by itself when its 4h timeout ends.\"
-if [ \"$NODE\" = open_pr_prep ]; then
-  G='The tier-4 rework agent gets your text and the final validation failure, then validate and review run again.'
+if [ -n \"$FS\" ]; then
+  G='The tier-4 rework agent gets your text and the failing tests as a new task to make the final validation pass, then validate and review run again.'
+elif [ \"$NODE\" = open_pr_prep ]; then
+  G='The tier-4 rework agent gets your text, then validate and review run again.'
 elif [ -n \"$MC\" ]; then
   G='Cannot help: guidance goes to the rework agent, which may not run git, so it cannot finish a merge. Choose [P] for one more merge attempt, or [X].'
 elif [ -n \"$WF\" ]; then
@@ -1974,6 +2127,21 @@ fi
     fi
     echo
     echo \"If one of them resolves #$N, choose [X] Abandon, then close #$N as completed by it.\"
+  fi
+  if [ -n \"$FS\" ]; then
+    echo
+    echo '**Failing tests in the final validation:**'
+    echo
+    echo '```'
+    cat $F/final_stop
+    echo '```'
+  elif [ \"$FF\" = true ] && [ -s $F/final_failures.txt ]; then
+    echo
+    echo '**Failing tests in the final validation, before the fix turn:**'
+    echo
+    echo '```'
+    cat $F/final_failures.txt
+    echo '```'
   fi
   if [ -s $F/rescue_findings.cut ]; then
     echo
@@ -2015,10 +2183,12 @@ IDX=$(cat $F/task_index 2>/dev/null)
 case \"$IDX\" in '' | *[!0-9]*) IDX=0 ;; esac
 CT=$(jq -r '.title // empty' $F/current_task.json 2>/dev/null)
 LAST=$(grep '^### Task: ' $F/completed.md 2>/dev/null | tail -1 | cut -c11-)
+FF=$(jq -r '.final_fix // false' $F/current_task.json 2>/dev/null)
 FROM=$IDX
-if [ $IDX -gt 0 ] && [ -n \"$CT\" ] && [ \"$CT\" != \"$LAST\" ]; then FROM=$((IDX - 1)); fi
+if [ $IDX -gt 0 ] && [ -n \"$CT\" ] && [ \"$CT\" != \"$LAST\" ]; then : > $F/partial_unreviewed; fi
+if [ $IDX -gt 0 ] && [ -n \"$CT\" ] && [ \"$CT\" != \"$LAST\" ] && [ \"$FF\" != true ]; then FROM=$((IDX - 1)); fi
 if [ $FROM -ge $COUNT ]; then echo 'accept partial: every task finished, so nothing moves to the remainder'; exit 0; fi
-jq --argjson i $FROM '.[$i:]' $F/tasks.json > $F/remainder.new.json 2>/dev/null || { echo 'accept partial: could not read tasks.json; nothing moved' >&2; exit 0; }
+jq --argjson i $FROM '.[$i:] | map(select(.final_fix != true))' $F/tasks.json > $F/remainder.new.json 2>/dev/null || { echo 'accept partial: could not read tasks.json; nothing moved' >&2; exit 0; }
 if [ -s $F/remainder.json ]; then cp $F/remainder.json $F/remainder.old.json; else echo '[]' > $F/remainder.old.json; fi
 jq -s '(.[0] + .[1]) | reduce .[] as $t ([]; if any(.[]; .id == $t.id) then . else . + [$t] end)' $F/remainder.old.json $F/remainder.new.json > $F/remainder.merged.json 2>/dev/null && mv $F/remainder.merged.json $F/remainder.json
 jq --argjson i $FROM '.[0:$i]' $F/tasks.json > $F/tasks.trim.json 2>/dev/null && mv $F/tasks.trim.json $F/tasks.json
@@ -2048,7 +2218,10 @@ case \"$N\" in '' | *[!0-9]*) N=$(cat /tmp/fabro/issue_number 2>/dev/null || ech
 case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
 if [ \"$N\" != 0 ]; then
   gh issue edit $N --remove-label agent-in-progress --add-label agent-stuck || true
-  if [ -s /tmp/fabro/stuck_reason.md ]; then
+  if [ -s /tmp/fabro/draft_reason.md ]; then
+    gh issue edit $N --remove-label Review 2>/dev/null || true
+    cp /tmp/fabro/draft_reason.md /tmp/fabro/stuck_comment.md
+  elif [ -s /tmp/fabro/stuck_reason.md ]; then
     { echo 'Agent run stopped before implementing this issue. The decomposer reported:'; echo; cat /tmp/fabro/stuck_reason.md; } > /tmp/fabro/stuck_comment.md
   else
     echo 'Agent run could not complete this issue and gave up. See the fabro run for details.' > /tmp/fabro/stuck_comment.md
@@ -2215,11 +2388,26 @@ echo done"]
     final_merge -> open_pr_prep     [condition="outcome=succeeded && context.final_conflict=false"]
     final_merge -> resolve_merge    [condition="outcome=succeeded && context.final_conflict=true"]
     final_merge -> rescue_brief
-    open_pr_prep -> open_pr         [condition="outcome=succeeded"]
+    // #35: open_pr_prep publishes `final_route` on every success. Each edge also requires
+    // outcome=succeeded, because a refusal (exit 1) applies no context update and a
+    // stale `final_route` from an earlier visit must not route it. `rescue` takes the
+    // unconditional edge, as a refusal does.
+    open_pr_prep -> open_pr         [condition="outcome=succeeded && context.final_route=pr"]
+    open_pr_prep -> open_pr         [condition="outcome=succeeded && context.final_route=draft"]
+    open_pr_prep -> drop_unreviewed [condition="outcome=succeeded && context.final_route=drop"]
+    open_pr_prep -> final_fix_prep  [condition="outcome=succeeded && context.final_route=fix"]
     open_pr_prep -> rescue_brief
+    drop_unreviewed -> final_merge  [condition="outcome=succeeded"]
+    drop_unreviewed -> rescue_brief
+    final_fix_prep -> rework_t4     [condition="outcome=succeeded"]
+    final_fix_prep -> rescue_brief
     open_pr -> file_remainder       [condition="outcome=succeeded"]
     open_pr -> rescue_brief
-    file_remainder -> pr_handoff    [condition="outcome=succeeded"]
+    // A draft PR (the same tree failed the final validation twice) skips the merge phase:
+    // mark_stuck labels the issue and posts open_pr's draft_reason.md. open_pr writes
+    // `pr_draft` on every success, so the two success edges are exclusive.
+    file_remainder -> mark_stuck    [condition="outcome=succeeded && context.pr_draft=true"]
+    file_remainder -> pr_handoff    [condition="outcome=succeeded && context.pr_draft=false"]
     file_remainder -> rescue_brief
     pr_handoff -> review_merge      [condition="outcome=succeeded"]
     pr_handoff -> rescue_brief
@@ -2237,15 +2425,22 @@ echo done"]
     // guidance from a path like every other input, which in turn lets the graph run at
     // `truncate` fidelity -- every level below `compact` drops the context table, and the
     // guidance used to reach the rework agent only through it.
-    record_guidance [label="Record the human guidance", shape=parallelogram,
+    //
+    // It routes (#35): guidance after a final-validation stop (open_pr_prep wrote
+    // final_stop) goes through final_fix_prep, so the rework agent and the reviewer get a
+    // task whose diff base is the merged branch. Straight to rework_t4, the reviewer would
+    // judge the fix together with main's merge against the last task's spec.
+    record_guidance [label="Record the human guidance", shape=parallelogram, output_schema="routing",
         stdin_source="human.gate.text",
         script="mkdir -p /tmp/fabro/feedback
 cat > /tmp/fabro/feedback/rescue.md
-echo recorded"]
+if [ -e /tmp/fabro/final_stop ]; then G=true; else G=false; fi
+echo '{\"context_updates\":{\"guidance_final\":'$G'}}'"]
 
     rescue_brief -> human_rescue
 
     human_rescue -> record_guidance [freeform=true]
+    record_guidance -> final_fix_prep [condition="outcome=succeeded && context.guidance_final=true"]
     record_guidance -> rework_t4
     human_rescue -> partial_remainder [label="[P] Accept partial: open a PR with what landed, file the rest"]
     human_rescue -> mark_stuck      [label="[X] Abandon: label the issue agent-stuck, open no PR"]

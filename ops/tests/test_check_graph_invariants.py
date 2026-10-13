@@ -52,8 +52,9 @@ class Counts(unittest.TestCase):
         self.assertEqual(cgi.spliced_counts(REAL), {
             # gate-relief task 05 (#29): refute_fix and refute_fix_gate, +2 nodes and +5 edges in
             # each importer of _shared/review-merge. #37: resolve_base and resolve_base_gate, +2 nodes
-            # and +6 edges in each importer. `fabro validate` (check-host) confirms them.
-            "backlog": (77, 190),
+            # and +6 edges in each importer. #35: drop_unreviewed and final_fix_prep, +2 nodes and +9
+            # edges in backlog only. `fabro validate` (check-host) confirms them.
+            "backlog": (79, 199),
             "pr-review": (39, 87),
             "issue-triage": (16, 36),
             "arch-review": (24, 54),
