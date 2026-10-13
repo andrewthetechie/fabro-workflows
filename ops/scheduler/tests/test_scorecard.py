@@ -211,13 +211,14 @@ def test_refuter_line(store):
         "R5": [RefuteVerdict("fail", None)],
         "R6": [RefuteVerdict("invalid", False)],
         "R7": [],
+        "R8": [RefuteVerdict("fail", False), RefuteVerdict("pass", False)],  # a defect-only fix turn (#36)
     }
     for run_id, refute in verdicts.items():
         run(store, run_id)
         store.save_run_summary(summary(run_id, [], refute=refute))
     assert compute(store).refute == scorecard.RefuteLine(
-        runs=6, first_pass=1, first_fail_not_met=2, first_fail_other=1,
-        first_fail_unknown=1, first_invalid=1, fix_turns=2, fix_cleared=1,
+        runs=7, first_pass=1, first_fail_not_met=2, first_fail_other=2,
+        first_fail_unknown=1, first_invalid=1, fix_turns=3, fix_cleared=2,
     )
 
 

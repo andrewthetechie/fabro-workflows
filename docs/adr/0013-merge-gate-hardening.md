@@ -199,3 +199,26 @@ defects, in `refute_findings.json`. Then the run goes through `validate`, `hygie
   with no fix turn (G6).
 - A failed or invalid fix routes to `deliver`, where the old verdict stands and the merge
   stays blocked (G10).
+
+## Amendment (2026-10-13): A defect-only verdict takes the fix turn too (#36)
+
+**Status:** accepted (operator, session 2026-10-13). This amends the #29 amendment above,
+whose last-but-one bullet it replaces. The text above is kept as written.
+
+**Why.** From 2026-10-12 to 2026-10-13, 3 of the 7 Refuter blocks across the four
+repositories were defect-only (womens-fantasy-sports #1983 and #1976, lawncare-saas #2816).
+Each went to a human with no fix turn, although a defect is the most concrete finding the
+Refuter writes: a file, a line and a failure scenario. The #29 amendment gave no reason for
+excluding defects.
+
+**Decision.** `refute_gate` takes the fix route when the verdict is `fail`, the run has
+not had a fix turn, and `refute.json` has at least one `not_met` criterion **or** at least
+one defect. The gate emits that as `refute_fixable`, and the edge reads it. `refute_not_met`
+keeps its meaning (at least one `not_met` criterion), because the scorecard reads it.
+- Everything else in the #29 amendment stands: one turn per run, the sealed verdict files,
+  a fresh second verdict, and any second `fail` goes to a human.
+- `invalid` verdicts and `unverifiable`-only verdicts still block with no fix turn. A code
+  change cannot make a criterion the Refuter could not check verifiable.
+- The gate-relief task 07 measurement (`docs/gate-relief/07-measure.md`) still reads the
+  `not_met` fix turns on 2026-10-19. Defect-only fix turns get their own row, measured from
+  this change's deploy for a week.

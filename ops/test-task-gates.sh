@@ -3826,20 +3826,23 @@ OUT=$(sh "$T/refute_gate.sh" 2>&1); RC=$?
 check "refute_gate: missing stage is a repair"      "1"    "$RC"
 check "refute_gate: missing stage is never pass"    "0"    "$(grep -c '"refute_verdict":"pass"' <<<"$OUT")"
 
-# 6. The fix turn (ADR 0013 D5 amendment, gate-relief G6-G8). The context keys decide the
-#    edge (refute_verdict=fail, refute_not_met=true, refute_fix_attempts=0), and the counter
-#    is written only when that route is taken.
+# 6. The fix turn (ADR 0013 D5 amendments, gate-relief G6-G8, #36). The context keys decide
+#    the edge (refute_verdict=fail, refute_fixable=true, refute_fix_attempts=0), and the counter
+#    is written only when that route is taken. A not_met criterion or a defect makes a fail
+#    fixable; refute_not_met still says only whether a criterion was not_met (the scorecard).
 rg_run() { OUT=$(sh "$T/refute_gate.sh" 2>&1); RC=$?; J=$(lastjson "$OUT"); }
 rgc() { jq -r ".context_updates.$1" <<<"$J"; }
 FAILF="$FIX_DIR/refute-fail.json"
 # a fixture whose not_met criteria are unverifiable, and one with defects but nothing not_met
-jq '.criteria |= map(if .status == "not_met" then .status = "unverifiable" else . end)' "$FAILF" > "$T/unverifiable.json"
+jq '.criteria |= map(if .status == "not_met" then .status = "unverifiable" else . end) | .defects = []' "$FAILF" > "$T/unverifiable.json"
+jq '.criteria |= map(if .status == "not_met" then .status = "unverifiable" else . end)' "$FAILF" > "$T/unverifiable-defect.json"
 jq '.criteria |= map(.status = "met")' "$FAILF" > "$T/defects-only.json"
 
 rg_stage; cp "$FAILF" "$T/review/refute.json"
 echo 0 > "$T/refute_attempts"; echo 0 > "$T/refute_fix_attempts"; rm -f "$T/review/refute_findings.json"
 rg_run
-check "fix: one not_met takes the fix route"    "true" "$(rgc refute_not_met)"
+check "fix: one not_met takes the fix route"    "true" "$(rgc refute_fixable)"
+check "fix: one not_met says not_met"           "true" "$(rgc refute_not_met)"
 check "fix: first pass counter is 0 on the edge" "0"   "$(rgc refute_fix_attempts)"
 check "fix: the counter is written to 1"        "1"    "$(cat "$T/refute_fix_attempts")"
 check "fix: the base HEAD is recorded"          "$(git rev-parse HEAD)" "$(cat "$T/refute_fix_base")"
@@ -3850,16 +3853,44 @@ check "fix: findings carry the defects"         "1"    "$(jq '.defects | length'
 rg_stage; cp "$T/unverifiable.json" "$T/review/refute.json"
 echo 0 > "$T/refute_fix_attempts"; rm -f "$T/review/refute_findings.json"
 rg_run
-check "fix: unverifiable only is not a fix route" "false" "$(rgc refute_not_met)"
+check "fix: unverifiable only is not a fix route" "false" "$(rgc refute_fixable)"
+check "fix: unverifiable only is not not_met"     "false" "$(rgc refute_not_met)"
 check "fix: unverifiable only leaves the counter" "0"     "$(cat "$T/refute_fix_attempts")"
 check "fix: unverifiable only has no not_met" "0" "$(jq '.not_met | length' "$T/review/refute_findings.json")"
 
-rg_stage; cp "$T/defects-only.json" "$T/review/refute.json"
+# unverifiable plus a defect: the defect makes it fixable (#36)
+rg_stage; cp "$T/unverifiable-defect.json" "$T/review/refute.json"
 echo 0 > "$T/refute_fix_attempts"
 rg_run
-check "fix: defects only is not a fix route"     "false" "$(rgc refute_not_met)"
+check "fix: unverifiable plus a defect is a fix route" "true" "$(rgc refute_fixable)"
+check "fix: unverifiable plus a defect writes the counter" "1" "$(cat "$T/refute_fix_attempts")"
+
+rg_stage; cp "$T/defects-only.json" "$T/review/refute.json"
+echo 0 > "$T/refute_fix_attempts"; rm -f "$T/review/refute_findings.json" "$T/refute_fix_base"
+rg_run
+check "fix: defects only takes the fix route"    "true"  "$(rgc refute_fixable)"
+check "fix: defects only is not not_met"         "false" "$(rgc refute_not_met)"
 check "fix: defects only is still fail"          "fail"  "$(rgc refute_verdict)"
-check "fix: defects only leaves the counter"     "0"     "$(cat "$T/refute_fix_attempts")"
+check "fix: defects only carries attempts 0"     "0"     "$(rgc refute_fix_attempts)"
+check "fix: defects only writes the counter"     "1"     "$(cat "$T/refute_fix_attempts")"
+check "fix: defects only records the base HEAD"  "$(git rev-parse HEAD)" "$(cat "$T/refute_fix_base")"
+check "fix: defects only findings, no not_met"   "0"     "$(jq '.not_met | length' "$T/review/refute_findings.json")"
+check "fix: defects only findings carry them"    "1"     "$(jq '.defects | length' "$T/review/refute_findings.json")"
+
+# the second defects-only verdict: the counter is already 1, so the run goes to deliver
+rg_stage; cp "$T/defects-only.json" "$T/review/refute.json"
+echo 1 > "$T/refute_fix_attempts"
+rg_run
+check "fix: second defects only carries attempts 1" "1"  "$(rgc refute_fix_attempts)"
+check "fix: second defects only does not rewrite it" "1" "$(cat "$T/refute_fix_attempts")"
+
+# a defects: null file computes like an empty list: no defect, so not fixable on its own
+jq '.criteria |= map(.status = "met") | .defects = null' "$FAILF" > "$T/defects-null.json"
+rg_stage; cp "$T/defects-null.json" "$T/review/refute.json"
+echo 0 > "$T/refute_fix_attempts"
+rg_run
+check "fix: null defects all met is pass"        "pass"  "$(rgc refute_verdict)"
+check "fix: null defects is not a fix route"     "false" "$(rgc refute_fixable)"
 
 # the second not_met: the counter is already 1, so the edge cannot match and the run goes to deliver
 rg_stage; cp "$FAILF" "$T/review/refute.json"
@@ -3867,12 +3898,14 @@ echo 1 > "$T/refute_fix_attempts"
 rg_run
 check "fix: second not_met carries attempts 1"   "1"     "$(rgc refute_fix_attempts)"
 check "fix: second not_met still says not_met"   "true"  "$(rgc refute_not_met)"
+check "fix: second not_met still fixable"        "true"  "$(rgc refute_fixable)"
 check "fix: second not_met does not rewrite it"  "1"     "$(cat "$T/refute_fix_attempts")"
 
 rg_stage; cp "$FIX_DIR/refute-pass.json" "$T/review/refute.json"
 echo 0 > "$T/refute_fix_attempts"; rm -f "$T/review/refute_findings.json"
 rg_run
-check "fix: pass is not a fix route"             "false" "$(rgc refute_not_met)"
+check "fix: pass is not a fix route"             "false" "$(rgc refute_fixable)"
+check "fix: pass is not not_met"                 "false" "$(rgc refute_not_met)"
 check "fix: pass writes no findings"             "absent" "$([ -f "$T/review/refute_findings.json" ] && echo present || echo absent)"
 
 # an invalid verdict (twice) is never a fix route, and its context keys are written too
@@ -3880,7 +3913,8 @@ rg_stage; printf '%s' '{"summary":"s","criteria":[{"criterion":"a","status":"met
 echo 0 > "$T/refute_attempts"; echo 0 > "$T/refute_fix_attempts"
 sh "$T/refute_gate.sh" >/dev/null 2>&1
 rg_run
-check "fix: invalid is not a fix route"          "false" "$(rgc refute_not_met)"
+check "fix: invalid is not a fix route"          "false" "$(rgc refute_fixable)"
+check "fix: invalid is not not_met"              "false" "$(rgc refute_not_met)"
 check "fix: invalid keeps attempts 0"            "0"     "$(rgc refute_fix_attempts)"
 rm -f "$T/refute_fix_attempts" "$T/refute_fix_base"
 

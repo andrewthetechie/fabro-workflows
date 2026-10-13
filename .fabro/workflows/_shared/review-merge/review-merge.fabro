@@ -643,11 +643,13 @@ echo 'refuter inputs: '$(jq length $R/refute_issues.json)' linked issue(s), '$SI
     // Validates refute.json with one repair turn, the same pattern as standards_gate, and
     // then COMPUTES the verdict: `pass` only when every criterion is `met` and there are no
     // defects. The agent writes no verdict of its own. Twice-invalid output is `invalid`,
-    // which blocks like `fail`. A `fail` with at least one not_met criterion takes one fix
-    // turn (ADR 0013 D5 amendment, gate-relief G6-G8): refute_fix changes the code, and the
-    // Refuter judges it again from scratch. The route is taken only while
-    // refute_fix_attempts is 0; this gate writes the counter to 1 when it takes the route, and
-    // nothing resets it in the run. Every other fail, and every invalid result, goes to deliver.
+    // which blocks like `fail`. A `fail` with at least one not_met criterion or at least one
+    // defect takes one fix turn (ADR 0013 D5 amendments, gate-relief G6-G8, #36): refute_fix
+    // changes the code, and the Refuter judges it again from scratch. The route is taken only
+    // while refute_fix_attempts is 0; this gate writes the counter to 1 when it takes the route,
+    // and nothing resets it in the run. An unverifiable-only fail, and every invalid result, goes
+    // to deliver. refute_fixable decides the edge; refute_not_met keeps its own meaning because
+    // the scorecard reads it.
     refute_gate [label="Validate refuter output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/refute.json
 R=/tmp/fabro/review
@@ -661,28 +663,31 @@ if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
   echo invalid > $R/refute_verdict
   echo 'The refuter wrote an invalid result twice, so it has no verdict and the merge is refused.' > $R/refute_reason.txt
-  echo '{\"context_updates\":{\"refute_verdict\":\"invalid\",\"refute_not_met\":false,\"refute_fix_attempts\":'$FA'}}'
+  echo '{\"context_updates\":{\"refute_verdict\":\"invalid\",\"refute_not_met\":false,\"refute_fixable\":false,\"refute_fix_attempts\":'$FA'}}'
   exit 0
 fi
 echo 0 > /tmp/fabro/refute_attempts
 V=$(jq -r 'if ([.criteria[] | select(.status != \"met\")] | length) == 0 and (.defects | length) == 0 then \"pass\" else \"fail\" end' $F)
 echo $V > $R/refute_verdict
 NM=$(jq '[.criteria[] | select(.status == \"not_met\")] | length' $F)
+DF=$(jq '.defects // [] | length' $F)
 NOT=false
+FIX=false
 if [ \"$V\" = fail ]; then
   jq -r '\"The refuter could not confirm the work is done: \" + ([.criteria[] | select(.status != \"met\") | .status + \": \" + .criterion] + [.defects[] | \"defect at \" + .file + (if (.line | type) == \"number\" then \":\" + (.line | tostring) else \"\" end) + \": \" + .scenario] | .[:5] | join(\"; \")) + \".\"' $F > $R/refute_reason.txt
   jq -c '{not_met: [.criteria[] | select(.status == \"not_met\") | {criterion, evidence}], defects: (.defects // [])}' $F > $R/refute_findings.json
-  if [ \"$NM\" -gt 0 ]; then NOT=true; fi
+  if [ \"$NM\" -gt 0 ]; then NOT=true; FIX=true; fi
+  if [ \"$DF\" -gt 0 ]; then FIX=true; fi
 else
   rm -f $R/refute_findings.json
 fi
-if [ \"$NOT\" = true ] && [ \"$FA\" = 0 ]; then echo 1 > /tmp/fabro/refute_fix_attempts; git rev-parse HEAD > /tmp/fabro/refute_fix_base 2>/dev/null || rm -f /tmp/fabro/refute_fix_base; fi
-echo '{\"context_updates\":{\"refute_verdict\":\"'$V'\",\"refute_not_met\":'$NOT',\"refute_fix_attempts\":'$FA'}}'"]
+if [ \"$FIX\" = true ] && [ \"$FA\" = 0 ]; then echo 1 > /tmp/fabro/refute_fix_attempts; git rev-parse HEAD > /tmp/fabro/refute_fix_base 2>/dev/null || rm -f /tmp/fabro/refute_fix_base; fi
+echo '{\"context_updates\":{\"refute_verdict\":\"'$V'\",\"refute_not_met\":'$NOT',\"refute_fixable\":'$FIX',\"refute_fix_attempts\":'$FA'}}'"]
 
     // The fix turn (gate-relief G9-G11). refute_fix runs on the run's coder pool in backlog and
     // pr-review, and on glm-5.3-flash in dependabot (the stylesheet rows). Both of its outcomes go
     // to refute_fix_gate, so a failed turn's edits are reverted before deliver pushes.
-    refute_fix [label="Fix the criteria not met", class="refute-fix", timeout="45m", max_retries=1, prompt="@prompts/refute_fix.md.j2"]
+    refute_fix [label="Fix the refuter's findings", class="refute-fix", timeout="45m", max_retries=1, prompt="@prompts/refute_fix.md.j2"]
 
     // Checks the fixer's Input receipt. The change is committed by fabro's checkpoint, as
     // review_fix's is: no node in this graph runs git commit. A missing receipt (a failed, timed-out
@@ -1470,7 +1475,7 @@ echo '{\"context_updates\":{\"review_merge_outcome\":\"'$O'\"}}'"]
     refute -> deliver
     refute_gate -> refute              [condition="outcome=failed", weight=10]
     refute_gate -> deliver
-    refute_gate -> refute_fix          [condition="context.refute_verdict=fail && context.refute_not_met=true && context.refute_fix_attempts=0", weight=5]
+    refute_gate -> refute_fix          [condition="context.refute_verdict=fail && context.refute_fixable=true && context.refute_fix_attempts=0", weight=5]
     refute_fix -> refute_fix_gate      [condition="outcome=succeeded"]
     refute_fix -> refute_fix_gate
     refute_fix_gate -> validate        [condition="outcome=succeeded"]

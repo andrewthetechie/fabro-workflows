@@ -496,7 +496,9 @@ def _refute_line(raw: Iterable[str | None]) -> RefuteLine:
             counts["first_fail_other"] += 1
         else:
             counts["first_fail_unknown"] += 1
-        if len(verdicts) > 1 and first["verdict"] == "fail" and first.get("not_met") is True:
+        # Only a fix turn sends a run back through refute_gate, so a second verdict after a
+        # first fail is one. A defect-only fail takes the turn too since #36, with not_met False.
+        if len(verdicts) > 1 and first["verdict"] == "fail":
             counts["fix_turns"] += 1
             if verdicts[-1]["verdict"] == "pass":
                 counts["fix_cleared"] += 1
