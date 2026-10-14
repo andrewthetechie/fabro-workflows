@@ -28,7 +28,7 @@ say() { builtin printf '\n== %s ==\n' "$*"; }
 # The AGENTS.md *Validating* node/edge baselines, keyed by package name. fabro
 # validate prints `Workflow: Backlog (72 nodes, 175 edges)`; match on the counts.
 declare -A BASELINE=(
-    [backlog]="80 nodes, 204 edges"
+    [backlog]="82 nodes, 210 edges"
     [pr-review]="39 nodes, 87 edges"
     [issue-triage]="16 nodes, 36 edges"
     [arch-review]="24 nodes, 54 edges"
