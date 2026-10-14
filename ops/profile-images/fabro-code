@@ -2,7 +2,7 @@
 # fabro-code -- the only interface agents use to the codegraph index (docs/code-context C2).
 # Installed at /usr/local/bin/fabro-code in every profile image. POSIX sh + jq + sqlite3.
 #
-# Verbs: index, def, show, search, callers, callees, impact, tests, map.
+# Verbs: index, def, show, search, callers, callees, impact, tests, list-tests, map.
 # Exit codes: 0 = an answer; 1 = nothing found / ambiguous; 2 = no index; 64 = usage.
 #
 # codegraph builds and syncs the index; every answer is read straight out of
@@ -238,10 +238,53 @@ impact_() {
   exit $rc
 }
 
+# `tests --json <path>...` (ADR 0025 C2): for each seed, the tests and conftests in
+# its reverse-import closure, plus every tracked test under each conftest's directory.
+# One JSON object on stdout, uncapped. `task-plan` reads it. The conftest expansion
+# lives here because TEST_RE does, so "a test file" has one definition.
+tests_json_() {
+  [ "$#" -gt 0 ] || { echo 'usage: fabro-code tests --json <path>...' >&2; exit 64; }
+  require_index
+  seeds_json='{}'
+  ct_json='{}'
+  for p in "$@"; do
+    p=${p#./}
+    rows=$(q "WITH RECURSIVE f(path, d) AS (
+        SELECT '$(sq "$p")', 0
+        UNION
+        SELECT s.file_path, f.d + 1 FROM f
+          JOIN nodes t ON t.file_path = f.path
+          JOIN edges e ON e.target = t.id AND e.kind = 'imports'
+          JOIN nodes s ON s.id = e.source
+        WHERE f.d < 5 AND $TRUST)
+      SELECT path, MIN(d) AS d FROM f GROUP BY path ORDER BY d, path;") || exit 2
+    paths=$(printf '%s' "$rows" | jq -r '.[].path')
+    tests_arr=$(printf '%s\n' "$paths" | grep -E "$TEST_RE" | jq -R -s 'split("\n") | map(select(length > 0))' || true)
+    confs=$(printf '%s\n' "$paths" | grep -E '(^|/)conftest[.]py$' || true)
+    confs_arr=$(printf '%s\n' "$confs" | jq -R -s 'split("\n") | map(select(length > 0))' || true)
+    count=$(q "SELECT COUNT(*) AS c FROM files WHERE path = '$(sq "$p")';" | jq '.[0].c')
+    if [ "${count:-0}" -gt 0 ]; then indexed=true; else indexed=false; fi
+    seeds_json=$(jq -n --argjson s "$seeds_json" --arg p "$p" --argjson indexed "$indexed" \
+      --argjson tests "${tests_arr:-[]}" --argjson confs "${confs_arr:-[]}" \
+      '$s + {($p): {indexed: $indexed, tests: $tests, conftests: $confs}}')
+    for conf in $confs; do
+      dir=$(dirname "$conf")
+      cfiles=$(git ls-files -- "$dir" 2>/dev/null | grep -E "$TEST_RE" || true)
+      cfiles_arr=$(printf '%s\n' "$cfiles" | jq -R -s 'split("\n") | map(select(length > 0))' || true)
+      ct_json=$(jq -n --argjson c "$ct_json" --arg conf "$conf" --argjson files "${cfiles_arr:-[]}" \
+        '$c + {($conf): $files}')
+    done
+  done
+  jq -n --argjson seeds "$seeds_json" --argjson ct "$ct_json" \
+    '{seeds: $seeds, conftest_tests: $ct}'
+  exit 0
+}
+
 # Test files that import the given files, directly or through up to 4 more
 # files (trusted `imports` edges only), picked out by TEST_RE.
 tests_() {
-  [ "$#" -gt 0 ] || { echo 'usage: fabro-code tests <path>...' >&2; exit 64; }
+  if [ "${1:-}" = "--json" ]; then shift; tests_json_ "$@"; fi
+  [ "$#" -gt 0 ] || { echo 'usage: fabro-code tests <path>...'; exit 64; }
   require_index
   seeds=
   for p in "$@"; do
@@ -399,6 +442,13 @@ search_() {
 
 usage() { echo "usage: fabro-code $1" >&2; exit 64; }
 
+# Every tracked test file (ADR 0025 C3). No index needed, so the image-build gate
+# and `test-env --check` can ask without one. Exit 0 even when it finds nothing.
+list_tests_() {
+  git ls-files | grep -E "$TEST_RE" || true
+  exit 0
+}
+
 case "${1:-}" in
   index)   index_ ;;
   def)     [ "$#" -ge 2 ] || usage 'def <name>'; def_ "$2" ;;
@@ -408,6 +458,7 @@ case "${1:-}" in
   callees) [ "$#" -ge 2 ] || usage 'callees <name>'; ref_ callees "$2" ;;
   impact)  [ "$#" -ge 2 ] || usage 'impact <name>'; impact_ "$2" ;;
   tests)   shift; tests_ "$@" ;;
+  list-tests) list_tests_ ;;
   map)     map_ ;;
-  *)       usage '{index|def|show|search|callers|callees|impact|tests|map} ...' ;;
+  *)       usage '{index|def|show|search|callers|callees|impact|tests|list-tests|map} ...' ;;
 esac

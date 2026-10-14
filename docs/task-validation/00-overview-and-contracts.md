@@ -1,7 +1,8 @@
 # Task validation: overview and canonical contracts
 
-**Status:** designed 2026-10-14 (issue #26, ADR 0025 proposed). Task 01 (the scorecard
-rows and the re-summarize command) is deployed; tasks 02–11 are not started.
+**Status:** designed 2026-10-14 (issue #26, ADR 0025 proposed). Tasks 01 (the scorecard
+rows and the re-summarize command; deployed, history re-summarized) and 02 (`fabro-code
+tests --json` + `list-tests`) are done; tasks 03–11 are not started.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report the
