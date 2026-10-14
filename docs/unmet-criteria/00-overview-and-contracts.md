@@ -1,6 +1,6 @@
 # Unmet criteria: overview and canonical contracts
 
-**Status:** planned 2026-10-13. Issue #17.
+**Status:** built 2026-10-13 (tasks 01-05 and the task 06 docs). Issue #17. The task 06 live triage trial is pending.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct. **Before you edit a

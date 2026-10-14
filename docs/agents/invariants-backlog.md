@@ -23,6 +23,16 @@ Every rule here passes `fabro validate` and fails at runtime, usually silently. 
 | Every pair of edges into `plan` and `improve` is exclusive on `arm` (`arm=plan` / `arm!=plan`), and `next_task -> improve` stays unconditional | A condition tie breaks lexically, so `improve` would win every plan-arm task. Checked by `ops/test-task-gates.sh`. |
 | `plan` and `improve` share `improve_gate`, `improve_result.json` and `task-context.md`; their manifest stages carry the same inputs and output | The gate's receipt check and split guards stop matching one of the two writers. |
 
+## Unmet criteria (#17, docs/unmet-criteria/)
+
+| Rule | What happens otherwise |
+|---|---|
+| Every edge out of `coder` and `rework_t1`..`rework_t4` that used to reach `autofix` goes through `task_block_gate` | A stage that blocked would have its empty diff validated and reviewed, and the rework ladder would spend hours on a task no tier can do. Before #17 the coder's `<blocked>` marker was text nothing read, and the coder prompt told it to "implement the closest form" instead, which is how lawncare-saas#2723 shipped a re-check button as its "Resend email" criterion. Covered by `ops/test-task-gates.sh` (the parsed edges). |
+| `task_block_gate` treats a file from an older visit as `none` and deletes it, and treats any other file it cannot read as a valid criterion block as `scope`, never `none`. `next_task` deletes `task_blocked.json` per task | A stale block from an earlier task would stop this one; a malformed block from this visit would let a stage that tried to block reach review. Covered by `ops/test-task-gates.sh`. |
+| `return_to_triage` comments first, with `<!-- fabro:triage-questions -->` as the first line, then swaps `agent` and `agent-in-progress` for `needs-info`, and ends the run at `exit` succeeded | Without the marker, issue-triage and arch-review re-triage the issue at once instead of waiting for a human answer. Left on `agent-in-progress`, the scheduler's receipt scan requeues it; ended failed, the requeue rule may put it back in the queue. It writes `stuck_reason.md` before any `gh` call, so its unconditional edge to `mark_stuck` still names the Contradiction. Covered by `ops/test-task-gates.sh`. |
+| The node that routes to `return_to_triage` publishes `triage_questions` (`decompose_gate`, `task_block_gate`), on every routing object it prints | The `discord-triage-question` hook fires on `return_to_triage`'s `stage_start`, before that node runs, and reads the key from the run state. A stale key from an earlier visit would send the wrong question. |
+| A rework whose findings all need out-of-scope edits completes; only a criterion that cannot be met as written, or a diff too large to keep one, blocks | A `scope` block goes to the rescue gate, so a rework that blocked on scope would skip the stronger tiers the ladder exists to try. |
+
 ## Issue selection and queue labels
 
 | Rule | What happens otherwise |
