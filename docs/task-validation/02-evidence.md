@@ -152,3 +152,36 @@ once more; from the third call the fingerprint is stable and `prepare` is null. 
 `.pyc` files already present (the common case after any earlier prepare), the second call
 is cached, which a run with the `__pycache__` directories left in place confirmed. Caching
 itself is correct: `task_check` prepares only on a fingerprint mismatch (C5, D9).
+
+## Task 06 acceptance
+
+`make deploy-images` from main at `2eba37b`. All four images rebuilt; each verify reports
+`fabro-io OK (0.5.0)`, and the build's own `cargo test --locked` passed.
+
+`fabro-io test-env --check` against each repository's unchanged `.fabro/test.toml`, in its
+image, with `git config --global --add safe.directory /src` (the build's own verify mounts
+the clone read-only into a root container, where git sees no tracked files, so its
+`verify-testenv-*.log` is empty — the parse check still runs, the ownership warnings do not):
+
+| Repository | Image | Ownership warnings |
+|---|---|---|
+| womens-fantasy-sports | fabro-ts | 357 |
+| lawncare-saas | fabro-python-node | 299 |
+| jelly-swipe | fabro-python | 81 |
+| writers-app | fabro-rust-node | 166 |
+
+One warning per tracked test file, all unowned, exactly as expected before tasks 09/11
+declare `tests`.
+
+Per image: `fabro-io --version` is 0.5.0; `fabro-code list-tests` prints 357 / 299 / 81 /
+166 lines; `fabro-test --task` prints `{"mode":"full","reason":"no_config","ok":null}` and
+exits 0.
+
+`min_binary` raised to 0.5.0 and the `FABRO_IO_MANIFEST` blocks regenerated. `make check`,
+`make verify-host` and `make check-host` are green, with the graph baselines unchanged
+(Backlog 82/210, PrReview 39/87, IssueTriage 16/36, ArchReview 24/54, Dependabot 51/115,
+MergeQueue 8/10).
+
+A `backlog` run that used the new image lists the tool: run `01M4Y4V83M0XM7WA1HS832H7X2`,
+`agent.tools.available` on `decompose` and `plan` carries
+`{"name":"mcp__io__task_check","description":"Run the checks and tests the Task validation gate will run for your current changes, using the same selection. Run it before you finish."}`.

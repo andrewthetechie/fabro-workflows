@@ -3,8 +3,9 @@
 **Status:** designed 2026-10-14 (issue #26, ADR 0025 proposed). Tasks 01 (the scorecard
 rows and the re-summarize command; deployed, history re-summarized), 02 (`fabro-code
 tests --json` + `list-tests`), 03 (the `test.toml` Task validation keys), 04 (`fabro-io
-task-plan`) and 05 (`fabro-io task-check`, the `task_check` tool, `fabro-test --task`,
-`fabro-io` 0.5.0) are done; tasks 06–11 are not started.
+task-plan`), 05 (`fabro-io task-check`, the `task_check` tool, `fabro-test --task`,
+`fabro-io` 0.5.0) and 06 (the images and `min_binary`) are done; tasks 07–11 are not
+started.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report the
