@@ -2,13 +2,27 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "decomposition",
   "title": "decomposition — backlog decompose outputs the task queue (task 10)",
-  "description": "The backlog decomposer's output (docs/stage-io, task 10). decompose_gate checks status enum and each issue's id/title/body/files shape; the task queue logic (source/covers stamping, cursor) stays in the gate. _io is stamped by the server.",
+  "description": "The backlog decomposer's output (docs/stage-io, task 10). decompose_gate checks status enum and each issue's id/title/body/files shape; the task queue logic (source/covers stamping, cursor) stays in the gate. contradiction (#17, docs/unmet-criteria C3) needs issues [] and a non-empty contradictions, a gate check. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
   "required": ["status", "summary", "issues"],
   "properties": {
-    "status": { "enum": ["issues", "no_work", "needs_human_review"] },
+    "status": { "enum": ["issues", "no_work", "needs_human_review", "contradiction"] },
     "summary": { "type": "string", "description": "One or two sentences describing the decomposition result." },
+    "contradictions": {
+      "type": "array",
+      "description": "With status contradiction: each acceptance criterion that a non-goal of the same issue forbids.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "non_goal", "needed_surface"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "non_goal": { "type": "string", "minLength": 1 },
+          "needed_surface": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "issues": {
       "type": "array",
       "items": {

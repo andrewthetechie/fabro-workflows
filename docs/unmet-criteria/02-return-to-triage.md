@@ -14,8 +14,8 @@
 3. `_io/schemas/decomposition.schema.json`: add `contradiction` to the `status` enum, and the
    optional `contradictions` array (C1 entry shape). Regenerate the manifest.
 4. `decompose_gate`: accept `contradiction` (C3). Valid only with `issues: []` and a non-empty,
-   well-formed `contradictions`. On it, write `return.json` with `source: "decompose"` and
-   `why` taken from `summary`. Publish `triage_questions` (one `- criterion / non-goal` line per
+   well-formed `contradictions`. On it, write `return.json` with `source: "decompose"`,
+   `summary`, and each item's `why` taken from its `needed_surface`. Publish `triage_questions` (one `- criterion / non-goal` line per
    item, `"` removed, cut to 1200 bytes, as `triage_gate` does). Edge:
    `decompose_gate -> return_to_triage [condition="context.decomp_status=contradiction"]`.
    Every routing object `decompose_gate` prints keeps a `triage_questions` key (empty when not

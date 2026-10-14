@@ -78,7 +78,15 @@ Operate read-only.
 - A single cohesive change is still one implementation task: return it under `issues`
   with a single entry. Do NOT emit `no_work` merely because the issue fits in one
   change, needs no splitting, or already has a complete spec in its body.
-- If requirements conflict or remain too ambiguous for safe task drafting, emit
+- Check each acceptance criterion against the issue's non-goals and boundaries. Name the
+  surface the criterion needs (a backend endpoint, an external API, a secret, a
+  migration, a file the issue rules out). When a non-goal excludes that surface, the two
+  cannot both hold: that is a Contradiction. Emit `contradiction` with one
+  `contradictions` entry per conflict, and no tasks. Never draft a task that meets a
+  similar behaviour in place of the criterion, and never drop the criterion. Example: a
+  "Resend email" action with the non-goal "No backend changes", when resending calls a
+  third-party API with a secret.
+- If requirements otherwise conflict or remain too ambiguous for safe task drafting, emit
   `needs_human_review`. Your `summary` is then posted on the issue as the reason the
   run stopped, so name the blocker (for example a declared `Blocked by` issue whose
   work is not in this checkout) and what has to happen first.
@@ -158,11 +166,11 @@ than a summary of it.
 
 ## Output
 
-Call `submit` with your `status`, `summary` and `issues`. It checks the shape and
+Call `submit` with your `status`, `summary`, `issues` and, for `contradiction`, `contradictions`. It checks the shape and
 writes `/tmp/fabro/decomposition.json`; do not write it yourself. A result
 `submit` did not write is refused.
 
-`status` is `issues` | `no_work` | `needs_human_review`; `summary` is one or two
+`status` is `issues` | `no_work` | `needs_human_review` | `contradiction`; `summary` is one or two
 sentences; `issues` is an array of tasks with `id`, `title`, `body`, `files`,
 and optionally `covers` and `priority`.
 
@@ -174,6 +182,11 @@ costs a full retry round:
   `issues` must be `[]`.
 - `status` must be `needs_human_review` when safe decomposition is not possible;
   then `issues` must be `[]` and `summary` must explain the blocker.
+- `status` must be `contradiction` when an acceptance criterion conflicts with a
+  non-goal; then `issues` must be `[]` and `contradictions` lists each conflict:
+  `criterion` and `non_goal` quoted from the issue, and `needed_surface`, what the
+  criterion needs that the non-goal excludes. The run returns the issue to triage, where
+  a human decides which side gives. Omit `contradictions` for every other status.
 - Every entry needs a non-empty string `id`, a non-empty string `title`, a
   non-empty string `body`, and `files` must be an array (it may be empty). The gate
   rejects the whole file if any entry fails this.

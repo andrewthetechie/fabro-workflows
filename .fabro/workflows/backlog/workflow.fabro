@@ -390,7 +390,11 @@ A=$(cat /tmp/fabro/decompose_attempts 2>/dev/null || echo 0)
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
 RM=0; if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then RM=1; S=invalid; else S=$(jq -r .status $F 2>/dev/null || echo invalid); fi
-if [ \"$S\" != issues ] && [ \"$S\" != no_work ] && [ \"$S\" != needs_human_review ]; then S=invalid; fi
+if [ \"$S\" != issues ] && [ \"$S\" != no_work ] && [ \"$S\" != needs_human_review ] && [ \"$S\" != contradiction ]; then S=invalid; fi
+if [ \"$S\" = contradiction ]; then
+  GOOD=$(jq '(.issues | type) == \"array\" and (.issues | length) == 0 and (.contradictions | type) == \"array\" and (.contradictions | length) > 0 and ([.contradictions[] | select(((.criterion // \"\") | tostring) == \"\" or ((.non_goal // \"\") | tostring) == \"\" or ((.needed_surface // \"\") | tostring) == \"\")] | length) == 0' $F 2>/dev/null || echo false)
+  if [ \"$GOOD\" != true ]; then S=invalid; fi
+fi
 if [ \"$S\" = issues ]; then
   T=$(jq -r '.issues | type' $F 2>/dev/null || echo none)
   N=$(jq '.issues | length' $F 2>/dev/null || echo 0)
@@ -418,7 +422,12 @@ if [ \"$S\" = issues ]; then
   fi
 fi
 if [ \"$S\" = needs_human_review ]; then jq -r '.summary // empty' $F > /tmp/fabro/stuck_reason.md 2>/dev/null || true; fi
-echo '{\"context_updates\":{\"decomp_status\":\"'$S'\",\"task_count\":'$CNT',\"oversized_tasks\":'$OVER'}}'"]
+QT=''
+if [ \"$S\" = contradiction ]; then
+  jq '{source: \"decompose\", summary: (.summary // \"\"), items: [.contradictions[] | {criterion, non_goal, why: .needed_surface}]}' $F > /tmp/fabro/return.json
+  QT=$(jq -r '[.items[] | \"- \" + .criterion + \" (conflicts with: \" + .non_goal + \")\"] | join(\"  \")' /tmp/fabro/return.json | tr -d '\"' | cut -c1-1200)
+fi
+jq -nc --arg s \"$S\" --argjson c \"${CNT:-0}\" --argjson o \"${OVER:-0}\" --arg q \"$QT\" '{context_updates:{decomp_status:$s,task_count:$c,oversized_tasks:$o,triage_questions:$q}}'"]
 
     // The first lines drop the worktree `baseline_check` makes at /tmp/fabro/base-tree
     // (docs/coder-tweaks 04, C4): it is per task, and a stale one would hold the previous
@@ -2247,10 +2256,52 @@ echo 'accept partial: '$((COUNT - FROM))' unfinished task(s) moved to the remain
     // 2026-09-19. /tmp/fabro/issue_number is written by `claim` before any network
     // call, so it is there whenever the run got past input validation at all.
     //
-    // The comment carries the decomposer's summary when decompose_gate routed here on
-    // needs_human_review (stuck_reason.md, which prep deletes). Otherwise it is the
-    // generic line. The comment file is written only when a number was found, and the
+    // The comment carries stuck_reason.md when one was written: the decomposer's summary
+    // when decompose_gate routed here on needs_human_review, or the Contradiction when
+    // return_to_triage failed after writing it (prep deletes the file). Otherwise it is
+    // the generic line. The comment file is written only when a number was found, and the
     // directory exists whenever claim wrote that number.
+    // ---- Return a Contradiction to triage (#17, docs/unmet-criteria C4) ----
+    // The issue asks for something its own non-goals forbid, found by `decompose` or by a
+    // coder that blocked on a criterion. Only a human can say which side gives, so the
+    // issue goes back to triage as a question instead of to `agent-stuck`, and the
+    // answer re-queues it without a relabel: the comment's first line is the triage
+    // marker, so issue-triage and arch-review wait for a human reply before they
+    // re-triage it. No PR is opened and the branch is dropped (backlog pushes nothing
+    // before open_pr), because the reviewed tasks were built on an issue about to change.
+    //
+    // The run ends succeeded at exit: the scheduler requeues some failed runs, and this
+    // issue must leave the queue. `agent-in-progress` comes off, or the scheduler's
+    // receipt scan would requeue it. stuck_reason.md is written before any gh call, so
+    // the unconditional edge to mark_stuck still names the Contradiction. gh output goes
+    // to return.log: stdout carries only the routing object (ADR 0020). The Discord
+    // `triage-question` hook fires on this node's stage_start and reads
+    // `triage_questions`, which the routing gate published.
+    return_to_triage [label="Return the issue to triage", shape=parallelogram, timeout="2m", output_schema="routing",
+        script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || true)
+case \"$N\" in '' | *[!0-9]*) N=$(cat /tmp/fabro/issue_number 2>/dev/null || echo 0) ;; esac
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+F=/tmp/fabro/return.json
+L=/tmp/fabro/return.log
+if ! jq -e '(.items | type) == \"array\" and (.items | length) > 0' $F >/dev/null 2>&1; then echo 'return_to_triage: return.json is missing or names no criterion; mark_stuck takes over' >&2; exit 1; fi
+jq -r '([10] | implode) as $nl | \"The issue asks for something its own boundaries forbid, so it was returned to triage:\" + $nl + $nl + ([.items[] | \"- \" + .criterion + \" (conflicts with: \" + .non_goal + \"): \" + .why] | join($nl))' $F > /tmp/fabro/stuck_reason.md
+if [ \"$N\" = 0 ]; then echo 'return_to_triage: no issue number; mark_stuck takes over' >&2; exit 1; fi
+jq -r '([10] | implode) as $nl
+| (if .source == \"decompose\" then \"the decomposer\" else \"the coder\" end) as $who
+| \"<!-- fabro:triage-questions -->\" + $nl
++ \"> *This was generated by AI during an autonomous implementation run.*\" + $nl + $nl
++ \"## Returned to triage\" + $nl + $nl
++ \"The implementation run stopped before opening a pull request, because \" + $who + \" found an acceptance criterion that the boundaries of this issue forbid. A criterion that cannot be met as written is reported, never replaced by a similar behaviour, so nothing from this run was kept.\" + $nl + $nl
++ ([.items[] | \"- **Criterion:** \" + .criterion + $nl + \"  - **Conflicts with:** \" + .non_goal + $nl + \"  - **Why:** \" + .why] | join($nl + $nl)) + $nl + $nl
++ \"### Question\" + $nl + $nl
++ \"For each item: should the criterion change, or the non-goal? Edit the issue body to match, then answer in a new comment. The next triage reads the answer and, when nothing else is open, queues the issue for the agent again.\" + $nl + $nl
++ \"Answer by replying in a new comment. Editing this comment is not detected.\"' $F > /tmp/fabro/return_comment.md
+gh label create needs-info --color FEF2C0 --description 'Waiting on a human for triage answers' >> $L 2>&1 || true
+if ! gh issue comment $N --body-file /tmp/fabro/return_comment.md >> $L 2>&1; then echo 'return_to_triage: gh issue comment failed; see return.log' >&2; exit 1; fi
+if ! gh issue edit $N --remove-label agent --remove-label agent-in-progress --add-label needs-info >> $L 2>&1; then echo 'return_to_triage: gh issue edit failed; see return.log' >&2; exit 1; fi
+R=$(jq -r '\"Returned to triage: \" + ([.items[] | .criterion + \" conflicts with \" + .non_goal] | join(\"; \"))' $F | tr '[:cntrl:]' ' ' | cut -c1-300 | sed 's/ *$//')
+jq -nc --arg r \"$R\" '{context_updates:{return_reason:$r}}'"]
+
     mark_stuck [label="Mark stuck", shape=parallelogram,
         script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || true)
 case \"$N\" in '' | *[!0-9]*) N=$(cat /tmp/fabro/issue_number 2>/dev/null || echo 0) ;; esac
@@ -2261,7 +2312,7 @@ if [ \"$N\" != 0 ]; then
     gh issue edit $N --remove-label Review 2>/dev/null || true
     cp /tmp/fabro/draft_reason.md /tmp/fabro/stuck_comment.md
   elif [ -s /tmp/fabro/stuck_reason.md ]; then
-    { echo 'Agent run stopped before implementing this issue. The decomposer reported:'; echo; cat /tmp/fabro/stuck_reason.md; } > /tmp/fabro/stuck_comment.md
+    { echo 'Agent run stopped before implementing this issue. The run reported:'; echo; cat /tmp/fabro/stuck_reason.md; } > /tmp/fabro/stuck_comment.md
   else
     echo 'Agent run could not complete this issue and gave up. See the fabro run for details.' > /tmp/fabro/stuck_comment.md
   fi
@@ -2294,6 +2345,10 @@ echo done"]
     // mark_stuck, which posts the decomposer's summary on the issue and frees the
     // coder box, instead of holding it at the gate for up to 4h.
     decompose_gate -> mark_stuck    [condition="context.decomp_status=needs_human_review"]
+    // A Contradiction (#17, docs/unmet-criteria C3) is a defect in the issue, not in the
+    // run: it goes back to triage as a question, so the answer re-queues the issue
+    // without a human relabelling it.
+    decompose_gate -> return_to_triage [condition="context.decomp_status=contradiction"]
     decompose_gate -> rescue_brief
 
     // ADR 0023. extra_prep (the extra review) is skipped in the fast lane: tasks_done goes
@@ -2495,5 +2550,7 @@ echo '{\"context_updates\":{\"guidance_final\":'$G'}}'"]
     partial_remainder -> final_merge [condition="outcome=succeeded"]
     partial_remainder -> rescue_brief
 
+    return_to_triage -> exit        [condition="outcome=succeeded"]
+    return_to_triage -> mark_stuck
     mark_stuck -> exit
 }

@@ -241,6 +241,35 @@ rm -f "$T/stuck_reason.md"
 dg_setup '{"status":"issues","summary":"s","issues":[{"id":"a","title":"A","body":"b","files":[]}]}'
 sh "$T/decompose_gate.sh" >/dev/null 2>&1
 check "issues writes no stuck reason"  "absent" "$([ -e "$T/stuck_reason.md" ] && echo present || echo absent)"
+check "issues: empty triage_questions" "" "$(jq -r '.context_updates.triage_questions' <<<"$(lastjson "$(sh "$T/decompose_gate.sh" 2>&1)")")"
+
+# A Contradiction (#17, docs/unmet-criteria C3) goes back to triage, not to mark_stuck:
+# return.json carries both sides, and triage_questions is published for the Discord
+# hook, which fires on return_to_triage's stage_start, before that node runs.
+rm -f "$T/return.json" "$T/stuck_reason.md"
+dg_setup '{"status":"contradiction","summary":"Resend needs a backend the issue rules out.","issues":[],"contradictions":[{"criterion":"The screen offers a \"Resend email\" action","non_goal":"No backend changes","needed_surface":"a backend that calls the Auth0 resend API"}]}'
+OUT=$(sh "$T/decompose_gate.sh" 2>&1); RC=$?; J=$(lastjson "$OUT")
+check "contradiction exits 0"          "0" "$RC"
+check "contradiction routes"           "contradiction" "$(jq -r '.context_updates.decomp_status' <<<"$J")"
+check "contradiction one routing object" "1" "$(grep -c 'context_updates' <<<"$OUT")"
+check "contradiction: return source"   "decompose" "$(jq -r '.source' "$T/return.json" 2>/dev/null)"
+check "contradiction: return criterion" 'The screen offers a "Resend email" action' "$(jq -r '.items[0].criterion' "$T/return.json" 2>/dev/null)"
+check "contradiction: return non_goal" "No backend changes" "$(jq -r '.items[0].non_goal' "$T/return.json" 2>/dev/null)"
+check "contradiction: return why"      "a backend that calls the Auth0 resend API" "$(jq -r '.items[0].why' "$T/return.json" 2>/dev/null)"
+check "contradiction: questions name it" "1" "$(jq -r '.context_updates.triage_questions' <<<"$J" | grep -c 'Resend email action (conflicts with: No backend changes)')"
+check "contradiction: no quote in questions" "0" "$(jq -r '.context_updates.triage_questions' <<<"$J" | grep -c '\"')"
+check "contradiction: no stuck reason" "absent" "$([ -e "$T/stuck_reason.md" ] && echo present || echo absent)"
+rm -f "$T/return.json"
+dg_setup '{"status":"contradiction","summary":"s","issues":[],"contradictions":[]}'
+sh "$T/decompose_gate.sh" >/dev/null 2>&1
+check "contradiction without entries retries" "1" "$?"
+dg_setup '{"status":"contradiction","summary":"s","issues":[{"id":"a","title":"A","body":"b","files":[]}],"contradictions":[{"criterion":"c","non_goal":"n","needed_surface":"s"}]}'
+sh "$T/decompose_gate.sh" >/dev/null 2>&1
+check "contradiction with issues retries" "1" "$?"
+dg_setup '{"status":"contradiction","summary":"s","issues":[],"contradictions":[{"criterion":"","non_goal":"n","needed_surface":"s"}]}'
+sh "$T/decompose_gate.sh" >/dev/null 2>&1
+check "contradiction empty side retries" "1" "$?"
+check "invalid contradiction writes no return" "absent" "$([ -e "$T/return.json" ] && echo present || echo absent)"
 
 # ---------------------------------------------------------------------------
 # improve_gate — the split splice and its guards
@@ -1053,7 +1082,7 @@ OUT=$(sh "$T/mark_stuck.sh" 2>&1); RC=$?
 check "reason: exits 0"               "0" "$RC"
 check "reason: still swaps the label" "1" "$(grep -c -- 'issue edit 1279 --remove-label agent-in-progress --add-label agent-stuck' "$T/gh.log")"
 check "reason: comment carries it"    "1" "$(grep -c '^blocker #1278 is not merged$' "$FAB/stuck_comment.md")"
-check "reason: names the decomposer"  "1" "$(grep -c 'The decomposer reported' "$FAB/stuck_comment.md")"
+check "reason: introduces it"         "1" "$(grep -c '^Agent run stopped before implementing this issue. The run reported:$' "$FAB/stuck_comment.md")"
 
 # THE REGRESSION: claim died before writing issue.json, so the only record of the
 # issue is the number claim wrote first.
@@ -1091,6 +1120,77 @@ check "no number still exits 0"       "0" "$RC"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
+
+# ---------------------------------------------------------------------------
+# return_to_triage — a Contradiction goes back to triage (#17, docs/unmet-criteria C4)
+#
+# The comment must start with the triage-questions marker, or issue-triage and
+# arch-review would re-triage the issue at once instead of waiting for a human. The
+# receipt (`agent-in-progress`) must come off, or the scheduler's receipt scan requeues
+# it. The routing object is the only stdout, and return_reason survives braces.
+# ---------------------------------------------------------------------------
+echo ""
+echo "return_to_triage"
+T="$WORK/rtt"; mkdir -p "$T/bin"
+FAB="$T/fabro"; mkdir -p "$FAB"
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+echo 'gh says {"noise": true}'
+[ -f "$GH_STATE/gh_fail" ] && [ "$1" = issue ] && exit 1
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+PATH="$T/bin:$SAVED_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+stage_into return_to_triage "$FAB"
+rt_setup() {
+    : > "$T/gh.log"; rm -f "$T/gh_fail" "$FAB"/issue.json "$FAB"/issue_number "$FAB"/stuck_reason.md "$FAB"/return_comment.md "$FAB"/return.log
+    printf '%s' '{"number":2723}' > "$FAB/issue.json"
+    jq -n '{source:"coder",summary:"s",items:[{criterion:"The screen offers a {Resend} email action",non_goal:"No backend changes",why:"Resending calls the Auth0 API with a secret, so a backend must proxy it."}]}' > "$FAB/return.json"
+}
+rt_setup
+OUT=$(sh "$T/return_to_triage.sh" 2>/dev/null); RC=$?
+check "rtt: exits 0"                   "0" "$RC"
+check "rtt: stdout is one object"      "1" "$(grep -c . <<<"$OUT")"
+check "rtt: return_reason one line"    "1" "$(jq -r '.context_updates.return_reason' <<<"$OUT" | grep -c .)"
+check "rtt: return_reason names it"    "1" "$(jq -r '.context_updates.return_reason' <<<"$OUT" | grep -c 'Resend')"
+check "rtt: return_reason <= 300"      "yes" "$([ "$(jq -r '.context_updates.return_reason' <<<"$OUT" | wc -c)" -le 301 ] && echo yes || echo no)"
+check "rtt: marker is the first line"  "<!-- fabro:triage-questions -->" "$(head -1 "$FAB/return_comment.md")"
+check "rtt: comment quotes criterion"  "1" "$(grep -c 'The screen offers a {Resend} email action' "$FAB/return_comment.md")"
+check "rtt: comment quotes non-goal"   "1" "$(grep -c 'No backend changes' "$FAB/return_comment.md")"
+check "rtt: comment says how to answer" "1" "$(grep -c 'Editing this comment is not detected' "$FAB/return_comment.md")"
+check "rtt: comments from the file"    "1" "$(grep -c -- "issue comment 2723 --body-file $FAB/return_comment.md" "$T/gh.log")"
+check "rtt: swaps labels"              "1" "$(grep -c -- 'issue edit 2723 --remove-label agent --remove-label agent-in-progress --add-label needs-info' "$T/gh.log")"
+check "rtt: comment before labels"     "comment" "$(grep -E '^issue (comment|edit)' "$T/gh.log" | head -1 | cut -d' ' -f2)"
+check "rtt: stuck reason for fallback" "1" "$(grep -c 'Resend' "$FAB/stuck_reason.md" 2>/dev/null)"
+long=$(printf 'x%.0s' $(seq 1 400))
+rt_setup; jq --arg l "$long" '.items[0].criterion=$l' "$FAB/return.json" > "$T/r" && mv "$T/r" "$FAB/return.json"
+OUT=$(sh "$T/return_to_triage.sh" 2>/dev/null)
+check "rtt: long reason is cut"        "yes" "$([ "$(jq -r '.context_updates.return_reason' <<<"$OUT" | wc -c)" -le 301 ] && echo yes || echo no)"
+# gh fails: the node fails, and mark_stuck's fallback still has the reason.
+rt_setup; : > "$T/gh_fail"
+sh "$T/return_to_triage.sh" >/dev/null 2>&1; RC=$?
+check "rtt: gh failure fails the node" "1" "$([ "$RC" != 0 ] && echo 1 || echo 0)"
+check "rtt: gh failure keeps reason"   "1" "$(grep -c 'Resend' "$FAB/stuck_reason.md" 2>/dev/null)"
+# No return.json: fail, so mark_stuck says something rather than an empty question.
+rt_setup; rm -f "$FAB/return.json"
+sh "$T/return_to_triage.sh" >/dev/null 2>&1; RC=$?
+check "rtt: no return.json fails"      "1" "$([ "$RC" != 0 ] && echo 1 || echo 0)"
+check "rtt: no return.json, no gh"     "0" "$(grep -c '^issue' "$T/gh.log")"
+# issue.json gone: fall back to the number claim wrote first, like mark_stuck.
+rt_setup; rm -f "$FAB/issue.json"; echo 2724 > "$FAB/issue_number"
+sh "$T/return_to_triage.sh" >/dev/null 2>&1
+check "rtt: falls back to issue_number" "1" "$(grep -c -- 'issue edit 2724 ' "$T/gh.log")"
+PATH="$SAVED_PATH"
+unset GH_LOG GH_STATE
+EDG=$(python3.11 "$REPO_ROOT/ops/check-graph-invariants.py" --dump "$GRAPH" | jq -r '.statements[] | select(.Edge) | .Edge | (([(.attrs // [])[] | select(.[0] == "condition") | .[1]] | .[0]) // "") as $c | .nodes as $n | range(0; ($n | length) - 1) | "\($n[.])->\($n[. + 1]) \($c)"')
+for e in 'return_to_triage->exit outcome=succeeded' \
+         'return_to_triage->mark_stuck ' \
+         'decompose_gate->return_to_triage context.decomp_status=contradiction'; do
+    check "edge: $e" "1" "$(grep -cxF -- "$e" <<<"$EDG")"
+done
+check "edge: return_to_triage has no other exit" "2" "$(grep -c '^return_to_triage->' <<<"$EDG")"
 
 
 # ---------------------------------------------------------------------------

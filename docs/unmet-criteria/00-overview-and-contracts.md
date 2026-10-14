@@ -125,7 +125,8 @@ after reading it.
 
 `status` enum adds `contradiction`. A new optional `contradictions` array has the C1 entry
 shape. `decompose_gate`: `contradiction` requires `issues: []` and a non-empty
-`contradictions`. Otherwise it is invalid. On `contradiction` it writes `/tmp/fabro/return.json`,
+`contradictions`. Otherwise it is invalid. On `contradiction` it writes `/tmp/fabro/return.json`
+(each item's `why` is its `needed_surface`),
 publishes `decomp_status=contradiction` and `triage_questions`, and routes to
 `return_to_triage`.
 
@@ -135,6 +136,7 @@ publishes `decomp_status=contradiction` and `triage_questions`, and routes to
 
 ```json
 { "source": "coder" | "decompose",
+  "summary": "the decomposer's summary, or the coder's reason",
   "items": [ { "criterion": "...", "non_goal": "...", "why": "..." } ] }
 ```
 
