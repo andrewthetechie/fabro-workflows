@@ -1,6 +1,6 @@
 # Unmet criteria: overview and canonical contracts
 
-**Status:** built 2026-10-13 (tasks 01-05 and the task 06 docs). Issue #17. The task 06 live triage trial is pending.
+**Status:** deployed 2026-10-14 (pushed to `main`, `e2ed254`). Issue #17. Live triage trial passed: lawncare-saas#2838 (an app-sent "Email to my accountant" criterion against the non-goal "No backend changes", filed fresh because #2791 already covers the Resend case) was triaged `needs-info` by run `01M4XC3BKZJBMQWJ10WM992ZE6`, with the Contradiction as its first question, and then closed as not planned. The coder block and `return_to_triage` are verified offline only; check the first live visit with `fabro events -p`.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct. **Before you edit a
