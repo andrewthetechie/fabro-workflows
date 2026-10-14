@@ -58,7 +58,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, charts, scorecard
+from . import __version__, charts, scorecard, trial
 from .collector import ScorecardCollector
 from .config import ConfigError, SchedulerConfig, load_config
 from .dispatch import DispatchLoop
@@ -488,6 +488,22 @@ def build_app(
         if (params.get("format") or "").lower() in ("md", "markdown"):
             return PlainTextResponse(scorecard.to_markdown(card), media_type="text/markdown")
         return scorecard.to_json(card)
+
+    @app.get("/api/scorecard/arms", response_model=None)
+    def api_scorecard_arms(
+        request: Request,
+    ) -> list[dict[str, object]] | PlainTextResponse:
+        """The plan trial (#25): the window's scorecard split by arm, `plan` and `improve`.
+
+        Same window parameters as `/api/scorecard`; `?format=md` answers the side-by-side
+        table that `ops/fabro-scorecard.sh --by-arm` prints.
+        """
+        params = request.query_params
+        start, end = _window(params.get("from"), params.get("to"), params.get("days"))
+        results = trial.compute(store.scorecard_rows(start, end), start, end)
+        if (params.get("format") or "").lower() in ("md", "markdown"):
+            return PlainTextResponse(trial.to_markdown(results, start, end), media_type="text/markdown")
+        return trial.to_json(results)
 
     @app.get("/api/scorecard/weeks")
     def api_scorecard_weeks(weeks: str | None = None) -> list[dict[str, object]]:

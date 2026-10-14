@@ -138,6 +138,15 @@ digraph Backlog {
             // coder, not a second one: the scheduler leases exactly one box per run, so
             // naming the other here would queue behind a run that holds it.
             //
+            // `.plan` is the hosted arm of the plan trial (docs/plan-trial/, #25): the
+            // `plan` node does improve's job on glm-5.3 and also writes the edit plan the
+            // coder follows, the strong-model-plans, small-model-edits split. Runs on an
+            // even issue number take it and odd ones keep `.improve` on the box
+            // (`route_lane`). It names glm-5.3 with no `reasoning_effort`, exactly like
+            // `.decomp`, so it runs a configuration already proven on this server. It is
+            // one more glm-5.3 stage per task against z.ai's 3 concurrent sessions
+            // (ADR 0003), which is the cost the trial measures.
+            //
             // The review classes are split one-per-node rather than sharing a `.review`
             // rule. They used to share it, which meant the three per-task reviewers and
             // the three merge-phase reviewers -- the gate in front of an unattended
@@ -158,6 +167,7 @@ digraph Backlog {
             *                 { model: coders-a; }
             .decomp           { model: glm-5.3; }
             .improve          { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .plan             { model: glm-5.3; }
             .coder            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .coder-t2         { model: glm-5.3-flash; }
             .coder-t3         { model: kimi-for-coding; }
@@ -327,6 +337,15 @@ else echo 'agent guide: could not write .codex/instructions.md' >&2; fi"]
     // extra review. An empty issue body becomes `Resolve issue #N: <title>`, because the
     // coder needs a non-empty body. In the standard lane it writes only /tmp/fabro/lane
     // and leaves tasks.json for `decompose`.
+    //
+    // It also picks the run's arm of the plan trial (docs/plan-trial/, #25), once, so
+    // every task of one PR is planned the same way: the merge outcome being compared is
+    // per PR. An even issue number is `plan` (hosted glm-5.3 writes the dossier and an
+    // edit plan), an odd one `improve` (the box, as before). A requeued issue keeps its
+    // number and so its arm. The fast lane never reaches either node and records `none`.
+    // `arm` is written on both branches and to /tmp/fabro/arm; a number that is not an
+    // integer gets `improve`, the unchanged path. Ending the trial is deleting this and
+    // the `context.arm` edges.
     route_lane [label="Choose the lane", shape=parallelogram, output_schema="routing", timeout="1m",
         script="set -e
 F=/tmp/fabro/issue.json
@@ -336,10 +355,14 @@ if jq -e '[.labels[].name] | index(\"fast-path\") != null' $F >/dev/null; then
   mv /tmp/fabro/tasks.new.json /tmp/fabro/tasks.json
   echo 0 > /tmp/fabro/task_index
   echo fast > /tmp/fabro/lane
-  echo '{\"context_updates\":{\"lane\":\"fast\"}}'
+  echo none > /tmp/fabro/arm
+  echo '{\"context_updates\":{\"lane\":\"fast\",\"arm\":\"none\"}}'
 else
+  N=$(jq -r '.number // empty' $F)
+  case \"$N\" in ''|*[!0-9]*) ARM=improve ;; *) if [ $((N % 2)) -eq 0 ]; then ARM=plan; else ARM=improve; fi ;; esac
   echo standard > /tmp/fabro/lane
-  echo '{\"context_updates\":{\"lane\":\"standard\"}}'
+  echo $ARM > /tmp/fabro/arm
+  echo '{\"context_updates\":{\"lane\":\"standard\",\"arm\":\"'$ARM'\"}}'
 fi"]
 
     // ---- Decomposition (agent writes file; gate validates) ----
@@ -580,6 +603,22 @@ fi"]
     // so the worst case on a genuinely dead box is 90m, up from 30m. That is the price of
     // not failing every non-trivial issue outright, which is what 15m does today.
     improve [label="Improve task spec", class="improve", timeout="45m", max_retries=1, prompt="@prompts/improve.md.j2"]
+
+    // `plan`: the trial arm of #25 (docs/plan-trial/). It is `improve` on a hosted model,
+    // with one more deliverable: a `## Plan` section in task-context.md, ordered edits
+    // the coder makes in a fresh session. Everything else is improve's contract
+    // unchanged: the same `submit` output (improve_result.json, schema improve_result),
+    // the same dispositions, the same `improve_gate` with its split guards, task budget,
+    // revert backstop and attempt counter, and the same `excerpts` after it. Only the
+    // arm `route_lane` picked reaches it, and `improve_gate` sends a retry back here.
+    //
+    // timeout="20m" is a peer value, not a measurement of this node. The only glm-5.3
+    // numbers for this job are improve's, from before 9b7f5ff moved it to the box:
+    // max 326s (n=11) and max 180s (29 executions). Writing the plan adds output, and
+    // glm-5.3's known stall is 15m39s before a 502, so 15m (the review peers) would be
+    // spent on one stall. 20m with max_retries=1 bounds a dead provider at 40m, under
+    // improve's 45m single attempt. Re-derive it from the trial's own stage times.
+    plan [label="Plan task (hosted)", class="plan", timeout="20m", max_retries=1, prompt="@prompts/plan.md.j2"]
 
     // The `split` disposition, and why the size check lives HERE rather than in
     // `decompose`.
@@ -2266,6 +2305,9 @@ echo done"]
     next_task -> final_merge        [condition="context.tasks_done=true && context.lane=fast"]
     next_task -> resolve_merge      [condition="context.rebase_failed=true"]
     next_task -> coder              [condition="context.tasks_done=false && context.rebase_failed=false && context.lane=fast"]
+    // The plan trial (#25): route_lane set `arm` once per run. `improve` stays the
+    // unconditional fallthrough, so a run without the key takes the unchanged path.
+    next_task -> plan               [condition="context.tasks_done=false && context.rebase_failed=false && context.lane!=fast && context.arm=plan"]
     next_task -> improve
 
     // A failed node still routes: resolve_merge's unconditional edge leads to its
@@ -2278,14 +2320,20 @@ echo done"]
     // improve; the standard lane is unchanged. A merge final_merge handed over goes back
     // to final_merge in either lane; the three success edges are exclusive on merge_return.
     resolve_merge_gate -> final_merge   [condition="context.merge_ok=true && context.merge_return=pr", weight=10]
-    resolve_merge_gate -> improve       [condition="context.merge_ok=true && context.merge_return=task && context.lane!=fast", weight=10]
+    resolve_merge_gate -> improve       [condition="context.merge_ok=true && context.merge_return=task && context.lane!=fast && context.arm!=plan", weight=10]
+    resolve_merge_gate -> plan          [condition="context.merge_ok=true && context.merge_return=task && context.lane!=fast && context.arm=plan", weight=10]
     resolve_merge_gate -> coder         [condition="context.merge_ok=true && context.merge_return=task && context.lane=fast", weight=10]
     resolve_merge_gate -> resolve_merge [condition="context.merge_attempts=1"]
     resolve_merge_gate -> rescue_brief
 
     improve -> improve_gate         [condition="outcome=succeeded"]
     improve -> rescue_brief
-    improve_gate -> improve         [condition="outcome=failed"]
+    plan -> improve_gate            [condition="outcome=succeeded"]
+    plan -> rescue_brief
+    // A rejected result goes back to the node that wrote it. The two retry edges are
+    // exclusive on `arm`: a condition tie breaks lexically, and `improve` sorts first.
+    improve_gate -> improve         [condition="outcome=failed && context.arm!=plan"]
+    improve_gate -> plan            [condition="outcome=failed && context.arm=plan"]
     improve_gate -> next_task       [condition="context.task_disposition=redundant"]
     // A split rewound `task_index` to the slot the oversized task occupied and
     // replaced it in place, so `next_task` re-selects that slot and picks up the

@@ -15,6 +15,14 @@ Every rule here passes `fabro validate` and fails at runtime, usually silently. 
 | `apply_split` never copies `fast-path` to a child | A split child would skip decomposition it needs. |
 | `pr_handoff` writes `queue` only for the fast lane, no `remainder_kind`, inside 200 lines / 10 files | Over the ceiling the PR waits for CI like any other. |
 
+## The plan trial (#25, docs/plan-trial/)
+
+| Rule | What happens otherwise |
+|---|---|
+| `route_lane` writes `arm` on both branches: `none` in the fast lane, `plan` for an even issue number, `improve` otherwise | A missing or stale `arm` sends the task to the wrong planner, or to none. |
+| Every pair of edges into `plan` and `improve` is exclusive on `arm` (`arm=plan` / `arm!=plan`), and `next_task -> improve` stays unconditional | A condition tie breaks lexically, so `improve` would win every plan-arm task. Checked by `ops/test-task-gates.sh`. |
+| `plan` and `improve` share `improve_gate`, `improve_result.json` and `task-context.md`; their manifest stages carry the same inputs and output | The gate's receipt check and split guards stop matching one of the two writers. |
+
 ## Issue selection and queue labels
 
 | Rule | What happens otherwise |

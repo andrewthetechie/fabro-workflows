@@ -143,3 +143,60 @@ def test_counts_every_event_and_survives_an_empty_log():
 def test_events_are_consumed_once_from_a_generator():
     summary = summarize("R1", STAGES, (event for event in events()))
     assert summary.events == 22
+
+
+# --- the plan trial (#25): tokens per node, the coder's first edit, dispositions -----
+
+
+def test_tokens_are_summed_per_node_with_reasoning_as_output():
+    stages = [
+        {"node_id": "plan", "handler": "agent", "wall_time_ms": 60_000,
+         "provider_used": {"provider": "zai", "model": "glm-5.3"},
+         "usage": {"tokens": {"input": 100, "output": 10, "reasoning": 5, "cache_read": 1000}}},
+        {"node_id": "plan", "handler": "agent", "wall_time_ms": 60_000,
+         "usage": {"tokens": {"input": 50, "output": 1, "reasoning": 0, "cache_read": 500}}},
+        {"node_id": "claim", "handler": "command", "wall_time_ms": 10, "usage": "not an object"},
+    ]
+    summary = summarize("R1", stages, [])
+    plan = summary.stages["plan"]
+    assert (plan.input_tokens, plan.output_tokens, plan.cache_read_tokens) == (150, 16, 1500)
+    assert summary.stages["claim"].input_tokens == 0
+
+
+def test_first_edit_is_timed_once_per_coder_attempt():
+    lines = [
+        {"event": "stage.started", "node_id": "coder", "ts": "2026-10-13T10:00:00.000000000Z"},
+        {"event": "agent.tool.started", "node_id": "coder", "ts": "2026-10-13T10:01:00Z",
+         "properties": {"event": {"ToolCallStarted": {"tool_name": "read_file"}}}},
+        {"event": "agent.tool.started", "node_id": "coder", "ts": "2026-10-13T10:03:30Z",
+         "properties": {"event": {"ToolCallStarted": {"tool_name": "edit_file"}}}},
+        {"event": "agent.tool.started", "node_id": "coder", "ts": "2026-10-13T10:04:00Z",
+         "properties": {"event": {"ToolCallStarted": {"tool_name": "edit_file"}}}},
+        # a rework edit is not the coder's
+        {"event": "stage.started", "node_id": "rework_t1", "ts": "2026-10-13T11:00:00Z"},
+        {"event": "agent.tool.started", "node_id": "rework_t1", "ts": "2026-10-13T11:00:10Z",
+         "properties": {"event": {"ToolCallStarted": {"tool_name": "edit_file"}}}},
+        # a coder attempt that never edits records nothing; the next one starts its own clock
+        {"event": "stage.started", "node_id": "coder", "ts": "2026-10-13T12:00:00Z"},
+        {"event": "stage.started", "node_id": "coder", "ts": "2026-10-13T13:00:00Z"},
+        {"event": "agent.tool.started", "properties": {"stage": "coder",
+         "event": {"ToolCallStarted": {"tool_name": "write_file"}}}, "ts": "2026-10-13T13:00:45Z"},
+        {"event": "agent.tool.started", "node_id": "coder", "ts": "not a time",
+         "properties": {"event": {"ToolCallStarted": {"tool_name": "edit_file"}}}},
+    ]
+    assert summarize("R1", [], lines).first_edit_ms == [210_000, 45_000]
+
+
+def test_dispositions_come_from_improve_gate():
+    lines = [
+        {"event": "stage.completed", "node_id": "improve_gate",
+         "properties": {"context_updates": {"task_disposition": "ready", "task_count": 3}}},
+        {"event": "stage.completed", "node_id": "improve_gate",
+         "properties": {"context_updates": {"task_disposition": "split"}}},
+        {"event": "stage.completed", "node_id": "improve_gate",
+         "properties": {"context_updates": {"task_disposition": "ready"}}},
+        {"event": "stage.completed", "node_id": "next_task",
+         "properties": {"context_updates": {"task_disposition": "none"}}},
+        {"event": "stage.failed", "node_id": "improve_gate", "properties": {}},
+    ]
+    assert dict(summarize("R1", [], lines).dispositions) == {"ready": 2, "split": 1}

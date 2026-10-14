@@ -24,6 +24,13 @@ dossier and the code may be absent. Use them as follows:
   fixtures or ADRs: act on it. Look further only when an edit fails, a test
   contradicts the dossier, or the dossier says nothing about something you must
   change.
+
+  When the dossier has a `## Plan` section, a planning stage on a stronger model
+  wrote it after reading the code. Make its edits in its order, one step at a time,
+  and treat its step list as your scope. Depart from a step only when its edit
+  fails, a test contradicts it, or it would break the acceptance criteria, and name
+  every departure, with its reason, in your completion note. Finish with the
+  check under `## Done when`.
 - `task-code.md` — the current text of every line range the dossier cites, copied
   from this checkout after `improve` finished and before you started. Each block is
   exact and has no line numbers, so you can use it as the `old_string` of
@@ -44,8 +51,8 @@ checkout.
 
 ## Deliverable
 
-Edits in the working tree. Nothing else. There is no plan stage and no result file:
-implement the task directly.
+Edits in the working tree. Nothing else. There is no result file: implement the
+task directly.
 
 ## Repo conventions and skills
 
@@ -176,7 +183,7 @@ Three moments decide this. Act on each one:
 ## Process
 
 1. **Start from the dossier.** Make the first edit from `task-context.md` and
-   `task-code.md`. Read code only for what they do not cover, with the code tools
+   `task-code.md`: its first `## Plan` step when it has one. Read code only for what they do not cover, with the code tools
    and only the smallest relevant surface. Don't browse the codebase looking for
    things to fix.
 2. **Avoid inspection loops.** Once you know the next useful edit, make it. Don't

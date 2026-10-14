@@ -268,7 +268,8 @@ loudly:
 ```
 
 `backlog` has all three, `pr-review` only `.rebase` (its merge-phase classes stay
-hosted). `.improve` joined them on 2026-09-21 — see `docs/plan/local-inference-tuning.md`
+hosted). The plan trial (#25) adds a hosted `.plan { model: glm-5.3; }` beside
+`.improve`; it names no box, so it cannot queue behind another run's lease. `.improve` joined them on 2026-09-21 — see `docs/plan/local-inference-tuning.md`
 for the measurement behind it. All three must name the **same** box: the scheduler leases
 exactly one per run, so a rule pointing at the other one would queue behind whoever holds
 it. The scheduler will pass `args.inputs.coder_pool = "coders-a"` on the intent;

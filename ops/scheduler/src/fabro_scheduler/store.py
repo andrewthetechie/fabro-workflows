@@ -216,7 +216,9 @@ CREATE TABLE IF NOT EXISTS run_summary (
   path          TEXT,              -- JSON array of "from>to": the run's last edges
   refute        TEXT,              -- JSON array of {verdict, not_met}, in order
   events        INTEGER,
-  error         TEXT
+  error         TEXT,
+  first_edit_ms TEXT,              -- JSON array: per coder attempt, ms to its first edit
+  dispositions  TEXT               -- JSON object: improve_gate disposition -> count
 );
 
 -- One row per node per run: every visit's totals. `box_ms` is the part of
@@ -230,6 +232,9 @@ CREATE TABLE IF NOT EXISTS run_stage_stats (
   box_ms   INTEGER NOT NULL,
   timeouts INTEGER NOT NULL,
   failures TEXT    NOT NULL,       -- JSON object, failure category -> count
+  input_tokens      INTEGER,       -- summed over visits; NULL = summarized before #25
+  output_tokens     INTEGER,       -- output plus reasoning
+  cache_read_tokens INTEGER,
   PRIMARY KEY (run_id, node_id)
 );
 
@@ -276,6 +281,22 @@ RUN_HISTORY_COLUMNS = {
     "hosted_tokens": "hosted_tokens INTEGER",
     "local_cost_usd_micros": "local_cost_usd_micros INTEGER",
     "hosted_cost_usd_micros": "hosted_cost_usd_micros INTEGER",
+}
+
+# The same, for the scorecard tables: the plan trial (#25) added per-stage tokens and
+# the coder's time to first edit. A run summarized before them keeps NULLs, which the
+# scorecard reads as "not measured", never as zero.
+ADDED_COLUMNS = {
+    "run_history": RUN_HISTORY_COLUMNS,
+    "run_stage_stats": {
+        "input_tokens": "input_tokens INTEGER",
+        "output_tokens": "output_tokens INTEGER",
+        "cache_read_tokens": "cache_read_tokens INTEGER",
+    },
+    "run_summary": {
+        "first_edit_ms": "first_edit_ms TEXT",
+        "dispositions": "dispositions TEXT",
+    },
 }
 
 
@@ -384,23 +405,24 @@ class Store:
         self._conn.commit()
 
     def _apply_migrations(self) -> None:
-        """Add `run_history` columns introduced after the table first shipped.
+        """Add columns introduced after their table first shipped (`ADDED_COLUMNS`).
 
         `CREATE TABLE IF NOT EXISTS` never alters an existing table, and the real
         database lives on the `scheduler-data` volume, so every added column has
         to be `ALTER TABLE ... ADD COLUMN`ed here. A missing column is the only
         case that runs, and `ADD COLUMN` is idempotent per column under the
-        `table_info` guard. String interpolation is safe: the keys come from the
-        static `RUN_HISTORY_COLUMNS`, never from a caller.
+        `table_info` guard. String interpolation is safe: the table names and keys
+        come from the static `ADDED_COLUMNS`, never from a caller.
         """
         with self._lock:
-            present = {
-                row["name"]
-                for row in self._conn.execute("PRAGMA table_info(run_history)")
-            }
-            for name, ddl in RUN_HISTORY_COLUMNS.items():
-                if name not in present:
-                    self._conn.execute(f"ALTER TABLE run_history ADD COLUMN {ddl}")
+            for table, columns in ADDED_COLUMNS.items():
+                present = {
+                    row["name"]
+                    for row in self._conn.execute(f"PRAGMA table_info({table})")
+                }
+                for name, ddl in columns.items():
+                    if name not in present:
+                        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
 
     # --- reads ------------------------------------------------------------------
@@ -1053,7 +1075,8 @@ class Store:
             self._conn.execute("DELETE FROM run_failovers WHERE run_id = ?", (summary.run_id,))
             self._conn.executemany(
                 "INSERT INTO run_stage_stats (run_id, node_id, handler, visits, wall_ms,"
-                " box_ms, timeouts, failures) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " box_ms, timeouts, failures, input_tokens, output_tokens, cache_read_tokens)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         summary.run_id,
@@ -1064,6 +1087,9 @@ class Store:
                         stat.box_ms,
                         stat.timeouts,
                         json.dumps(dict(sorted(stat.failures.items()))),
+                        stat.input_tokens,
+                        stat.output_tokens,
+                        stat.cache_read_tokens,
                     )
                     for stat in summary.stages.values()
                 ],
@@ -1078,12 +1104,13 @@ class Store:
             )
             self._conn.execute(
                 "INSERT INTO run_summary (run_id, status, attempts, summarized_at,"
-                " terminal_node, path, refute, events, error)"
-                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL) "
+                " terminal_node, path, refute, events, error, first_edit_ms, dispositions)"
+                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?) "
                 "ON CONFLICT(run_id) DO UPDATE SET status = 'ok',"
                 "  attempts = run_summary.attempts + 1, summarized_at = excluded.summarized_at,"
                 "  terminal_node = excluded.terminal_node, path = excluded.path,"
-                "  refute = excluded.refute, events = excluded.events, error = NULL",
+                "  refute = excluded.refute, events = excluded.events, error = NULL,"
+                "  first_edit_ms = excluded.first_edit_ms, dispositions = excluded.dispositions",
                 (
                     summary.run_id,
                     stamp,
@@ -1091,6 +1118,8 @@ class Store:
                     json.dumps(summary.path),
                     json.dumps(refute),
                     summary.events,
+                    json.dumps(summary.first_edit_ms),
+                    json.dumps(dict(sorted(summary.dispositions.items()))),
                 ),
             )
 

@@ -26,7 +26,17 @@ Event shapes, verified live on fabro 0.362 (2026-10-12):
   e.g. `kimi/kimi-k3` -> `zai/glm-5.3`, `access_denied` on the Kimi weekly quota;
 * `edge.selected`: `properties.{from_node, to_node}`;
 * `stage.completed`: `properties.context_updates` holds a command node's routing
-  keys.
+  keys;
+* `agent.tool.started`: `properties.event.ToolCallStarted.tool_name`, with the event's
+  top-level `ts`.
+
+The plan trial (#25) added three facts. Each stage visit in the stage list carries
+`usage.tokens.{input, output, reasoning, cache_read}`, summed per node here, so the
+cost of `plan` (hosted) and `improve` (the box) can be compared. `GET /runs/{id}/usage`
+has the same numbers already summed per node, but the stage list is fetched anyway.
+The coder's time to first edit is `stage.started` of `coder` to its first
+`edit_file`/`write_file`, once per attempt. `improve_gate`'s `task_disposition` is
+counted from its `stage.completed`.
 
 Pure: no I/O, so the parsing is tested with fixture event lines.
 """
@@ -36,6 +46,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 
 # A stage is coder-box work when it ran on the run's own coder pool. Every pool is
 # a LiteLLM-style group named `coders-<x>`, so the model name says it without a
@@ -48,6 +59,11 @@ CODER_MODEL_PREFIX = "coders-"
 PATH_TAIL = 8
 
 REFUTE_GATE = "review_merge.refute_gate"
+
+# The plan trial's coder measurements (#25).
+CODER_NODE = "coder"
+EDIT_TOOLS = frozenset({"edit_file", "write_file"})
+DISPOSITION_GATE = "improve_gate"
 
 
 @dataclass
@@ -62,6 +78,9 @@ class StageStat:
     box_ms: int = 0
     timeouts: int = 0
     failures: Counter[str] = field(default_factory=Counter)  # category -> count
+    input_tokens: int = 0
+    output_tokens: int = 0  # output plus reasoning
+    cache_read_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -82,6 +101,9 @@ class RunSummary:
     terminal_node: str | None  # the last node the run started, other than exit
     refute: list[RefuteVerdict]
     events: int  # how many events were read; 0 means the log was empty
+    # Per coder attempt that made an edit, ms from its start to the first edit, in order.
+    first_edit_ms: list[int] = field(default_factory=list)
+    dispositions: Counter[str] = field(default_factory=Counter)  # improve_gate's verdicts
 
 
 def summarize(
@@ -110,11 +132,20 @@ def summarize(
             CODER_MODEL_PREFIX
         ):
             stat.box_ms += wall
+        usage = stage.get("usage")
+        tokens = usage.get("tokens") if isinstance(usage, Mapping) else None
+        if isinstance(tokens, Mapping):
+            stat.input_tokens += _int(tokens.get("input"))
+            stat.output_tokens += _int(tokens.get("output")) + _int(tokens.get("reasoning"))
+            stat.cache_read_tokens += _int(tokens.get("cache_read"))
 
     failovers: Counter[tuple[str, str, str, str]] = Counter()
     path: list[str] = []
     terminal: str | None = None
     refute: list[RefuteVerdict] = []
+    first_edit: list[int] = []
+    coder_started: datetime | None = None  # the open coder attempt that has not edited yet
+    dispositions: Counter[str] = Counter()
     count = 0
 
     for event in events:
@@ -128,6 +159,16 @@ def summarize(
         if name == "stage.started":
             if node and node != "exit":
                 terminal = node
+            if node == CODER_NODE:
+                coder_started = _ts(event.get("ts"))
+        elif name == "agent.tool.started" and node == CODER_NODE and coder_started is not None:
+            inner = props.get("event")
+            call = inner.get("ToolCallStarted") if isinstance(inner, Mapping) else None
+            if isinstance(call, Mapping) and _str(call.get("tool_name")) in EDIT_TOOLS:
+                at = _ts(event.get("ts"))
+                if at is not None and at >= coder_started:
+                    first_edit.append(int((at - coder_started).total_seconds() * 1000))
+                coder_started = None
         elif name == "stage.failed":
             failure = props.get("failure")
             if node and isinstance(failure, Mapping):
@@ -152,6 +193,12 @@ def summarize(
                 path.append(f"{src}>{dst}")
                 if len(path) > PATH_TAIL:
                     del path[0]
+        elif name == "stage.completed" and node == DISPOSITION_GATE:
+            updates = props.get("context_updates")
+            if isinstance(updates, Mapping):
+                disposition = _str(updates.get("task_disposition"))
+                if disposition:
+                    dispositions[disposition] += 1
         elif name == "stage.completed" and node == REFUTE_GATE:
             updates = props.get("context_updates")
             if isinstance(updates, Mapping):
@@ -173,7 +220,19 @@ def summarize(
         terminal_node=terminal,
         refute=refute,
         events=count,
+        first_edit_ms=first_edit,
+        dispositions=dispositions,
     )
+
+
+def _ts(value: object) -> datetime | None:
+    """An event's ISO-8601 `ts`. fabro writes nanoseconds, which 3.11 accepts and truncates."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _str(value: object) -> str:

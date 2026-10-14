@@ -6476,6 +6476,26 @@ fl_route '["fast-path"]' ''
 check "route_lane empty body" "Resolve issue #42: Fix the thing" "$(jq -r '.[0].body' "$FL/fab/tasks.json")"
 fl_route '["fast-path"]' '   '
 check "route_lane blank body" "Resolve issue #42: Fix the thing" "$(jq -r '.[0].body' "$FL/fab/tasks.json")"
+# 3b. the plan trial's arm (#25): once per run, by issue-number parity; `none` in the fast lane.
+fl_route '["fast-path"]' 'b'
+check "route_lane fast: arm none" "none|none" "$(jq -r '.context_updates.arm' <<<"$(lastjson "$FLOUT")")|$(cat "$FL/fab/arm")"
+fl_route '["agent-in-progress"]' 'b'
+check "route_lane even issue: arm plan" "plan|plan" "$(jq -r '.context_updates.arm' <<<"$(lastjson "$FLOUT")")|$(cat "$FL/fab/arm")"
+fl_arm() { # <number json> -> the arm route_lane publishes
+    rm -rf "$FL/fab"; mkdir -p "$FL/fab"
+    jq -n --argjson n "$1" '{number: $n, title: "t", body: "b", labels: []}' > "$FL/fab/issue.json"
+    jq -r '.context_updates.arm' <<<"$(lastjson "$(sh "$FL/route_lane.sh" 2>/dev/null)")"
+}
+check "route_lane odd issue: arm improve" "improve" "$(fl_arm 43)"
+check "route_lane issue 2: arm plan" "plan" "$(fl_arm 2)"
+check "route_lane no number: arm improve" "improve" "$(fl_arm null)"
+check "route_lane string number: arm improve" "improve" "$(fl_arm '"4x"')"
+# The arm's edges: each pair that can both match is exclusive on `arm`, and `improve` stays
+# the unconditional fallthrough out of next_task.
+check "improve_gate retry edges are exclusive on arm" "1 1" "$(grep -E '^ +improve_gate -> (improve|plan) +\[condition="outcome=failed' "$GRAPH" | awk '/-> improve .*context.arm!=plan/{a=1} /-> plan .*context.arm=plan"/{b=1} END{print a+0, b+0}')"
+check "resolve_merge_gate task edges are exclusive on arm" "1 1" "$(grep -E '^ +resolve_merge_gate -> (improve|plan) ' "$GRAPH" | awk '/-> improve .*context.arm!=plan/{a=1} /-> plan .*context.arm=plan"/{b=1} END{print a+0, b+0}')"
+check "next_task falls through to improve" "1" "$(grep -cE '^ +next_task -> improve$' "$GRAPH")"
+check "next_task -> plan requires arm=plan and the standard lane" "1" "$(grep -E '^ +next_task -> plan ' "$GRAPH" | grep -c 'context.lane!=fast && context.arm=plan')"
 # 4. no issue.json, and one without labels: exit 1, no routing object.
 rm -rf "$FL/fab"; mkdir -p "$FL/fab"; FLOUT=$(sh "$FL/route_lane.sh" 2>/dev/null); FLRC=$?
 check "route_lane, no issue.json: exit 1" "1" "$FLRC"
@@ -6549,9 +6569,9 @@ git -C "$FL/repo" update-ref -d refs/remotes/origin/main; git -C "$FL/repo" remo
 ( cd "$FL/repo" && PATH="$FL/bin:$SAVED_PATH" sh "$FL/pr_handoff.sh" ) > "$FL/out" 2> "$FL/err"
 check "pr_handoff fast, the base cannot be diffed: watch" "watch" "$(cat "$FL/fab/merge_mode")"
 # 8. edge exclusivity: at most one conditional edge matches each state that a node can publish.
-fl_matches() { # <node> <lane> <tasks_done> <rebase_failed> <merge_ok> <merge_return> -> count of matching evaluable conditional edges
-    awk -v node="$1" -v lane="$2" -v td="$3" -v rf="$4" -v mo="$5" -v mr="$6" '
-    BEGIN { v["lane"] = lane; v["tasks_done"] = td; v["rebase_failed"] = rf; v["merge_ok"] = mo; v["merge_return"] = mr }
+fl_matches() { # <node> <lane> <tasks_done> <rebase_failed> <merge_ok> <merge_return> <arm> -> count of matching evaluable conditional edges
+    awk -v node="$1" -v lane="$2" -v td="$3" -v rf="$4" -v mo="$5" -v mr="$6" -v arm="$7" '
+    BEGIN { v["lane"] = lane; v["tasks_done"] = td; v["rebase_failed"] = rf; v["merge_ok"] = mo; v["merge_return"] = mr; v["arm"] = arm }
     $1 == node && $2 == "->" && match($0, /condition="[^"]*"/) {
         c = substr($0, RSTART + 11, RLENGTH - 12); n = split(c, cl, / && /); ok = 1
         for (i = 1; i <= n && ok; i++) {
@@ -6566,17 +6586,20 @@ fl_matches() { # <node> <lane> <tasks_done> <rebase_failed> <merge_ok> <merge_re
 }
 FL_WORST=0; FL_ZERO=""
 for n in next_task route_lane resolve_merge_gate; do
-  for ln in fast standard; do for td in true false; do for rf in true false; do for mo in true false; do for mr in task pr; do
+  for ln in fast standard; do for td in true false; do for rf in true false; do for mo in true false; do for mr in task pr; do for arm in none plan improve; do
     [ "$td" = true ] && [ "$rf" = true ] && continue
+    # route_lane publishes arm=none with the fast lane and plan or improve with the standard one.
+    if [ "$ln" = fast ]; then [ "$arm" = none ] || continue; else [ "$arm" = none ] && continue; fi
+    [ "$n" = route_lane ] && [ "$arm" != improve ] && [ "$arm" != none ] && continue
     [ "$n" = route_lane ] && [ "$td$rf$mo" != falsefalsefalse ] && continue
     [ "$n" = resolve_merge_gate ] && { [ "$td$rf" != falsefalse ] || [ "$mo" != true ]; } && continue
     [ "$n" != resolve_merge_gate ] && [ "$mr" = pr ] && continue
-    m=$(fl_matches "$n" "$ln" "$td" "$rf" "$mo" "$mr")
+    m=$(fl_matches "$n" "$ln" "$td" "$rf" "$mo" "$mr" "$arm")
     [ "$m" -gt "$FL_WORST" ] && FL_WORST=$m
-    # next_task keeps improve as its unconditional edge; every other published state needs exactly one match.
-    if [ "$n" = next_task ] && [ "$td$rf" = falsefalse ] && [ "$ln" = standard ]; then continue; fi
-    [ "$m" -eq 0 ] && FL_ZERO="$FL_ZERO $n/$ln/$td/$rf/$mo/$mr"
-  done; done; done; done; done
+    # next_task keeps improve as its unconditional edge (the improve arm); every other published state needs exactly one match.
+    if [ "$n" = next_task ] && [ "$td$rf" = falsefalse ] && [ "$ln" = standard ] && [ "$arm" = improve ]; then continue; fi
+    [ "$m" -eq 0 ] && FL_ZERO="$FL_ZERO $n/$ln/$td/$rf/$mo/$mr/$arm"
+  done; done; done; done; done; done
 done
 check "no state matches two conditional edges out of next_task, route_lane or resolve_merge_gate" "1" "$FL_WORST"
 check "every published state has a matching conditional edge (standard next_task falls to improve)" "" "$FL_ZERO"

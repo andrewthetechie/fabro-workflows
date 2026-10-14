@@ -80,13 +80,13 @@ The offline gates need only jq, awk, git, python3.11 and, when `ops/fabro-io/` o
 binary on this Mac, so graph validation happens in the container via `make check-host`.
 
 Baselines (as of 2026-10-13, fabro 0.362.0-nightly.0, verified by `make check-host`):
-`Backlog (79 nodes, 199 edges)` with one warning, `issue_number` unbound in `claim`;
+`Backlog (80 nodes, 204 edges)` with one warning, `issue_number` unbound in `claim`;
 `PrReview (39 nodes, 87 edges)` with one warning, `pr_number` unbound in `validate_input`;
 `IssueTriage (16 nodes, 36 edges)`, `ArchReview (24 nodes, 54 edges)`,
 `Dependabot (51 nodes, 115 edges)` and `MergeQueue (8 nodes, 10 edges)` clean. Both
 warnings are deliberate: never bind those inputs in `[run.inputs]`. The fast-path series
 added `report_queued` to the three importing graphs (+1 node, +3 edges each), and
-`route_lane` and `demote_lane` to `backlog`. The gate-relief series (#29) added `refute_fix` and `refute_fix_gate` to the three importing graphs (+2 nodes, +5 edges each). The final-merge fix (2026-10-12) added `final_merge` to `backlog` (+1 node, +4 edges). The base-conflict fix (#37, 2026-10-13) added `resolve_base` and `resolve_base_gate` to the three importing graphs (+2 nodes, +6 edges each). The final-validation fix (#35, 2026-10-13) added `drop_unreviewed` and `final_fix_prep` to `backlog` (+2 nodes, +9 edges). `make check-host` compares `fabro validate`'s node and edge counts against these.
+`route_lane` and `demote_lane` to `backlog`. The gate-relief series (#29) added `refute_fix` and `refute_fix_gate` to the three importing graphs (+2 nodes, +5 edges each). The final-merge fix (2026-10-12) added `final_merge` to `backlog` (+1 node, +4 edges). The base-conflict fix (#37, 2026-10-13) added `resolve_base` and `resolve_base_gate` to the three importing graphs (+2 nodes, +6 edges each). The final-validation fix (#35, 2026-10-13) added `drop_unreviewed` and `final_fix_prep` to `backlog` (+2 nodes, +9 edges). The plan trial (#25, 2026-10-13) added `plan` to `backlog` (+1 node, +5 edges). `make check-host` compares `fabro validate`'s node and edge counts against these.
 
 `docs/agents/validating.md` says what each gate covers and misses, why the warnings are
 deliberate, and why `fabro preflight` is not an offline check.

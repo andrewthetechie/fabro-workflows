@@ -289,7 +289,8 @@ The same review proposed four other changes. The operator declined them. They ar
 so that nobody proposes them again without new evidence.
 
 - Moving `.improve` back to a hosted model. On the box it is 27% of box-busy time, with a
-  p50 of 7.6 min, against about 3 min on `glm-5.3`.
+  p50 of 7.6 min, against about 3 min on `glm-5.3`. *Reopened by the operator on 2026-10-13 as
+  a trial (#25, `docs/plan-trial/`): a hosted `plan` node beside `improve`, on half of the runs.*
 - Releasing the coder lease at `pr_handoff`. The box is busy for only 60% of lease time,
   and the merge phase averages about 50 minutes per run.
 - Moving the merge phase's `rebase` to a hosted class.

@@ -7,6 +7,7 @@
 #   ./ops/fabro-scorecard.sh --week                  # the current ISO week so far
 #   ./ops/fabro-scorecard.sh --last-week             # the previous ISO week
 #   ./ops/fabro-scorecard.sh --json [...]            # the JSON behind the table
+#   ./ops/fabro-scorecard.sh --by-arm --from 2026-10-14   # the plan trial (#25), plan vs improve
 #
 # Both dates are inclusive (UTC). A window holds the runs dispatched in it.
 #
@@ -27,6 +28,7 @@ SCHEDULER="${SCHEDULER_URL:-http://10.10.0.32:32280}"
 FROM=""
 TO=""
 FORMAT="md"
+ENDPOINT="api/scorecard"
 
 iso_week() { # iso_week <weeks back>: "<monday> <sunday>" of that ISO week, UTC
     python3 -c '
@@ -43,7 +45,8 @@ while [ $# -gt 0 ]; do
         --week) read -r FROM TO <<<"$(iso_week 0)"; shift ;;
         --last-week) read -r FROM TO <<<"$(iso_week 1)"; shift ;;
         --json) FORMAT="json"; shift ;;
-        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --by-arm) ENDPOINT="api/scorecard/arms"; shift ;;
+        -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "fabro-scorecard.sh: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -59,6 +62,6 @@ QUERY="format=$FORMAT"
 [ -n "$FROM" ] && QUERY="$QUERY&from=$FROM"
 [ -n "$TO" ] && QUERY="$QUERY&to=$TO"
 
-curl -fsS --max-time 60 "$SCHEDULER/api/scorecard?$QUERY"
+curl -fsS --max-time 60 "$SCHEDULER/$ENDPOINT?$QUERY"
 [ "$FORMAT" = json ] && echo
 exit 0

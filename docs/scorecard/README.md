@@ -65,6 +65,19 @@ are not in it.
 | Refuter verdicts | Each run's `refute_gate` verdicts in order: the first one split pass / fail with a `not_met` / other fail / invalid, then fix turns taken (a second verdict after a first `not_met`) and how many passed. A fail recorded before gate relief has no `not_met` flag. This is gate-relief task 07's measurement. |
 | Open to merge | Hours from the PR opening to its merge, by anyone; p50 and p90, architecture and other. |
 
+## The plan trial (#25)
+
+`GET /api/scorecard/arms` and `ops/fabro-scorecard.sh --by-arm` split one window by the
+planner node each run took, `plan` or `improve` (`trial.py`, `docs/plan-trial/`). Each arm
+gets the whole scorecard plus a per-task line: planner minutes and tokens, coder box-minutes
+per task, rework and `validate` failures per task, coder timeouts, the coder's time to first
+edit, and the planner's dispositions. The trial added three facts to every summary:
+`run_stage_stats.input_tokens/output_tokens/cache_read_tokens` (summed from each visit's
+`usage` in the stage list; output includes reasoning), `run_summary.first_edit_ms` (per
+`coder` attempt, `stage.started` to its first `edit_file`/`write_file`) and
+`run_summary.dispositions` (`improve_gate`'s `task_disposition`). Runs summarized before the
+scheduler deploy have NULLs there, which the split reads as "not measured".
+
 ## Verification
 
 Checked on 2026-10-12 before deploy. A throwaway container on the host ran the new collector

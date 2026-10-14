@@ -225,6 +225,44 @@ def test_the_migration_adds_the_usage_columns_to_an_existing_table(tmp_path):
         reopened.close()
 
 
+def test_the_migration_adds_the_plan_trial_columns_to_existing_scorecard_tables(tmp_path):
+    """The host's scorecard tables predate #25: per-stage tokens and the coder's first
+    edit must be ALTERed in on open, and an old row reads NULL, never zero."""
+    import sqlite3
+
+    path = tmp_path / "scheduler.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE run_summary (
+          run_id TEXT PRIMARY KEY, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1,
+          summarized_at TEXT NOT NULL, terminal_node TEXT, path TEXT, refute TEXT,
+          events INTEGER, error TEXT
+        );
+        CREATE TABLE run_stage_stats (
+          run_id TEXT NOT NULL, node_id TEXT NOT NULL, handler TEXT NOT NULL,
+          visits INTEGER NOT NULL, wall_ms INTEGER NOT NULL, box_ms INTEGER NOT NULL,
+          timeouts INTEGER NOT NULL, failures TEXT NOT NULL, PRIMARY KEY (run_id, node_id)
+        );
+        INSERT INTO run_stage_stats VALUES ('R0', 'improve', 'agent', 1, 10, 10, 0, '{}');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = Store(path)
+    try:
+        def columns(table):
+            return {r["name"] for r in reopened._conn.execute(f"PRAGMA table_info({table})")}
+
+        assert {"input_tokens", "output_tokens", "cache_read_tokens"} <= columns("run_stage_stats")
+        assert {"first_edit_ms", "dispositions"} <= columns("run_summary")
+        old = reopened._conn.execute("SELECT * FROM run_stage_stats").fetchone()
+        assert old["input_tokens"] is None
+    finally:
+        reopened.close()
+
+
 def test_a_usage_outcome_round_trips_through_the_history_row(tmp_path):
     store = Store(tmp_path / "scheduler.db")
     try:

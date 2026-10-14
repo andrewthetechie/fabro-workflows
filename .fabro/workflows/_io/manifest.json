@@ -591,6 +591,39 @@
             "schema": "improve_result"
           }
         },
+        "plan": {
+          "live": true,
+          "prompt": ".fabro/workflows/backlog/prompts/plan.md.j2",
+          "inputs": [
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "ranked outline of the checkout; can be missing, continue without it",
+              "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the single task object being planned"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, for reporter intent and human discussion"
+            }
+          ],
+          "sealed": [],
+          "also": [
+            "/tmp/fabro/task-context.md"
+          ],
+          "output": {
+            "path": "/tmp/fabro/improve_result.json",
+            "schema": "improve_result"
+          }
+        },
         "coder": {
           "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/coder.md.j2",
@@ -605,8 +638,8 @@
               "name": "task-context.md",
               "path": "/tmp/fabro/task-context.md",
               "required": false,
-              "about": "what improve verified in this checkout minutes ago: files, line ranges, tests, traps; treat it as verified",
-              "absent": "improve did not write a dossier for this task; find the code with the code_* tools"
+              "about": "what improve or plan verified in this checkout minutes ago: files, line ranges, tests, traps, and the ordered edit plan when plan wrote it; treat it as verified",
+              "absent": "no dossier was written for this task; find the code with the code_* tools"
             },
             {
               "name": "task-code.md",
