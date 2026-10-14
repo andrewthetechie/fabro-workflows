@@ -421,6 +421,58 @@ async fn code_answer(root: &Path, seeds: &[String]) -> Result<CodeAnswer, String
         .map_err(|e| format!("fabro-code tests --json is not the C2 object: {e}"))
 }
 
+/// The plan for the repository's current diff, with every fallback already applied (C4).
+///
+/// This is the one pipeline `task-plan`, `task-check` and the `task_check` tool share: load
+/// the declaration, resolve the base, compute the changed set, ask `fabro-code`, and plan.
+/// It never errors; an unusable input becomes a `mode: full` plan naming the reason.
+pub async fn current_plan(root: &Path, base_arg: Option<&str>) -> Plan {
+    let env = match TestEnv::load(root) {
+        Ok(env) => env,
+        Err(message) => {
+            eprintln!("task-plan: {message}");
+            return full(&[], "invalid_config");
+        }
+    };
+    if env.as_ref().is_none_or(|env| !env.declares_task_keys()) {
+        return full(&[], "no_config");
+    }
+    let base = match resolve_base(root, base_arg) {
+        Ok(base) => base,
+        Err(message) => {
+            eprintln!("task-plan: {message}");
+            return full(&[], "index_unavailable");
+        }
+    };
+    let changed = match changed_set(root, &base) {
+        Ok(changed) => changed,
+        Err(message) => {
+            eprintln!("task-plan: {message}");
+            return full(&[], "index_unavailable");
+        }
+    };
+    let skip = testenv::glob_set(env.as_ref().map_or(&[], |env| env.task_skip()));
+    let seeds: Vec<String> = changed
+        .iter()
+        .filter(|path| !skip.is_match(path.as_str()))
+        .cloned()
+        .collect();
+    let code = if seeds.is_empty() {
+        CodeAnswer::default()
+    } else {
+        match code_answer(root, &seeds).await {
+            Ok(code) => code,
+            Err(message) => {
+                eprintln!("task-plan: {message}");
+                return full(&changed, "index_unavailable");
+            }
+        }
+    };
+    let mut plan = plan(root, env.as_ref(), &changed, &code);
+    plan.base = base;
+    plan
+}
+
 /// The `fabro-io task-plan` subcommand (C4). Always exits 0 unless the arguments are invalid.
 pub fn run_cli(args: &[String]) -> ExitCode {
     let mut base_arg: Option<String> = None;
@@ -461,60 +513,14 @@ pub fn run_cli(args: &[String]) -> ExitCode {
             }
         },
     };
-
-    let env = match TestEnv::load(&root) {
-        Ok(env) => env,
-        Err(message) => {
-            eprintln!("task-plan: {message}");
-            let plan = full(&[], "invalid_config");
-            return print_plan(&plan);
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("task-plan: cannot start a runtime: {e}");
+            return ExitCode::FAILURE;
         }
     };
-    if env.as_ref().is_none_or(|env| !env.declares_task_keys()) {
-        return print_plan(&full(&[], "no_config"));
-    }
-
-    let base = match resolve_base(&root, base_arg.as_deref()) {
-        Ok(base) => base,
-        Err(message) => {
-            eprintln!("task-plan: {message}");
-            return print_plan(&full(&[], "index_unavailable"));
-        }
-    };
-    let changed = match changed_set(&root, &base) {
-        Ok(changed) => changed,
-        Err(message) => {
-            eprintln!("task-plan: {message}");
-            return print_plan(&full(&[], "index_unavailable"));
-        }
-    };
-    let skip = testenv::glob_set(env.as_ref().map_or(&[], |env| env.task_skip()));
-    let seeds: Vec<String> = changed
-        .iter()
-        .filter(|path| !skip.is_match(path.as_str()))
-        .cloned()
-        .collect();
-    let code = if seeds.is_empty() {
-        CodeAnswer::default()
-    } else {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                eprintln!("task-plan: cannot start a runtime: {e}");
-                return print_plan(&full(&changed, "index_unavailable"));
-            }
-        };
-        match rt.block_on(code_answer(&root, &seeds)) {
-            Ok(code) => code,
-            Err(message) => {
-                eprintln!("task-plan: {message}");
-                return print_plan(&full(&changed, "index_unavailable"));
-            }
-        }
-    };
-
-    let mut plan = plan(&root, env.as_ref(), &changed, &code);
-    plan.base = base;
+    let plan = rt.block_on(current_plan(&root, base_arg.as_deref()));
     print_plan(&plan)
 }
 

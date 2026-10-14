@@ -211,9 +211,21 @@ fn test_13_serve_tools_and_submit() {
         let names = tool_names(&list);
         assert!(names.iter().any(|n| n == "inputs"));
         assert!(names.iter().any(|n| n == "submit"), "submit listed for an output stage");
-        for tool in ["code_def", "code_show", "code_search", "code_callers", "code_callees", "code_impact", "code_tests", "restore_file", "baseline_check"] {
+        for tool in ["code_def", "code_show", "code_search", "code_callers", "code_callees", "code_impact", "code_tests", "restore_file", "baseline_check", "run_tests", "task_check"] {
             assert!(names.iter().any(|n| n == tool), "{tool} listed for a known stage");
         }
+        let task = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "task_check")
+            .expect("task_check is in the list");
+        assert!(
+            task["description"].as_str().unwrap().contains("Task validation gate"),
+            "task_check description: {}",
+            task["description"]
+        );
+        assert_eq!(task["inputSchema"]["properties"]["base"]["type"], "string");
 
         // Reads-only stage -> inputs only (same server, new stage.json).
         common::write_stage(&root, "reader", &visit);

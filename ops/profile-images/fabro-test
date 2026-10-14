@@ -1,4 +1,10 @@
 #!/bin/sh
-# fabro-test -- shell alias for run_tests (docs/test-env C4), installed at
-# /usr/local/bin/fabro-test in every profile image beside fabro-code.
+# fabro-test -- shell alias for run_tests and task_check (docs/test-env C4, ADR 0025 C5),
+# installed at /usr/local/bin/fabro-test in every profile image beside fabro-code.
+# `fabro-test --task [--base SHA]` runs `fabro-io task-check`; every other call is
+# `fabro-io run-tests`.
+if [ "${1:-}" = "--task" ]; then
+  shift
+  exec fabro-io task-check "$@"
+fi
 exec fabro-io run-tests "$@"

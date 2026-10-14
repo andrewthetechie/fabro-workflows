@@ -46,7 +46,7 @@ fn fail(text: impl Into<String>) -> Report {
 /// from the current one (C3, D4).
 ///
 /// The fingerprint walks the checkout, so it runs on the blocking pool.
-async fn needs_prepare(root: &Path, env: &TestEnv, fresh: bool) -> bool {
+pub(crate) async fn needs_prepare(root: &Path, env: &TestEnv, fresh: bool) -> bool {
     if fresh {
         return true;
     }

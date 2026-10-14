@@ -121,3 +121,34 @@ Noted, not a bug in the plan: `fabro-code index` writes `.codegraph/`, whose
 `.codegraph/.gitignore` (`*`, `!.gitignore`) is itself untracked, so it appears in
 `changed` on every indexed run. It matches no `full` glob, so it never escalates; the
 `prek` check's `watch = ["**"]` covers it, which is why `unchecked` is empty here.
+
+## Task 05 acceptance
+
+Same container and clone, with the task 09 draft `test.toml` committed locally (throwaway
+commit, then discarded) and `origin/main` pointed at it so `fabro-test --task` resolves the
+base the way a run after the task 09 merge does. Binaries: the in-tree `fabro-test`, and a
+`fabro-io` 0.5.0 musl build from this checkout (all `cargo test` green there, including
+`taskcheck_tests`).
+
+```
+call1 {"prepared_seconds":7,"prepare":{"exit_code":0}}
+call2 {"prepared_seconds":4,"prepare":{"exit_code":0}}
+call3 {"prepared_seconds":0,"prepare":null}
+gate  {"prepared_seconds":4,"prepare":{"exit_code":0}}
+results: [{"kind":"check","name":"prek","exit_code":0},{"kind":"target","name":"backend","exit_code":0}]
+```
+
+`fabro-test --task` runs the `prek` check and the selected `backend` tests (the acceptance
+edit was to `backend/app/api/routes/waitlist.py`), prints `ok: true`, and exits 0. `--gate`
+prepares again, as C5 requires.
+
+**Off by one on a fresh checkout, reported not hidden.** The task file says "a second call
+does not prepare again", and the run above shows the second call preparing. The cause is
+in ADR 0018's fingerprint, not in this task: `prepare.inputs` for this repository covers
+`backend/app/seed/**` and `backend/app/alembic/**`, and the preparation imports those
+modules, so Python writes `__pycache__/*.pyc` inside the globs. The stamp records the
+fingerprint taken *before* the steps, so the next call sees the new `.pyc` and prepares
+once more; from the third call the fingerprint is stable and `prepare` is null. With the
+`.pyc` files already present (the common case after any earlier prepare), the second call
+is cached, which a run with the `__pycache__` directories left in place confirmed. Caching
+itself is correct: `task_check` prepares only on a fingerprint mismatch (C5, D9).

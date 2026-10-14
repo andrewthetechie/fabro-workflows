@@ -22,7 +22,7 @@ use rmcp::transport::streamable_http_server::{
 };
 use rmcp::{ErrorData, RoleServer};
 
-use crate::{code, common, gitsafe, inputs, manifest, runtests, submit};
+use crate::{code, common, gitsafe, inputs, manifest, runtests, submit, taskcheck};
 
 const DEFAULT_PORT: u16 = 7391;
 const INPUTS: &str = "inputs";
@@ -91,6 +91,26 @@ impl IoHandler {
         Tool::new(runtests::RUN_TESTS, description, schema)
     }
 
+    /// The `task_check` tool (ADR 0025 C6), listed for every known stage.
+    fn task_check_tool() -> Tool {
+        let schema: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_value(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "base": {"type": "string",
+                             "description": "The base commit to diff against. Omit it to use the task's base or origin/main."}
+                },
+                "additionalProperties": false
+            }))
+            .expect("static task_check schema is valid JSON");
+        Tool::new(
+            taskcheck::TASK_CHECK,
+            "Run the checks and tests the Task validation gate will run for your current \
+             changes, using the same selection. Run it before you finish.",
+            schema,
+        )
+    }
+
     /// One git-safe tool (docs/coder-tweaks C4), listed for every known stage.
     fn gitsafe_tool(name: &'static str, description: String, schema: serde_json::Value) -> Tool {
         let schema: serde_json::Map<String, serde_json::Value> =
@@ -129,6 +149,7 @@ impl ServerHandler for IoHandler {
                 tools.extend(code::VERBS.iter().map(Self::code_tool));
                 tools.extend(gitsafe::tools().into_iter().map(|(n, d, s)| Self::gitsafe_tool(n, d, s)));
                 tools.push(Self::run_tests_tool());
+                tools.push(Self::task_check_tool());
             }
             Ok(ListToolsResult { tools, ..Default::default() })
         }
@@ -140,6 +161,7 @@ impl ServerHandler for IoHandler {
             INPUTS => Some(Self::inputs_tool()),
             SUBMIT if stage.output.is_some() => Some(Self::submit_tool(&stage)),
             runtests::RUN_TESTS => Some(Self::run_tests_tool()),
+            taskcheck::TASK_CHECK => Some(Self::task_check_tool()),
             other => code::verb(other).map(Self::code_tool).or_else(|| {
                 gitsafe::tools()
                     .into_iter()
@@ -199,6 +221,13 @@ async fn run_tool(request: CallToolRequestParams) -> Result<CallToolResult, Erro
     if name == runtests::RUN_TESTS {
         let args = request.arguments.unwrap_or_default();
         return Ok(match runtests::call(&args).await {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Err(text) => CallToolResult::error(vec![ContentBlock::text(text)]),
+        });
+    }
+    if name == taskcheck::TASK_CHECK {
+        let args = request.arguments.unwrap_or_default();
+        return Ok(match taskcheck::call(&args).await {
             Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
             Err(text) => CallToolResult::error(vec![ContentBlock::text(text)]),
         });

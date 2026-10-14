@@ -17,5 +17,6 @@ pub mod serve;
 pub mod served;
 pub mod stage;
 pub mod submit;
+pub mod taskcheck;
 pub mod taskplan;
 pub mod testenv;

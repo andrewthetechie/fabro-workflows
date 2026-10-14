@@ -19,6 +19,10 @@ from the **Stage manifest** (C2), generated into each `workflow.toml` as the
 | `submit --file <path>` | Validates the output against the stage's schema, refuses until every required input was read in full, stamps `_io` and writes the contract atomically (0, 3 on "call inputs first"/incomplete, 4 on a schema violation). |
 | `guard` | The `io-guard` pre-tool-use hook: blocks a Sealed path or a path a Sealed glob matches (2), proceeds (0) otherwise, and proceeds with a warning on its own errors (D8). |
 | `serve --port N` | The MCP streamable-HTTP server on `127.0.0.1:N`. `list_tools`/`call_tool` read `stage.json` and the manifest on every request, so it is stateless (D3): each stage sees only its own tools. A stage problem is returned as an `is_error` tool result, never a JSON-RPC error. |
+| `test-env [--check] [--root DIR]` | Prepares the repository's Test environment from `.fabro/test.toml` and prints the `export` lines for `ci.sh`; `--check` parses only and warns about Task validation ownership (0, 1 on a parse error, 64 usage). |
+| `run-tests TARGET [args...] [--fresh]` | The `fabro-io` half of `fabro-test` (docs/test-env C4): prepares when the stamp is stale, then runs the target (0 only when the target passed). |
+| `task-plan [--base SHA] [--root DIR]` | Prints the Task validation plan for the current diff (ADR 0025 C4): the checks, the targets and the tests each will run, and every fallback to the full suite. Always exits 0 unless the arguments are invalid. |
+| `task-check [--gate] [--base SHA] [--out FILE] [--root DIR]` | Runs the plan (ADR 0025 C5). `--gate` always prepares fresh and applies no total budget; otherwise the Test environment is cached and the call stops at 600 s. 0 when the plan is full or everything passed, 1 when something failed, 2 on an internal error. |
 | `version` | Prints the crate version. |
 
 Every known stage also gets seven `code_*` tools (`src/code.rs`): `code_def`, `code_show`,
@@ -32,6 +36,13 @@ answer; exit 2 (no index) and anything else is an `is_error` result that says to
 They exist because a local model ignores a shell command it is told about and uses the
 listed `read_file` instead: two backlog runs on 2026-10-01 made no `fabro-code` call in
 `improve` or `coder`.
+
+Every known stage also gets `run_tests` (docs/test-env C4) and `task_check` (ADR 0025 C6).
+`run_tests TARGET [args]` runs one named target from `.fabro/test.toml` inside its Test
+environment. `task_check` runs the checks and the tests Task validation selected for the
+current diff, with the same selection the gate uses, so the agent can fix what the gate
+will report before it finishes; `fabro-test --task` is the shell fallback. `run_tests`
+stays the tool for a narrow run while the agent works.
 
 Two git-safe tools (`src/gitsafe.rs`, docs/coder-tweaks C4) stand in for what agents used
 `git stash` and `git checkout --` for. `restore_file(path)` restores one file to its content
