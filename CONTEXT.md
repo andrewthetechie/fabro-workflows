@@ -395,3 +395,16 @@ A named, narrow test command a repository declares with its **Test environment**
 picks a target and adds only the paths or selectors to run. The command itself comes from
 the repository.
 _Avoid_: test suite (a target is deliberately narrower), test script
+
+**Task validation**:
+The gate a `backlog` task passes before review: the repository's checks and the tests that
+cover the files the task changed, chosen from the diff by the gate and never by the agent.
+It falls back to the full suite when the change is too broad or too unfamiliar to scope.
+Not **Final validation**, which is the net for whatever task validation did not select.
+_Avoid_: scoped CI, fast validate, per-task CI
+
+**Final validation**:
+The full `setup.sh && ci.sh` a `backlog` run passes once, on the merged branch, before it
+opens its PR. Every test the repository has runs here, including those no task's diff
+selected.
+_Avoid_: full CI (GitHub's checks are a different thing), final check
