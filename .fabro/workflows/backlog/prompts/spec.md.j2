@@ -70,6 +70,15 @@ design the branch has already committed to. Check any deliberate deviation in
 requirement unless those sources accept the deviation. If evidence is weak,
 omit the finding. Prefer approval over speculative cleanup.
 
+None of that covers an acceptance criterion. A criterion that the branch does not
+deliver as written is always a finding, however deliberate the deviation, and the
+committed design is no excuse: quote the criterion in `message`. A note in
+`completed.md` that explains the gap does not accept it; only the issue or a human
+comment can. A different behaviour delivered in its place (a button that does
+something else, a renamed or relabelled action) is still unmet. Its follow-up
+implements the criterion. Never ask for the substitute to be relabelled, reworded or
+documented "honestly".
+
 Only two extra-review rounds run in total. A finding saved for "next round" never
 gets one — raise it now or not at all.
 

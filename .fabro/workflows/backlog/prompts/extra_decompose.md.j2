@@ -53,6 +53,13 @@ findings you received — do not re-review the branch yourself.
 - Write task bodies that are self-contained enough for an implementation agent to
   work from the task alone: carry the finding's `message` as the problem statement
   and its `suggestion` as the required change.
+- A finding about an acceptance criterion the branch does not meet becomes a task that
+  implements that criterion, quoted in the body as its acceptance criterion. Never
+  write a task that relabels, rewords, renames or documents a different behaviour
+  shipped in its place. If a reviewer's `suggestion` asks for that, ignore the
+  suggestion and keep the criterion. When the criterion cannot be met as written, the
+  coder of that task blocks and the issue returns to a human; that is the right
+  outcome, so do not soften the task to avoid it.
 - If the findings are all nits or already addressed in the branch, emit `no_work`.
 - Never emit a task that requires a change to a file under `.github/workflows/`, not
   in `files` and not in the body: the run pushes its branch with a token that lacks

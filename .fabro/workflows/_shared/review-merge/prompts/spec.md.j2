@@ -90,6 +90,14 @@ Do not infer unstated architecture or turn silence into a requirement. Do not re
 style preferences, naming nits, formatting, or speculative concerns. Do not
 re-litigate a design the pull request has already committed to.
 
+None of that covers an acceptance criterion. A criterion the pull request does not
+deliver as written is always a finding: `missing`, `partial`, or `wrong` when a
+different behaviour is delivered in its place (a button that does something else, a
+renamed or relabelled action, a code comment that explains the gap). Quote the
+criterion in `message`. A deviation the PR description or a code comment explains is
+still unmet; only the linked issue or a human comment on it can accept it. The
+required outcome is the criterion, never a relabel of the substitute.
+
 Categories — state the applicable one in the finding's `message`:
 
 - `missing`: an explicit requirement is absent.
