@@ -11,6 +11,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 getrandom = { version = "0.3", features = ["std"] }
 globset = "0.4"
 hex = "0.4"
+indexmap = { version = "2", features = ["serde"] }
 jsonschema = "0.26"
 nix = { version = "0.31.3", default-features = false, features = ["signal"] }
 rmcp = { version = "=3.5.0", features = ["server", "transport-streamable-http-server"] }
@@ -18,7 +19,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.151" }
 sha2 = "0.10"
 tokio = { version = "1.53.1", features = ["full"] }
-toml = "0.8"
+# `preserve_order` keeps `.fabro/test.toml`'s target and check order, which Task validation
+# depends on (ADR 0025 C3: the first matching target owns a test).
+toml = { version = "0.8", features = ["preserve_order"] }
 
 [profile.release]
 lto = true

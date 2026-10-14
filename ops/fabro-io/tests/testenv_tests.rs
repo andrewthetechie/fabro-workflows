@@ -468,3 +468,232 @@ fn test_env_check_fails_and_names_a_bad_key() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+
+// --- the Task validation keys (ADR 0025 C3) -------------------------------------------
+
+use std::os::unix::fs::PermissionsExt;
+
+#[test]
+fn task_keys_parse_with_their_values() {
+    let env = testenv::parse(
+        r#"
+version = 1
+
+[task]
+full = ["alembic/**"]
+skip = ["frontend/tests/**"]
+
+[targets.backend]
+about = "backend"
+cwd = "backend"
+run = "uv run pytest -n 1 -q"
+tests = ["backend/tests/**"]
+
+[targets.rust]
+about = "rust"
+run = "cargo test --all-features"
+watch = ["src-tauri/**"]
+
+[checks.prek]
+about = "pre-commit hooks"
+run = "uv run prek run"
+watch = ["**"]
+files = false
+cwd = "."
+timeout = 300
+"#,
+    )
+    .expect("the C3 example is valid");
+    assert!(env.declares_task_keys());
+    assert_eq!(env.task_full(), &["alembic/**".to_string()][..]);
+    assert_eq!(env.task_skip(), &["frontend/tests/**".to_string()][..]);
+    let backend = &env.targets["backend"];
+    assert_eq!(backend.tests.as_deref(), Some(&["backend/tests/**".to_string()][..]));
+    assert!(backend.watch.is_none());
+    let rust = &env.targets["rust"];
+    assert_eq!(rust.watch.as_deref(), Some(&["src-tauri/**".to_string()][..]));
+    assert!(rust.tests.is_none());
+    let prek = &env.checks["prek"];
+    assert_eq!(prek.name, "prek");
+    assert_eq!(prek.about, "pre-commit hooks");
+    assert_eq!(prek.run, "uv run prek run");
+    assert_eq!(prek.cwd, PathBuf::from("."));
+    assert_eq!(prek.timeout, 300);
+    assert!(!prek.files);
+}
+
+#[test]
+fn check_optional_keys_default() {
+    let env = testenv::parse("version = 1\n[checks.lint]\nrun = \"true\"\nwatch = [\"src/**\"]\n")
+        .expect("a check with only run and watch is valid");
+    let lint = &env.checks["lint"];
+    assert_eq!(lint.cwd, PathBuf::from("."));
+    assert_eq!(lint.timeout, 120);
+    assert!(!lint.files);
+    assert!(lint.about.is_empty());
+}
+
+#[test]
+fn task_key_errors_name_the_key() {
+    let both = expect_err(
+        "version = 1\n[targets.x]\nabout=\"x\"\nrun=\"x\"\ntests=[\"a/**\"]\nwatch=[\"b/**\"]\n",
+    );
+    assert!(both.contains("targets.x") && both.contains("not both"), "{both}");
+    let empty_watch = expect_err("version = 1\n[checks.x]\nrun=\"true\"\nwatch=[]\n");
+    assert!(empty_watch.contains("checks.x.watch"), "{empty_watch}");
+    let bad_name = expect_err("version = 1\n[checks.X]\nrun=\"true\"\nwatch=[\"a/**\"]\n");
+    assert!(bad_name.contains("check name `X`"), "{bad_name}");
+    let bad_timeout = expect_err(
+        "version = 1\n[checks.x]\nrun=\"true\"\nwatch=[\"a/**\"]\ntimeout=601\n",
+    );
+    assert!(bad_timeout.contains("checks.x.timeout"), "{bad_timeout}");
+    let empty_run = expect_err("version = 1\n[checks.x]\nrun=\"  \"\nwatch=[\"a/**\"]\n");
+    assert!(empty_run.contains("checks.x.run"), "{empty_run}");
+    let bad_cwd = expect_err("version = 1\n[checks.x]\nrun=\"true\"\nwatch=[\"a/**\"]\ncwd=\"/tmp\"\n");
+    assert!(bad_cwd.contains("checks.x.cwd"), "{bad_cwd}");
+    let full_glob = expect_err("version = 1\n[task]\nfull=[\"[\"]\n");
+    assert!(full_glob.contains("task.full[0]"), "{full_glob}");
+    let skip_glob = expect_err("version = 1\n[task]\nskip=[\"[\"]\n");
+    assert!(skip_glob.contains("task.skip[0]"), "{skip_glob}");
+    let tests_glob = expect_err("version = 1\n[targets.x]\nabout=\"x\"\nrun=\"x\"\ntests=[\"[\"]\n");
+    assert!(tests_glob.contains("targets.x.tests[0]"), "{tests_glob}");
+    let watch_glob = expect_err("version = 1\n[targets.x]\nabout=\"x\"\nrun=\"x\"\nwatch=[\"[\"]\n");
+    assert!(watch_glob.contains("targets.x.watch[0]"), "{watch_glob}");
+    let check_glob = expect_err("version = 1\n[checks.x]\nrun=\"true\"\nwatch=[\"[\"]\n");
+    assert!(check_glob.contains("checks.x.watch[0]"), "{check_glob}");
+}
+
+#[test]
+fn unknown_keys_inside_task_and_checks_are_errors() {
+    let task = expect_err("version = 1\n[task]\nbogus = 1\n");
+    assert!(task.contains("bogus"), "{task}");
+    let check = expect_err("version = 1\n[checks.x]\nrun=\"true\"\nwatch=[\"a/**\"]\nbogus = 1\n");
+    assert!(check.contains("bogus"), "{check}");
+}
+
+#[test]
+fn target_and_check_order_is_preserved() {
+    let env = testenv::parse(
+        "version = 1\n\
+         [targets.zeta]\nabout=\"z\"\nrun=\"z\"\ntests=[\"z/**\"]\n\
+         [targets.alpha]\nabout=\"a\"\nrun=\"a\"\ntests=[\"a/**\"]\n\
+         [checks.zed]\nrun=\"z\"\nwatch=[\"**\"]\n\
+         [checks.abc]\nrun=\"a\"\nwatch=[\"**\"]\n",
+    )
+    .expect("valid");
+    assert_eq!(env.targets.keys().cloned().collect::<Vec<_>>(), ["zeta", "alpha"]);
+    assert_eq!(env.checks.keys().cloned().collect::<Vec<_>>(), ["zed", "abc"]);
+}
+
+#[test]
+fn declares_task_keys_needs_a_task_table_a_target_or_a_check() {
+    let plain = testenv::parse("version = 1\n[targets.x]\nabout=\"x\"\nrun=\"x\"\n").unwrap();
+    assert!(!plain.declares_task_keys());
+    let empty_task = testenv::parse("version = 1\n[task]\n").unwrap();
+    assert!(empty_task.declares_task_keys());
+    let target = testenv::parse(
+        "version = 1\n[targets.x]\nabout=\"x\"\nrun=\"x\"\ntests=[\"a/**\"]\n",
+    )
+    .unwrap();
+    assert!(target.declares_task_keys());
+    let check = testenv::parse("version = 1\n[checks.x]\nrun=\"true\"\nwatch=[\"a/**\"]\n").unwrap();
+    assert!(check.declares_task_keys());
+}
+
+/// A stub `fabro-code` in `dir` that prints `body` and exits 0.
+fn write_code_stub(dir: &Path, body: &str) -> PathBuf {
+    let stub = dir.join("fabro-code");
+    std::fs::write(&stub, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    stub
+}
+
+fn check_run(root: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_fabro-io"))
+        .args(["test-env", "--check", "--root"])
+        .arg(root)
+        .output()
+        .expect("fabro-io runs")
+}
+
+#[test]
+fn check_warns_on_duplicate_ownership_and_a_glob_outside_its_cwd() {
+    let _g = lock();
+    let root = common::temp_root("check-warn");
+    std::fs::create_dir_all(root.join(".fabro")).unwrap();
+    std::fs::write(
+        root.join(".fabro/test.toml"),
+        r#"
+version = 1
+
+[task]
+skip = ["e2e/**"]
+
+[targets.backend]
+about = "backend"
+cwd = "backend"
+run = "pytest"
+tests = ["backend/tests/**"]
+
+[targets.frontend]
+about = "frontend"
+cwd = "frontend"
+run = "vitest"
+tests = ["frontend/src/**", "backend/tests/**"]
+"#,
+    )
+    .unwrap();
+    let stub = write_code_stub(
+        &root,
+        "printf '%s\\n' backend/tests/test_a.py frontend/src/a.test.tsx e2e/spec.ts \
+         other/tests/test_b.py",
+    );
+    unsafe { std::env::set_var("FABRO_CODE_BIN", &stub) };
+    let out = check_run(&root);
+    unsafe { std::env::remove_var("FABRO_CODE_BIN") };
+
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("`backend/tests/test_a.py` is matched by more than one target's tests: backend, frontend"),
+        "{text}"
+    );
+    assert!(
+        text.contains("no target's tests and no [task] skip entry owns test file `other/tests/test_b.py`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("targets.frontend.tests `backend/tests/**` is outside its cwd `frontend`"),
+        "{text}"
+    );
+    assert!(!text.contains("e2e/spec.ts"), "skip covers it: {text}");
+    assert!(
+        !text.contains("`frontend/src/a.test.tsx`"),
+        "owned once, so no warning: {text}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn check_skips_the_ownership_warnings_without_fabro_code() {
+    let _g = lock();
+    let root = common::temp_root("check-skip");
+    std::fs::create_dir_all(root.join(".fabro")).unwrap();
+    std::fs::write(
+        root.join(".fabro/test.toml"),
+        "version = 1\n[task]\nskip = [\"a/**\"]\n",
+    )
+    .unwrap();
+    unsafe { std::env::set_var("FABRO_CODE_BIN", "/nonexistent/fabro-code-not-here") };
+    let out = check_run(&root);
+    unsafe { std::env::remove_var("FABRO_CODE_BIN") };
+
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("skipped"), "{text}");
+    assert!(text.lines().count() == 1, "one line: {text}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}

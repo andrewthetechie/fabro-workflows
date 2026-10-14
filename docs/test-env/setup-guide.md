@@ -139,6 +139,65 @@ Zero or more. `NAME` matches `^[a-z0-9-]+$`: it is what the agent types, and the
 | `flags` | array of strings | `[]` | flags the agent may pass alone, such as `"-x"`. A flag listed here and in `value_flags` counts as a plain flag |
 | `value_flags` | array of strings | `[]` | flags that take the next argument as their value, such as `"-k"` |
 | `timeout` | integer seconds | `120` | `1` to `600`, for the run alone |
+| `tests` | array of globs | — | the test files this target runs, relative to the checkout root. `*` stops at `/`; `**` crosses directories. Mutually exclusive with `watch` |
+| `watch` | array of globs | — | a changed file matching any of these runs the whole target, with no arguments. Mutually exclusive with `tests` |
+
+## Task validation keys (ADR 0025)
+
+These keys are optional, and they exist for the `backlog` per-task **Task validation**
+gate: it runs the repository's checks plus the tests that cover the task's changed files,
+instead of the whole suite. A repository that declares none of them gets the full suite per
+task, exactly as before, so **declaring them is a choice and deleting them rolls the choice
+back**. They are parsed strictly, so a repository may use them only once the images carry
+`fabro-io` 0.5.0 (task 06 of `docs/task-validation/`).
+
+```toml
+[task]
+full = ["alembic/**"]          # extra globs that force the full suite (added to the built-ins)
+skip = ["frontend/tests/**"]   # test files Task validation never runs (e2e, deployed checks)
+
+[targets.backend]              # the existing keys, plus exactly one of tests / watch
+cwd = "backend"
+run = "uv run pytest -n 1 -q"
+tests = ["backend/tests/**"]   # the test files this target runs; selected ones become args
+
+[targets.rust]
+run = "cargo test --all-features"
+watch = ["src-tauri/**"]       # any changed file here runs the whole target, with no args
+
+[checks.prek]                  # a lint or typecheck step; never prepares the Test environment
+about = "pre-commit hooks over the task's changes"   # optional, one line
+run = "uv run prek run --from-ref \"$FABRO_TASK_BASE\" --to-ref HEAD"
+watch = ["**"]                 # required, non-empty; the check runs when a changed file matches
+files = false                  # true: append the matching changed files, relative to cwd
+cwd = "."                      # default "."
+timeout = 300                  # 1..=600, default 120
+```
+
+Rules:
+
+- Globs are relative to the checkout root, with `*` (no `/`) and `**` (any depth) semantics.
+- A target may have `tests` or `watch`, never both. A target with neither is still available
+  to `run_tests`, but takes no part in Task validation.
+- A `watch` target runs whole when any changed path matches it; a `tests` target runs only
+  the selected tests, passed as paths relative to its `cwd`.
+- Check names match `^[a-z0-9-]+$`. A check runs with `[env]`, `path` and `FABRO_TASK_BASE`
+  (the task's base commit) set, from its `cwd`. It never prepares the Test environment.
+- Built-in `full` globs always apply on top of `[task] full`: `.fabro/**`; every dependency
+  manifest and lockfile (`package.json`, `bun.lock`, `pyproject.toml`, `uv.lock`,
+  `Cargo.toml`, `go.mod`, ...); `conftest.py`; and the test-runner configs
+  (`tsconfig*.json`, `vite.config.*`, `vitest.config.*`, `jest.config.*`).
+- Anything the gate cannot attribute falls back to the full suite: an unowned selected test,
+  a selected test outside its target's `cwd`, the Code index unavailable, or a deleted
+  non-test source file.
+
+Two update rules:
+
+1. **A new test file in a directory a `tests` glob already covers needs no edit.** The glob
+   describes the directory, not the files in it.
+2. **A new test directory, or a new app, needs a `tests` entry (or a `skip` entry).** Without
+   one, its test files are owned by no target, and every task that selects one runs the full
+   suite until it is declared. `fabro-io test-env --check` warns about exactly this.
 
 ## How it behaves
 
@@ -271,11 +330,18 @@ beside a `pyproject.toml` or `uv.lock`) to share with the worktree, and refuses 
 
 ## Checking a file
 
-On any machine with `fabro-io` 0.4.1 or later:
+On any machine with `fabro-io` 0.5.0 or later (0.4.1 for a file without the Task
+validation keys):
 
 ```sh
 fabro-io test-env --check --root path/to/repo   # parse only; non-zero and names the key on any error
 ```
+
+With the Task validation keys, `--check` also prints one `warning:` line per problem the
+selection cannot resolve, and still exits 0: a tracked test file no target's `tests` and no
+`skip` entry owns, a test file two targets' `tests` both match, or a `tests` glob outside its
+target's `cwd`. It gets the test-file list from `fabro-code list-tests`; when that command
+is absent it prints one line saying the ownership warnings were skipped.
 
 In the repository's profile image on the host, before you open the PR:
 

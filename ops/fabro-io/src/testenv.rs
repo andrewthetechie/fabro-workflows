@@ -3,6 +3,10 @@
 //!
 //! Contracts: docs/test-env/00-overview-and-contracts.md C1 to C3. The file belongs to the
 //! target repository; nothing here reads the Stage manifest.
+//!
+//! ADR 0025 D5 added the Task validation keys (`[task]`, a target's `tests` or `watch`, and
+//! `[checks.*]`) to the same file. They are optional and still parsed strictly, so a
+//! repository may use them only after the images carry `fabro-io` 0.5.0.
 
 // Rust guideline compliant 2026-07-21
 
@@ -14,7 +18,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
-use globset::{GlobBuilder, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use indexmap::IndexMap;
 use serde::Deserialize;
 
 use crate::common::{atomic_write, io_root, kill_group, sha256_hex};
@@ -28,6 +33,34 @@ pub const LOG_FILE: &str = "test-env.log";
 
 /// The lock file under the io root that serializes use of the Test environment.
 pub const LOCK_FILE: &str = "test-env.lock";
+
+/// The globs that always force the full suite (ADR 0025 C3). Kept next to the parser so
+/// `task-plan`, which reads them, cannot drift from the declaration.
+pub const BUILTIN_FULL_GLOBS: &[&str] = &[
+    ".fabro/**",
+    "**/package.json",
+    "**/package-lock.json",
+    "**/bun.lock",
+    "**/bun.lockb",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+    "**/pyproject.toml",
+    "**/uv.lock",
+    "**/requirements*.txt",
+    "**/setup.cfg",
+    "**/pytest.ini",
+    "**/tox.ini",
+    "**/conftest.py",
+    "**/Cargo.toml",
+    "**/Cargo.lock",
+    "**/go.mod",
+    "**/go.sum",
+    "**/tsconfig*.json",
+    "**/vite.config.*",
+    "**/vitest.config.*",
+    "**/vitest.workspace.*",
+    "**/jest.config.*",
+];
 
 /// The only accepted `version` (C1).
 const VERSION: u32 = 1;
@@ -48,7 +81,7 @@ const LOCK_POLL: Duration = Duration::from_millis(100);
 /// a daemon holding the pipe must not block the caller forever, so the reader is then detached.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
-/// A parsed, validated `.fabro/test.toml` (C1).
+/// A parsed, validated `.fabro/test.toml` (C1, ADR 0025 C3).
 #[derive(Clone, Debug)]
 pub struct TestEnv {
     /// The `[env]` table, applied to every preparation step and target. Sorted by name.
@@ -57,8 +90,12 @@ pub struct TestEnv {
     pub path: Vec<PathBuf>,
     /// The `[prepare]` table, or its defaults when the table is absent.
     pub prepare: Prepare,
-    /// The `[targets.*]` tables, keyed by name.
-    pub targets: BTreeMap<String, Target>,
+    /// The `[targets.*]` tables, keyed by name, in file order.
+    pub targets: IndexMap<String, Target>,
+    /// The `[task]` table, or `None` when it is absent (ADR 0025 C3).
+    pub task: Option<Task>,
+    /// The `[checks.*]` tables, keyed by name, in file order (ADR 0025 C3).
+    pub checks: IndexMap<String, Check>,
     /// The exact bytes the file was parsed from; the fingerprint hashes them (C3).
     source: Vec<u8>,
 }
@@ -74,7 +111,7 @@ pub struct Prepare {
     pub run: Vec<String>,
 }
 
-/// One `[targets.<name>]` table (C1).
+/// One `[targets.<name>]` table (C1, ADR 0025 C3).
 #[derive(Clone, Debug)]
 pub struct Target {
     /// One line naming what the target runs, shown to agents.
@@ -89,6 +126,39 @@ pub struct Target {
     pub value_flags: Vec<String>,
     /// Budget for the run, in seconds.
     pub timeout: u64,
+    /// Globs, relative to the checkout root, naming the test files this target runs (C3).
+    /// Mutually exclusive with `watch`; a target with neither takes no part in Task validation.
+    pub tests: Option<Vec<String>>,
+    /// Globs whose match runs this whole target with no arguments (C3).
+    pub watch: Option<Vec<String>>,
+}
+
+/// The `[task]` table (ADR 0025 C3).
+#[derive(Clone, Debug)]
+pub struct Task {
+    /// Extra globs that force the full suite, added to [`BUILTIN_FULL_GLOBS`].
+    pub full: Vec<String>,
+    /// Test files Task validation never runs.
+    pub skip: Vec<String>,
+}
+
+/// One `[checks.<name>]` table (ADR 0025 C3).
+#[derive(Clone, Debug)]
+pub struct Check {
+    /// The check's name, matching `^[a-z0-9-]+$`.
+    pub name: String,
+    /// One optional line describing the check.
+    pub about: String,
+    /// The command, run as `sh -c` from `cwd`.
+    pub run: String,
+    /// Globs whose match runs this check; required and non-empty.
+    pub watch: Vec<String>,
+    /// When true, the matching changed files are appended as arguments.
+    pub files: bool,
+    /// Directory the command runs in, relative to the checkout root.
+    pub cwd: PathBuf,
+    /// Budget for the check, in seconds.
+    pub timeout: u64,
 }
 
 /// The raw shape of the file. `deny_unknown_fields` on every table makes an unknown key an error.
@@ -102,7 +172,10 @@ struct Raw {
     path: Vec<String>,
     prepare: Option<RawPrepare>,
     #[serde(default)]
-    targets: BTreeMap<String, RawTarget>,
+    targets: IndexMap<String, RawTarget>,
+    task: Option<RawTask>,
+    #[serde(default)]
+    checks: IndexMap<String, RawCheck>,
 }
 
 #[derive(Deserialize)]
@@ -125,6 +198,29 @@ struct RawTarget {
     flags: Vec<String>,
     #[serde(default)]
     value_flags: Vec<String>,
+    timeout: Option<u64>,
+    tests: Option<Vec<String>>,
+    watch: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTask {
+    #[serde(default)]
+    full: Vec<String>,
+    #[serde(default)]
+    skip: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCheck {
+    about: Option<String>,
+    run: String,
+    watch: Vec<String>,
+    #[serde(default)]
+    files: bool,
+    cwd: Option<String>,
     timeout: Option<u64>,
 }
 
@@ -183,11 +279,7 @@ fn validate(raw: Raw, source: Vec<u8>) -> Result<TestEnv, String> {
             run: Vec::new(),
         },
         Some(p) => {
-            for (i, glob) in p.inputs.iter().enumerate() {
-                glob_builder(glob)
-                    .build()
-                    .map_err(|e| format!("prepare.inputs[{i}] `{glob}` is not a valid glob: {e}"))?;
-            }
+            check_globs(&p.inputs, "prepare.inputs")?;
             for (i, step) in p.run.iter().enumerate() {
                 if step.trim().is_empty() {
                     return Err(format!("prepare.run[{i}] must not be empty"));
@@ -202,7 +294,7 @@ fn validate(raw: Raw, source: Vec<u8>) -> Result<TestEnv, String> {
             }
         }
     };
-    let mut targets = BTreeMap::new();
+    let mut targets = IndexMap::new();
     for (name, t) in raw.targets {
         if !valid_target_name(&name) {
             return Err(format!("target name `{name}` must match ^[a-z0-9-]+$"));
@@ -217,6 +309,15 @@ fn validate(raw: Raw, source: Vec<u8>) -> Result<TestEnv, String> {
         check_relative(&cwd, &format!("targets.{name}.cwd"))?;
         let timeout = t.timeout.unwrap_or(TARGET_TIMEOUT_DEFAULT_S);
         check_timeout(&format!("targets.{name}.timeout"), timeout)?;
+        if t.tests.is_some() && t.watch.is_some() {
+            return Err(format!("targets.{name} may set either tests or watch, not both"));
+        }
+        if let Some(globs) = &t.tests {
+            check_globs(globs, &format!("targets.{name}.tests"))?;
+        }
+        if let Some(globs) = &t.watch {
+            check_globs(globs, &format!("targets.{name}.watch"))?;
+        }
         targets.insert(
             name,
             Target {
@@ -226,6 +327,52 @@ fn validate(raw: Raw, source: Vec<u8>) -> Result<TestEnv, String> {
                 flags: t.flags,
                 value_flags: t.value_flags,
                 timeout,
+                tests: t.tests,
+                watch: t.watch,
+            },
+        );
+    }
+    let task = match raw.task {
+        None => None,
+        Some(t) => {
+            check_globs(&t.full, "task.full")?;
+            check_globs(&t.skip, "task.skip")?;
+            Some(Task {
+                full: t.full,
+                skip: t.skip,
+            })
+        }
+    };
+    let mut checks = IndexMap::new();
+    for (name, c) in raw.checks {
+        if !valid_target_name(&name) {
+            return Err(format!("check name `{name}` must match ^[a-z0-9-]+$"));
+        }
+        if c.run.trim().is_empty() {
+            return Err(format!("checks.{name}.run must not be empty"));
+        }
+        if c.watch.is_empty() {
+            return Err(format!("checks.{name}.watch must list at least one glob"));
+        }
+        check_globs(&c.watch, &format!("checks.{name}.watch"))?;
+        let cwd = c.cwd.unwrap_or_else(|| ".".to_string());
+        check_relative(&cwd, &format!("checks.{name}.cwd"))?;
+        let timeout = c.timeout.unwrap_or(TARGET_TIMEOUT_DEFAULT_S);
+        check_timeout(&format!("checks.{name}.timeout"), timeout)?;
+        let about = c.about.unwrap_or_default();
+        if about.contains(['\n', '\r']) {
+            return Err(format!("checks.{name}.about must be one line"));
+        }
+        checks.insert(
+            name.clone(),
+            Check {
+                name,
+                about,
+                run: c.run,
+                watch: c.watch,
+                files: c.files,
+                cwd: PathBuf::from(cwd),
+                timeout,
             },
         );
     }
@@ -234,8 +381,38 @@ fn validate(raw: Raw, source: Vec<u8>) -> Result<TestEnv, String> {
         path: raw.path.into_iter().map(PathBuf::from).collect(),
         prepare,
         targets,
+        task,
+        checks,
         source,
     })
+}
+
+impl TestEnv {
+    /// Whether any Task validation key is declared (ADR 0025 C3).
+    ///
+    /// A `[task]` table counts even when it is empty; a target counts only with `tests` or
+    /// `watch`. Without any of them `task-plan` runs the full suite.
+    #[must_use]
+    pub fn declares_task_keys(&self) -> bool {
+        self.task.is_some()
+            || !self.checks.is_empty()
+            || self
+                .targets
+                .values()
+                .any(|t| t.tests.is_some() || t.watch.is_some())
+    }
+
+    /// The `[task] full` globs, or an empty slice when the table is absent.
+    #[must_use]
+    pub fn task_full(&self) -> &[String] {
+        self.task.as_ref().map_or(&[], |t| &t.full)
+    }
+
+    /// The `[task] skip` globs, or an empty slice when the table is absent.
+    #[must_use]
+    pub fn task_skip(&self) -> &[String] {
+        self.task.as_ref().map_or(&[], |t| &t.skip)
+    }
 }
 
 /// A glob with `*` stopping at `/`, so `backend/*.py` means one directory level.
@@ -273,6 +450,16 @@ fn check_timeout(key: &str, seconds: u64) -> Result<(), String> {
     } else {
         Err(format!("{key} must be 1 to {TIMEOUT_MAX_S} seconds, found {seconds}"))
     }
+}
+
+/// Rejects a glob that does not compile, naming its key and index.
+fn check_globs(globs: &[String], key: &str) -> Result<(), String> {
+    for (i, glob) in globs.iter().enumerate() {
+        glob_builder(glob)
+            .build()
+            .map_err(|e| format!("{key}[{i}] `{glob}` is not a valid glob: {e}"))?;
+    }
+    Ok(())
 }
 
 /// The fingerprint of `env` for the checkout at `root` (C3).
@@ -677,7 +864,7 @@ pub fn run_cli(args: &[String]) -> ExitCode {
         }
     };
     if check {
-        return ExitCode::SUCCESS;
+        return check_declaration(&root, &env);
     }
     // Wait at most one preparation budget for an agent's call to finish, then prepare
     // within a budget of its own.
@@ -710,4 +897,108 @@ pub fn checkout_root() -> Result<PathBuf, String> {
         return Err("not inside a git checkout; pass --root DIR".to_string());
     }
     Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
+}
+
+/// `test-env --check`: the parse already succeeded, so warn about the Task validation
+/// declaration (ADR 0025 C3). Warnings never change the exit code.
+fn check_declaration(root: &Path, env: &TestEnv) -> ExitCode {
+    for (name, target) in &env.targets {
+        for glob in target.tests.iter().flatten() {
+            if !glob_within_cwd(glob, &target.cwd) {
+                println!(
+                    "warning: targets.{name}.tests `{glob}` is outside its cwd `{}`",
+                    target.cwd.display()
+                );
+            }
+        }
+    }
+    let files = match list_test_files(root) {
+        Ok(files) => files,
+        Err(message) => {
+            println!("warning: {message}; the ownership warnings were skipped");
+            return ExitCode::SUCCESS;
+        }
+    };
+    let skip = glob_set(env.task_skip());
+    let owners: Vec<(&str, GlobSet)> = env
+        .targets
+        .iter()
+        .filter_map(|(name, target)| {
+            target
+                .tests
+                .as_deref()
+                .map(|globs| (name.as_str(), glob_set(globs)))
+        })
+        .collect();
+    for file in &files {
+        let holding: Vec<&str> = owners
+            .iter()
+            .filter(|(_, set)| set.is_match(file.as_str()))
+            .map(|(name, _)| *name)
+            .collect();
+        if holding.len() > 1 {
+            println!(
+                "warning: test file `{file}` is matched by more than one target's tests: {}",
+                holding.join(", ")
+            );
+        } else if holding.is_empty() && !skip.is_match(file.as_str()) {
+            println!("warning: no target's tests and no [task] skip entry owns test file `{file}`");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Every test file the repository tracks, from `fabro-code list-tests` (ADR 0025 C3).
+fn list_test_files(root: &Path) -> Result<Vec<String>, String> {
+    let bin = std::env::var("FABRO_CODE_BIN").unwrap_or_else(|_| "fabro-code".to_string());
+    let out = Command::new(&bin)
+        .arg("list-tests")
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("`{bin} list-tests` could not run: {e}"))?;
+    if !out.status.success() {
+        let how = out
+            .status
+            .code()
+            .map_or_else(|| "a signal".to_string(), |c| format!("exit code {c}"));
+        return Err(format!("`{bin} list-tests` failed with {how}"));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+/// The compiled set of a validated glob list. `parse` compiled each glob, so this cannot fail.
+fn glob_set(globs: &[String]) -> GlobSet {
+    let mut builder = GlobSetBuilder::new();
+    for glob in globs {
+        builder.add(
+            glob_builder(glob)
+                .build()
+                .expect("globs were validated by parse"),
+        );
+    }
+    builder
+        .build()
+        .expect("globs were validated by parse")
+}
+
+/// Whether a `tests` glob's static prefix lies under `cwd` (ADR 0025 C3).
+///
+/// Globs are relative to the checkout root while the target runs in `cwd`, so a glob whose
+/// fixed prefix is outside `cwd` selects a test the target cannot be handed as a path.
+fn glob_within_cwd(pattern: &str, cwd: &Path) -> bool {
+    let prefix = pattern
+        .find(['*', '?', '[', '{'])
+        .map_or(pattern, |i| &pattern[..i]);
+    let dir = prefix.rsplit_once('/').map_or("", |(d, _)| d);
+    let dir = dir.trim_matches('/');
+    if dir.is_empty() {
+        return true;
+    }
+    let cwd = cwd.to_string_lossy();
+    let cwd = cwd.trim_start_matches("./").trim_end_matches('/');
+    cwd.is_empty() || cwd == "." || dir == cwd || dir.starts_with(&format!("{cwd}/"))
 }
