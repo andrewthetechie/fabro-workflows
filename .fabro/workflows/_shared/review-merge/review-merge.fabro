@@ -422,6 +422,12 @@ fi"]
     // ops/test-task-gates.sh are the contract for what each counter matches
     // (docs/merge-gate/00-overview-and-contracts.md, C5). The sandbox awk is mawk.
     //
+    // #38: a removed assertion is also excused when its own hunk adds an equality
+    // assertion (assert x == y, expect(x).toEqual(...), assert_eq!(x, ...)) on a subject
+    // that removal checked -- two asserts merged into one stronger one. A removal whose
+    // subject no added assertion mentions still counts. eqsubj/rsubj define the two
+    // subjects; the prefixes . and [ keep `outbox` from matching `out`.
+    //
     // It prints no routing object and never chooses a route. A failure to COUNT is
     // written into hygiene.json as `hygiene_error`, which blocks the merge; only a failure
     // of the node itself (it cannot write the program) takes the edge to mark_needs_human.
@@ -468,10 +474,46 @@ function assertish(f) { return istest(f) || f ~ /[.]rs$/ }
 function emit(c, f, n, t) { print c S f S n S substr(t, 1, 160) }
 function trim(s) { gsub(/^ +| +$/, \"\", s); return s }
 function akey(s) { gsub(WS, \"\", s); return s }
-function flush(  i, k, h) {
+function subjmatch(rs, es,  c) {  # equal, or rs a member or attribute of es; `outbox` never matches `out` (#38)
+  if (rs == \"\" || es == \"\") return 0
+  if (rs == es) return 1
+  if (index(rs, es) == 1) { c = substr(rs, length(es) + 1, 1); if (c == \".\" || c == \"[\") return 1 }
+  return 0
+}
+function eqsubj(t,  s, p, q) {  # subject of an added `assert x == y`, `expect(x).toEqual(...)` or `assert_eq!(x, ...)`; empty for any other added line (#38)
+  if (match(t, /expect[(][^()]*[)][.]to(Be|Equal|StrictEqual)[(]/)) { s = substr(t, RSTART + 7); p = index(s, \")\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /(assert_eq!|assertEqual|assertEquals)[(]/)) { s = substr(t, RSTART + RLENGTH); p = index(s, \",\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /assert +/)) {
+    s = substr(t, RSTART + RLENGTH); q = index(s, \"==\")
+    if (q < 2 || substr(s, q - 1, 1) ~ /[!<>=]/ || substr(s, q + 2, 1) == \"=\") return \"\"
+    return trim(substr(s, 1, q - 1))
+  }
+  return \"\"
+}
+function rsubj(t,  s, p, q) {  # subject a removed assertion checked: isinstance arg, expect arg, equality left side, else the expression
+  if (match(t, /isinstance *[(]/)) { s = substr(t, RSTART + RLENGTH); p = index(s, \",\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /expect[(]/)) { s = substr(t, RSTART + RLENGTH); p = index(s, \")\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /(assert_eq!|assertEqual|assertEquals)[(]/)) { s = substr(t, RSTART + RLENGTH); p = index(s, \",\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /assert +/)) {
+    s = substr(t, RSTART + RLENGTH); q = index(s, \"==\")
+    if (q > 0 && substr(s, q - 1, 1) !~ /[!<>=]/ && substr(s, q + 2, 1) != \"=\") s = substr(s, 1, q - 1)
+    return trim(s)
+  }
+  return \"\"
+}
+function flush(  i, j, k, h, e, ok) {
   for (i = 1; i <= rn; i++) {
     k = rk[i]
-    if (AN[k] > 0) { HA[AH[k, AN[k]]]--; AN[k]--; moved[i] = 1 } else RU[rh[i]]++
+    if (AN[k] > 0) { HA[AH[k, AN[k]]]--; AN[k]--; moved[i] = 1; continue }
+    h = rh[i]; ok = 0
+    for (j = 1; j <= EQL[h]; j++) {  # #38: a removal the added equality assertion of this hunk covers by subject is not a removal
+      e = EQS[h, j]
+      if (subjmatch(rsj[i], e)) {
+        if (!((h, e) in EQUSED)) { EQUSED[h, e] = 1; if (HA[h] > 0) HA[h]-- }  # spent, so it cannot also net here
+        ok = 1; break
+      }
+    }
+    if (!ok) RU[h]++
   }
   for (i = 1; i <= rn; i++) {
     h = rh[i]
@@ -531,7 +573,7 @@ head { next }
   t = substr($0, 2)
   if (!skipped(file)) {
     if (t ~ SKIP_ANY || (istest(file) && t ~ SKIP_TEST)) emit(\"skips_added\", file, nl, t)
-    if (assertish(file) && t ~ ASSERT) { HA[hid]++; k = akey(t); AN[k]++; AH[k, AN[k]] = hid }
+    if (assertish(file) && t ~ ASSERT) { HA[hid]++; k = akey(t); AN[k]++; AH[k, AN[k]] = hid; e = eqsubj(t); if (e != \"\") { EQL[hid]++; EQS[hid, EQL[hid]] = e } }
     if (assertish(file) && (t ~ TAUT || same(t))) emit(\"tautologies_added\", file, nl, t)
     if (t ~ BROAD) emit(\"broad_except\", file, nl, t)
     if (t ~ TYPE) emit(\"type_escape\", file, nl, t)
@@ -544,7 +586,7 @@ head { next }
 }
 /^-/ {
   t = substr($0, 2)
-  if (!del && !skipped(file) && assertish(file) && t ~ ASSERT) { rn++; rf[rn] = file; rl[rn] = ol; rt[rn] = t; rh[rn] = hid; rk[rn] = akey(t) }
+  if (!del && !skipped(file) && assertish(file) && t ~ ASSERT) { rn++; rf[rn] = file; rl[rn] = ol; rt[rn] = t; rh[rn] = hid; rk[rn] = akey(t); rsj[rn] = rsubj(t) }
   ol++
   next
 }

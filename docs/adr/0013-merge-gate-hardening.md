@@ -39,7 +39,11 @@ The counters use heuristics: `asserts_removed` compares removed and added assert
 lines per hunk, after excusing a removed line whose exact text the PR adds elsewhere (a
 moved test). Per-hunk netting alone blocked every test split across files, and with no
 override that is a false block on an ordinary refactor (review fix, 2026-09-26). The fixtures in `ops/test-task-gates.sh` are the contract, and a pattern
-change starts as a fixture.
+change starts as a fixture. A second false-positive class was refined the same way: two
+assertions merged into one stronger equality assertion on the same subject counted as a
+removal, so an added equality assertion (`assert x == y`, `expect(x).toEqual(...)`,
+`assert_eq!`/`assertEqual`/`assertEquals`) now excuses removals of the subjects it
+covers in its hunk (#38, 2026-10-13).
 
 ## D2. A repository tunes the counters from its base branch, and nothing overrides a block
 

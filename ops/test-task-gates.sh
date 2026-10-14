@@ -3941,6 +3941,41 @@ check "config null: invalid"                "config_invalid" "$(hy '.blocking | 
 hy_repo '{"erosion_mode":"block","erosion_thresholds":{"lint_disable":"9"}}'; hy_lint
 check "config string threshold: invalid"    "invalid"        "$(hy .config)"
 
+# 22. #38: two assertions on one subject replaced by a single stronger equality
+#     assertion on the same subject are not a removal.
+hy_repo
+hy_base tests/test_login.py 'def test_login():' '    assert isinstance(out, LoginFailed)' '    assert out.clear_cookie'
+printf '%s\n' 'def test_login():' '    assert out == LoginFailed(reason="state missing or mismatch", clear_cookie=True)' > "$T/wt/tests/test_login.py"; hy_commit; hy_run
+check "merged equality: same subject not removed" "0" "$(hy .tamper.asserts_removed)"
+check "merged equality: nothing blocks"           "0" "$(hy '.blocking | length')"
+
+# 23. ...but an added equality assertion on a different subject excuses nothing,
+#     so both removals count.
+hy_repo
+hy_base tests/test_login.py 'def test_login():' '    assert isinstance(out, LoginFailed)' '    assert out.clear_cookie'
+printf '%s\n' 'def test_login():' '    assert other == LoginFailed(reason="state missing or mismatch", clear_cookie=True)' > "$T/wt/tests/test_login.py"; hy_commit; hy_run
+check "merged equality: other subject counted"    "1" "$(hy .tamper.asserts_removed)"
+
+# 24. An assertion deleted outright still counts, with no added assertion to excuse it.
+hy_repo
+hy_base tests/test_login.py 'def test_login():' '    assert isinstance(out, LoginFailed)' '    assert out.clear_cookie'
+printf '%s\n' 'def test_login():' '    assert isinstance(out, LoginFailed)' > "$T/wt/tests/test_login.py"; hy_commit; hy_run
+check "deleted outright: counted"                 "1" "$(hy .tamper.asserts_removed)"
+
+# 25. `expect(x).toEqual(...)` is an equality assertion too, and excuses removals
+#     of the same subject in its hunk.
+hy_repo
+hy_base web/a.test.ts 'function t() {' '  expect(out.ready).toBe(true)' '  expect(out.clearCookie).toBe(true)' '}'
+printf '%s\n' 'function t() {' '  expect(out).toEqual(LoginFailed({clearCookie: true}))' '}' > "$T/wt/web/a.test.ts"; hy_commit; hy_run
+check "merged expect equality: not removed"       "0" "$(hy .tamper.asserts_removed)"
+
+# 26. A plain added assertion is not an equality assertion, so it excuses nothing:
+#     the removals on the subject still count.
+hy_repo
+hy_base tests/test_login.py 'def test_login():' '    assert isinstance(out, LoginFailed)' '    assert out.clear_cookie'
+printf '%s\n' 'def test_login():' '    assert out.state' > "$T/wt/tests/test_login.py"; hy_commit; hy_run
+check "plain added assertion: still removed"     "1" "$(hy .tamper.asserts_removed)"
+
 PATH="$SAVED_PATH"
 
 # ---------------------------------------------------------------------------
