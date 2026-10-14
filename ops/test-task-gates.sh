@@ -2958,6 +2958,32 @@ echo '{"readiness":"ready","title":"refactor: x","labels":[],"questions":[],"dec
 sh "$T/triage_gate.sh" >/dev/null 2>&1; RC=$?
 check "decisions not array: retry"     "1" "$RC"
 
+# 12b. A Contradiction (#17, docs/unmet-criteria C1): a criterion its own non-goals
+# forbid. `ready` with one is refused; `needs_info` with one passes; a non-array is
+# refused. `submit` enforces the key's presence, so the gate reads a missing one as [].
+printf '{"number":7,"body":"b","labels":[]}' > "$T/issue.json"
+RESEND='[{"criterion":"The screen offers a Resend email action","non_goal":"No backend changes","needed_surface":"a backend endpoint that calls the Auth0 resend API with a secret"}]'
+echo 0 > "$T/triage_attempts"
+jq -n --argjson c "$RESEND" '{readiness:"ready",title:"feat: x",labels:[],questions:[],decisions:[],contradictions:$c,_io:{visit:"ok1"}}' > "$T/triage.json"
+sh "$T/triage_gate.sh" >/dev/null 2>&1; RC=$?
+check "contradiction ready: retries"   "1" "$RC"
+OUT=$(sh "$T/triage_gate.sh" 2>&1); RC=$?
+check "contradiction ready: 2nd exit 0" "0" "$RC"
+check "contradiction ready: invalid"   "invalid" "$(jq -r '.context_updates.triage_readiness' <<<"$(lastjson "$OUT")")"
+echo 0 > "$T/triage_attempts"
+jq -n --argjson c "$RESEND" '{readiness:"needs_info",title:"feat: x",labels:[],questions:[{id:"Q1",question:"Resend needs a backend; drop the criterion or the non-goal?",why:"w"}],decisions:[],contradictions:$c,_io:{visit:"ok1"}}' > "$T/triage.json"
+OUT=$(sh "$T/triage_gate.sh" 2>&1); RC=$?
+check "contradiction needs_info: exit 0" "0" "$RC"
+check "contradiction needs_info: kept" "needs_info" "$(jq -r '.context_updates.triage_readiness' <<<"$(lastjson "$OUT")")"
+echo 0 > "$T/triage_attempts"
+echo '{"readiness":"needs_info","title":"feat: x","labels":[],"questions":[{"id":"Q1","question":"q","why":"w"}],"decisions":[],"contradictions":"x","_io":{"visit":"ok1"}}' > "$T/triage.json"
+sh "$T/triage_gate.sh" >/dev/null 2>&1; RC=$?
+check "contradictions not array: retry" "1" "$RC"
+echo 0 > "$T/triage_attempts"
+echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[],"decisions":[],"contradictions":[],"_io":{"visit":"ok1"}}' > "$T/triage.json"
+OUT=$(sh "$T/triage_gate.sh" 2>&1); RC=$?
+check "no contradiction: ready"        "ready" "$(jq -r '.context_updates.triage_readiness' <<<"$(lastjson "$OUT")")"
+
 # 13. apply_ready appends one section, and replaces an old one.
 printf '{"number":7,"body":"first line","labels":[]}' > "$T/issue.json"
 echo '{"readiness":"ready","title":"feat: x","labels":[],"questions":[],"decisions":[{"question":"Where?","decision":"Here.","basis":"CONTEXT.md"}],"_io":{"visit":"ok1"}}' > "$T/triage.json"

@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "triage",
   "title": "triage — triage's verdict (task 10)",
-  "description": "The triage agent's output (docs/stage-io, task 10). Encodes triage_gate's shape checks: readiness enum, conventional title, labels nameset, questions policy per readiness, non-empty question/decision. `basis` per decision for non-architecture issues is a gate check depending on issue.json and stays in the gate. _io is stamped by the server.",
+  "description": "The triage agent's output (docs/stage-io, task 10). Encodes triage_gate's shape checks: readiness enum, conventional title, labels nameset, questions policy per readiness, non-empty question/decision. `basis` per decision for non-architecture issues is a gate check depending on issue.json and stays in the gate. A ready verdict must carry no contradictions (#17, docs/unmet-criteria C1), a gate check. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["readiness", "classification", "confidence", "title", "labels", "questions", "decisions", "summary"],
+  "required": ["readiness", "classification", "confidence", "title", "labels", "questions", "decisions", "contradictions", "summary"],
   "properties": {
     "readiness": { "enum": ["ready", "needs_info", "not_actionable"] },
     "classification": { "enum": ["bug", "enhancement", "mixed"] },
@@ -36,6 +36,20 @@
           "question": { "type": "string", "minLength": 1 },
           "decision": { "type": "string", "minLength": 1 },
           "basis": { "type": "string", "description": "The repository path that settles the question. triage_gate requires it non-empty unless the issue carries the architecture label, and the renderers print it." }
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "description": "Each acceptance criterion that a non-goal of the same issue forbids. triage_gate refuses readiness ready while this is non-empty.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "non_goal", "needed_surface"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "non_goal": { "type": "string", "minLength": 1 },
+          "needed_surface": { "type": "string", "minLength": 1, "description": "What the criterion needs that the non-goal excludes: a backend endpoint, an external API, a secret, a migration." }
         }
       }
     },

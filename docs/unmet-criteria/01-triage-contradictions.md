@@ -14,21 +14,24 @@
    - *Readiness*: `ready` requires no Contradiction.
    - *Output*: document `contradictions` and the gate rule.
 3. `_shared/triage/triage.fabro`, `triage_gate`: after the `decisions` checks, invalid when
-   `R=ready` and `contradictions` is not an empty array. Also invalid when `contradictions` is
-   not an array. Update the gate's comment.
+   `R=ready` and `contradictions` has an entry. Also invalid when `contradictions` is present
+   and not an array. A missing key reads as `[]`: `submit` already refuses a verdict without
+   it. Update the gate's comment.
 4. `_shared/triage/prompts/improve.md.j2`, *Boundaries*: never resolve a conflict between an
    acceptance criterion and a non-goal by editing, moving or dropping either. Keep both as
    written. The next stage asks about them.
 
 ## Tests (`ops/test-task-gates.sh`)
 
-Find the `triage_gate` section. Add `contradictions: []` to every existing fixture that should
-stay valid. Add:
+Find the `triage_gate` section (case 12b). The existing fixtures stay valid, because a missing
+key reads as `[]`. Add:
 
 - `ready` with one contradiction (the Resend fixture) is refused: exit 1 on the first attempt,
   then `triage_readiness=invalid`.
 - `needs_info` with that contradiction and one question gives `needs_info`.
-- `contradictions` missing or not an array is refused.
+- `contradictions` that is not an array is refused.
+- `ops/fabro-io/tests/schema_tests.rs`: the schema refuses a verdict without `contradictions`
+  and an entry with an empty side.
 
 ## Done when
 

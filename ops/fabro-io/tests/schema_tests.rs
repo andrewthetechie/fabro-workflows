@@ -62,10 +62,35 @@ fn triage_accepts_a_decision_basis() {
     let ok = serde_json::json!({
         "readiness": "ready", "classification": "bug", "confidence": "high",
         "title": "fix(api): x", "labels": [], "questions": [], "summary": "s",
-        "decisions": [{"question": "Where?", "decision": "Here.", "basis": "CONTEXT.md"}]
+        "decisions": [{"question": "Where?", "decision": "Here.", "basis": "CONTEXT.md"}],
+        "contradictions": []
     });
     let errs: Vec<String> = v.iter_errors(&ok).map(|e| e.to_string()).collect();
     assert!(errs.is_empty(), "{errs:?}");
+}
+
+/// A Contradiction (#17, docs/unmet-criteria C1) is a required list, so a triage that
+/// never looked cannot omit it; each entry names both sides and the surface between them.
+#[test]
+fn triage_requires_its_contradictions() {
+    let v = validator("triage");
+    let base = serde_json::json!({
+        "readiness": "needs_info", "classification": "bug", "confidence": "high",
+        "title": "fix(api): x", "labels": [], "summary": "s", "decisions": [],
+        "questions": [{"id": "Q1", "question": "Which gives?", "why": "w"}]
+    });
+    assert!(!v.is_valid(&base), "a verdict without contradictions must be refused");
+    let mut one = base.clone();
+    one["contradictions"] = serde_json::json!([{
+        "criterion": "The screen offers a Resend email action",
+        "non_goal": "No backend changes",
+        "needed_surface": "a backend endpoint that calls the Auth0 resend API"
+    }]);
+    let errs: Vec<String> = v.iter_errors(&one).map(|e| e.to_string()).collect();
+    assert!(errs.is_empty(), "{errs:?}");
+    let mut half = base.clone();
+    half["contradictions"] = serde_json::json!([{"criterion": "c", "non_goal": ""}]);
+    assert!(!v.is_valid(&half), "an entry without a non-goal or surface must be refused");
 }
 
 /// improve_gate rejects a `ready` result without `task.title` and `task.body`, and a

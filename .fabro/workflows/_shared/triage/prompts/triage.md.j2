@@ -86,6 +86,27 @@ contract (an API, a file format, a CLI flag that another system calls), data
 (migrations, deletion, retention), security or permissions, or a fact that only a
 human knows. Those stay questions.
 
+## Contradictions
+
+An issue can ask for something that its own non-goals forbid. Check for this before you
+decide readiness:
+
+1. For each acceptance criterion, name the surface it needs in order to work: a backend
+   endpoint, an external API, a secret or credential, a migration, a deploy, a file the issue
+   puts out of scope.
+2. Read the non-goals, the out-of-scope list and every other boundary the issue states.
+3. A criterion whose surface a boundary excludes is a **Contradiction**. Both statements
+   cannot hold, so the implementer would have to drop one of them without telling anyone.
+
+Example: a criterion "the screen offers a Resend email action" and a non-goal "No backend
+changes". Resending the email calls a third-party API with a secret, so a backend has to
+proxy it. That is a Contradiction.
+
+A Contradiction is always a question, never a decision: which side gives is product scope.
+List each one in `contradictions` and ask one question for it that quotes the criterion and
+the non-goal. When the repository shows the criterion can be met without the excluded
+surface, it is not a Contradiction; say so in `triage.md` with the evidence.
+
 ## Classification
 
 - `bug` when documented or intended behaviour is wrong, regressed or errors
@@ -101,7 +122,7 @@ When intent is unclear, pick the likeliest and name what would change it.
 - `ready` — the issue plus the repository give an implementer the affected user and
   workflow, current and desired behaviour, scope and boundaries, the domain rules
   that materially affect behaviour, and verifiable acceptance criteria. No blocking
-  question remains.
+  question and no Contradiction remains.
 - `needs_info` — at least one open question blocks the work.
 - `not_actionable` — evidence shows a duplicate, an already-implemented request, an
   invalid bug, or a previously rejected one.
@@ -121,8 +142,8 @@ Call `submit` with your verdict for `/tmp/fabro/triage.json`; it checks the shap
 and writes it. Do not write it yourself — a result `submit` did not write is
 refused. The verdict has `readiness`, `classification` (`bug | enhancement |
 mixed`), `confidence` (`high | medium | low`), a Conventional-Commit `title`
-(`fix(scope): imperative description`), `labels`, `questions`, `decisions` and a
-one-sentence `summary`. Rules — `triage_gate` enforces these:
+(`fix(scope): imperative description`), `labels`, `questions`, `decisions`,
+`contradictions` and a one-sentence `summary`. Rules — `triage_gate` enforces these:
 
 - `labels` match `^[a-z0-9:._-]+$` — they expand unquoted into a `gh issue edit`
   command line, so a space breaks the call. **Use labels that already exist in this
@@ -138,6 +159,10 @@ one-sentence `summary`. Rules — `triage_gate` enforces these:
   when you decided nothing.
 - A decided question is not in `questions`. A question you could not decide is not
   in `decisions`.
+- `contradictions` is an array; `[]` when you found none. Each entry has a non-empty
+  `criterion` and `non_goal` (both quoted from the issue) and `needed_surface` (what
+  the criterion needs that the non-goal excludes). `readiness` is never `ready` while
+  `contradictions` has an entry, and each entry also has a question.
 
 Then write `/tmp/fabro/triage.md` with `write_file` — the issue-ready Markdown
 artifact posted verbatim as a comment:

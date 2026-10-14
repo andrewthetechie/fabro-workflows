@@ -128,7 +128,10 @@ jq -nc --arg s \"$S\" '{context_updates:{improve_status:$s}}'"]
     triage [label="Triage the issue", class="triage", prompt="@prompts/triage.md.j2", timeout="30m", max_retries=1]
 
     // Validates readiness, the Conventional Commits title, the label shapes and the
-    // artifact, then publishes the questions so the Discord hook can carry them. `"` is
+    // artifact, then publishes the questions so the Discord hook can carry them. A
+    // `ready` verdict that lists a Contradiction (a criterion its own non-goals forbid,
+    // #17, docs/unmet-criteria C1) is invalid: only a human can choose which side gives.
+    // `submit` enforces that `contradictions` is present, so a missing one reads as []. `"` is
     // stripped from the questions because the hook reads them with a grep that stops
     // at the first quote.
     triage_gate [label="Validate the triage", shape=parallelogram, output_schema="routing",
@@ -153,6 +156,10 @@ DT=$(jq -r '(.decisions // []) | type' $F 2>/dev/null || echo bad)
 if [ \"$DT\" != array ]; then R=invalid; fi
 DB=$(jq '[(.decisions // [])[]? | select(((.question // \"\") | tostring) == \"\" or ((.decision // \"\") | tostring) == \"\")] | length' $F 2>/dev/null || echo 99)
 if [ \"$DB\" != 0 ]; then R=invalid; fi
+CT=$(jq -r '(.contradictions // []) | type' $F 2>/dev/null || echo bad)
+if [ \"$CT\" != array ]; then R=invalid; fi
+NC=$(jq '(.contradictions // []) | length' $F 2>/dev/null || echo 0)
+if [ \"$R\" = ready ] && [ \"$NC\" != 0 ]; then R=invalid; fi
 if ! jq -e '[.labels[].name] | index(\"architecture\") != null' /tmp/fabro/issue.json > /dev/null 2>&1; then
   NB=$(jq '[(.decisions // [])[]? | select(((.basis // \"\") | tostring) == \"\")] | length' $F 2>/dev/null || echo 99)
   if [ \"$NB\" != 0 ]; then R=invalid; fi
