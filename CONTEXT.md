@@ -268,6 +268,26 @@ checker, a disabled lint rule, an unlinked TODO. A repository chooses whether er
 counters only report or also block (ADR 0013).
 _Avoid_: code smell, tech debt
 
+**Contradiction**:
+An acceptance criterion that the same issue's non-goals make impossible to meet: the
+criterion needs a surface (a backend, an external API, a secret, a migration) that a
+non-goal excludes. It is a defect in the issue, and only a human can resolve it, by
+changing either the criterion or the non-goal. It is never resolved by the work.
+_Avoid_: blocker, conflict (too broad), ambiguity
+
+**Unmet criterion**:
+An acceptance criterion that the delivered work does not satisfy as written, whether the
+work is missing, partial, or a **Substitution**. A run reports it openly; it never hides it
+inside a criterion it calls met.
+_Avoid_: blocker, gap, deviation
+
+**Substitution**:
+Delivering a different behaviour in place of an acceptance criterion and presenting the
+work as done: for example, a "Resend email" criterion delivered as a button that only
+re-checks verification. It is the failure that an **Unmet criterion** report exists to
+expose. A criterion that cannot be met as written is reported, never substituted.
+_Avoid_: closest form, workaround, honest relabel
+
 **Refuter**:
 The reviewer that runs last before a PR is delivered. It sees only the issue, the diff and
 the counters, never the coder's or the other reviewers' work, and it is told to prove the
