@@ -224,24 +224,31 @@
 </p>
 {% if card.models %}
 <div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
-<table class="w-full text-sm">
+<table class="w-full text-sm" data-sortable>
+  {# Sortable with scripting on: each header is a button, and every cell carries the raw
+     value it sorts by in data-value, so "12.3k" sorts as 12300. A cell with no
+     value (an unpriced cost) always sorts last, in either direction. #}
   <thead class="bg-slate-900/60 text-slate-400"><tr>
-    <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Model</th>
-    <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Where</th>
-    {% for h in ['Runs', 'Visits', 'Input', 'Output', 'Cache', 'Total', 'Share', 'Cost'] %}<th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">{{ h }}</th>{% endfor %}
+    {% for label, kind, align in [
+      ('Model', 'text', 'left'), ('Where', 'text', 'left'), ('Runs', 'num', 'right'),
+      ('Visits', 'num', 'right'), ('Input', 'num', 'right'), ('Output', 'num', 'right'),
+      ('Cache', 'num', 'right'), ('Total', 'num', 'right'), ('Share', 'num', 'right'),
+      ('Cost', 'num', 'right'),
+    ] %}<th class="whitespace-nowrap px-4 py-2.5 text-{{ align }} text-xs font-medium uppercase tracking-wide"{% if label == 'Total' %} aria-sort="descending"{% endif %}>
+      <button type="button" class="cursor-pointer select-none uppercase tracking-wide hover:text-slate-100" data-kind="{{ kind }}">{{ label }}<span class="ml-1" aria-hidden="true">{{ '▼' if label == 'Total' else '' }}</span></button></th>{% endfor %}
   </tr></thead>
   <tbody class="divide-y divide-slate-800">
   {% for m in card.models %}
-    <tr><td class="whitespace-nowrap px-4 py-3 font-mono text-[0.85em]">{{ m.name }}</td>
-      <td class="whitespace-nowrap px-4 py-3 {{ 'text-slate-400' if m.local else 'text-amber-300' }}">{{ 'local' if m.local else 'hosted' }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ m.runs }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ m.stages }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ tokens(m.input_tokens) }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ tokens(m.output_tokens) }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ tokens(m.cache_read_tokens + m.cache_write_tokens) }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-100">{{ tokens(m.total_tokens) }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ '%.0f%%'|format(m.share * 100) }}</td>
-      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ ('$%.2f'|format(m.cost_usd)) if m.cost_usd is not none else '&mdash;'|safe }}</td></tr>
+    <tr><td class="whitespace-nowrap px-4 py-3 font-mono text-[0.85em]" data-value="{{ m.name }}">{{ m.name }}</td>
+      <td class="whitespace-nowrap px-4 py-3 {{ 'text-slate-400' if m.local else 'text-amber-300' }}" data-value="{{ 'local' if m.local else 'hosted' }}">{{ 'local' if m.local else 'hosted' }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums" data-value="{{ m.runs }}">{{ m.runs }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums" data-value="{{ m.stages }}">{{ m.stages }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums" data-value="{{ m.input_tokens }}">{{ tokens(m.input_tokens) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums" data-value="{{ m.output_tokens }}">{{ tokens(m.output_tokens) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums" data-value="{{ m.cache_read_tokens + m.cache_write_tokens }}">{{ tokens(m.cache_read_tokens + m.cache_write_tokens) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-100" data-value="{{ m.total_tokens }}">{{ tokens(m.total_tokens) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums" data-value="{{ m.share }}">{{ '%.0f%%'|format(m.share * 100) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums" data-value="{{ m.cost_usd if m.cost_usd is not none else '' }}">{{ ('$%.2f'|format(m.cost_usd)) if m.cost_usd is not none else '&mdash;'|safe }}</td></tr>
   {% endfor %}
   </tbody>
   <tfoot class="border-t border-slate-700 text-slate-300"><tr>
@@ -290,5 +297,44 @@
 </p>
 
 </div>
+
+<script>
+// Click-to-sort for any table marked data-sortable. Pure enhancement: the server
+// renders the rows already sorted by Total, so the page reads the same with
+// scripting off. Numbers sort high-to-low on the first click, text A-to-Z; a second
+// click reverses. Rows with an empty data-value always go last. The tfoot stays put.
+(function () {
+  Array.prototype.forEach.call(document.querySelectorAll("table[data-sortable]"), function (table) {
+    var heads = table.querySelectorAll("thead th");
+    var body = table.tBodies[0];
+    Array.prototype.forEach.call(heads, function (th, col) {
+      var button = th.querySelector("button");
+      if (!button) { return; }
+      button.addEventListener("click", function () {
+        var kind = button.dataset.kind;
+        var current = th.getAttribute("aria-sort");
+        var dir = current ? (current === "descending" ? "ascending" : "descending")
+                          : (kind === "num" ? "descending" : "ascending");
+        var sign = dir === "ascending" ? 1 : -1;
+        var rows = Array.prototype.slice.call(body.rows);
+        rows.sort(function (a, b) {
+          var x = a.cells[col].dataset.value, y = b.cells[col].dataset.value;
+          if (x === "" || y === "") { return (x === "") - (y === ""); }
+          if (kind === "num") { return sign * (parseFloat(x) - parseFloat(y)); }
+          return sign * x.localeCompare(y);
+        });
+        rows.forEach(function (row) { body.appendChild(row); });
+        Array.prototype.forEach.call(heads, function (other) {
+          other.removeAttribute("aria-sort");
+          var arrow = other.querySelector("button span");
+          if (arrow) { arrow.textContent = ""; }
+        });
+        th.setAttribute("aria-sort", dir);
+        button.querySelector("span").textContent = dir === "ascending" ? "\u25B2" : "\u25BC";
+      });
+    });
+  });
+})();
+</script>
 </body>
 </html>

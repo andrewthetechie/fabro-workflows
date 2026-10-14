@@ -129,4 +129,7 @@ def test_metrics_page_shows_tokens_by_model(client, store):
     assert "Tokens by model" in html
     assert "zai/glm-5.3" in html and "box-a/deepseek" in html
     assert "1.50M" in html and "$1.25" in html
+    assert "data-sortable" in html and 'aria-sort="descending"' in html
+    assert 'data-value="1500000"' in html  # raw counts to sort by, not "1.50M"
+    assert 'data-value=""' in html  # the unpriced box sorts last on Cost
     assert client.get("/api/scorecard").json()["models"][0]["model_id"] == "deepseek"
