@@ -1,6 +1,9 @@
 # 10. The womens-fantasy-sports trial
 
-**Switch time:** _set by task 09 (UTC)._
+**Switch time:** _pending: the operator must merge the PR by hand (it trips `config_changed`)._
+
+**Task 09 PR:** https://github.com/andrewthetechie/womens-fantasy-sports/pull/2088 — the switch
+is its merge time (UTC).
 
 ## Outcome
 `docs/task-validation/result-<date>.txt` says whether Task validation met issue #26's two
