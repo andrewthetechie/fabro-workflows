@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -316,3 +316,56 @@ def test_avg_run_duration_is_the_mean_of_released_runs(store):
     # DISPATCHED is 2026-09-20T12:00:00Z. A:4h, B:2h, C:6h -> mean 4h.
     from datetime import timedelta as _td
     assert store.avg_run_duration(FF) == _td(hours=4)
+
+
+def test_resummarize_window_deletes_only_its_summary_rows(tmp_path):
+    """`resummarize_window` (ADR 0025, C9) puts a window back in the collector's queue.
+
+    It deletes `run_summary` and `run_stage_stats` rows for runs dispatched in the
+    window and nothing else: the `run_history` rows, and every row of a run outside
+    the window, are the window's own record.
+    """
+    from collections import Counter
+
+    from fabro_scheduler.summary import RunSummary, StageStat
+
+    store = Store(tmp_path / "scheduler.db")
+    try:
+        spread = (
+            ("IN1", DISPATCHED),
+            ("IN2", DISPATCHED),
+            ("OUT", DISPATCHED - timedelta(days=1)),
+        )
+        for run_id, at in spread:
+            store.acquire_lease(
+                coder_pool="coders-a", repo=FF, issue_number=1, run_id=run_id, dispatched_at=at
+            )
+            store.archive_and_release_lease(
+                run_id, RunOutcome(kind="succeeded", finished_at=at + timedelta(days=1))
+            )
+        for run_id, _ in spread:
+            store.save_run_summary(
+                RunSummary(
+                    run_id=run_id,
+                    stages={"validate": StageStat("validate", "command", 1, 1, 0)},
+                    failovers=Counter(),
+                    path=[],
+                    terminal_node="exit",
+                    refute=[],
+                    events=1,
+                )
+            )
+
+        runs, summaries, stages = store.resummarize_window(
+            DISPATCHED, DISPATCHED + timedelta(days=1)
+        )
+        assert (runs, summaries, stages) == (2, 2, 2)
+        assert {r["run_id"] for r in store._conn.execute("SELECT run_id FROM run_summary")} == {
+            "OUT"
+        }
+        assert {
+            r["run_id"] for r in store._conn.execute("SELECT run_id FROM run_stage_stats")
+        } == {"OUT"}
+        assert {r["run_id"] for r in _history(store)} == {"IN1", "IN2", "OUT"}
+    finally:
+        store.close()

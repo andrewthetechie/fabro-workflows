@@ -65,6 +65,8 @@ are not in it.
 | Refuter verdicts | Each run's `refute_gate` verdicts in order: the first one split pass / fail with a `not_met` / other fail / invalid, then fix turns taken (a second verdict after a first `not_met`) and how many passed. A fail recorded before gate relief has no `not_met` flag. This is gate-relief task 07's measurement. |
 | Open to merge | Hours from the PR opening to its merge, by anyone; p50 and p90, architecture and other. |
 | Tokens by model | Every model call in the window's runs, from fabro's `GET /runs/{id}/usage` `by_model` rollup, which the collector reads once per summarized run into `run_model_usage` (`usage.model_rows`; speed tiers of one model are summed). Per provider and model: runs, stage visits, input, output (with reasoning), cache read plus write, total, share of the window's tokens, and fabro's priced cost. A stage that failed over counts under the model that served it, a subagent under its own model. Local is a LAN coder box (`usage.LOCAL_PROVIDERS`), which fabro does not price. `run_summary.model_usage` records whether a run has been read (`ok`, `none`, `missing`, `error`, retried after an hour), so the first tick after a deploy backfills all of history, 20 runs a tick. |
+| Task validation | Every `backlog` `validate` visit (ADR 0025, `docs/task-validation/`), one entry per visit in `run_summary.task_validations`. **Mode** is `scoped` (the checks and the tests that cover the diff), `full` (the repository's `setup.sh && ci.sh`, on a fallback), `legacy` (a visit summarized before the change, or one with no routing keys) or `timeout`. The row gives the visits by mode with per-visit minutes p50 and p90 (and all visits together), the `full` visits by fallback reason class (`no_config`, `full_glob`, `deleted`, `index_unavailable`, `unowned_test`, `path_outside_cwd`, `final_fix`, `task_check_error`), the red visits per mode, and the unchecked changed files (`task_validation_unchecked`, summed). A red legacy visit is recorded from its `stage.failed`, which is the only event it emits. |
+| Final validation | Runs that reached `open_pr_prep`, and the first `final_route` of each, split `pr` / `fix` / `drop` / `rescue` / `draft` (`run_summary.final_routes`; `open_pr_prep` can be visited twice after a `final_fix`, and only the first verdict counts). **Red final rate** is the runs whose first `final_route` is not `pr`, over the runs that reached it. |
 
 ## The plan trial (#25)
 
@@ -78,6 +80,20 @@ edit, and the planner's dispositions. The trial added three facts to every summa
 `coder` attempt, `stage.started` to its first `edit_file`/`write_file`) and
 `run_summary.dispositions` (`improve_gate`'s `task_disposition`). Runs summarized before the
 scheduler deploy have NULLs there, which the split reads as "not measured".
+
+## Re-summarizing a window (ADR 0025, C9)
+
+A summary is built once, so a field added to `summary.py` exists for an old run only
+after it is re-summarized. `python -m fabro_scheduler resummarize --from D --to D`, run
+inside the scheduler container, deletes the window's `run_summary` and `run_stage_stats`
+rows and prints how many; the collector's next ticks stream the events again. Both dates
+are inclusive, and `run_history`, the leases and the PR facts are never touched. The
+first `resummarize` after the Task validation deploy (#26) rebuilt the whole history so
+the trial had a baseline.
+
+`ops/fabro-scorecard.sh --repo OWNER/REPO` (or `?repo=` on `GET /api/scorecard`) narrows
+every series to one repository, which is how the womens-fantasy-sports trial window is
+read.
 
 ## Verification
 

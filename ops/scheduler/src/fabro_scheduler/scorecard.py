@@ -79,6 +79,11 @@ IDLE_CATEGORIES = (
 )
 LEASE_CATEGORIES = BOX_CATEGORIES + IDLE_CATEGORIES
 
+# Task validation (ADR 0025) runs in these modes. A legacy visit predates the change (or
+# published no routing keys); a timeout visit is one whose stage timed out. Rendered in
+# this order, so the table reads the same week to week regardless of insertion order.
+TASK_VALIDATION_MODES = ("scoped", "full", "legacy", "timeout")
+
 
 @dataclass(frozen=True)
 class Percentiles:
@@ -149,6 +154,28 @@ class RefuteLine:
 
 
 @dataclass(frozen=True)
+class FinalValidationRow:
+    """Final validation (`open_pr_prep`): runs that reached it and their first verdict."""
+
+    reached: int
+    routes: dict[str, int]  # first final_route -> runs, most common first
+    red_rate: float | None  # runs whose first final_route is not "pr", over `reached`
+
+
+@dataclass(frozen=True)
+class TaskValidationRow:
+    """Task validation (ADR 0025): every `validate` visit in the window, by mode."""
+
+    visits: int
+    by_mode: dict[str, int]
+    mode_minutes: dict[str, Percentiles]  # mode -> per-visit minutes (p50/p90)
+    all_minutes: Percentiles  # every visit together
+    full_reasons: dict[str, int]  # full visits by fallback reason class
+    red: dict[str, int]  # mode -> visits with ok false
+    unchecked: int  # summed task_validation_unchecked over the window's visits
+
+
+@dataclass(frozen=True)
 class Scorecard:
     start: datetime
     end: datetime
@@ -182,6 +209,12 @@ class Scorecard:
     repos: list[RepoLine] = field(default_factory=list)
     models: list[ModelLine] = field(default_factory=list)
     models_runs: int = 0  # runs in the window whose model usage has been read
+    task_validation: TaskValidationRow = field(
+        default_factory=lambda: TaskValidationRow(0, {}, {}, Percentiles(0, None, None), {}, {}, 0)
+    )
+    final_validation: FinalValidationRow = field(
+        default_factory=lambda: FinalValidationRow(0, {}, None)
+    )
 
     @property
     def merge_rate(self) -> float | None:
@@ -204,7 +237,16 @@ class Scorecard:
         return {k: (v / total if total else 0.0) for k, v in self.lease_hours.items()}
 
 
-def compute(rows: ScorecardRows, start: datetime, end: datetime) -> Scorecard:
+def compute(
+    rows: ScorecardRows, start: datetime, end: datetime, *, repo: str | None = None
+) -> Scorecard:
+    """The window's scorecard. `repo` narrows every series to one repository.
+
+    Filtering here rather than in SQL keeps one definition of the window and lets
+    `trial.compute`, which calls this, ignore the parameter.
+    """
+    if repo:
+        rows = _filter_repo(rows, repo)
     history = rows.history
     summaries = {row["run_id"]: row for row in rows.summaries if row["status"] == "ok"}
     facts = {(row["repo"], row["pr_number"]): row for row in rows.prs}
@@ -340,6 +382,8 @@ def compute(rows: ScorecardRows, start: datetime, end: datetime) -> Scorecard:
 
     models, models_runs = _model_lines(rows.models, summaries)
 
+    task_validation, final_validation = _task_validation(rows.stages, summaries)
+
     return Scorecard(
         start=start,
         end=end,
@@ -373,6 +417,82 @@ def compute(rows: ScorecardRows, start: datetime, end: datetime) -> Scorecard:
         repos=repos,
         models=models,
         models_runs=models_runs,
+        task_validation=task_validation,
+        final_validation=final_validation,
+    )
+
+
+def _filter_repo(rows: ScorecardRows, repo: str) -> ScorecardRows:
+    """The rows for one repository's runs. Every table is keyed off `run_history`."""
+    run_ids = {row["run_id"] for row in rows.history if row["repo"] == repo}
+    return ScorecardRows(
+        history=[row for row in rows.history if row["repo"] == repo],
+        summaries=[row for row in rows.summaries if row["run_id"] in run_ids],
+        stages=[row for row in rows.stages if row["run_id"] in run_ids],
+        failovers=[row for row in rows.failovers if row["run_id"] in run_ids],
+        prs=[row for row in rows.prs if row["repo"] == repo],
+        models=[row for row in rows.models if row["run_id"] in run_ids],
+    )
+
+
+def _task_validation(
+    stages: Iterable[sqlite3.Row], summaries: dict[str, sqlite3.Row]
+) -> tuple[TaskValidationRow, FinalValidationRow]:
+    """Task validation and Final validation (ADR 0025, C9), both from the summaries.
+
+    `run_summary.task_validations` holds one entry per `validate` visit; a visit with no
+    `ok` is not a red one, and a run summarized before the fields existed keeps NULLs,
+    which read as no visits.
+    """
+    visits: list[dict[str, object]] = []
+    unchecked = 0
+    routes: Counter[str] = Counter()
+    for summary in summaries.values():
+        visits.extend(json.loads(summary["task_validations"] or "[]"))
+        unchecked += summary["task_validation_unchecked"] or 0
+        run_routes = json.loads(summary["final_routes"] or "[]")
+        if run_routes:
+            routes[run_routes[0]] += 1
+
+    by_mode: Counter[str] = Counter()
+    minutes: dict[str, list[float]] = defaultdict(list)
+    all_minutes: list[float] = []
+    full_reasons: Counter[str] = Counter()
+    red: Counter[str] = Counter()
+    for visit in visits:
+        mode = str(visit.get("mode") or "legacy")
+        by_mode[mode] += 1
+        ms = visit.get("ms")
+        value = (ms if isinstance(ms, int) else 0) / 60_000
+        minutes[mode].append(value)
+        all_minutes.append(value)
+        reason = str(visit.get("reason_class") or "")
+        if mode == "full" and reason:
+            full_reasons[reason] += 1
+        if visit.get("ok") is False:
+            red[mode] += 1
+
+    reached = sum(
+        1
+        for row in stages
+        if row["node_id"] == "open_pr_prep" and row["run_id"] in summaries
+    )
+    red_final = reached - routes.get("pr", 0)
+    return (
+        TaskValidationRow(
+            visits=len(visits),
+            by_mode=dict(by_mode.most_common()),
+            mode_minutes={mode: _percentiles(values) for mode, values in minutes.items()},
+            all_minutes=_percentiles(all_minutes),
+            full_reasons=dict(full_reasons.most_common()),
+            red=dict(red.most_common()),
+            unchecked=unchecked,
+        ),
+        FinalValidationRow(
+            reached=reached,
+            routes=dict(routes.most_common()),
+            red_rate=_rate(red_final, reached),
+        ),
     )
 
 
@@ -547,6 +667,7 @@ def to_markdown(card: Scorecard) -> str:
         )
         + " |",
     ]
+    lines.extend(_task_validation_rows(card))
     lines.extend(["", *_model_table(card)])
     if card.unknown:
         lines.append("")
@@ -558,6 +679,42 @@ def to_markdown(card: Scorecard) -> str:
             " share, timeouts, failovers and terminal nodes count only summarized runs."
         )
     return "\n".join(lines) + "\n"
+
+
+def _task_validation_rows(card: Scorecard) -> list[str]:
+    """The Task validation and Final validation rows (ADR 0025, C9).
+
+    Task validation splits every `validate` visit by mode (scoped, full, legacy,
+    timeout), with the per-visit minutes and the red count for each, the full visits'
+    fallback reasons, and the unchecked-file count. Final validation splits the first
+    verdict of each run that reached `open_pr_prep`.
+    """
+    tv = card.task_validation
+    modes = [mode for mode in TASK_VALIDATION_MODES if mode in tv.by_mode]
+    modes += [mode for mode in tv.by_mode if mode not in TASK_VALIDATION_MODES]
+    by_mode = ", ".join(
+        f"{mode} {tv.by_mode[mode]}"
+        f" ({_num(tv.mode_minutes[mode].p50)}/{_num(tv.mode_minutes[mode].p90)} min)"
+        for mode in modes
+    )
+    scoped = tv.by_mode.get("scoped", 0)
+    unchecked = f"{tv.unchecked}"
+    if scoped:
+        unchecked += f" ({tv.unchecked / scoped:.1f} per scoped visit)"
+    fv = card.final_validation
+    routes = ", ".join(f"{name} {count}" for name, count in fv.routes.items()) or "none"
+    return [
+        f"| Task validation: visits by mode (p50/p90 min) | {by_mode or 'none'};"
+        f" all {tv.visits} ({_num(tv.all_minutes.p50)}/{_num(tv.all_minutes.p90)} min) |",
+        f"| Task validation: full visits by reason | {_counts(tv.full_reasons) or 'none'} |",
+        "| Task validation: red visits by mode | "
+        + ", ".join(f"{mode} {tv.red.get(mode, 0)}/{tv.by_mode[mode]}" for mode in modes)
+        + ("" if modes else "none")
+        + " |",
+        f"| Task validation: unchecked files | {unchecked} |",
+        f"| Final validation: reached / first route | {fv.reached} / {routes}"
+        f" (red {_pct(fv.red_rate)}) |",
+    ]
 
 
 def _model_table(card: Scorecard) -> list[str]:

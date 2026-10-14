@@ -38,6 +38,17 @@ The coder's time to first edit is `stage.started` of `coder` to its first
 `edit_file`/`write_file`, once per attempt. `improve_gate`'s `task_disposition` is
 counted from its `stage.completed`.
 
+Task validation (ADR 0025) added three more. Every `validate` visit is one
+`run_summary.task_validations` entry `{mode, reason_class, ok, ms}`: a completed visit
+carries the routing keys from its `stage.completed` (`task_validation_mode` and friends),
+and a visit with none -- a run from before the change, or a `validate` that failed --
+records `legacy`, or `timeout` when its `stage.failed` has `system_actor: "timeout"`. `ms`
+is the visit's `properties.timing.wall_time_ms`, the same clock `run_stage_stats` uses.
+A red visit with no `stage.completed` is recorded from its `stage.failed`; without that,
+the baseline would count only green visits. `task_validation_unchecked` is summed into
+`RunSummary.task_validation_unchecked`. Each `open_pr_prep` visit appends its
+`final_route` to `RunSummary.final_routes`, in order.
+
 Pure: no I/O, so the parsing is tested with fixture event lines.
 """
 
@@ -64,6 +75,26 @@ REFUTE_GATE = "review_merge.refute_gate"
 CODER_NODE = "coder"
 EDIT_TOOLS = frozenset({"edit_file", "write_file"})
 DISPOSITION_GATE = "improve_gate"
+
+# Task validation (ADR 0025). Matched exactly: `validate` must never match
+# `review_merge.validate`, whose visits are the merge phase's, not the gate's.
+VALIDATE_NODE = "validate"
+FINAL_VALIDATION_NODE = "open_pr_prep"
+
+
+@dataclass(frozen=True)
+class TaskValidation:
+    """One `validate` visit (ADR 0025): how it ran and how long it took.
+
+    `mode` is `scoped`, `full`, `legacy` (a run summarized before the change, or a
+    visit whose `stage.completed` carried no routing keys) or `timeout`. `ok` is
+    None when neither a context update nor the stage's own status could say.
+    """
+
+    mode: str
+    reason_class: str  # the reason text before the first ":", or ""
+    ok: bool | None
+    ms: int
 
 
 @dataclass
@@ -104,6 +135,11 @@ class RunSummary:
     # Per coder attempt that made an edit, ms from its start to the first edit, in order.
     first_edit_ms: list[int] = field(default_factory=list)
     dispositions: Counter[str] = field(default_factory=Counter)  # improve_gate's verdicts
+    # Task validation (ADR 0025): every `validate` visit in order, its ok events' count of
+    # unchecked files, and every `open_pr_prep` visit's first final route in order.
+    task_validations: list[TaskValidation] = field(default_factory=list)
+    task_validation_unchecked: int = 0
+    final_routes: list[str] = field(default_factory=list)
 
 
 def summarize(
@@ -146,6 +182,9 @@ def summarize(
     first_edit: list[int] = []
     coder_started: datetime | None = None  # the open coder attempt that has not edited yet
     dispositions: Counter[str] = Counter()
+    task_validations: list[TaskValidation] = []
+    task_validation_unchecked = 0
+    final_routes: list[str] = []
     count = 0
 
     for event in events:
@@ -175,9 +214,21 @@ def summarize(
                 stat = stats.get(node)
                 if stat is None:
                     stat = stats[node] = StageStat(node, "unknown")
-                if failure.get("system_actor") == "timeout":
+                timeout = failure.get("system_actor") == "timeout"
+                if timeout:
                     stat.timeouts += 1
                 stat.failures[_str(failure.get("category")) or "unknown"] += 1
+                if node == VALIDATE_NODE:
+                    # A red legacy visit has no `stage.completed` (verified live on 0.362);
+                    # recording it here keeps the baseline's visit count whole.
+                    task_validations.append(
+                        TaskValidation(
+                            mode="timeout" if timeout else "legacy",
+                            reason_class="",
+                            ok=False,
+                            ms=_timing_ms(props),
+                        )
+                    )
         elif name == "agent.route.failover":
             inner = props.get("event")
             route = inner.get("RouteFailover") if isinstance(inner, Mapping) else None
@@ -199,6 +250,32 @@ def summarize(
                 disposition = _str(updates.get("task_disposition"))
                 if disposition:
                     dispositions[disposition] += 1
+        elif name == "stage.completed" and node == VALIDATE_NODE:
+            updates = props.get("context_updates")
+            if not isinstance(updates, Mapping):
+                updates = {}
+            mode = _str(updates.get("task_validation_mode")) or "legacy"
+            ok = updates.get("task_validation_ok")
+            if not isinstance(ok, bool):
+                ok = _bool_text(ok)
+            if ok is None:
+                # Before the change `validate` published nothing; its own status is left.
+                ok = _str(props.get("status")) == "succeeded"
+            task_validations.append(
+                TaskValidation(
+                    mode=mode,
+                    reason_class=_reason_class(_str(updates.get("task_validation_reason"))),
+                    ok=ok,
+                    ms=_timing_ms(props),
+                )
+            )
+            task_validation_unchecked += _int(updates.get("task_validation_unchecked"))
+        elif name == "stage.completed" and node == FINAL_VALIDATION_NODE:
+            updates = props.get("context_updates")
+            if isinstance(updates, Mapping):
+                route = _str(updates.get("final_route"))
+                if route:
+                    final_routes.append(route)
         elif name == "stage.completed" and node == REFUTE_GATE:
             updates = props.get("context_updates")
             if isinstance(updates, Mapping):
@@ -222,7 +299,21 @@ def summarize(
         events=count,
         first_edit_ms=first_edit,
         dispositions=dispositions,
+        task_validations=task_validations,
+        task_validation_unchecked=task_validation_unchecked,
+        final_routes=final_routes,
     )
+
+
+def _timing_ms(props: Mapping[str, object]) -> int:
+    """A stage event's `properties.timing.wall_time_ms`, the clock `run_stage_stats` uses."""
+    timing = props.get("timing")
+    return _int(timing.get("wall_time_ms")) if isinstance(timing, Mapping) else 0
+
+
+def _reason_class(reason: str) -> str:
+    """A fallback reason's class: the text before the first `:` (`full_glob:path`)."""
+    return reason.split(":", 1)[0]
 
 
 def _ts(value: object) -> datetime | None:

@@ -133,3 +133,25 @@ def test_metrics_page_shows_tokens_by_model(client, store):
     assert 'data-value="1500000"' in html  # raw counts to sort by, not "1.50M"
     assert 'data-value=""' in html  # the unpriced box sorts last on Cost
     assert client.get("/api/scorecard").json()["models"][0]["model_id"] == "deepseek"
+
+
+def test_api_scorecard_repo_filter(client, store):
+    """`?repo=OWNER/REPO` narrows the window to one repository (ADR 0025, C10)."""
+    other = "andrewthetechie/writers-app"
+    seed(store, "R1", datetime(2026, 10, 6, 9, tzinfo=UTC), pr=5, merged=True)
+    store.acquire_lease(
+        coder_pool="coders-a", repo=other, issue_number=1, run_id="R2",
+        dispatched_at=datetime(2026, 10, 6, 10, tzinfo=UTC),
+    )
+    store.archive_and_release_lease(
+        "R2",
+        RunOutcome(kind="succeeded", finished_at=datetime(2026, 10, 6, 12, tzinfo=UTC)),
+    )
+    body = client.get(
+        f"/api/scorecard?from=2026-10-06&to=2026-10-06&repo={other}"
+    ).json()
+    assert body["runs"] == 1
+    assert [line["repo"] for line in body["repos"]] == [other]
+    assert body["prs"] == 0
+    # Without the filter both runs are in the window.
+    assert client.get("/api/scorecard?from=2026-10-06&to=2026-10-06").json()["runs"] == 2

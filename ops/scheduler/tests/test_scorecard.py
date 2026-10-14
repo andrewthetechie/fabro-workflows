@@ -10,7 +10,7 @@ import pytest
 from fabro_scheduler import scorecard
 from fabro_scheduler.prfacts import PrFacts
 from fabro_scheduler.store import RunOutcome, Store
-from fabro_scheduler.summary import RefuteVerdict, RunSummary, StageStat
+from fabro_scheduler.summary import RefuteVerdict, RunSummary, StageStat, TaskValidation
 from fabro_scheduler.usage import ModelUsage
 
 REPO = "andrewthetechie/jelly-swipe"
@@ -52,7 +52,8 @@ def facts(*, state="open", labels=("agent-authored",), reason=None, report="comp
     )
 
 
-def summary(run_id, stages, *, terminal="exit_node", failovers=None, refute=()):
+def summary(run_id, stages, *, terminal="exit_node", failovers=None, refute=(),
+            task_validations=(), unchecked=0, final_routes=()):
     return RunSummary(
         run_id=run_id,
         stages={s.node_id: s for s in stages},
@@ -61,7 +62,14 @@ def summary(run_id, stages, *, terminal="exit_node", failovers=None, refute=()):
         terminal_node=terminal,
         refute=list(refute),
         events=10,
+        task_validations=list(task_validations),
+        task_validation_unchecked=unchecked,
+        final_routes=list(final_routes),
     )
+
+
+def visit(mode, minutes, *, ok=True, reason=""):
+    return TaskValidation(mode=mode, reason_class=reason, ok=ok, ms=int(minutes * 60_000))
 
 
 def compute(store):
@@ -316,3 +324,83 @@ def test_tokens_by_model(store):
 def test_token_formatting():
     assert [scorecard.tokens(n) for n in (0, 950, 12_345, 4_560_000, 1_200_000_000)] == [
         "0", "950", "12.3k", "4.56M", "1.20B"]
+
+
+# --- task validation and final validation (ADR 0025, C9) -----------------------------
+
+
+def test_task_validation_row_and_red_final_rate(store):
+    run(store, "R1")
+    run(store, "R2")
+    run(store, "R3")  # not summarized: not counted anywhere
+    store.save_run_summary(summary(
+        "R1",
+        [StageStat("validate", "command", 2, 0, 0), StageStat("open_pr_prep", "command", 1, 0, 0)],
+        task_validations=[visit("scoped", 3.0), visit("scoped", 5.0, ok=False)],
+        unchecked=4,
+        final_routes=["pr"],
+    ))
+    store.save_run_summary(summary(
+        "R2",
+        [StageStat("validate", "command", 3, 0, 0), StageStat("open_pr_prep", "command", 2, 0, 0)],
+        task_validations=[
+            visit("full", 20.0, ok=False, reason="unowned_test"),
+            visit("legacy", 24.0),
+            visit("timeout", 30.0, ok=False),
+        ],
+        final_routes=["fix", "pr"],  # open_pr_prep was visited twice: the first counts
+    ))
+    card = compute(store)
+    row = card.task_validation
+    assert row.visits == 5
+    assert row.by_mode == {"scoped": 2, "full": 1, "legacy": 1, "timeout": 1}
+    assert row.mode_minutes["scoped"].p50 == pytest.approx(4.0)
+    assert row.mode_minutes["full"].p50 == pytest.approx(20.0)
+    assert row.all_minutes.p50 == pytest.approx(20.0)  # 3, 5, 20, 24, 30 minutes
+    assert row.full_reasons == {"unowned_test": 1}
+    assert row.red == {"scoped": 1, "full": 1, "timeout": 1}
+    assert row.unchecked == 4  # 4 over 2 scoped visits
+    final = card.final_validation
+    assert final.reached == 2
+    assert final.routes == {"pr": 1, "fix": 1}
+    assert final.red_rate == pytest.approx(0.5)
+    text = scorecard.to_markdown(card)
+    assert "| Task validation: visits by mode" in text
+    assert "| Task validation: full visits by reason | unowned_test 1 |" in text
+    assert "| Task validation: unchecked files | 4 (2.0 per scoped visit) |" in text
+    assert "| Final validation: reached / first route | 2 / pr 1, fix 1 (red 50%) |" in text
+
+
+def test_task_validation_row_is_empty_without_summaries(store):
+    run(store, "R1")
+    card = compute(store)
+    assert card.task_validation.visits == 0
+    assert card.task_validation.all_minutes.p50 is None
+    assert card.final_validation.reached == 0
+    assert card.final_validation.red_rate is None
+    text = scorecard.to_markdown(card)
+    assert "| Task validation: visits by mode (p50/p90 min) | none; all 0 (n/a/n/a min) |" in text
+    assert "| Task validation: red visits by mode | none |" in text
+
+
+def test_repo_filter_narrows_every_series(store):
+    run(store, "R1", repo=REPO, pr=1)
+    run(store, "R2", repo=OTHER, pr=2)
+    store.save_run_summary(summary(
+        "R1", [StageStat("validate", "command", 1, 0, 0)],
+        task_validations=[visit("scoped", 3.0)], final_routes=["pr"],
+    ))
+    store.save_run_summary(summary(
+        "R2", [StageStat("validate", "command", 1, 0, 0)],
+        task_validations=[visit("full", 30.0, ok=False, reason="no_config")],
+        final_routes=["draft"],
+    ))
+    store.save_model_usage("R1", [ModelUsage("zai", "glm-5.3", 1, 1, 1, 0, 0, None)])
+    store.save_model_usage("R2", [ModelUsage("box-a", "deepseek", 1, 5, 5, 0, 0, None)])
+    card = scorecard.compute(store.scorecard_rows(*WINDOW), *WINDOW, repo=OTHER)
+    assert card.runs == 1
+    assert [line.repo for line in card.repos] == [OTHER]
+    assert [m.name for m in card.models] == ["box-a/deepseek"]
+    assert card.task_validation.by_mode == {"full": 1}
+    assert card.task_validation.full_reasons == {"no_config": 1}
+    assert card.final_validation.routes == {"draft": 1}

@@ -200,3 +200,73 @@ def test_dispositions_come_from_improve_gate():
         {"event": "stage.failed", "node_id": "improve_gate", "properties": {}},
     ]
     assert dict(summarize("R1", [], lines).dispositions) == {"ready": 2, "split": 1}
+
+
+# --- task validation (ADR 0025): validate visits, unchecked files, final routes -------
+
+
+def test_task_validation_visits_from_completions_and_failures():
+    lines = [
+        {"event": "stage.completed", "node_id": "validate",
+         "properties": {"status": "succeeded", "timing": {"wall_time_ms": 120_000},
+                        "context_updates": {
+                            "task_validation_mode": "scoped", "task_validation_ok": True,
+                            "task_validation_reason": "", "task_validation_unchecked": 3}}},
+        {"event": "stage.completed", "node_id": "validate",
+         "properties": {"status": "succeeded", "timing": {"wall_time_ms": 900_000},
+                        "context_updates": {
+                            "task_validation_mode": "full", "task_validation_ok": "false",
+                            "task_validation_reason": "full_glob:backend/uv.lock",
+                            "task_validation_unchecked": 0}}},
+        # a green legacy visit: a completion with no routing keys, from before the change
+        {"event": "stage.completed", "node_id": "validate",
+         "properties": {"status": "succeeded", "timing": {"wall_time_ms": 60_000},
+                        "context_updates": {"command.output": "blob://x"}}},
+        # a red legacy visit has no completion at all; only its stage.failed says so
+        {"event": "stage.failed", "node_id": "validate",
+         "properties": {"timing": {"wall_time_ms": 450_000},
+                        "failure": {"category": "deterministic"}}},
+        {"event": "stage.failed", "node_id": "validate",
+         "properties": {"timing": {"wall_time_ms": 1_800_000},
+                        "failure": {"category": "transient_infra", "system_actor": "timeout"}}},
+        # the merge phase's validate is a different node and must not be counted
+        {"event": "stage.completed", "node_id": "review_merge.validate",
+         "properties": {"status": "succeeded",
+                        "context_updates": {"task_validation_mode": "scoped"}}},
+    ]
+    summary = summarize("R1", [], lines)
+    assert [(v.mode, v.reason_class, v.ok, v.ms) for v in summary.task_validations] == [
+        ("scoped", "", True, 120_000),
+        ("full", "full_glob", False, 900_000),
+        ("legacy", "", True, 60_000),
+        ("legacy", "", False, 450_000),
+        ("timeout", "", False, 1_800_000),
+    ]
+    assert summary.task_validation_unchecked == 3
+
+
+def test_task_validation_ok_falls_back_to_the_stage_status():
+    lines = [
+        {"event": "stage.completed", "node_id": "validate",
+         "properties": {"status": "failed", "context_updates": {"task_validation_mode": "scoped"}}},
+        {"event": "stage.completed", "node_id": "validate",
+         "properties": {"status": "succeeded", "context_updates": {}}},
+    ]
+    summary = summarize("R1", [], lines)
+    assert [(v.mode, v.ok, v.ms) for v in summary.task_validations] == [
+        ("scoped", False, 0), ("legacy", True, 0),
+    ]
+
+
+def test_final_routes_are_recorded_in_order_for_open_pr_prep_only():
+    lines = [
+        {"event": "stage.completed", "node_id": "open_pr_prep",
+         "properties": {"context_updates": {"final_route": "fix"}}},
+        {"event": "stage.completed", "node_id": "open_pr_prep",
+         "properties": {"context_updates": {"final_route": "pr"}}},
+        {"event": "stage.completed", "node_id": "open_pr",
+         "properties": {"context_updates": {"final_route": "pr"}}},
+        {"event": "stage.completed", "node_id": "open_pr_prep",
+         "properties": {"context_updates": {}}},
+    ]
+    assert summarize("R1", [], lines).final_routes == ["fix", "pr"]

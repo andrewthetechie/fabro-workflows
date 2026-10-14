@@ -481,10 +481,14 @@ def build_app(
 
         `?format=md` answers the weekly table as Markdown, which is what
         `ops/fabro-scorecard.sh` prints. The default window is the last 7 days.
+        `?repo=OWNER/REPO` narrows every series to that repository, which is how the
+        womens-fantasy-sports trial window (ADR 0025, C10) is read.
         """
         params = request.query_params
         start, end = _window(params.get("from"), params.get("to"), params.get("days"))
-        card = scorecard.compute(store.scorecard_rows(start, end), start, end)
+        card = scorecard.compute(
+            store.scorecard_rows(start, end), start, end, repo=params.get("repo") or None
+        )
         if (params.get("format") or "").lower() in ("md", "markdown"):
             return PlainTextResponse(scorecard.to_markdown(card), media_type="text/markdown")
         return scorecard.to_json(card)
@@ -1455,6 +1459,55 @@ def create_app(
     )
 
 
+def _resummarize(argv: Sequence[str]) -> int:
+    """`python -m fabro_scheduler resummarize --from D --to D`: rebuild a window.
+
+    Both dates are inclusive, like `/api/scorecard`'s. It deletes only the window's
+    `run_summary` and `run_stage_stats` rows and prints how many; the collector's next
+    ticks stream the events again and write the current fields (ADR 0025, C9).
+    """
+    parser = argparse.ArgumentParser(
+        prog="fabro-scheduler resummarize",
+        description="Delete a window's summaries so the collector rebuilds them.",
+    )
+    parser.add_argument("--from", dest="date_from", required=True, help="first date, inclusive")
+    parser.add_argument("--to", dest="date_to", required=True, help="last date, inclusive")
+    parser.add_argument("--config", type=Path, default=None, help="path to repos.toml")
+    args = parser.parse_args(argv)
+
+    start = _parse_date(args.date_from)
+    end = _parse_date(args.date_to)
+    if start is None or end is None or start > end:
+        print(
+            f"scheduler: resummarize: both dates must be YYYY-MM-DD and --from must not"
+            f" be after --to (got {args.date_from!r}, {args.date_to!r})",
+            file=sys.stderr,
+        )
+        return 2
+
+    path = args.config or Path(os.environ.get("SCHEDULER_CONFIG") or DEFAULT_CONFIG_PATH)
+    try:
+        config = load_config(path)
+    except ConfigError as exc:
+        print(f"scheduler: cannot start: {exc}", file=sys.stderr)
+        return 1
+    try:
+        store = Store(config.db_path)
+    except sqlite3.Error as exc:
+        print(f"scheduler: cannot start: {config.db_path}: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        runs, summaries, stages = store.resummarize_window(start, end + timedelta(days=1))
+    finally:
+        store.close()
+    print(
+        f"resummarize: deleted {summaries} run_summary and {stages} run_stage_stats rows"
+        f" for {runs} runs dispatched {args.date_from} to {args.date_to}"
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entrypoint: validate the config first, then serve.
 
@@ -1463,7 +1516,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     healthcheck instead of producing a service that is up and wrong. The database
     gets the same treatment: an unopenable `/data` is reported the same way, since
     a service that cannot persist what it sees should not claim to be healthy.
+
+    `argv[0] == "resummarize"` dispatches to the offline rebuild instead of serving,
+    so `python -m fabro_scheduler resummarize …` works inside the container with no
+    second console script.
     """
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list[:1] == ["resummarize"]:
+        return _resummarize(args_list[1:])
     parser = argparse.ArgumentParser(
         prog="fabro-scheduler",
         description="Owns admission to the coder instances.",
@@ -1477,7 +1537,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{DEFAULT_CONFIG_PATH})"
         ),
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(args_list)
 
     logging.basicConfig(
         level=logging.INFO,

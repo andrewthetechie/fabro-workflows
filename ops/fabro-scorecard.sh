@@ -7,6 +7,7 @@
 #   ./ops/fabro-scorecard.sh --week                  # the current ISO week so far
 #   ./ops/fabro-scorecard.sh --last-week             # the previous ISO week
 #   ./ops/fabro-scorecard.sh --json [...]            # the JSON behind the table
+#   ./ops/fabro-scorecard.sh --repo OWNER/REPO [...] # one repository only (ADR 0025, C10)
 #   ./ops/fabro-scorecard.sh --by-arm --from 2026-10-14   # the plan trial (#25), plan vs improve
 #
 # Both dates are inclusive (UTC). A window holds the runs dispatched in it.
@@ -27,6 +28,7 @@ set -euo pipefail
 SCHEDULER="${SCHEDULER_URL:-http://10.10.0.32:32280}"
 FROM=""
 TO=""
+REPO=""
 FORMAT="md"
 ENDPOINT="api/scorecard"
 
@@ -42,11 +44,12 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --from) FROM="${2:?--from needs a date}"; shift 2 ;;
         --to) TO="${2:?--to needs a date}"; shift 2 ;;
+        --repo) REPO="${2:?--repo needs OWNER/REPO}"; shift 2 ;;
         --week) read -r FROM TO <<<"$(iso_week 0)"; shift ;;
         --last-week) read -r FROM TO <<<"$(iso_week 1)"; shift ;;
         --json) FORMAT="json"; shift ;;
         --by-arm) ENDPOINT="api/scorecard/arms"; shift ;;
-        -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "fabro-scorecard.sh: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -61,6 +64,7 @@ done
 QUERY="format=$FORMAT"
 [ -n "$FROM" ] && QUERY="$QUERY&from=$FROM"
 [ -n "$TO" ] && QUERY="$QUERY&to=$TO"
+[ -n "$REPO" ] && QUERY="$QUERY&repo=$REPO"
 
 curl -fsS --max-time 60 "$SCHEDULER/$ENDPOINT?$QUERY"
 [ "$FORMAT" = json ] && echo

@@ -1187,3 +1187,52 @@ def test_the_page_renders_the_label_and_keeps_the_raw_facts(client, store):
 
     assert "merged" in body
     assert 'title="succeeded' in body      # the raw kind is still one hover away
+
+
+def test_resummarize_dispatch_rebuilds_a_window(tmp_path, monkeypatch, capsys):
+    """`python -m fabro_scheduler resummarize …` (ADR 0025, C9) as `main` dispatches it."""
+    from collections import Counter
+
+    from fabro_scheduler import app as app_module
+    from fabro_scheduler.store import RunOutcome
+    from fabro_scheduler.summary import RunSummary, StageStat
+
+    db = tmp_path / "scheduler.db"
+    store = Store(db)
+    at = datetime(2026, 10, 1, 9, tzinfo=UTC)
+    store.acquire_lease(
+        coder_pool="coders-a", repo="o/r", issue_number=1, run_id="R1", dispatched_at=at
+    )
+    store.archive_and_release_lease(
+        "R1", RunOutcome(kind="succeeded", finished_at=at + timedelta(hours=1))
+    )
+    store.save_run_summary(
+        RunSummary(
+            run_id="R1",
+            stages={"validate": StageStat("validate", "command", 1, 1, 0)},
+            failovers=Counter(),
+            path=[],
+            terminal_node="exit",
+            refute=[],
+            events=1,
+        )
+    )
+    store.close()
+
+    config = tmp_path / "repos.toml"
+    config.write_text(
+        '[[repo]]\nname = "o/r"\npriority = 0\nenvironment_id = "python"\n'
+    )
+    monkeypatch.setenv("SCHEDULER_CONFIG", str(config))
+    monkeypatch.setenv("SCHEDULER_DB", str(db))
+
+    assert app_module.main(["resummarize", "--from", "2026-10-01", "--to", "2026-10-01"]) == 0
+    assert "deleted 1 run_summary and 1 run_stage_stats rows for 1 runs" in (
+        capsys.readouterr().out
+    )
+    reopened = Store(db)
+    try:
+        assert reopened._conn.execute("SELECT COUNT(*) AS c FROM run_summary").fetchone()["c"] == 0
+        assert reopened._conn.execute("SELECT COUNT(*) AS c FROM run_history").fetchone()["c"] == 1
+    finally:
+        reopened.close()

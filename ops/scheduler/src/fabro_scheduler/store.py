@@ -38,7 +38,7 @@ import logging
 import sqlite3
 import threading
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -219,7 +219,10 @@ CREATE TABLE IF NOT EXISTS run_summary (
   events        INTEGER,
   error         TEXT,
   first_edit_ms TEXT,              -- JSON array: per coder attempt, ms to its first edit
-  dispositions  TEXT               -- JSON object: improve_gate disposition -> count
+  dispositions  TEXT,              -- JSON object: improve_gate disposition -> count
+  task_validations TEXT,           -- JSON array: per `validate` visit {mode, reason_class, ok, ms}
+  task_validation_unchecked INTEGER, -- summed task_validation_unchecked over validate visits
+  final_routes  TEXT               -- JSON array: each open_pr_prep visit's final_route, in order
 );
 
 -- One row per node per run: every visit's totals. `box_ms` is the part of
@@ -314,6 +317,11 @@ ADDED_COLUMNS = {
     "run_summary": {
         "first_edit_ms": "first_edit_ms TEXT",
         "dispositions": "dispositions TEXT",
+        # Task validation (ADR 0025). Kept as JSON so the whole visit list fits one row;
+        # a run summarized before it keeps NULLs, read as "not measured".
+        "task_validations": "task_validations TEXT",
+        "task_validation_unchecked": "task_validation_unchecked INTEGER",
+        "final_routes": "final_routes TEXT",
         # Whether `run_model_usage` has been read for the run: NULL (not yet), `ok`,
         # `none` (fabro reported no model usage), `missing` (404) or `error` (retried).
         "model_usage": "model_usage TEXT",
@@ -1127,13 +1135,17 @@ class Store:
             )
             self._conn.execute(
                 "INSERT INTO run_summary (run_id, status, attempts, summarized_at,"
-                " terminal_node, path, refute, events, error, first_edit_ms, dispositions)"
-                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?) "
+                " terminal_node, path, refute, events, error, first_edit_ms, dispositions,"
+                " task_validations, task_validation_unchecked, final_routes)"
+                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO UPDATE SET status = 'ok',"
                 "  attempts = run_summary.attempts + 1, summarized_at = excluded.summarized_at,"
                 "  terminal_node = excluded.terminal_node, path = excluded.path,"
                 "  refute = excluded.refute, events = excluded.events, error = NULL,"
-                "  first_edit_ms = excluded.first_edit_ms, dispositions = excluded.dispositions",
+                "  first_edit_ms = excluded.first_edit_ms, dispositions = excluded.dispositions,"
+                "  task_validations = excluded.task_validations,"
+                "  task_validation_unchecked = excluded.task_validation_unchecked,"
+                "  final_routes = excluded.final_routes",
                 (
                     summary.run_id,
                     stamp,
@@ -1143,6 +1155,9 @@ class Store:
                     summary.events,
                     json.dumps(summary.first_edit_ms),
                     json.dumps(dict(sorted(summary.dispositions.items()))),
+                    json.dumps([asdict(visit) for visit in summary.task_validations]),
+                    summary.task_validation_unchecked,
+                    json.dumps(summary.final_routes),
                 ),
             )
 
@@ -1159,6 +1174,37 @@ class Store:
                 "  summarized_at = excluded.summarized_at, error = excluded.error",
                 (run_id, status, _stamp(at), error[:500]),
             )
+
+    def resummarize_window(self, start: datetime, end: datetime) -> tuple[int, int, int]:
+        """Drop the summaries of the runs dispatched in `[start, end)`, for a rebuild.
+
+        The collector's only entry point (`runs_to_summarize`) is a `LEFT JOIN` on
+        `run_summary`, so deleting the summary rows is what puts a window back in the
+        queue; it streams the events again and writes the current fields. Returns the
+        number of runs in the window and the `run_summary` / `run_stage_stats` rows
+        deleted. `run_history`, the leases and the PR facts are never touched: they are
+        the window's own record, not a summary of it.
+        """
+        bounds = (start.isoformat(), end.isoformat())
+        with self._lock, self._conn:
+            run_ids = [
+                row["run_id"]
+                for row in self._conn.execute(
+                    "SELECT run_id FROM run_history WHERE dispatched_at >= ? AND"
+                    " dispatched_at < ?",
+                    bounds,
+                )
+            ]
+            if not run_ids:
+                return 0, 0, 0
+            placeholders = ",".join("?" * len(run_ids))
+            summaries = self._conn.execute(
+                f"DELETE FROM run_summary WHERE run_id IN ({placeholders})", run_ids
+            ).rowcount
+            stages = self._conn.execute(
+                f"DELETE FROM run_stage_stats WHERE run_id IN ({placeholders})", run_ids
+            ).rowcount
+        return len(run_ids), summaries, stages
 
     def runs_to_read_models(self, *, retry_before: datetime, limit: int) -> list[str]:
         """Summarized runs whose model usage has not been read, newest first.
