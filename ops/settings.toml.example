@@ -261,13 +261,13 @@ enabled = false
 # The `openai` provider is a lithos BUILT-IN that reads OPENAI_API_KEY, so it needs
 # no provider table here -- only model rows, the same way `zai` is extended above.
 # The key lives in the fabro vault (`fabro secret set OPENAI_API_KEY <key>`), which
-# validates it against the openai endpoint before storing. Two models are used by
-# the factory: `gpt-6.1-sol`, the adversarial reviewer (`backlog`/`pr-review`'s
-# `.refute`), and `gpt-6-luna`, the implementer's final escalation rung
-# (`backlog`'s `coders-a`/`coders-b`/`coders-c` fallback chains). Both model names must resolve
-# before the merge gate flips to them; verify with `fabro model test -m gpt-6.1-sol`
-# and `-m gpt-6-luna`, which must report provider `openai`. Take effect with no
-# restart (5s settings poll).
+# validates it against the openai endpoint before storing. The factory uses
+# `gpt-6-luna` twice: as the adversarial reviewer (`.refute` in `backlog`, `pr-review`
+# and `dependabot`, since 2026-10-14 for cost; ADR 0013 D6 amendment) and as the
+# implementer's final escalation rung (`backlog`'s `coders-*` fallback chains).
+# `gpt-6.1-sol` was the Refuter before that and stays defined, unused. Verify with
+# `fabro model test -m gpt-6-luna`, which must report provider `openai`. Takes effect
+# with no restart (5s settings poll).
 [llm.providers.openai.models."gpt-6.1-sol"]
 display_name = "GPT-6.1 Sol (OpenAI)"
 api_model = "gpt-6.1-sol"

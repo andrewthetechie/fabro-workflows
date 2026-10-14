@@ -24,7 +24,7 @@ digraph Dependabot {
             .merge-fix        { model: glm-5.3-flash; }
             .ci-fix           { model: glm-5.3-flash; }
             .rebase-t2        { model: glm-5.3; }
-            .refute           { model: gpt-6.1-sol; }
+            .refute           { model: gpt-6-luna; }
             .refute-fix       { model: glm-5.3-flash; }
             .merge-resolve    { model: glm-5.3; }
         "

@@ -222,3 +222,32 @@ keeps its meaning (at least one `not_met` criterion), because the scorecard read
 - The gate-relief task 07 measurement (`docs/gate-relief/07-measure.md`) still reads the
   `not_met` fix turns on 2026-10-19. Defect-only fix turns get their own row, measured from
   this change's deploy for a week.
+
+## Amendment (2026-10-14): The Refuter runs on `gpt-6-luna` for cost
+
+**Status:** accepted (operator, 2026-10-14).
+
+The Refuter moved from `glm-5.3` to `gpt-6.1-sol` on 2026-09-26 (`9c76544`), per D6. That held while it ran
+about ten times a day. Since 2026-10-11, four coder pools and the fast lane put about 65 PRs a day through the
+merge phase, and the Refuter is effectively the whole OpenAI bill: $60 spent by 2026-10-14 against a $100
+budget, running at about $10 a day (about $300 a month). One Refuter visit reads about 230k cached input
+tokens and writes about 2.3k output tokens, with cache writes and reasoning on top; at OpenAI's prices that
+is about $0.16 a visit on Sol.
+
+We decided that **the Refuter runs on `gpt-6-luna`**, in all three importing graphs. OpenAI prices luna at a
+twentieth of Sol on every line (input $0.10 vs $2.00, cached input $0.01 vs $0.10, cache writes $0.125 vs
+$2.50, output $0.50 vs $10.00 per million tokens, short context), so a visit costs about $0.008 and the
+Refuter about $16 a month at today's volume. D6's rule is unchanged: luna is still a family unlike the
+coder's (DeepSeek) and the reviewers' (GLM, Kimi).
+
+Its fallback becomes `orfallback:hy4-preview` (Tencent, through OpenRouter) instead of `gpt-6-luna`. A Sol
+fallback would cost twenty times as much and fail in the same OpenAI outage that sent the run to it. The
+cost of hy4: in a week when Kimi's quota is spent, the spec reviewer also runs on hy4, so a luna outage in
+that week makes the Refuter and the spec reviewer one family until it ends.
+
+Consequences:
+- Luna is the smaller model. Watch the Refuter's first verdicts (`./ops/fabro-scorecard.sh`: pass /
+  `not_met` / other fail / invalid, fix turns, held PRs by reason) against the week before the switch
+  (2026-10-12..14: 142 / 11 / 10 / 0 of 163). A pass rate that rises while operator commits or reverts on
+  merged PRs also rise means luna is missing what Sol caught; revert this amendment then.
+- `gpt-6.1-sol` stays in the host's catalog, unused.

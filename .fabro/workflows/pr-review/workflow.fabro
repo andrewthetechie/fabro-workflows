@@ -65,10 +65,13 @@ digraph PrReview {
             // silent downgrade of the auto-merge gate rather than a visible error.
             //
             // `.refute` is the Refuter in the imported merge phase (ADR 0013 D6). It runs on
-            // gpt-6.1-sol (openai), moved here from glm-5.3 so its model family is unlike the
-            // coder's AND the reviewers' -- the adversarial value it exists for. Its fallback
-            // is `openai:gpt-6-luna`, likewise non-GLM. Change the rule here AND in the other
-            // importing graph; the `"gpt-6.1-sol"` fallback row lives in both workflow.tomls.
+            // gpt-6-luna (openai) so its model family is unlike the coder's AND the reviewers'
+            // -- the adversarial value it exists for. It moved from gpt-6.1-sol on 2026-10-14
+            // for cost: luna is a twentieth of Sol's price on every token line, and the
+            // Refuter's ~65 visits a day had made it ~$300/month (ADR 0013 D6 amendment). Its
+            // fallback is `orfallback:hy4-preview`, non-OpenAI and non-GLM, so an OpenAI outage
+            // still has an independent Refuter. Change the rule here AND in the other
+            // importing graphs; the `"gpt-6-luna"` fallback row lives in each workflow.toml.
         model_stylesheet="
             *                 { model: glm-5.3; }
             .rebase           { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
@@ -77,7 +80,7 @@ digraph PrReview {
             .merge-spec       { model: glm-5.3; }
             .merge-fix        { model: glm-5.3; }
             .ci-fix           { model: glm-5.3-flash; }
-            .refute           { model: gpt-6.1-sol; }
+            .refute           { model: gpt-6-luna; }
             .refute-fix       { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .merge-resolve    { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
         "

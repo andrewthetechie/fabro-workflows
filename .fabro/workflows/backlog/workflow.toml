@@ -43,10 +43,11 @@ graph = "workflow.fabro"
 "coders-d" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
 kimi-for-coding = ["zai:glm-5.3"]
 "glm-5.3" = ["kimi:kimi-k3", "orfallback:hy4-preview"]
-# The adversarial reviewer (.refute). Non-GLM, and its fallback is likewise non-GLM:
-# a refute outage degrades to the sibling openai model, and the merge gate keeps its
-# adversarial independence either way.
-"gpt-6.1-sol" = ["openai:gpt-6-luna"]
+# The adversarial reviewer (.refute), on gpt-6-luna since 2026-10-14 (cost; ADR 0013 D6
+# amendment). Its fallback is neither OpenAI nor GLM, so an OpenAI outage still leaves an
+# independent Refuter. Fallbacks are non-recursive, so this row never applies to a coder
+# box that escalated to gpt-6-luna above.
+"gpt-6-luna" = ["orfallback:hy4-preview"]
 # The mechanical-check tier (.review-standards, .merge-standards) and, since
 # glm-4.7 was removed, the first hosted rung of the coder ladder (.coder-t2) and
 # the landing spot for a failed local box. It escalates UP to full glm-5.3 rather
