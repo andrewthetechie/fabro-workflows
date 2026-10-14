@@ -5,6 +5,14 @@ on its push to `main`, and the scorecard split needs `make deploy-scheduler`. It
 least 50 runs in each arm, which at about 30 runs a day is 4 to 5 days. The result goes in
 `result-<date>.txt` next to this file, and the chosen shape in an ADR.
 
+**2026-10-14 — a cross-trial note.** womens-fantasy-sports switches to Task validation
+(ADR 0025, `docs/task-validation/` task 09) when its `.fabro/test.toml` PR merges. From that
+switch date its per-task `validate` visits change meaning in **both arms**: a visit runs the
+repository's checks and the tests that cover the task's diff, not the full `setup.sh &&
+ci.sh`. A per-task `validate` failure count from before the switch is not comparable to one
+after it, and the same is true of per-visit `validate` minutes. The scorecard's **Task
+validation** row (its mode split, `scoped` against `full`/`legacy`) is what separates them.
+
 ## The question
 
 The operator works with an LLM this way: a stronger model writes a plan, then a smaller model

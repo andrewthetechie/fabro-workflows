@@ -4,8 +4,8 @@
 rows and the re-summarize command; deployed, history re-summarized), 02 (`fabro-code
 tests --json` + `list-tests`), 03 (the `test.toml` Task validation keys), 04 (`fabro-io
 task-plan`), 05 (`fabro-io task-check`, the `task_check` tool, `fabro-test --task`,
-`fabro-io` 0.5.0) and 06 (the images and `min_binary`) are done; tasks 07–11 are not
-started.
+`fabro-io` 0.5.0), 06 (the images and `min_binary`) and 07+08 (the graph and the agents and
+records) are done; task 09 is next, and tasks 10–11 follow it.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report the

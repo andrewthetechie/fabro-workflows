@@ -130,12 +130,17 @@ These tools answer a code question in one call and return only what you ask for.
 | whether a failure existed before your change | `baseline_check` COMMAND |
 | to undo your change to one file | `restore_file` PATH |
 | whether your change passes its tests | `run_tests` TARGET [paths] |
+| what the gate will run for your change, and whether it passes | `task_check` |
+
+Run `task_check` before you finish: it runs the checks and the tests the Task validation
+gate selected for your diff, so you fix what the gate will report.
 
 If the shell says a test needs a database or a service, use `run_tests`; the repository
 declares how to start it.
 
 If a tool above is not in your tool list, the shell has the same verbs:
-`fabro-code def|show|search|callers|impact|tests ARGS`.
+`fabro-code def|show|search|callers|impact|tests ARGS`, and for the two test tools
+`fabro-test TARGET [paths]` and `fabro-test --task`.
 
 `grep` and `rg` are right for text that is not a code name: a string, a config key, an
 error message. The index knows calls and imports by name only, so confirm with

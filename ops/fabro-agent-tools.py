@@ -395,7 +395,9 @@ def test_kind(words: list[str]) -> str | None:
     """`test` for a direct test runner (M-run's denominator), `fabro` for the
     Test environment's own entry points, None otherwise."""
     head = words[0]
-    if head == "fabro-test" or (head == "fabro-io" and words[1:2] == ["run-tests"]):
+    if head == "fabro-test" or (
+        head == "fabro-io" and words[1:2] in (["run-tests"], ["task-check"])
+    ):
         return "fabro"
     if head in ("pytest", "vitest") or (head == "npx" and words[1:2] == ["vitest"]):
         return "test"
@@ -621,7 +623,9 @@ def report(runs: list[dict], local_only: bool) -> str:
     mech: Counter[str] = Counter()
     for v in all_visits:
         for t in v.tools:
-            if t["name"] == "run_tests" or (t["name"] == "baseline_check" and t["args"].get("target")):
+            if t["name"] in ("run_tests", "task_check") or (
+                t["name"] == "baseline_check" and t["args"].get("target")
+            ):
                 total += 1
                 via += 1
                 mech[t["name"]] += 1
@@ -637,10 +641,10 @@ def report(runs: list[dict], local_only: bool) -> str:
                     else:
                         mech["direct " + w[0]] += 1
     lines += [
-        "M-run  test invocations that go through run_tests or fabro-test",
+        "M-run  test invocations that go through run_tests, task_check or fabro-test",
         f"    {via} of {total} = {pct(via, total)}; by entry point {dict(sorted(mech.items()))}",
-        "    test invocations: run_tests, baseline_check with a target, fabro-test, and direct pytest,"
-        " vitest, cargo test, npm/bun test",
+        "    test invocations: run_tests, task_check, baseline_check with a target, fabro-test,"
+        " and direct pytest, vitest, cargo test, npm/bun test",
         "",
     ]
 

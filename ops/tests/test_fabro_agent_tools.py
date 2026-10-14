@@ -126,6 +126,8 @@ class TestEnv(unittest.TestCase):
         self.assertEqual(fat.test_kind(["bun", "run", "build"]), None)
         self.assertEqual(fat.test_kind(["fabro-test", "backend"]), "fabro")
         self.assertEqual(fat.test_kind(["fabro-io", "run-tests", "backend"]), "fabro")
+        self.assertEqual(fat.test_kind(["fabro-test", "--task"]), "fabro")
+        self.assertEqual(fat.test_kind(["fabro-io", "task-check", "--gate"]), "fabro")
         self.assertEqual(fat.test_kind(["grep", "pytest", "x"]), None)
 
     def test_m_env_counts_the_refusals_per_repository(self):
@@ -137,9 +139,10 @@ class TestEnv(unittest.TestCase):
 
     def test_m_run_counts_entry_points_against_direct_runners(self):
         out = self.report()
-        self.assertIn("2 of 7 = 28.6%", out)
+        self.assertIn("5 of 10 = 50.0%", out)
         self.assertIn("'run_tests': 1", out)
-        self.assertIn("'fabro-test': 1", out)
+        self.assertIn("'task_check': 1", out)
+        self.assertIn("'fabro-test': 3", out)
         self.assertIn("'direct pytest': 2", out)
 
 
