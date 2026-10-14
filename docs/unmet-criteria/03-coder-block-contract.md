@@ -16,8 +16,12 @@
      then emit `<promise>COMPLETE</promise>`. Never ship a similar behaviour in its place, and
      never relabel or reword one.
    - *Deliverable*: say the one exception (the block).
-3. `backlog/prompts/rework.md.j2`: the same Completion change. Its "emit `<blocked>`" lines
-   become the `submit` block.
+3. `backlog/prompts/rework.md.j2`: a finding about a criterion is fixed by meeting it, and a
+   criterion that cannot be met as written is a `criterion` block. A diff too large to keep a
+   criterion is a `scope` block. "Every finding needs out-of-scope edits" is **not** a block:
+   the rework keeps its in-scope fixes and completes, so the ladder escalates to a stronger
+   tier as before, instead of stopping the run for a human. A missing `current_task.json`
+   completes with no change, because `submit` refuses while a required input is missing.
 4. `backlog/workflow.fabro`:
    - `task_block_gate` (C2): command node with `output_schema="routing"` and a comment above it.
      Every branch prints `task_block` and `triage_questions`.
@@ -27,8 +31,9 @@
      `task_block_gate -> return_to_triage [condition="context.task_block=criterion"]` and the
      unconditional `task_block_gate -> rescue_brief`.
    - `next_task`: delete `/tmp/fabro/task_blocked.json` at the start of each task.
-   - `rescue_brief`: when `task_block_scope.md` exists, it is the cause line. Delete it where
-     `rescue_brief` deletes its other per-stop files.
+   - `rescue_brief`: when `task_block_scope.md` exists, it is the cause line, below a failure
+     signature. `task_block_gate` deletes the note on every visit and `next_task` per task;
+     `rescue_brief` leaves it, because the gate may show the brief more than once.
 
 ## Tests (`ops/test-task-gates.sh`)
 
@@ -39,7 +44,8 @@
 - `criterion`: `task_block=criterion`, `return.json` has `source: "coder"`, and
   `triage_questions` names the criterion;
 - `scope`: `task_block=scope`, and `task_block_scope.md` holds the reason;
-- `kind=criterion` with an empty criterion, or a bad `kind`: `scope`.
+- `kind=criterion` with an empty criterion, a bad `kind`, or a file that is not a JSON
+  object: `scope`.
 
 Parsed edges: no edge from `coder` or `rework_t*` goes straight to `autofix`.
 

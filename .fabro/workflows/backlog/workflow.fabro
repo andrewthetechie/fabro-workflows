@@ -460,7 +460,7 @@ jq -nc --arg s \"$S\" --argjson c \"${CNT:-0}\" --argjson o \"${OVER:-0}\" --arg
         script="git worktree remove --force /tmp/fabro/base-tree >/dev/null 2>&1
 rm -rf /tmp/fabro/base-tree
 git worktree prune >/dev/null 2>&1
-rm -f /tmp/fabro/final_merge_conflict
+rm -f /tmp/fabro/final_merge_conflict /tmp/fabro/task_blocked.json /tmp/fabro/task_block_scope.md
 echo 0 > /tmp/fabro/merge_attempts
 IDX=$(cat /tmp/fabro/task_index 2>/dev/null || echo 0)
 COUNT=$(jq length /tmp/fabro/tasks.json)
@@ -945,6 +945,56 @@ exit 0"]
     // drives the ladder onto a DIFFERENT model. That is Sandcastle's shape:
     // whatever the agent produced gets reviewed, and escalation follows.
     coder [label="Implement task (tier 1)", class="coder", timeout="180m", max_retries=1, allow_partial=true, prompt="@prompts/coder.md.j2"]
+
+    // task_block_gate: the coder and the rework tiers block through a contract, never by
+    // substitution (#17, docs/unmet-criteria C2). A stage that implements its task submits
+    // nothing, and the run goes on to autofix as before. A stage that cannot meet an
+    // acceptance criterion as written calls `submit` with kind `criterion`, and the issue
+    // returns to triage as a question (return_to_triage); one that cannot do the task
+    // inside its files submits kind `scope`, and the unconditional edge takes the run to
+    // the rescue gate, whose brief quotes task_block_scope.md. Before #17 the coder's
+    // `<blocked>` marker was text nothing read, so its empty diff went to review and the
+    // rework ladder, and a coder told to "implement the closest form" shipped a different
+    // behaviour as the criterion (lawncare-saas#2723).
+    //
+    // A file from an older visit is stale (next_task also deletes it per task): `none`.
+    // A file this visit wrote that is not a valid criterion block (an empty criterion, a
+    // bad kind) is `scope`, never `none`: the stage tried to block. So is a file that is
+    // not a JSON object, which has no receipt to call it stale by: `submit` writes only
+    // objects, so it cannot be an old valid block. The
+    // file is deleted once read. `triage_questions` is on every routing object, because
+    // the Discord hook on return_to_triage reads it at that node's stage_start.
+    task_block_gate [label="Read the coder's block", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro/task_blocked.json
+rm -f /tmp/fabro/task_block_scope.md
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+STALE=no
+if [ ! -e $F ]; then STALE=yes
+elif jq -e 'type == \"object\"' $F >/dev/null 2>&1; then
+  RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+  if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then STALE=yes; fi
+fi
+if [ $STALE = yes ]; then
+  rm -f $F
+  jq -nc '{context_updates:{task_block:\"none\",triage_questions:\"\"}}'
+  exit 0
+fi
+K=$(jq -r '.kind // empty' $F 2>/dev/null)
+C=$(jq -r '.criterion // empty' $F 2>/dev/null)
+W=$(jq -r '.reason // empty' $F 2>/dev/null)
+B=scope
+QT=''
+if [ \"$K\" = criterion ] && [ -n \"$C\" ] && [ -n \"$W\" ]; then B=criterion; fi
+if [ $B = criterion ]; then
+  jq '{source: \"coder\", summary: .reason, items: [{criterion, non_goal: (if (.non_goal // \"\") == \"\" then \"the constraints of this task\" else .non_goal end), why: .reason}]}' $F > /tmp/fabro/return.json
+  QT=$(jq -r '[.items[] | \"- \" + .criterion + \" (conflicts with: \" + .non_goal + \")\"] | join(\"  \")' /tmp/fabro/return.json | tr -d '\"' | cut -c1-1200)
+else
+  T=$(jq -r '.title // empty' /tmp/fabro/current_task.json 2>/dev/null)
+  if [ -z \"$W\" ]; then W='it submitted a block the gate could not read (kind, criterion or reason missing)'; fi
+  echo \"The coder blocked on task ${T:-unknown}: $W\" | tr -d '{}' | head -c 600 > /tmp/fabro/task_block_scope.md
+fi
+rm -f $F
+jq -nc --arg b $B --arg q \"$QT\" '{context_updates:{task_block:$b,triage_questions:$q}}'"]
 
     // autofix: formatters and machine-applicable lint fixes between every coder or rework
     // stage and its review (ADR 0011 D5). It runs the target repository's optional
@@ -2075,6 +2125,8 @@ if [ -n \"$SIG\" ]; then
   NODE=${SIG%%|*}
   REST=${SIG#*|}
   WHAT=\"$NODE failed (${REST%%|*}): ${REST#*|}\"
+elif [ -s $F/task_block_scope.md ]; then
+  WHAT=$(head -c 600 $F/task_block_scope.md | tr '[:cntrl:]' ' ' | sed 's/ *$//')
 elif [ -n \"$MC\" ]; then
   WHAT=\"main changed the same lines as this branch before the PR was built, and resolve_merge_gate rejected the merge agent's resolution. Conflicting files: $MC\"
 elif [ -n \"$FS\" ]; then
@@ -2404,11 +2456,11 @@ echo done"]
     excerpts -> coder               [condition="outcome=failed"]
     excerpts -> rescue_brief
 
-    coder -> autofix                [condition="outcome=succeeded"]
+    coder -> task_block_gate        [condition="outcome=succeeded"]
     // Retries exhausted on a coder that was still working. allow_partial makes
     // that partially_succeeded rather than failed; this edge is what stops it
     // falling through to the unconditional human_rescue and skipping the ladder.
-    coder -> autofix                [condition="outcome=partially_succeeded"]
+    coder -> task_block_gate        [condition="outcome=partially_succeeded"]
     coder -> rescue_brief
 
     autofix -> prep_review          [condition="outcome=succeeded"]
@@ -2444,7 +2496,7 @@ echo done"]
     drop_followup -> next_task      [condition="outcome=succeeded"]
     drop_followup -> rescue_brief
 
-    rework_t1 -> autofix            [condition="outcome=succeeded"]
+    rework_t1 -> task_block_gate    [condition="outcome=succeeded"]
     // Tier 1 runs on a single-slot local box, whose failure is usually slowness or a
     // hung request, not a task no model can fix. A failed tier 1 (both attempts timed
     // out, or the session died) climbs the ladder: rework_router bumps `round` past 1,
@@ -2453,12 +2505,19 @@ echo done"]
     // edits done. Tiers 2-4 still fail to human_rescue.
     rework_t1 -> rework_router      [condition="outcome=failed"]
     rework_t1 -> rescue_brief
-    rework_t2 -> autofix            [condition="outcome=succeeded"]
+    rework_t2 -> task_block_gate    [condition="outcome=succeeded"]
     rework_t2 -> rescue_brief
-    rework_t3 -> autofix            [condition="outcome=succeeded"]
+    rework_t3 -> task_block_gate    [condition="outcome=succeeded"]
     rework_t3 -> rescue_brief
-    rework_t4 -> autofix            [condition="outcome=succeeded"]
+    rework_t4 -> task_block_gate    [condition="outcome=succeeded"]
     rework_t4 -> rescue_brief
+
+    // #17: a stage that blocked never reaches autofix. A criterion block goes back to
+    // triage; a scope block, or an unreadable one, takes the unconditional edge to the
+    // rescue gate, which quotes the reason.
+    task_block_gate -> autofix      [condition="context.task_block=none"]
+    task_block_gate -> return_to_triage [condition="context.task_block=criterion"]
+    task_block_gate -> rescue_brief
 
     extra_prep -> final_merge       [condition="context.extra_done=true"]
     extra_prep -> standards

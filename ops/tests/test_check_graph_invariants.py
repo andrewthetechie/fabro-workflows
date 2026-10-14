@@ -54,9 +54,9 @@ class Counts(unittest.TestCase):
             # each importer of _shared/review-merge. #37: resolve_base and resolve_base_gate, +2 nodes
             # and +6 edges in each importer. #35: drop_unreviewed and final_fix_prep, +2 nodes and +9
             # edges in backlog only. The plan trial (#25): plan, +1 node and +5 edges in backlog
-            # only. #17 (docs/unmet-criteria): return_to_triage, +1 node and +3 edges in backlog
-            # only. `fabro validate` (check-host) confirms them.
-            "backlog": (81, 207),
+            # only. #17 (docs/unmet-criteria): return_to_triage and task_block_gate, +2 nodes and
+            # +6 edges in backlog only. `fabro validate` (check-host) confirms them.
+            "backlog": (82, 210),
             "pr-review": (39, 87),
             "issue-triage": (16, 36),
             "arch-review": (24, 54),

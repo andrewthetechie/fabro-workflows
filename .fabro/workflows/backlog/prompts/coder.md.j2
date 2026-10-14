@@ -47,12 +47,13 @@ dossier and the code may be absent. Use them as follows:
 The repository checkout in the current working directory is your workspace.
 `/tmp/fabro/` holds only the inputs the `inputs` tool returned (and the served
 record); it is read-only and you must not write anywhere outside the repository
-checkout.
+checkout. The one exception is `submit`, which you call only to block (see
+Completion).
 
 ## Deliverable
 
 Edits in the working tree. Nothing else. There is no result file: implement the
-task directly.
+task directly. Call `submit` only when you block.
 
 ## Repo conventions and skills
 
@@ -175,10 +176,13 @@ Three moments decide this. Act on each one:
 - **You think "let me design" a type, table or helper.** Write it into the file with
   `edit_file`, then read the typecheck or test output. Do not open a code fence in
   your reasoning.
-- **An acceptance criterion cannot pass as written** (it contradicts the code, or a
-  literal assertion is impossible). Do not argue it out for pages. Decide within a
-  few lines: implement the closest form that meets its intent and name the
-  difference in your completion note, or emit `<blocked>` (see Completion).
+- **An acceptance criterion cannot pass as written** (a non-goal or another
+  constraint of the task forbids what it needs, or the code makes it impossible).
+  Do not argue it out for pages, and never ship a similar behaviour in its place: a
+  button that does something else, a renamed or relabelled action, a comment that
+  explains the gap. Decide within a few lines and block (see Completion). Wording is
+  not a block: a criterion that names a different file, function or test than the
+  code uses is met by delivering the behaviour it describes.
 
 ## Process
 
@@ -240,15 +244,24 @@ When your edits satisfy the acceptance criteria and `git status -s` shows exactl
 the in-scope files and nothing else, emit the literal marker
 `<promise>COMPLETE</promise>` on its own line and stop.
 
-If the task genuinely cannot be implemented without touching out-of-scope files, or
-requirements are truly ambiguous, signal the blocker instead of expanding scope:
+Every acceptance criterion is either met as written or reported. None is replaced by
+a similar behaviour. When you cannot meet the task as written, block:
 
-1. Change nothing.
-2. Emit `<blocked>one or two sentences explaining what makes this out of scope or ambiguous</blocked>`.
+1. Change nothing. Undo any edit you made with `restore_file`.
+2. Call `submit` with:
+   - `kind`: `criterion` when an acceptance criterion cannot be met as written (a
+     non-goal, another constraint of the issue or the task, or the code forbids what
+     it needs), or `scope` when the task cannot be done without files outside it.
+   - `criterion`: the acceptance criterion, quoted from the task. Empty for `scope`.
+   - `non_goal`: the non-goal or constraint it conflicts with, quoted, or empty.
+   - `reason`: one or two sentences on why it cannot be done as written.
 3. Emit `<promise>COMPLETE</promise>`.
 
-Scope creep is never the right answer. Emitting `<blocked>` is strictly better than
-expanding scope to make the work fit.
+A `criterion` block returns the issue to a human, who decides whether the criterion
+or the non-goal changes. A `scope` block stops the run for a human. Both are strictly
+better than expanding scope, or than shipping something else under the criterion's
+name. Do not block on a requirement that is merely hard: block only when it cannot
+be met as written.
 
 If, after inspecting the current checkout, the task's acceptance criteria are
 already satisfied with no code changes needed:

@@ -552,8 +552,10 @@ cat > "$T/tasks.json" <<'EOF'
 EOF
 echo 0 > "$T/task_index"; echo 0 > "$T/split_rounds"
 
+echo '{"kind":"scope","reason":"old"}' > "$T/task_blocked.json"
 OUT=$(sh "$T/next_task.sh" 2>/dev/null)
 check "selects first task"          "small" "$(jq -r .id "$T/current_task.json")"
+check "drops a stale block file"    "absent" "$([ -e "$T/task_blocked.json" ] && echo present || echo absent)"
 check "not done yet"                "false" "$(jq -r '.context_updates.tasks_done' <<<"$(lastjson "$OUT")")"
 sh "$T/next_task.sh" >/dev/null 2>&1
 check "selects oversized task"      "big"   "$(jq -r .id "$T/current_task.json")"
@@ -1191,6 +1193,74 @@ for e in 'return_to_triage->exit outcome=succeeded' \
     check "edge: $e" "1" "$(grep -cxF -- "$e" <<<"$EDG")"
 done
 check "edge: return_to_triage has no other exit" "2" "$(grep -c '^return_to_triage->' <<<"$EDG")"
+
+# ---------------------------------------------------------------------------
+# task_block_gate — the coder and the rework tiers block through a contract
+# (#17, docs/unmet-criteria C2), never by substitution
+#
+# No file, or one from an older visit, is `none` (the old file is deleted). A valid
+# criterion block returns the issue to triage; a scope block, or any file this visit
+# wrote that is not a valid criterion block, goes to a human. Never `none`: a stage
+# that tried to block and got the shape wrong must not have its empty diff reviewed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "task_block_gate"
+T="$WORK/tbg"; mkdir -p "$T"; stage task_block_gate
+mkreadok ok1 current_task.json issue.json
+tb_setup() { # tb_setup <task_blocked.json body or empty> <visit>
+    rm -f "$T/task_blocked.json" "$T/return.json" "$T/task_block_scope.md"
+    printf '%s' '{"id":"t1","title":"Verification screen","body":"b","files":[]}' > "$T/current_task.json"
+    if [ -n "$1" ]; then printf '%s' "$1" | jq --arg v "$2" '._io.visit=$v' > "$T/task_blocked.json"; fi
+}
+tb_run() { OUT=$(sh "$T/task_block_gate.sh" 2>&1); RC=$?; J=$(lastjson "$OUT"); }
+tb_setup '' ok1; tb_run
+check "tbg none: exits 0"              "0" "$RC"
+check "tbg none: routes on"            "none" "$(jq -r '.context_updates.task_block' <<<"$J")"
+check "tbg none: one routing object"   "1" "$(grep -c 'context_updates' <<<"$OUT")"
+check "tbg none: empty questions"      "" "$(jq -r '.context_updates.triage_questions' <<<"$J")"
+tb_setup '{"kind":"criterion","criterion":"c","non_goal":"n","reason":"r"}' older; tb_run
+check "tbg stale: none"                "none" "$(jq -r '.context_updates.task_block' <<<"$J")"
+check "tbg stale: file deleted"        "absent" "$([ -e "$T/task_blocked.json" ] && echo present || echo absent)"
+check "tbg stale: no return"           "absent" "$([ -e "$T/return.json" ] && echo present || echo absent)"
+tb_setup '{"kind":"criterion","criterion":"The screen offers a \"Resend email\" action","non_goal":"No backend changes","reason":"Resending calls the Auth0 API with a secret; the task allows no backend."}' ok1; tb_run
+check "tbg criterion: exits 0"         "0" "$RC"
+check "tbg criterion: routes"          "criterion" "$(jq -r '.context_updates.task_block' <<<"$J")"
+check "tbg criterion: source"          "coder" "$(jq -r '.source' "$T/return.json" 2>/dev/null)"
+check "tbg criterion: criterion"       'The screen offers a "Resend email" action' "$(jq -r '.items[0].criterion' "$T/return.json" 2>/dev/null)"
+check "tbg criterion: non_goal"        "No backend changes" "$(jq -r '.items[0].non_goal' "$T/return.json" 2>/dev/null)"
+check "tbg criterion: why"             "1" "$(jq -r '.items[0].why' "$T/return.json" 2>/dev/null | grep -c 'Auth0')"
+check "tbg criterion: questions"       "1" "$(jq -r '.context_updates.triage_questions' <<<"$J" | grep -c 'Resend email action (conflicts with: No backend changes)')"
+check "tbg criterion: no quote"        "0" "$(jq -r '.context_updates.triage_questions' <<<"$J" | grep -c '\"')"
+check "tbg criterion: file consumed"   "absent" "$([ -e "$T/task_blocked.json" ] && echo present || echo absent)"
+tb_setup '{"kind":"criterion","criterion":"c","non_goal":"","reason":"the code cannot do it"}' ok1; tb_run
+check "tbg no non-goal: criterion"     "criterion" "$(jq -r '.context_updates.task_block' <<<"$J")"
+check "tbg no non-goal: says so"       "1" "$(jq -r '.items[0].non_goal' "$T/return.json" 2>/dev/null | grep -c 'constraints')"
+tb_setup '{"kind":"scope","criterion":"","non_goal":"","reason":"Needs a change to src/api/client.ts, outside the task."}' ok1; tb_run
+check "tbg scope: routes"              "scope" "$(jq -r '.context_updates.task_block' <<<"$J")"
+check "tbg scope: reason kept"         "1" "$(grep -c 'src/api/client.ts' "$T/task_block_scope.md" 2>/dev/null)"
+check "tbg scope: names the task"      "1" "$(grep -c 'Verification screen' "$T/task_block_scope.md" 2>/dev/null)"
+check "tbg scope: no return"           "absent" "$([ -e "$T/return.json" ] && echo present || echo absent)"
+tb_setup '{"kind":"criterion","criterion":"","non_goal":"n","reason":"r"}' ok1; tb_run
+check "tbg empty criterion: scope"     "scope" "$(jq -r '.context_updates.task_block' <<<"$J")"
+tb_setup '{"kind":"bogus","criterion":"c","non_goal":"n","reason":"r"}' ok1; tb_run
+check "tbg bad kind: scope"            "scope" "$(jq -r '.context_updates.task_block' <<<"$J")"
+tb_setup 'not json' ok1; printf 'not json' > "$T/task_blocked.json"; tb_run
+check "tbg unreadable: not none"       "scope" "$(jq -r '.context_updates.task_block' <<<"$J")"
+tb_setup '' ok1; echo '{"kind":"scope"}' > "$T/task_block_scope.md"; tb_run
+check "tbg none: old scope note gone"  "absent" "$([ -e "$T/task_block_scope.md" ] && echo present || echo absent)"
+for e in 'coder->task_block_gate outcome=succeeded' \
+         'coder->task_block_gate outcome=partially_succeeded' \
+         'rework_t1->task_block_gate outcome=succeeded' \
+         'rework_t2->task_block_gate outcome=succeeded' \
+         'rework_t3->task_block_gate outcome=succeeded' \
+         'rework_t4->task_block_gate outcome=succeeded' \
+         'task_block_gate->autofix context.task_block=none' \
+         'task_block_gate->return_to_triage context.task_block=criterion' \
+         'task_block_gate->rescue_brief '; do
+    check "edge: $e" "1" "$(grep -cxF -- "$e" <<<"$EDG")"
+done
+check "edge: task_block_gate has no other exit" "3" "$(grep -c '^task_block_gate->' <<<"$EDG")"
+check "edge: no coder or rework straight to autofix" "0" "$(grep -cE '^(coder|rework_t[0-9])->autofix' <<<"$EDG")"
 
 
 # ---------------------------------------------------------------------------
@@ -2812,6 +2882,16 @@ printf '%s' '{"number":1279,"title":"t","labels":[]}' > "$FAB/issue.json"; rs_ta
 : > "$T/empty_diff"; rs_run 'open_pr_prep|deterministic|script failed with exit code: <n>'
 check "superseded: not without a landed task" "no" "$(rs_has 'Main already has this change')"
 rm -f "$T/empty_diff"
+
+# 6b. The coder blocked on scope (#17, docs/unmet-criteria C2): task_block_gate kept the
+# reason, and the brief says it instead of "a gate rejected its agent's output". The note
+# stays: task_block_gate deletes it on its next visit, and a failure signature outranks it.
+rs_setup 2 1 t2
+printf '%s\n' 'The coder blocked on task 2 (T2): Needs src/api/client.ts, outside the task.' > "$FAB/task_block_scope.md"
+rs_run ''
+check "scope block: says the coder blocked" "yes" "$(rs_has 'Needs src/api/client.ts, outside the task.')"
+check "scope block: not the generic line"   "no" "$(rs_has 'a gate rejected its agent')"
+check "scope block: prints only the object" "1" "$(printf '%s\n' "$OUT" | grep -c .)"
 
 # 7. The auto-merge sentence follows the same switches the merge phase reads.
 rs_setup 6 5 t6

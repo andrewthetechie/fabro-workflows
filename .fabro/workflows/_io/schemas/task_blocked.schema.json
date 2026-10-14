@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task_blocked",
+  "title": "task_blocked — the coder or a rework tier blocks (#17)",
+  "description": "Submitted only to block (docs/unmet-criteria C2): a stage that implements its task submits nothing. task_block_gate routes kind criterion to return_to_triage and kind scope to rescue_brief, and treats a criterion block with an empty criterion as scope, a gate check. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "criterion", "non_goal", "reason"],
+  "properties": {
+    "kind": { "enum": ["criterion", "scope"], "description": "criterion: an acceptance criterion cannot be met as written. scope: the task cannot be done without files outside it." },
+    "criterion": { "type": "string", "description": "The acceptance criterion, quoted. Required non-empty for kind criterion; empty for scope." },
+    "non_goal": { "type": "string", "description": "The non-goal or constraint the criterion conflicts with, quoted, or empty." },
+    "reason": { "type": "string", "minLength": 1, "description": "One or two sentences: why it cannot be done as written." }
+  }
+}

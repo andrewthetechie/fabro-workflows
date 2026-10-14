@@ -655,6 +655,10 @@
               "about": "the parent issue, for reporter intent and human discussion; supplemental"
             }
           ],
+          "output": {
+            "path": "/tmp/fabro/task_blocked.json",
+            "schema": "task_blocked"
+          },
           "sealed": [],
           "also": []
         },
@@ -758,6 +762,10 @@
               "about": "the parent issue, supplemental (and the fallback task source)"
             }
           ],
+          "output": {
+            "path": "/tmp/fabro/task_blocked.json",
+            "schema": "task_blocked"
+          },
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
@@ -807,6 +815,10 @@
               "about": "the parent issue, supplemental (and the fallback task source)"
             }
           ],
+          "output": {
+            "path": "/tmp/fabro/task_blocked.json",
+            "schema": "task_blocked"
+          },
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
@@ -856,6 +868,10 @@
               "about": "the parent issue, supplemental (and the fallback task source)"
             }
           ],
+          "output": {
+            "path": "/tmp/fabro/task_blocked.json",
+            "schema": "task_blocked"
+          },
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
@@ -905,6 +921,10 @@
               "about": "the parent issue, supplemental (and the fallback task source)"
             }
           ],
+          "output": {
+            "path": "/tmp/fabro/task_blocked.json",
+            "schema": "task_blocked"
+          },
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
