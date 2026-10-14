@@ -89,3 +89,35 @@ The conftest rule (D8) also resolves: `tests --json backend/app/core/db.py` reac
 `no test files import: ...`), and `--json` agrees. `waitlist.py` is the acceptance seed.
 
 `make check` (task 02): green; `ops/check-graph-invariants.py` 0 violations.
+
+## Task 04 acceptance
+
+The task 02 clone, indexed in a fresh `fabro-python-node:local` container with the in-tree
+`fabro-code` and a `fabro-io` 0.5.0-dev musl binary built from this checkout
+(`rust:1.98.1-trixie`, the same image `ops/profile-images/build-images.sh` uses; all 18
+`taskplan_tests` and the rest of `cargo test` passed there). The task 09 draft
+`test.toml` (`[task]`, `tests`, `[checks.prek]`) was committed locally as a throwaway
+commit so it is part of the base, then discarded; the clone is back at `c2a4be0`.
+
+```
+=== backend route (waitlist.py) ===
+{"mode":"scoped","reason":"","checks":["prek"],"targets":[{"name":"backend","args":["tests/api/routes/test_waitlist.py"],"whole":false}],"untested":[],"unchecked":[],"skipped":[]}
+=== bun.lock (built-in **/bun.lock) ===
+{"mode":"full","reason":"full_glob:bun.lock"}
+=== frontend component ===
+{"mode":"scoped","reason":"","targets":[{"name":"frontend","args":["src/components/Admin/Moderation/ActionBar.test.tsx","src/components/Admin/Moderation/ReportDetail.test.tsx"],"whole":false}]}
+```
+
+The backend args are relative to `backend/` and the frontend args to `frontend/`, as C4
+step 7 requires.
+
+Difference to report: the task file's example is `backend/uv.lock`, and
+womens-fantasy-sports has no `backend/uv.lock` (it is not tracked, and never has been). The
+real tracked dependency files are `bun.lock` (root) and `backend/pyproject.toml`; the
+`bun.lock` run shows the built-in `**/bun.lock` glob forcing the full suite, which is what
+the acceptance is about.
+
+Noted, not a bug in the plan: `fabro-code index` writes `.codegraph/`, whose
+`.codegraph/.gitignore` (`*`, `!.gitignore`) is itself untracked, so it appears in
+`changed` on every indexed run. It matches no `full` glob, so it never escalates; the
+`prek` check's `watch = ["**"]` covers it, which is why `unchecked` is empty here.

@@ -416,7 +416,7 @@ impl TestEnv {
 }
 
 /// A glob with `*` stopping at `/`, so `backend/*.py` means one directory level.
-fn glob_builder(pattern: &str) -> GlobBuilder<'_> {
+pub(crate) fn glob_builder(pattern: &str) -> GlobBuilder<'_> {
     let mut builder = GlobBuilder::new(pattern);
     builder.literal_separator(true);
     builder
@@ -971,7 +971,7 @@ fn list_test_files(root: &Path) -> Result<Vec<String>, String> {
 }
 
 /// The compiled set of a validated glob list. `parse` compiled each glob, so this cannot fail.
-fn glob_set(globs: &[String]) -> GlobSet {
+pub(crate) fn glob_set(globs: &[String]) -> GlobSet {
     let mut builder = GlobSetBuilder::new();
     for glob in globs {
         builder.add(
