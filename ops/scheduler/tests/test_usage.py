@@ -9,7 +9,7 @@ made-up zero — so the page can tell "spent nothing" from "could not tell".
 
 from __future__ import annotations
 
-from fabro_scheduler.usage import split_by_model, UsageSplit
+from fabro_scheduler.usage import ModelUsage, model_rows, split_by_model, UsageSplit
 
 
 def _row(
@@ -100,3 +100,38 @@ def test_unpriced_usage_keeps_its_tokens_and_no_cost():
     split = split_by_model([_row("zai", input=5000)])  # no cost -> absent
     assert split.hosted_tokens == 5000
     assert split.hosted_cost_usd_micros == 0
+
+
+def _model(provider, model_id, *, speed=None, **kw):
+    row = _row(provider, **kw)
+    row["model"] = {"provider": provider, "model_id": model_id, "speed": speed}
+    return row
+
+
+def test_model_rows_keep_each_model_and_count_reasoning_as_output():
+    rows = model_rows([
+        _model("zai", "glm-5.3", input=100, output=10, reasoning=5, cache_read=7, cost=900),
+        _model("box-a", "deepseek", input=1000, output=50),
+    ])
+    assert rows == [
+        ModelUsage("box-a", "deepseek", 1, 1000, 50, 0, 0, None),
+        ModelUsage("zai", "glm-5.3", 1, 100, 15, 7, 0, 900),
+    ]
+    assert rows[1].total_tokens == 122
+
+
+def test_model_rows_merge_speed_tiers_of_one_model():
+    rows = model_rows([
+        _model("openai", "gpt-6-luna", speed="fast", input=10, cost=5),
+        _model("openai", "gpt-6-luna", input=20),
+    ])
+    assert rows == [ModelUsage("openai", "gpt-6-luna", 2, 30, 0, 0, 0, 5)]
+
+
+def test_model_rows_skip_unreadable_rows():
+    bad_tokens = _model("zai", "glm-5.3", input=1)
+    bad_tokens["usage"]["tokens"]["output"] = "lots"
+    no_id = _row("zai", input=1)
+    del no_id["model"]["model_id"]
+    assert model_rows([bad_tokens, no_id, "junk"]) == []
+    assert model_rows(None) == []

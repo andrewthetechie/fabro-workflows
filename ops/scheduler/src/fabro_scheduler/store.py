@@ -38,13 +38,14 @@ import logging
 import sqlite3
 import threading
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .github import Issue
 from .prfacts import PrFacts
 from .summary import RunSummary
+from .usage import ModelUsage
 
 log = logging.getLogger(__name__)
 
@@ -199,7 +200,7 @@ CREATE TABLE IF NOT EXISTS run_history (
   hosted_cost_usd_micros INTEGER
 );
 
--- Issue #22, the scorecard. Four tables the collector fills after a run is released
+-- Issue #22, the scorecard. Five tables the collector fills after a run is released
 -- (`collector.py`), and nothing else writes. They are derived data: dropping them
 -- loses nothing that the fabro run store and GitHub cannot rebuild, which the
 -- collector does on its own (every `run_history` row without a summary is work).
@@ -246,6 +247,23 @@ CREATE TABLE IF NOT EXISTS run_failovers (
   error_kind TEXT    NOT NULL,     -- the provider error's llm_kind: "access_denied"
   count      INTEGER NOT NULL,
   PRIMARY KEY (run_id, node_id, from_model, to_model, error_kind)
+);
+
+-- One row per model per run: `GET /runs/{id}/usage`'s `by_model`, kept whole for the
+-- Metrics tab's "Tokens by model" table (`usage.model_rows`). Filled by the collector
+-- after the run is summarized; `run_summary.model_usage` says whether it has been read.
+-- `output_tokens` includes reasoning. `cost_usd_micros` is NULL when fabro priced none of it.
+CREATE TABLE IF NOT EXISTS run_model_usage (
+  run_id             TEXT    NOT NULL,
+  provider           TEXT    NOT NULL,  -- "zai", "box-a", "kimi"
+  model_id           TEXT    NOT NULL,  -- "glm-5.3"
+  stages             INTEGER NOT NULL,  -- usage-bearing stage visits on this model
+  input_tokens       INTEGER NOT NULL,
+  output_tokens      INTEGER NOT NULL,
+  cache_read_tokens  INTEGER NOT NULL,
+  cache_write_tokens INTEGER NOT NULL,
+  cost_usd_micros    INTEGER,
+  PRIMARY KEY (run_id, provider, model_id)
 );
 
 -- What became of each factory PR (`prfacts.py`). Refetched while `state` is
@@ -296,6 +314,10 @@ ADDED_COLUMNS = {
     "run_summary": {
         "first_edit_ms": "first_edit_ms TEXT",
         "dispositions": "dispositions TEXT",
+        # Whether `run_model_usage` has been read for the run: NULL (not yet), `ok`,
+        # `none` (fabro reported no model usage), `missing` (404) or `error` (retried).
+        "model_usage": "model_usage TEXT",
+        "model_usage_at": "model_usage_at TEXT",
     },
 }
 
@@ -355,6 +377,7 @@ class ScorecardRows:
     stages: list[sqlite3.Row]
     failovers: list[sqlite3.Row]
     prs: list[sqlite3.Row]
+    models: list[sqlite3.Row] = field(default_factory=list)  # run_model_usage
 
 
 @dataclass(frozen=True)
@@ -1137,6 +1160,64 @@ class Store:
                 (run_id, status, _stamp(at), error[:500]),
             )
 
+    def runs_to_read_models(self, *, retry_before: datetime, limit: int) -> list[str]:
+        """Summarized runs whose model usage has not been read, newest first.
+
+        Only `ok` summaries: a `missing` run is gone from fabro, and an `error` one is
+        read once its summary succeeds. An `error` read is retried once its last
+        attempt is older than `retry_before`. One small GET per run, so the whole
+        history backfills within a few ticks of a deploy.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT s.run_id FROM run_summary s JOIN run_history h ON h.run_id = s.run_id "
+                "WHERE s.status = 'ok' AND (s.model_usage IS NULL OR "
+                "  (s.model_usage = 'error' AND s.model_usage_at <= ?)) "
+                "ORDER BY h.finished_at DESC, h.run_id DESC LIMIT ?",
+                (retry_before.isoformat(), limit),
+            ).fetchall()
+        return [row["run_id"] for row in rows]
+
+    def save_model_usage(
+        self, run_id: str, rows: Sequence[ModelUsage], *, at: datetime | None = None
+    ) -> None:
+        """Replace one run's model rows and mark it read (`ok`, or `none` if empty)."""
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM run_model_usage WHERE run_id = ?", (run_id,))
+            self._conn.executemany(
+                "INSERT INTO run_model_usage (run_id, provider, model_id, stages, input_tokens,"
+                " output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_micros)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        row.provider,
+                        row.model_id,
+                        row.stages,
+                        row.input_tokens,
+                        row.output_tokens,
+                        row.cache_read_tokens,
+                        row.cache_write_tokens,
+                        row.cost_usd_micros,
+                    )
+                    for row in rows
+                ],
+            )
+            self._conn.execute(
+                "UPDATE run_summary SET model_usage = ?, model_usage_at = ? WHERE run_id = ?",
+                ("ok" if rows else "none", _stamp(at), run_id),
+            )
+
+    def save_model_usage_failure(
+        self, run_id: str, status: str, *, at: datetime | None = None
+    ) -> None:
+        """Record that a run's model usage could not be read: `missing` or `error`."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE run_summary SET model_usage = ?, model_usage_at = ? WHERE run_id = ?",
+                (status, _stamp(at), run_id),
+            )
+
     def prs_to_refresh(self, *, stale_before: datetime, limit: int) -> list[tuple[str, int]]:
         """Factory PRs whose facts are missing, or open and older than `stale_before`.
 
@@ -1198,7 +1279,7 @@ class Store:
     def scorecard_rows(self, start: datetime, end: datetime) -> ScorecardRows:
         """Everything the scorecard reads for runs dispatched in `[start, end)`.
 
-        Five SELECTs under one lock, so the window is one consistent snapshot.
+        Six SELECTs under one lock, so the window is one consistent snapshot.
         """
         bounds = (start.isoformat(), end.isoformat())
         in_window = "SELECT run_id FROM run_history WHERE dispatched_at >= ? AND dispatched_at < ?"
@@ -1223,7 +1304,10 @@ class Store:
                 "  AND h.dispatched_at >= ? AND h.dispatched_at < ?)",
                 bounds,
             ).fetchall()
-        return ScorecardRows(history, summaries, stages, failovers, prs)
+            models = self._conn.execute(
+                f"SELECT * FROM run_model_usage WHERE run_id IN ({in_window})", bounds
+            ).fetchall()
+        return ScorecardRows(history, summaries, stages, failovers, prs, models)
 
     def first_dispatch(self) -> datetime | None:
         """When the oldest `run_history` row was dispatched, or None if there is none."""

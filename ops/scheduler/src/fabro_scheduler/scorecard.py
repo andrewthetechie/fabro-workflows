@@ -35,6 +35,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from .store import ScorecardRows
+from .usage import LOCAL_PROVIDERS
 
 WEEK = timedelta(days=7)
 
@@ -105,6 +106,28 @@ class FailoverLine:
 
 
 @dataclass(frozen=True)
+class ModelLine:
+    """One model's tokens over the window's runs (`run_model_usage`)."""
+
+    provider: str
+    model_id: str
+    local: bool  # a LAN coder box (`usage.LOCAL_PROVIDERS`), not a metered provider
+    runs: int
+    stages: int
+    input_tokens: int
+    output_tokens: int  # output plus reasoning
+    cache_read_tokens: int
+    cache_write_tokens: int
+    total_tokens: int
+    share: float  # of the window's total tokens
+    cost_usd: float | None  # None when fabro priced none of it
+
+    @property
+    def name(self) -> str:
+        return f"{self.provider}/{self.model_id}"
+
+
+@dataclass(frozen=True)
 class NoPrLine:
     terminal_node: str
     runs: int
@@ -157,6 +180,8 @@ class Scorecard:
     hosted_tokens: int
     hosted_cost_usd: float
     repos: list[RepoLine] = field(default_factory=list)
+    models: list[ModelLine] = field(default_factory=list)
+    models_runs: int = 0  # runs in the window whose model usage has been read
 
     @property
     def merge_rate(self) -> float | None:
@@ -313,6 +338,8 @@ def compute(rows: ScorecardRows, start: datetime, end: datetime) -> Scorecard:
         key=lambda line: (-line.box_hours, line.repo),
     )
 
+    models, models_runs = _model_lines(rows.models, summaries)
+
     return Scorecard(
         start=start,
         end=end,
@@ -344,7 +371,61 @@ def compute(rows: ScorecardRows, start: datetime, end: datetime) -> Scorecard:
         hosted_tokens=sum(row["hosted_tokens"] or 0 for row in history),
         hosted_cost_usd=sum(row["hosted_cost_usd_micros"] or 0 for row in history) / 1e6,
         repos=repos,
+        models=models,
+        models_runs=models_runs,
     )
+
+
+def _model_lines(
+    rows: Iterable[sqlite3.Row], summaries: dict[str, sqlite3.Row]
+) -> tuple[list[ModelLine], int]:
+    """The window's `run_model_usage` rows summed per model, most tokens first.
+
+    Also returns how many of the window's runs have had their model usage read, so
+    the page can say when the table is still filling.
+    """
+    sums: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+    runs: dict[tuple[str, str], set[str]] = defaultdict(set)
+    costs: dict[tuple[str, str], int | None] = {}
+    for row in rows:
+        key = (row["provider"], row["model_id"])
+        runs[key].add(row["run_id"])
+        for column in (
+            "stages", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"
+        ):
+            sums[key][column] += row[column] or 0
+        cost = row["cost_usd_micros"]
+        if cost is not None:
+            costs[key] = (costs.get(key) or 0) + cost
+        else:
+            costs.setdefault(key, None)
+    totals = {
+        key: c["input_tokens"] + c["output_tokens"] + c["cache_read_tokens"] + c["cache_write_tokens"]
+        for key, c in sums.items()
+    }
+    grand = sum(totals.values())
+    lines = [
+        ModelLine(
+            provider=key[0],
+            model_id=key[1],
+            local=key[0] in LOCAL_PROVIDERS,
+            runs=len(runs[key]),
+            stages=c["stages"],
+            input_tokens=c["input_tokens"],
+            output_tokens=c["output_tokens"],
+            cache_read_tokens=c["cache_read_tokens"],
+            cache_write_tokens=c["cache_write_tokens"],
+            total_tokens=totals[key],
+            share=totals[key] / grand if grand else 0.0,
+            cost_usd=costs[key] / 1e6 if costs.get(key) is not None else None,
+        )
+        for key, c in sums.items()
+    ]
+    lines.sort(key=lambda line: (-line.total_tokens, line.name))
+    read = sum(
+        1 for summary in summaries.values() if summary["model_usage"] in ("ok", "none")
+    )
+    return lines, read
 
 
 def held_bucket(fact: sqlite3.Row | None) -> str:
@@ -466,6 +547,7 @@ def to_markdown(card: Scorecard) -> str:
         )
         + " |",
     ]
+    lines.extend(["", *_model_table(card)])
     if card.unknown:
         lines.append("")
         lines.append(f"{card.unknown} PR(s) have not been read from GitHub yet.")
@@ -476,6 +558,39 @@ def to_markdown(card: Scorecard) -> str:
             " share, timeouts, failovers and terminal nodes count only summarized runs."
         )
     return "\n".join(lines) + "\n"
+
+
+def _model_table(card: Scorecard) -> list[str]:
+    """The "Tokens by model" table: one row per provider and model, most tokens first."""
+    lines = [
+        f"Tokens by model ({card.models_runs} of {card.runs} runs read)",
+        "",
+        "| Model | Where | Runs | Visits | Input | Output | Cache read | Total | Share | Cost |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for m in card.models:
+        lines.append(
+            f"| {m.name} | {'local' if m.local else 'hosted'} | {m.runs} | {m.stages} |"
+            f" {tokens(m.input_tokens)} | {tokens(m.output_tokens)} |"
+            f" {tokens(m.cache_read_tokens + m.cache_write_tokens)} | {tokens(m.total_tokens)} |"
+            f" {_pct(m.share)} | {_usd(m.cost_usd)} |"
+        )
+    if not card.models:
+        lines.append("| none | | | | | | | | | |")
+    return lines
+
+
+def tokens(count: int) -> str:
+    """A token count as the page shows it: 950, 12.3k, 4.56M, 1.20B."""
+    for size, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "k")):
+        if count >= size:
+            value = count / size
+            return f"{value:.2f}{suffix}" if value < 10 else f"{value:.1f}{suffix}"
+    return str(count)
+
+
+def _usd(value: float | None) -> str:
+    return "n/a" if value is None else f"${value:.2f}"
 
 
 def _refute_line(raw: Iterable[str | None]) -> RefuteLine:

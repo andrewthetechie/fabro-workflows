@@ -38,10 +38,29 @@ def released(store, run_id, *, finished=NOW - timedelta(hours=1), pr=None):
     )
 
 
+USAGE = {"by_model": [
+    {"model": {"provider": "zai", "model_id": "glm-5.3"}, "stages": 3,
+     "usage": {"tokens": {"input": 900, "output": 80, "reasoning": 20, "cache_read": 0,
+                          "cache_write": 0}, "cost": {"usd_micros": 1500, "source": "catalog"}}},
+    {"model": {"provider": "box-a", "model_id": "deepseek"}, "stages": 2,
+     "usage": {"tokens": {"input": 5000, "output": 400, "reasoning": 0, "cache_read": 100,
+                          "cache_write": 0}}},
+]}
+
+
 class FakeFabro:
-    def __init__(self, fail=None):
+    def __init__(self, fail=None, usage_fail=None, usage=None):
         self.fail = fail or {}  # run_id -> status code
+        self.usage_fail = usage_fail or {}  # run_id -> status code, for run_usage
+        self.usage = USAGE if usage is None else usage
         self.streamed = []
+        self.usage_read = []
+
+    def run_usage(self, run_id):
+        self.usage_read.append(run_id)
+        if run_id in self.usage_fail:
+            raise FabroError("boom", status_code=self.usage_fail[run_id])
+        return self.usage
 
     def summary_stages(self, run_id):
         if run_id in self.fail:
@@ -193,3 +212,69 @@ def test_iter_events_never_loops_on_a_seq_that_does_not_advance():
         return_value=httpx.Response(200, json={"data": [{"seq": 0}], "meta": {"has_more": True}})
     )
     assert len(list(iter_events(FABRO_API, "tok", "R1"))) == 1
+
+
+def model_rows_of(store, run_id):
+    return store._conn.execute(
+        "SELECT * FROM run_model_usage WHERE run_id = ? ORDER BY provider", (run_id,)
+    ).fetchall()
+
+
+def test_model_usage_is_read_once_after_the_summary(store):
+    released(store, "R1")
+    fabro = FakeFabro()
+    report = collector(store, fabro).tick()
+    assert report.summarized == 1 and report.models == 1
+    rows = model_rows_of(store, "R1")
+    assert [(r["provider"], r["model_id"], r["stages"]) for r in rows] == [
+        ("box-a", "deepseek", 2), ("zai", "glm-5.3", 3)]
+    zai = rows[1]
+    assert (zai["input_tokens"], zai["output_tokens"], zai["cost_usd_micros"]) == (900, 100, 1500)
+    assert rows[0]["cost_usd_micros"] is None and rows[0]["cache_read_tokens"] == 100
+    assert summary_row(store, "R1")["model_usage"] == "ok"
+    assert collector(store, fabro).tick().models == 0
+    assert fabro.usage_read == ["R1"]
+
+
+def test_model_usage_backfills_runs_summarized_before_it_existed(store):
+    for i, hours in enumerate((5, 3, 1)):
+        released(store, f"R{i}", finished=NOW - timedelta(hours=hours))
+    fabro = FakeFabro()
+    collector(store, fabro, runs=3).tick()
+    store._conn.execute("UPDATE run_summary SET model_usage = NULL, model_usage_at = NULL")
+    store._conn.execute("DELETE FROM run_model_usage")
+    fabro.usage_read.clear()
+    c = ScorecardCollector(store, fabro, "", "andrews-ai-agent", runs_per_tick=3,
+                           models_per_tick=2, pr_reader=lambda r, n: facts(), now=lambda: NOW)
+    assert c.tick().models == 2
+    assert fabro.usage_read == ["R2", "R1"]  # newest first
+    assert c.tick().models == 1
+
+
+def test_model_usage_is_not_read_for_an_unsummarized_run(store):
+    released(store, "GONE")
+    fabro = FakeFabro(fail={"GONE": 404})
+    assert collector(store, fabro).tick().models == 0
+    assert fabro.usage_read == []
+
+
+def test_empty_model_usage_is_none_and_a_404_is_missing(store):
+    released(store, "EMPTY", finished=NOW - timedelta(hours=2))
+    released(store, "PRUNED", finished=NOW - timedelta(hours=1))
+    fabro = FakeFabro(usage={"by_model": []}, usage_fail={"PRUNED": 404})
+    report = collector(store, fabro).tick()
+    assert report.models == 1 and report.model_failures == 0
+    assert summary_row(store, "EMPTY")["model_usage"] == "none"
+    assert summary_row(store, "PRUNED")["model_usage"] == "missing"
+    assert collector(store, fabro, now=NOW + RETRY_AFTER * 10).tick().models == 0
+
+
+def test_a_model_usage_error_is_retried_after_the_backoff(store):
+    released(store, "FLAKY")
+    fabro = FakeFabro(usage_fail={"FLAKY": 500})
+    assert collector(store, fabro).tick().model_failures == 1
+    assert summary_row(store, "FLAKY")["model_usage"] == "error"
+    assert collector(store, fabro, now=NOW + timedelta(minutes=5)).tick().model_failures == 0
+    fabro.usage_fail.clear()
+    assert collector(store, fabro, now=NOW + RETRY_AFTER + timedelta(minutes=1)).tick().models == 1
+    assert summary_row(store, "FLAKY")["model_usage"] == "ok"

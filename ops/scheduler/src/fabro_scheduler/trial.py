@@ -93,6 +93,7 @@ def split_by_arm(rows: ScorecardRows) -> dict[str, ScorecardRows]:
             stages=[row for row in rows.stages if row["run_id"] in ids],
             failovers=[row for row in rows.failovers if row["run_id"] in ids],
             prs=[row for row in rows.prs if (row["repo"], row["pr_number"]) in keys],
+            models=[row for row in rows.models if row["run_id"] in ids],
         )
     return out
 

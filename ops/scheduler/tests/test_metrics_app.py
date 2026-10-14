@@ -112,3 +112,21 @@ def test_window_parsing_never_raises():
     for junk in (("nope", "nope", "x"), ("2026-10-05", "2026-10-01", None), (None, None, "-3")):
         start, end = _window(*junk)
         assert start < end
+
+
+def test_metrics_page_shows_tokens_by_model(client, store):
+    from fabro_scheduler.summary import RunSummary
+    from fabro_scheduler.usage import ModelUsage
+    from collections import Counter
+
+    seed(store, "R1", datetime.now(UTC) - timedelta(days=1))
+    store.save_run_summary(RunSummary("R1", {}, Counter(), [], None, [], 1))
+    store.save_model_usage("R1", [
+        ModelUsage("zai", "glm-5.3", 2, 1_500_000, 20_000, 0, 0, 1_250_000),
+        ModelUsage("box-a", "deepseek", 4, 3_000_000, 90_000, 0, 0, None),
+    ])
+    html = client.get("/metrics").text
+    assert "Tokens by model" in html
+    assert "zai/glm-5.3" in html and "box-a/deepseek" in html
+    assert "1.50M" in html and "$1.25" in html
+    assert client.get("/api/scorecard").json()["models"][0]["model_id"] == "deepseek"

@@ -11,6 +11,7 @@ from fabro_scheduler import scorecard
 from fabro_scheduler.prfacts import PrFacts
 from fabro_scheduler.store import RunOutcome, Store
 from fabro_scheduler.summary import RefuteVerdict, RunSummary, StageStat
+from fabro_scheduler.usage import ModelUsage
 
 REPO = "andrewthetechie/jelly-swipe"
 OTHER = "andrewthetechie/writers-app"
@@ -283,3 +284,35 @@ def test_week_windows_are_iso_weeks_oldest_first():
         "2026-09-28", "2026-10-05", "2026-10-12",
     ]
     assert all(end - start == timedelta(days=7) for start, end in windows)
+
+
+def test_tokens_by_model(store):
+    run(store, "R1")
+    run(store, "R2")
+    run(store, "R3")  # summarized, model usage not read yet
+    run(store, "OUT", at=T0 - timedelta(days=1))  # outside the window
+    for run_id in ("R1", "R2", "R3", "OUT"):
+        store.save_run_summary(summary(run_id, [StageStat("coder", "agent", visits=1)]))
+    glm = lambda i, o, c: ModelUsage("zai", "glm-5.3", 2, i, o, 0, 0, c)
+    box = ModelUsage("box-a", "deepseek", 3, 9000, 500, 400, 100, None)
+    store.save_model_usage("R1", [box, glm(1000, 100, 2_000_000)])
+    store.save_model_usage("R2", [glm(500, 50, 1_000_000)])
+    store.save_model_usage("OUT", [glm(10**9, 0, 9)])
+    card = compute(store)
+    assert card.models_runs == 2
+    by_name = {m.name: m for m in card.models}
+    assert [m.name for m in card.models] == ["box-a/deepseek", "zai/glm-5.3"]
+    assert by_name["box-a/deepseek"].local and not by_name["zai/glm-5.3"].local
+    g = by_name["zai/glm-5.3"]
+    assert (g.runs, g.stages, g.input_tokens, g.output_tokens, g.total_tokens) == (2, 4, 1500, 150, 1650)
+    assert g.cost_usd == 3.0 and by_name["box-a/deepseek"].cost_usd is None
+    assert abs(sum(m.share for m in card.models) - 1.0) < 1e-9
+    text = scorecard.to_markdown(card)
+    assert "Tokens by model (2 of 3 runs read)" in text
+    assert "| zai/glm-5.3 | hosted | 2 | 4 | 1.50k | 150 | 0 | 1.65k | 14% | $3.00 |" in text
+    assert "| box-a/deepseek | local | 1 | 3 | 9.00k | 500 | 500 | 10.0k | 86% | n/a |" in text
+
+
+def test_token_formatting():
+    assert [scorecard.tokens(n) for n in (0, 950, 12_345, 4_560_000, 1_200_000_000)] == [
+        "0", "950", "12.3k", "4.56M", "1.20B"]

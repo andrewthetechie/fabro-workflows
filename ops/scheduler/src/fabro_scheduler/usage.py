@@ -155,3 +155,95 @@ def _cost_usd_micros(usage: Mapping[str, object]) -> int | None:
     if isinstance(micros, bool) or not isinstance(micros, int):
         return None
     return micros
+
+
+@dataclass(frozen=True)
+class ModelUsage:
+    """One model's share of one run: a `by_model` row kept whole for the scorecard.
+
+    The history page needs only the local/hosted split above; the Metrics tab's
+    "Tokens by model" table needs each row, so the collector stores these per run
+    (`run_model_usage`). `output_tokens` includes reasoning, as everywhere else in
+    the scorecard. `cost_usd_micros` is None when fabro priced none of it.
+    """
+
+    provider: str
+    model_id: str
+    stages: int
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    cost_usd_micros: int | None
+
+    @property
+    def total_tokens(self) -> int:
+        return (
+            self.input_tokens + self.output_tokens + self.cache_read_tokens
+            + self.cache_write_tokens
+        )
+
+
+def model_rows(by_model: object) -> list[ModelUsage]:
+    """fabro's `by_model` array as one `ModelUsage` per provider and model.
+
+    fabro groups by speed tier as well, so two rows can share a provider and model;
+    they are summed here, because the table is about which model did the work. A
+    row whose shape or token counts cannot be read is skipped, the same rule as
+    `split_by_model`. Sorted by provider, then model, so storage order is stable.
+    """
+    if not isinstance(by_model, list):
+        return []
+    merged: dict[tuple[str, str], ModelUsage] = {}
+    for row in by_model:
+        if not isinstance(row, Mapping):
+            continue
+        model = row.get("model")
+        usage = row.get("usage")
+        if not isinstance(model, Mapping) or not isinstance(usage, Mapping):
+            continue
+        provider = model.get("provider")
+        model_id = model.get("model_id")
+        tokens = usage.get("tokens")
+        if not isinstance(provider, str) or not isinstance(model_id, str):
+            continue
+        if not isinstance(tokens, Mapping) or _token_sum(tokens) is None:
+            continue
+        stages = row.get("stages")
+        current = ModelUsage(
+            provider=provider,
+            model_id=model_id,
+            stages=stages if isinstance(stages, int) and not isinstance(stages, bool) else 0,
+            input_tokens=_bucket(tokens, "input"),
+            output_tokens=_bucket(tokens, "output") + _bucket(tokens, "reasoning"),
+            cache_read_tokens=_bucket(tokens, "cache_read"),
+            cache_write_tokens=_bucket(tokens, "cache_write"),
+            cost_usd_micros=_cost_usd_micros(usage),
+        )
+        prior = merged.get((provider, model_id))
+        if prior is not None:
+            current = ModelUsage(
+                provider=provider,
+                model_id=model_id,
+                stages=prior.stages + current.stages,
+                input_tokens=prior.input_tokens + current.input_tokens,
+                output_tokens=prior.output_tokens + current.output_tokens,
+                cache_read_tokens=prior.cache_read_tokens + current.cache_read_tokens,
+                cache_write_tokens=prior.cache_write_tokens + current.cache_write_tokens,
+                cost_usd_micros=_add_cost(prior.cost_usd_micros, current.cost_usd_micros),
+            )
+        merged[(provider, model_id)] = current
+    return [merged[key] for key in sorted(merged)]
+
+
+def _bucket(tokens: Mapping[str, object], name: str) -> int:
+    value = tokens.get(name)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _add_cost(a: int | None, b: int | None) -> int | None:
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a + b

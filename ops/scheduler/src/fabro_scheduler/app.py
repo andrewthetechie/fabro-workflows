@@ -1020,6 +1020,7 @@ def build_app(
                 "collecting": collector is not None,
                 "lease_categories": scorecard.LEASE_CATEGORIES,
                 "idle_categories": scorecard.IDLE_CATEGORIES,
+                "tokens": scorecard.tokens,
             },
         )
 

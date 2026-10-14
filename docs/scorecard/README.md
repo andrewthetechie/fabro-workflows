@@ -64,6 +64,7 @@ are not in it.
 | Runs with no PR, by terminal node | Runs whose release found no PR, by the last node they started. |
 | Refuter verdicts | Each run's `refute_gate` verdicts in order: the first one split pass / fail with a `not_met` / other fail / invalid, then fix turns taken (a second verdict after a first `not_met`) and how many passed. A fail recorded before gate relief has no `not_met` flag. This is gate-relief task 07's measurement. |
 | Open to merge | Hours from the PR opening to its merge, by anyone; p50 and p90, architecture and other. |
+| Tokens by model | Every model call in the window's runs, from fabro's `GET /runs/{id}/usage` `by_model` rollup, which the collector reads once per summarized run into `run_model_usage` (`usage.model_rows`; speed tiers of one model are summed). Per provider and model: runs, stage visits, input, output (with reasoning), cache read plus write, total, share of the window's tokens, and fabro's priced cost. A stage that failed over counts under the model that served it, a subagent under its own model. Local is a LAN coder box (`usage.LOCAL_PROVIDERS`), which fabro does not price. `run_summary.model_usage` records whether a run has been read (`ok`, `none`, `missing`, `error`, retried after an hour), so the first tick after a deploy backfills all of history, 20 runs a tick. |
 
 ## The plan trial (#25)
 

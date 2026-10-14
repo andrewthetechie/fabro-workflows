@@ -215,6 +215,49 @@
 <p class="text-sm text-slate-500">No failovers in this window.</p>
 {% endif %}
 
+<h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Tokens by model</h2>
+<p class="mb-3 max-w-prose text-xs text-slate-500">
+  Every model call in this window's runs, from fabro's per-run usage rollup. A stage that
+  failed over counts under the model that served it, and a subagent under its own model.
+  Output includes reasoning; cache is read plus write. Local is a LAN coder box, which
+  fabro does not price.{% if card.models_runs < card.runs %} Coverage: {{ card.models_runs }} of {{ card.runs }} runs read so far.{% endif %}
+</p>
+{% if card.models %}
+<div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
+<table class="w-full text-sm">
+  <thead class="bg-slate-900/60 text-slate-400"><tr>
+    <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Model</th>
+    <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Where</th>
+    {% for h in ['Runs', 'Visits', 'Input', 'Output', 'Cache', 'Total', 'Share', 'Cost'] %}<th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">{{ h }}</th>{% endfor %}
+  </tr></thead>
+  <tbody class="divide-y divide-slate-800">
+  {% for m in card.models %}
+    <tr><td class="whitespace-nowrap px-4 py-3 font-mono text-[0.85em]">{{ m.name }}</td>
+      <td class="whitespace-nowrap px-4 py-3 {{ 'text-slate-400' if m.local else 'text-amber-300' }}">{{ 'local' if m.local else 'hosted' }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ m.runs }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ m.stages }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ tokens(m.input_tokens) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ tokens(m.output_tokens) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ tokens(m.cache_read_tokens + m.cache_write_tokens) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-100">{{ tokens(m.total_tokens) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ '%.0f%%'|format(m.share * 100) }}</td>
+      <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ ('$%.2f'|format(m.cost_usd)) if m.cost_usd is not none else '&mdash;'|safe }}</td></tr>
+  {% endfor %}
+  </tbody>
+  <tfoot class="border-t border-slate-700 text-slate-300"><tr>
+    <td class="px-4 py-2.5 text-xs font-medium uppercase tracking-wide" colspan="5">All models</td>
+    <td class="px-4 py-2.5"></td><td class="px-4 py-2.5"></td>
+    <td class="whitespace-nowrap px-4 py-2.5 text-right tabular-nums">{{ tokens(card.models|sum(attribute='total_tokens')) }}</td>
+    <td class="px-4 py-2.5"></td>
+    {% set priced = card.models|selectattr('cost_usd', 'ne', none)|list %}
+    <td class="whitespace-nowrap px-4 py-2.5 text-right tabular-nums">{{ ('$%.2f'|format(priced|sum(attribute='cost_usd'))) if priced else '&mdash;'|safe }}</td></tr>
+  </tfoot>
+</table>
+</div>
+{% else %}
+<p class="text-sm text-slate-500">No model usage read for this window yet.</p>
+{% endif %}
+
 <h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">By repository</h2>
 <div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
 <table class="w-full text-sm">
