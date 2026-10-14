@@ -384,6 +384,9 @@ fi"]
     // engine retry would double-increment.
     decompose [label="Decompose issue", class="decomp", timeout="30m", max_retries=1, prompt="@prompts/decompose.md.j2"]
 
+    // On `contradiction` (#17, docs/unmet-criteria C3) it writes return.json and publishes
+    // `triage_questions` for return_to_triage's Discord hook; every routing object carries
+    // the key. Its `QT=` line is task_block_gate's, word for word: change them together.
     decompose_gate [label="Validate decomposition", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/decomposition.json
 A=$(cat /tmp/fabro/decompose_attempts 2>/dev/null || echo 0)
@@ -964,6 +967,8 @@ exit 0"]
     // objects, so it cannot be an old valid block. The
     // file is deleted once read. `triage_questions` is on every routing object, because
     // the Discord hook on return_to_triage reads it at that node's stage_start.
+    // The `QT=` line is decompose_gate's, word for word: both build the question from
+    // return.json the same way, so change them together.
     task_block_gate [label="Read the coder's block", shape=parallelogram, timeout="1m", output_schema="routing",
         script="F=/tmp/fabro/task_blocked.json
 rm -f /tmp/fabro/task_block_scope.md
@@ -2125,12 +2130,12 @@ if [ -n \"$SIG\" ]; then
   NODE=${SIG%%|*}
   REST=${SIG#*|}
   WHAT=\"$NODE failed (${REST%%|*}): ${REST#*|}\"
-elif [ -s $F/task_block_scope.md ]; then
-  WHAT=$(head -c 600 $F/task_block_scope.md | tr '[:cntrl:]' ' ' | sed 's/ *$//')
 elif [ -n \"$MC\" ]; then
   WHAT=\"main changed the same lines as this branch before the PR was built, and resolve_merge_gate rejected the merge agent's resolution. Conflicting files: $MC\"
 elif [ -n \"$FS\" ]; then
   WHAT=\"the final validation (./.fabro/setup.sh && ./.fabro/ci.sh after main was merged in) failed twice on this branch, after the run's one automatic fix turn.\"
+elif [ -s $F/task_block_scope.md ]; then
+  WHAT=$(head -c 600 $F/task_block_scope.md | tr '[:cntrl:]' ' ' | sed 's/ *$//')
 elif [ $ROUND -ge 6 ] && [ -n \"$CUR\" ] && [ \"$FF\" = true ]; then
   WHAT='the fix turn for the final validation failed validate or review.'
 elif [ $ROUND -ge 6 ] && [ -n \"$CUR\" ]; then
@@ -2277,6 +2282,7 @@ jq -cRs '{context_updates: {last_stage: \"rescue_brief\", \"response.rescue_brie
     // were not done. Always exits 0.
     partial_remainder [label="Move unfinished tasks to the remainder", shape=parallelogram,
         script="F=/tmp/fabro
+rm -f $F/task_block_scope.md
 COUNT=$(jq length $F/tasks.json 2>/dev/null)
 case \"$COUNT\" in '' | *[!0-9]*) COUNT=0 ;; esac
 IDX=$(cat $F/task_index 2>/dev/null)
@@ -2295,24 +2301,6 @@ jq --argjson i $FROM '.[0:$i]' $F/tasks.json > $F/tasks.trim.json 2>/dev/null &&
 echo partial > $F/remainder_kind
 echo 'accept partial: '$((COUNT - FROM))' unfinished task(s) moved to the remainder, which file_remainder files as one held issue after open_pr'"]
 
-    // Taking the receipt off is the load-bearing half of this node, not the
-    // comment. `claim` swapped `agent` -> `agent-in-progress`, and an issue left
-    // wearing it is in no collection the scheduler reads: `agent` no longer has
-    // it, so it is out of the queue, and the only thing that repairs it is the
-    // scheduler's startup receipt scan plus the periodic one added with it.
-    //
-    // So the number is resolved from two sources, not one. issue.json is absent
-    // whenever `claim` failed before its fetch -- which is exactly the run that
-    // arrives here -- and the old `|| echo 0` then silently skipped the label work
-    // entirely. That is what stranded jelly-swipe#353 and lawncare-saas#2277 on
-    // 2026-09-19. /tmp/fabro/issue_number is written by `claim` before any network
-    // call, so it is there whenever the run got past input validation at all.
-    //
-    // The comment carries stuck_reason.md when one was written: the decomposer's summary
-    // when decompose_gate routed here on needs_human_review, or the Contradiction when
-    // return_to_triage failed after writing it (prep deletes the file). Otherwise it is
-    // the generic line. The comment file is written only when a number was found, and the
-    // directory exists whenever claim wrote that number.
     // ---- Return a Contradiction to triage (#17, docs/unmet-criteria C4) ----
     // The issue asks for something its own non-goals forbid, found by `decompose` or by a
     // coder that blocked on a criterion. Only a human can say which side gives, so the
@@ -2354,6 +2342,24 @@ if ! gh issue edit $N --remove-label agent --remove-label agent-in-progress --ad
 R=$(jq -r '\"Returned to triage: \" + ([.items[] | .criterion + \" conflicts with \" + .non_goal] | join(\"; \"))' $F | tr '[:cntrl:]' ' ' | cut -c1-300 | sed 's/ *$//')
 jq -nc --arg r \"$R\" '{context_updates:{return_reason:$r}}'"]
 
+    // Taking the receipt off is the load-bearing half of this node, not the
+    // comment. `claim` swapped `agent` -> `agent-in-progress`, and an issue left
+    // wearing it is in no collection the scheduler reads: `agent` no longer has
+    // it, so it is out of the queue, and the only thing that repairs it is the
+    // scheduler's startup receipt scan plus the periodic one added with it.
+    //
+    // So the number is resolved from two sources, not one. issue.json is absent
+    // whenever `claim` failed before its fetch -- which is exactly the run that
+    // arrives here -- and the old `|| echo 0` then silently skipped the label work
+    // entirely. That is what stranded jelly-swipe#353 and lawncare-saas#2277 on
+    // 2026-09-19. /tmp/fabro/issue_number is written by `claim` before any network
+    // call, so it is there whenever the run got past input validation at all.
+    //
+    // The comment carries stuck_reason.md when one was written: the decomposer's summary
+    // when decompose_gate routed here on needs_human_review, or the Contradiction when
+    // return_to_triage failed after writing it (prep deletes the file). Otherwise it is
+    // the generic line. The comment file is written only when a number was found, and the
+    // directory exists whenever claim wrote that number.
     mark_stuck [label="Mark stuck", shape=parallelogram,
         script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || true)
 case \"$N\" in '' | *[!0-9]*) N=$(cat /tmp/fabro/issue_number 2>/dev/null || echo 0) ;; esac
@@ -2514,9 +2520,11 @@ echo done"]
 
     // #17: a stage that blocked never reaches autofix. A criterion block goes back to
     // triage; a scope block, or an unreadable one, takes the unconditional edge to the
-    // rescue gate, which quotes the reason.
-    task_block_gate -> autofix      [condition="context.task_block=none"]
-    task_block_gate -> return_to_triage [condition="context.task_block=criterion"]
+    // rescue gate, which quotes the reason. Both conditional edges require success: a
+    // failed gate applies no context update, and a `none` left by an earlier task must
+    // not carry an unread block past it.
+    task_block_gate -> autofix      [condition="outcome=succeeded && context.task_block=none"]
+    task_block_gate -> return_to_triage [condition="outcome=succeeded && context.task_block=criterion"]
     task_block_gate -> rescue_brief
 
     extra_prep -> final_merge       [condition="context.extra_done=true"]

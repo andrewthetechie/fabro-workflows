@@ -1254,8 +1254,8 @@ for e in 'coder->task_block_gate outcome=succeeded' \
          'rework_t2->task_block_gate outcome=succeeded' \
          'rework_t3->task_block_gate outcome=succeeded' \
          'rework_t4->task_block_gate outcome=succeeded' \
-         'task_block_gate->autofix context.task_block=none' \
-         'task_block_gate->return_to_triage context.task_block=criterion' \
+         'task_block_gate->autofix outcome=succeeded && context.task_block=none' \
+         'task_block_gate->return_to_triage outcome=succeeded && context.task_block=criterion' \
          'task_block_gate->rescue_brief '; do
     check "edge: $e" "1" "$(grep -cxF -- "$e" <<<"$EDG")"
 done
@@ -2922,7 +2922,9 @@ check "cap: still valid JSON"              "rescue_brief" "$(jq -r '.context_upd
 # partial_remainder
 # 10. Mid-task: the unfinished task and the unstarted one move; tasks.json keeps the landed.
 rs_setup 6 5 t6
+echo 'The coder blocked on task T6: out of scope' > "$FAB/task_block_scope.md"
 OUT=$(sh "$T/partial_remainder.sh" 2>&1); RC=$?
+check "partial: drops the scope note"      "absent" "$([ -e "$FAB/task_block_scope.md" ] && echo present || echo absent)"
 check "partial: exits 0"                   "0" "$RC"
 check "partial: moves task 6 and 7"        "t6,t7" "$(jq -r 'map(.id) | join(",")' "$FAB/remainder.json")"
 check "partial: tasks.json keeps 5"        "5" "$(jq length "$FAB/tasks.json")"
@@ -2988,6 +2990,15 @@ check "final red: a later signature wins"  "yes" "$(rs_has 'final_merge failed (
 check "final red: not the final text then" "no" "$(rs_has 'failed twice')"
 check "final red: outranked stop cleared"  "absent" "$([ -e "$FAB/final_stop" ] && echo present || echo absent)"
 rm -f "$FAB/final_stop"
+# #17: a scope note left by an earlier block never outranks the final validation, and the
+# final_stop it would have hidden is kept for record_guidance.
+rs_setup 7 7 t7; echo 'FAILED tests/test_api.py::test_patch' > "$FAB/final_stop"
+echo 'The coder blocked on task T3: an old reason' > "$FAB/task_block_scope.md"
+rs_run ''
+check "final red over scope: final text"   "yes" "$(rs_has 'failed twice')"
+check "final red over scope: no old block" "no" "$(rs_has 'an old reason')"
+check "final red over scope: stop kept"    "present" "$([ -e "$FAB/final_stop" ] && echo present || echo absent)"
+rm -f "$FAB/final_stop" "$FAB/task_block_scope.md"
 
 # 17. Mid-task [P] says a red final validation drops the unreviewed edits.
 rs_setup 6 5 t6; rs_run ''
