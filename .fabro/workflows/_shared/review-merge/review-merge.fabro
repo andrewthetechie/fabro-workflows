@@ -121,6 +121,11 @@ def one($axis):
   \"| Refuter | \" + (if $rverdict == \"\" then \"_did not run_\" else $rverdict end) + \" |\",
   \"| Diff hygiene | \" + (if ($HG.blocking | type) != \"array\" then \"_did not run_\" elif ($HG.blocking | length) == 0 then \"clear\" else \"blocked: \" + ($HG.blocking | join(\", \")) end) + \" |\",
   \"\",
+  \"### Unmet criteria\", \"\",
+  ( if ($RF.criteria | type) != \"array\" then \"_The Refuter did not return a result, so no criterion was checked._\"
+    else ( [ $RF.criteria[] | select(.status != \"met\") | \"- **\" + .status + \"** - \" + .criterion + \" - \" + .evidence ]
+           | if length == 0 then \"_None: the Refuter found every criterion met._\" else join(NL) end ) end ),
+  \"\",
   \"### Findings\", \"\",
   ( $all | if length == 0 then \"_None recorded._\" else [ .[] | one(._a) ] | join(NL) end ),
   \"\",

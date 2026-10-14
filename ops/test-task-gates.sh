@@ -5237,6 +5237,26 @@ rm -f "$T/review/refute_fix.json"
 C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
 check "render: no fix turn, no line"           "0" "$(grep -c "One fix turn ran" <<<"$C")"
 
+# #17 (docs/unmet-criteria C5): the Unmet criteria section, in every report, from the
+# Refuter's checklist alone: not_met and unverifiable, never met.
+echo '{"summary":"s","criteria":[{"criterion":"The screen offers a Resend email action","status":"not_met","evidence":"EmailVerificationScreen.tsx:66 only re-checks"},{"criterion":"429 shows its copy","status":"met","evidence":"ok"},{"criterion":"a sign-in works","status":"unverifiable","evidence":"needs Auth0"}],"defects":[]}' > "$T/review/refute.json"
+for k in blocked merged needs-human queued complete; do
+    C=$( cd "$T" && sh "$T/render_comment.sh" $k 2>&1 )
+    check "render $k: unmet heading"           "1" "$(grep -c '^### Unmet criteria$' <<<"$C")"
+done
+C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
+UM=$(awk '/^### Unmet criteria$/{s=1; next} s && /^### /{s=0} s' <<<"$C")
+check "render: unmet lists not_met"            "1" "$(grep -c '^- \*\*not_met\*\* - The screen offers a Resend email action - EmailVerificationScreen.tsx:66 only re-checks$' <<<"$UM")"
+check "render: unmet lists unverifiable"       "1" "$(grep -c '^- \*\*unverifiable\*\* - a sign-in works - needs Auth0$' <<<"$UM")"
+check "render: unmet omits met"                "0" "$(grep -c '429 shows its copy' <<<"$UM")"
+check "render: unmet before findings"          "yes" "$([ "$(grep -n '^### Unmet criteria$' <<<"$C" | cut -d: -f1)" -lt "$(grep -n '^### Findings$' <<<"$C" | cut -d: -f1)" ] && echo yes || echo no)"
+echo '{"summary":"s","criteria":[{"criterion":"a","status":"met","evidence":"x"}],"defects":[]}' > "$T/review/refute.json"
+C=$( cd "$T" && sh "$T/render_comment.sh" merged 2>&1 )
+check "render: all met says None"              "1" "$(grep -c '^_None: the Refuter found every criterion met._$' <<<"$C")"
+rm -f "$T/review/refute.json"
+C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
+check "render: no refuter says so"             "1" "$(grep -c '^_The Refuter did not return a result, so no criterion was checked._$' <<<"$C")"
+
 # ---------------------------------------------------------------------------
 # the report's commit list (real git): only the review's own commits. pr-review's
 # rebase_check moved run_base_sha past the rebase, and the render excludes
