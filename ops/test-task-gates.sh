@@ -1592,6 +1592,7 @@ opp_repo work
 OUT=$(opp_run); RC=$?
 check "real work exits 0"          "0" "$RC"
 check "real work runs CI"          "2" "$(wc -l < "$T/opp.log" | tr -d ' ')"
+check "real work records the validated tree" "$(git -C "$T/wt" rev-parse 'HEAD^{tree}')" "$(cat "$T/final_validated_tree" 2>/dev/null)"
 check "real work writes a body"    "1" "$(grep -c 'fabro:commit-body:start' "$T/pr_body.md")"
 check "real work derives a CC subject" "1" \
     "$(grep -cE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)(\(.*\))?!?: ' "$T/commit_subject.txt")"
@@ -1840,6 +1841,7 @@ check "red final: rework.md has the validate shape" "1" "$(head -1 "$T/feedback/
 check "red final: rework.md lists the tests first" "1" "$(head -8 "$T/feedback/rework.md" | grep -c '^FAILED tests/test_api.py::test_patch_profile')"
 check "red final: no PR body"                "absent" "$([ -f "$T/pr_body.md" ] && echo present || echo absent)"
 check "red final: fix records the code"      "$(opp_key)" "$(cat "$T/final_fail_keys")"
+check "red final: writes no validated tree"  "absent" "$([ -f "$T/final_validated_tree" ] && echo present || echo absent)"
 
 # 20. The fix turn changed the code and it is still red: the gate, which records it.
 echo fixed >> "$T/wt/a.txt"; git -C "$T/wt" commit -qam 'fabro(01TEST): rework_t4 (succeeded)'
@@ -7517,6 +7519,196 @@ check "monitor C3: only merge-queue rows are recent, so the scheduler is dead" "
 { for i in $(seq 1 30); do mm_row "MQ$i" merge-queue succeeded "$(mm_ago 60)"; done; mm_row BL1 backlog succeeded "$(mm_ago 600)"; } | jq -cs '{data: ., meta: {has_more: false}}' > "$MM/newest.json"
 mm_run
 check "monitor C3: a recent backlog run keeps it quiet" "0|1" "$(grep -c 'DRY.*dead-scheduler' "$MM/out")|$(grep -c 'ok    C3' "$MM/out")"
+
+
+# ---------------------------------------------------------------------------
+# Task validation (ADR 0025 C7): the scoped gate, every full-suite fallback, the
+# placeholder a timeout leaves, the parsed edge, and the merge phase's skip (C8).
+# ---------------------------------------------------------------------------
+echo ""
+echo "task validation (C7)"
+T="$WORK/tv"; mkdir -p "$T/repo/.fabro" "$T/feedback" "$T/bin"
+stage validate
+cat > "$T/repo/.fabro/setup.sh" <<'STUB'
+#!/bin/sh
+echo setup >> "$TV_LOG"
+exit "${TV_SETUP_RC:-0}"
+STUB
+cat > "$T/repo/.fabro/ci.sh" <<'STUB'
+#!/bin/sh
+echo ci >> "$TV_LOG"
+exit "${TV_CI_RC:-0}"
+STUB
+chmod +x "$T/repo/.fabro/setup.sh" "$T/repo/.fabro/ci.sh"
+# The stub fabro-io: writes the canned result to --out, echoes it, records that it
+# was called, and captures the placeholder rework.md before it is replaced.
+cat > "$T/bin/fabro-io" <<'STUB'
+#!/bin/sh
+out=
+while [ $# -gt 0 ]; do
+  case "$1" in --out) out=$2; shift 2 ;; *) shift ;; esac
+done
+if [ -n "${TV_READS_REWORK:-}" ] && [ -f "$TV_ROOT/feedback/rework.md" ]; then
+  cp "$TV_ROOT/feedback/rework.md" "$TV_READS_REWORK"
+fi
+if [ -n "${TV_CANNED:-}" ] && [ -f "$TV_CANNED" ]; then
+  [ -n "$out" ] && cp "$TV_CANNED" "$out"
+  cat "$TV_CANNED"
+fi
+[ -n "${TV_MARK:-}" ] && echo called >> "$TV_MARK"
+exit "${TV_IO_RC:-0}"
+STUB
+chmod +x "$T/bin/fabro-io"
+PATH="$T/bin:$ORIG_PATH"
+export TV_LOG="$T/run.log" TV_MARK="$T/io.called" TV_ROOT="$T"
+TV_BASE=deadbeef
+
+tv_reset() { # canned [final_fix]
+    : > "$TV_LOG"; rm -f "$TV_MARK" "$T/task_check.json" "$T/validate_output.log" "$T/reads_rework"
+    rm -rf "$T/feedback"; mkdir -p "$T/feedback"
+    printf '%s' '{"final_fix":false}' > "$T/current_task.json"
+    echo "$TV_BASE" > "$T/task_base_sha"
+    printf '%s' "$1" > "$T/canned.json"
+    TV_CANNED="$T/canned.json"; TV_IO_RC=0; TV_SETUP_RC=0; TV_CI_RC=0
+    export TV_CANNED TV_IO_RC TV_SETUP_RC TV_CI_RC
+    unset TV_READS_REWORK
+    [ "${2:-}" = final_fix ] && printf '%s' '{"final_fix":true}' > "$T/current_task.json"
+    return 0
+}
+tv_run() { ( cd "$T/repo" && sh "$T/validate.sh" 2>&1 ); }
+tv_mode() { jq -r '.context_updates.task_validation_mode' <<<"$(lastjson "$OUT")"; }
+tv_ok() { jq -r '.context_updates.task_validation_ok' <<<"$(lastjson "$OUT")"; }
+tv_reason() { jq -r '.context_updates.task_validation_reason' <<<"$(lastjson "$OUT")"; }
+
+SCOPED_OK='{"version":1,"mode":"scoped","reason":"","base":"deadbeef","changed":["backend/app/a.py"],"checks":[{"name":"prek","args":[]}],"targets":[{"name":"backend","args":["tests/a.py"],"whole":false,"why":{}}],"untested":[],"unchecked":[],"skipped":[],"ok":true,"prepared_seconds":3,"prepare":{"exit_code":0},"results":[{"kind":"check","name":"prek","exit_code":0,"seconds":1},{"kind":"target","name":"backend","exit_code":0,"seconds":2}],"log":"/tmp/fabro/task_check.log"}'
+SCOPED_RED='{"version":1,"mode":"scoped","reason":"","base":"deadbeef","changed":["backend/app/a.py"],"checks":[{"name":"prek","args":[]}],"targets":[{"name":"backend","args":["tests/a.py"],"whole":false,"why":{}}],"untested":["backend/app/quiet.py"],"unchecked":["docs/x.md"],"skipped":[],"ok":false,"prepared_seconds":4,"prepare":{"exit_code":0},"results":[{"kind":"check","name":"prek","exit_code":1,"seconds":1,"tail":"lint exploded"},{"kind":"target","name":"backend","exit_code":1,"seconds":2,"tail":"tests/a.py::t FAILED"}],"log":"/tmp/fabro/task_check.log"}'
+
+# Scoped green: no setup.sh, no ci.sh, one routing object, ok true.
+tv_reset "$SCOPED_OK"
+OUT=$(tv_run); RC=$?
+check "tv scoped green: exits 0"           "0"       "$RC"
+check "tv scoped green: mode"              "scoped"  "$(tv_mode)"
+check "tv scoped green: ok"                "true"    "$(tv_ok)"
+check "tv scoped green: fabro-io called"   "present" "$([ -f "$TV_MARK" ] && echo present || echo absent)"
+check "tv scoped green: no setup/ci"       "0"       "$(wc -l < "$TV_LOG" | tr -d ' ')"
+check "tv scoped green: one brace object"  "1"       "$(grep -c '[{}]' <<<"$OUT")"
+check "tv scoped green: reason empty"      ""        "$(tv_reason)"
+check "tv scoped green: selected"          "1"       "$(jq -r '.context_updates.task_validation_selected' <<<"$(lastjson "$OUT")")"
+check "tv scoped green: prepare seconds"   "3"       "$(jq -r '.context_updates.task_validation_prepare_s' <<<"$(lastjson "$OUT")")"
+
+# Scoped red: the rework file names the failing items and their tails; exit 0.
+tv_reset "$SCOPED_RED"
+OUT=$(tv_run); RC=$?
+check "tv scoped red: exits 0"               "0" "$RC"
+check "tv scoped red: ok"                    "false" "$(tv_ok)"
+check "tv scoped red: header"                "## Validation failed (exit 1): task validation" "$(head -1 "$T/feedback/rework.md")"
+check "tv scoped red: check line"            "1" "$(grep -c '^- check `prek` (exit 1)$' "$T/feedback/rework.md")"
+check "tv scoped red: target line with args" "1" "$(grep -c '^- target `backend` (exit 1): tests/a.py$' "$T/feedback/rework.md")"
+check "tv scoped red: check tail"            "1" "$(grep -c 'lint exploded' "$T/feedback/rework.md")"
+check "tv scoped red: target tail"           "1" "$(grep -c 'tests/a.py::t FAILED' "$T/feedback/rework.md")"
+check "tv scoped red: no setup/ci"           "0" "$(wc -l < "$TV_LOG" | tr -d ' ')"
+check "tv scoped red: one brace object"      "1" "$(grep -c '[{}]' <<<"$OUT")"
+check "tv scoped red: unchecked published"   "1" "$(jq -r '.context_updates.task_validation_unchecked' <<<"$(lastjson "$OUT")")"
+
+# mode: full (no_config): the full suite runs; green and red.
+FULL='{"version":1,"mode":"full","reason":"no_config","base":"deadbeef","changed":[],"checks":[],"targets":[],"untested":[],"unchecked":[],"skipped":[],"ok":null,"prepared_seconds":0,"results":[],"log":"/tmp/fabro/task_check.log"}'
+tv_reset "$FULL"
+OUT=$(tv_run); RC=$?
+check "tv full green: exits 0"           "0"         "$RC"
+check "tv full green: mode"              "full"      "$(tv_mode)"
+check "tv full green: reason"            "no_config" "$(tv_reason)"
+check "tv full green: ok"                "true"      "$(tv_ok)"
+check "tv full green: setup and ci ran"  "2"         "$(wc -l < "$TV_LOG" | tr -d ' ')"
+check "tv full green: counts are 0"      "0 0 0"     "$(jq -r '[.context_updates.task_validation_selected, .context_updates.task_validation_unchecked, .context_updates.task_validation_prepare_s] | join(" ")' <<<"$(lastjson "$OUT")")"
+
+tv_reset "$FULL"; TV_CI_RC=1; export TV_CI_RC
+OUT=$(tv_run); RC=$?
+check "tv full red: exits 0"        "0" "$RC"
+check "tv full red: ok"             "false" "$(tv_ok)"
+check "tv full red: today's header" "## Validation failed (exit 1): ./.fabro/setup.sh && ./.fabro/ci.sh" "$(head -1 "$T/feedback/rework.md")"
+
+# final_fix: fabro-io is never called; the full suite runs; reason=final_fix.
+tv_reset "$SCOPED_OK" final_fix
+OUT=$(tv_run); RC=$?
+check "tv final_fix: mode"                "full"      "$(tv_mode)"
+check "tv final_fix: reason"              "final_fix" "$(tv_reason)"
+check "tv final_fix: fabro-io not called" "absent"    "$([ -f "$TV_MARK" ] && echo present || echo absent)"
+check "tv final_fix: full suite ran"      "2"         "$(wc -l < "$TV_LOG" | tr -d ' ')"
+
+# No task-check in the image: fabro-io writes no result and exits 1 -> full suite.
+tv_reset "$SCOPED_OK"; TV_CANNED=""; TV_IO_RC=1; export TV_CANNED TV_IO_RC
+OUT=$(tv_run); RC=$?
+check "tv no task-check: mode"           "full"             "$(tv_mode)"
+check "tv no task-check: reason"         "task_check_error" "$(tv_reason)"
+check "tv no task-check: full suite ran" "2"                "$(wc -l < "$TV_LOG" | tr -d ' ')"
+
+# The placeholder is written before anything runs, so a timeout is not read as the
+# previous round's feedback.
+tv_reset "$SCOPED_OK"; printf 'STALE FEEDBACK\n' > "$T/feedback/rework.md"
+TV_READS_REWORK="$T/reads_rework"; export TV_READS_REWORK
+OUT=$(tv_run)
+check "tv placeholder: replaced before fabro-io runs" "1" "$(grep -c '^## Validation failed (timeout): task validation did not finish$' "$T/reads_rework" 2>/dev/null)"
+check "tv placeholder: not the stale text"            "0" "$(grep -c 'STALE FEEDBACK' "$T/reads_rework" 2>/dev/null)"
+unset TV_READS_REWORK
+
+# The parsed edges.
+TVEDG=$(python3.11 "$REPO_ROOT/ops/check-graph-invariants.py" --dump "$GRAPH" | jq -r '.statements[] | select(.Edge) | .Edge | (([(.attrs // [])[] | select(.[0] == "condition") | .[1]] | .[0]) // "") as $c | .nodes as $n | range(0; ($n | length) - 1) | "\($n[.])->\($n[. + 1]) \($c)"')
+check "tv edge: validate->review needs task_validation_ok" "1" "$(grep -cxF -- 'validate->review outcome=succeeded && context.task_validation_ok=true' <<<"$TVEDG")"
+check "tv edge: validate->rework_router unconditional"     "1" "$(grep -cxF -- 'validate->rework_router ' <<<"$TVEDG")"
+check "tv edge: validate has no other exit"                "2" "$(grep -c '^validate->' <<<"$TVEDG")"
+
+PATH="$ORIG_PATH"
+
+echo ""
+echo "task validation: the merge phase skips a tree Final validation passed (C8)"
+T="$WORK/tvmerge"; mkdir -p "$T/feedback"
+extract_from "$SHARED" validate | sed "s#/tmp/fabro#$T#g" > "$T/validate.sh"
+if ! sh -n "$T/validate.sh" 2>"$T/validate.syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL validate (shared) is not valid POSIX sh\n'; sed 's/^/       /' "$T/validate.syntax"
+fi
+tv_repo() {
+    rm -rf "$T/repo"; mkdir -p "$T/repo/.fabro"
+    git -C "$T/repo" init -q -b main
+    git -C "$T/repo" config user.email t@t
+    git -C "$T/repo" config user.name t
+    printf '%s\n' '#!/bin/sh' 'echo setup >> "$TV_LOG"' > "$T/repo/.fabro/setup.sh"
+    printf '%s\n' '#!/bin/sh' 'echo ci >> "$TV_LOG"' > "$T/repo/.fabro/ci.sh"
+    chmod +x "$T/repo/.fabro/setup.sh" "$T/repo/.fabro/ci.sh"
+    echo x > "$T/repo/a.txt"
+    git -C "$T/repo" add -A
+    git -C "$T/repo" commit -qm init
+    : > "$TV_LOG"; rm -f "$T/final_validated_tree" "$T/fix_attempts"
+}
+tv_m_run() { ( cd "$T/repo" && sh "$T/validate.sh" 2>&1 ); }
+tv_m_ok() { jq -r '.context_updates.ci_ok' <<<"$(lastjson "$OUT")"; }
+
+tv_repo; echo 2 > "$T/fix_attempts"
+git -C "$T/repo" rev-parse 'HEAD^{tree}' > "$T/final_validated_tree"
+OUT=$(tv_m_run); RC=$?
+check "merge skip: exits 0"                "0"    "$RC"
+check "merge skip: no setup/ci"            "0"    "$(wc -l < "$TV_LOG" | tr -d ' ')"
+check "merge skip: ci_ok true"             "true" "$(tv_m_ok)"
+check "merge skip: says skipped"           "1"    "$(grep -c 'validate: skipped' <<<"$OUT")"
+check "merge skip: fix_attempts unchanged" "2"    "$(cat "$T/fix_attempts")"
+check "merge skip: the file survives"      "present" "$([ -f "$T/final_validated_tree" ] && echo present || echo absent)"
+
+tv_repo
+git -C "$T/repo" rev-parse 'HEAD^{tree}' > "$T/final_validated_tree"
+echo y >> "$T/repo/a.txt"; git -C "$T/repo" commit -qam 'a real change'
+OUT=$(tv_m_run)
+check "merge skip: a new commit runs the suite" "2" "$(wc -l < "$TV_LOG" | tr -d ' ')"
+
+tv_repo
+git -C "$T/repo" rev-parse 'HEAD^{tree}' > "$T/final_validated_tree"
+echo dirty >> "$T/repo/a.txt"
+OUT=$(tv_m_run)
+check "merge skip: a dirty worktree runs the suite" "2" "$(wc -l < "$TV_LOG" | tr -d ' ')"
+git -C "$T/repo" checkout -q -- a.txt
+
+tv_repo
+OUT=$(tv_m_run)
+check "merge skip: no file runs the suite" "2" "$(wc -l < "$TV_LOG" | tr -d ' ')"
+
 
 echo ""
 echo "the suite leaves the checkout alone"

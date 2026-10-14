@@ -382,8 +382,21 @@ echo '{\"context_updates\":{\"fix_outcome\":\"'$O'\"}}'"]
     // next one: `deliver` on success, and `merge` on its failure path (which also writes
     // `merge_block_reason`, because the two renderers read different files). Add a stage
     // here and it inherits the same duty.
+    // ADR 0025 C8: skip the suite when HEAD's tree is the one `backlog`'s `open_pr_prep`
+    // recorded as passing Final validation, and the worktree is clean. Only backlog writes
+    // that file, so pr-review and dependabot never skip. The file is never deleted here: a
+    // later visit after `refute_fix` or `resolve_base` has a different tree, so the suite
+    // runs then anyway.
     validate [label="Validate (setup + ci)", shape=parallelogram, timeout="20m", output_schema="routing",
         script="echo 'The validate stage did not finish: ./.fabro/setup.sh and ./.fabro/ci.sh were still running when it was stopped, most likely on the stage timeout. CI never reported, so nothing was delivered.' > /tmp/fabro/needs_human_reason
+T=$(cat /tmp/fabro/final_validated_tree 2>/dev/null)
+if [ -n \"$T\" ] && git diff --quiet HEAD && [ \"$(git rev-parse 'HEAD^{tree}')\" = \"$T\" ]; then
+  echo 'validate: skipped, this tree passed final validation in open_pr_prep ('$T')'
+  echo 'CI passed, but the run stopped after validate and before the review was delivered.' > /tmp/fabro/needs_human_reason
+  A=$(cat /tmp/fabro/fix_attempts 2>/dev/null || echo 0)
+  echo '{\"context_updates\":{\"ci_ok\":true,\"fix_attempts\":'$A'}}'
+  exit 0
+fi
 ./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1
 RC=$?
 tail -c 8000 /tmp/fabro/validate_output.log
