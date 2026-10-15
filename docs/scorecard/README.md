@@ -133,4 +133,6 @@ Collection cost: about 5 s per run summarized (in production, two runs per 30 s 
 
 - B1's revert detection (a factory PR reverted or re-fixed within 14 days), proposal
   acceptance, cost by model, and the seeded-defect suite.
-- A weekly Discord line. `ops/fabro-scorecard.sh --last-week` prints the table to paste.
+- The weekly retro (`docs/factory-retro/`, ADR 0026) covers this line: it posts a
+  scorecard summary to Discord every Monday and files issues for the week's failure
+  classes. `ops/fabro-scorecard.sh --last-week` still prints the table to paste by hand.

@@ -1,6 +1,6 @@
 # Factory retro: overview and canonical contracts
 
-**Status:** Planned 2026-10-15. Tasks 01-06 not started. Issue #33, ADR 0026 (proposed).
+**Status:** Built 2026-10-15 (tasks 01-06, local commits); task 07, the deploy and the one-month check, is the operator's. Issue #33, ADR 0026 (proposed).
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
