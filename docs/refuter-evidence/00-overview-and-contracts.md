@@ -1,6 +1,6 @@
 # Refuter evidence: overview and canonical contracts
 
-**Status:** Planned. Tasks 01–05 ship as one push, then `make deploy-scheduler`. Issue #40.
+**Status:** Deployed 2026-10-15 (pushed `2a2be46` ~20:55Z, `make deploy-scheduler` 20:56Z). Task 06, the live check and the 7-day measurement, is open (due 2026-10-22). Issue #40.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
@@ -142,7 +142,7 @@ The scorecard reads them (task 04).
 | 03 | `refute_gate` reports two new fields (C4) — done (commit `d10e4fc`) | yes |
 | 04 | the scorecard split — done (commit `7b90344`) | yes |
 | 05 | ADR 0013 amendment, plan-trial note, docs; **stop** — done (commit `124690d`) | — |
-| 06 | live check and measurement (operator, after push + `make deploy-scheduler`) | — |
+| 06 | live check and measurement (operator; pushed and scheduler deployed 2026-10-15, measure 2026-10-22) | — |
 
 01, 03 and 04 change command nodes; 02 is a prompt. Do them in order so each commit is
 reviewable. 04 depends on 03's fields. 06 is write-only here; the operator carries it out.
