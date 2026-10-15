@@ -7,8 +7,9 @@ two modules agree about what a window's rows look like.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -231,3 +232,367 @@ def test_ranked_orders_by_box_hours_then_key():
         "timeout:a",
         "timeout:b",
     ]
+
+
+# --- the plan, the guard and the text (task 03, C3-C7) ----------------------------
+
+from dataclasses import replace as _replace  # noqa: E402
+
+from fabro_scheduler import scorecard  # noqa: E402
+from fabro_scheduler.github import TrackedIssue  # noqa: E402
+from fabro_scheduler.store import ScorecardRows  # noqa: E402
+
+WEEK = date(2026, 10, 5)
+# The four configured repositories, from ops/scheduler/repos.toml.
+REPOS = (
+    "andrewthetechie/womens-fantasy-sports",
+    "andrewthetechie/writers-app",
+    "andrewthetechie/lawncare-saas",
+    "andrewthetechie/jelly-swipe",
+)
+
+
+def tracked(number, *, state="open", state_reason=None, body="", closed_at=None):
+    return TrackedIssue(
+        number=number,
+        state=state,
+        state_reason=state_reason,
+        closed_at=closed_at,
+        html_url=f"https://github.com/andrewthetechie/fabro-workflows/issues/{number}",
+        body=body,
+    )
+
+
+def marked(key, **kwargs):
+    return tracked(body=f"<!-- fabro:retro-class {key} -->", **kwargs)
+
+
+def cls(*stats):
+    return retro.Classified(classes={s.key: s for s in stats}, unsummarized=0)
+
+
+def a_file(key, *, runs=6, boxes=9.5, kind="timeout", samples=()):
+    return retro.Action(
+        kind="file",
+        key=key,
+        stat=stat(key, runs=runs, boxes=boxes, kind=kind),
+        issue=None,
+        title=f"t-{key}",
+        body=f"b-{key}",
+    )
+
+
+def a_comment(key, issue):
+    return retro.Action(
+        kind="comment", key=key, stat=stat(key, runs=3, boxes=2.0),
+        issue=issue, title=None, body=f"b-{key}",
+    )
+
+
+def test_known_classes_maps_every_marker_highest_number_first():
+    issues = [
+        marked("timeout:improve", number=7),
+        marked("held:ci", number=19, state="closed", state_reason="completed",
+               closed_at="2026-10-10T00:00:00Z"),
+        marked("held:ci", number=41, state="closed", state_reason="not_planned"),
+        tracked(99, body="no marker here"),
+    ]
+    found = retro.known_classes(issues)
+    assert set(found) == {"timeout:improve", "held:ci"}
+    assert [issue.number for issue in found["held:ci"]] == [41, 19]
+    assert found["timeout:improve"][0].number == 7
+
+
+def test_known_classes_reads_two_markers_on_one_issue():
+    issue = tracked(5, body="<!-- fabro:retro-class timeout:improve -->\n"
+                            "<!-- fabro:retro-class held:diff-hygiene -->")
+    found = retro.known_classes([issue])
+    assert found["timeout:improve"] == [issue]
+    assert found["held:diff-hygiene"] == [issue]
+
+
+def test_guard_matches_and_allows():
+    assert retro.guard("see andrewthetechie/lawncare-saas", REPOS)
+    assert retro.guard("LAWNCARE-SAAS", REPOS)
+    assert retro.guard("the lawncare-saas repository", REPOS)
+    assert retro.guard("https://github.com/andrewthetechie/writers-app/pull/3", REPOS)
+    assert retro.guard("a cross-repository reference wfs#2080", REPOS)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "#41",
+        "(#41)",
+        "see #41 for the details",
+        "https://github.com/andrewthetechie/fabro-workflows/issues/41",
+        "lawncare-saasy",
+        "`#41`",
+    ],
+)
+def test_guard_does_not_match_this_repository_or_near_misses(text):
+    assert retro.guard(text, REPOS) is None
+
+
+def test_safe_sample_rewrites_hashes_and_mentions_and_cuts_long_text():
+    assert retro.safe_sample("closes #1326 now") == "closes issue 1326 now"
+    assert retro.safe_sample("thanks @andrew") == "thanks @\u200bandrew"
+    long = "word " * 80
+    safe = retro.safe_sample(long)
+    assert len(safe) == 161
+    assert safe.endswith("…")
+    assert len(safe[:-1]) == 160
+
+
+def test_issue_body_starts_with_a_marker_that_reads_the_key_back():
+    for key in ("held:diff-hygiene", "timeout:improve",
+                "failover:spec:kimi/kimi-k3:access_denied", "ending:unknown:lost"):
+        stat = retro.ClassStat(
+            key=key, kind=key.split(":")[0],
+            runs=(retro.RunRef("R1", "failed", 3_600_000),), events=1,
+        )
+        body = retro.issue_body(stat, None, WEEK)
+        assert body.splitlines()[0] == f"<!-- fabro:retro-class {key} -->"
+        assert retro.MARKER.findall(body) == [key]
+
+
+def test_issue_body_previous_week_column_is_zero_and_names_no_repository():
+    stat = retro.ClassStat(
+        key="held:other", kind="held",
+        runs=(retro.RunRef("R1", "PR opened", 3_600_000),), events=1,
+        samples=("the reason mentions no repository",),
+    )
+    body = retro.issue_body(stat, None, WEEK)
+    assert "| Runs | 1 | 0 |" in body
+    assert "| Events | 1 | 0 |" in body
+    assert "| Box-hours | 1.0 | 0.0 |" in body
+    assert "**Sample reasons:**" in body
+    assert retro.guard(body, REPOS) is None
+    for repo in REPOS:
+        assert repo not in body
+        assert repo.split("/")[1] not in body
+
+
+def test_a_regression_body_names_the_closed_issue_and_its_date():
+    stat = retro.ClassStat(
+        key="timeout:improve", kind="timeout",
+        runs=(retro.RunRef("R1", "failed", 3_600_000),), events=1,
+    )
+    closed = tracked(19, state="closed", state_reason="completed",
+                     closed_at="2026-10-10T00:00:00Z")
+    body = retro.issue_body(stat, None, WEEK, regression=closed)
+    assert "Regression of #19, closed as completed on 2026-10-10." in body
+
+
+def test_a_regression_body_without_a_close_date_says_so():
+    stat = retro.ClassStat(
+        key="timeout:improve", kind="timeout",
+        runs=(retro.RunRef("R1", "failed", 3_600_000),), events=1,
+    )
+    body = retro.issue_body(stat, None, WEEK, regression=tracked(19, state="closed"))
+    assert "Regression of #19, closed as completed on an unknown date." in body
+
+
+def test_plan_comments_on_the_open_issue_even_with_a_closed_one_present():
+    one = stat("timeout:improve", runs=4, boxes=4.0)
+    known = retro.known_classes([
+        marked("timeout:improve", number=19, state="closed", state_reason="completed"),
+        marked("timeout:improve", number=41),
+    ])
+    actions = retro.plan(
+        cls(one), cls(), known, week_start=WEEK, repos=REPOS,
+        min_runs=3, min_box_hours=4.0, cap=3,
+    )
+    assert [a.kind for a in actions] == ["comment"]
+    assert actions[0].issue == 41
+
+
+def test_plan_files_a_regression_of_a_completed_issue():
+    one = stat("timeout:improve", runs=4, boxes=4.0)
+    known = retro.known_classes([
+        marked("timeout:improve", number=19, state="closed", state_reason="completed",
+               closed_at="2026-10-10T00:00:00Z"),
+    ])
+    actions = retro.plan(cls(one), cls(), known, week_start=WEEK, repos=REPOS,
+                         min_runs=3, min_box_hours=4.0, cap=3)
+    assert [a.kind for a in actions] == ["regression"]
+    assert actions[0].issue == 19
+    assert actions[0].title.startswith("retro (regression of #19): ")
+
+
+@pytest.mark.parametrize("reason", ["not_planned", "duplicate"])
+def test_plan_suppresses_a_rejected_class(reason):
+    one = stat("timeout:improve", runs=4, boxes=4.0)
+    known = retro.known_classes([
+        marked("timeout:improve", number=19, state="closed", state_reason=reason),
+    ])
+    actions = retro.plan(cls(one), cls(), known, week_start=WEEK, repos=REPOS,
+                         min_runs=3, min_box_hours=4.0, cap=3)
+    assert [a.kind for a in actions] == ["suppressed"]
+    assert actions[0].body is None
+
+
+def test_plan_files_a_class_nothing_knows():
+    one = stat("timeout:improve", runs=4, boxes=4.0)
+    actions = retro.plan(cls(one), cls(), {}, week_start=WEEK, repos=REPOS,
+                         min_runs=3, min_box_hours=4.0, cap=3)
+    assert [a.kind for a in actions] == ["file"]
+    assert actions[0].issue is None
+    assert actions[0].body is not None
+    assert actions[0].body.splitlines()[0] == "<!-- fabro:retro-class timeout:improve -->"
+
+
+def test_plan_caps_files_by_box_hours():
+    stats = [stat(f"timeout:n{i}", runs=4, boxes=float(i)) for i in range(1, 6)]
+    actions = retro.plan(cls(*stats), cls(), {}, week_start=WEEK, repos=REPOS,
+                         min_runs=3, min_box_hours=0.0, cap=3)
+    assert [a.kind for a in actions] == ["file", "file", "file", "capped", "capped"]
+    assert [a.key for a in actions] == [
+        "timeout:n5", "timeout:n4", "timeout:n3", "timeout:n2", "timeout:n1",
+    ]
+
+
+def test_plan_ignores_a_class_under_the_threshold():
+    under = stat("timeout:improve", runs=2, boxes=3.9)
+    actions = retro.plan(cls(under), cls(), {}, week_start=WEEK, repos=REPOS,
+                         min_runs=3, min_box_hours=4.0, cap=3)
+    assert actions == []
+
+
+def test_a_withheld_class_gives_its_cap_slot_to_the_next():
+    # cap 1: the biggest class names a configured repository in its sample, so its
+    # write is withheld and the second class gets the week's one new-issue slot.
+    first = retro.ClassStat(
+        key="held:other", kind="held",
+        runs=(retro.RunRef("R1", "PR opened", 10 * 3_600_000),), events=1,
+        samples=("blocked until jelly-swipe lands",),
+    )
+    second = stat("timeout:improve", runs=4, boxes=5.0)
+    actions = retro.plan(cls(first, second), cls(), {}, week_start=WEEK, repos=REPOS,
+                         min_runs=3, min_box_hours=4.0, cap=1)
+    assert [a.kind for a in actions] == ["withheld", "file"]
+    assert "jelly-swipe" in actions[0].why
+    assert actions[1].key == "timeout:improve"
+
+
+# --- the Discord message (C6) ------------------------------------------------------
+
+
+def card(**over) -> scorecard.Scorecard:
+    empty = scorecard.compute(
+        ScorecardRows([], [], [], [], [], []), T0, T0 + timedelta(days=7)
+    )
+    return _replace(empty, **over)
+
+
+def test_discord_text_dry_run_prefix_and_would_wording():
+    text = retro.discord_text(
+        card(), card(), [a_file("timeout:improve")], week_start=WEEK, dry_run=True,
+        still_leased=0, unsummarized=0,
+    )
+    assert text.startswith(
+        "[DRY RUN] Factory retro, week of 2026-10-05 to 2026-10-11 (backlog runs only)"
+    )
+    assert "Would file: timeout:improve (6 runs, 9.5 box-h)" in text
+    assert "Filed:" not in text
+
+
+def test_discord_text_real_run_shows_the_issue_number():
+    text = retro.discord_text(
+        card(), card(), [a_file("timeout:improve")], week_start=WEEK, dry_run=False,
+        still_leased=0, unsummarized=0, issued={0: 41},
+    )
+    assert "Filed: #41 timeout:improve (6 runs, 9.5 box-h)" in text
+    assert not text.startswith("[DRY RUN]")
+
+
+def test_discord_text_regression_line_names_both_issues_and_the_key():
+    action = retro.Action(
+        "regression", "held:unspecified", stat("held:unspecified", runs=3, boxes=2.0),
+        issue=19, title="t", body="b",
+    )
+    real = retro.discord_text(
+        card(), card(), [action], week_start=WEEK, dry_run=False, still_leased=0,
+        unsummarized=0, issued={0: 44},
+    )
+    assert "Regression: #44 of #19 held:unspecified (3 runs, 2.0 box-h)" in real
+    dry = retro.discord_text(
+        card(), card(), [action], week_start=WEEK, dry_run=True, still_leased=0,
+        unsummarized=0,
+    )
+    assert "Would file regression: held:unspecified of #19 (3 runs, 2.0 box-h)" in dry
+
+
+def test_discord_text_signed_deltas():
+    current = card(runs=45, prs=10, merged_workflow=3, box_hours_per_merge=6.1)
+    previous = card(runs=48, prs=8, merged_workflow=2, box_hours_per_merge=6.9)
+    text = retro.discord_text(
+        current, previous, [], week_start=WEEK, dry_run=False, still_leased=0, unsummarized=0
+    )
+    assert "Runs 45 (-3)" in text
+    assert "PRs 10 (+2)" in text
+    assert "merged by workflow 3 (30%, +5pp)" in text
+    assert "box-h per merge 6.1 (-0.8)" in text
+
+
+def test_discord_text_n_a_when_a_side_is_missing():
+    text = retro.discord_text(
+        card(), card(), [], week_start=WEEK, dry_run=False, still_leased=0, unsummarized=0
+    )
+    assert "merged by workflow 0 (n/a, n/a)" in text
+    assert "box-h per merge n/a (n/a)" in text
+
+
+def test_discord_text_leaves_out_an_empty_list():
+    text = retro.discord_text(
+        card(), card(), [a_comment("timeout:improve", 41)], week_start=WEEK, dry_run=False,
+        still_leased=0, unsummarized=0,
+    )
+    assert "Commented: #41 timeout:improve" in text
+    assert "Filed:" not in text
+    assert "Regression:" not in text
+    assert "Over threshold, not filed" not in text
+    assert "Suppressed" not in text
+
+
+def test_discord_text_shortens_a_long_list_to_fit():
+    actions = [a_file(f"timeout:node{i}") for i in range(200)]
+    text = retro.discord_text(
+        card(), card(), actions, week_start=WEEK, dry_run=False, still_leased=0,
+        unsummarized=0,
+    )
+    assert len(text) <= 2000
+    assert re.search(r"…and \d+ more", text)
+
+
+def test_discord_text_reports_a_failure_and_the_writes_not_made():
+    actions = [a_file("timeout:improve"), a_file("held:ci")]
+    text = retro.discord_text(
+        card(), card(), actions, week_start=WEEK, dry_run=False, still_leased=0,
+        unsummarized=0, failure="HTTP 500", done={0}, issued={0: 41},
+    )
+    assert text.splitlines()[0] == "retro failed: HTTP 500"
+    assert "Filed: #41 timeout:improve" in text
+    assert "Not written: held:ci" in text
+
+
+def test_discord_text_counts_the_buckets_and_what_was_not_counted():
+    current = card(
+        runs=10,
+        held={"architecture": 9, "refuter": 5, "CI": 3, "unspecified": 2, "risk": 1,
+              "other": 1},
+        timeouts={"improve": 4, "review_merge.review_fix": 2},
+        failovers=[scorecard.FailoverLine("spec", "a/b", "c/d", "quota", 12)],
+    )
+    text = retro.discord_text(
+        current, card(), [], week_start=WEEK, dry_run=False, still_leased=2,
+        unsummarized=1,
+    )
+    assert "Held: refuter 5, CI 3, unspecified 2, risk 1, other 1" in text
+    assert "architecture 9" not in text
+    assert "Timeouts: improve 4, review_merge.review_fix 2" in text
+    assert "Failovers: 12 runs" in text
+    assert (
+        "Not counted: 2 runs still leased, 1 not summarized. "
+        "Box-hours are per class; never add them." in text
+    )
