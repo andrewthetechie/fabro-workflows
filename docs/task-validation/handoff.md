@@ -94,23 +94,25 @@ The operator merges `andrewthetechie/womens-fantasy-sports#2088` by hand (it tri
    - a `task_check` tool call by the `coder` stage, and
    - a green Final validation (`open_pr_prep` publishes `final_route: "pr"`), or a red one
      routed by #35 exactly as designed.
-3. Within 24 hours, read the scorecard's `Task validation: unchecked files` for that
-   repository. A large count means a `watch` glob is missing: open a follow-up PR against
-   `test.toml` before the trial window gets far.
+3. Within 24 hours, read the scorecard's `Task validation: untested files` for that
+   repository (`unchecked` is always 0 there: `prek` watches `**`; 00 A3). A large count
+   means changed files select no test: find which in the `validate` logs and decide whether
+   a `tests` or `full` glob is missing, in a follow-up PR before the trial window gets far.
 
 ## Task 10 — the trial measurement
 
 `D` is the merge time recorded above. The baseline window is the 7 days before the switch,
-the after window the 7 days from it. Both commands need the scorecard rows for those windows
+but never earlier than **2026-10-14** (00 A6: no run before #35 recorded a `final_route`, so
+an earlier window has no red final rate); the after window is the 7 days from it. Both commands need the scorecard rows for those windows
 to have been built (C9), which they are once the collector has summarized the runs (it does
 2 runs / 30 s, newest first).
 
 ```sh
 cd <a checkout of this repo at origin/main>
 
-# Baseline: D-7d .. D-1d  (dates are inclusive)
+# Baseline: max(D-7d, 2026-10-14) .. D-1d  (dates are inclusive)
 ./ops/fabro-scorecard.sh --repo andrewthetechie/womens-fantasy-sports \
-  --from <D-7d> --to <D-1d>
+  --from <max(D-7d, 2026-10-14)> --to <D-1d>
 
 # After: D .. D+6d
 ./ops/fabro-scorecard.sh --repo andrewthetechie/womens-fantasy-sports \
@@ -120,16 +122,21 @@ cd <a checkout of this repo at origin/main>
 Run the after command **seven days after `D`** (on `D+6d` inclusive, so the morning of
 `D+7d`). If either side has fewer than 15 runs, extend the after window one day at a time and
 say so in the result. Save both outputs to
-`docs/task-validation/result-<date>.txt` with the two targets from C10:
+`docs/task-validation/result-<date>.txt` with the three targets from C10:
 
 - (a) the median per-visit `validate` minutes after the switch is at most 50% of the
   baseline median (the `Task validation: visits by mode` row's `all` p50 over the window);
 - (b) the red final rate after the switch is at most the baseline rate + 5 points (the
-  `Final validation: reached / first route` row).
+  `Final validation: verdicts / first route` row, which counts only runs that recorded a
+  route);
+- (c) box-hours per merged PR after the switch is no higher than the baseline (the
+  `Box-hours per merged PR` row): `task_check` moves test time into the coder stage.
 
 Also record, from `00-overview-and-contracts.md` C10: the after window split by mode
-(`scoped` against `full`/`legacy`), the full visits by reason class, the unchecked count,
-`task_validation_prepare_s` per scoped visit, and box-hours per merged PR before and after.
+(`scoped` against `full`/`legacy`), the full visits by reason class (a high
+`too_many_tests` share means `max_tests` is the next lever), the untested and unchecked
+counts, `task_validation_prepare_s` per scoped visit, and the coder and rework stage minutes
+before and after.
 On a pass, mark ADR 0025 `accepted (<date>)`, update the `docs/README.md` row and the series
 status, and comment the result on #26. On a fail, open the rollback PR (delete the keys from
 the repository's `test.toml`) and record the cause; leave ADR 0025 `proposed`.

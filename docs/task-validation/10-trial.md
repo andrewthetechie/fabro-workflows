@@ -16,10 +16,12 @@ targets on womens-fantasy-sports (C10). ADR 0025 and this series' status say wha
    - (a) per-visit `validate` minutes, median and p90, before and after, and the after-window split by mode (scoped against full)
    - (b) the red final rate before and after
    - the full visits by reason: a high `unowned_test` or `index_unavailable` count is a configuration or index fault to fix, not a design result
-   - the unchecked count
+   - the untested and unchecked counts
    - the preparation seconds per scoped visit (`task_validation_prepare_s`); if preparation is over half of a scoped visit, that is the next lever
-   - box-hours per merged PR, before and after, for context
-3. **Pass** (both (a) and (b) met):
+   - (c) box-hours per merged PR, before and after
+   - the coder and rework stages' minutes p50 before and after, and the `task_check` calls
+     per run (M-run, `ops/fabro-agent-tools.py`): where the test time went
+3. **Pass** ((a), (b) and (c) all met; C10):
    - mark ADR 0025 `accepted (<date>)`
    - update the `docs/README.md` row and this series' status
    - comment the result on #26 and close it when task 11 is done

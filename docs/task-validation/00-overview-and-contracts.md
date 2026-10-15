@@ -40,14 +40,14 @@ once on the merged branch, is the net. Glossary: `CONTEXT.md`, **Task validation
 | D3 | **The gate selects the tests, never the agent.** The selection comes from the diff only. No agent output adds to it or removes from it. |
 | D4 | **Selection lives in Rust:** `fabro-io task-plan` (C4) prints a JSON plan, and `fabro-io task-check` (C5) runs it. Cargo unit tests cover the rules. The DOT script only calls it and reads the result. |
 | D5 | **The repository declares Task validation in `.fabro/test.toml`** (C3): `[task] full` and `skip`, per-target `tests` or `watch`, and `[checks.*]`. The keys are optional. A repository without them gets the full suite per task, as today. |
-| D6 | **Fallback to the full suite**, in this precedence: the repository declares no task keys; a changed path matches a built-in or declared `full` glob; a non-test source file was deleted or renamed; the Code index is unavailable; a selected test file is owned by no target and not in `skip`; a selected test is outside its target's `cwd`. The node also falls back when the task is a `final_fix`, or when `task-check` itself errors. |
-| D7 | **Untested and unchecked files are recorded and never escalate.** `untested` means a changed source file the index knows, with no importing test. `unchecked` means a changed file that no check watches and no target covers. Both appear in the log, and the unchecked count is published as a context update. |
+| D6 | **Fallback to the full suite**, in this precedence: the repository declares no task keys; a changed path matches a built-in or declared `full` glob; a non-test source file was deleted or renamed; the Code index is unavailable; a selected test file is owned by no target and not in `skip`; a selected test is outside its target's `cwd`; a target's selection exceeds its `max_tests` (A1). The base cannot be diffed (`no_base`, A4). The node also falls back when the task is a `final_fix`, or when `task-check` itself errors. |
+| D7 | **Untested and unchecked files are recorded and never escalate.** `untested` means a changed file that selected no test: a source file the index knows with no importing test, or a non-test file under a target's `tests` (a fixture, a snapshot; A3). `unchecked` means a changed file that no check watches and no target covers. Both appear in the log, and both counts are published as context updates. |
 | D8 | **The conftest rule is built in.** When the reverse-import walk from a changed file reaches a `conftest.py`, every test file under that `conftest.py`'s directory is selected. |
 | D9 | **Task validation prepares the Test environment fresh once per visit**, then runs every selected target against that preparation. This keeps ADR 0018's "the gate is never misled by a dirty database". Agent calls use the cache. The preparation seconds are recorded. |
 | D10 | **`setup.sh` runs only when a dependency file changed.** Every dependency manifest is a built-in `full` glob, so the scoped path never runs `setup.sh`, and the full path runs it as today. |
 | D11 | **Agents get `task_check`** (MCP) and `fabro-test --task` (shell). Both run the same plan against the current diff with the cached environment. The tool gets one Agent guide row and one coder-prompt line, and M-run (`ops/fabro-agent-tools.py`) counts it as a tool test run. |
 | D12 | **The scorecard measures it**, and the new row is deployed with history re-summarized *before* the trial starts (C9). |
-| D13 | **Rollout order:** the scorecard → `fabro-code` → `fabro-io` 0.5.0 → the images → `min_binary` → the workflow → womens-fantasy-sports → the trial → lawncare-saas, jelly-swipe, writers-app. A repository's `test.toml` must never use the new keys before the images carry 0.5.0: 0.4.x parses strictly, and every `run_tests` and every `ci.sh` (`fabro-io test-env`) would fail. |
+| D13 | **Rollout order:** the scorecard → `fabro-code` → `fabro-io` 0.5.0 → the images → `min_binary` → the workflow → womens-fantasy-sports → the trial → lawncare-saas, jelly-swipe, writers-app. A repository's `test.toml` must never use the new keys before the images carry 0.5.0: 0.4.x parses strictly, and every `run_tests` and every `ci.sh` (`fabro-io test-env`) would fail. The same holds for `max_tests` and 0.5.1 (A1): images, then `min_binary` 0.5.1, then the repository's PR. |
 | D14 | **Trial on womens-fantasy-sports** (C10): 7 days before against 7 days after its switch, at least 15 runs on each side. It passes when the median per-visit `validate` time is at most 50% of the baseline and red final validations per run rise by no more than 5 percentage points. Rollback: delete the keys from its `test.toml`. On a pass: lawncare-saas, jelly-swipe, then writers-app, each with a 3-day check. |
 | D15 | **Records:** ADR 0025 (written; `proposed`), this series, a `docs/README.md` row, a note in `docs/plan-trial/README.md`, and a comment on #26. |
 
@@ -58,6 +58,18 @@ once on the merged branch, is the net. Glossary: `CONTEXT.md`, **Task validation
 | P1 | A deleted or renamed non-test source file escalates to the full suite (in D6). Its importers' tests cannot be found once the index has synced the deletion. The changed set uses `--no-renames`, so a rename shows its old path as deleted. |
 | P2 | A target whose selected tests number more than 200 runs whole, with no file args. The result is the same, and it avoids an argument list longer than the command line allows. |
 | P3 | The gate runs every selected check and target even after one fails, so `rework.md` lists every failure. A preparation failure stops the targets, but the checks have already run. |
+
+### Amendments after the 2026-10-14 review (implemented in 0.5.1)
+
+| # | Amendment | Evidence |
+|---|---|---|
+| A1 | A target may set **`max_tests`** (only with `tests`). A selection of more test files than that is `mode: full`, reason `too_many_tests:<target>` (C3, C4 step 7). | womens-fantasy-sports, `core/db.py` edited: the conftest rule selected all 168 backend test files. `-n 1` ran them in 154 s, over the 120 s default `timeout`; the whole `ci.sh` (8 xdist workers) took 104 s. A timed-out target keeps no output, so rework would get `exit 124` and nothing to fix. |
+| A2 | A **`watch` target owns the test files its `watch` matches**: a selected one runs that target whole, and `test-env --check` does not warn about it (C3, C4 step 7). | writers-app has 39 `src-tauri/tests/*.rs` integration tests; with `rust` a `watch` target, every selection of one fell back with `unowned_test`. |
+| A3 | `untested` also counts a non-test seed the index does not know when it lies under a target's `tests`, and the node publishes `task_validation_untested` (C4 step 10, C7, C9). | A check that watches `**` (womens-fantasy-sports' `prek`) makes `unchecked` always 0, so it cannot show a selection gap. A changed fixture selected nothing and appeared in neither list. |
+| A4 | A base that cannot be resolved or diffed is reason `no_base`, not `index_unavailable` (C4). | The two have different fixes. |
+| A5 | The `validate` node puts back the `rework.md` it found on a green visit, lists a preparation failure with its error, keeps a crashed `task-check`'s output in `/tmp/fabro/task_check_error.log`, and fails if it cannot print the routing object (C7). | A green visit left the timeout placeholder for `rescue_brief` to quote; a preparation failure rendered an empty "Failed:" list. |
+| A6 | The red final rate counts only runs that recorded a `final_route`; the trial baseline starts no earlier than 2026-10-14; pass also needs box-hours per merged PR not to rise (C9, C10). | `open_pr_prep` published no `final_route` before #35 (2026-10-13 22:13Z): womens-fantasy-sports 10-07..10-12 read "103 / none (red 100%)", and 10-14 "51 / pr 51 (red 0%)". `task_check` moves test time into the coder stage, which the `validate` median cannot see. |
+| A7 | A check that must see an agent's uncommitted edits takes `files = true`. womens-fantasy-sports' `prek` runs `prek run --files` (task 09). | `--from-ref "$FABRO_TASK_BASE" --to-ref HEAD` lists only committed files; in a coder stage the edits are committed only at the stage checkpoint, so `task_check` linted nothing. |
 
 ## Verified facts (sources)
 
@@ -147,6 +159,7 @@ skip = ["frontend/tests/**"]   # test files Task validation never runs (e2e, dep
 cwd = "backend"
 run = "uv run pytest -n 1 -q"
 tests = ["backend/tests/**"]   # the test files this target runs; selected ones become args
+max_tests = 50                 # optional, only with tests (A1): a bigger selection runs the full suite
 
 [targets.rust]
 run = "cargo test --all-features"
@@ -163,7 +176,8 @@ timeout = 300                  # 1..=600, default 120
 
 **Rules:**
 - Globs are relative to the checkout root, with `*` (no `/`) and `**` (any depth) semantics. Use the same glob crate the `prepare.inputs` code uses.
-- A target may have `tests` or `watch`, never both. A target with neither is still available to `run_tests` but takes no part in Task validation.
+- A target may have `tests` or `watch`, never both. A target with neither is still available to `run_tests` but takes no part in Task validation. `max_tests` (at least 1) needs `tests` (A1).
+- A `watch` target owns the test files its `watch` matches (A2).
 - Check names match `^[a-z0-9-]+$`. A check runs with `[env]`, `path`, and `FABRO_TASK_BASE` set to `B`.
 - **"Declares task keys"** means: a `[task]` table, or any target with `tests` or `watch`, or any `[checks.*]`. Without any of them `task-plan` returns `mode: full`, `reason: no_config`.
 - **Built-in `full` globs**, always applied:
@@ -173,6 +187,7 @@ timeout = 300                  # 1..=600, default 120
   - `**/Cargo.toml`, `**/Cargo.lock`, `**/go.mod`, `**/go.sum`
   - `**/tsconfig*.json`, `**/vite.config.*`, `**/vitest.config.*`, `**/vitest.workspace.*`, `**/jest.config.*`
 - **`fabro-io test-env --check` warns** (exit 0, one `warning:` line each). It warns on any tracked test file that no target's `tests` and no `skip` owns, on a test file two targets' `tests` both match, and on a `tests` glob outside its target's `cwd`. The parse errors stay errors.
+  - A test file a `watch` glob matches is owned (A2).
   - `TEST_RE` lives only in `fabro-code`, so `--check` gets the test files from `fabro-code list-tests`. That is a new verb, `git ls-files | grep -E "$TEST_RE"`, which needs no index.
   - When `fabro-code` is absent (the image build gate runs `--check` on the host), it prints one line saying the ownership warnings were skipped.
 
@@ -182,15 +197,15 @@ It prints one JSON object (the plan) to stdout and always exits 0 unless the arg
 invalid (64). Every failure becomes `mode: full` with a reason, never an error. The steps:
 
 1. Load `test.toml` (`testenv::TestEnv::load`). If there is none, it is invalid, or it declares no task keys: full, `no_config` (invalid files get `invalid_config`).
-2. Compute the changed set (C1). If it is empty: scoped, nothing to run.
+2. Compute the changed set (C1). If the base cannot be resolved or diffed: full, `no_base` (A4). If it is empty: scoped, nothing to run.
 3. If any changed path matches a built-in or `[task] full` glob: full, `full_glob:<first path>`.
 4. If any changed path no longer exists, is not a test (by C2's classification) and is not in `skip`: full, `deleted:<path>` (P1).
 5. Call `fabro-code tests --json` on every changed, existing, non-`skip` path. A non-zero exit or unparseable output means full, `index_unavailable`.
 6. Selected tests = the union over the seeds of `tests`, plus `conftest_tests` for every conftest in `conftests`, minus `skip` matches, minus files that do not exist.
-7. Map each selected test to the first target, in file order, whose `tests` matches it. If none matches: full, `unowned_test:<path>`. If the path is not under that target's `cwd`: full, `path_outside_cwd:<path>`. Otherwise pass it as an argument relative to `cwd`. A target with more than 200 selected tests runs whole (P2).
+7. Map each selected test to the first target, in file order, whose `tests` or `watch` matches it. If none matches: full, `unowned_test:<path>`. A `watch` owner runs whole (A2). If the path is not under a `tests` owner's `cwd`: full, `path_outside_cwd:<path>`. Otherwise pass it as an argument relative to `cwd`. Then, for each target in file order: more selected tests than its `max_tests` is full, `too_many_tests:<target>` (A1); otherwise more than 200 runs it whole (P2).
 8. A `watch` target runs whole when any changed path matches its `watch`.
 9. A check runs when any changed path matches its `watch`. With `files = true` its args are the matching paths that still exist, relative to its `cwd`. A check left with no existing files is not run.
-10. `untested` = seeds with `indexed: true`, not tests themselves, with empty `tests` and no `conftests`. `unchecked` = changed paths no check's `watch` matches and no target's `tests` or `watch` matches.
+10. `untested` = seeds with empty `tests` and no `conftests` (so not tests themselves) that are `indexed: true` or lie under a target's `tests` (A3). `unchecked` = changed paths no check's `watch` matches and no target's `tests` or `watch` matches.
 
 ```json
 {
@@ -260,9 +275,9 @@ It computes the plan (C4), then:
 
 Same id, label "Task validation", `timeout="20m"`, `output_schema="routing"`. The script, in order:
 
-1. Write a placeholder `/tmp/fabro/feedback/rework.md`: `## Validation failed (timeout): task validation did not finish`, then one sentence saying the stage was stopped, most likely on its 20m timeout, and that the log is `/tmp/fabro/validate_output.log`. Today a timeout reaches `rework_router` with the previous round's feedback still in the file. Delete `/tmp/fabro/task_check.json`.
+1. Copy the current `rework.md`, if any, to `/tmp/fabro/rework.prev`. Write a placeholder `/tmp/fabro/feedback/rework.md`: `## Validation failed (timeout): task validation did not finish`, then one sentence saying the stage was stopped, most likely on its 20m timeout, and that the logs are `/tmp/fabro/validate_output.log` and `/tmp/fabro/task_check.log`. Today a timeout reaches `rework_router` with the previous round's feedback still in the file. Delete `/tmp/fabro/task_check.json` and `/tmp/fabro/task_check_error.log`.
 2. If `current_task.json` has `final_fix: true`: mode full, reason `final_fix`.
-3. Otherwise run `fabro-io task-check --gate --base "$(cat /tmp/fabro/task_base_sha)" --out /tmp/fabro/task_check.json > /tmp/fabro/validate_output.log 2>&1`. A missing or unparseable result file (an old image has no `task-check`, or the subcommand crashed) means mode full, reason `task_check_error`. Otherwise read `mode`, `reason` and `ok` from it.
+3. Otherwise run `fabro-io task-check --gate --base "$(cat /tmp/fabro/task_base_sha)" --out /tmp/fabro/task_check.json > /tmp/fabro/validate_output.log 2>&1`. A missing or unparseable result file (an old image has no `task-check`, or the subcommand crashed) means mode full, reason `task_check_error`; its output is copied to `/tmp/fabro/task_check_error.log` before the full suite overwrites the log (A5). Otherwise read `mode`, `reason` and `ok` from it.
 4. **Full:** run `./.fabro/setup.sh > … && ./.fabro/ci.sh >> …` exactly as today, writing `/tmp/fabro/validate_output.log`. On failure, the rework file is today's shape, unchanged: `## Validation failed (exit N): ./.fabro/setup.sh && ./.fabro/ci.sh` plus the log tail.
 5. **Scoped, red:** the rework file is:
 
@@ -271,23 +286,25 @@ Same id, label "Task validation", `timeout="20m"`, `output_schema="routing"`. Th
 
    Task validation ran the checks and tests that cover this task's changed files. Failed:
 
+   - preparation of the Test environment (exit 1)      (only when it failed; A5)
    - check `prek` (exit 1)
    - target `backend` (exit 1): tests/api/routes/test_quiz.py
 
-   <each failing item's tail, under a `### <kind> <name>` heading>
+   <the preparation error under `### preparation`, then each failing item's tail, under a `### <kind> <name>` heading>
    ```
 
-   The whole file is capped at 6,000 bytes of tail, like today.
+   The whole file is capped at 6,000 bytes of tail, like today. **Green:** put `rework.prev` back as `rework.md`, or delete the placeholder when there was none (A5).
 6. Print to stdout, through `tr -d '{}'`: one summary line (`task validation: mode=… reason=… ok=… selected=N untested=N unchecked=N prepared=Ns`), then the last 4,000 bytes of the log. After that, the one routing object:
-   `{"context_updates":{"task_validation_ok":<bool>,"task_validation_mode":"scoped|full","task_validation_reason":"…","task_validation_selected":N,"task_validation_unchecked":N,"task_validation_prepare_s":N}}`.
+   `{"context_updates":{"task_validation_ok":<bool>,"task_validation_mode":"scoped|full","task_validation_reason":"…","task_validation_selected":N,"task_validation_untested":N,"task_validation_unchecked":N,"task_validation_prepare_s":N}}`.
    Write every key on both branches, `reason` empty and the counts 0 on the full path.
-7. Exit 0 on both green and red. A red result routes by context, not by exit code.
+7. Exit 0 on both green and red. A red result routes by context, not by exit code. If the routing object cannot be printed, exit 1 (A5): no update must never pair with `outcome=succeeded`.
 
 Edges (the count is unchanged):
 `validate -> review [condition="outcome=succeeded && context.task_validation_ok=true"]`,
 and the unconditional `validate -> rework_router` as today. A timeout fails the node, so it
-applies no update, and `outcome=succeeded` is false. A stale `task_validation_ok=true`
-from an earlier visit can therefore never send it to `review`.
+applies no update, and `outcome=succeeded` is false; so does a routing object that cannot be
+printed (step 7). A stale `task_validation_ok=true` from an earlier visit can therefore never
+send it to `review`.
 
 ### C8. Final validation records its tree; the merge phase skips it
 
@@ -301,7 +318,7 @@ from an earlier visit can therefore never send it to `review`.
 
 ### C9. Scorecard
 
-- **`summary.py`**, per `stage.completed` of the node id exactly `validate` (not `review_merge.validate`): append `{mode, reason_class, ok, ms}` to `run_summary.task_validations`, and add `task_validation_unchecked` to a running total.
+- **`summary.py`**, per `stage.completed` of the node id exactly `validate` (not `review_merge.validate`): append `{mode, reason_class, ok, ms}` to `run_summary.task_validations`, and add `task_validation_unchecked` and `task_validation_untested` to running totals.
   - `reason_class` is the text before the first `:`.
   - `ms` comes from the same timing `run_stage_stats` uses.
   - A visit with no `task_validation_mode`, from a run before the change or a timeout, records `mode: "legacy"` (or `"timeout"` when the stage failed on timeout).
@@ -310,20 +327,21 @@ from an earlier visit can therefore never send it to `review`.
   - visits by mode, with per-visit minutes p50 and p90 for each mode and for all visits together
   - full visits by `reason_class`
   - red visits per mode
-  - unchecked files per scoped visit
+  - unchecked files and untested files per scoped visit
 
-  And a **Final validation** row: runs that reached `open_pr_prep`, and the first `final_route` split `pr` / `fix` / `drop` / `rescue` / `draft`. **Red final rate** = runs whose first `final_route` is not `pr`, over runs that reached it.
+  And a **Final validation** row: runs that recorded a `final_route` at `open_pr_prep`, and the first one split `pr` / `fix` / `drop` / `rescue` / `draft`. **Red final rate** = runs whose first `final_route` is not `pr`, over runs that recorded one. Runs that visited `open_pr_prep` without recording a route (every run before #35) are shown apart and never counted as red (A6).
 - **`ops/fabro-scorecard.sh --repo OWNER/REPO`** and the API's `repo` parameter filter the window to one repository.
 - **A `resummarize` command** (`python -m fabro_scheduler resummarize --from D --to D`, run in the scheduler container) deletes the window's `run_summary` and `run_stage_stats` rows, and only those, so the collector rebuilds them with the new fields.
 
 ### C10. The trial measurement
 
-- **Baseline:** `ops/fabro-scorecard.sh --repo andrewthetechie/womens-fantasy-sports --from <switch−7d> --to <switch−1d>`, after C9 is deployed and that window re-summarized.
+- **Baseline:** `ops/fabro-scorecard.sh --repo andrewthetechie/womens-fantasy-sports --from <max(switch−7d, 2026-10-14)> --to <switch−1d>`, after C9 is deployed and that window re-summarized. It starts no earlier than 2026-10-14, the first whole day with `final_route` (A6).
 - **After:** the same for `<switch>` to `<switch+6d>`. The switch date is the merge time of the womens-fantasy-sports `test.toml` PR (task 09).
-- Each side needs at least 15 runs; otherwise extend the after-window a day at a time.
-- **Pass** needs both:
+- Each side needs at least 15 runs; otherwise extend the after-window a day at a time. The baseline cannot be extended back past 2026-10-14, so the switch waits until the baseline window holds 15 runs (2026-10-14 alone holds 52 womens-fantasy-sports runs).
+- **Pass** needs all three:
   - (a) the median per-visit `validate` minutes over all visits after the switch is at most 50% of the baseline median
   - (b) the red final rate after the switch is at most the baseline rate + 5 points
+  - (c) box-hours per merged PR after the switch is no higher than the baseline (A6): `task_check` moves test time into the coder stage, where (a) cannot see it
 - The result goes in `docs/task-validation/result-<date>.txt`.
 
 ## Tasks

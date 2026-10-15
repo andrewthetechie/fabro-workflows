@@ -22,7 +22,8 @@ Start the next repository only after the previous one's 3-day check passes.
    - checks: `typecheck` and `lint`, with cwd `frontend`, from its `npm run` scripts.
    - Note that `ci.sh` runs `npm ci` itself. The scoped path never does, which is correct, because a lockfile change is a built-in `full` glob.
 3. **writers-app:**
-   - `rust`: `watch = ["src-tauri/**"]` (whole target; inline `#[cfg(test)]` modules are invisible to the index). `frontend`: `tests = ["src/**"]`.
+   - `rust`: `watch = ["src-tauri/**"]` (whole target; inline `#[cfg(test)]` modules are invisible to the index). Its 39 `src-tauri/tests/*.rs` integration tests are owned by that `watch` (00 A2), so they need no `skip`. `frontend`: `tests = ["src/**"]`.
+   - Time a large selection for each `tests` target before choosing its `max_tests` and `timeout` (00 A1), as task 09 did.
    - checks:
      - `typecheck`: `npm run typecheck`
      - `lint`: `npm run lint`

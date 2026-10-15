@@ -15,19 +15,23 @@ In `andrewthetechie/womens-fantasy-sports`, on a branch, as one PR. It trips
 1. `[task]`:
    - `skip = ["frontend/tests/**", "frontend/tests-deployed/**"]`: Playwright specs that vitest excludes (`frontend/vitest.config.ts`).
    - `full = ["backend/app/alembic/**", "backend/app/seed/**", "backend/app/initial_data.py", "content/**", "backend/scripts/**"]`: preparation inputs and the scripts `ci.sh` calls. A change to what the database holds cannot be scoped by imports.
-2. `[targets.backend]`: add `tests = ["backend/tests/**"]`. Its `cwd` is already `backend`.
+2. `[targets.backend]`: add `tests = ["backend/tests/**"]`, `max_tests = 50` and
+   `timeout = 600` (00 A1). Its `cwd` is already `backend`. Measured 2026-10-14: a
+   `core/db.py` edit selects all 168 backend test files, which `-n 1` runs in 154 s against
+   104 s for the whole `ci.sh`; about 0.9 s a file, so 50 files is about 45 s.
 3. `[targets.frontend]`: set `cwd = "frontend"`, `run = "bun run test:unit --"` (the workspace
    script is `vitest run`), and `tests = ["frontend/src/**"]`. Check that
    `fabro-test frontend src/<some>.test.tsx` still passes before you commit, and update
    `about`.
-4. `[checks.prek]`: `run = "uv run prek run --from-ref \"$FABRO_TASK_BASE\" --to-ref HEAD --show-diff-on-failure"`,
-   `watch = ["**"]`, `files = false`, `timeout = 300`. Read `.pre-commit-config.yaml` first: if
+4. `[checks.prek]`: `run = "uv run prek run --show-diff-on-failure --files"`,
+   `watch = ["**"]`, `files = true`, `timeout = 300` (00 A7: a `--from-ref`/`--to-ref`
+   range sees only committed files, so the agent's `task_check` linted nothing). Read `.pre-commit-config.yaml` first: if
    prek already runs the frontend's eslint and tsc, no other check is needed.
 5. `[checks.typecheck]`, only if prek does not cover it: `cwd = "frontend"`,
    `run = "bunx tsc --noEmit -p ."` (or the repo's own typecheck script),
    `watch = ["frontend/src/**"]`, `files = false`.
 6. Leave `ci.sh` unchanged. The build and `coverage report` stay in Final validation.
-7. Check it offline in a 0.5.0 image container against the branch:
+7. Check it offline in a 0.5.1 image container against the branch (`max_tests` needs 0.5.1):
    - `fabro-io test-env --check` passes with zero ownership warnings
    - `fabro-io task-plan --base origin/main` on three throwaway edits gives the expected plan:
      - a backend route: scoped, backend tests
@@ -41,8 +45,10 @@ In `andrewthetechie/womens-fantasy-sports`, on a branch, as one PR. It trips
 - The first `backlog` run after the merge shows `task_validation_mode: scoped` on a
   `validate` visit, `task_check` called by the coder, and a green Final validation, or a red
   one routed by #35 as designed.
-- Within 24 hours, check the scorecard's unchecked-files count. A large count means `watch`
-  globs are missing: fix them in a follow-up PR before the trial window gets far.
+- Within 24 hours, check the scorecard's untested-files count (00 A3; `unchecked` is always
+  0 here because `prek` watches `**`). A large count means changed files select no test:
+  read which ones in the `validate` logs and decide whether a `tests` glob or a `full` glob
+  is missing, in a follow-up PR before the trial window gets far.
 
 ## Depends on
-07, 08 (pushed), and 01 (deployed and re-summarized).
+07, 08 (pushed), 01 (deployed and re-summarized), and images carrying `fabro-io` 0.5.1 with `min_binary` 0.5.1 (00 A1, D13).

@@ -29,7 +29,9 @@ whatever Task validation did not select. Its existing route (#35: one `final_fix
 - **Anything unfamiliar falls back to the full suite.** These cases fall back: a dependency
   manifest, `.fabro/**`, a `conftest.py` or a test config changed; the Code index is
   unavailable; a selected test has no owner; the repository declares nothing; or the task is
-  a `final_fix`. A stale declaration costs time, never a missed test.
+  a `final_fix`. A stale declaration costs time, never a missed test. So does a selection
+  larger than the target's declared `max_tests`: a target that runs its files serially can
+  be slower on a large selection than `ci.sh` running the whole suite in parallel.
 - **Agents can run the same plan.** `task_check` (shell: `fabro-test --task`) runs the plan
   against the current diff, so the coder runs before it finishes what the gate will run.
 - **The merge phase skips a tree Final validation already passed.**
@@ -63,8 +65,11 @@ cache.
 
 - More failures surface at Final validation, which has a budget of one `final_fix`. The trial
   measures red final validations per run, and a rise of more than 5 points fails it.
+- Agents run the selection too (`task_check`), so part of the test time moves into the coder
+  stage, which holds the lease. The trial therefore also requires box-hours per merged PR
+  not to rise; a faster `validate` alone is not the result.
 - `test.toml` grows a second job. Its new keys are optional and strictly parsed, so
-  `fabro-io` 0.5.0 must be in the images before any repository uses them. An edit still
+  `fabro-io` 0.5.0 (0.5.1 for a target's `max_tests`) must be in the images before any repository uses them. An edit still
   trips `config_changed`, so a human merges every change to what the gate runs.
 - The Code index becomes load-bearing for validation, not just for reading. Its
   unavailability is a fallback to the full suite, never a pass.
