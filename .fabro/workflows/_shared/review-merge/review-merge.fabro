@@ -752,7 +752,9 @@ echo 'refuter inputs: '$(jq length $R/refute_issues.json)' linked issue(s), '$SI
     // while refute_fix_attempts is 0; this gate writes the counter to 1 when it takes the route,
     // and nothing resets it in the run. An unverifiable-only fail, and every invalid result, goes
     // to deliver. refute_fixable decides the edge; refute_not_met keeps its own meaning because
-    // the scorecard reads it.
+    // the scorecard reads it. It also emits two fields the scorecard reads (#40):
+    // refute_unverifiable_only, whether a fail has no not_met criterion and no defect, and
+    // refute_ci_credited, how many met criteria cite ci.sh.
     refute_gate [label="Validate refuter output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/refute.json
 R=/tmp/fabro/review
@@ -766,7 +768,7 @@ if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   if [ $A -lt 2 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; exit 1; fi
   echo invalid > $R/refute_verdict
   echo 'The refuter wrote an invalid result twice, so it has no verdict and the merge is refused.' > $R/refute_reason.txt
-  echo '{\"context_updates\":{\"refute_verdict\":\"invalid\",\"refute_not_met\":false,\"refute_fixable\":false,\"refute_fix_attempts\":'$FA'}}'
+  echo '{\"context_updates\":{\"refute_verdict\":\"invalid\",\"refute_not_met\":false,\"refute_fixable\":false,\"refute_fix_attempts\":'$FA',\"refute_unverifiable_only\":false,\"refute_ci_credited\":0}}'
   exit 0
 fi
 echo 0 > /tmp/fabro/refute_attempts
@@ -774,6 +776,7 @@ V=$(jq -r 'if ([.criteria[] | select(.status != \"met\")] | length) == 0 and (.d
 echo $V > $R/refute_verdict
 NM=$(jq '[.criteria[] | select(.status == \"not_met\")] | length' $F)
 DF=$(jq '.defects // [] | length' $F)
+CC=$(jq '[.criteria[] | select(.status == \"met\" and ((.evidence // \"\") | test(\"ci[.]sh\")))] | length' $F)
 NOT=false
 FIX=false
 if [ \"$V\" = fail ]; then
@@ -785,7 +788,9 @@ else
   rm -f $R/refute_findings.json
 fi
 if [ \"$FIX\" = true ] && [ \"$FA\" = 0 ]; then echo 1 > /tmp/fabro/refute_fix_attempts; git rev-parse HEAD > /tmp/fabro/refute_fix_base 2>/dev/null || rm -f /tmp/fabro/refute_fix_base; fi
-echo '{\"context_updates\":{\"refute_verdict\":\"'$V'\",\"refute_not_met\":'$NOT',\"refute_fixable\":'$FIX',\"refute_fix_attempts\":'$FA'}}'"]
+UO=false
+if [ \"$V\" = fail ] && [ \"$NM\" -eq 0 ] && [ \"$DF\" -eq 0 ]; then UO=true; fi
+echo '{\"context_updates\":{\"refute_verdict\":\"'$V'\",\"refute_not_met\":'$NOT',\"refute_fixable\":'$FIX',\"refute_fix_attempts\":'$FA',\"refute_unverifiable_only\":'$UO',\"refute_ci_credited\":'$CC'}}'"]
 
     // The fix turn (gate-relief G9-G11). refute_fix runs on the run's coder pool in backlog and
     // pr-review, and on glm-5.3-flash in dependabot (the stylesheet rows). Both of its outcomes go

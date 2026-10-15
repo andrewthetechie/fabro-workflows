@@ -4477,7 +4477,36 @@ rg_run
 check "fix: invalid is not a fix route"          "false" "$(rgc refute_fixable)"
 check "fix: invalid is not not_met"              "false" "$(rgc refute_not_met)"
 check "fix: invalid keeps attempts 0"            "0"     "$(rgc refute_fix_attempts)"
+check "fix: invalid unverifiable_only is false"  "false" "$(rgc refute_unverifiable_only)"
+check "fix: invalid ci_credited is 0"            "0"     "$(rgc refute_ci_credited)"
 rm -f "$T/refute_fix_attempts" "$T/refute_fix_base"
+
+# 7. #40: the two new context keys. refute_unverifiable_only is true only for a fail
+#    with no not_met criterion and no defect; refute_ci_credited counts met criteria
+#    whose evidence cites ci.sh.
+jq '.criteria[0].evidence = ".fabro/ci.sh:13 runs tsc over every changed file" | .criteria[1].evidence = "src/auth.ts:40" | .defects = []' "$FIX_DIR/refute-pass.json" > "$T/ci-credited.json"
+rg_stage; cp "$T/ci-credited.json" "$T/review/refute.json"
+echo 0 > "$T/refute_attempts"
+rg_run
+check "refute_gate: pass with a ci.sh citation credits it" "1"      "$(rgc refute_ci_credited)"
+check "refute_gate: pass is not unverifiable-only"          "false" "$(rgc refute_unverifiable_only)"
+
+rg_stage; cp "$T/unverifiable.json" "$T/review/refute.json"
+echo 0 > "$T/refute_attempts"
+rg_run
+check "refute_gate: unverifiable only stays fail"           "fail"  "$(rgc refute_verdict)"
+check "refute_gate: unverifiable only is unverifiable-only" "true"  "$(rgc refute_unverifiable_only)"
+
+jq '.criteria[0].status = "unverifiable" | .defects = []' "$FIX_DIR/refute-fail.json" > "$T/unverifiable-notmet.json"
+rg_stage; cp "$T/unverifiable-notmet.json" "$T/review/refute.json"
+echo 0 > "$T/refute_attempts"
+rg_run
+check "refute_gate: unverifiable + not_met is not unverifiable-only" "false" "$(rgc refute_unverifiable_only)"
+
+rg_stage; cp "$T/unverifiable-defect.json" "$T/review/refute.json"
+echo 0 > "$T/refute_attempts"
+rg_run
+check "refute_gate: unverifiable + defect is not unverifiable-only" "false" "$(rgc refute_unverifiable_only)"
 
 # review-merge refute_fix_gate — the fix turn's receipt check (ADR 0013 D5 amendment, G10).
 # A fix turn that did not submit writes no receipt: the gate fails, and the run goes to deliver.
