@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "min_binary": "0.5.0",
+  "min_binary": "0.5.1",
   "phases": {
     "review-merge": {
       "standards": {
