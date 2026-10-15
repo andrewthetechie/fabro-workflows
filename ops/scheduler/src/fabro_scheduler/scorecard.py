@@ -285,12 +285,7 @@ def compute(
         released_merged = any(run["merged"] for run in runs)
         labels = set(json.loads(fact["labels"])) if fact is not None else set()
         is_arch = ARCHITECTURE_LABEL in labels
-        by_workflow = released_merged or (
-            fact is not None
-            and fact["state"] == "merged"
-            and bool(fact["queue_approved"])
-            and not fact["queue_handoff"]
-        )
+        by_workflow = merged_by_workflow(runs, fact)
         repo_prs[key[0]] += 1
         if is_arch:
             arch += 1
@@ -560,6 +555,28 @@ def _model_lines(
         1 for summary in summaries.values() if summary["model_usage"] in ("ok", "none")
     )
     return lines, read
+
+
+def merged_by_workflow(runs: Sequence[sqlite3.Row], fact: sqlite3.Row | None) -> bool:
+    """Whether the workflow merged the PR one or more runs opened.
+
+    Two ways, and only two: a release row says the merge phase merged it (the
+    operator could not have, because the run held the PR at release time), or it
+    merged after the merge phase queued it (`<!-- fabro:merge-queue approved -->`)
+    and the merge queue did not hand it off. `mergedBy` cannot separate the two
+    accounts because both use `andrewthetechie`.
+
+    Public because the weekly retro's held classes need the same answer
+    (ADR 0026 C1a): a PR it counts as merged by the workflow is not held.
+    """
+    if any(run["merged"] for run in runs):
+        return True
+    return (
+        fact is not None
+        and fact["state"] == "merged"
+        and bool(fact["queue_approved"])
+        and not fact["queue_handoff"]
+    )
 
 
 def held_bucket(fact: sqlite3.Row | None) -> str:
