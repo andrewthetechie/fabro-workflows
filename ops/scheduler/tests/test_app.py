@@ -1236,3 +1236,200 @@ def test_resummarize_dispatch_rebuilds_a_window(tmp_path, monkeypatch, capsys):
         assert reopened._conn.execute("SELECT COUNT(*) AS c FROM run_history").fetchone()["c"] == 1
     finally:
         reopened.close()
+
+
+# --- the weekly retro subcommand (issue #33, ADR 0026 C9) --------------------------
+
+RETRO_NOW = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)  # a Wednesday
+RETRO_WEEK = "2026-10-05"
+RETRO_ISSUES = "https://api.github.com/repos/andrewthetechie/fabro-workflows/issues"
+RETRO_TOKEN = {"GITHUB_TOKEN": "ghp_test"}
+
+
+def _retro_store(tmp_path, monkeypatch, runs):
+    """A store with `runs` seeded in the retro's target week, and a matching config."""
+    from collections import Counter
+
+    from fabro_scheduler.store import RunOutcome
+    from fabro_scheduler.summary import RunSummary
+
+    store = Store(tmp_path / "scheduler.db")
+    for run_id, at, hours, outcome, terminal in runs:
+        store.acquire_lease(
+            coder_pool="coders-a", repo="o/r", issue_number=1, run_id=run_id,
+            dispatched_at=at,
+        )
+        store.archive_and_release_lease(
+            run_id, RunOutcome(finished_at=at + timedelta(hours=hours), **outcome)
+        )
+        store.save_run_summary(
+            RunSummary(
+                run_id=run_id, stages={}, failovers=Counter(), path=[],
+                terminal_node=terminal, refute=[], events=1,
+            )
+        )
+    store.close()
+
+    config = tmp_path / "repos.toml"
+    config.write_text('[[repo]]\nname = "o/r"\npriority = 0\nenvironment_id = "python"\n')
+    monkeypatch.setenv("SCHEDULER_CONFIG", str(config))
+    monkeypatch.setenv("SCHEDULER_DB", str(tmp_path / "scheduler.db"))
+
+
+def _one_failure(run_id="R1", *, hours=5.0, terminal="improve"):
+    at = datetime(2026, 10, 6, 9, tzinfo=UTC)
+    outcome = {"kind": "failed", "reason": "workflow_error", "category": "deterministic"}
+    return (run_id, at, hours, outcome, terminal)
+
+
+def _no_pr(run_id="R2", *, hours=6.0, terminal="mark_stuck"):
+    at = datetime(2026, 10, 7, 9, tzinfo=UTC)
+    return (run_id, at, hours, {"kind": "succeeded", "reason": "completed"}, terminal)
+
+
+@respx.mock
+def test_retro_last_week_dry_run_reads_github_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    from fabro_scheduler import app as app_module
+
+    _retro_store(tmp_path, monkeypatch, [_one_failure()])
+    read = respx.get(RETRO_ISSUES).mock(return_value=httpx.Response(200, json=[]))
+
+    rc = app_module._retro(["--last-week", "--dry-run"], now=RETRO_NOW, environ=RETRO_TOKEN)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert out.startswith(f"[DRY RUN] Factory retro, week of {RETRO_WEEK} to 2026-10-11")
+    assert read.called
+    assert all(call.request.method == "GET" for call in respx.calls)
+
+
+@respx.mock
+def test_retro_files_an_issue_for_a_new_class(tmp_path, monkeypatch, capsys, caplog):
+    import logging
+
+    from fabro_scheduler import app as app_module
+
+    _retro_store(tmp_path, monkeypatch, [_one_failure()])
+    respx.get(RETRO_ISSUES).mock(return_value=httpx.Response(200, json=[]))
+    created = respx.post(RETRO_ISSUES).mock(
+        return_value=httpx.Response(201, json={"number": 41, "state": "open"})
+    )
+
+    with caplog.at_level(logging.INFO):
+        rc = app_module._retro(["--last-week"], now=RETRO_NOW, environ=RETRO_TOKEN)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "Filed: #41 ending:improve:deterministic" in out
+    assert "retro: filed #41 for ending:improve:deterministic" in caplog.text
+    body = json.loads(created.calls.last.request.content)
+    assert body["labels"] == ["retro", "bug"]
+    assert body["body"].splitlines()[0] == "<!-- fabro:retro-class ending:improve:deterministic -->"
+
+
+@respx.mock
+def test_retro_comments_on_an_known_open_issue(tmp_path, monkeypatch, capsys):
+    from fabro_scheduler import app as app_module
+
+    _retro_store(tmp_path, monkeypatch, [_one_failure()])
+    respx.get(RETRO_ISSUES).mock(
+        return_value=httpx.Response(
+            200,
+            json=[{
+                "number": 19,
+                "state": "open",
+                "labels": [{"name": "retro"}],
+                "body": "<!-- fabro:retro-class ending:improve:deterministic -->",
+            }],
+        )
+    )
+    commented = respx.post(f"{RETRO_ISSUES}/19/comments").mock(
+        return_value=httpx.Response(201, json={})
+    )
+
+    rc = app_module._retro(["--last-week"], now=RETRO_NOW, environ=RETRO_TOKEN)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert commented.called
+    assert "Commented: #19 ending:improve:deterministic" in out
+    # No issue was created: the only POST route registered is the comment.
+    assert [call.request.method for call in respx.calls].count("POST") == 1
+
+
+@respx.mock
+def test_retro_reports_a_failed_list_read(tmp_path, monkeypatch, capsys):
+    from fabro_scheduler import app as app_module
+
+    _retro_store(tmp_path, monkeypatch, [_one_failure()])
+    respx.get(RETRO_ISSUES).mock(
+        return_value=httpx.Response(500, json={"message": "boom"})
+    )
+
+    rc = app_module._retro(["--last-week"], now=RETRO_NOW, environ=RETRO_TOKEN)
+    out = capsys.readouterr().out
+
+    assert rc == 3
+    assert out.startswith("retro failed: cannot list retro issues")
+    assert all(call.request.method == "GET" for call in respx.calls)
+
+
+@respx.mock
+def test_retro_stops_after_a_failed_write_and_reports_the_rest(tmp_path, monkeypatch, capsys):
+    from fabro_scheduler import app as app_module
+
+    _retro_store(tmp_path, monkeypatch, [_one_failure(), _no_pr()])
+    respx.get(RETRO_ISSUES).mock(return_value=httpx.Response(200, json=[]))
+    respx.post(RETRO_ISSUES).mock(
+        side_effect=[
+            httpx.Response(201, json={"number": 41, "state": "open"}),
+            httpx.Response(500, json={"message": "boom"}),
+        ]
+    )
+
+    rc = app_module._retro(["--last-week"], now=RETRO_NOW, environ=RETRO_TOKEN)
+    out = capsys.readouterr().out
+
+    assert rc == 3
+    assert out.splitlines()[0].startswith("retro failed:")
+    assert "Filed: #41 ending:mark_stuck:no-pr" in out
+    assert "Not written: ending:improve:deterministic" in out
+
+
+def test_retro_without_a_token_exits_one_with_empty_stdout(tmp_path, monkeypatch, capsys):
+    from fabro_scheduler import app as app_module
+
+    _retro_store(tmp_path, monkeypatch, [_one_failure()])
+
+    rc = app_module._retro(["--last-week"], now=RETRO_NOW, environ={})
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert captured.out == ""
+    assert "GITHUB_TOKEN is not set" in captured.err
+
+
+@respx.mock
+def test_retro_week_of_selects_the_containing_iso_week(tmp_path, monkeypatch, capsys):
+    from fabro_scheduler import app as app_module
+
+    _retro_store(tmp_path, monkeypatch, [_one_failure()])
+    respx.get(RETRO_ISSUES).mock(return_value=httpx.Response(200, json=[]))
+
+    rc = app_module._retro(
+        ["--week-of", "2026-10-08", "--dry-run"],
+        now=datetime(2027, 3, 1, tzinfo=UTC),  # a different year entirely
+        environ=RETRO_TOKEN,
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert out.startswith(f"[DRY RUN] Factory retro, week of {RETRO_WEEK} to 2026-10-11")
+
+
+def test_retro_last_week_and_week_of_together_exit_two():
+    from fabro_scheduler import app as app_module
+
+    with pytest.raises(SystemExit) as caught:
+        app_module.main(["retro", "--last-week", "--week-of", "2026-10-08"])
+    assert caught.value.code == 2

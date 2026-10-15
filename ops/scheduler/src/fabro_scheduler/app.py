@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -58,7 +59,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, charts, scorecard, trial
+from . import __version__, charts, github, retro, scorecard, trial
 from .collector import ScorecardCollector
 from .config import ConfigError, SchedulerConfig, load_config
 from .dispatch import DispatchLoop
@@ -1508,6 +1509,179 @@ def _resummarize(argv: Sequence[str]) -> int:
     return 0
 
 
+def _retro(
+    argv: Sequence[str],
+    *,
+    now: datetime | None = None,
+    environ: Mapping[str, str] | None = None,
+    client: httpx.Client | None = None,
+) -> int:
+    """`python -m fabro_scheduler retro …`: one weekly retro (issue #33, ADR 0026).
+
+    The only part of the retro that does I/O: the store, the clock and GitHub. The
+    logic (`retro.classify`, `plan`, `discord_text`) is pure and does not know this
+    function exists. stdout carries **only** the Discord text (C6), because the cron
+    wrapper posts exactly stdout; diagnostics go to stderr and the exit code says
+    what happened (C9): 0 success, 1 config/database/token, 2 bad arguments, 3 a
+    GitHub read or write failed.
+    """
+    parser = argparse.ArgumentParser(
+        prog="fabro-scheduler retro",
+        description="Report one week's failure classes to Discord, and file issues for them.",
+    )
+    window = parser.add_mutually_exclusive_group(required=True)
+    window.add_argument("--last-week", action="store_true", help="the previous ISO week")
+    window.add_argument("--week-of", dest="week_of", help="the ISO week containing this date")
+    parser.add_argument("--dry-run", action="store_true", help="read GitHub, write nothing")
+    parser.add_argument("--repo", default=retro.RETRO_REPO, help="where issues are filed")
+    parser.add_argument("--min-runs", type=int, default=retro.DEFAULT_MIN_RUNS)
+    parser.add_argument("--min-box-hours", type=float, default=retro.DEFAULT_MIN_BOX_HOURS)
+    parser.add_argument("--cap", type=int, default=retro.DEFAULT_CAP)
+    parser.add_argument("--config", type=Path, default=None, help="path to repos.toml")
+    args = parser.parse_args(argv)
+
+    now = now or datetime.now(UTC)
+    if args.last_week:
+        this_monday = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        start = this_monday - timedelta(days=7)
+    else:
+        day = _parse_date(args.week_of)
+        if day is None:
+            print(
+                f"scheduler: retro: --week-of must be YYYY-MM-DD (got {args.week_of!r})",
+                file=sys.stderr,
+            )
+            return 2
+        start = day - timedelta(days=day.weekday())
+    end = start + timedelta(days=7)
+    previous_start = start - timedelta(days=7)
+
+    path = args.config or Path(os.environ.get("SCHEDULER_CONFIG") or DEFAULT_CONFIG_PATH)
+    try:
+        config = load_config(path)
+    except ConfigError as exc:
+        print(f"scheduler: cannot start: {exc}", file=sys.stderr)
+        return 1
+    try:
+        store = Store(config.db_path)
+    except sqlite3.Error as exc:
+        print(f"scheduler: cannot start: {config.db_path}: {exc}", file=sys.stderr)
+        return 1
+
+    environ = os.environ if environ is None else environ
+    token = environ.get("GITHUB_TOKEN", "")
+    if not token.strip():
+        print("scheduler: retro: GITHUB_TOKEN is not set", file=sys.stderr)
+        store.close()
+        return 1
+
+    try:
+        rows = store.scorecard_rows(start, end)
+        previous_rows = store.scorecard_rows(previous_start, start)
+        card = scorecard.compute(rows, start, end)
+        previous_card = scorecard.compute(previous_rows, previous_start, start)
+        current = retro.classify(rows)
+        previous = retro.classify(previous_rows)
+        still_leased = sum(
+            1 for row in store.lease_rows() if _in_window(row["dispatched_at"], start, end)
+        )
+        week_start = start.date()
+
+        try:
+            issues = github.fetch_label_all_states(
+                args.repo, retro.RETRO_LABEL, token, client=client
+            )
+        except github.GitHubError as exc:
+            print(
+                retro.discord_text(
+                    card, previous_card, [], week_start=week_start, dry_run=args.dry_run,
+                    still_leased=still_leased, unsummarized=current.unsummarized,
+                    failure=f"cannot list retro issues: {exc}", cap=args.cap,
+                )
+            )
+            return 3
+
+        actions = retro.plan(
+            current,
+            previous,
+            retro.known_classes(issues),
+            week_start=week_start,
+            repos=[repo.name for repo in config.repos],
+            min_runs=args.min_runs,
+            min_box_hours=args.min_box_hours,
+            cap=args.cap,
+        )
+        for action in actions:
+            if action.kind == "withheld":
+                # The title and body are kept on the action for this line only; the
+                # operator has to see what was suppressed, and it must not reach GitHub
+                # or Discord. Never a token, and here never a body either.
+                log.warning("retro: withheld %s: %s", action.key, action.why)
+
+        done: set[int] = set()
+        issued: dict[int, int] = {}
+        failure: str | None = None
+        if not args.dry_run:
+            for index, action in enumerate(actions):
+                try:
+                    if action.kind == "comment" and action.issue is not None:
+                        github.comment(
+                            args.repo, action.issue, action.body or "", token, client=client
+                        )
+                        log.info("retro: commented on #%s for %s", action.issue, action.key)
+                    elif action.kind in ("file", "regression"):
+                        created = github.create_issue(
+                            args.repo,
+                            action.title or "",
+                            action.body or "",
+                            retro.ISSUE_LABELS,
+                            token,
+                            client=client,
+                        )
+                        issued[index] = created.number
+                        log.info("retro: filed #%s for %s", created.number, action.key)
+                    else:
+                        continue
+                except github.GitHubError as exc:
+                    failure = str(exc)
+                    break
+                done.add(index)
+
+        print(
+            retro.discord_text(
+                card,
+                previous_card,
+                actions,
+                week_start=week_start,
+                dry_run=args.dry_run,
+                still_leased=still_leased,
+                unsummarized=current.unsummarized,
+                failure=failure,
+                done=None if args.dry_run else done,
+                issued=issued,
+                cap=args.cap,
+            )
+        )
+        return 3 if failure else 0
+    finally:
+        store.close()
+
+
+def _in_window(stamp: str | None, start: datetime, end: datetime) -> bool:
+    """Whether a stored ISO-8601 timestamp falls in `[start, end)`."""
+    if not stamp:
+        return False
+    try:
+        at = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return start <= at < end
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entrypoint: validate the config first, then serve.
 
@@ -1519,11 +1693,28 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     `argv[0] == "resummarize"` dispatches to the offline rebuild instead of serving,
     so `python -m fabro_scheduler resummarize …` works inside the container with no
-    second console script.
+    second console script. `argv[0] == "retro"` does the same for the weekly retro
+    (`docs/factory-retro/`), which the host cron wrapper runs. Logging is configured
+    before either dispatch, so their `retro: ...` lines reach stderr and the cron log.
     """
     args_list = list(sys.argv[1:] if argv is None else argv)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    )
+    logging.getLogger("fabro_scheduler").setLevel(logging.INFO)
+    # httpx logs every request at INFO, which duplicates this service's own line
+    # for the same fetch; four repos a minute is ~11k lines a day of noise in
+    # `docker compose logs`. The `github:` line carries the repo, the status, the
+    # ETag and the rate limit, which is everything the request line had.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     if args_list[:1] == ["resummarize"]:
         return _resummarize(args_list[1:])
+    if args_list[:1] == ["retro"]:
+        return _retro(args_list[1:])
     parser = argparse.ArgumentParser(
         prog="fabro-scheduler",
         description="Owns admission to the coder instances.",
@@ -1538,18 +1729,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(args_list)
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-    )
-    logging.getLogger("fabro_scheduler").setLevel(logging.INFO)
-    # httpx logs every request at INFO, which duplicates this service's own line
-    # for the same fetch; four repos a minute is ~11k lines a day of noise in
-    # `docker compose logs`. The `github:` line carries the repo, the status, the
-    # ETag and the rate limit, which is everything the request line had.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     path = args.config or Path(
         os.environ.get("SCHEDULER_CONFIG") or DEFAULT_CONFIG_PATH
