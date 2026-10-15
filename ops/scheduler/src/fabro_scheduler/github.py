@@ -31,12 +31,19 @@ what lets the caller skip re-filtering on every tick.
 **A label write is not conditional and not free**, and it does not go through the
 cache: it is a small mutation whose only safety property is that both operations
 are idempotent, so a rollback or a retry can be repeated without harm.
+
+Two calls exist for the weekly retro (issue #33, ADR 0026) and for nothing else:
+`fetch_label_all_states` lists every issue carrying one label whatever its state
+(so the retro can read which failure classes the operator has filed, closed or
+not), and `create_issue` files a new one. Both write in **this** repository only,
+avoiding the deploy-on-push path a PR would take, and neither is on the poll
+path.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -146,6 +153,25 @@ class PullRequest:
     number: int
     url: str
     merged: bool
+
+
+@dataclass(frozen=True)
+class TrackedIssue:
+    """One issue carrying a label, whatever its state, as the retro reads it.
+
+    Unlike `Issue` this keeps the raw body and the closing fields, because the
+    retro matches a hidden marker in the body and reads the operator's decision
+    from `state_reason`. `state_reason` and `closed_at` are `None` for an open
+    issue (and for one GitHub never populated); `body` is `""` rather than
+    `None` so callers have one shape.
+    """
+
+    number: int
+    state: str  # "open" | "closed"
+    state_reason: str | None  # "completed" | "not_planned" | "duplicate" | ...
+    closed_at: str | None  # ISO-8601, as GitHub sends it
+    html_url: str
+    body: str
 
 
 def is_eligible(payload: Mapping[str, Any]) -> bool:
@@ -552,6 +578,86 @@ def fetch_remainders(
     return fetch_labelled(repo, REMAINDER_LABEL, token, client=client, timeout=timeout)
 
 
+def fetch_label_all_states(
+    repo: str,
+    label: str,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> list[TrackedIssue]:
+    """Every issue in `repo` carrying `label`, open and closed (ADR 0026 D3).
+
+    `state=all` is the point: the weekly retro's whole state is the operator's
+    own decisions on these issues, and a closed one is a decision (completed =
+    file a regression on a recurrence, not planned = suppress the class). Pull
+    requests are dropped (`GET /issues` returns them too), and so is any object
+    that does not actually carry the label.
+
+    Pages every `rel="next"` Link, unlike `fetch_labelled`: there is no ETag
+    cache here (the collection changes at most a few times a week), and a
+    truncated list would silently lose an open issue and file a duplicate. The
+    query travels on the first request only, because the next URL already
+    carries it.
+
+    Raises `GitHubError` for anything that is not a `200`.
+    """
+    if not token or not token.strip():
+        raise GitHubError(
+            "GITHUB_TOKEN is not set; the GitHub inventory cannot be refreshed"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    owned = client is None
+    http = client or httpx.Client(timeout=timeout)
+    results: list[TrackedIssue] = []
+    url: str | None = f"{GITHUB_API}/repos/{repo}/issues"
+    params: dict[str, object] | None = {
+        "labels": label,
+        "state": "all",
+        "per_page": PAGE_SIZE,
+    }
+    try:
+        while url:
+            response = http.get(url, params=params, headers=headers)
+            if response.status_code != 200:
+                remaining = response.headers.get("x-ratelimit-remaining")
+                raise GitHubError(
+                    _error_message(repo, response, remaining),
+                    status_code=response.status_code,
+                    remaining=remaining,
+                )
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise GitHubError(
+                    f"{repo}: expected a list of issues, got {type(payload).__name__}"
+                )
+            for item in payload:
+                if not isinstance(item, Mapping) or "pull_request" in item:
+                    continue
+                number = item.get("number")
+                if not isinstance(number, int) or isinstance(number, bool):
+                    continue
+                if label not in _label_names(item):
+                    continue
+                results.append(_tracked_issue(item))
+            url = _next_link_url(response)
+            params = None
+    except httpx.HTTPError as exc:
+        raise GitHubError(f"{repo}: GitHub request failed: {exc}") from exc
+    finally:
+        if owned:
+            http.close()
+
+    log.info("github: %s %d %s issue(s) in any state", repo, len(results), label)
+    return results
+
+
 def fetch_pull_state(
     repo: str,
     number: int,
@@ -723,6 +829,44 @@ def fetch_sub_issues(
         if owned:
             http.close()
     return results
+
+
+def create_issue(
+    repo: str,
+    title: str,
+    body: str,
+    labels: Sequence[str],
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> TrackedIssue:
+    """`POST /repos/{owner}/{repo}/issues` -- file one issue (ADR 0026 D3).
+
+    Only the weekly retro calls this, and only in this repository. It is not
+    idempotent -- a retry files a second issue -- so the retro fingerprints the
+    issues it filed and never files the same class twice by accident. Raises
+    `GitHubError` for anything that is not a `2xx`. Never logs the body.
+    """
+    path = f"/repos/{repo}/issues"
+    response = _write(
+        "POST",
+        path,
+        token,
+        json={"title": title, "body": body, "labels": list(labels)},
+        client=client,
+        timeout=timeout,
+    )
+    if not 200 <= response.status_code < 300:
+        raise _write_error(path, "create issue", response)
+    payload = response.json()
+    if not isinstance(payload, Mapping):
+        raise GitHubError(
+            f"{repo}: expected an issue object, got {type(payload).__name__}"
+        )
+    created = _tracked_issue(payload)
+    log.info("github: %s#%s issue created", repo, created.number)
+    return created
 
 
 def comment(
@@ -931,6 +1075,32 @@ def _label_names(payload: Mapping[str, Any]) -> frozenset[str]:
         elif isinstance(label, str):
             names.add(label)
     return frozenset(names)
+
+
+def _tracked_issue(payload: Mapping[str, Any]) -> TrackedIssue:
+    """One issue object from `GET/POST /issues`, keeping its state and body.
+
+    `state_reason`, `closed_at`, `html_url` and `body` are absent or `null`
+    often enough (open issues, a body GitHub never set) that treating a missing
+    one as a parse failure would drop real issues; `body` becomes `""` so the
+    marker match has one shape to read. `number` is the only required field.
+    """
+    number = payload.get("number")
+    if not isinstance(number, int) or isinstance(number, bool):
+        raise GitHubError("GitHub issue object without a numeric `number`")
+    state = payload.get("state")
+    reason = payload.get("state_reason")
+    closed_at = payload.get("closed_at")
+    url = payload.get("html_url")
+    body = payload.get("body")
+    return TrackedIssue(
+        number=number,
+        state=state if isinstance(state, str) else "",
+        state_reason=reason if isinstance(reason, str) else None,
+        closed_at=closed_at if isinstance(closed_at, str) else None,
+        html_url=url if isinstance(url, str) else "",
+        body=body if isinstance(body, str) else "",
+    )
 
 
 def _to_issue(repo: str, payload: Mapping[str, Any], seen_at: datetime) -> Issue:

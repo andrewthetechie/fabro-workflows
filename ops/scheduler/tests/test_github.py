@@ -23,7 +23,9 @@ from fabro_scheduler.github import (
     GitHubError,
     PullRequest,
     add_label,
+    create_issue,
     fetch_issues,
+    fetch_label_all_states,
     fetch_pull_for_branch,
     is_eligible,
     remove_label,
@@ -497,3 +499,144 @@ def test_the_lookup_timeout_is_five_seconds():
         inspect.signature(fetch_pull_for_branch).parameters["timeout"].default
         == PR_LOOKUP_TIMEOUT_SECONDS
     )
+
+
+# --- the retro's two calls (issue #33, ADR 0026) ----------------------------------
+#
+# One read and one write, both in this repository. The read must page, because a
+# truncated list loses an open issue and the retro then files a duplicate class;
+# the write is the only call in this module that creates an issue.
+
+ALL_STATES_URL = "https://api.github.com/repos/o/a/issues"
+CREATE_URL = "https://api.github.com/repos/o/a/issues"
+
+
+@respx.mock
+def test_fetch_label_all_states_pages_and_drops_pull_requests():
+    page2 = httpx.URL(ALL_STATES_URL).copy_with(
+        params={"labels": "retro", "state": "all", "per_page": "100", "page": 2}
+    )
+    # One route, two responses in order: respx matches on the path alone, so a
+    # second route for page 2 would never be reached and the first page's Link
+    # header would loop forever.
+    route = respx.get(ALL_STATES_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=[api_issue(1, ["retro"])],
+                headers={"link": f'<{page2}>; rel="next"'},
+            ),
+            httpx.Response(
+                200,
+                json=[
+                    api_issue(2, ["retro"], state="closed", state_reason="completed"),
+                    api_issue(3, ["retro"], pull_request={"url": "x"}),
+                ],
+            ),
+        ]
+    )
+
+    issues = fetch_label_all_states("o/a", "retro", TOKEN)
+
+    assert [issue.number for issue in issues] == [1, 2]
+    assert len(route.calls) == 2
+    assert route.calls[0].request.url.params["state"] == "all"
+    assert str(route.calls[1].request.url) == str(page2)
+    # Exactly the next URL's query, with nothing merged in a second time.
+    assert list(route.calls[1].request.url.params.multi_items()) == list(
+        page2.params.multi_items()
+    )
+
+
+@respx.mock
+def test_a_closed_issue_parses_its_state_reason_and_a_null_body():
+    respx.get(ALL_STATES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                api_issue(
+                    2,
+                    ["retro"],
+                    state="closed",
+                    state_reason="not_planned",
+                    closed_at="2026-10-10T08:00:00Z",
+                    html_url="https://github.com/o/a/issues/2",
+                    body=None,
+                )
+            ],
+        )
+    )
+
+    issues = fetch_label_all_states("o/a", "retro", TOKEN)
+
+    assert issues[0].state == "closed"
+    assert issues[0].state_reason == "not_planned"
+    assert issues[0].closed_at == "2026-10-10T08:00:00Z"
+    assert issues[0].html_url == "https://github.com/o/a/issues/2"
+    assert issues[0].body == ""
+    assert issues[0].number == 2
+
+
+@respx.mock
+def test_fetch_label_all_states_drops_an_issue_without_the_label():
+    respx.get(ALL_STATES_URL).mock(
+        return_value=httpx.Response(200, json=[api_issue(1, ["bug"])])
+    )
+    assert fetch_label_all_states("o/a", "retro", TOKEN) == []
+
+
+@respx.mock
+def test_fetch_label_all_states_403_raises_with_its_status():
+    respx.get(ALL_STATES_URL).mock(
+        return_value=httpx.Response(
+            403,
+            json={"message": "API rate limit exceeded"},
+            headers={"x-ratelimit-remaining": "0"},
+        )
+    )
+    with pytest.raises(GitHubError) as caught:
+        fetch_label_all_states("o/a", "retro", TOKEN)
+    assert caught.value.status_code == 403
+
+
+@respx.mock
+def test_fetch_label_all_states_with_an_empty_token_never_reaches_the_network():
+    route = respx.get(ALL_STATES_URL).mock(return_value=httpx.Response(200, json=[]))
+    with pytest.raises(GitHubError, match="GITHUB_TOKEN"):
+        fetch_label_all_states("o/a", "retro", "   ")
+    assert not route.called
+
+
+@respx.mock
+def test_create_issue_posts_the_title_body_and_labels_and_returns_the_number():
+    route = respx.post(CREATE_URL).mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "number": 41,
+                "state": "open",
+                "html_url": "https://github.com/o/a/issues/41",
+                "body": "the body",
+            },
+        )
+    )
+
+    created = create_issue("o/a", "retro: timeout:improve", "the body", ["retro", "bug"], TOKEN)
+
+    assert created.number == 41
+    request = route.calls.last.request
+    assert json.loads(request.content) == {
+        "title": "retro: timeout:improve",
+        "body": "the body",
+        "labels": ["retro", "bug"],
+    }
+
+
+@respx.mock
+def test_a_422_on_create_issue_raises_a_GitHubError():
+    respx.post(CREATE_URL).mock(
+        return_value=httpx.Response(422, json={"message": "Validation Failed"})
+    )
+    with pytest.raises(GitHubError) as caught:
+        create_issue("o/a", "t", "b", ["retro"], TOKEN)
+    assert caught.value.status_code == 422
