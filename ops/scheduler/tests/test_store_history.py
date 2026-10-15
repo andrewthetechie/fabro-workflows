@@ -369,3 +369,27 @@ def test_resummarize_window_deletes_only_its_summary_rows(tmp_path):
         assert {r["run_id"] for r in _history(store)} == {"IN1", "IN2", "OUT"}
     finally:
         store.close()
+
+
+def test_refute_row_round_trips_the_new_field_keys(tmp_path):
+    # #40: the stored refute row carries unverifiable_only and ci_credited, so the
+    # scorecard can split the "other" bucket and count CI-credited criteria.
+    from collections import Counter
+
+    from fabro_scheduler.summary import RefuteVerdict, RunSummary
+
+    store = Store(tmp_path / "scheduler.db")
+    try:
+        store.save_run_summary(
+            RunSummary(
+                run_id="RX", stages={}, failovers=Counter(), path=[], terminal_node="x",
+                refute=[RefuteVerdict("fail", False, True, 3)], events=1,
+            )
+        )
+        raw = store._conn.execute(
+            "SELECT refute FROM run_summary WHERE run_id = ?", ("RX",)
+        ).fetchone()["refute"]
+        assert raw == ('[{"verdict": "fail", "not_met": false, '
+                       '"unverifiable_only": true, "ci_credited": 3}]')
+    finally:
+        store.close()

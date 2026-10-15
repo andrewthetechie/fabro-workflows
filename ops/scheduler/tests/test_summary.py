@@ -132,6 +132,28 @@ def test_refute_verdicts_in_order_with_not_met_when_known():
     ]
 
 
+def test_refute_verdict_reads_the_new_field_keys():
+    # #40: unverifiable_only arrives as a bool or "true"/"false"; ci_credited as an
+    # int or a digit string. Absent keys stay None.
+    evs = [
+        {"seq": 1, "event": "stage.completed", "node_id": "review_merge.refute_gate",
+         "properties": {"status": "succeeded", "context_updates": {
+             "refute_verdict": "fail", "refute_not_met": False,
+             "refute_unverifiable_only": True, "refute_ci_credited": 3}}},
+        {"seq": 2, "event": "stage.completed", "node_id": "review_merge.refute_gate",
+         "properties": {"status": "succeeded", "context_updates": {
+             "refute_verdict": "fail", "refute_not_met": False,
+             "refute_unverifiable_only": "false", "refute_ci_credited": "2"}}},
+        {"seq": 3, "event": "stage.completed", "node_id": "review_merge.refute_gate",
+         "properties": {"status": "succeeded", "context_updates": {"refute_verdict": "pass"}}},
+    ]
+    assert summarize("R1", [], evs).refute == [
+        RefuteVerdict("fail", False, True, 3),
+        RefuteVerdict("fail", False, False, 2),
+        RefuteVerdict("pass", None),
+    ]
+
+
 def test_counts_every_event_and_survives_an_empty_log():
     assert summarize("R1", STAGES, events()).events == 22
     empty = summarize("R1", [], [])

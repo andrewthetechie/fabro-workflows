@@ -171,11 +171,15 @@
         ('Runs the refuter judged', r.runs),
         ('First verdict pass', r.first_pass),
         ('First verdict fail with a not_met', r.first_fail_not_met),
-        ('First verdict fail, unverifiable or defects only', r.first_fail_other),
+        ('First verdict fail, defects only', r.first_fail_defects),
+        ('First verdict fail, unverifiable only', r.first_fail_unverifiable_only),
+        ('First verdict fail, other (before the split)', r.first_fail_other_unknown),
         ('First verdict fail, before #29', r.first_fail_unknown),
         ('First verdict invalid', r.first_invalid),
         ('Fix turns taken', r.fix_turns),
         ('Fix turns the second verdict passed', r.fix_cleared),
+        ('First verdict CI-credited criteria', r.first_ci_credited),
+        ('Runs with a known CI-credited count', r.first_ci_credited_runs),
       ] %}<tr><td class="py-1.5 text-slate-400">{{ label }}</td><td class="py-1.5 text-right text-slate-200">{{ value }}</td></tr>{% endfor %}
     </tbody></table>
   </section>

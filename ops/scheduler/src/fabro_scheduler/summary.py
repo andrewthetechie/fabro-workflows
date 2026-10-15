@@ -121,6 +121,8 @@ class RefuteVerdict:
 
     verdict: str
     not_met: bool | None
+    unverifiable_only: bool | None = None
+    ci_credited: int | None = None
 
 
 @dataclass
@@ -286,10 +288,14 @@ def summarize(
                 verdict = _str(updates.get("refute_verdict"))
                 if verdict:
                     not_met = updates.get("refute_not_met")
+                    unverifiable_only = updates.get("refute_unverifiable_only")
+                    ci_credited = updates.get("refute_ci_credited")
                     refute.append(
                         RefuteVerdict(
                             verdict,
                             not_met if isinstance(not_met, bool) else _bool_text(not_met),
+                            unverifiable_only if isinstance(unverifiable_only, bool) else _bool_text(unverifiable_only),
+                            ci_credited if isinstance(ci_credited, int) else _int_or_none(ci_credited),
                         )
                     )
 
@@ -351,4 +357,15 @@ def _bool_text(value: object) -> bool | None:
         return True
     if value == "false":
         return False
+    return None
+
+
+def _int_or_none(value: object) -> int | None:
+    """A context value that is an int or a digit string; None otherwise."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
     return None

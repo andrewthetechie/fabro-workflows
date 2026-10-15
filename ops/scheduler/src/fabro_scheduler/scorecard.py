@@ -146,11 +146,15 @@ class RefuteLine:
     runs: int = 0  # runs whose refute_gate gave at least one verdict
     first_pass: int = 0
     first_fail_not_met: int = 0  # a fail with a not_met criterion: the fix-turn case
-    first_fail_other: int = 0  # unverifiable or defects only
+    first_fail_defects: int = 0  # a fail with no not_met, unverifiable_only False
+    first_fail_unverifiable_only: int = 0  # a fail with no not_met and no defect
+    first_fail_other_unknown: int = 0  # a fail with no not_met and no unverifiable_only
     first_fail_unknown: int = 0  # a fail recorded before refute_not_met existed
     first_invalid: int = 0
     fix_turns: int = 0  # runs with a second verdict after a fix turn
     fix_cleared: int = 0  # ... whose second verdict was pass
+    first_ci_credited: int = 0  # met criteria citing ci.sh, over first verdicts
+    first_ci_credited_runs: int = 0  # runs whose first verdict carried a ci_credited count
 
 
 @dataclass(frozen=True)
@@ -666,10 +670,12 @@ def to_markdown(card: Scorecard) -> str:
         f" {sum(l.box_hours for l in card.no_pr):.0f} box-hours: "
         + (", ".join(f"`{l.terminal_node}` {l.runs}" for l in card.no_pr) or "none")
         + " |",
-        f"| Refuter first verdicts: pass / not_met / other fail / invalid | {card.refute.first_pass} /"
-        f" {card.refute.first_fail_not_met} / {card.refute.first_fail_other + card.refute.first_fail_unknown}"
-        f" / {card.refute.first_invalid}; fix turns {card.refute.fix_turns},"
-        f" cleared {card.refute.fix_cleared} |",
+        f"| Refuter first verdicts: pass / not_met / defects / unverifiable-only / other / invalid | {card.refute.first_pass} /"
+        f" {card.refute.first_fail_not_met} / {card.refute.first_fail_defects} / {card.refute.first_fail_unverifiable_only} /"
+        f" {card.refute.first_fail_other_unknown + card.refute.first_fail_unknown} / {card.refute.first_invalid};"
+        f" fix turns {card.refute.fix_turns}, cleared {card.refute.fix_cleared} |",
+        f"| Refuter CI-credited criteria (first verdicts) | {card.refute.first_ci_credited} over"
+        f" {card.refute.first_ci_credited_runs} runs |",
         "| Open to merge, p50 / p90 hours: architecture / other | "
         + " / ".join(
             f"{_num(p.p50)} / {_num(p.p90)} (n={p.count})"
@@ -780,9 +786,19 @@ def _refute_line(raw: Iterable[str | None]) -> RefuteLine:
         elif first.get("not_met") is True:
             counts["first_fail_not_met"] += 1
         elif first.get("not_met") is False:
-            counts["first_fail_other"] += 1
+            if first.get("unverifiable_only") is True:
+                counts["first_fail_unverifiable_only"] += 1
+            elif first.get("unverifiable_only") is False:
+                counts["first_fail_defects"] += 1
+            else:
+                counts["first_fail_other_unknown"] += 1
         else:
             counts["first_fail_unknown"] += 1
+        # The CI-credited count (#40): summed over first verdicts that carry it.
+        cc = first.get("ci_credited")
+        if isinstance(cc, int):
+            counts["first_ci_credited"] += cc
+            counts["first_ci_credited_runs"] += 1
         # Only a fix turn sends a run back through refute_gate, so a second verdict after a
         # first fail is one. A defect-only fail takes the turn too since #36, with not_met False.
         if len(verdicts) > 1 and first["verdict"] == "fail":

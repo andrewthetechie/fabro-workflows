@@ -227,9 +227,47 @@ def test_refuter_line(store):
         run(store, run_id)
         store.save_run_summary(summary(run_id, [], refute=refute))
     assert compute(store).refute == scorecard.RefuteLine(
-        runs=7, first_pass=1, first_fail_not_met=2, first_fail_other=2,
+        runs=7, first_pass=1, first_fail_not_met=2, first_fail_defects=0,
+        first_fail_unverifiable_only=0, first_fail_other_unknown=2,
         first_fail_unknown=1, first_invalid=1, fix_turns=3, fix_cleared=2,
+        first_ci_credited=0, first_ci_credited_runs=0,
     )
+
+
+def test_refuter_line_three_buckets():
+    # #40: a not_met-False fail is unverifiable-only when unverifiable_only is true,
+    # defects when it is false, and other (unknown) when it is absent.
+    line = scorecard._refute_line([
+        '[{"verdict": "fail", "not_met": false, "unverifiable_only": true}]',
+        '[{"verdict": "fail", "not_met": false, "unverifiable_only": false}]',
+        '[{"verdict": "fail", "not_met": false}]',
+    ])
+    assert line.first_fail_unverifiable_only == 1
+    assert line.first_fail_defects == 1
+    assert line.first_fail_other_unknown == 1
+    assert line.first_fail_unknown == 0
+
+
+def test_refuter_line_old_row_lands_in_other():
+    # A row stored before #40 carried only {verdict, not_met}; its fail with not_met
+    # False has no unverifiable_only, so it lands in "other", never unverifiable-only.
+    line = scorecard._refute_line(['[{"verdict": "fail", "not_met": false}]'])
+    assert line.first_fail_other_unknown == 1
+    assert line.first_fail_unverifiable_only == 0
+    assert line.first_fail_defects == 0
+
+
+def test_refuter_line_ci_credited_sums():
+    # #40: first_ci_credited sums the per-run ci_credited counts, over first verdicts
+    # that carry one (None or absent is skipped).
+    line = scorecard._refute_line([
+        '[{"verdict": "pass", "not_met": false, "unverifiable_only": false, "ci_credited": 3}]',
+        '[{"verdict": "fail", "not_met": false, "unverifiable_only": false, "ci_credited": 2}]',
+        '[{"verdict": "fail", "not_met": false, "unverifiable_only": true}]',
+        '[{"verdict": "fail", "not_met": false, "unverifiable_only": false}]',
+    ])
+    assert line.first_ci_credited == 5
+    assert line.first_ci_credited_runs == 2
 
 
 def test_window_is_by_dispatch_time_and_repos_are_listed(store):

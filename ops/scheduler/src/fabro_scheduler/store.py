@@ -215,7 +215,7 @@ CREATE TABLE IF NOT EXISTS run_summary (
   summarized_at TEXT    NOT NULL,  -- ISO-8601 UTC
   terminal_node TEXT,              -- the last node the run started, other than exit
   path          TEXT,              -- JSON array of "from>to": the run's last edges
-  refute        TEXT,              -- JSON array of {verdict, not_met}, in order
+  refute        TEXT,              -- JSON array of {verdict, not_met, unverifiable_only, ci_credited}, in order
   events        INTEGER,
   error         TEXT,
   first_edit_ms TEXT,              -- JSON array: per coder attempt, ms to its first edit
@@ -1100,7 +1100,12 @@ class Store:
         """Replace one run's summary rows, in one transaction."""
         stamp = _stamp(at)
         refute = [
-            {"verdict": verdict.verdict, "not_met": verdict.not_met}
+            {
+                "verdict": verdict.verdict,
+                "not_met": verdict.not_met,
+                "unverifiable_only": verdict.unverifiable_only,
+                "ci_credited": verdict.ci_credited,
+            }
             for verdict in summary.refute
         ]
         with self._lock, self._conn:
