@@ -173,29 +173,42 @@ pub fn plan(root: &Path, env: Option<&TestEnv>, changed: &[String], code: &CodeA
         }
     }
 
-    // Step 7: map each selected test to the first target, in file order, that owns it.
+    // Step 7: map each selected test to the first target, in file order, that owns it. A
+    // `watch` target owns the tests its `watch` matches and runs whole for them: it takes
+    // no file arguments, so its `cwd` does not matter.
     let mut owned: BTreeMap<&str, Vec<&String>> = BTreeMap::new();
+    let mut owned_whole: BTreeSet<&str> = BTreeSet::new();
     for test in &selected {
-        let Some((name, target)) = env
-            .targets
-            .iter()
-            .find(|(_, target)| glob_matches(target.tests.as_deref(), test))
-        else {
+        let Some((name, target)) = env.targets.iter().find(|(_, target)| {
+            glob_matches(target.tests.as_deref(), test) || glob_matches(target.watch.as_deref(), test)
+        }) else {
             return full(changed, &format!("unowned_test:{test}"));
         };
+        if target.watch.is_some() {
+            owned_whole.insert(name.as_str());
+            continue;
+        }
         if relative_to_cwd(test, &target.cwd).is_none() {
             return full(changed, &format!("path_outside_cwd:{test}"));
         }
         owned.entry(name.as_str()).or_default().push(test);
+    }
+    // A target's own `max_tests`: past it the full suite is the faster gate (C3).
+    for (name, target) in &env.targets {
+        let count = owned.get(name.as_str()).map_or(0, Vec::len);
+        if target.max_tests.is_some_and(|max| count > max) {
+            return full(changed, &format!("too_many_tests:{name}"));
+        }
     }
 
     // Steps 7 and 8, in file order so the plan reads as the declaration does.
     let mut targets: Vec<PlannedTarget> = Vec::new();
     for (name, target) in &env.targets {
         let tests = owned.get(name.as_str()).cloned().unwrap_or_default();
-        let watched = changed
-            .iter()
-            .any(|p| glob_matches(target.watch.as_deref(), p));
+        let watched = owned_whole.contains(name.as_str())
+            || changed
+                .iter()
+                .any(|p| glob_matches(target.watch.as_deref(), p));
         if watched {
             targets.push(PlannedTarget {
                 name: name.clone(),
@@ -258,14 +271,18 @@ pub fn plan(root: &Path, env: Option<&TestEnv>, changed: &[String], code: &CodeA
     }
 
     // Step 10: what the selection could not attribute, recorded and never escalated (D7).
+    // A seed the index does not know (a fixture, a snapshot) counts as untested when it lies
+    // under a target's `tests`: it is that target's input, and it selected nothing.
     let untested: Vec<String> = code
         .seeds
         .iter()
         .filter(|(seed, answer)| {
-            answer.indexed
-                && !answer.tests.iter().any(|t| t == *seed)
-                && answer.tests.is_empty()
-                && answer.conftests.is_empty()
+            let known = answer.indexed
+                || env
+                    .targets
+                    .values()
+                    .any(|target| glob_matches(target.tests.as_deref(), seed));
+            known && answer.tests.is_empty() && answer.conftests.is_empty()
         })
         .map(|(seed, _)| seed.clone())
         .collect();
@@ -441,14 +458,14 @@ pub async fn current_plan(root: &Path, base_arg: Option<&str>) -> Plan {
         Ok(base) => base,
         Err(message) => {
             eprintln!("task-plan: {message}");
-            return full(&[], "index_unavailable");
+            return full(&[], "no_base");
         }
     };
     let changed = match changed_set(root, &base) {
         Ok(changed) => changed,
         Err(message) => {
             eprintln!("task-plan: {message}");
-            return full(&[], "index_unavailable");
+            return full(&[], "no_base");
         }
     };
     let skip = testenv::glob_set(env.as_ref().map_or(&[], |env| env.task_skip()));

@@ -141,6 +141,7 @@ Zero or more. `NAME` matches `^[a-z0-9-]+$`: it is what the agent types, and the
 | `timeout` | integer seconds | `120` | `1` to `600`, for the run alone |
 | `tests` | array of globs | — | the test files this target runs, relative to the checkout root. `*` stops at `/`; `**` crosses directories. Mutually exclusive with `watch` |
 | `watch` | array of globs | — | a changed file matching any of these runs the whole target, with no arguments. Mutually exclusive with `tests` |
+| `max_tests` | integer | — | only with `tests`, at least `1`: a Task validation selection of more test files than this runs the full suite instead (`too_many_tests:<target>`). Set it when the target runs its files serially and `ci.sh` runs the suite in parallel |
 
 ## Task validation keys (ADR 0025)
 
@@ -149,7 +150,7 @@ gate: it runs the repository's checks plus the tests that cover the task's chang
 instead of the whole suite. A repository that declares none of them gets the full suite per
 task, exactly as before, so **declaring them is a choice and deleting them rolls the choice
 back**. They are parsed strictly, so a repository may use them only once the images carry
-`fabro-io` 0.5.0 (task 06 of `docs/task-validation/`).
+`fabro-io` 0.5.0 (task 06 of `docs/task-validation/`); `max_tests` needs 0.5.1.
 
 ```toml
 [task]
@@ -160,6 +161,8 @@ skip = ["frontend/tests/**"]   # test files Task validation never runs (e2e, dep
 cwd = "backend"
 run = "uv run pytest -n 1 -q"
 tests = ["backend/tests/**"]   # the test files this target runs; selected ones become args
+max_tests = 50                 # optional: a bigger selection runs the full suite instead
+timeout = 600                  # the gate runs the whole selection under this
 
 [targets.rust]
 run = "cargo test --all-features"
@@ -167,9 +170,9 @@ watch = ["src-tauri/**"]       # any changed file here runs the whole target, wi
 
 [checks.prek]                  # a lint or typecheck step; never prepares the Test environment
 about = "pre-commit hooks over the task's changes"   # optional, one line
-run = "uv run prek run --from-ref \"$FABRO_TASK_BASE\" --to-ref HEAD"
+run = "uv run prek run --files"
 watch = ["**"]                 # required, non-empty; the check runs when a changed file matches
-files = false                  # true: append the matching changed files, relative to cwd
+files = true                   # true: append the matching changed files, relative to cwd
 cwd = "."                      # default "."
 timeout = 300                  # 1..=600, default 120
 ```
@@ -180,7 +183,16 @@ Rules:
 - A target may have `tests` or `watch`, never both. A target with neither is still available
   to `run_tests`, but takes no part in Task validation.
 - A `watch` target runs whole when any changed path matches it; a `tests` target runs only
-  the selected tests, passed as paths relative to its `cwd`.
+  the selected tests, passed as paths relative to its `cwd`. A `watch` target also owns the
+  test files its `watch` matches (writers-app's `src-tauri/tests/*.rs`): a selected one runs
+  the target whole.
+- A check that should see the agent's uncommitted edits takes `files = true`. A command that
+  diffs refs (`prek run --from-ref "$FABRO_TASK_BASE" --to-ref HEAD`) sees only committed
+  files: right at the gate, which runs after the stage checkpoint, but empty in an agent's
+  `task_check` before it.
+- A target's `timeout` bounds the whole selection at the gate, not one test. The default of
+  120 s is for an agent's narrow run; a target the gate may hand dozens of files needs more,
+  and `max_tests` caps how many.
 - Check names match `^[a-z0-9-]+$`. A check runs with `[env]`, `path` and `FABRO_TASK_BASE`
   (the task's base commit) set, from its `cwd`. It never prepares the Test environment.
 - Built-in `full` globs always apply on top of `[task] full`: `.fabro/**`; every dependency
@@ -188,8 +200,11 @@ Rules:
   `Cargo.toml`, `go.mod`, ...); `conftest.py`; and the test-runner configs
   (`tsconfig*.json`, `vite.config.*`, `vitest.config.*`, `jest.config.*`).
 - Anything the gate cannot attribute falls back to the full suite: an unowned selected test,
-  a selected test outside its target's `cwd`, the Code index unavailable, or a deleted
-  non-test source file.
+  a selected test outside its target's `cwd`, a selection over `max_tests`, the Code index
+  unavailable, a base it cannot diff against, or a deleted non-test source file.
+- `untested` lists the changed files that selected no test: a source file the index knows,
+  or any non-test file under a target's `tests` (a fixture, a snapshot). It is recorded,
+  never escalated.
 
 Two update rules:
 

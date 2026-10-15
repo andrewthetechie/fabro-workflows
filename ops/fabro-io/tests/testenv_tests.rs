@@ -697,3 +697,44 @@ fn check_skips_the_ownership_warnings_without_fabro_code() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn check_counts_a_watch_target_as_the_owner_of_the_tests_it_watches() {
+    let _g = lock();
+    let root = common::temp_root("check-watch-owner");
+    std::fs::create_dir_all(root.join(".fabro")).unwrap();
+    std::fs::write(
+        root.join(".fabro/test.toml"),
+        "version = 1\n[targets.rust]\nabout=\"rust\"\nrun=\"cargo test\"\nwatch=[\"src-tauri/**\"]\n",
+    )
+    .unwrap();
+    let stub = write_code_stub(&root, "printf '%s\\n' src-tauri/tests/bible.rs");
+    unsafe { std::env::set_var("FABRO_CODE_BIN", &stub) };
+    let out = check_run(&root);
+    unsafe { std::env::remove_var("FABRO_CODE_BIN") };
+
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!text.contains("src-tauri/tests/bible.rs"), "the watch target owns it: {text}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn max_tests_needs_tests_and_is_at_least_one() {
+    let ok = testenv::parse(
+        "version = 1\n[targets.x]\nabout=\"x\"\nrun=\"x\"\ntests=[\"a/**\"]\nmax_tests = 50\n",
+    )
+    .expect("valid");
+    assert_eq!(ok.targets["x"].max_tests, Some(50));
+    let without = expect_err("version = 1\n[targets.x]\nabout=\"x\"\nrun=\"x\"\nmax_tests = 5\n");
+    assert!(without.contains("targets.x.max_tests"), "{without}");
+    let watch = expect_err(
+        "version = 1\n[targets.x]\nabout=\"x\"\nrun=\"x\"\nwatch=[\"a/**\"]\nmax_tests = 5\n",
+    );
+    assert!(watch.contains("targets.x.max_tests"), "{watch}");
+    let zero = expect_err(
+        "version = 1\n[targets.x]\nabout=\"x\"\nrun=\"x\"\ntests=[\"a/**\"]\nmax_tests = 0\n",
+    );
+    assert!(zero.contains("targets.x.max_tests"), "{zero}");
+}

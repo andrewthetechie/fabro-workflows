@@ -405,3 +405,102 @@ fn the_cli_reports_index_unavailable_as_a_full_plan() {
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&bin);
 }
+
+#[test]
+fn a_watch_target_owns_the_tests_it_watches_and_runs_whole() {
+    // writers-app: `src-tauri/tests/*.rs` are tests by TEST_RE, and the Rust target is a
+    // `watch` target. A selected integration test is that target's, not unowned.
+    let root = repo("tp-watch-own", &["shared/types.ts", "src-tauri/tests/bible.rs"]);
+    let env = env("version = 1\n[targets.rust]\nabout=\"x\"\nrun=\"x\"\nwatch=[\"src-tauri/**\"]\n");
+    let answer = code(r#"{"seeds": {"shared/types.ts": {"indexed": true, "tests": ["src-tauri/tests/bible.rs"], "conftests": []}}}"#);
+    let plan = taskplan::plan(&root, Some(&env), &changed(&["shared/types.ts"]), &answer);
+    assert_eq!(plan.mode, "scoped", "{}", plan.reason);
+    assert_eq!(plan.targets.len(), 1);
+    assert_eq!(plan.targets[0].name, "rust");
+    assert!(plan.targets[0].whole);
+    assert!(plan.targets[0].args.is_empty());
+}
+
+#[test]
+fn a_changed_fixture_under_a_tests_glob_that_selects_nothing_is_untested() {
+    // A JSON fixture or snapshot is not in the index and imports nothing, so it selects no
+    // test. It lives under the target's tests glob, so it is the target's untested change.
+    let root = repo("tp-fixture", &["backend/tests/fixtures/data.json", "docs/readme.md"]);
+    let env = env("version = 1\n[targets.backend]\nabout=\"x\"\nrun=\"x\"\ncwd=\"backend\"\ntests=[\"backend/tests/**\"]\n");
+    let answer = code(
+        r#"{"seeds": {
+            "backend/tests/fixtures/data.json": {"indexed": false, "tests": [], "conftests": []},
+            "docs/readme.md": {"indexed": false, "tests": [], "conftests": []}
+        }}"#,
+    );
+    let plan = taskplan::plan(
+        &root,
+        Some(&env),
+        &changed(&["backend/tests/fixtures/data.json", "docs/readme.md"]),
+        &answer,
+    );
+    assert_eq!(plan.mode, "scoped", "{}", plan.reason);
+    assert_eq!(plan.untested, ["backend/tests/fixtures/data.json"]);
+}
+
+#[test]
+fn the_cli_reports_a_base_it_cannot_diff_as_no_base() {
+    let root = common::temp_root("tp-cli-nobase");
+    std::fs::create_dir_all(root.join(".fabro")).unwrap();
+    std::fs::write(
+        root.join(".fabro/test.toml"),
+        "version = 1\n[targets.x]\nabout=\"x\"\nrun=\"x\"\ntests=[\"a/**\"]\n",
+    )
+    .unwrap();
+    git(&root, &["init", "-q"]);
+    git(&root, &["config", "user.email", "t@example.com"]);
+    git(&root, &["config", "user.name", "t"]);
+    write(&root, "a.py");
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-qm", "base"]);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_fabro-io"))
+        .args(["task-plan", "--root"])
+        .arg(&root)
+        .args(["--base", "0000000000000000000000000000000000000000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let plan: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(plan["mode"], "full");
+    assert_eq!(plan["reason"], "no_base");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_selection_over_a_targets_max_tests_falls_back_to_the_full_suite() {
+    // womens-fantasy-sports, measured 2026-10-14: a `core/db.py` edit reaches the backend
+    // conftest and selects all 168 backend test files. At `-n 1` they took 154 s, while the
+    // whole `ci.sh` (8 xdist workers) took 104 s, so the full suite is the faster gate.
+    let files: Vec<String> = (0..3).map(|i| format!("backend/tests/test_{i}.py")).collect();
+    let mut present: Vec<&str> = files.iter().map(String::as_str).collect();
+    present.push("backend/app/core/db.py");
+    let root = repo("tp-max", &present);
+    let decl = "version = 1\n[targets.backend]\nabout=\"x\"\nrun=\"x\"\ncwd=\"backend\"\ntests=[\"backend/tests/**\"]\nmax_tests = 2\n";
+    let answer = serde_json::json!({
+        "seeds": {"backend/app/core/db.py": {"indexed": true, "tests": files, "conftests": []}}
+    });
+    let plan = taskplan::plan(
+        &root,
+        Some(&env(decl)),
+        &changed(&["backend/app/core/db.py"]),
+        &code(&answer.to_string()),
+    );
+    assert_eq!(reasons(&plan), ("full".into(), "too_many_tests:backend".into()));
+
+    let at_limit = env(&decl.replace("max_tests = 2", "max_tests = 3"));
+    let plan = taskplan::plan(
+        &root,
+        Some(&at_limit),
+        &changed(&["backend/app/core/db.py"]),
+        &code(&answer.to_string()),
+    );
+    assert_eq!(plan.mode, "scoped", "{}", plan.reason);
+    assert_eq!(plan.targets[0].args.len(), 3);
+}

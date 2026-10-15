@@ -131,6 +131,11 @@ pub struct Target {
     pub tests: Option<Vec<String>>,
     /// Globs whose match runs this whole target with no arguments (C3).
     pub watch: Option<Vec<String>>,
+    /// The most selected tests Task validation runs here; more fall back to the full suite.
+    ///
+    /// Only with `tests`. A target that runs its files serially can be slower on a large
+    /// selection than `ci.sh` running the whole suite in parallel.
+    pub max_tests: Option<usize>,
 }
 
 /// The `[task]` table (ADR 0025 C3).
@@ -201,6 +206,7 @@ struct RawTarget {
     timeout: Option<u64>,
     tests: Option<Vec<String>>,
     watch: Option<Vec<String>>,
+    max_tests: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -318,6 +324,14 @@ fn validate(raw: Raw, source: Vec<u8>) -> Result<TestEnv, String> {
         if let Some(globs) = &t.watch {
             check_globs(globs, &format!("targets.{name}.watch"))?;
         }
+        if let Some(max) = t.max_tests {
+            if t.tests.is_none() {
+                return Err(format!("targets.{name}.max_tests needs tests"));
+            }
+            if max == 0 {
+                return Err(format!("targets.{name}.max_tests must be at least 1"));
+            }
+        }
         targets.insert(
             name,
             Target {
@@ -329,6 +343,7 @@ fn validate(raw: Raw, source: Vec<u8>) -> Result<TestEnv, String> {
                 timeout,
                 tests: t.tests,
                 watch: t.watch,
+                max_tests: t.max_tests,
             },
         );
     }
@@ -920,6 +935,14 @@ fn check_declaration(root: &Path, env: &TestEnv) -> ExitCode {
         }
     };
     let skip = glob_set(env.task_skip());
+    // A `watch` target runs whole, so it owns every test file its `watch` matches, as in
+    // `task-plan`'s step 7. Only `tests` globs can double-own a file.
+    let watchers = glob_set(
+        &env.targets
+            .values()
+            .flat_map(|target| target.watch.iter().flatten().cloned())
+            .collect::<Vec<_>>(),
+    );
     let owners: Vec<(&str, GlobSet)> = env
         .targets
         .iter()
@@ -941,7 +964,10 @@ fn check_declaration(root: &Path, env: &TestEnv) -> ExitCode {
                 "warning: test file `{file}` is matched by more than one target's tests: {}",
                 holding.join(", ")
             );
-        } else if holding.is_empty() && !skip.is_match(file.as_str()) {
+        } else if holding.is_empty()
+            && !skip.is_match(file.as_str())
+            && !watchers.is_match(file.as_str())
+        {
             println!("warning: no target's tests and no [task] skip entry owns test file `{file}`");
         }
     }
