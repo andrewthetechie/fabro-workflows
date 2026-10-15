@@ -255,3 +255,37 @@ Consequences:
   (2026-10-12..14: 142 / 11 / 10 / 0 of 163). A pass rate that rises while operator commits or reverts on
   merged PRs also rise means luna is missing what Sol caught; revert this amendment then.
 - `gpt-6.1-sol` stays in the host's catalog, unused.
+
+## Amendment (2026-10-15): The Refuter credits CI for command criteria (#40)
+
+**Status:** accepted (operator, 2026-10-15).
+
+Since moving to `gpt-6-luna`, the Refuter marks **command criteria** `unverifiable`: a criterion whose
+whole content is that a named command succeeds, such as "`bunx tsc --noEmit` passes". The prompt told it
+not to run commands and that a green CI is not evidence, so it blocked PRs whose command criteria had
+already run green on that exact tree in `./.fabro/ci.sh`. 17 PRs were held this way, and 16 were merged
+by hand. Issue #40.
+
+This amends D4: the Refuter's inputs gain a `validation` input, which says whether `./.fabro/setup.sh`
+and `./.fabro/ci.sh` passed on this exact tree, and quotes `.fabro/ci.sh`. The operating-rule bullet about
+green CI now applies to **behavioural** criteria only, and a new Method rule covers command criteria.
+
+**Decision.** A command criterion is `met` when the `validation` input says a validation passed on this
+exact tree, and `.fabro/ci.sh` runs the same tool (directly, or through a script or hook it calls — a
+`package.json` script, a pre-commit hook) over every file this PR changes. A different config file or a
+narrower scope is acceptable when it still covers every changed file. The Refuter cites the `.fabro/ci.sh`
+line in `evidence`. Missing evidence stays `unverifiable` and still blocks (consistent with D5).
+`.fabro/test.toml` checks are not evidence: they ran on earlier per-task trees, not on this tree.
+
+Options 3, 4 and 5 from the issue were not adopted: option 3 (a deterministic gate that runs a command
+parsed from criterion text) would execute untrusted issue text; option 4 (triage tells writers what to
+file) would not fix issues already queued; option 5 (back to `gpt-6.1-sol`) is blocked by the $100 hosted
+budget.
+
+Consequences:
+- `refute_gate` now emits `refute_unverifiable_only` (a fail with no `not_met` criterion and no defect)
+  and `refute_ci_credited` (how many met criteria cite `ci.sh`) on every verdict, and the scheduler's
+  scorecard reads them: it splits the "other" fail bucket into defects / unverifiable-only / other, and
+  counts CI-credited criteria over first verdicts. This **adds to** the 2026-10-14 luna amendment's
+  consequences: if unverifiable-only first verdicts stay above 5 a day across repositories for 3
+  consecutive days after this change, the choice of Refuter model is reopened.

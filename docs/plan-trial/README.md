@@ -74,6 +74,10 @@ run, or one that ended before its first task, is in neither arm.
 Per-stage tokens and the first-edit times exist only for runs summarized after the scheduler
 deploy. Use a window that starts after both deploys.
 
+On 2026-10-15 (#40) the Refuter began crediting `ci.sh` for command criteria. Its first-verdict
+metric changes at that deploy for both arms equally, so compare arms within the same window, not
+across it.
+
 ### Sizing, from the runs of 2026-10-04 to 10-13
 
 - `improve` per run, summed over its visits (n=59 runs): fresh input p50 185k, p90 536k; cache
