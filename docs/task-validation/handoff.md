@@ -22,7 +22,8 @@ the outputs that were already checked.
 | 06 images 0.5.0 + `min_binary` | `54095ad`, `f5ebaa5` | `make deploy-images`, `make verify-host`, `make check-host`; warning counts in `02-evidence.md`. |
 | 07 Task validation node + merge skip | `786ccea` | `make check`, `make check-host` (baselines unchanged), `ops/test-task-gates.sh` 1864 checks. |
 | 08 agents, guide, M-run, invariants, records | `23c3deb` | `make check` (guide 2109 B < 3000), `ops/tests` 80 tests. |
-| 09 womens-fantasy-sports `test.toml` | PR [#2088](https://github.com/andrewthetechie/womens-fantasy-sports/pull/2088) | Branch `task-validation` at `ce6ee55` on top of `c2a4be0`, pushed by hand. Offline checks (zero ownership warnings, `setup.sh` exit 0, `fabro-test frontend ...` 12 passed, the three plans) are in the PR body. |
+| 09 womens-fantasy-sports `test.toml` | PR [#2088](https://github.com/andrewthetechie/womens-fantasy-sports/pull/2088), merged `4fa6bb8` | `ce6ee55`, then `5251bbd` (review amendments: backend `max_tests = 50`, `timeout = 600`; prek `--files`). Re-checked offline in the 0.5.1 `fabro-ts` image: zero warnings, four plans, a 31 s green gate (PR body). CI green; squash-merged **2026-10-15T01:11:50Z**, the switch time. |
+| Review amendments A1–A7 | `0613fad`, `97eef7f`, `583e660`, `03b419c`, `bb8a771` | `fabro-io` 0.5.1 in all four images, `min_binary` 0.5.1, scheduler redeployed (red final rate over recorded verdicts). `make check`, `make check-host`, `make verify-host`. |
 
 Deploys run: `make deploy-scheduler` (`eb532a0`) + `resummarize`, `make deploy-images`
 (`2eba37b`). Both are dated in `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`.
@@ -82,12 +83,10 @@ asks.
 
 ## Live check 2 — task 09: the switch (after the operator merges PR #2088)
 
-The operator merges `andrewthetechie/womens-fantasy-sports#2088` by hand (it trips
-`config_changed`). Immediately after the merge:
+**Merged 2026-10-15T01:11:50Z** (`4fa6bb8`); `D` is that time, recorded in
+`10-trial.md`. Still to check:
 
-1. **Record the merge time (UTC)** at the top of `docs/task-validation/10-trial.md` as the
-   switch time, replacing the pending line. That timestamp is `D` for the measurement below
-   (`gh pr view 2088 --repo andrewthetechie/womens-fantasy-sports --json mergedAt`).
+1. ~~Record the merge time~~ (done).
 2. The first `backlog` run dispatched after `D` and in that repository must show, in
    `fabro events <run> --json`:
    - a `validate` visit with `task_validation_mode: "scoped"` (not `full`),

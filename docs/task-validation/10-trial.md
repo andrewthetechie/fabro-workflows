@@ -1,6 +1,9 @@
 # 10. The womens-fantasy-sports trial
 
-**Switch time:** _pending: the operator must merge the PR by hand (it trips `config_changed`)._
+**Switch time:** **2026-10-15T01:11:50Z** (womens-fantasy-sports#2088 squash-merged as
+`4fa6bb8`). Baseline window: 2026-10-14 to 2026-10-14 (C10: never before 2026-10-14; that day
+holds 56 womens-fantasy-sports runs, at least 15). After window: 2026-10-15 to 2026-10-21;
+run it on the morning of 2026-10-22 (UTC).
 
 **Task 09 PR:** https://github.com/andrewthetechie/womens-fantasy-sports/pull/2088 — the switch
 is its merge time (UTC).
