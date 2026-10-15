@@ -270,3 +270,17 @@ def test_final_routes_are_recorded_in_order_for_open_pr_prep_only():
          "properties": {"context_updates": {}}},
     ]
     assert summarize("R1", [], lines).final_routes == ["fix", "pr"]
+
+
+def test_untested_files_are_summed_over_validate_visits():
+    lines = [
+        {"event": "stage.completed", "node_id": "validate",
+         "properties": {"status": "succeeded", "context_updates": {
+             "task_validation_mode": "scoped", "task_validation_ok": True,
+             "task_validation_untested": 2}}},
+        {"event": "stage.completed", "node_id": "validate",
+         "properties": {"status": "succeeded", "context_updates": {
+             "task_validation_mode": "scoped", "task_validation_ok": True,
+             "task_validation_untested": 1}}},
+    ]
+    assert summarize("R1", [], lines).task_validation_untested == 3

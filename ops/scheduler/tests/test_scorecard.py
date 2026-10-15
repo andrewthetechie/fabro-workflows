@@ -53,7 +53,7 @@ def facts(*, state="open", labels=("agent-authored",), reason=None, report="comp
 
 
 def summary(run_id, stages, *, terminal="exit_node", failovers=None, refute=(),
-            task_validations=(), unchecked=0, final_routes=()):
+            task_validations=(), unchecked=0, untested=0, final_routes=()):
     return RunSummary(
         run_id=run_id,
         stages={s.node_id: s for s in stages},
@@ -64,6 +64,7 @@ def summary(run_id, stages, *, terminal="exit_node", failovers=None, refute=(),
         events=10,
         task_validations=list(task_validations),
         task_validation_unchecked=unchecked,
+        task_validation_untested=untested,
         final_routes=list(final_routes),
     )
 
@@ -368,7 +369,7 @@ def test_task_validation_row_and_red_final_rate(store):
     assert "| Task validation: visits by mode" in text
     assert "| Task validation: full visits by reason | unowned_test 1 |" in text
     assert "| Task validation: unchecked files | 4 (2.0 per scoped visit) |" in text
-    assert "| Final validation: reached / first route | 2 / pr 1, fix 1 (red 50%) |" in text
+    assert "| Final validation: verdicts / first route | 2 / pr 1, fix 1 (red 50%) |" in text
 
 
 def test_task_validation_row_is_empty_without_summaries(store):
@@ -404,3 +405,35 @@ def test_repo_filter_narrows_every_series(store):
     assert card.task_validation.by_mode == {"full": 1}
     assert card.task_validation.full_reasons == {"no_config": 1}
     assert card.final_validation.routes == {"draft": 1}
+
+
+def test_a_run_with_no_recorded_route_is_not_a_red_final(store):
+    # Before #35 (2026-10-13 22:13Z) open_pr_prep published no final_route. Such a run
+    # reached Final validation but says nothing about its verdict, so it must not count
+    # as red: a baseline window before #35 read "red 100%" (live, 2026-10-14).
+    run(store, "R1")
+    run(store, "R2")
+    store.save_run_summary(summary(
+        "R1", [StageStat("open_pr_prep", "command", 1, 0, 0)], final_routes=["pr"],
+    ))
+    store.save_run_summary(summary(
+        "R2", [StageStat("open_pr_prep", "command", 1, 0, 0)], final_routes=[],
+    ))
+    final = compute(store).final_validation
+    assert final.reached == 1
+    assert final.unrouted == 1
+    assert final.red_rate == pytest.approx(0.0)
+    text = scorecard.to_markdown(compute(store))
+    assert "| Final validation: verdicts / first route | 1 / pr 1 (red 0%); 1 more with no route recorded |" in text
+
+
+def test_untested_files_are_counted_per_scoped_visit(store):
+    run(store, "R1")
+    store.save_run_summary(summary(
+        "R1", [StageStat("validate", "command", 2, 0, 0)],
+        task_validations=[visit("scoped", 3.0), visit("scoped", 4.0)],
+        untested=3,
+    ))
+    card = compute(store)
+    assert card.task_validation.untested == 3
+    assert "| Task validation: untested files | 3 (1.5 per scoped visit) |" in scorecard.to_markdown(card)

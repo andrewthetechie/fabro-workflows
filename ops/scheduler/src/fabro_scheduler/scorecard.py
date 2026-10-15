@@ -157,9 +157,13 @@ class RefuteLine:
 class FinalValidationRow:
     """Final validation (`open_pr_prep`): runs that reached it and their first verdict."""
 
-    reached: int
+    reached: int  # runs that recorded a final_route (the verdicts the red rate is over)
     routes: dict[str, int]  # first final_route -> runs, most common first
     red_rate: float | None  # runs whose first final_route is not "pr", over `reached`
+    # Runs that visited `open_pr_prep` but recorded no route: every run before #35
+    # (2026-10-13 22:13Z), or a visit that failed before routing. Their verdict is unknown,
+    # so they are shown apart and never counted as red.
+    unrouted: int = 0
 
 
 @dataclass(frozen=True)
@@ -173,6 +177,7 @@ class TaskValidationRow:
     full_reasons: dict[str, int]  # full visits by fallback reason class
     red: dict[str, int]  # mode -> visits with ok false
     unchecked: int  # summed task_validation_unchecked over the window's visits
+    untested: int = 0  # summed task_validation_untested over the window's visits
 
 
 @dataclass(frozen=True)
@@ -446,10 +451,12 @@ def _task_validation(
     """
     visits: list[dict[str, object]] = []
     unchecked = 0
+    untested = 0
     routes: Counter[str] = Counter()
     for summary in summaries.values():
         visits.extend(json.loads(summary["task_validations"] or "[]"))
         unchecked += summary["task_validation_unchecked"] or 0
+        untested += summary["task_validation_untested"] or 0
         run_routes = json.loads(summary["final_routes"] or "[]")
         if run_routes:
             routes[run_routes[0]] += 1
@@ -472,11 +479,12 @@ def _task_validation(
         if visit.get("ok") is False:
             red[mode] += 1
 
-    reached = sum(
+    visited = sum(
         1
         for row in stages
         if row["node_id"] == "open_pr_prep" and row["run_id"] in summaries
     )
+    reached = sum(routes.values())
     red_final = reached - routes.get("pr", 0)
     return (
         TaskValidationRow(
@@ -487,11 +495,13 @@ def _task_validation(
             full_reasons=dict(full_reasons.most_common()),
             red=dict(red.most_common()),
             unchecked=unchecked,
+            untested=untested,
         ),
         FinalValidationRow(
             reached=reached,
             routes=dict(routes.most_common()),
             red_rate=_rate(red_final, reached),
+            unrouted=max(visited - reached, 0),
         ),
     )
 
@@ -686,8 +696,9 @@ def _task_validation_rows(card: Scorecard) -> list[str]:
 
     Task validation splits every `validate` visit by mode (scoped, full, legacy,
     timeout), with the per-visit minutes and the red count for each, the full visits'
-    fallback reasons, and the unchecked-file count. Final validation splits the first
-    verdict of each run that reached `open_pr_prep`.
+    fallback reasons, and the unchecked- and untested-file counts. Final validation splits
+    the first verdict of each run that recorded one at `open_pr_prep`, and names the runs
+    that visited it without recording one.
     """
     tv = card.task_validation
     modes = [mode for mode in TASK_VALIDATION_MODES if mode in tv.by_mode]
@@ -699,9 +710,12 @@ def _task_validation_rows(card: Scorecard) -> list[str]:
     )
     scoped = tv.by_mode.get("scoped", 0)
     unchecked = f"{tv.unchecked}"
+    untested = f"{tv.untested}"
     if scoped:
         unchecked += f" ({tv.unchecked / scoped:.1f} per scoped visit)"
+        untested += f" ({tv.untested / scoped:.1f} per scoped visit)"
     fv = card.final_validation
+    unrouted = f"; {fv.unrouted} more with no route recorded" if fv.unrouted else ""
     routes = ", ".join(f"{name} {count}" for name, count in fv.routes.items()) or "none"
     return [
         f"| Task validation: visits by mode (p50/p90 min) | {by_mode or 'none'};"
@@ -712,8 +726,9 @@ def _task_validation_rows(card: Scorecard) -> list[str]:
         + ("" if modes else "none")
         + " |",
         f"| Task validation: unchecked files | {unchecked} |",
-        f"| Final validation: reached / first route | {fv.reached} / {routes}"
-        f" (red {_pct(fv.red_rate)}) |",
+        f"| Task validation: untested files | {untested} |",
+        f"| Final validation: verdicts / first route | {fv.reached} / {routes}"
+        f" (red {_pct(fv.red_rate)}){unrouted} |",
     ]
 
 

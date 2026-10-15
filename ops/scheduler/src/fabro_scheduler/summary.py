@@ -45,9 +45,10 @@ and a visit with none -- a run from before the change, or a `validate` that fail
 records `legacy`, or `timeout` when its `stage.failed` has `system_actor: "timeout"`. `ms`
 is the visit's `properties.timing.wall_time_ms`, the same clock `run_stage_stats` uses.
 A red visit with no `stage.completed` is recorded from its `stage.failed`; without that,
-the baseline would count only green visits. `task_validation_unchecked` is summed into
-`RunSummary.task_validation_unchecked`. Each `open_pr_prep` visit appends its
-`final_route` to `RunSummary.final_routes`, in order.
+the baseline would count only green visits. `task_validation_unchecked` and
+`task_validation_untested` are summed into the `RunSummary` fields of the same names.
+Each `open_pr_prep` visit appends its `final_route` to `RunSummary.final_routes`, in
+order.
 
 Pure: no I/O, so the parsing is tested with fixture event lines.
 """
@@ -135,10 +136,11 @@ class RunSummary:
     # Per coder attempt that made an edit, ms from its start to the first edit, in order.
     first_edit_ms: list[int] = field(default_factory=list)
     dispositions: Counter[str] = field(default_factory=Counter)  # improve_gate's verdicts
-    # Task validation (ADR 0025): every `validate` visit in order, its ok events' count of
-    # unchecked files, and every `open_pr_prep` visit's first final route in order.
+    # Task validation (ADR 0025): every `validate` visit in order, the summed counts of
+    # unchecked and untested files, and every `open_pr_prep` visit's final route in order.
     task_validations: list[TaskValidation] = field(default_factory=list)
     task_validation_unchecked: int = 0
+    task_validation_untested: int = 0
     final_routes: list[str] = field(default_factory=list)
 
 
@@ -184,6 +186,7 @@ def summarize(
     dispositions: Counter[str] = Counter()
     task_validations: list[TaskValidation] = []
     task_validation_unchecked = 0
+    task_validation_untested = 0
     final_routes: list[str] = []
     count = 0
 
@@ -270,6 +273,7 @@ def summarize(
                 )
             )
             task_validation_unchecked += _int(updates.get("task_validation_unchecked"))
+            task_validation_untested += _int(updates.get("task_validation_untested"))
         elif name == "stage.completed" and node == FINAL_VALIDATION_NODE:
             updates = props.get("context_updates")
             if isinstance(updates, Mapping):
@@ -301,6 +305,7 @@ def summarize(
         dispositions=dispositions,
         task_validations=task_validations,
         task_validation_unchecked=task_validation_unchecked,
+        task_validation_untested=task_validation_untested,
         final_routes=final_routes,
     )
 

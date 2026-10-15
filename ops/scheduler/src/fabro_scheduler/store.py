@@ -222,6 +222,7 @@ CREATE TABLE IF NOT EXISTS run_summary (
   dispositions  TEXT,              -- JSON object: improve_gate disposition -> count
   task_validations TEXT,           -- JSON array: per `validate` visit {mode, reason_class, ok, ms}
   task_validation_unchecked INTEGER, -- summed task_validation_unchecked over validate visits
+  task_validation_untested INTEGER, -- summed task_validation_untested over validate visits
   final_routes  TEXT               -- JSON array: each open_pr_prep visit's final_route, in order
 );
 
@@ -321,6 +322,7 @@ ADDED_COLUMNS = {
         # a run summarized before it keeps NULLs, read as "not measured".
         "task_validations": "task_validations TEXT",
         "task_validation_unchecked": "task_validation_unchecked INTEGER",
+        "task_validation_untested": "task_validation_untested INTEGER",
         "final_routes": "final_routes TEXT",
         # Whether `run_model_usage` has been read for the run: NULL (not yet), `ok`,
         # `none` (fabro reported no model usage), `missing` (404) or `error` (retried).
@@ -1136,8 +1138,9 @@ class Store:
             self._conn.execute(
                 "INSERT INTO run_summary (run_id, status, attempts, summarized_at,"
                 " terminal_node, path, refute, events, error, first_edit_ms, dispositions,"
-                " task_validations, task_validation_unchecked, final_routes)"
-                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?) "
+                " task_validations, task_validation_unchecked, task_validation_untested,"
+                " final_routes)"
+                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO UPDATE SET status = 'ok',"
                 "  attempts = run_summary.attempts + 1, summarized_at = excluded.summarized_at,"
                 "  terminal_node = excluded.terminal_node, path = excluded.path,"
@@ -1145,6 +1148,7 @@ class Store:
                 "  first_edit_ms = excluded.first_edit_ms, dispositions = excluded.dispositions,"
                 "  task_validations = excluded.task_validations,"
                 "  task_validation_unchecked = excluded.task_validation_unchecked,"
+                "  task_validation_untested = excluded.task_validation_untested,"
                 "  final_routes = excluded.final_routes",
                 (
                     summary.run_id,
@@ -1157,6 +1161,7 @@ class Store:
                     json.dumps(dict(sorted(summary.dispositions.items()))),
                     json.dumps([asdict(visit) for visit in summary.task_validations]),
                     summary.task_validation_unchecked,
+                    summary.task_validation_untested,
                     json.dumps(summary.final_routes),
                 ),
             )
