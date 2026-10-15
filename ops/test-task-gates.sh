@@ -4299,6 +4299,37 @@ echo 1 > "$T/refute_fix_attempts"
 check "refute_prep: fix counter kept"          "1" "$(cat "$T/refute_fix_attempts")"
 rm -f "$T/refute_fix_attempts"
 
+# 7. #40: refute_prep writes the `validation` input (refute_validation.md). The
+#    worktree must be clean and the repo must have a .fabro/ci.sh to quote, so the
+#    fixture commits one first.
+mkdir -p "$T/wt/.fabro"
+cat > "$T/wt/.fabro/ci.sh" <<'CI'
+#!/bin/sh
+echo 'the fixture ci runs'
+CI
+git -C "$T/wt" add .fabro/ci.sh && git -C "$T/wt" commit -qm 'add ci.sh'
+HT=$(git -C "$T/wt" rev-parse 'HEAD^{tree}')
+echo "stale validation" > "$T/review/refute_validation.md"
+
+echo "$HT final" > "$T/validated_tree"
+( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" >/dev/null 2>&1 )
+check "refute_prep: final tree -> Final validation passed" "1" "$(grep -c 'Final validation passed on this exact tree' "$T/review/refute_validation.md")"
+check "refute_prep: quotes ci.sh"                          "1" "$(grep -c 'the fixture ci runs' "$T/review/refute_validation.md")"
+check "refute_prep: stale file replaced, not appended"     "0" "$(grep -c '^stale validation$' "$T/review/refute_validation.md")"
+
+echo "$HT merge" > "$T/validated_tree"
+( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" >/dev/null 2>&1 )
+check "refute_prep: merge tree -> merge-validation passed" "1" "$(grep -c 'The merge phase validate passed' "$T/review/refute_validation.md")"
+
+rm -f "$T/validated_tree"
+( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" >/dev/null 2>&1 )
+check "refute_prep: no tree -> No validation recorded"    "1" "$(grep -c 'No validation is recorded' "$T/review/refute_validation.md")"
+
+echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef final" > "$T/validated_tree"
+( cd "$T/wt" && PATH="$T/bin:$SAVED_PATH" sh "$T/refute_prep.sh" >/dev/null 2>&1 )
+check "refute_prep: different tree -> No validation recorded" "1" "$(grep -c 'No validation is recorded' "$T/review/refute_validation.md")"
+rm -f "$T/validated_tree"
+
 PATH="$SAVED_PATH"
 
 # ---------------------------------------------------------------------------
@@ -7766,7 +7797,7 @@ tv_repo() {
     echo x > "$T/repo/a.txt"
     git -C "$T/repo" add -A
     git -C "$T/repo" commit -qm init
-    : > "$TV_LOG"; rm -f "$T/final_validated_tree" "$T/fix_attempts"
+    : > "$TV_LOG"; rm -f "$T/final_validated_tree" "$T/fix_attempts" "$T/validated_tree"
 }
 tv_m_run() { ( cd "$T/repo" && sh "$T/validate.sh" 2>&1 ); }
 tv_m_ok() { jq -r '.context_updates.ci_ok' <<<"$(lastjson "$OUT")"; }
@@ -7780,23 +7811,36 @@ check "merge skip: ci_ok true"             "true" "$(tv_m_ok)"
 check "merge skip: says skipped"           "1"    "$(grep -c 'validate: skipped' <<<"$OUT")"
 check "merge skip: fix_attempts unchanged" "2"    "$(cat "$T/fix_attempts")"
 check "merge skip: the file survives"      "present" "$([ -f "$T/final_validated_tree" ] && echo present || echo absent)"
+check "merge skip: records the tree as final" "final" "$(cut -d' ' -f2 "$T/validated_tree")"
+check "merge skip: records the matching tree" "$(cat "$T/final_validated_tree")" "$(cut -d' ' -f1 "$T/validated_tree")"
 
 tv_repo
 git -C "$T/repo" rev-parse 'HEAD^{tree}' > "$T/final_validated_tree"
 echo y >> "$T/repo/a.txt"; git -C "$T/repo" commit -qam 'a real change'
 OUT=$(tv_m_run)
 check "merge skip: a new commit runs the suite" "2" "$(wc -l < "$TV_LOG" | tr -d ' ')"
+check "merge skip: a changed tree writes merge, not final" "merge" "$(cut -d' ' -f2 "$T/validated_tree")"
 
 tv_repo
 git -C "$T/repo" rev-parse 'HEAD^{tree}' > "$T/final_validated_tree"
 echo dirty >> "$T/repo/a.txt"
 OUT=$(tv_m_run)
 check "merge skip: a dirty worktree runs the suite" "2" "$(wc -l < "$TV_LOG" | tr -d ' ')"
+check "merge skip: a dirty worktree writes merge" "merge" "$(cut -d' ' -f2 "$T/validated_tree")"
 git -C "$T/repo" checkout -q -- a.txt
 
 tv_repo
 OUT=$(tv_m_run)
 check "merge skip: no file runs the suite" "2" "$(wc -l < "$TV_LOG" | tr -d ' ')"
+
+# A red run writes no validated_tree: the rm at the top stays, and the red branch
+# writes nothing.
+tv_repo
+printf '%s\n' '#!/bin/sh' 'echo ci >> "$TV_LOG"' 'exit 1' > "$T/repo/.fabro/ci.sh"
+chmod +x "$T/repo/.fabro/ci.sh"
+git -C "$T/repo" add -A; git -C "$T/repo" commit -qam 'red ci'
+OUT=$(tv_m_run)
+check "merge skip: a red run leaves no validated_tree" "absent" "$([ -f "$T/validated_tree" ] && echo present || echo absent)"
 
 
 echo ""

@@ -387,13 +387,18 @@ echo '{\"context_updates\":{\"fix_outcome\":\"'$O'\"}}'"]
     // that file, so pr-review and dependabot never skip. The file is never deleted here: a
     // later visit after `refute_fix` or `resolve_base` has a different tree, so the suite
     // runs then anyway.
+    // It also records which tree it passed, for refute_prep (#40): `final` on the skip path
+    // (the tree backlog's open_pr_prep validated last), `merge` on a green run, in
+    // /tmp/fabro/validated_tree. A red run writes nothing.
     validate [label="Validate (setup + ci)", shape=parallelogram, timeout="20m", output_schema="routing",
         script="echo 'The validate stage did not finish: ./.fabro/setup.sh and ./.fabro/ci.sh were still running when it was stopped, most likely on the stage timeout. CI never reported, so nothing was delivered.' > /tmp/fabro/needs_human_reason
+rm -f /tmp/fabro/validated_tree
 T=$(cat /tmp/fabro/final_validated_tree 2>/dev/null)
 if [ -n \"$T\" ] && git diff --quiet HEAD && [ \"$(git rev-parse 'HEAD^{tree}')\" = \"$T\" ]; then
   echo 'validate: skipped, this tree passed final validation in open_pr_prep ('$T')'
   echo 'CI passed, but the run stopped after validate and before the review was delivered.' > /tmp/fabro/needs_human_reason
   A=$(cat /tmp/fabro/fix_attempts 2>/dev/null || echo 0)
+  echo \"$T final\" > /tmp/fabro/validated_tree
   echo '{\"context_updates\":{\"ci_ok\":true,\"fix_attempts\":'$A'}}'
   exit 0
 fi
@@ -415,6 +420,8 @@ if [ $RC -ne 0 ]; then
   fi
   echo '{\"context_updates\":{\"ci_ok\":false,\"fix_attempts\":'$A'}}'
 else
+  HT=$(git rev-parse 'HEAD^{tree}')
+  echo \"$HT merge\" > /tmp/fabro/validated_tree
   echo 'CI passed, but the run stopped after validate and before the review was delivered.' > /tmp/fabro/needs_human_reason
   echo '{\"context_updates\":{\"ci_ok\":true,\"fix_attempts\":'$A'}}'
 fi"]
@@ -655,12 +662,15 @@ jq -r '\"diff hygiene: config \" + .config + \", blocking [\" + (.blocking | joi
     // issue body here, so the Refuter never reads them. Their checklist goes to
     // post_deploy.md for the report and the PR body. An issue with no such section is
     // written exactly as before.
+    // It also writes refute_validation.md (#40): which validation passed on this exact
+    // tree (Final validation, or the merge phase's validate), quoted .fabro/ci.sh, or that
+    // none is recorded. The Refuter reads it as the `validation` input.
     refute_prep [label="Prepare refuter inputs", shape=parallelogram, timeout="5m",
         script="set -e
 B=$(cat /tmp/fabro/base_ref)
 R=/tmp/fabro/review
 mkdir -p $R
-rm -f $R/refute.json $R/refute_verdict $R/refute_reason.txt $R/refute_issues.ndjson $R/refute_diff.patch $R/refute_omitted.txt $R/refute.draft.json /tmp/fabro/refute_attempts $R/post_deploy.md $R/post_items.txt $R/refute_body.txt $R/refute_issue.line
+rm -f $R/refute.json $R/refute_verdict $R/refute_reason.txt $R/refute_issues.ndjson $R/refute_diff.patch $R/refute_omitted.txt $R/refute.draft.json /tmp/fabro/refute_attempts $R/post_deploy.md $R/post_items.txt $R/refute_body.txt $R/refute_issue.line $R/refute_validation.md
 : > $R/refute_issues.ndjson
 LINKED=$(jq -r '.[]?.number // empty' /tmp/fabro/linked_issues.json 2>/dev/null | head -3)
 NL=$(echo \"$LINKED\" | grep -c . || true)
@@ -699,6 +709,28 @@ while read -r N P; do
   fi
 done < $R/refute_files.txt
 rm -f $R/refute_one.patch $R/refute_files.txt
+HT=$(git rev-parse 'HEAD^{tree}')
+VT=$(cut -d' ' -f1 /tmp/fabro/validated_tree 2>/dev/null || true)
+VS=$(cut -d' ' -f2 /tmp/fabro/validated_tree 2>/dev/null || true)
+{
+  echo '# Validation of this tree'
+  echo
+  if [ -n \"$VT\" ] && [ \"$VT\" = \"$HT\" ] && git diff --quiet HEAD; then
+    if [ \"$VS\" = final ]; then
+      echo 'Final validation passed on this exact tree ('$HT'): ./.fabro/setup.sh and ./.fabro/ci.sh exited 0 before the PR was opened, and the merge phase skipped its own run because the tree had not changed.'
+    else
+      echo 'The merge phase validate passed on this exact tree ('$HT'): ./.fabro/setup.sh and ./.fabro/ci.sh exited 0.'
+    fi
+  else
+    echo 'No validation is recorded for this tree ('$HT'). Every command criterion is unverifiable.'
+  fi
+  echo
+  echo '## .fabro/ci.sh'
+  echo
+  echo '```sh'
+  cat .fabro/ci.sh 2>/dev/null || echo '(this checkout has no .fabro/ci.sh)'
+  echo '```'
+} > $R/refute_validation.md
 echo 'refuter inputs: '$(jq length $R/refute_issues.json)' linked issue(s), '$SIZE' diff bytes, '$(wc -l < $R/refute_omitted.txt | tr -d ' ')' file(s) omitted'"]
 
     // .refute runs on glm-5.3 for now (ADR 0013 D6): the same family as the reviewers,

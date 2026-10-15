@@ -206,6 +206,12 @@
             "path": "/tmp/fabro/review/hygiene.json",
             "required": true,
             "about": "the diff-hygiene counters; samples lists where each fired"
+          },
+          {
+            "name": "validation",
+            "path": "/tmp/fabro/review/refute_validation.md",
+            "required": true,
+            "about": "which validation passed on this exact tree, and the text of .fabro/ci.sh; says so when none is recorded"
           }
         ],
         "output": {
