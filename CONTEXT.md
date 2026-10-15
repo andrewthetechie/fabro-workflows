@@ -288,6 +288,13 @@ re-checks verification. It is the failure that an **Unmet criterion** report exi
 expose. A criterion that cannot be met as written is reported, never substituted.
 _Avoid_: closest form, workaround, honest relabel
 
+**Command criterion**:
+An acceptance criterion whose whole content is that a named command succeeds on the change,
+such as "`bunx tsc --noEmit` passes". It is checked by running the command, not by reading
+the code, which is what separates it from a behavioural criterion, one that says what the
+software does. A criterion that names no command ("tests pass unchanged") is not one.
+_Avoid_: CI criterion (GitHub's checks are a different thing), lint criterion (too narrow)
+
 **Refuter**:
 The reviewer that runs last before a PR is delivered. It sees only the issue, the diff and
 the counters, never the coder's or the other reviewers' work, and it is told to prove the
