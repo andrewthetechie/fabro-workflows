@@ -19,6 +19,7 @@ locations instead.
 | `fabro-run-prune.sh` | Archives every `succeeded` `merge-queue` run, then deletes `merge-queue` runs older than 7 days with `fabro system prune --workflow merge-queue` (daily cron; ADR 0024 D8). The merge queue makes 288 runs a day and nothing else deletes them; archiving keeps them out of the run listing the fabro UI pages through. Dry run unless `DRY_RUN=0`. |
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
 | `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
+| `fabro-retro.sh` | The weekly **retro** (Monday 12:00 UTC cron, issue #33 / ADR 0026): runs `python -m fabro_scheduler retro --last-week` in the scheduler container over the previous ISO week of `backlog` runs, files at most 3 issues a week in `andrewthetechie/fabro-workflows` for new **failure classes**, comments on known ones, and posts the scorecard summary plus the class totals to Discord. `DRY_RUN=1` by default: a dry run reads GitHub and posts the message but writes no issue, which is how the operator reviews it before going live. Contract: `../docs/factory-retro/00-overview-and-contracts.md`, `../docs/adr/0026-weekly-retro-files-issues.md`. |
 | `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
 | `fabro-export-runs.sh` | Mac tool (not deployed; `make deploy` does not copy it). Lists the `backlog` runs created in a window (`--since`, `--until`, `--workflow`, `--status`), pages `GET /runs` on the host, and exports each run's `fabro events <id> --json` to `OUTDIR/<id>.jsonl`, with `index.tsv` (run, created, workflow, repo, status, issue, workflow_sha). A failed run leaves `<id>.err` and the rest go on. Reads the token on the host. Refuses an `OUTDIR` inside a git work tree, because event files hold issue text. Tests: `tests/test_fabro_export_runs.py`. |
 | `fabro-scorecard.sh` | Mac tool (not deployed). Prints the weekly factory scorecard (issue #22) for a window (`--from`/`--to`, `--week`, `--last-week`; `--json` for the data) by curling the scheduler's `/api/scorecard`. Nothing but the table reaches the Mac: the scheduler's collector summarizes each run's events on the host. The same numbers, with charts, are on the scheduler's Metrics tab. See `../docs/scorecard/README.md`. |
@@ -1172,6 +1173,35 @@ which see the run context it cannot (ADR 0004,
   configured — declined by the operator** (turn-it-on task 03 skipped): host
   death therefore looks like silence, and the runbook carries the manual
   two-minute disambiguation.
+
+## Cron — the weekly retro
+
+```sh
+( crontab -l 2>/dev/null; \
+  echo '0 12 * * 1 /home/andrew/bin/fabro-retro.sh >> /home/andrew/.local/state/fabro-retro.log 2>&1' \
+) | crontab -
+```
+
+12:00 UTC every Monday, over the previous ISO week. Installed by task 07's runbook,
+never by `make deploy`. This line is **the dry run** (`fabro-retro.sh` defaults to
+`DRY_RUN=1`): it reads GitHub, prints the message and posts it to Discord, and files
+nothing. Go live with the second line once that first message reads correctly:
+
+```sh
+( crontab -l 2>/dev/null; \
+  echo '0 12 * * 1 DRY_RUN=0 /home/andrew/bin/fabro-retro.sh >> /home/andrew/.local/state/fabro-retro.log 2>&1' \
+) | crontab -
+```
+
+By hand, without posting (the message still lands in the terminal):
+
+```sh
+NO_POST=1 ~/bin/fabro-retro.sh
+```
+
+See `../docs/factory-retro/00-overview-and-contracts.md` (C8) and
+`../docs/adr/0026-weekly-retro-files-issues.md`. The subcommand's stderr and the
+wrapper's warnings go to the log; stdout is the Discord message only.
 
 ## Sandbox containers — fabro stops them, nothing removes them
 
