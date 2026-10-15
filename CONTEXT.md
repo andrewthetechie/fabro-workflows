@@ -415,3 +415,14 @@ The full `setup.sh && ci.sh` a `backlog` run passes once, on the merged branch, 
 opens its PR. Every test the repository has runs here, including those no task's diff
 selected.
 _Avoid_: full CI (GitHub's checks are a different thing), final check
+
+**Retro**:
+The weekly review of the previous ISO week's `backlog` runs, which files an issue in this
+repository for each new **Failure class**. Weekly by design, so it never pings per run.
+_Avoid_: report, digest, monitor (the **Monitor** watches health, not failures)
+
+**Failure class**:
+One recurring way runs fail or lose time, named by a key built only from enumerable values:
+an ending node and category, a held-PR reason bucket, a timed-out node, or a provider
+failover. Two runs share a class exactly when they share its key.
+_Avoid_: failure mode, error type, bucket (a bucket is one input to a key)
