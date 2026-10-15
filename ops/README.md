@@ -16,7 +16,7 @@ locations instead.
 | File | Purpose |
 |---|---|
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). 0.362 no longer creates `fabro/meta/*`; it still sweeps the ones earlier versions left. Deterministic; see its header comments. |
-| `fabro-run-prune.sh` | Deletes `merge-queue` runs older than 7 days with `fabro system prune --workflow merge-queue` (daily cron; ADR 0024 D8). The merge queue makes 576 runs a day and nothing else deletes them. Dry run unless `DRY_RUN=0`. |
+| `fabro-run-prune.sh` | Archives every `succeeded` `merge-queue` run, then deletes `merge-queue` runs older than 7 days with `fabro system prune --workflow merge-queue` (daily cron; ADR 0024 D8). The merge queue makes 288 runs a day and nothing else deletes them; archiving keeps them out of the run listing the fabro UI pages through. Dry run unless `DRY_RUN=0`. |
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
 | `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
 | `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
@@ -1127,7 +1127,8 @@ neither is urgent.
 ```
 
 05:07 daily (installed by task 09's runbook, not by `make deploy`). It prunes only `merge-queue`
-runs older than 7 days, so the run store does not grow by 576 runs a day. Preview with
+runs older than 7 days, so the run store does not grow by 288 runs a day. First it archives every
+`succeeded` `merge-queue` run (2026-10-15), so the fabro UI's run list stays short. Preview with
 `~/bin/fabro-run-prune.sh` (dry run).
 
 ## Cron — the health monitor
@@ -1225,7 +1226,8 @@ branches get the short `RUN_GRACE_HOURS` (24 default). Only `refs/heads/fabro/ru
 
 ## The merge queue's footprint (ADR 0024)
 
-- `merge-queue-<repo>` fires every 10 minutes per repository, 576 runs a day in all. The host
+- `merge-queue-<repo>` fires every 20 minutes per repository, 288 runs a day in all (every 10
+  minutes and 576 a day until 2026-10-15, when the UI's run list had grown to 1,864 sweeps). The host
   runs `max_concurrent_runs = 8` (4 until 2026-10-11) so sweeps do not starve the coder runs. The cap is read
   once at startup: raising it needs the drain-and-restart procedure above, and the container's
   `StartedAt` must be later than the overlay's mtime.
@@ -1234,7 +1236,7 @@ branches get the short `RUN_GRACE_HOURS` (24 default). Only `refs/heads/fabro/ru
   minimal run per environment) was **not** measured; the first hand-fired run in task 10 does it.
   If a tick spends over 60 s before its first node, create a `light` environment (ADR 0024 D8).
 - `fabro-run-prune.sh` prunes `merge-queue` runs older than 7 days (daily cron; it is not
-  installed by `make deploy`). `fabro-monitor.sh` C3/C4 ignore `merge-queue` rows, so 576 runs a
+  installed by `make deploy`). `fabro-monitor.sh` C3/C4 ignore `merge-queue` rows, so 288 runs a
   day cannot push the other workflows out of its page of runs.
 - Pause the queue alone by disabling its schedules: `ops/fabro-automation-schedule.sh
   merge-queue-<repo> off`. Or turn a merge switch off (host `FABRO_AUTO_MERGE=0`, or the

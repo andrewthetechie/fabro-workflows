@@ -7450,6 +7450,51 @@ jq -cn '{data: [
 rp_run DRY_RUN=0 RP_NOFLAG=1
 check "fabro-run-prune: fallback deletes only the old terminal merge-queue run" "1|1" "$(grep -c 'X DELETE.*runs/OLDDONE' "$RP/log")|$(grep -c 'X DELETE' "$RP/log")"
 check "fabro-run-prune: fallback never deletes a non-terminal run" "0" "$(grep -c 'DELETE.*OLDLIVE' "$RP/log")"
+# The daily archive (2026-10-15): every succeeded merge-queue run leaves the default listing,
+# which the fabro UI pages through in full. A failed or live sweep, or another workflow, stays.
+jq -cn '{data: [
+  {id: "MQDONE", workflow: {slug: "merge-queue"}, lifecycle: {status: {kind: "succeeded"}}, timestamps: {created_at: "2026-10-15T00:00:00.000Z"}},
+  {id: "MQFAIL", workflow: {slug: "merge-queue"}, lifecycle: {status: {kind: "failed"}}, timestamps: {created_at: "2026-10-15T00:00:00.000Z"}},
+  {id: "MQLIVE", workflow: {slug: "merge-queue"}, lifecycle: {status: {kind: "running"}}, timestamps: {created_at: "2026-10-15T00:00:00.000Z"}},
+  {id: "BLDONE", workflow: {slug: "backlog"}, lifecycle: {status: {kind: "succeeded"}}, timestamps: {created_at: "2026-10-15T00:00:00.000Z"}}
+], meta: {has_more: false}}' > "$RP/page.json"
+rp_run DRY_RUN=0
+check "fabro-run-prune: archives the succeeded merge-queue run" "1" "$(grep -c 'fabro archive .*MQDONE' "$RP/log")"
+check "fabro-run-prune: never archives a failed or live sweep, or another workflow" "0" "$(grep 'fabro archive' "$RP/log" | grep -c 'MQFAIL\|MQLIVE\|BLDONE')"
+check "fabro-run-prune: archiving does not replace the prune" "1" "$(grep -c 'system prune --workflow merge-queue --older-than 7d --yes' "$RP/log")"
+rp_run DRY_RUN=1
+check "fabro-run-prune: a dry run archives nothing" "0|1" "$(grep -c 'fabro archive' "$RP/log")|$(grep -c 'would archive 1 ' "$RP/out")"
+printf 'garbage' > "$RP/page.json"
+rp_run DRY_RUN=0
+check "fabro-run-prune: an unreadable listing still prunes, and fails the pass" "1|1" "$(grep -c 'system prune --workflow merge-queue --older-than 7d --yes' "$RP/log")|$(grep -c 'archive: ' "$RP/out")"
+
+# ---------------------------------------------------------------------------
+# fabro-sandbox-sweep.sh: a docker call inside the loop must not read the names list.
+# 2026-10-15: a pass stopped after 504 of ~1,950 exited containers and reported success.
+# ---------------------------------------------------------------------------
+echo ""
+echo "ops: fabro-sandbox-sweep.sh"
+SW="$WORK/sandboxsweep"; rm -rf "$SW"; mkdir -p "$SW/bin"
+cat > "$SW/bin/docker" <<'STUB'
+#!/bin/sh
+case "$1" in
+  ps) printf 'fabro-run-01AAAAAAAAAAAAAAAAAAAAAAAA\nfabro-run-01BBBBBBBBBBBBBBBBBBBBBBBB\nfabro-run-01CCCCCCCCCCCCCCCCCCCCCCCC\nfabro-fabro-1\n' ;;
+  inspect) cat >/dev/null; echo "false 2020-01-01T00:00:00Z" ;;
+  rm) cat >/dev/null; echo "rm $2" >> "$SW_LOG" ;;
+esac
+exit 0
+STUB
+# The sweep is GNU-only (`date -d`); this stub lets it run here. The FinishedAt is in 2020.
+cat > "$SW/bin/date" <<'STUB'
+#!/bin/sh
+[ "$1" = "-d" ] && { echo 1577836800; exit 0; }
+exec /bin/date "$@"
+STUB
+chmod +x "$SW/bin/docker" "$SW/bin/date"
+: > "$SW/log"
+env PATH="$SW/bin:$ORIG_PATH" SW_LOG="$SW/log" DRY_RUN=0 GRACE_HOURS=0 sh "$REPO_ROOT/ops/fabro-sandbox-sweep.sh" >"$SW/out" 2>&1
+check "fabro-sandbox-sweep: a docker call that reads stdin does not end the pass" "3" "$(grep -c '^rm fabro-run-' "$SW/log")"
+check "fabro-sandbox-sweep: never removes fabro-fabro-1" "0" "$(grep -c 'fabro-fabro-1' "$SW/log")"
 
 # ---------------------------------------------------------------------------
 # fabro-monitor.sh C3/C4 (task 08): merge-queue runs neither hide a stuck run nor reset the idle clock.

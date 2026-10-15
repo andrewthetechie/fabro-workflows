@@ -361,16 +361,17 @@ provision_automation dependabot-lawncare-saas python-node andrewthetechie/lawnca
 provision_automation dependabot-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports dependabot daily "40 5 * * *" true true || FAILED=$((FAILED+1))
 provision_automation dependabot-writers-app rust-node andrewthetechie/writers-app dependabot daily "0 6 * * *" true true || FAILED=$((FAILED+1))
 
-# merge-queue (ADR 0024 D1, P4): one sweep per repository every 10 minutes, staggered by 2-3 minutes.
+# merge-queue (ADR 0024 D1, P4): one sweep per repository every 20 minutes (10 until 2026-10-15),
+# staggered by 2-3 minutes.
 # The schedule is created DISABLED (the last argument defaults to false): the operator enables it
 # with ops/fabro-automation-schedule.sh once the first hand-fired run is verified (task 10). The
 # switches live on the pr-review-<repo> row (P10), so these rows carry no auto_merge token; the
 # `true` below is ignored for this workflow.
 echo "Provisioning merge-queue automations..."
-provision_automation merge-queue-jelly-swipe python andrewthetechie/jelly-swipe merge-queue sweep "0-59/10 * * * *" true || FAILED=$((FAILED+1))
-provision_automation merge-queue-lawncare-saas python-node andrewthetechie/lawncare-saas merge-queue sweep "2-59/10 * * * *" true || FAILED=$((FAILED+1))
-provision_automation merge-queue-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports merge-queue sweep "5-59/10 * * * *" true || FAILED=$((FAILED+1))
-provision_automation merge-queue-writers-app rust-node andrewthetechie/writers-app merge-queue sweep "7-59/10 * * * *" true || FAILED=$((FAILED+1))
+provision_automation merge-queue-jelly-swipe python andrewthetechie/jelly-swipe merge-queue sweep "0-59/20 * * * *" true || FAILED=$((FAILED+1))
+provision_automation merge-queue-lawncare-saas python-node andrewthetechie/lawncare-saas merge-queue sweep "2-59/20 * * * *" true || FAILED=$((FAILED+1))
+provision_automation merge-queue-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports merge-queue sweep "5-59/20 * * * *" true || FAILED=$((FAILED+1))
+provision_automation merge-queue-writers-app rust-node andrewthetechie/writers-app merge-queue sweep "7-59/20 * * * *" true || FAILED=$((FAILED+1))
 
 if [ "$FAILED" -ne 0 ]; then
   echo "$FAILED automation(s) could not be created; see the errors above." >&2

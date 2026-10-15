@@ -21,6 +21,11 @@ womens-fantasy-sports `5-59/10` and writers-app `7-59/10` (four distinct residue
 the ADR 0001 rule). A run sweeps the repository it targets and then ends. It never waits
 for CI. A PR that is not ready is handled again on the next tick.
 
+**Amended 2026-10-15:** every 20 minutes (`0-59/20`, `2-59/20`, `5-59/20`, `7-59/20`; the
+residues stay distinct mod 20). At 576 runs a day the fabro UI, which pages through the whole
+run listing on every load, took seconds to open. `fabro-run-prune.sh` also archives every
+`succeeded` sweep daily, which hides it from that listing; pruning at 7 days is unchanged.
+
 ## D2. The `merge-on-green` label and an approval marker are the request
 
 Only the merge phase adds the PR label `merge-on-green`. Its new `report_queued` node does

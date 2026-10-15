@@ -118,7 +118,7 @@ bug surfaces. The coder scheduler is the only producer of `backlog` runs. Fire a
 hand only with `~/bin/fabro-fire-pr-review.sh <owner/repo> <pr>` or
 `~/bin/fabro-fire-backlog.sh <owner/repo> <issue>`. A `dependabot-<repo>` run fires through
 its `api:manual` trigger (task 10 records the command). A `merge-queue-<repo>` run fires from its
-schedule (every 10 minutes, created disabled) or its `api:manual` trigger; it takes no input. `docs/agents/server.md` says why the
+schedule (every 20 minutes, created disabled) or its `api:manual` trigger; it takes no input. `docs/agents/server.md` says why the
 automation endpoint cannot carry the input, and covers the scheduler.
 
 The operational history is `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md` on the Mac,

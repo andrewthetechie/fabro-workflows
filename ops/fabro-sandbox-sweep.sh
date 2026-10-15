@@ -70,7 +70,9 @@ while read -r name; do
     *[!0-9A-Z]*) echo "skip  $name (not a run sandbox name)"; continue ;;
   esac
 
-  state=$(docker inspect "$name" --format '{{.State.Running}} {{.State.FinishedAt}}' 2>/dev/null) \
+  # Every docker call in this loop takes </dev/null: the loop reads the names on stdin, and
+  # a docker call that reads it too ends the pass early, silently (2026-10-15: 504 of ~1,950).
+  state=$(docker inspect "$name" --format '{{.State.Running}} {{.State.FinishedAt}}' </dev/null 2>/dev/null) \
     || { echo "WARN  $name: could not inspect, skipping"; continue; }
   running=${state%% *}
   finished=${state#* }
@@ -104,7 +106,7 @@ while read -r name; do
     continue
   fi
 
-  if docker rm "$name" >/dev/null 2>&1; then
+  if docker rm "$name" </dev/null >/dev/null 2>&1; then
     echo "rm    $name (stopped $finished)"
     removed=$(( removed + 1 ))
   else

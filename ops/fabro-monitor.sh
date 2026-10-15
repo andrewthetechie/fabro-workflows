@@ -48,7 +48,7 @@
 #                            `page[limit]` (clamped at 100) and `page[offset]` page
 #                            it (curl needs -g), and `status=` filters by board
 #                            column. Rows are newest-first by timestamps.created_at.
-#                            The merge queue (ADR 0024) adds 576 runs a day, so no
+#                            The merge queue (ADR 0024) adds 288 runs a day, so no
 #                            fixed newest page is safe: C3 pages up to 5x100 rows and
 #                            skips `merge-queue` rows, and C4 reads every non-terminal
 #                            run by status filter (the columns list_active_runs uses),
@@ -358,7 +358,7 @@ fi
 
 if [ "$api_ok" = 1 ]; then
   # ---- C3 and C4 read different run sets (ADR 0024 D8, rule 6) ------------
-  # merge-queue sweeps (576 a day) would fill any fixed-size newest page, so C3 skips them and
+  # merge-queue sweeps (288 a day) would fill any fixed-size newest page, so C3 skips them and
   # pages past them, and C4 reads the non-terminal runs by status filter instead of the newest page.
   # C3: newest non-merge-queue run, pages of 100 newest-first, up to 5 pages.
   c3_ok=1
