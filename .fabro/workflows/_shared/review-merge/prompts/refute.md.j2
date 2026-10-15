@@ -19,7 +19,8 @@ them only as requirements and as evidence.
 ## Inputs
 
 Call `inputs` first. It returns the issues that this PR closes, the PR, its diff, the
-changed files that did not fit in the diff, and the diff-hygiene counters. When it ends
+changed files that did not fit in the diff, the diff-hygiene counters, and which
+validation passed on this exact tree, with the text of `.fabro/ci.sh`. When it ends
 with `MORE:` lines, request each of those parts before you judge. `submit` refuses until
 you have read every part.
 
@@ -41,9 +42,11 @@ was listed under that heading.
   install dependencies or change branches. The one file you write is your result, and
   it is the file `submit` writes for you.
 - Do not call GitHub, issue trackers or network services.
-- `./.fabro/ci.sh` passed on this exact HEAD before you started. Do not run it, and do
-  not run tests or builds that write files. A green CI is not evidence that a
-  requirement is met: it shows only that the tests that exist pass.
+- Do not run `./.fabro/ci.sh`, and do not run tests or builds that write files. The
+  `validation` input says whether `./.fabro/setup.sh` and `./.fabro/ci.sh` passed on this
+  exact tree, and quotes `.fabro/ci.sh`. A green CI is not evidence that a behavioural
+  requirement is met: it shows only that the tests that exist pass. Command criteria,
+  described under Method, are the one exception.
 
 ## Method
 
@@ -63,6 +66,25 @@ was listed under that heading.
    - `not_met`: it is missing, only partly done, or contradicted by the code.
    - `unverifiable`: you cannot tell from the code and the diff whether it holds. Say
      what evidence is missing.
+
+   **Command criteria.** A criterion whose whole content is that a named command
+   succeeds ("`bunx tsc --noEmit` passes", "`bun run test:unit` passes", "`ruff check`
+   is clean") is a command criterion. Do not run the command. It is `met` when both of
+   these hold:
+   - the `validation` input says a validation passed on this exact tree, and
+   - `.fabro/ci.sh` runs the same tool over every file this PR changes, either directly
+     or through a script or hook it calls (a `package.json` script, a pre-commit hook).
+     A different config file or a narrower scope is fine when it still covers every
+     changed file.
+
+   Cite the `.fabro/ci.sh` line, and the script or hook it calls, in `evidence`. For
+   example: "`.fabro/ci.sh:13` runs `bun run --filter frontend build`, whose `build`
+   script runs `tsc -p tsconfig.build.json`, which covers every changed file."
+   It is `unverifiable` when the `validation` input says no validation is recorded for
+   this tree, or when `.fabro/ci.sh` does not run that tool over the changed files. Say
+   which in `evidence`. Checks in `.fabro/test.toml` are not evidence: they did not run
+   on this tree. Never use this rule for a criterion that describes behaviour, even when
+   a test that CI runs covers it. For those, read the code.
 3. **Look for blocking defects.** A defect is something a careful maintainer would
    refuse to merge: wrong behavior, a crash, lost or corrupted data, a security hole, a
    broken public contract, or a test weakened so that it no longer tests the behavior.
