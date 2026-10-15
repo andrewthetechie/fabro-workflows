@@ -7555,6 +7555,7 @@ if [ -n "${TV_CANNED:-}" ] && [ -f "$TV_CANNED" ]; then
   [ -n "$out" ] && cp "$TV_CANNED" "$out"
   cat "$TV_CANNED"
 fi
+[ -n "${TV_SAY:-}" ] && echo "$TV_SAY"
 [ -n "${TV_MARK:-}" ] && echo called >> "$TV_MARK"
 exit "${TV_IO_RC:-0}"
 STUB
@@ -7571,7 +7572,8 @@ tv_reset() { # canned [final_fix]
     printf '%s' "$1" > "$T/canned.json"
     TV_CANNED="$T/canned.json"; TV_IO_RC=0; TV_SETUP_RC=0; TV_CI_RC=0
     export TV_CANNED TV_IO_RC TV_SETUP_RC TV_CI_RC
-    unset TV_READS_REWORK
+    unset TV_READS_REWORK TV_SAY
+    rm -f "$T/rework.prev" "$T/task_check_error.log"
     [ "${2:-}" = final_fix ] && printf '%s' '{"final_fix":true}' > "$T/current_task.json"
     return 0
 }
@@ -7650,6 +7652,48 @@ OUT=$(tv_run)
 check "tv placeholder: replaced before fabro-io runs" "1" "$(grep -c '^## Validation failed (timeout): task validation did not finish$' "$T/reads_rework" 2>/dev/null)"
 check "tv placeholder: not the stale text"            "0" "$(grep -c 'STALE FEEDBACK' "$T/reads_rework" 2>/dev/null)"
 unset TV_READS_REWORK
+
+# A green visit puts back the feedback it found, so a later reader (rescue_brief quotes
+# rework.md when round > 0) never sees the timeout placeholder for a passing visit.
+tv_reset "$SCOPED_OK"; printf 'PRIOR ROUND\n' > "$T/feedback/rework.md"
+OUT=$(tv_run)
+check "tv green restores: previous feedback back"   "PRIOR ROUND" "$(cat "$T/feedback/rework.md" 2>/dev/null)"
+tv_reset "$SCOPED_OK"
+OUT=$(tv_run)
+check "tv green restores: no placeholder left"       "absent" "$([ -f "$T/feedback/rework.md" ] && echo present || echo absent)"
+tv_reset "$FULL"; printf 'PRIOR ROUND\n' > "$T/feedback/rework.md"
+OUT=$(tv_run)
+check "tv full green restores: previous feedback"   "PRIOR ROUND" "$(cat "$T/feedback/rework.md" 2>/dev/null)"
+
+# A preparation failure stops the targets: rework.md names it and quotes its error.
+SCOPED_PREP='{"version":1,"mode":"scoped","reason":"","base":"deadbeef","changed":["backend/app/models.py"],"checks":[{"name":"prek","args":[]}],"targets":[{"name":"backend","args":["tests/a.py"],"whole":false,"why":{}}],"untested":[],"unchecked":[],"skipped":[],"ok":false,"prepared_seconds":0,"prepare":{"exit_code":1,"error":"prepare step 3 failed: alembic upgrade head exited 1"},"results":[{"kind":"check","name":"prek","exit_code":0,"seconds":1}],"log":"/tmp/fabro/task_check.log"}'
+tv_reset "$SCOPED_PREP"
+OUT=$(tv_run); RC=$?
+check "tv prepare red: ok"            "false" "$(tv_ok)"
+check "tv prepare red: header"        "## Validation failed (exit 1): task validation" "$(head -1 "$T/feedback/rework.md")"
+check "tv prepare red: listed"        "1" "$(grep -c '^- preparation of the Test environment (exit 1)$' "$T/feedback/rework.md")"
+check "tv prepare red: error quoted"  "1" "$(grep -c 'alembic upgrade head exited 1' "$T/feedback/rework.md")"
+check "tv prepare red: check not listed" "0" "$(grep -c '^- check' "$T/feedback/rework.md")"
+
+# untested is published beside unchecked.
+tv_reset "$SCOPED_RED"
+OUT=$(tv_run)
+check "tv untested published"         "1" "$(jq -r '.context_updates.task_validation_untested' <<<"$(lastjson "$OUT")")"
+tv_reset "$FULL"
+OUT=$(tv_run)
+check "tv untested 0 on the full path" "0" "$(jq -r '.context_updates.task_validation_untested' <<<"$(lastjson "$OUT")")"
+
+# If the routing object cannot be built, the node fails instead of exiting 0 with no
+# update, which would let a stale task_validation_ok=true reach review.
+tv_reset "$(jq -c '.prepared_seconds = "abc"' <<<"$SCOPED_OK")"
+OUT=$(tv_run); RC=$?
+check "tv emission failure: exits 1"      "1" "$RC"
+check "tv emission failure: no object"    "0" "$(grep -c '[{}]' <<<"$OUT")"
+
+# task-check crashed: its output is kept before the full suite overwrites the log.
+tv_reset "$SCOPED_OK"; TV_CANNED=""; TV_IO_RC=2; TV_SAY="task-check: boom"; export TV_CANNED TV_IO_RC TV_SAY
+OUT=$(tv_run)
+check "tv task_check_error: output kept" "1" "$(grep -c 'task-check: boom' "$T/task_check_error.log" 2>/dev/null)"
 
 # The parsed edges.
 TVEDG=$(python3.11 "$REPO_ROOT/ops/check-graph-invariants.py" --dump "$GRAPH" | jq -r '.statements[] | select(.Edge) | .Edge | (([(.attrs // [])[] | select(.[0] == "condition") | .[1]] | .[0]) // "") as $c | .nodes as $n | range(0; ($n | length) - 1) | "\($n[.])->\($n[. + 1]) \($c)"')

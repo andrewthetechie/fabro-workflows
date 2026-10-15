@@ -1076,14 +1076,23 @@ fi"]
     // from an earlier visit can never send it to review.
     //
     // The placeholder `rework.md` is written first because a timeout reaches
-    // `rework_router` with the previous round's feedback still in the file. Every line of
+    // `rework_router` with the previous round's feedback still in the file. The file it
+    // replaced is kept in /tmp/fabro/rework.prev and put back on a green visit, so a later
+    // reader (`rescue_brief` quotes rework.md once round > 0) never sees a timeout that did
+    // not happen. A preparation failure stops the targets; it is listed with its error,
+    // because no item result carries it. The routing object is the last command: if it
+    // cannot be built the node fails rather than exit 0 with no update, which would let a
+    // stale `task_validation_ok=true` through. Every line of
     // the summary and the log tail goes through `tr -d '{}'`, because fabro scans stdout
     // and stderr for brace-balanced objects and the log is arbitrary test output.
-    // `selected` is the number of test files passed as target arguments.
+    // `selected` is the number of test files passed as target arguments. A `task-check`
+    // that errored keeps its output in /tmp/fabro/task_check_error.log, because the full
+    // suite overwrites validate_output.log.
     validate [label="Task validation", shape=parallelogram, timeout="20m", output_schema="routing",
-        script="echo '## Validation failed (timeout): task validation did not finish' > /tmp/fabro/feedback/rework.md
-echo 'The stage was stopped before it finished, most likely on its 20-minute timeout. Its output is in /tmp/fabro/validate_output.log.' >> /tmp/fabro/feedback/rework.md
-rm -f /tmp/fabro/task_check.json
+        script="rm -f /tmp/fabro/rework.prev /tmp/fabro/task_check.json /tmp/fabro/task_check_error.log
+if [ -f /tmp/fabro/feedback/rework.md ]; then cp /tmp/fabro/feedback/rework.md /tmp/fabro/rework.prev; fi
+echo '## Validation failed (timeout): task validation did not finish' > /tmp/fabro/feedback/rework.md
+echo 'The stage was stopped before it finished, most likely on its 20-minute timeout. Its output is in /tmp/fabro/validate_output.log, and for a scoped run in /tmp/fabro/task_check.log.' >> /tmp/fabro/feedback/rework.md
 FF=$(jq -r '.final_fix // false' /tmp/fabro/current_task.json 2>/dev/null || echo false)
 MODE=full
 REASON=task_check_error
@@ -1094,6 +1103,8 @@ else
   if jq -e . /tmp/fabro/task_check.json >/dev/null 2>&1; then
     MODE=$(jq -r '.mode // \"full\"' /tmp/fabro/task_check.json)
     REASON=$(jq -r '.reason // \"\"' /tmp/fabro/task_check.json)
+  else
+    cp /tmp/fabro/validate_output.log /tmp/fabro/task_check_error.log 2>/dev/null
   fi
 fi
 SEL=0
@@ -1116,7 +1127,9 @@ if [ \"$MODE\" = full ]; then
 else
   OK=$(jq -r '.ok // false' /tmp/fabro/task_check.json 2>/dev/null || echo false)
 fi
-if [ \"$OK\" != true ]; then
+if [ \"$OK\" = true ]; then
+  if [ -f /tmp/fabro/rework.prev ]; then mv /tmp/fabro/rework.prev /tmp/fabro/feedback/rework.md; else rm -f /tmp/fabro/feedback/rework.md; fi
+else
   if [ \"$MODE\" = full ]; then
     echo '## Validation failed (exit '$RC'): ./.fabro/setup.sh && ./.fabro/ci.sh' > /tmp/fabro/feedback/rework.md
     echo >> /tmp/fabro/feedback/rework.md
@@ -1125,21 +1138,24 @@ if [ \"$OK\" != true ]; then
     {
       echo '## Validation failed (exit 1): task validation'
       echo
-      echo 'Task validation ran the checks and tests that cover the files this task changed. Failed:'
+      echo 'Task validation ran the checks and tests that cover the files this task changed. The full output is in /tmp/fabro/task_check.log. Failed:'
       echo
+      jq -r 'select((.prepare.exit_code // 0) != 0) | \"- preparation of the Test environment (exit \" + (.prepare.exit_code|tostring) + \")\"' /tmp/fabro/task_check.json
       jq -r '. as $r | .results[] | select(.exit_code != null and .exit_code != 0) | .name as $n | \"- \" + .kind + \" `\" + $n + \"` (exit \" + (.exit_code|tostring) + \")\" + (if .kind == \"target\" then ((($r.targets[] | select(.name == $n) | .args) // []) | if length > 0 then \": \" + join(\" \") else \"\" end) else \"\" end)' /tmp/fabro/task_check.json
       echo
+      {
+      jq -r 'select((.prepare.exit_code // 0) != 0) | \"### preparation\", (.prepare.error // \"\")' /tmp/fabro/task_check.json
       jq -r '.results[] | select(.exit_code != null and .exit_code != 0) | .kind + \" \" + .name' /tmp/fabro/task_check.json | while read -r KIND NAME; do
         echo \"### $KIND $NAME\"
         jq -r --arg k \"$KIND\" --arg n \"$NAME\" '.results[] | select(.kind == $k and .name == $n) | .tail // \"\"' /tmp/fabro/task_check.json
-      done | head -c 6000
+      done
+      } | head -c 6000
     } > /tmp/fabro/feedback/rework.md
   fi
 fi
 echo 'task validation: mode='$MODE' reason='$REASON' ok='$OK' selected='$SEL' untested='$UNT' unchecked='$UNCH' prepared='$PREP's' | tr -d '{}'
 tail -c 4000 /tmp/fabro/validate_output.log | tr -d '{}'
-jq -nc --argjson ok $OK --arg mode \"$MODE\" --arg reason \"$REASON\" --argjson sel $SEL --argjson unt $UNT --argjson unch $UNCH --argjson prep $PREP '{context_updates:{task_validation_ok:$ok,task_validation_mode:$mode,task_validation_reason:$reason,task_validation_selected:$sel,task_validation_unchecked:$unch,task_validation_prepare_s:$prep}}'
-exit 0"]
+jq -nc --argjson ok $OK --arg mode \"$MODE\" --arg reason \"$REASON\" --argjson sel $SEL --argjson unt $UNT --argjson unch $UNCH --argjson prep $PREP '{context_updates:{task_validation_ok:$ok,task_validation_mode:$mode,task_validation_reason:$reason,task_validation_selected:$sel,task_validation_untested:$unt,task_validation_unchecked:$unch,task_validation_prepare_s:$prep}}' || exit 1"]
 
     review [label="Review task", class="review-task", timeout="15m", max_retries=1, prompt="@prompts/reviewer.md.j2"]
 
