@@ -137,11 +137,11 @@ The scorecard reads them (task 04).
 
 | Task | What | Shell change? |
 |---|---|---|
-| 01 | `validate` records the tree; `refute_prep` writes the `validation` input (C1-C3) | yes |
-| 02 | the Refuter credits `ci.sh` for command criteria (the prompt rule) | no |
-| 03 | `refute_gate` reports two new fields (C4) | yes |
-| 04 | the scorecard split | yes |
-| 05 | ADR 0013 amendment, plan-trial note, docs; **stop** | — |
+| 01 | `validate` records the tree; `refute_prep` writes the `validation` input (C1-C3) — done (commit `0c4ee59`) | yes |
+| 02 | the Refuter credits `ci.sh` for command criteria (the prompt rule) — done (commit `7080221`) | no |
+| 03 | `refute_gate` reports two new fields (C4) — done (commit `d10e4fc`) | yes |
+| 04 | the scorecard split — done (commit `7b90344`) | yes |
+| 05 | ADR 0013 amendment, plan-trial note, docs; **stop** — done (commit `124690d`) | — |
 | 06 | live check and measurement (operator, after push + `make deploy-scheduler`) | — |
 
 01, 03 and 04 change command nodes; 02 is a prompt. Do them in order so each commit is
