@@ -426,3 +426,20 @@ One recurring way runs fail or lose time, named by a key built only from enumera
 an ending node and category, a held-PR reason bucket, a timed-out node, or a provider
 failover. Two runs share a class exactly when they share its key.
 _Avoid_: failure mode, error type, bucket (a bucket is one input to a key)
+
+**Scout**:
+The per-repository job that looks for defects nobody filed and files each one as an issue
+for the coders, without a model. It reads only what a tool or GitHub reports, and it files
+straight to the queue because each issue it writes is mechanical to check.
+_Avoid_: scanner, linter (a linter is one tool the scout runs), bug finder
+
+**Ratchet rule**:
+A lint rule that a target repository declares for the **Scout** because CI does not enforce it
+yet. Its findings are worked down until none are left, and then CI enforces it, so the rule
+only ever tightens.
+_Avoid_: strict rule, extra lint, warning
+
+**Flaky job**:
+A CI job that failed and then passed on a rerun of the same commit. Counted per workflow and
+job, not per test: which test failed is evidence inside the issue, not part of its identity.
+_Avoid_: flaky test (the job is what is counted), flake (as a noun for the issue)
