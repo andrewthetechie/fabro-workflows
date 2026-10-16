@@ -1588,7 +1588,6 @@ def _retro(
             1 for row in store.lease_rows() if _in_window(row["dispatched_at"], start, end)
         )
         week_start = start.date()
-        failover_runs = len({row["run_id"] for row in rows.failovers})
 
         try:
             issues = github.fetch_label_all_states(
@@ -1599,8 +1598,8 @@ def _retro(
                 retro.discord_text(
                     card, previous_card, [], week_start=week_start, dry_run=args.dry_run,
                     still_leased=still_leased, unsummarized=current.unsummarized,
-                    failover_runs=failover_runs,
-                    failure=f"cannot list retro issues: {exc}", cap=args.cap,
+                    previous=previous, failure=f"cannot list retro issues: {exc}",
+                    cap=args.cap, repo=args.repo,
                 )
             )
             return 3
@@ -1616,7 +1615,13 @@ def _retro(
             min_box_hours=args.min_box_hours,
             cap=args.cap,
         )
-        for action in actions:
+        for rank, action in enumerate(actions, 1):
+            # Every class over the threshold, so the cron log has the whole list
+            # when the Discord message has to shorten it.
+            log.info(
+                "retro: %d. %s %s (%d runs, %.1f box-h)",
+                rank, action.kind, action.key, len(action.stat.runs), action.stat.box_hours,
+            )
             if action.kind == "withheld":
                 # The title and body are kept on the action for this line only; the
                 # operator has to see what was suppressed, and it must not reach GitHub
@@ -1661,11 +1666,12 @@ def _retro(
                 dry_run=args.dry_run,
                 still_leased=still_leased,
                 unsummarized=current.unsummarized,
-                failover_runs=failover_runs,
+                previous=previous,
                 failure=failure,
                 done=None if args.dry_run else done,
                 issued=issued,
                 cap=args.cap,
+                repo=args.repo,
             )
         )
         return 3 if failure else 0

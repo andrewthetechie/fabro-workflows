@@ -1298,7 +1298,7 @@ def test_retro_last_week_dry_run_reads_github_and_writes_nothing(tmp_path, monke
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert out.startswith(f"[DRY RUN] Factory retro, week of {RETRO_WEEK} to 2026-10-11")
+    assert out.startswith(f"**Factory retro, {RETRO_WEEK} to 2026-10-11** · **DRY RUN**")
     assert read.called
     assert all(call.request.method == "GET" for call in respx.calls)
 
@@ -1320,7 +1320,8 @@ def test_retro_files_an_issue_for_a_new_class(tmp_path, monkeypatch, capsys, cap
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert "Filed: #41 ending:improve:deterministic" in out
+    assert "Runs failed (deterministic) at `improve`" in out
+    assert "→ **filed [#41](<https://github.com/andrewthetechie/fabro-workflows/issues/41>)**" in out
     assert "retro: filed #41 for ending:improve:deterministic" in caplog.text
     body = json.loads(created.calls.last.request.content)
     assert body["labels"] == ["retro", "bug"]
@@ -1352,7 +1353,7 @@ def test_retro_comments_on_an_known_open_issue(tmp_path, monkeypatch, capsys):
 
     assert rc == 0
     assert commented.called
-    assert "Commented: #19 ending:improve:deterministic" in out
+    assert "→ commented on [#19](<https://github.com/andrewthetechie/fabro-workflows/issues/19>)" in out
     # No issue was created: the only POST route registered is the comment.
     assert [call.request.method for call in respx.calls].count("POST") == 1
 
@@ -1392,8 +1393,10 @@ def test_retro_stops_after_a_failed_write_and_reports_the_rest(tmp_path, monkeyp
 
     assert rc == 3
     assert out.splitlines()[0].startswith("retro failed:")
-    assert "Filed: #41 ending:mark_stuck:no-pr" in out
-    assert "Not written: ending:improve:deterministic" in out
+    assert "Runs stopped without a PR at `mark_stuck`" in out
+    assert "**filed [#41]" in out
+    assert "Runs failed (deterministic) at `improve`" in out
+    assert "→ not written: the run stopped first" in out
 
 
 def test_retro_without_a_token_exits_one_with_empty_stdout(tmp_path, monkeypatch, capsys):
@@ -1424,7 +1427,7 @@ def test_retro_week_of_selects_the_containing_iso_week(tmp_path, monkeypatch, ca
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert out.startswith(f"[DRY RUN] Factory retro, week of {RETRO_WEEK} to 2026-10-11")
+    assert out.startswith(f"**Factory retro, {RETRO_WEEK} to 2026-10-11** · **DRY RUN**")
 
 
 def test_retro_last_week_and_week_of_together_exit_two():

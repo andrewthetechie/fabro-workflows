@@ -165,7 +165,10 @@ def test_timeout_and_failover_classes(store):
     store.save_run_summary(summary(
         "R2",
         [StageStat("improve", "agent", 1, 1, 1, timeouts=1)],
-        failovers={("spec", "kimi/kimi-k3", "zai/glm-5.3", "access_denied"): 1},
+        failovers={
+            ("spec", "kimi/kimi-k3", "zai/glm-5.3", "access_denied"): 1,
+            ("extra_decompose", "kimi/kimi-k3", "zai/glm-5.3", "access_denied"): 5,
+        },
     ))
 
     classified = classify(store)
@@ -174,10 +177,44 @@ def test_timeout_and_failover_classes(store):
     assert timeout.kind == "timeout"
     assert timeout.events == 3
     assert [r.run_id for r in timeout.runs] == ["R1", "R2"]  # longest lease first
-    failover = classified.classes["failover:spec:kimi/kimi-k3:access_denied"]
+    # One model refusing is one class wherever it was called; the stages ride along.
+    assert [k for k in classified.classes if k.startswith("failover:")] == [
+        "failover:kimi/kimi-k3:access_denied"
+    ]
+    failover = classified.classes["failover:kimi/kimi-k3:access_denied"]
     assert failover.kind == "failover"
-    assert failover.events == 4
+    assert failover.events == 9
     assert [r.run_id for r in failover.runs] == ["R1", "R2"]
+    assert failover.stages == (("extra_decompose", 5), ("spec", 4))
+
+
+def test_cost_hours_counts_only_runs_without_a_pr_for_timeouts_and_failovers():
+    shipped = retro.RunRef("A", "PR opened", 15 * 3_600_000)
+    lost = retro.RunRef("B", "no PR", 2 * 3_600_000)
+    timeout = retro.ClassStat("timeout:coder", "timeout", (shipped, lost), events=2)
+    held = retro.ClassStat("held:refuter", "held", (shipped, lost), events=2)
+    assert timeout.box_hours == pytest.approx(17.0)
+    assert timeout.cost_hours == pytest.approx(2.0)
+    assert held.cost_hours == pytest.approx(17.0)
+
+
+def test_one_long_run_that_shipped_is_not_over_the_threshold():
+    # A 15-hour run that timed out once and still opened a PR is not a class.
+    one = retro.ClassStat(
+        "timeout:coder", "timeout", (retro.RunRef("A", "PR opened", 15 * 3_600_000),), 1
+    )
+    assert not retro.over_threshold(one, min_runs=3, min_box_hours=4.0)
+
+
+def test_ranked_uses_cost_hours():
+    failover = retro.ClassStat(
+        "failover:kimi/kimi-k3:access_denied", "failover",
+        tuple(retro.RunRef(f"F{i}", "PR opened", 10 * 3_600_000) for i in range(10)), 10,
+    )
+    held = stat("held:refuter", runs=3, boxes=6.0, kind="held")
+    assert [c.key for c in retro.ranked([failover, held])] == [
+        "held:refuter", "failover:kimi/kimi-k3:access_denied",
+    ]
 
 
 def test_an_unsummarized_run_is_in_no_class(store):
@@ -534,42 +571,86 @@ def card(**over) -> scorecard.Scorecard:
     return _replace(empty, **over)
 
 
-def test_discord_text_dry_run_prefix_and_would_wording():
-    text = retro.discord_text(
-        card(), card(), [a_file("timeout:improve")], week_start=WEEK, dry_run=True,
-        still_leased=0, unsummarized=0,
+def text_for(actions, **kwargs):
+    kwargs.setdefault("dry_run", False)
+    return retro.discord_text(
+        card(), card(), actions, week_start=WEEK, still_leased=0, unsummarized=0, **kwargs
     )
+
+
+LINK = "https://github.com/andrewthetechie/fabro-workflows/issues"
+
+
+def test_discord_text_dry_run_says_so_and_would_file():
+    text = text_for([a_file("timeout:improve")], dry_run=True)
     assert text.startswith(
-        "[DRY RUN] Factory retro, week of 2026-10-05 to 2026-10-11 (backlog runs only)"
+        "**Factory retro, 2026-10-05 to 2026-10-11** · **DRY RUN**: nothing was filed"
     )
-    assert "Would file: timeout:improve (6 runs, 9.5 box-h)" in text
-    assert "Filed:" not in text
+    assert "1. Stage `improve` timed out 6× in 6 runs, 6 got no PR (9.5 box-h)" in text
+    assert text.splitlines()[4].endswith("→ **would file**")
 
 
-def test_discord_text_real_run_shows_the_issue_number():
-    text = retro.discord_text(
-        card(), card(), [a_file("timeout:improve")], week_start=WEEK, dry_run=False,
-        still_leased=0, unsummarized=0, issued={0: 41},
+def test_discord_text_real_run_links_the_filed_issue():
+    text = text_for([a_file("timeout:improve")], issued={0: 41})
+    assert f"→ **filed [#41](<{LINK}/41>)**" in text
+    assert "DRY RUN" not in text
+
+
+def test_discord_text_says_each_class_in_words():
+    actions = [
+        a_file("ending:mark_stuck:no-pr", kind="ending", runs=4, boxes=12.9),
+        a_file("ending:validate:deterministic", kind="ending", runs=1, boxes=6.4),
+        a_file("held:refuter", kind="held", runs=15, boxes=38.1),
+    ]
+    text = text_for(actions, dry_run=True)
+    assert "1. Runs stopped without a PR at `mark_stuck`: 4 runs, 12.9 box-h; last week 0" in text
+    assert "2. Runs failed (deterministic) at `validate`: 1 run, 6.4 box-h" in text
+    assert "3. PRs held because the Refuter said the work is not done: 15 PRs" in text
+
+
+def test_discord_text_failover_line_names_the_model_and_stages():
+    failover = retro.ClassStat(
+        "failover:kimi/kimi-k3:access_denied", "failover",
+        (retro.RunRef("A", "PR opened", 3_600_000), retro.RunRef("B", "no PR", 7_200_000)),
+        events=5, stages=(("spec", 3), ("extra_decompose", 2)),
     )
-    assert "Filed: #41 timeout:improve (6 runs, 9.5 box-h)" in text
-    assert not text.startswith("[DRY RUN]")
+    action = retro.Action("file", failover.key, failover, None, "t", "b")
+    prev = retro.ClassStat(failover.key, "failover", (retro.RunRef("C", "no PR", 1),), 1)
+    text = text_for([action], dry_run=True, previous=cls(prev))
+    assert (
+        "1. `kimi/kimi-k3` failing over on access_denied: 5× in 2 runs at `spec`,"
+        " `extra_decompose`, 1 got no PR (2.0 box-h); last week 1 → **would file**" in text
+    )
 
 
-def test_discord_text_regression_line_names_both_issues_and_the_key():
+def test_discord_text_regression_names_both_issues():
     action = retro.Action(
-        "regression", "held:unspecified", stat("held:unspecified", runs=3, boxes=2.0),
+        "regression", "held:unspecified", stat("held:unspecified", runs=3, boxes=2.0,
+                                               kind="held"),
         issue=19, title="t", body="b",
     )
-    real = retro.discord_text(
-        card(), card(), [action], week_start=WEEK, dry_run=False, still_leased=0,
-        unsummarized=0, issued={0: 44},
+    assert f"**filed [#44](<{LINK}/44>)**, a regression of [#19](<{LINK}/19>)" in text_for(
+        [action], issued={0: 44}
     )
-    assert "Regression: #44 of #19 held:unspecified (3 runs, 2.0 box-h)" in real
-    dry = retro.discord_text(
-        card(), card(), [action], week_start=WEEK, dry_run=True, still_leased=0,
-        unsummarized=0,
+    assert f"**would file** a regression of [#19](<{LINK}/19>)" in text_for(
+        [action], dry_run=True
     )
-    assert "Would file regression: held:unspecified of #19 (3 runs, 2.0 box-h)" in dry
+
+
+@pytest.mark.parametrize(
+    ("kind", "issue", "says"),
+    [
+        ("comment", 42, f"commented on [#42](<{LINK}/42>)"),
+        ("capped", None, "→ over the cap"),
+        ("suppressed", 19, f"silenced: [#19](<{LINK}/19>) was closed as not planned"),
+        ("recent", 19, f"not re-filed: [#19](<{LINK}/19>) was closed as fixed this week"),
+        ("withheld", None, "withheld: its text named a target repository"),
+    ],
+)
+def test_discord_text_says_what_was_done(kind, issue, says):
+    action = retro.Action(kind, "timeout:improve", stat("timeout:improve", runs=4, boxes=4.0),
+                          issue=issue, title=None, body="b" if kind == "comment" else None)
+    assert says in text_for([action])
 
 
 def test_discord_text_signed_deltas():
@@ -578,105 +659,60 @@ def test_discord_text_signed_deltas():
     text = retro.discord_text(
         current, previous, [], week_start=WEEK, dry_run=False, still_leased=0, unsummarized=0
     )
-    assert "Runs 45 (-3)" in text
-    assert "PRs 10 (+2)" in text
-    assert "merged by workflow 3 (30%, +5pp)" in text
-    assert "box-h per merge 6.1 (-0.8)" in text
+    assert (
+        "Week over week: Runs 45 (-3) · PRs 10 (+2) · merged by the workflow 3 = 30% (+5pp)"
+        " · box-hours per merge 6.1 (-0.8)" in text
+    )
 
 
 def test_discord_text_n_a_when_a_side_is_missing():
+    text = text_for([])
+    assert "merged by the workflow 0 = n/a (n/a)" in text
+    assert "box-hours per merge n/a (n/a)" in text
+    assert "No failure class was over the threshold." in text
+
+
+def test_discord_text_states_what_was_not_counted():
     text = retro.discord_text(
-        card(), card(), [], week_start=WEEK, dry_run=False, still_leased=0, unsummarized=0
+        card(), card(), [], week_start=WEEK, dry_run=False, still_leased=2, unsummarized=1,
     )
-    assert "merged by workflow 0 (n/a, n/a)" in text
-    assert "box-h per merge n/a (n/a)" in text
-
-
-def test_discord_text_leaves_out_an_empty_list():
-    text = retro.discord_text(
-        card(), card(), [a_comment("timeout:improve", 41)], week_start=WEEK, dry_run=False,
-        still_leased=0, unsummarized=0,
-    )
-    assert "Commented: #41 timeout:improve" in text
-    assert "Filed:" not in text
-    assert "Regression:" not in text
-    assert "Over threshold, not filed" not in text
-    assert "Suppressed" not in text
-
-
-def test_discord_text_shortens_a_long_list_to_fit():
-    actions = [a_file(f"timeout:node{i}") for i in range(200)]
-    text = retro.discord_text(
-        card(), card(), actions, week_start=WEEK, dry_run=False, still_leased=0,
-        unsummarized=0,
-    )
-    assert len(text) <= 2000
-    assert re.search(r"…and \d+ more", text)
+    assert "Backlog runs only; not counted: 2 runs still leased, 1 not yet summarized." in text
+    assert "never add them" in text
 
 
 def test_discord_text_reports_a_failure_and_the_writes_not_made():
-    actions = [a_file("timeout:improve"), a_file("held:ci")]
-    text = retro.discord_text(
-        card(), card(), actions, week_start=WEEK, dry_run=False, still_leased=0,
-        unsummarized=0, failure="HTTP 500", done={0}, issued={0: 41},
-    )
+    actions = [a_file("timeout:improve"), a_file("held:ci", kind="held")]
+    text = text_for(actions, failure="HTTP 500", done={0}, issued={0: 41})
     assert text.splitlines()[0] == "retro failed: HTTP 500"
-    assert "Filed: #41 timeout:improve" in text
-    assert "Not written: held:ci" in text
+    assert "1. Stage `improve` timed out 6× in 6 runs" in text
+    assert f"**filed [#41](<{LINK}/41>)**" in text
+    assert "2. PRs held because of CI checks: 6 PRs, 9.5 box-h; last week 0 → not written:" \
+        " the run stopped first" in text
 
 
-def test_discord_text_counts_the_buckets_and_what_was_not_counted():
-    current = card(
-        runs=10,
-        held={"architecture": 9, "refuter": 5, "CI": 3, "unspecified": 2, "risk": 1,
-              "other": 1},
-        timeouts={"improve": 4, "review_merge.review_fix": 2},
-        failovers=[scorecard.FailoverLine("spec", "a/b", "c/d", "quota", 12)],
-    )
-    text = retro.discord_text(
-        current, card(), [], week_start=WEEK, dry_run=False, still_leased=2,
-        unsummarized=1, failover_runs=12,
-    )
-    assert "Held: refuter 5, CI 3, unspecified 2, risk 1, other 1" in text
-    assert "architecture 9" not in text
-    assert "Timeouts: improve 4, review_merge.review_fix 2" in text
-    assert "Failovers: 12 runs" in text
-    assert (
-        "Not counted: 2 runs still leased, 1 not summarized. "
-        "Box-hours are per class; never add them." in text
-    )
+def test_discord_text_after_a_failed_read_does_not_claim_a_quiet_week():
+    text = text_for([], failure="cannot list retro issues: HTTP 502")
+    assert "No failure class" not in text
+    assert "Nothing was planned" in text
 
 
-def test_discord_text_failovers_come_from_the_distinct_run_count_not_the_lines():
-    # One run on two failover lines is one run; the card's lines cannot say so.
-    current = card(failovers=[
-        scorecard.FailoverLine("spec", "a/b", "c/d", "quota", 1),
-        scorecard.FailoverLine("coder", "a/b", "c/d", "quota", 1),
-    ])
-    text = retro.discord_text(
-        current, card(), [], week_start=WEEK, dry_run=False, still_leased=0,
-        unsummarized=0, failover_runs=1,
-    )
-    assert "Failovers: 1 runs" in text
+def test_discord_text_shortens_the_lines_that_wrote_nothing_first():
+    actions = [a_file("timeout:filed")] + [
+        retro.Action("capped", f"timeout:node{i:03d}", stat(f"timeout:node{i:03d}",
+                     runs=4, boxes=4.0), None, None, None)
+        for i in range(60)
+    ] + [a_comment("timeout:commented", 9)]
+    text = text_for(actions, issued={0: 41}, done={0, 61})
+    assert len(text) <= 2000
+    assert "timeout:filed" not in text  # the key is not shown, the words are
+    assert f"[#41](<{LINK}/41>)" in text
+    assert f"commented on [#9](<{LINK}/9>)" in text  # a write survives, though last
+    assert re.search(r"…and \d+ more, all in the cron log", text)
 
 
-def test_discord_text_lists_a_class_fixed_inside_the_week():
-    action = retro.Action("recent", "timeout:improve", stat("timeout:improve", runs=4,
-                          boxes=4.0), issue=19, title=None, body=None)
-    text = retro.discord_text(
-        card(), card(), [action], week_start=WEEK, dry_run=False, still_leased=0,
-        unsummarized=0,
-    )
-    assert "Closed as completed during the week, not re-filed: #19 timeout:improve" in text
-
-
-def test_discord_text_shortens_a_long_not_written_list_instead_of_failing():
+def test_discord_text_never_raises_on_a_long_failure():
     # The writes are made before this message is built; it must never raise.
     actions = [a_comment(f"timeout:node{i:03d}", 100 + i) for i in range(300)]
-    text = retro.discord_text(
-        card(), card(), actions, week_start=WEEK, dry_run=False, still_leased=0,
-        unsummarized=0, failure="HTTP 500", done=set(),
-    )
+    text = text_for(actions, failure="HTTP 500", done=set())
     assert len(text) <= 2000
     assert text.splitlines()[0] == "retro failed: HTTP 500"
-    assert re.search(r"Not written: .*…and \d+ more", text)

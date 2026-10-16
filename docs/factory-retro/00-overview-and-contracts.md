@@ -51,14 +51,14 @@ scorecard computation and a GitHub client:
 | D2 | A **Failure class** has one of four kinds: `ending`, `held`, `timeout`, `failover` (C1). Its key is built only from enumerable values, never from free text. |
 | D3 | GitHub is the only store of known classes. Each retro issue has the label `retro` and a hidden marker `<!-- fabro:retro-class KEY -->`. No database table is added. |
 | D4 | A known class that recurs: open issue → comment; closed as completed → a new regression issue that links it; closed as not planned (or duplicate) → no write, counted as suppressed (C4). |
-| D5 | A class is over the threshold when it touches ≥ 3 runs or costs ≥ 4 box-hours in the week. At most 3 new issues (new plus regression) per week, ranked by box-hours. Comments are not capped. Each threshold is a CLI flag with these defaults. |
+| D5 | A class is over the threshold when it touches ≥ 3 runs or costs ≥ 4 box-hours (`cost_hours`, C2) in the week. At most 3 new issues (new plus regression) per week, ranked by `cost_hours`. Comments are not capped. Each threshold is a CLI flag with these defaults. |
 | D6 | The first fire is a dry run. A dry run reads GitHub and writes nothing; its Discord message starts with `DRY RUN`. The operator goes live by adding `DRY_RUN=0` to the cron line. |
 | D7 | Cron runs Monday 12:00 UTC (the host clock is UTC) over the previous ISO week, compared with the week before. Runs still leased, or not yet summarized, are reported and not waited for. |
 | D8 | One Discord message per week, at most 2000 characters. Never one per run (ADR 0004). |
 | D9 | Before every write, the text is checked for target repository names (C5). A match withholds that one write. Nothing is redacted. |
 | D10 | Retro issues get the labels `retro` and `bug`. The operator accepts an issue by leaving it open or closing it as completed, and rejects it by closing it as not planned. Nothing measures acceptance automatically. |
 | D11 | Only scheduler-dispatched `backlog` runs are covered (the scorecard's scope). The gap is stated in the docs and in every Discord message. |
-| D12 | Each class counts the full lease time of every run it touches. A run in several classes counts in each. Box-hours are never added across classes. |
+| D12 | Each class's `box_hours` is the full lease time of every run it touches; its `cost_hours` (C2) is what the threshold and rank use. A run in several classes counts in each. Box-hours are never added across classes. |
 | D13 | `ending` leaves out runs that ended at `close_noop` or `demote_lane`, and runs the operator cancelled. |
 | D14 | If the subcommand fails, the wrapper posts one line to Discord: `retro failed: ...`. Writes are made in rank order. A partial failure leaves the earlier writes in place, and next week's run fingerprints them. |
 
@@ -121,7 +121,7 @@ leading and trailing `-` removed, empty becomes `unknown`. So `diff hygiene` bec
 | `ending` | Each summarized `run_history` row where `kind` is `failed`, `dead` or `lost`, or where `kind` is `succeeded` and `pr_lookup` is `none`. Leave out `kind = failed` with `reason = cancelled`. Leave out a run whose node is `close_noop` or `demote_lane`. | `ending:<node>:<detail>`. `node` is `terminal_node` when the summary is `ok`, else `unknown`. `detail`: `terminated` when `reason = terminated`; else `category` when set (`deterministic`); else `reason` when `kind = failed`; `dead`; `lost`; `no-pr` for a succeeded run with no PR. |
 | `held` | Each PR the window's runs opened (the scorecard's `pr_runs`) that was **not merged by the workflow** (C1a). Leave out the policy buckets: `architecture`, `do-not-merge`, `auto-merge off`, `queued`, `queued, merged by hand`, `no report`, `not read yet`. | `held:<bucket>`, with `bucket = held_bucket(fact)`. The class's runs are every run that opened the PR. |
 | `timeout` | Each `run_stage_stats` row of a summarized run with `timeouts > 0`. | `timeout:<node_id>` |
-| `failover` | Each `run_failovers` row of a summarized run. | `failover:<node_id>:<from_model>:<error_kind>` (`to_model` is not in the key) |
+| `failover` | Each `run_failovers` row of a summarized run. | `failover:<from_model>:<error_kind>`. Neither the stage nor `to_model` is in the key: one model refusing is one cause at every stage. The stages are kept on the class as `stages` (`(node_id, events)`, most first). |
 
 `pr_lookup = failed` (the lookup itself failed) is not `none`, so that run is in no
 `ending` class.
@@ -152,6 +152,7 @@ class ClassStat:
     events: int                   # timeout: summed `timeouts`; failover: summed `count`;
                                   # ending: runs; held: PRs
     samples: tuple[str, ...] = () # held:other and held:no-reason-recorded only (C5)
+    stages: tuple[tuple[str, int], ...] = ()  # failover only: (node_id, events), most first
 
     @property
     def box_hours(self) -> float: ...   # sum(r.lease_ms for r in runs) / 3_600_000
@@ -173,11 +174,15 @@ DEFAULT_MIN_RUNS = 3
 DEFAULT_MIN_BOX_HOURS = 4.0
 DEFAULT_CAP = 3
 
+# ClassStat.cost_hours: box_hours for `ending` and `held` (the whole run is the loss);
+# for `timeout` and `failover`, the leases of the class's runs whose ending is not
+# "PR opened" only (a stage that failed over usually still ships).
+
 def over_threshold(stat: ClassStat, *, min_runs: int, min_box_hours: float) -> bool:
-    return len(stat.runs) >= min_runs or stat.box_hours >= min_box_hours
+    return len(stat.runs) >= min_runs or stat.cost_hours >= min_box_hours
 ```
 
-Classes over the threshold are ranked by `box_hours` descending, then `key` ascending. The
+Classes over the threshold are ranked by `cost_hours` descending, then `key` ascending. The
 plan (C4) and all writes follow that order.
 
 ### C3. Known classes: what GitHub holds
@@ -281,36 +286,45 @@ Never write `run_history.repo`, `pr_number` or `pr_url` into a body.
 
 ### C6. The Discord message
 
-`retro.discord_text(...) -> str` builds one plain-text message, at most 2000 characters.
-Lines, in order (leave out a line whose list is empty):
+`retro.discord_text(...) -> str` builds one Discord-markdown message, at most 2000
+characters: a header, the scorecard line, then **one numbered line per class over the
+threshold**, in rank order, saying in words what went wrong, how big it was, last week's
+size, and what the retro did. Rewritten 2026-10-16 after the first dry run: a list of keys
+did not say what was going on.
 
 ```
-[DRY RUN] Factory retro, week of 2026-10-05 to 2026-10-11 (backlog runs only)
-Runs 45 (-3) · PRs 40 (+2) · merged by workflow 12 (30%, +5pp) · box-h per merge 6.1 (-0.8)
-Held: refuter 5, CI 3, unspecified 2 · Timeouts: improve 4, review_merge.review_fix 2 · Failovers: 12 runs
-Filed: #41 timeout:improve (6 runs, 9.5 box-h)
-Regression: #44 of #19 held:unspecified (3 runs, 2.0 box-h)
-Commented: #42 failover:spec:kimi/kimi-k3:access_denied (12 runs, 40.1 box-h)
-Over threshold, not filed (cap 3): ending:validate:deterministic, held:ci
-Closed as completed during the week, not re-filed: #23 timeout:review_merge.watch_checks
-Suppressed (closed not planned): 1 · Withheld (named a target repository): 1
-Not counted: 2 runs still leased, 1 not summarized. Box-hours are per class; never add them.
+**Factory retro, 2026-10-05 to 2026-10-11** · **DRY RUN**: nothing was filed or commented
+Week over week: Runs 119 (+25) · PRs 103 (+21) · merged by the workflow 38 = 37% (+30pp) · box-hours per merge 8.1 (-47.4)
+
+**11 failure classes over the threshold**, costliest first (at most 3 new issues a week):
+1. PRs held because the Refuter said the work is not done: 15 PRs, 38.1 box-h; last week 5 → **would file**
+2. `kimi/kimi-k3` failing over on access_denied: 123× in 38 runs at `spec`, `extra_decompose`, 6 got no PR (27.5 box-h); last week 31 → **filed [#41](<https://github.com/…/issues/41>)**
+3. Runs stopped without a PR at `mark_stuck`: 4 runs, 12.9 box-h; last week 9 → over the cap
+…and 3 more, all in the cron log
+
+Backlog runs only; not counted: 3 runs still leased. Box-h is the lease of the runs a line counts, and one run can be in several lines: never add them.
 ```
 
-- `[DRY RUN] ` is the prefix only on a dry run, and then `Filed/Regression/Commented`
-  become `Would file/Would file regression/Would comment`, with no issue numbers for new
-  issues.
-- The deltas compare with the previous week's scorecard: counts as signed integers, the
-  merge rate in percentage points, box-hours per merge with one decimal. `n/a` when either
-  side is `None`.
-- `Held:` lists the current week's `card.held`, leaving out the C1 policy buckets, top 5.
-  `Timeouts:` is the top 5 of `card.timeouts`. `Failovers:` is the distinct run ids in
-  the window's `run_failovers` rows (`failover_runs`); summing `card.failovers[*].runs`
-  counts a run once per line.
-- If the text is over 2000 characters, shorten the `Filed`, `Commented`, `Over threshold`,
-  `Closed as completed` and `Not written` lists from the end, replacing the dropped items
-  with `…and N more`, until it fits; then, if still over, cut to 2000. It never raises:
-  the writes are already made, and this message is their only report.
+- The header says `· **DRY RUN**: nothing was filed or commented` only on a dry run.
+- The scorecard deltas compare with the previous week's scorecard: counts as signed
+  integers, the merge rate in percentage points, box-hours per merge with one decimal.
+  `n/a` when either side is `None`.
+- Each line's words come from the key (`_what`): an `ending` detail in words (`no-pr`,
+  `terminated`, `dead`, `lost`, else `failed (<detail>)`), a held bucket as a reason
+  (`_HELD_BECAUSE`), a timeout's stage, a failover's model, error and top 3 stages. The
+  hours are `cost_hours`; "last week" is the previous window's runs (PRs for `held`).
+- The result (`_result`): `would file` / `filed #N`, `would file a regression of #M` /
+  `filed #N, a regression of #M`, `would comment on #M` / `commented on #M`,
+  `over the cap`, `silenced: #M was closed as not planned`, `not re-filed: #M was closed
+  as fixed this week`, `withheld: its text named a target repository`, and on a partial
+  failure `not written: the run stopped first`. Issue numbers are masked links in `<…>`,
+  so Discord unfurls nothing.
+- No class over the threshold: `No failure class was over the threshold.` After a failed
+  GitHub read: `Nothing was planned: the retro stopped before it could.`
+- If the text is over 2000 characters, drop lines from the end, first those that wrote
+  nothing, then the rest, adding `…and N more, all in the cron log` (the subcommand logs
+  every class to stderr); then, if still over, cut to 2000. It never raises: the writes
+  are already made, and this message is their only report.
 
 On a GitHub failure (C9), the first line is `retro failed: <message>`, and the rest of the
 message shows what was written before the failure.
@@ -328,7 +342,9 @@ A one-sentence template for each kind, with the key's parts filled in:
 | `ending` (other) | Runs that ended at `<node>` as `<detail>`. |
 | `held` | PRs the workflow did not merge, held for the reason bucket `<bucket>` (`scorecard.REASON_BUCKETS`). |
 | `timeout` | Stage `<node>` timed out. Every timed-out attempt counts, retried ones included. |
-| `failover` | Stage `<node>` failed over from `<from_model>` on `<error_kind>`. |
+| `failover` | Calls to `<from_model>` failed with `<error_kind>` and fell back to another model, at these stages (failovers each): `<node>` (N), .... |
+
+A `timeout` or `failover` body adds, after the sentence: `K of these N runs ended without a PR (H box-hours); the rest opened one. The retro ranks this class by those runs' hours.`
 
 Body, in this order:
 

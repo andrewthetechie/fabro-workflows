@@ -30,13 +30,17 @@ happens, and the monitor stays health-only.
 ## D2. A failure class is a key built from enumerable values
 
 A **Failure class** has one of four kinds, `ending`, `held`, `timeout` and `failover`. Its
-key (`timeout:improve`, `failover:spec:kimi/kimi-k3:access_denied`) is built only from node
+key (`timeout:improve`, `failover:kimi/kimi-k3:access_denied`) is built only from node
 names, fabro's categories, the scorecard's held-reason buckets and model ids. Never from
 free text, because the key has to be the same the next week.
 
 The issue proposed one tuple: terminal node, failure category and block reason. That tuple
 misses two of the retro's three examples. Kimi failovers and most merge-phase timeouts
 happen in runs that still end with a PR, so those runs have no failure ending at all.
+
+Amended 2026-10-16, after the first dry run: a failover key leaves out the stage. The Kimi
+quota refused the same 38 runs at `spec` and at `extra_decompose`, which as two keys was one
+cause filed twice, two of the week's three slots. The stages are reported inside the class.
 
 ## D3. GitHub is the store of known classes
 
@@ -68,8 +72,11 @@ counts, box-hours, node names and bucket names.
 ## D5. Bounded volume
 
 A class counts in a week when it touches at least 3 runs or costs at least 4 box-hours. At
-most 3 new issues are filed each week, ranked by box-hours, and comments on known classes
-are not capped. The first live fire comes only after a dry run that the operator has read in
+most 3 new issues are filed each week, ranked by cost, and comments on known classes
+are not capped. Cost is box-hours, but for a `timeout` or `failover` class only the runs
+that ended without a PR count (amended 2026-10-16): a stage that failed over usually still
+ships, and the first dry run ranked 38 Kimi runs that mostly opened PRs above 15 PRs the
+Refuter held, and passed a single 15-hour run that timed out once and shipped. The first live fire comes only after a dry run that the operator has read in
 Discord. These limits keep the issue list at a rate a human will read, which is the same
 reason ADR 0004 forbids double pings.
 
