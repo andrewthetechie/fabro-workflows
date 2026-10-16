@@ -1,0 +1,77 @@
+[
+  {
+    "id": 2001,
+    "run_id": 38194309790,
+    "run_attempt": 1,
+    "name": "UI end-to-end (tauri-pilot)",
+    "status": "completed",
+    "conclusion": "failure",
+    "started_at": "2026-10-15T09:12:30Z",
+    "completed_at": "2026-10-15T09:40:00Z",
+    "html_url": "https://github.com/andrewthetechie/writers-app/actions/runs/38194309790/job/2001",
+    "steps": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Run scenario suite",
+        "status": "completed",
+        "conclusion": "failure",
+        "number": 2
+      }
+    ]
+  },
+  {
+    "id": 2002,
+    "run_id": 38194309790,
+    "run_attempt": 2,
+    "name": "UI end-to-end (tauri-pilot)",
+    "status": "completed",
+    "conclusion": "failure",
+    "started_at": "2026-10-15T09:12:30Z",
+    "completed_at": "2026-10-15T09:40:00Z",
+    "html_url": "https://github.com/andrewthetechie/writers-app/actions/runs/38194309790/job/2002",
+    "steps": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Run scenario suite",
+        "status": "completed",
+        "conclusion": "failure",
+        "number": 2
+      }
+    ]
+  },
+  {
+    "id": 2003,
+    "run_id": 38194309790,
+    "run_attempt": 3,
+    "name": "UI end-to-end (tauri-pilot)",
+    "status": "completed",
+    "conclusion": "failure",
+    "started_at": "2026-10-15T09:12:30Z",
+    "completed_at": "2026-10-15T09:40:00Z",
+    "html_url": "https://github.com/andrewthetechie/writers-app/actions/runs/38194309790/job/2003",
+    "steps": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Run scenario suite",
+        "status": "completed",
+        "conclusion": "failure",
+        "number": 2
+      }
+    ]
+  }
+]

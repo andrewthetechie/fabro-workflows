@@ -1,0 +1,74 @@
+[
+  {
+    "id": 38855093415,
+    "name": "CI",
+    "path": ".github/workflows/ci.yml",
+    "run_attempt": 2,
+    "head_sha": "abc1111111111111111111111111111111111111",
+    "head_branch": "main",
+    "created_at": "2026-10-15T09:12:00Z",
+    "html_url": "https://github.com/andrewthetechie/writers-app/actions/runs/38855093415",
+    "status": "completed",
+    "conclusion": "success"
+  },
+  {
+    "id": 38194309790,
+    "name": "CI",
+    "path": ".github/workflows/ci.yml",
+    "run_attempt": 3,
+    "head_sha": "def2222222222222222222222222222222222222",
+    "head_branch": "fabro/run/01M3SFYASZQ7MEKVKR1A38C4J0",
+    "created_at": "2026-10-14T09:00:00Z",
+    "html_url": "https://github.com/andrewthetechie/writers-app/actions/runs/38194309790",
+    "status": "completed",
+    "conclusion": "failure"
+  },
+  {
+    "id": 38194309791,
+    "name": "CI",
+    "path": ".github/workflows/ci.yml",
+    "run_attempt": 2,
+    "head_sha": "aaa3333333333333333333333333333333333333",
+    "head_branch": "main",
+    "created_at": "2026-10-13T09:00:00Z",
+    "html_url": "https://github.com/andrewthetechie/writers-app/actions/runs/38194309791",
+    "status": "completed",
+    "conclusion": "success"
+  },
+  {
+    "id": 38194309792,
+    "name": "CI",
+    "path": ".github/workflows/ci.yml",
+    "run_attempt": 2,
+    "head_sha": "bbb4444444444444444444444444444444444444",
+    "head_branch": "main",
+    "created_at": "2026-10-12T09:00:00Z",
+    "html_url": "https://github.com/andrewthetechie/writers-app/actions/runs/38194309792",
+    "status": "completed",
+    "conclusion": "success"
+  },
+  {
+    "id": 38194309793,
+    "name": "CI",
+    "path": ".github/workflows/ci.yml",
+    "run_attempt": 3,
+    "head_sha": "ccc5555555555555555555555555555555555555",
+    "head_branch": "main",
+    "created_at": "2026-10-11T09:00:00Z",
+    "html_url": "https://github.com/andrewthetechie/writers-app/actions/runs/38194309793",
+    "status": "completed",
+    "conclusion": "success"
+  },
+  {
+    "id": 38194309794,
+    "name": "CI",
+    "path": ".github/workflows/ci.yml",
+    "run_attempt": 2,
+    "head_sha": "ddd6666666666666666666666666666666666666",
+    "head_branch": "main",
+    "created_at": "2026-09-01T09:00:00Z",
+    "html_url": "https://github.com/andrewthetechie/writers-app/actions/runs/38194309794",
+    "status": "completed",
+    "conclusion": "success"
+  }
+]

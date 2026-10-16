@@ -10,13 +10,14 @@
 // Rust guideline compliant 2026-07-21
 
 pub mod config;
+pub mod flaky;
 pub mod ratchet;
 
 use std::process::ExitCode;
 
 const USAGE: &str = concat!(
     "usage: fabro-io scout <command> [args]\n",
-    "commands: config [--file PATH] | ratchet --config FILE [--root DIR]\n"
+    "commands: config [--file PATH] | ratchet --config FILE [--root DIR] | flaky --runs FILE --jobs-dir DIR --since TIMESTAMP\n"
 );
 
 /// Dispatches `fabro-io scout <command>` (C2, C3).
@@ -31,6 +32,7 @@ pub fn run_cli(args: &[String]) -> ExitCode {
     match sub {
         "config" => config::run_cli(&args[1..]),
         "ratchet" => ratchet::run_cli(&args[1..]),
+        "flaky" => flaky::run_cli(&args[1..]),
         other => {
             eprintln!("scout: unknown subcommand '{other}'");
             eprint!("{USAGE}");
@@ -94,4 +96,26 @@ pub fn is_fingerprint(fp: &str) -> bool {
         count += 1;
     }
     count == 2
+}
+
+/// True when `s` is GitHub's UTC timestamp form `YYYY-MM-DDTHH:MM:SSZ` (C4).
+///
+/// Exactly 20 characters, digits where digits belong, and `T` and `Z` in place. The fields
+/// are not range-checked: every timestamp in this series is compared as a string.
+#[must_use]
+pub fn is_github_ts(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 20 {
+        return false;
+    }
+    let digits = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
+    if !digits.iter().all(|i| bytes[*i].is_ascii_digit()) {
+        return false;
+    }
+    bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && bytes[16] == b':'
+        && bytes[19] == b'Z'
 }
