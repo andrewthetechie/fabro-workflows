@@ -77,6 +77,8 @@ MARKER = re.compile(r"<!-- fabro:retro-class ([a-z0-9_.:/-]+) -->")
 # `wfs#2080`, `repo#12`. A bare `#41` (preceded by a space, `(`, a backtick, or
 # the start of a line) is this repository's issue number and is allowed.
 _CROSS_REF = re.compile(r"[A-Za-z0-9_.-]+#\d+")
+# The `#<digits>` a sample rewrites: only one that `_CROSS_REF` would not match.
+_BARE_REF = re.compile(r"(?<![A-Za-z0-9_.-])#(\d+)")
 # `github.com/<owner>/<repo>` -- blocked unless the repository is this one.
 _GITHUB_URL = re.compile(r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", re.I)
 
@@ -123,7 +125,7 @@ class ClassStat:
     kind: str  # "ending" | "held" | "timeout" | "failover"
     runs: tuple[RunRef, ...]
     events: int
-    # Raw reasons, `held:other` only, made safe at render time (task 03 / C5).
+    # `held:other` only: each PR's reason, already through `safe_sample` (C5).
     samples: tuple[str, ...] = ()
 
     @property
@@ -365,10 +367,13 @@ def safe_sample(reason: str) -> str:
     The reason is agent prose about a **target** repository. Three things are done
     to it, in this order, and each one is a way the text could leak or misfire:
 
-    1. whitespace collapsed, and cut at 160 characters with `…` -- a reason is
-       often several paragraphs;
-    2. `#<digits>` becomes `issue <digits>`, because GitHub would otherwise render
-       it as a link to *this* repository's issue of that number;
+    1. whitespace collapsed, and cut to at most 160 characters with `…` -- a reason
+       is often several paragraphs. The cut falls on a space, so it never halves a
+       repository name into a prefix `guard` would not recognise;
+    2. a bare `#<digits>` becomes `issue <digits>`, because GitHub would otherwise
+       render it as a link to *this* repository's issue of that number. A
+       cross-repository `wfs#2080` is left whole: rewritten to `wfsissue 2080` it
+       would slip past `guard`'s cross-reference rule and publish the short name;
     3. `@` becomes `@` (a zero-width space), so nobody is mentioned by accident.
 
     A target repository's own name is not touched here; the finished body goes
@@ -376,8 +381,9 @@ def safe_sample(reason: str) -> str:
     """
     text = " ".join(reason.split())
     if len(text) > 160:
-        text = text[:160] + "…"
-    text = re.sub(r"#(\d+)", r"issue \1", text)
+        cut = text.rfind(" ", 0, 161)
+        text = text[: cut if cut > 0 else 160] + "…"
+    text = _BARE_REF.sub(r"issue \1", text)
     return text.replace("@", "@\u200b")
 
 
@@ -457,8 +463,10 @@ def comment_body(stat: ClassStat, prev_stat: ClassStat | None, week_start: date)
 class Action:
     """One thing the retro decided to do about one class (C4).
 
-    `kind` is `file`, `regression`, `comment`, `suppressed`, `capped` or `withheld`.
-    Only the first three carry a body and reach GitHub. `title` and `body` are kept
+    `kind` is `file`, `regression`, `comment`, `suppressed`, `recent`, `capped` or
+    `withheld`. Only the first three carry a body and reach GitHub. `recent` is a
+    class whose issue was closed as completed during the reported week (`issue` is
+    that issue). `title` and `body` are kept
     on a withheld action **for the stderr log only** -- the operator has to be able
     to see what was suppressed without it reaching a public issue.
     """
@@ -487,7 +495,8 @@ def plan(
 
     GitHub's own state decides: an open issue for a key takes a comment, a closed
     one takes a regression or, when it was closed as not planned or duplicate, is
-    left alone as the operator's rejection. At most `cap` new issues are planned;
+    left alone as the operator's rejection. A completed issue closed inside the
+    reported week is left alone too: that week's runs predate the fix. At most `cap` new issues are planned;
     a comment is never capped, and a write `guard` withholds does not use a slot --
     otherwise a withheld class would silently cost the week one of its three.
     """
@@ -519,6 +528,11 @@ def plan(
                 issue = closed[0]
                 if issue.state_reason in ("not_planned", "duplicate"):
                     action = Action("suppressed", stat.key, stat, None, None, None)
+                elif _closed_on_or_after(issue, week_start):
+                    # Closed as fixed inside the week being reported: the week still
+                    # holds the runs from before the fix, so they are no regression.
+                    # Next week's window starts after the close and decides.
+                    action = Action("recent", stat.key, stat, issue.number, None, None)
                 elif filed >= cap:
                     action = Action("capped", stat.key, stat, None, None, None)
                 else:
@@ -575,6 +589,7 @@ def discord_text(
     dry_run: bool,
     still_leased: int,
     unsummarized: int,
+    failover_runs: int = 0,
     failure: str | None = None,
     done: set[int] | None = None,
     issued: dict[int, int] | None = None,
@@ -582,10 +597,12 @@ def discord_text(
 ) -> str:
     """The week's one Discord message (C6, ADR 0026 D8).
 
-    Plain text, one message, at most 2000 characters. `done` is the indexes that
-    were actually written and `issued` maps an action index to the number GitHub
-    returned; both exist for the partial-failure report, where a write failed after
-    some succeeded. On a failure the first line is `retro failed: ...`.
+    Plain text, one message, at most 2000 characters. `failover_runs` is the
+    distinct runs with a failover; the card cannot give it, because its lines count
+    runs per `(node, from, to, error)` and one run can be on several. `done` is the
+    indexes that were actually written and `issued` maps an action index to the
+    number GitHub returned; both exist for the partial-failure report, where a write
+    failed after some succeeded. On a failure the first line is `retro failed: ...`.
     """
     issued = issued or {}
     written = None if done is None else set(done)
@@ -596,12 +613,16 @@ def discord_text(
     regressions: list[str] = []
     comments: list[str] = []
     capped: list[str] = []
+    recent: list[str] = []
     suppressed = 0
     withheld = 0
     not_written: list[str] = []
     for index, action in enumerate(actions):
         if action.kind == "capped":
             capped.append(action.key)
+            continue
+        if action.kind == "recent":
+            recent.append(f"#{action.issue} {action.key}")
             continue
         if action.kind == "suppressed":
             suppressed += 1
@@ -646,71 +667,66 @@ def discord_text(
         " (backlog runs only)",
         _card_line(card, prev_card),
     ]
-    buckets = _bucket_line(card)
+    buckets = _bucket_line(card, failover_runs)
     if buckets:
         header.append(buckets)
-    tail: list[str] = []
-    if capped:
-        tail.append(f"Over threshold, not filed (cap {cap}): {', '.join(capped)}")
     status = []
     if suppressed:
         status.append(f"Suppressed (closed not planned): {suppressed}")
     if withheld:
         status.append(f"Withheld (named a target repository): {withheld}")
-    if status:
-        tail.append(" · ".join(status))
-    if not_written:
-        tail.append(f"Not written: {', '.join(not_written)}")
     counted = []
     if still_leased:
         counted.append(f"{still_leased} runs still leased")
     if unsummarized:
         counted.append(f"{unsummarized} not summarized")
     note = "Box-hours are per class; never add them."
-    tail.append(f"Not counted: {', '.join(counted)}. {note}" if counted else note)
+    footer = f"Not counted: {', '.join(counted)}. {note}" if counted else note
 
-    lists = {
-        "filed": filed,
-        "regressions": regressions,
-        "comments": comments,
-        "capped": capped,
-    }
-    # The three the contract shortens when the message is too long; the regression
-    # list is not among them, and a regression implies a filed slot anyway.
-    droppable = ("filed", "comments", "capped")
+    # Each list line, in message order. `None` is the fixed status line's slot.
+    lists: list[tuple[str, str, list[str]] | None] = [
+        ("filed", filed_label, filed),
+        ("regressions", regression_label, regressions),
+        ("comments", comment_label, comments),
+        ("capped", f"Over threshold, not filed (cap {cap})", capped),
+        ("recent", "Closed as completed during the week, not re-filed", recent),
+        None,
+        ("not_written", "Not written", not_written),
+    ]
+    # Shortened from the end, in this order, when the message is too long. The
+    # regression list is not among them: the cap bounds it.
+    droppable = ("filed", "comments", "capped", "recent", "not_written")
     dropped = dict.fromkeys(droppable, 0)
+    items = {entry[0]: entry[2] for entry in lists if entry is not None}
 
     def assemble() -> str:
         lines = list(header)
-        for name, label in (
-            ("filed", filed_label),
-            ("regressions", regression_label),
-            ("comments", comment_label),
-        ):
-            line = _list_line(label, lists[name], dropped.get(name, 0))
+        for entry in lists:
+            if entry is None:
+                if status:
+                    lines.append(" · ".join(status))
+                continue
+            name, label, values = entry
+            line = _list_line(label, values, dropped.get(name, 0))
             if line:
                 lines.append(line)
-        for line in tail:
-            if line.startswith("Over threshold"):
-                shortened = _list_line(
-                    f"Over threshold, not filed (cap {cap})", capped, dropped["capped"]
-                )
-                if shortened:
-                    lines.append(shortened)
-            else:
-                lines.append(line)
+        lines.append(footer)
         return "\n".join(lines)
 
     text = assemble()
     while len(text) > 2000:
         for name in droppable:
-            if dropped[name] < len(lists[name]):
+            if dropped[name] < len(items[name]):
                 dropped[name] += 1
                 break
         else:
             break
         text = assemble()
-    assert len(text) <= 2000, len(text)
+    if len(text) > 2000:
+        # Only the header and fixed lines are left, and they are bounded well under
+        # the limit; cut rather than fail, because by now the writes have been made
+        # and this message is their only report.
+        text = text[:1999] + "…"
     return text
 
 
@@ -773,14 +789,26 @@ def _runs_list(stat: ClassStat) -> list[str]:
     return lines
 
 
+def _closed_on(issue: TrackedIssue) -> date | None:
+    """A closed issue's UTC date, or `None` when GitHub did not give a usable one."""
+    if not issue.closed_at:
+        return None
+    try:
+        return date.fromisoformat(issue.closed_at[:10])
+    except ValueError:
+        return None
+
+
 def _closed_date(issue: TrackedIssue) -> str:
     """A closed issue's date, or the string that says GitHub did not give one."""
-    if not issue.closed_at:
-        return "an unknown date"
-    try:
-        return date.fromisoformat(issue.closed_at[:10]).isoformat()
-    except ValueError:
-        return "an unknown date"
+    closed = _closed_on(issue)
+    return closed.isoformat() if closed else "an unknown date"
+
+
+def _closed_on_or_after(issue: TrackedIssue, day: date) -> bool:
+    """Whether the issue was closed on `day` or later. An unknown date is not."""
+    closed = _closed_on(issue)
+    return closed is not None and closed >= day
 
 
 def _card_line(card: Scorecard, prev: Scorecard) -> str:
@@ -806,7 +834,7 @@ def _delta(formatted: str, card: Scorecard, prev: Scorecard) -> str:
     return f"{card.box_hours_per_merge - prev.box_hours_per_merge:+.1f}"
 
 
-def _bucket_line(card: Scorecard) -> str:
+def _bucket_line(card: Scorecard, failover_runs: int) -> str:
     """This week's held, timeout and failover totals, the first five each (C6)."""
     segments = []
     held = [(name, count) for name, count in card.held.items() if name not in POLICY_HELD_BUCKETS][:5]
@@ -815,9 +843,8 @@ def _bucket_line(card: Scorecard) -> str:
     timeouts = list(card.timeouts.items())[:5]
     if timeouts:
         segments.append("Timeouts: " + ", ".join(f"{name} {count}" for name, count in timeouts))
-    runs = sum(line.runs for line in card.failovers)
-    if runs:
-        segments.append(f"Failovers: {runs} runs")
+    if failover_runs:
+        segments.append(f"Failovers: {failover_runs} runs")
     return " · ".join(segments)
 
 

@@ -1588,6 +1588,7 @@ def _retro(
             1 for row in store.lease_rows() if _in_window(row["dispatched_at"], start, end)
         )
         week_start = start.date()
+        failover_runs = len({row["run_id"] for row in rows.failovers})
 
         try:
             issues = github.fetch_label_all_states(
@@ -1598,6 +1599,7 @@ def _retro(
                 retro.discord_text(
                     card, previous_card, [], week_start=week_start, dry_run=args.dry_run,
                     still_leased=still_leased, unsummarized=current.unsummarized,
+                    failover_runs=failover_runs,
                     failure=f"cannot list retro issues: {exc}", cap=args.cap,
                 )
             )
@@ -1658,6 +1660,7 @@ def _retro(
                 dry_run=args.dry_run,
                 still_leased=still_leased,
                 unsummarized=current.unsummarized,
+                failover_runs=failover_runs,
                 failure=failure,
                 done=None if args.dry_run else done,
                 issued=issued,

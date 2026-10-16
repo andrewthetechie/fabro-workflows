@@ -215,10 +215,10 @@ The retro reads issues in `RETRO_REPO = "andrewthetechie/fabro-workflows"` (the 
 ```python
 @dataclass(frozen=True)
 class Action:
-    kind: str          # "file" | "regression" | "comment" | "suppressed" | "capped" | "withheld"
+    kind: str          # "file" | "regression" | "comment" | "suppressed" | "recent" | "capped" | "withheld"
     key: str
     stat: ClassStat
-    issue: int | None  # comment: the open issue; regression: the closed one; else None
+    issue: int | None  # comment: the open issue; regression, recent: the closed one; else None
     title: str | None  # file and regression only
     body: str | None   # file, regression, comment; None for the rest
     why: str = ""      # withheld: what C5 matched
@@ -232,8 +232,10 @@ For each class over the threshold, in rank order (C2):
 
 1. If any known issue for the key is `open`: a `comment` on the highest-numbered open one.
 2. Else, if a closed one exists: look at the highest-numbered closed issue. If its
-   `state_reason` is `not_planned` or `duplicate`: `suppressed`. Otherwise (`completed`,
-   `reopened`, `None`): a `regression` of it.
+   `state_reason` is `not_planned` or `duplicate`: `suppressed`. Otherwise, if it was
+   closed on or after `week_start`: `recent` (the week still holds the runs from before
+   the fix, so they are no regression; next week's window decides). Otherwise
+   (`completed`, `reopened`, `None`, or no `closed_at`): a `regression` of it.
 3. Else: `file`.
 4. A `file` or `regression` after `cap` of them have been planned becomes `capped`.
 5. Render the title and body (C7). If `guard` (C5) matches the title or body, the action
@@ -261,9 +263,13 @@ returns a short description of the first match:
 **Samples** (only `held:other`) are made safe before they reach a body. They still pass
 through `guard` with the rest of the body:
 
-1. Collapse whitespace; truncate to 160 characters, adding `…` if cut.
-2. Replace `#<digits>` with `issue <digits>`. A target repository's `#1326` would otherwise
-   link to this repository's issue 1326.
+1. Collapse whitespace; truncate to at most 160 characters at the last space, adding `…`
+   if cut (a hard cut at 160 only when there is no space). A cut in the middle of a word
+   could leave a repository name's prefix that the guard does not recognise.
+2. Replace a bare `#<digits>` with `issue <digits>`. A target repository's `#1326` would
+   otherwise link to this repository's issue 1326. A `#<digits>` preceded by a word
+   character is a cross-repository reference and is left whole, so the guard withholds
+   the write (rewritten, `wfs#2080` would become `wfsissue 2080` and pass).
 3. Replace `@` with `@​` (a zero-width space). No one is mentioned by accident.
 4. At most 3 samples per class: the reasons of its PRs in PR order, distinct, first 3.
 
@@ -283,6 +289,7 @@ Filed: #41 timeout:improve (6 runs, 9.5 box-h)
 Regression: #44 of #19 held:unspecified (3 runs, 2.0 box-h)
 Commented: #42 failover:spec:kimi/kimi-k3:access_denied (12 runs, 40.1 box-h)
 Over threshold, not filed (cap 3): ending:validate:deterministic, held:ci
+Closed as completed during the week, not re-filed: #23 timeout:review_merge.watch_checks
 Suppressed (closed not planned): 1 · Withheld (named a target repository): 1
 Not counted: 2 runs still leased, 1 not summarized. Box-hours are per class; never add them.
 ```
@@ -294,10 +301,13 @@ Not counted: 2 runs still leased, 1 not summarized. Box-hours are per class; nev
   merge rate in percentage points, box-hours per merge with one decimal. `n/a` when either
   side is `None`.
 - `Held:` lists the current week's `card.held`, leaving out the C1 policy buckets, top 5.
-  `Timeouts:` is the top 5 of `card.timeouts`. `Failovers:` is the distinct runs in
-  `card.failovers`.
-- If the text is over 2000 characters, shorten the `Filed`, `Commented`, `Over threshold`
-  lists from the end, replacing the dropped items with `…and N more`, until it fits.
+  `Timeouts:` is the top 5 of `card.timeouts`. `Failovers:` is the distinct run ids in
+  the window's `run_failovers` rows (`failover_runs`); summing `card.failovers[*].runs`
+  counts a run once per line.
+- If the text is over 2000 characters, shorten the `Filed`, `Commented`, `Over threshold`,
+  `Closed as completed` and `Not written` lists from the end, replacing the dropped items
+  with `…and N more`, until it fits; then, if still over, cut to 2000. It never raises:
+  the writes are already made, and this message is their only report.
 
 On a GitHub failure (C9), the first line is `retro failed: <message>`, and the rest of the
 message shows what was written before the failure.

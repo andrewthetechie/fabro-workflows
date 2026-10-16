@@ -46,7 +46,8 @@ closed, and matches markers. The operator's own actions on an issue are the deci
 
 - **open**: the class is known. The retro comments with the week's evidence.
 - **closed as completed**: the class was fixed. A recurrence files a new regression issue
-  that links the old one.
+  that links the old one. A close inside the reported week is not a recurrence yet: that
+  week still holds the runs from before the fix, so the class waits for the next week.
 - **closed as not planned** (or duplicate): the operator rejected it. The class is
   suppressed, and no write is made.
 

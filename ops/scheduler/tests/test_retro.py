@@ -339,9 +339,25 @@ def test_safe_sample_rewrites_hashes_and_mentions_and_cuts_long_text():
     assert retro.safe_sample("thanks @andrew") == "thanks @\u200bandrew"
     long = "word " * 80
     safe = retro.safe_sample(long)
-    assert len(safe) == 161
-    assert safe.endswith("…")
-    assert len(safe[:-1]) == 160
+    assert len(safe) <= 161
+    assert safe.endswith("word…")
+    assert long.startswith(safe[:-1])
+    # One token longer than the limit has no space to cut at: a hard cut.
+    assert len(retro.safe_sample("x" * 300)) == 161
+
+
+def test_safe_sample_keeps_a_cross_repository_reference_for_the_guard():
+    # Rewritten to `wfsissue 2080` it would pass the guard and publish `wfs`.
+    safe = retro.safe_sample("see wfs#2080 and (#12)")
+    assert safe == "see wfs#2080 and (issue 12)"
+    assert retro.guard(safe, REPOS)
+
+
+def test_safe_sample_never_halves_a_repository_name():
+    reason = "a" * 150 + " lawncare-saas is the blocker"
+    safe = retro.safe_sample(reason)
+    assert "lawncare" not in safe
+    assert retro.guard(safe, REPOS) is None
 
 
 def test_issue_body_starts_with_a_marker_that_reads_the_key_back():
@@ -411,13 +427,29 @@ def test_plan_files_a_regression_of_a_completed_issue():
     one = stat("timeout:improve", runs=4, boxes=4.0)
     known = retro.known_classes([
         marked("timeout:improve", number=19, state="closed", state_reason="completed",
-               closed_at="2026-10-10T00:00:00Z"),
+               closed_at="2026-10-02T00:00:00Z"),
     ])
     actions = retro.plan(cls(one), cls(), known, week_start=WEEK, repos=REPOS,
                          min_runs=3, min_box_hours=4.0, cap=3)
     assert [a.kind for a in actions] == ["regression"]
     assert actions[0].issue == 19
     assert actions[0].title.startswith("retro (regression of #19): ")
+
+
+@pytest.mark.parametrize("closed_at", ["2026-10-05T00:00:00Z", "2026-10-10T18:00:00Z",
+                                       "2026-10-12T09:00:00Z"])
+def test_plan_files_no_regression_of_an_issue_fixed_inside_the_week(closed_at):
+    # The week's runs include the ones from before the fix; they are no recurrence.
+    one = stat("timeout:improve", runs=4, boxes=4.0)
+    known = retro.known_classes([
+        marked("timeout:improve", number=19, state="closed", state_reason="completed",
+               closed_at=closed_at),
+    ])
+    actions = retro.plan(cls(one), cls(), known, week_start=WEEK, repos=REPOS,
+                         min_runs=3, min_box_hours=4.0, cap=3)
+    assert [a.kind for a in actions] == ["recent"]
+    assert actions[0].issue == 19
+    assert actions[0].body is None
 
 
 @pytest.mark.parametrize("reason", ["not_planned", "duplicate"])
@@ -586,7 +618,7 @@ def test_discord_text_counts_the_buckets_and_what_was_not_counted():
     )
     text = retro.discord_text(
         current, card(), [], week_start=WEEK, dry_run=False, still_leased=2,
-        unsummarized=1,
+        unsummarized=1, failover_runs=12,
     )
     assert "Held: refuter 5, CI 3, unspecified 2, risk 1, other 1" in text
     assert "architecture 9" not in text
@@ -596,3 +628,38 @@ def test_discord_text_counts_the_buckets_and_what_was_not_counted():
         "Not counted: 2 runs still leased, 1 not summarized. "
         "Box-hours are per class; never add them." in text
     )
+
+
+def test_discord_text_failovers_come_from_the_distinct_run_count_not_the_lines():
+    # One run on two failover lines is one run; the card's lines cannot say so.
+    current = card(failovers=[
+        scorecard.FailoverLine("spec", "a/b", "c/d", "quota", 1),
+        scorecard.FailoverLine("coder", "a/b", "c/d", "quota", 1),
+    ])
+    text = retro.discord_text(
+        current, card(), [], week_start=WEEK, dry_run=False, still_leased=0,
+        unsummarized=0, failover_runs=1,
+    )
+    assert "Failovers: 1 runs" in text
+
+
+def test_discord_text_lists_a_class_fixed_inside_the_week():
+    action = retro.Action("recent", "timeout:improve", stat("timeout:improve", runs=4,
+                          boxes=4.0), issue=19, title=None, body=None)
+    text = retro.discord_text(
+        card(), card(), [action], week_start=WEEK, dry_run=False, still_leased=0,
+        unsummarized=0,
+    )
+    assert "Closed as completed during the week, not re-filed: #19 timeout:improve" in text
+
+
+def test_discord_text_shortens_a_long_not_written_list_instead_of_failing():
+    # The writes are made before this message is built; it must never raise.
+    actions = [a_comment(f"timeout:node{i:03d}", 100 + i) for i in range(300)]
+    text = retro.discord_text(
+        card(), card(), actions, week_start=WEEK, dry_run=False, still_leased=0,
+        unsummarized=0, failure="HTTP 500", done=set(),
+    )
+    assert len(text) <= 2000
+    assert text.splitlines()[0] == "retro failed: HTTP 500"
+    assert re.search(r"Not written: .*…and \d+ more", text)
