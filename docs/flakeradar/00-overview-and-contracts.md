@@ -37,6 +37,14 @@ files a job-level fingerprint that a per-test one then supersedes.
   keyed on `tier == "flaky"` alone would not have recognised it (task 04).
 - FlakeRadar can file GitHub issues itself. No `flakeradar`-labelled issue exists in any target
   repository, so that feature is off. Keep it off (ADR 0028 D4).
+- `page_size` is at most 100 for `/api/tests` and `/api/jobs`. Execution `status` is `passed`,
+  `failed`, `error` or `skipped`.
+- FlakeRadar timestamps carry microseconds: `2026-10-16T20:58:11.683359Z`. Every scout contract
+  compares GitHub's `YYYY-MM-DDTHH:MM:SSZ` as a string, so each FlakeRadar timestamp is
+  normalised to its first 19 characters plus `Z` when it is read, and one that does not fit
+  that shape is an invalid input (exit 1).
+- The dashboard links one test as `<base>/?repo=O/N&project=P&test=<id>`
+  (`frontend/src/urlState.ts`).
 - The MCP is at `/mcp/` (trailing slash) with `Authorization: Bearer <FLAKERADAR_API_TOKEN>`.
   v1 does not use it (D5).
 
@@ -49,8 +57,8 @@ files a job-level fingerprint that a per-test one then supersedes.
 | F3 | Test fingerprint: `flaky:test-` + `slug(project)` + `:` + the FlakeRadar `fingerprint`. It matches C3's pattern. It never changes with the test's file or line. |
 | F4 | Job candidates in a covered repository: a GitHub-attempts job (C4) is filed only when FlakeRadar has no job with the same `pipeline` and `name`, or has one with `tier == "flaky"`. Otherwise the action is `explained` (new kind, silent, counted in the summary). In an uncovered repository nothing changes. |
 | F5 | Tests and jobs share the flaky source's caps (`PER_RUN_CAP`, `MAX_OPEN`). Order: tests by score descending, then proven count descending, then fingerprint; then jobs in C4's order. `ignore_jobs` still applies to jobs. |
-| F6 | D8 suppression and regression apply to tests unchanged. A test regression counts only when FlakeRadar's `last_seen_at` is after the closed issue's `closed_at`. |
-| F7 | Fail toward filing less (ADR 0028 D3): a failed FlakeRadar read marks the test source `skipped: flakeradar unreachable`, and in a repository `scout.toml` declares covered, the job source then files nothing either (it cannot tell explained from unexplained). |
+| F6 | D8 suppression and regression apply to tests unchanged. A test regression is filed only when its newest `failed` or `error` execution (normalised) is after the closed issue's `closed_at`; otherwise the candidate produces nothing. |
+| F7 | Fail toward filing less (ADR 0028 D3). Coverage is the operator's declaration, `[flakeradar] covered = true`. A covered repository whose FlakeRadar read fails (`FLAKERADAR_URL` empty, a non-2xx, a timeout, unparseable JSON, or the repository missing from `/api/repos`) gets `sources.flaky = "skipped: flakeradar <reason>"`, and **no** flaky action of either kind is planned, because the job source cannot tell explained from unexplained. An uncovered repository runs C4 exactly as today and never calls FlakeRadar. C8 part 5 adds `flaky skipped: <reason>`. |
 | F8 | Merge phase: after `watch_checks`' one rerun is still red, every failing check that is an Actions run is looked up with flakeradar#5's endpoint, waiting up to 3 minutes for its reports to be processed. **Known flaky** means each failing check has at least one FlakeRadar failure, and every failure's test is `flaky`, or `suspect` with `confirmed_flake_count >= 1`. A failing check with no report (lint, a job without JUnit) is not known flaky. |
 | F9 | All failing checks known flaky → one more rerun (`ci_flaky_rerun_done`, reset where `ci_rerun_done` is), under the same budget guards. Green → the merge continues. Still red → `blocked`, with a reason naming the tests (and their scout issue numbers when the marker is found). `ci_fix` does not run. |
 | F10 | Otherwise `ci_fix` runs as today, and `ci_fix.md` gains `## Known flaky (FlakeRadar)`, listing those failures with "not caused by this PR: do not change, skip or retry these tests". |
@@ -66,26 +74,42 @@ covered = true          # this repository uploads JUnit to FlakeRadar (F7's "dec
 min_proven = 1          # 0..=20
 ```
 
-### C4b: `fabro-io scout flakeradar --tests FILE --history-dir DIR --jobs FILE --repo O/N`
+`[flakeradar]` is closed like every C1 table. `covered` is a bool (default false), `min_proven`
+an integer in `0..=20` (default 1).
+
+### C4b: `fabro-io scout flakeradar --tests FILE --history-dir DIR --jobs FILE --repo O/N --config CONFIG_JSON --base URL`
 
 Pure, like C4. `--tests` is the slurped `items[]` of every `/api/tests` page, `--history-dir`
-holds `test_<id>.json` for each candidate, and `--jobs` is the slurped `/api/jobs` `items[]`.
-Output: `{"tests": [{fp, project, suite, classname, name, file, line, score, proven,
+holds `test_<id>.json` for each candidate the graph fetched, and `--jobs` is the slurped
+`/api/jobs` `items[]`. The subcommand applies F2 itself (tier, quarantine, `min_proven` from
+`--config`) and keeps a candidate only when its history file exists; a missing history file
+is not an error, since the graph fetches at most 10 (the 10 highest scores after F2). `--base`
+builds each test's dashboard link.
+Output: `{"tests": [{fp, id, url, project, suite, classname, name, file, line, score, proven,
 category, last_seen_at, last_failing_sha, last_failing_branch, failures: [{created_at,
 message, branch, ci_run_id, attempt}]}], "jobs": [{pipeline, name, tier, score}]}`. Failures
-newest first, at most 10, each `message` collapsed and cut to 500 characters.
+are the `failed` and `error` executions, newest first, at most 10, each `message` collapsed
+and cut to 500 characters. Timestamps are normalised. Tests are in F5's order.
+
+The graph fetches (task 02): `/api/repos` once; `/api/tests?repo=R&sort=score&page_size=100&page=P`
+until a page is empty or `total` is reached (at most 20 pages); `/api/jobs` the same way; then
+`/api/tests/{id}/history?limit=20` for the 10 highest-scored F2 candidates (the graph applies
+F2 with `jq` to pick them). Every read is `curl -fsS -m 20 URL > file || <F7 skip>`, never a
+pipe, as C9 requires for `gh`.
 
 ### C5 amendment
 
-`scout plan` takes `--flakeradar FILE` (optional). Candidates per F2-F6. New action kind
+`scout plan` takes `--flakeradar FILE` (optional). Absent, or the repository uncovered, the plan
+is byte-for-byte what it is today. A covered repository whose fetch failed passes
+`--flakeradar-skipped REASON` instead, which F7 turns into the skip. Candidates per F2-F6. New action kind
 `explained` (`issue` null, `detail` `"explained by FlakeRadar tests"`). C8's header adds
 `explained N`.
 
 ### C7b: flaky-test issue text
 
 Title: `scout: flaky test "<name>" in <project> (score S, N proven flakes)`. Body: the marker; a
-first paragraph naming the suite, classname, `file:line` when known, the failure category and
-FlakeRadar's link (`<FLAKERADAR_URL>/tests/<id>` if the UI has one; task 01 checks); `##
+first paragraph naming the suite, classname, `file:line` when known, the failure category, the
+score and proven count, and the dashboard link (`url`); `##
 Recent failures` (date, branch, message in a ````text```` fence cleaned as C7's log tails);
 `## Last failing commit`; the acceptance criteria and non-goals of C7, plus "Do not quarantine
 the test in FlakeRadar." Labels as C7.
