@@ -25,6 +25,8 @@ const MAX_TAILS: usize = 3;
 const MAX_TAIL_CHARS: usize = 3000;
 /// The most lines one cleaned log tail may hold (C7).
 const MAX_TAIL_LINES: usize = 60;
+/// The line GitHub's runner writes when a step fails; the log tail ends at the first (C7).
+const ERROR_MARK: &str = "##[error]";
 /// The most characters the summary line may hold (C8).
 const MAX_SUMMARY_CHARS: usize = 1500;
 
@@ -211,8 +213,8 @@ fn render_flaky(
     out
 }
 
-/// C7's four cleaning steps, in order: timestamps, ANSI codes, size, then backticks and
-/// mentions.
+/// C7's cleaning steps, in order: timestamps, ANSI codes, the cut at the first `##[error]`,
+/// size, then backticks and mentions.
 #[must_use]
 pub fn clean_log(raw: &str) -> String {
     let mut without_ts = String::with_capacity(raw.len());
@@ -223,7 +225,12 @@ pub fn clean_log(raw: &str) -> String {
         without_ts.push_str(strip_timestamp(line));
     }
     let without_ansi = strip_ansi(&without_ts);
-    let lines: Vec<&str> = without_ansi.split('\n').collect();
+    let mut lines: Vec<&str> = without_ansi.split('\n').collect();
+    // The tail ends at the first `##[error]` line, which closes the first failed step. What
+    // follows it is later steps and post-job cleanup, which say nothing about the failure.
+    if let Some(error) = lines.iter().position(|line| line.starts_with(ERROR_MARK)) {
+        lines.truncate(error + 1);
+    }
     let kept = lines[lines.len().saturating_sub(MAX_TAIL_LINES)..].join("\n");
     let capped = last_chars_at_line_start(&kept, MAX_TAIL_CHARS);
     sanitize(&capped)
@@ -234,10 +241,11 @@ fn strip_timestamp(line: &str) -> &str {
     if !line.starts_with(|c: char| c.is_ascii_digit()) {
         return line;
     }
-    let Some(space) = line.chars().position(|c| c == ' ') else {
+    // A byte index, so the slices below stay on a char boundary; the 40 is counted in chars.
+    let Some(space) = line.find(' ') else {
         return line;
     };
-    if space < 40 && line[..space].ends_with('Z') {
+    if line[..space].chars().count() < 40 && line[..space].ends_with('Z') {
         &line[space + 1..]
     } else {
         line
@@ -245,6 +253,9 @@ fn strip_timestamp(line: &str) -> &str {
 }
 
 /// C7 step 2: remove `ESC [ ... <final in @..~>` sequences.
+///
+/// Every other control byte but newline and tab goes too, so a stray `ESC` from a non-CSI
+/// sequence, or a carriage return, never reaches the issue body.
 fn strip_ansi(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -259,7 +270,10 @@ fn strip_ansi(text: &str) -> String {
                 i += 1;
             }
         } else {
-            out.push(bytes[i]);
+            let b = bytes[i];
+            if !((b < 0x20 && b != b'\n' && b != b'\t') || b == 0x7f) {
+                out.push(b);
+            }
             i += 1;
         }
     }
@@ -399,7 +413,7 @@ pub fn summary(plan: &PlanOut, filed: Option<&[Filed]>) -> String {
     if !plan.filing {
         header.push_str(" DRY RUN");
     }
-    let counts = counts(plan);
+    let counts = counts(plan, filed);
     if !counts.is_empty() {
         header.push_str(&format!(": {}", counts.join(", ")));
     }
@@ -423,12 +437,22 @@ fn subject(action: &Action) -> String {
 }
 
 /// C8's header counts: only the non-zero ones, in C8's order.
-fn counts(plan: &PlanOut) -> Vec<String> {
+///
+/// A live `filed N` counts the write log's `filed` outcomes, not the planned actions: after a
+/// raced or failed write, the planned number would overstate what reached GitHub.
+fn counts(plan: &PlanOut, filed: Option<&[Filed]>) -> Vec<String> {
     let count = |kind: &str| plan.actions.iter().filter(|a| a.kind == kind).count();
     let mut out = Vec::new();
-    let filed = count("file") + count("regression");
-    if filed > 0 {
-        out.push(format!("{} {filed}", if plan.filing { "filed" } else { "would file" }));
+    if plan.filing {
+        let n = filed.map_or(0, |list| list.iter().filter(|e| e.outcome == "filed").count());
+        if n > 0 {
+            out.push(format!("filed {n}"));
+        }
+    } else {
+        let n = count("file") + count("regression");
+        if n > 0 {
+            out.push(format!("would file {n}"));
+        }
     }
     for (kind, label) in [
         ("known", "known"),

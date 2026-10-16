@@ -36,6 +36,8 @@ const WINDOW_DAYS_DEFAULT: u32 = 14;
 const WINDOW_DAYS_MIN: u32 = 1;
 /// `window_days` may be at most this (C1).
 const WINDOW_DAYS_MAX: u32 = 30;
+/// The most job names `flaky.ignore_jobs` may hold (C1).
+const MAX_IGNORE_JOBS: usize = 20;
 /// The tools a Ratchet rule may name (C1, D4).
 const TOOLS: [&str; 3] = ["ruff", "eslint", "clippy"];
 /// The `--file` default, relative to the checkout root (C2).
@@ -72,6 +74,7 @@ struct RawRatchet {
 struct RawFlaky {
     min_flakes: Option<u32>,
     window_days: Option<u32>,
+    ignore_jobs: Option<Vec<String>>,
 }
 
 /// C2's output, and the config JSON `ratchet` and `plan` read back.
@@ -117,11 +120,19 @@ pub struct FlakyCfg {
     pub min_flakes: u32,
     /// How many days back the Flaky source looks (D5).
     pub window_days: u32,
+    /// Job names that are never filed, matched exactly: an aggregator such as `alls-green`,
+    /// which fails only because a job it needs failed, so its flake is that job's (C1).
+    #[serde(default)]
+    pub ignore_jobs: Vec<String>,
 }
 
 impl Default for FlakyCfg {
     fn default() -> Self {
-        FlakyCfg { min_flakes: MIN_FLAKES_DEFAULT, window_days: WINDOW_DAYS_DEFAULT }
+        FlakyCfg {
+            min_flakes: MIN_FLAKES_DEFAULT,
+            window_days: WINDOW_DAYS_DEFAULT,
+            ignore_jobs: Vec::new(),
+        }
     }
 }
 
@@ -150,7 +161,7 @@ pub fn load(path: &Path) -> ConfigOut {
 pub fn parse(text: &str) -> ConfigOut {
     let raw: Raw = match toml::from_str(text) {
         Ok(raw) => raw,
-        Err(e) => return invalid(e.to_string()),
+        Err(e) => return invalid(toml_error(text, &e)),
     };
     if let Err(error) = validate(&raw) {
         return invalid(error);
@@ -172,6 +183,7 @@ pub fn parse(text: &str) -> ConfigOut {
     let flaky = raw.flaky.as_ref().map_or_else(FlakyCfg::default, |flaky| FlakyCfg {
         min_flakes: flaky.min_flakes.unwrap_or(MIN_FLAKES_DEFAULT),
         window_days: flaky.window_days.unwrap_or(WINDOW_DAYS_DEFAULT),
+        ignore_jobs: flaky.ignore_jobs.clone().unwrap_or_default(),
     });
     ConfigOut {
         present: true,
@@ -180,6 +192,21 @@ pub fn parse(text: &str) -> ConfigOut {
         filing: raw.filing,
         ratchet,
         flaky,
+    }
+}
+
+/// The one-line reason for a TOML error: `line N: <message>` (C2).
+///
+/// `toml`'s own `Display` draws a multi-line source snippet with ` | ` gutters. The reason
+/// reaches the Discord line, where a newline becomes a stray `n` and each ` | ` a new line.
+fn toml_error(text: &str, e: &toml::de::Error) -> String {
+    let message = e.message().split_whitespace().collect::<Vec<_>>().join(" ");
+    match e.span() {
+        Some(span) => {
+            let line = text.get(..span.start).map_or(0, |head| head.matches('\n').count()) + 1;
+            format!("line {line}: {message}")
+        }
+        None => message,
     }
 }
 
@@ -253,6 +280,17 @@ fn validate(raw: &Raw) -> Result<(), String> {
             return Err(format!(
                 "flaky.window_days must be between {WINDOW_DAYS_MIN} and {WINDOW_DAYS_MAX}, found {window_days}"
             ));
+        }
+        if let Some(ignore_jobs) = &flaky.ignore_jobs {
+            if ignore_jobs.len() > MAX_IGNORE_JOBS {
+                return Err(format!(
+                    "flaky.ignore_jobs may hold at most {MAX_IGNORE_JOBS} names, found {}",
+                    ignore_jobs.len()
+                ));
+            }
+            if ignore_jobs.iter().any(String::is_empty) {
+                return Err("flaky.ignore_jobs must not hold an empty name".to_string());
+            }
         }
     }
     Ok(())

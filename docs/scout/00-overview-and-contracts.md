@@ -89,8 +89,11 @@ everything, writes nothing, and posts the plan as `DRY RUN`.
   at step `Probe — ping the app before running scenarios` in attempt 2, and failed in attempt 3.
   That run is **not** a flake, because no later attempt passed. Run 38855093415: the same job
   failed in attempt 1 and passed in attempt 2, which **is** one.
-- Over the 14 days to 2026-10-16, runs with `run_attempt > 1`: womens-fantasy-sports 6,
-  writers-app 8, lawncare-saas 2, jelly-swipe 0. Only these runs need a jobs call.
+- Over the 14 days to 2026-10-16, runs with `run_attempt > 1`: womens-fantasy-sports 32 (of
+  6,200 runs), writers-app 8 (of 200). Only these runs need a jobs call. **Corrected
+  2026-10-16:** the first count (womens-fantasy-sports 6, lawncare-saas 2) came from a
+  `created=` query, which GitHub caps at 1,000 runs; womens-fantasy-sports ran 1,033 on
+  2026-10-14 alone. The `flaky` node pages the unfiltered list instead (C9).
 - `GET /repos/{r}/actions/jobs/{job_id}/logs` returns the plain-text log of one job attempt
   (`gh api` follows the redirect). Each line starts with a timestamp like
   `2026-10-14T12:00:00.1234567Z `.
@@ -135,10 +138,16 @@ enforce_in = "pyproject.toml"
 enforce_how = "add \"B006\" to `extend-select` under `[tool.ruff.lint]`"
 timeout_secs = 900        # optional, default 1200, at most 3000
 
-[flaky]                   # optional table, and both keys optional
+[flaky]                   # optional table, and every key optional
 min_flakes = 3            # 1..=20
 window_days = 14          # 1..=30
+ignore_jobs = ["alls-green-playwright"]   # job names never filed, matched exactly; at most 20
 ```
+
+`ignore_jobs` is for an aggregator job (`re-actors/alls-green` and the like) that runs with
+`if: always()` and fails only because a job it `needs` failed. Its flake is that job's, which is
+counted on its own. Without the list, an aggregator outranks the job it waits on and spends the
+per-run cap (found on womens-fantasy-sports' first dry plan, 2026-10-16).
 
 Every table and key is closed: an unknown key is invalid. `rule`, `command`, `enforce_in` and
 `enforce_how` are non-empty strings. Two entries with the same `(tool, rule)` are invalid. At
@@ -153,7 +162,7 @@ Default `--file` is `.fabro/scout.toml`. Always exits 0 (except 2 for bad argume
 {"present": true, "valid": true, "error": null, "filing": false,
  "ratchet": [{"index": 0, "tool": "ruff", "rule": "B006", "command": "...",
               "enforce_in": "pyproject.toml", "enforce_how": "...", "timeout_secs": 900}],
- "flaky": {"min_flakes": 3, "window_days": 14}}
+ "flaky": {"min_flakes": 3, "window_days": 14, "ignore_jobs": []}}
 ```
 
 - Missing file: `present: false, valid: true, filing: false, ratchet: []`, default `flaky`.
@@ -257,7 +266,7 @@ of open issues with at least one marker for that source (`ratchet:` or `flaky:`)
 
 **Candidates**, in D18's order:
 - each ratchet entry with `status == "ok"` and `count >= 1`;
-- each flaky job whose **effective count** is at least `min_flakes`. The effective count is
+- each flaky job not named in `ignore_jobs` whose **effective count** is at least `min_flakes`. The effective count is
   `count`, or for D8's flaky regression, the number of occurrences with `created_at` later than
   the closed issue's `closed_at`.
 
@@ -389,8 +398,11 @@ occurrence out of this section. If none have a file, the section reads
 1. Drop the leading timestamp: when a line starts with a digit and its first space comes
    within its first 40 characters, right after a `Z`, remove everything up to and including
    that space.
-2. Remove ANSI escape sequences (ESC `[` ... final byte in `@`–`~`).
-3. Keep the last 60 lines, then the last 3000 characters, cut at a line start.
+2. Remove ANSI escape sequences (ESC `[` ... final byte in `@`–`~`), then every other control
+   character but newline and tab.
+3. Drop every line after the first line that starts with `##[error]` (the runner's line for
+   the first failed step; what follows is later steps and post-job cleanup). Keep the last 60
+   lines, then the last 3000 characters, cut at a line start.
 4. Replace every backtick run of 4 or more with `'''`, and every `@` with `@` + U+200B, so no
    one is mentioned.
 
@@ -440,8 +452,8 @@ POSIX `sh` has no `pipefail`, so `gh api ... | jq -s . > out.json` succeeds when
 |---|---|---|
 | `prep` | `3m` | `rm -rf $S; mkdir -p $S/logs $S/jobs`. Reads `REPO` (`gh repo view --json nameWithOwner`), `SHA` (`git rev-parse HEAD`) and `NOW` (`date -u +%Y-%m-%dT%H:%M:%SZ`) into `$S/env.json`. Runs `fabro-io scout config > $S/config.json`; if that fails, `stop 'fabro-io has no scout subcommand: run make deploy-images'`. Lists every `scout` issue: `gh api --paginate "repos/$REPO/issues?labels=scout&state=all&per_page=100" --jq '.[] \| select(.pull_request \| not) \| {number, state, state_reason, closed_at, body}'`, slurped with `jq -s` into `$S/issues.json`; a failure is `stop 'could not list scout issues'`. Prints `{"context_updates":{"scout":"run"}}`, so `output_schema="routing"`. |
 | `ratchet` | `65m` | If `config.json` has no ratchet entries, writes `{"status":"ok","reason":null,"entries":[]}` and exits 0. Else runs `timeout 1200 ./.fabro/setup.sh > $S/setup.log 2>&1`. If that fails, writes the C3 skip with its exit code and exits 0. Else `fabro-io scout ratchet --config $S/config.json > $S/ratchet.json`; if that fails, writes the skip with reason `fabro-io scout ratchet failed (exit N)`. **Always exits 0** (D15). |
-| `flaky` | `15m` | `SINCE` = `NOW` minus `window_days` days (`date -u -d "@$(( $(date +%s) - DAYS*86400 ))" +%Y-%m-%dT%H:%M:%SZ`). `gh api --paginate "repos/$REPO/actions/runs?created=>=${SINCE%%T*}&per_page=100" --jq '.workflow_runs[]'` slurped into `$S/runs.json`. For each run with `run_attempt >= 2`: `gh api --paginate "repos/$REPO/actions/runs/$ID/jobs?filter=all&per_page=100" --jq '.jobs[]'` slurped into `$S/jobs/jobs_$ID.json`. Any read failure is `stop 'could not read Actions runs'`. Then `fabro-io scout flaky ... > $S/flaky.json`. For the first 10 jobs with `count >= min_flakes`, it fetches the log of each of the newest 3 occurrences: `gh api "repos/$REPO/actions/jobs/$JID/logs" > $S/logs/$JID.txt`. A failed log read deletes that file and is not a stop. |
-| `plan` | `2m` | `fabro-io scout plan ... > $S/plan.json`. Prints each action's `kind`, `fp` and `detail` to stderr. |
+| `flaky` | `15m` | `SINCE` = `NOW` minus `window_days` days (`date -u -d "@$(( $(date +%s) - DAYS*86400 ))" +%Y-%m-%dT%H:%M:%SZ`). `gh api "repos/$REPO/actions/runs?per_page=100&page=$P"`, one page at a time, newest first, until a page is short or reaches a run older than `SINCE` (a `created=` filter caps at 1,000 runs), projected to C4's fields and de-duplicated by `id` into `$S/runs.json`. For each run with `run_attempt >= 2`: `gh api --paginate "repos/$REPO/actions/runs/$ID/jobs?filter=all&per_page=100" --jq '.jobs[]'` slurped into `$S/jobs/jobs_$ID.json`. Any read failure is `stop 'could not read Actions runs'`. Then `fabro-io scout flaky ... > $S/flaky.json`. For the first 10 jobs with `count >= min_flakes` that are not in `ignore_jobs`, it fetches the log of each of the newest 3 occurrences: `gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$JID/logs" > $S/logs/$JID.txt` (without the flag gh refuses a log with ANSI codes, which is every CI log). A failed log read deletes that file and is not a stop. |
+| `plan` | `2m` | A missing or unparseable `ratchet.json` (the `ratchet` node hit its own timeout) first becomes the C3 skip with reason `the ratchet node did not finish`. Then `fabro-io scout plan ... > $S/plan.json`. Prints each action's `kind`, `fp` and `detail` to stderr. |
 | `file` | `10m` | Exits 0 at once when `filing` is false. Else it creates the labels once with `gh label create <name> --color <c> --description <d> 2>/dev/null \|\| true` (C9a). For each `file` or `regression` action in order: it re-lists the `scout` issues as `prep` does (a failure is a `failed` entry and stops). If the fingerprint is now present, it appends `raced`. Else it writes the body to a file and runs `gh issue create --title "$T" --body-file "$F" --label L1 --label L2 ...`. It appends `filed` with the number parsed from the returned URL, or `failed` with the last stderr line, and **stops** on `failed`. The log is `$S/filed.json` (C8). Exits 0. |
 | `summarize` | `1m` | `fabro-io scout summary --plan $S/plan.json [--filed $S/filed.json]` when `plan.json` exists. If `stop_reason` exists, prefixes `Stopped at <stopped_at>: <reason>` (with ` \| ` before the plan line when there is one). Strips `"`, `{`, `}` and backslashes, cuts to 1500 characters, prints the line to stderr, then `jq -cn --arg m "$SUM" '{context_updates: {scout_summary: $m}}'`. `output_schema="routing"`. Always exits 0. |
 | `finish` | `1m` | `echo done`. The summary hook's target. |

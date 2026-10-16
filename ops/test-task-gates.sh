@@ -7940,7 +7940,14 @@ echo "gh $*" >> "$SC_LOG"
 case "$*" in
   "repo view"*) echo "${SC_REPO-andrewthetechie/jelly-swipe}" ;;
   *"/issues?labels=scout"*) [ -n "${SC_FAIL_ISSUES:-}" ] && exit 1; cat "${SC_ISSUES:-/dev/null}" ;;
-  *"/actions/runs?"*) [ -n "${SC_FAIL_RUNS:-}" ] && exit 1; cat "${SC_RUNS:-/dev/null}" ;;
+  *"/actions/runs?"*)
+      [ -n "${SC_FAIL_RUNS:-}" ] && exit 1
+      if [ -n "${SC_RUNS_PAGES:-}" ]; then
+          PG=${2##*page=}
+          if [ -e "$SC_RUNS_PAGES/page_$PG.raw" ]; then cat "$SC_RUNS_PAGES/page_$PG.raw"; fi
+      else
+          cat "${SC_RUNS:-/dev/null}"
+      fi ;;
   *"/actions/runs/"*"/jobs?filter=all"*)
       ID=""
       for a in "$@"; do case "$a" in *"/actions/runs/"*"/jobs"*) ID=${a#*/actions/runs/}; ID=${ID%%/jobs*} ;; esac; done
@@ -8069,6 +8076,23 @@ check "scout flaky: jobs read for the attempt-2 run" "1" "$(grep -c '/actions/ru
 check "scout flaky: no jobs read for the attempt-1 run" "0" "$(grep -c '/actions/runs/111/jobs' "$SC_DIR/gh.log")"
 check "scout flaky: a failed log read leaves no log file" "0" "$(test -e "$SC_DIR/scout/logs/2220.txt" && echo 1 || echo 0)"
 
+# 6b. flaky: the run list is paged by hand until a page reaches a run older than SINCE (a
+# `created=` query caps at 1,000 runs), and a run seen on two pages is kept once.
+sc_setup flaky-pages flaky
+cp "$SC_FIX/config.json" "$SC_DIR/scout/config.json"
+cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+mkdir -p "$SC_DIR/jobs-in/pages"
+jq -cn 'range(1000; 1100) | {id: ., path: ".github/workflows/ci.yml", name: "CI", run_attempt: 1, head_sha: "a", head_branch: "main", created_at: "2026-10-15T00:00:00Z", html_url: "https://x"}' > "$SC_DIR/jobs-in/pages/page_1.raw"
+jq -cn '(1099, 1100) as $i | {id: $i, path: ".github/workflows/ci.yml", name: "CI", run_attempt: 1, head_sha: "a", head_branch: "main", created_at: (if $i == 1100 then "2026-10-01T00:00:00Z" else "2026-10-15T00:00:00Z" end), html_url: "https://x"}' > "$SC_DIR/jobs-in/pages/page_2.raw"
+jq -cn '{id: 1200, path: ".github/workflows/ci.yml", name: "CI", run_attempt: 1, head_sha: "a", head_branch: "main", created_at: "2026-09-30T00:00:00Z", html_url: "https://x"}' > "$SC_DIR/jobs-in/pages/page_3.raw"
+printf '%s' '{"since":"2026-10-02T02:00:00Z","jobs":[]}' > "$SC_DIR/jobs-in/flaky-empty.json"
+sc_run "SC_RUNS_PAGES=$SC_DIR/jobs-in/pages SC_FLAKY=$SC_DIR/jobs-in/flaky-empty.json"
+check "scout flaky: paged: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout flaky: paged: no created= filter" "0" "$(grep -c 'created=' "$SC_DIR/gh.log")"
+check "scout flaky: paged: reads pages 1 and 2, not 3" "1|1|0" \
+    "$(grep -c 'runs?per_page=100&page=1 ' "$SC_DIR/gh.log")|$(grep -c 'runs?per_page=100&page=2 ' "$SC_DIR/gh.log")|$(grep -c 'runs?per_page=100&page=3 ' "$SC_DIR/gh.log")"
+check "scout flaky: paged: runs de-duplicated by id" "101" "$(jq length "$SC_DIR/scout/runs.json")"
+
 # 7. flaky: a failed run list stops the run.
 sc_setup flaky-runs flaky
 cp "$SC_FIX/config.json" "$SC_DIR/scout/config.json"
@@ -8076,6 +8100,19 @@ cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
 sc_run "SC_FAIL_RUNS=1"
 check "scout flaky: run list fails: exit 1" "1" "$(cat "$SC_DIR.rc")"
 check "scout flaky: run list fails: stop_reason" "could not read Actions runs" "$(cat "$SC_DIR/scout/stop_reason")"
+
+# 7b. plan: a ratchet node that hit its own timeout leaves no ratchet.json; plan writes the C3
+# skip instead of failing, so the flaky source still reports (D15).
+sc_setup plan-no-ratchet plan
+cp "$SC_FIX/config.json" "$SC_DIR/scout/config.json"
+cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+printf '%s' '{"filing":false,"repo":"andrewthetechie/jelly-swipe","sources":{"ratchet":"ok","flaky":"ok"},"actions":[{"kind":"known","source":"flaky","fp":"flaky:a:b","issue":3,"title":null,"body":null,"labels":null,"detail":"3 flakes in 14 days"}]}' > "$SC_DIR/jobs-in/plan.json"
+sc_run "SC_PLAN=$SC_DIR/jobs-in/plan.json"
+check "scout plan: no ratchet.json: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout plan: no ratchet.json: the skip is written" "skipped|the ratchet node did not finish" \
+    "$(jq -r '.status + "|" + .reason' "$SC_DIR/scout/ratchet.json")"
+check "scout plan: no ratchet.json: plan still runs" "1" "$(grep -c '^fabro-io scout plan' "$SC_DIR/gh.log")"
+check "scout plan: stderr names each action" "1" "$(grep -c '^plan: known flaky:a:b 3 flakes in 14 days$' "$SC_DIR.err")"
 
 # 8. file: a dry repository writes nothing.
 sc_setup file-dry file

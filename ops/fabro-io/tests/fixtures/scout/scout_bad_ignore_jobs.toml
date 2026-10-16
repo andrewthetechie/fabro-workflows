@@ -1,0 +1,4 @@
+version = 1
+
+[flaky]
+ignore_jobs = ["alls-green", ""]

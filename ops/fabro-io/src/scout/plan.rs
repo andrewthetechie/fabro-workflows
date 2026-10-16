@@ -49,9 +49,15 @@ pub struct Issue {
     /// When it was closed, in GitHub's UTC form.
     #[serde(default)]
     pub closed_at: Option<String>,
-    /// Its body, which holds the markers.
-    #[serde(default)]
+    /// Its body, which holds the markers. GitHub sends `null` for an empty body, and any
+    /// issue a human labels `scout` is listed, so `null` must read as empty, not fail.
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub body: String,
+}
+
+/// Reads a JSON string, or `null`, as a `String` (`null` becomes empty).
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// Everything the plan reads.
@@ -227,6 +233,9 @@ pub fn plan(input: &PlanInput<'_>) -> PlanOut {
         jobs.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.fp.cmp(&b.fp)));
         jobs
     } {
+        if input.config.flaky.ignore_jobs.iter().any(|name| *name == job.job) {
+            continue;
+        }
         let list = known.get(&job.fp);
         let open_issue = list.and_then(|list| list.iter().find(|i| i.state == "open").copied());
         let closed = if open_issue.is_none() {

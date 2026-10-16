@@ -54,6 +54,22 @@ Not for the implementing agent. Every step writes to `main`, the host, or a targ
    ```
    For clippy, check whether the crate uses `[lints.clippy]` or `[workspace.lints.clippy]`
    before you write it.
+   **What the survey found (2026-10-16).** The candidate table above was written before
+   anyone ran the tools, and most of it is already enforced:
+   - **lawncare-saas** selects nearly every bug-catching ruff family already; every small
+     unenforced rule left is a docstring or style rule. Its `ci.sh` runs no eslint, so the
+     frontend cannot take a rule either (the issue forbids editing `ci.sh`). Flaky only.
+   - **womens-fantasy-sports**: the only small bug-catching ruff rules, `B904` and `B008`, are
+     in `ignore` by documented policy (FastAPI's `Depends()` defaults and `HTTPException`).
+     That is the owner's call, not the scout's. Its frontend lints with biome, which v1 does not
+     parse. Flaky only, with its three `alls-green-*` aggregators in `ignore_jobs`.
+   - **jelly-swipe**'s `ci.sh` runs no ruff, so a ruff rule would never fail CI. Its eslint
+     config is untyped. `eqeqeq` (3 findings in 2 files) fits, and the command runs
+     `npm ci` itself, because `setup.sh` only runs `uv sync`.
+   - **writers-app** already enforces its eslint rules through ESLint bulk suppressions
+     (`eslint-suppressions.json`). A Ratchet rule there pays down one rule's suppressed debt:
+     the command points `--suppressions-location` at an empty file (a missing one is an
+     error) and `enforce_how` says to prune that rule's entries. Clippy was not surveyed.
 8. Fire each repository by hand (step 5's command with its id). For every rule, read the
    result: `too_big` means narrow the command's paths or drop the rule; `error` means fix the
    command. Repeat until every rule you keep is `file` or `known` in the plan.

@@ -1326,8 +1326,12 @@ The four schedules are created **disabled** (ADR 0027 D16); enable them with
 - **Read a run.** `fabro events <run> -p`; the `plan` node's stderr lists every action's kind,
   fingerprint and detail.
 - **Stop it.** Disable the schedule with `ops/fabro-automation-schedule.sh scout-<repo> off`,
-  or set `filing = false` in the repository's `.fabro/scout.toml` (that repository then reads
-  and writes nothing).
+  or set `filing = false` in the repository's `.fabro/scout.toml` (that repository then still
+  reads and posts its plan as `DRY RUN`, and writes nothing).
+- **Skip an aggregator job.** A job such as `re-actors/alls-green` runs with `if: always()`
+  and fails only because a job it `needs` failed, so it looks flaky whenever that job is. Name
+  it in `ignore_jobs` under `[flaky]` in the repository's `.fabro/scout.toml` (exact job
+  names, at most 20). The job it waits on is still counted on its own.
 - **Silence one finding.** Close its issue as **not planned** (or as a duplicate). Every run
   lists every `scout` issue, open and closed, and a close as not planned suppresses the
   fingerprint forever; any other close lets it come back as a regression issue.

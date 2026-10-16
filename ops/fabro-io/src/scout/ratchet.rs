@@ -90,7 +90,8 @@ pub struct RatchetOut {
 /// The ruff finding, in `--output-format json` shape.
 #[derive(Deserialize)]
 struct RawRuff {
-    code: String,
+    /// `null` on a syntax error, which ruff reports whatever `--select` says.
+    code: Option<String>,
     filename: String,
     location: RawRuffLocation,
     message: String,
@@ -186,7 +187,7 @@ fn parse_ruff(rule: &str, text: &str, root: &Path) -> Result<Vec<Finding>, Strin
         serde_json::from_str(text).map_err(|_| "ruff output is not valid JSON".to_string())?;
     Ok(raw
         .into_iter()
-        .filter(|finding| finding.code == rule)
+        .filter(|finding| finding.code.as_deref() == Some(rule))
         .filter_map(|finding| {
             let path = relative(&finding.filename, root)?;
             Some(Finding {

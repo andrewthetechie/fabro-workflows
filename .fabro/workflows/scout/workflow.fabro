@@ -65,46 +65,70 @@ exit 0"]
 
     // Reads the last `window_days` days of workflow runs and, for every run with run_attempt >= 2,
     // that run's jobs from every attempt. Any read failure writes stop_reason and exits 1: a
-    // partially-read run list would under-count flakes. Then the pure flaky subcommand finds the
+    // partially-read run list would under-count flakes. The run list is paged by hand, newest
+    // first, until a page reaches a run older than SINCE: GitHub returns at most 1,000 runs for
+    // a `created=` query, and lawncare-saas and womens-fantasy-sports run more than that in a
+    // day. Unfiltered paging has no such cap. New runs arriving mid-listing shift the pages, so
+    // the list is de-duplicated by id. Then the pure flaky subcommand finds the
     // jobs that failed and then passed on a rerun, and the newest three log tails of every job at
-    // or above min_flakes are fetched. A log read that fails is not a stop: that occurrence is
-    // simply left out of the issue body.
+    // or above min_flakes, and not in ignore_jobs, are fetched. A log read that fails is not a stop: that occurrence is
+    // simply left out of the issue body. A CI log is full of ANSI colour codes, and gh refuses to
+    // print one without --allow-escape-sequences; fabro-io's clean_log strips them (C7).
     flaky [label="Read the flaky CI jobs", shape=parallelogram, timeout="15m",
         script="S=/tmp/fabro/scout
 stop() { printf '%s' \"$1\" > $S/stop_reason; printf flaky > $S/stopped_at; echo \"$1\" >&2; exit 1; }
 REPO=$(jq -r .repo $S/env.json)
 DAYS=$(jq -r '.flaky.window_days' $S/config.json)
 SINCE=$(date -u -d \"@$(( $(date +%s) - DAYS*86400 ))\" +%Y-%m-%dT%H:%M:%SZ)
-gh api --paginate \"repos/$REPO/actions/runs?created=>=${SINCE%%T*}&per_page=100\" --jq '.workflow_runs[]' > $S/runs.raw || stop 'could not read Actions runs'
-jq -s . $S/runs.raw > $S/runs.json || stop 'could not read Actions runs'
+: > $S/runs.raw
+P=1
+while :; do
+  gh api \"repos/$REPO/actions/runs?per_page=100&page=$P\" --jq '.workflow_runs[] | {id, path, name, run_attempt, head_sha, head_branch, created_at, html_url}' > $S/page.raw < /dev/null || stop 'could not read Actions runs'
+  N=$(jq -s length $S/page.raw) || stop 'could not read Actions runs'
+  OLD=$(jq -s --arg s \"$SINCE\" '[.[] | select(.created_at < $s)] | length' $S/page.raw) || stop 'could not read Actions runs'
+  cat $S/page.raw >> $S/runs.raw
+  [ \"$N\" -ge 100 ] && [ \"$OLD\" -eq 0 ] || break
+  P=$((P + 1))
+  [ \"$P\" -le 300 ] || stop 'more than 30000 Actions runs in the window'
+done
+jq -s 'unique_by(.id)' $S/runs.raw > $S/runs.json || stop 'could not read Actions runs'
+echo \"flaky: $P page(s), $(jq length $S/runs.json) run(s)\" >&2
 jq -r '.[] | select(.run_attempt >= 2) | .id' $S/runs.json > $S/runids.txt
 while read -r ID; do
   [ -n \"$ID\" ] || continue
-  gh api --paginate \"repos/$REPO/actions/runs/$ID/jobs?filter=all&per_page=100\" --jq '.jobs[]' > $S/jobs/jobs_$ID.raw || stop 'could not read Actions runs'
+  gh api --paginate \"repos/$REPO/actions/runs/$ID/jobs?filter=all&per_page=100\" --jq '.jobs[]' > $S/jobs/jobs_$ID.raw < /dev/null || stop 'could not read Actions runs'
   jq -s . $S/jobs/jobs_$ID.raw > $S/jobs/jobs_$ID.json || stop 'could not read Actions runs'
 done < $S/runids.txt
 fabro-io scout flaky --runs $S/runs.json --jobs-dir $S/jobs --since \"$SINCE\" > $S/flaky.json || stop 'fabro-io scout flaky failed'
 MIN=$(jq -r '.flaky.min_flakes' $S/config.json)
-for JID in $(jq -r --argjson m \"$MIN\" '[.jobs[] | select(.count >= $m)][0:10][] | .occurrences[0:3][] | .failed_job_id' $S/flaky.json); do
-  gh api \"repos/$REPO/actions/jobs/$JID/logs\" > $S/logs/$JID.txt || rm -f $S/logs/$JID.txt
+IG=$(jq -c '.flaky.ignore_jobs // []' $S/config.json)
+for JID in $(jq -r --argjson m \"$MIN\" --argjson ig \"$IG\" '[.jobs[] | select(.count >= $m) | select(.job as $j | any($ig[]; . == $j) | not)][0:10][] | .occurrences[0:3][] | .failed_job_id' $S/flaky.json); do
+  gh api --allow-escape-sequences \"repos/$REPO/actions/jobs/$JID/logs\" > $S/logs/$JID.txt < /dev/null || rm -f $S/logs/$JID.txt
 done
 echo \"flaky: since=$SINCE\" >&2
 exit 0"]
 
     // The whole decision, and every issue's title and body, computed by the pure plan subcommand.
-    // Its stderr names every action so a wrong route is visible in the run log. A failure writes
+    // Its stderr names every action so a wrong route is visible in the run log. A ratchet node
+    // that hit its own 65m timeout leaves no ratchet.json, or a cut one, and still routes here
+    // (the edge is unconditional), so that case becomes the C3 skip rather than a plan failure
+    // (D15). A failure writes
     // stop_reason and exits 1; the plan -> summarize edge then carries the stop.
     plan [label="Plan the issues", shape=parallelogram, timeout="2m",
         script="S=/tmp/fabro/scout
 REPO=$(jq -r .repo $S/env.json)
 SHA=$(jq -r .sha $S/env.json)
+if ! jq -e .entries $S/ratchet.json > /dev/null 2>&1; then
+  jq -n '{status:\"skipped\", reason:\"the ratchet node did not finish\", entries:[]}' > $S/ratchet.json
+  echo 'plan: no ratchet result, the source is skipped' >&2
+fi
 if ! fabro-io scout plan --config $S/config.json --ratchet $S/ratchet.json --flaky $S/flaky.json --issues $S/issues.json --logs-dir $S/logs --repo \"$REPO\" --sha \"$SHA\" > $S/plan.json; then
   printf '%s' 'plan: fabro-io scout plan failed' > $S/stop_reason
   printf plan > $S/stopped_at
   echo 'plan: fabro-io scout plan failed' >&2
   exit 1
 fi
-jq -r '.actions[] | \"plan: \" + .kind + \" \" + .fp + \" \" + .detail' $S/plan.json >&2
+jq -r '.actions[] | \"plan: \" + .kind + \" \" + .fp + \" \" + (.detail // \"\")' $S/plan.json >&2
 exit 0"]
 
     // A dry repository (filing is not true) exits at once, which is the whole write path. A live
@@ -129,7 +153,7 @@ agent:5319e7:Queued for the coder agents
 LABELS
 while IFS=: read -r NAME COLOR DESC; do
   [ -n \"$NAME\" ] || continue
-  gh label create \"$NAME\" --color \"$COLOR\" --description \"$DESC\" 2>/dev/null || true
+  gh label create \"$NAME\" --color \"$COLOR\" --description \"$DESC\" < /dev/null 2>/dev/null || true
 done < $S/labels.txt
 record() {
   jq -c --arg fp \"$1\" --arg o \"$2\" --arg n \"$3\" --arg e \"$4\" '. + [{fp: $fp, outcome: $o, number: (if $n == \"\" then null else ($n | tonumber) end), error: (if $e == \"\" then null else $e end)}]' $S/filed.json > $S/filed.tmp && mv $S/filed.tmp $S/filed.json
@@ -138,7 +162,7 @@ printf '[]' > $S/filed.json
 jq -c '.actions[] | select(.kind == \"file\" or .kind == \"regression\")' $S/plan.json > $S/actions.lines
 while IFS= read -r A; do
   FP=$(printf '%s' \"$A\" | jq -r .fp)
-  if ! gh api --paginate \"repos/$REPO/issues?labels=scout&state=all&per_page=100\" --jq '.[] | select(.pull_request | not) | {body}' > $S/file_issues.raw; then
+  if ! gh api --paginate \"repos/$REPO/issues?labels=scout&state=all&per_page=100\" --jq '.[] | select(.pull_request | not) | {body}' > $S/file_issues.raw < /dev/null; then
     record \"$FP\" failed '' 'could not list scout issues'
     break
   fi
@@ -154,7 +178,7 @@ while IFS= read -r A; do
   printf '%s' \"$A\" | jq -r .body > $S/body.md
   set --
   for L in $(printf '%s' \"$A\" | jq -r '.labels[]'); do set -- \"$@\" --label \"$L\"; done
-  if OUT=$(gh issue create --title \"$T\" --body-file $S/body.md \"$@\" 2>$S/create.err); then
+  if OUT=$(gh issue create --title \"$T\" --body-file $S/body.md \"$@\" < /dev/null 2>$S/create.err); then
     N=$(printf '%s' \"$OUT\" | grep -o '[0-9]*$')
     record \"$FP\" filed \"$N\" ''
   else

@@ -192,6 +192,7 @@ fn config_valid_file_keeps_every_key() {
     assert_eq!(entry.timeout_secs, 900);
     assert_eq!(entry.enforce_in, "pyproject.toml");
     assert_eq!((out.flaky.min_flakes, out.flaky.window_days), (4, 7));
+    assert_eq!(out.flaky.ignore_jobs, vec!["alls-green".to_string()]);
 }
 
 #[test]
@@ -276,4 +277,22 @@ fn run_kills_a_command_at_its_deadline_and_goes_on() {
     assert_eq!(out.entries[1].status, "ok", "the entry after a timeout still runs");
     assert_eq!(out.entries[1].count, 2);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_toml_syntax_error_is_one_line_with_its_line_number() {
+    let out = config::parse("version = 1\nfiling = \n");
+    assert!(!out.valid);
+    let error = out.error.unwrap();
+    assert!(!error.contains('\n'), "{error}");
+    assert!(error.starts_with("line 2: "), "{error}");
+}
+
+#[test]
+fn ruff_syntax_errors_with_a_null_code_are_skipped() {
+    let stdout = br#"[{"code":null,"filename":"src/x.py","location":{"row":1,"column":1},"message":"SyntaxError"},
+{"code":"B006","filename":"src/x.py","location":{"row":2,"column":5},"message":"mutable default"}]"#;
+    let findings = ratchet::parse("ruff", "B006", stdout, &root()).unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].line, 2);
 }

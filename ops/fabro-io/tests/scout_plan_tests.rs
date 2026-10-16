@@ -650,3 +650,70 @@ fn plan_cli_reports_a_missing_input_file() {
     .collect();
     assert_eq!(plan::run_cli(&args), ExitCode::FAILURE);
 }
+
+#[test]
+fn a_null_issue_body_reads_as_empty() {
+    // GitHub sends `body: null` for an issue with no text, and a human may label any issue `scout`.
+    let issues: Vec<Issue> = serde_json::from_str(
+        r#"[{"number":4,"state":"open","state_reason":null,"closed_at":null,"body":null}]"#,
+    )
+    .unwrap();
+    assert_eq!(issues[0].body, "");
+    assert!(plan::markers(&issues[0].body).is_empty());
+}
+
+#[test]
+fn summary_live_header_counts_only_filed_outcomes() {
+    let plan = plan_out(
+        true,
+        vec![
+            act("file", "ratchet", "ratchet:ruff:b001", None, "ruff B001", "1 finding in 1 file"),
+            act("file", "ratchet", "ratchet:ruff:b002", None, "ruff B002", "1 finding in 1 file"),
+        ],
+    );
+    let filed = vec![
+        Filed { fp: "ratchet:ruff:b001".to_string(), outcome: "filed".to_string(), number: Some(7), error: None },
+        Filed {
+            fp: "ratchet:ruff:b002".to_string(),
+            outcome: "failed".to_string(),
+            number: None,
+            error: Some("boom".to_string()),
+        },
+    ];
+    let line = text::summary(&plan, Some(&filed));
+    assert!(line.starts_with("scout jelly-swipe: filed 1 | "), "{line}");
+}
+
+#[test]
+fn clean_log_survives_a_multibyte_character_before_the_first_space() {
+    // A line that starts with a digit and holds a multibyte char before its first space must
+    // not panic on a byte slice, and a real timestamp is still stripped.
+    let raw = "1é ok\n2026-10-14T12:00:00.1234567Z — probe";
+    assert_eq!(text::clean_log(raw), "1é ok\n— probe");
+}
+
+#[test]
+fn clean_log_drops_stray_control_bytes() {
+    let raw = "2026-10-14T12:00:00.1234567Z \u{1b}]0;title\u{7}ok\r\n2026-10-14T12:00:01.0000000Z \u{1b}[31mred\u{1b}[0m\tend";
+    assert_eq!(text::clean_log(raw), "]0;titleok\nred\tend");
+}
+
+#[test]
+fn clean_log_ends_at_the_first_error_line() {
+    let raw = "2026-10-14T12:00:00.0000000Z test failed: x\n2026-10-14T12:00:00.0000000Z ##[error]Process completed with exit code 1.\n2026-10-14T12:00:01.0000000Z Post job cleanup.\n2026-10-14T12:00:01.0000000Z ##[error]second";
+    assert_eq!(text::clean_log(raw), "test failed: x\n##[error]Process completed with exit code 1.");
+}
+
+#[test]
+fn an_ignored_job_is_never_planned() {
+    let mut config = config(false);
+    config.flaky.ignore_jobs = vec!["alls-green".to_string()];
+    let three = || vec![occ(1, "2026-10-10T00:00:00Z"), occ(2, "2026-10-11T00:00:00Z"), occ(3, "2026-10-12T00:00:00Z")];
+    let flaky = flaky(vec![
+        flaky_job(".github/workflows/ci.yml", "alls-green", three()),
+        flaky_job(".github/workflows/ci.yml", "test", three()),
+    ]);
+    let out = run(&config, &ratchet(vec![]), &flaky, &[]);
+    assert_eq!(kinds(&out), vec!["file"]);
+    assert_eq!(out.actions[0].fp, flaky_fp(".github/workflows/ci.yml", "test"));
+}
