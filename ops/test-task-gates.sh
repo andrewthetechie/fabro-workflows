@@ -7480,6 +7480,48 @@ check "notify merge-queue-summary: a different Stopped line posts" "4" "$(mn_cal
 mn_run "Stopped at inventory: other" 5801
 check "notify merge-queue-summary: the same Stopped line after 3601 s posts again" "5" "$(mn_calls)"
 
+
+# ---------------------------------------------------------------------------
+# scout-summary Discord kind (task 05): a quiet run posts nothing, and there is no
+# once-an-hour state file (scout runs once a day).
+# ---------------------------------------------------------------------------
+echo ""
+echo "scout: the scout-summary Discord kind"
+SN="$WORK/scoutnotify"; rm -rf "$SN"; mkdir -p "$SN/storage/secrets" "$SN/stub"
+printf 'http://discord.test/hook' > "$SN/storage/secrets/discord_webhook_url"; printf 'tok' > "$SN/storage/server.dev-token"
+sed "s#/storage#$SN/storage#g" "$REPO_ROOT/.fabro/workflows/backlog/scripts/discord-notify.sh" > "$SN/notify.sh"
+cat > "$SN/stub/wget" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *"/state"*) printf '{"scout_summary":"%s"}' "$SN_SUMMARY" ;;
+  *"/api/v1/runs/"*) echo '{"origin_url":"https://github.com/andrewthetechie/jelly-swipe.git"}' ;;
+esac
+exit 0
+STUB
+cat > "$SN/stub/curl" <<'STUB'
+#!/bin/sh
+echo call >> "$SN_CALLS"
+while [ $# -gt 0 ]; do [ "$1" = -d ] && printf '%s' "$2" > "$SN_PAYLOAD"; shift; done
+exit 0
+STUB
+chmod +x "$SN/stub/wget" "$SN/stub/curl"
+sn_run() { # $1 summary
+    env PATH="$SN/stub:$ORIG_PATH" SN_CALLS="$SN/calls" SN_PAYLOAD="$SN/payload.json" SN_SUMMARY="$1" \
+        sh "$SN/notify.sh" scout-summary <<<'{"run_id":"01X"}' >/dev/null 2>&1
+}
+sn_calls() { test -e "$SN/calls" && wc -l < "$SN/calls" | tr -d ' ' || echo 0; }
+sn_run ""
+check "notify scout-summary: an empty scout_summary posts nothing" "0" "$(sn_calls)"
+sn_run "scout jelly-swipe DRY RUN: would file 1 | would file ratchet ruff B006 (2 findings in 1 file)"
+check "notify scout-summary: a two-part summary posts once" "1" "$(sn_calls)"
+check "notify scout-summary: the header and both parts, one per line" "1|scout jelly-swipe DRY RUN: would file 1|would file ratchet ruff B006 (2 findings in 1 file)" \
+    "$(jq -r .content "$SN/payload.json" | grep -c '🔭 fabro scout on andrewthetechie/jelly-swipe')|$(jq -r .content "$SN/payload.json" | sed -n 2p)|$(jq -r .content "$SN/payload.json" | sed -n 3p)"
+check "notify scout-summary: the payload is valid JSON" "0" "$(jq -e . "$SN/payload.json" >/dev/null 2>&1; echo $?)"
+sn_run 'a\b "q"'
+check "notify scout-summary: a quote and a backslash are stripped" "0|0" \
+    "$(jq -r .content "$SN/payload.json" | grep -c '"' || true)|$(jq -r .content "$SN/payload.json" | grep -c '\\' || true)"
+
+
 # ---------------------------------------------------------------------------
 # fabro-run-prune.sh (task 08): the command line, and the fallback never deletes a live run.
 # ---------------------------------------------------------------------------

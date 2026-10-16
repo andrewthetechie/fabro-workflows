@@ -206,8 +206,8 @@ provision_variable() {
 }
 
 # provision_automation <id> <environment_id> <repo> <workflow> <schedule_id_or_empty> [schedule_expr] [auto_merge] [schedule_enabled]
-#   - workflow is "backlog", "pr-review", "issue-triage", "arch-review", "dependabot" or "merge-queue"; all live in
-#     andrewthetechie/fabro-workflows@main.
+#   - workflow is "backlog", "pr-review", "issue-triage", "arch-review", "dependabot", "merge-queue" or
+#     "scout"; all live in andrewthetechie/fabro-workflows@main.
 #   - schedule_id, when non-empty, adds a DISABLED schedule row for operator
 #     convenience, using schedule_expr. The four backlog schedules are staggered
 #     three minutes apart (ADR 0001) so all four never fire in the same minute.
@@ -373,6 +373,18 @@ provision_automation merge-queue-lawncare-saas python-node andrewthetechie/lawnc
 provision_automation merge-queue-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports merge-queue sweep "5-59/20 * * * *" true || FAILED=$((FAILED+1))
 provision_automation merge-queue-writers-app rust-node andrewthetechie/writers-app merge-queue sweep "7-59/20 * * * *" true || FAILED=$((FAILED+1))
 
+# scout (ADR 0027 D16): one run per repository a day, at 02:00 UTC plus 15 minutes per repo, so
+# scout runs before arch-review (04:00) and dependabot (05:00).
+# The schedule is created DISABLED (the last argument defaults to false): the operator enables it
+# with ops/fabro-automation-schedule.sh once the first dry run is verified (task 07 of
+# docs/scout/). These rows carry no auto-merge token: scout files issues, and the one Ratchet rule
+# issue that takes the backlog fast lane does so through its `fast-path` label.
+echo "Provisioning scout automations..."
+provision_automation scout-jelly-swipe python andrewthetechie/jelly-swipe scout daily "0 2 * * *" || FAILED=$((FAILED+1))
+provision_automation scout-lawncare-saas python-node andrewthetechie/lawncare-saas scout daily "15 2 * * *" || FAILED=$((FAILED+1))
+provision_automation scout-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports scout daily "30 2 * * *" || FAILED=$((FAILED+1))
+provision_automation scout-writers-app rust-node andrewthetechie/writers-app scout daily "45 2 * * *" || FAILED=$((FAILED+1))
+
 if [ "$FAILED" -ne 0 ]; then
   echo "$FAILED automation(s) could not be created; see the errors above." >&2
   exit 1
@@ -383,4 +395,4 @@ if [ "$DRIFT_FOUND" -ne 0 ]; then
   exit 2
 fi
 
-echo "Done. Backlog and issue-triage schedules are created disabled; enable them if this was a rebuild. arch-review schedules are created enabled (ADR 0012). dependabot schedules are created enabled (ADR 0022 D10). merge-queue schedules are created disabled (ADR 0024)."
+echo "Done. Backlog and issue-triage schedules are created disabled; enable them if this was a rebuild. arch-review schedules are created enabled (ADR 0012). dependabot schedules are created enabled (ADR 0022 D10). merge-queue schedules are created disabled (ADR 0024). scout schedules are created disabled (ADR 0027 D16)."

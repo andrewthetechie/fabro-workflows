@@ -1,7 +1,7 @@
 #!/bin/sh
 # discord-notify.sh — best-effort Discord notification for fabro runs.
 #
-# Usage: discord-notify.sh <rescue|complete|failed|merged|queued|blocked|needs-human|fallback|triage-question|triage-failed|arch-summary|dependabot-summary|merge-queue-summary>
+# Usage: discord-notify.sh <rescue|complete|failed|merged|queued|blocked|needs-human|fallback|triage-question|triage-failed|arch-summary|dependabot-summary|merge-queue-summary|scout-summary>
 #
 # Runs as a hook with sandbox = false, i.e. inside the fabro server container
 # (Alpine: /bin/sh + wget, no bash, no curl, no jq). The event context JSON is
@@ -89,6 +89,7 @@ issue_newest=""
 arch_summary=""
 dep_summary=""
 mq_summary=""
+scout_summary=""
 if [ -r "$token_file" ]; then
   auth="Authorization: Bearer $(cat "$token_file")"
   repo_url=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id" 2>/dev/null \
@@ -133,6 +134,11 @@ if [ -r "$token_file" ]; then
   mq_summary=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
     | grep -o '"mq_summary":"[^"]*"' | tail -1 | cut -d'"' -f4)
   mq_summary=$(printf '%s' "$mq_summary" | sed 's/[\\"]//g' | cut -c1-1500)
+  # scout-summary (ADR 0027 D17): the one line summarize publishes; empty means a quiet run.
+  # Unlike merge-queue-summary there is no once-an-hour state file: scout runs once a day.
+  scout_summary=$(wget -q -T 5 -O- --header="$auth" "$api/api/v1/runs/$run_id/state" 2>/dev/null \
+    | grep -o '"scout_summary":"[^"]*"' | tail -1 | cut -d'"' -f4)
+  scout_summary=$(printf '%s' "$scout_summary" | sed 's/[\\"]//g' | cut -c1-1500)
   triage_questions=$(printf '%s' "$triage_questions" | sed 's/[\\"]//g' | cut -c1-800)
 fi
 
@@ -169,7 +175,7 @@ fi
 case "$kind" in
   triage-question|triage-failed)
     issue="$issue_newest" ;;
-  arch-summary|dependabot-summary|merge-queue-summary)
+  arch-summary|dependabot-summary|merge-queue-summary|scout-summary)
     issue="" ;;
 esac
 
@@ -250,6 +256,13 @@ case "$kind" in
     esac
     mq_text=$(printf '%s' "$mq_summary" | sed 's/ | /\\n/g')
     msg="🔀 fabro merge queue${subject}\\n${mq_text}"
+    ;;
+  scout-summary)
+    # A quiet run publishes nothing and posts nothing. There is no once-an-hour state file:
+    # scout runs once a day (ADR 0027 D17), unlike the merge queue's sweep.
+    [ -n "$scout_summary" ] || exit 0
+    scout_text=$(printf '%s' "$scout_summary" | sed 's/ | /\\n/g')
+    msg="🔭 fabro scout${subject}\\n${scout_text}"
     ;;
   *)        msg="ℹ️ fabro run ${run_id} notification ($kind)" ;;
 esac
