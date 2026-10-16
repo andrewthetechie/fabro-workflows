@@ -1,6 +1,6 @@
 # Factory retro: overview and canonical contracts
 
-**Status:** Deployed 2026-10-16 as a **dry run** (task 07 steps 1-6: pushed, scheduler and scripts deployed, `retro` label, dry cron line). The first Discord dry run is Monday 2026-10-19; going live (step 7) and the one-month check are open. Issue #33, ADR 0026 (proposed).
+**Status:** **Live** since 2026-10-16 04:16Z (task 07 steps 1-8). The first live run, over the week of 2026-10-05, filed #42-#44; #41 silences the Kimi quota class (closed not planned by the operator). Cron `DRY_RUN=0`, Mondays 12:00 UTC. The one-month check (steps 9-11) is due after four live Mondays, about 2026-11-09. Issue #33, ADR 0026 (proposed).
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report

@@ -1204,6 +1204,26 @@ See `../docs/factory-retro/00-overview-and-contracts.md` (C8) and
 `../docs/adr/0026-weekly-retro-files-issues.md`. The subcommand's stderr and the
 wrapper's warnings go to the log; stdout is the Discord message only.
 
+**Your decisions are the issues' states** (ADR 0026 D4). Leave a retro issue open and each
+week adds a comment. Close it as completed when fixed; a recurrence in a later week files a
+regression. Close it as **not planned** to silence the class for good: the Discord line then
+says `silenced: #N`, no slot is used, and reopening the issue brings it back.
+
+To silence a known class **before** the retro files it (a known cause you will not act on),
+create the issue yourself with the label and the class's marker, then close it. The key is
+the one the Discord line or the cron log names (`retro: N. <kind> <key>`):
+
+```sh
+key='failover:kimi/kimi-k3:access_denied'
+url=$(gh issue create -R andrewthetechie/fabro-workflows --label retro \
+  --title "retro: $key (known, not planned)" \
+  --body "<!-- fabro:retro-class $key -->
+Known and accepted; closed as not planned so the weekly retro silences it.")
+gh issue close "$url" --reason "not planned"
+```
+
+#41 is the first: the Kimi weekly quota.
+
 ## Sandbox containers — fabro stops them, nothing removes them
 
 Fabro creates one `fabro-run-<run_id>` container per run and stops it on terminal. It
