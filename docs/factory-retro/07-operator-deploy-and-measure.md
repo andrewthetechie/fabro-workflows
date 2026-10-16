@@ -20,8 +20,9 @@ Not for the implementing agent. Every step writes to `main`, the host or GitHub.
 
 7. After the first Monday's `DRY RUN` message in Discord: if the planned writes look right,
    replace the cron line with the `DRY_RUN=0` one. If not, fix it and wait for the next
-   dry run. To preview a write without waiting, run
-   `RETRO_ARGS="--cap 1" DRY_RUN=0 ~/bin/fabro-retro.sh` by hand.
+   dry run. To make one real write early instead of waiting for Monday, run
+   `RETRO_ARGS="--cap 1" DRY_RUN=0 ~/bin/fabro-retro.sh` by hand. That is not a preview:
+   it files up to one issue, comments on every known open one, and posts to Discord.
 8. Append a dated section to `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`.
 
 ## The one-month check (four live Mondays after step 7)

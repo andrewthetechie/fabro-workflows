@@ -353,6 +353,23 @@ def test_safe_sample_keeps_a_cross_repository_reference_for_the_guard():
     assert retro.guard(safe, REPOS)
 
 
+def test_guard_matches_an_alias_as_a_whole_word():
+    assert retro.guard("the WFS build broke", REPOS, ["wfs"]) == "repository alias 'wfs'"
+    assert retro.guard("the wfsx build broke", REPOS, ["wfs"]) is None
+    assert retro.guard("the wfs build broke", REPOS) is None
+
+
+def test_plan_withholds_a_write_that_names_an_alias():
+    one = retro.ClassStat(
+        key="held:other", kind="held",
+        runs=tuple(retro.RunRef(f"R{i}", "PR opened", 3_600_000) for i in range(3)),
+        events=3, samples=("waits on the wfs migration",),
+    )
+    actions = retro.plan(cls(one), cls(), {}, week_start=WEEK, repos=REPOS,
+                         min_runs=3, min_box_hours=4.0, cap=3, aliases=["wfs"])
+    assert [a.kind for a in actions] == ["withheld"]
+
+
 def test_safe_sample_never_halves_a_repository_name():
     reason = "a" * 150 + " lawncare-saas is the blocker"
     safe = retro.safe_sample(reason)

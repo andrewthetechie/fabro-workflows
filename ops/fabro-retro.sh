@@ -17,6 +17,9 @@
 #   NO_POST=0                     1 prints the message and posts nothing (tests, by hand)
 #   SCHEDULER_CONTAINER=fabro-scheduler   where the subcommand runs
 #   CONTAINER=fabro-fabro-1       where the Discord webhook is read
+#   WEEK_OF=""                    YYYY-MM-DD: report the ISO week containing it instead of
+#                                 last week (by-hand re-runs; --week-of and --last-week
+#                                 cannot both be given, so RETRO_ARGS cannot do this)
 #   RETRO_ARGS=""                 extra subcommand arguments, word-split, by-hand runs
 #
 # Crontab (installed by the operator, task 07; `make deploy` never touches crontab):
@@ -31,12 +34,17 @@ DRY_RUN="${DRY_RUN:-1}"
 NO_POST="${NO_POST:-0}"
 SCHEDULER_CONTAINER="${SCHEDULER_CONTAINER:-fabro-scheduler}"
 CONTAINER="${CONTAINER:-fabro-fabro-1}"
+WEEK_OF="${WEEK_OF:-}"
 RETRO_ARGS="${RETRO_ARGS:-}"
 
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 
 # Build the subcommand's arguments. Anything but 0 means a dry run.
-set -- retro --last-week
+if [ -n "$WEEK_OF" ]; then
+  set -- retro --week-of "$WEEK_OF"
+else
+  set -- retro --last-week
+fi
 [ "$DRY_RUN" = "0" ] || set -- "$@" --dry-run
 # shellcheck disable=SC2086  # word-split on purpose: RETRO_ARGS is for by-hand runs
 set -- "$@" $RETRO_ARGS

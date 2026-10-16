@@ -33,6 +33,8 @@ from pathlib import Path
 # shape: exactly one slash, neither side empty. A name that fails this cannot be
 # passed to the GitHub API as an owner/repo pair.
 REPO_NAME = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+# One short name for a repository, as agents write it (`wfs#2080`).
+REPO_ALIAS = re.compile(r"^[A-Za-z0-9._-]+$")
 
 # The LiteLLM model groups that address one coder instance each — decision 12.
 # `coders`, the load-balanced group over both boxes, is deliberately absent: the
@@ -75,7 +77,7 @@ DEFAULT_AUTOMATION_AUTHOR = "andrews-ai-agent,noreply@fabro.sh"
 # Every key a `[[repo]]` table may carry. Unknown keys are errors rather than
 # warnings: `priorty = 0` would otherwise be silently ignored and the row would
 # sort by whatever the default turned out to be.
-_REPO_KEYS = frozenset({"name", "priority", "environment_id", "enabled"})
+_REPO_KEYS = frozenset({"name", "priority", "environment_id", "enabled", "aliases"})
 
 
 class ConfigError(ValueError):
@@ -94,6 +96,9 @@ class RepoConfig:
     priority: int  # signed; smaller is more urgent
     environment_id: str
     enabled: bool = True
+    # Short names agents use for the repo in prose. Nothing schedules by them; the
+    # weekly retro's guard withholds any write that names one (ADR 0026 D9).
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -286,11 +291,20 @@ def _parse_repo(
     if not isinstance(enabled, bool):
         raise ConfigError(f"{where}.enabled: {enabled!r} is not a boolean")
 
+    aliases = row.get("aliases", [])
+    if not isinstance(aliases, list) or not all(
+        isinstance(alias, str) and REPO_ALIAS.match(alias) for alias in aliases
+    ):
+        raise ConfigError(
+            f"{where}.aliases: {aliases!r} is not a list of short names ([A-Za-z0-9._-]+)"
+        )
+
     return RepoConfig(
         name=name,
         priority=priority,
         environment_id=environment_id,
         enabled=enabled,
+        aliases=tuple(aliases),
     )
 
 

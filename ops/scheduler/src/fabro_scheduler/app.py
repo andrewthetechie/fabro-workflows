@@ -1611,6 +1611,7 @@ def _retro(
             retro.known_classes(issues),
             week_start=week_start,
             repos=[repo.name for repo in config.repos],
+            aliases=[alias for repo in config.repos for alias in repo.aliases],
             min_runs=args.min_runs,
             min_box_hours=args.min_box_hours,
             cap=args.cap,

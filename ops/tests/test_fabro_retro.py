@@ -89,12 +89,22 @@ class Retro(unittest.TestCase):
         )
 
     def test_retro_args_are_word_split(self):
-        r = self.run_retro(RETRO_ARGS="--week-of 2026-10-08 --cap 1", STUB_OUT="x")
+        r = self.run_retro(RETRO_ARGS="--cap 1 --min-runs 2", STUB_OUT="x")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(
             self.docker_argv()[0],
             "exec fabro-scheduler python -m fabro_scheduler retro --last-week --dry-run"
-            " --week-of 2026-10-08 --cap 1",
+            " --cap 1 --min-runs 2",
+        )
+
+    def test_week_of_replaces_last_week(self):
+        # The subcommand refuses both together, so WEEK_OF swaps one for the other.
+        r = self.run_retro(WEEK_OF="2026-10-08", STUB_OUT="x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            self.docker_argv()[0],
+            "exec fabro-scheduler python -m fabro_scheduler retro --week-of 2026-10-08"
+            " --dry-run",
         )
 
     def test_a_failing_subcommand_posts_the_failure_line_and_its_output(self):

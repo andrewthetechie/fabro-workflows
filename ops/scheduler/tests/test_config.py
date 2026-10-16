@@ -174,6 +174,26 @@ def test_enabled_rejects_a_non_boolean(tmp_path):
         load_config(p, env={})
 
 
+# --- aliases --------------------------------------------------------------------
+
+
+def test_aliases_default_to_none(tmp_path):
+    cfg = load_config(write(tmp_path, repo()), env={})
+    assert cfg.repos[0].aliases == ()
+
+
+def test_aliases_are_read(tmp_path):
+    cfg = load_config(write(tmp_path, repo() + 'aliases = ["wfs", "w.f-s_2"]\n'), env={})
+    assert cfg.repos[0].aliases == ("wfs", "w.f-s_2")
+
+
+@pytest.mark.parametrize("value", ['"wfs"', '["w fs"]', '[""]', "[1]"])
+def test_aliases_reject_anything_but_a_list_of_short_names(tmp_path, value):
+    p = write(tmp_path, repo() + f"aliases = {value}\n")
+    with pytest.raises(ConfigError, match=r"repo\[0\]\.aliases"):
+        load_config(p, env={})
+
+
 # --- the file as a whole --------------------------------------------------------
 
 

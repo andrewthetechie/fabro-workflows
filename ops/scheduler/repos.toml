@@ -16,6 +16,11 @@
 #
 # `enabled = false` keeps the row and takes the repo out of all scheduling.
 #
+# `aliases` (optional) lists short names agents use for the repo in prose, like
+# `wfs#2080`. Nothing schedules by them; the weekly retro withholds any issue text
+# that names one (ADR 0026 D9). Add one only when it is a distinct word: an alias
+# like `js` would withhold every write that mentions JavaScript.
+#
 # No token, key or webhook URL belongs in this file. This repository is public.
 # Both credentials arrive through the container's environment.
 
@@ -24,6 +29,7 @@ name           = "andrewthetechie/womens-fantasy-sports"
 priority       = 10
 environment_id = "ts"
 enabled        = true
+aliases        = ["wfs"]
 
 [[repo]]
 name           = "andrewthetechie/writers-app"

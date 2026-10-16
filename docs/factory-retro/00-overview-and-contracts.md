@@ -225,7 +225,7 @@ class Action:
 
 def plan(current: Classified, previous: Classified, known: dict[str, list[TrackedIssue]],
          *, week_start: date, repos: Sequence[str], min_runs: int, min_box_hours: float,
-         cap: int) -> list[Action]
+         cap: int, aliases: Sequence[str] = ()) -> list[Action]
 ```
 
 For each class over the threshold, in rank order (C2):
@@ -247,15 +247,18 @@ shows `0`.
 ### C5. The guard and the sample rules
 
 ```python
-def guard(text: str, repos: Sequence[str]) -> str | None
+def guard(text: str, repos: Sequence[str], aliases: Sequence[str] = ()) -> str | None
     """What in `text` names a target repository, or None."""
 ```
 
-`repos` is every `config.repos[*].name` (`owner/name`). Matching is case-insensitive. It
+`repos` is every `config.repos[*].name` (`owner/name`), and `aliases` every
+`config.repos[*].aliases` entry. Matching is case-insensitive. It
 returns a short description of the first match:
 
 - the full `owner/name` of any configured repository;
 - the bare `name` of any configured repository, as a whole word (`\bname\b`);
+- any `aliases` entry of a configured repository (`repos.toml`, e.g. `wfs`), as a whole
+  word;
 - `github.com/<owner>/<x>`, where `<x>` is anything except `fabro-workflows`;
 - a cross-repository reference `<word>#<digits>` (`wfs#2080`, `repo#12`). A plain `#41`
   preceded by a space, `(` or line start is this repository's issue and is allowed.
@@ -373,9 +376,10 @@ A comment is the table, the box-hours note and the runs list, under the heading
 | `NO_POST` | `0` | `1` prints the message and posts nothing (for tests and by-hand runs). |
 | `SCHEDULER_CONTAINER` | `fabro-scheduler` | Where the subcommand runs. |
 | `CONTAINER` | `fabro-fabro-1` | Where the webhook is read (the monitor's variable name). |
+| `WEEK_OF` | empty | `YYYY-MM-DD`: pass `--week-of` it instead of `--last-week`, for a by-hand re-run of an earlier week. (`RETRO_ARGS` cannot do this: the subcommand refuses both flags together.) |
 | `RETRO_ARGS` | empty | Extra subcommand arguments, word-split, for by-hand runs. |
 
-Flow: `out=$(docker exec "$SCHEDULER_CONTAINER" python -m fabro_scheduler retro --last-week [--dry-run] $RETRO_ARGS)`,
+Flow: `out=$(docker exec "$SCHEDULER_CONTAINER" python -m fabro_scheduler retro (--last-week | --week-of "$WEEK_OF") [--dry-run] $RETRO_ARGS)`,
 with its exit code in `rc`. The subcommand's stderr passes through to the cron log.
 
 - `rc = 0`: post `out`.

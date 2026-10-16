@@ -332,7 +332,7 @@ def known_classes(issues: Iterable[TrackedIssue]) -> dict[str, list[TrackedIssue
     return dict(found)
 
 
-def guard(text: str, repos: Sequence[str]) -> str | None:
+def guard(text: str, repos: Sequence[str], aliases: Sequence[str] = ()) -> str | None:
     """What in `text` names a target repository, or `None` (C5, ADR 0026 D4).
 
     The repository is public and the issue body is written by the operator's own
@@ -340,6 +340,10 @@ def guard(text: str, repos: Sequence[str]) -> str | None:
     publish which repositories the factory works on. Nothing is redacted: a
     redaction that misses once has already published the name, so the whole write
     is withheld and reported instead.
+
+    `aliases` are the repositories' short names from `repos.toml` (`wfs`), matched
+    as whole words like a bare name: an agent's prose uses them as often as the
+    real name, and nothing else would catch `the wfs build` without a `#`.
 
     The description itself is safe: it goes to Discord (already private) and never
     to GitHub. Case is ignored throughout, because a link and a path differ in case
@@ -355,6 +359,9 @@ def guard(text: str, repos: Sequence[str]) -> str | None:
         name = repo.split("/", 1)[-1]
         if name and re.search(rf"\b{re.escape(name)}\b", text, re.IGNORECASE):
             return f"bare repository name '{name}'"
+    for alias in aliases:
+        if alias and re.search(rf"\b{re.escape(alias)}\b", text, re.IGNORECASE):
+            return f"repository alias '{alias}'"
     match = _CROSS_REF.search(text)
     if match:
         return f"cross-repository reference '{match.group(0)}'"
@@ -490,6 +497,7 @@ def plan(
     min_runs: int,
     min_box_hours: float,
     cap: int,
+    aliases: Sequence[str] = (),
 ) -> list[Action]:
     """Decide every write for one week, in rank order (C4).
 
@@ -561,7 +569,7 @@ def plan(
             # report names the more visible leak when both match.
             why = next(
                 (match for text in (action.title, action.body) if text
-                 and (match := guard(text, repos))),
+                 and (match := guard(text, repos, aliases))),
                 None,
             )
             if why is not None:
