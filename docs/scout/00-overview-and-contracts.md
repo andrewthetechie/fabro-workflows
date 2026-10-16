@@ -1,7 +1,11 @@
 # Scout: overview and canonical contracts
 
-**Status:** Tasks 01-06 done 2026-10-16; task 07 (deploy, dry runs, go live, measure) is the
-operator's. ADR 0027 (proposed). Roadmap B6, reduced.
+**Status:** Tasks 01-06 done 2026-10-16; review fixes in 751e662. Task 07 steps 1-9 done
+2026-10-16: deployed, `Scout (9 nodes, 11 edges)` verified, `scout.toml` committed dry in all
+four repositories, dry runs read, schedules on. **Every repository stays dry** (step 10 waits)
+until the scout's flaky source reads FlakeRadar per test (operator decision 2026-10-16): going
+live first would file job-level flaky fingerprints that the per-test ones then supersede.
+ADR 0027 (proposed). Roadmap B6, reduced.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
