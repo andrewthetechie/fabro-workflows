@@ -1,6 +1,6 @@
 # Factory retro: overview and canonical contracts
 
-**Status:** Built 2026-10-15 (tasks 01-06, local commits); task 07, the deploy and the one-month check, is the operator's. Issue #33, ADR 0026 (proposed).
+**Status:** Deployed 2026-10-16 as a **dry run** (task 07 steps 1-6: pushed, scheduler and scripts deployed, `retro` label, dry cron line). The first Discord dry run is Monday 2026-10-19; going live (step 7) and the one-month check are open. Issue #33, ADR 0026 (proposed).
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
