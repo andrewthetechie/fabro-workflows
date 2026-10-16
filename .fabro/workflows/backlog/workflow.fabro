@@ -329,7 +329,10 @@ else echo 'agent guide: could not write .codex/instructions.md' >&2; fi"]
 
     // ---- The lane (ADR 0023) ----
     // An issue labelled `fast-path` beside `agent` was chosen by a human as a one-commit
-    // change (operator decision O1/O2). The label is read from /tmp/fabro/issue.json, which
+    // change (operator decision O1/O2). The Scout adds the same label to a Ratchet rule
+    // issue it files (ADR 0027): that issue is generated from a template, its fix is
+    // bounded, and its checks run in `ci.sh`, so it takes this lane too. The label is read
+    // from /tmp/fabro/issue.json, which
     // `claim` wrote with `gh issue view --json ...,labels`, so this node makes no network
     // call. It never guesses: a file it cannot read, or one without a `labels` array, exits
     // 1 and the unconditional edge goes to rescue_brief.

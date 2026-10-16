@@ -112,3 +112,10 @@ one short run instead of a 4-hour wait at the gate.
   50 minutes of CI wait.
 - An issue labelled `fast-path` that is not small costs one short run (D6 and D7), not a
   wrong merge. The merge phase and the Refuter review every PR in both lanes.
+
+## Amendment (2026-10-16, ADR 0027): the Scout selects the lane for a Ratchet rule
+
+D1 said only a human adds `fast-path`. From now on the **Scout** adds it to a **Ratchet
+rule** issue too, because that issue is generated from a template, is bounded by ADR 0027 D3,
+and its checks run in `ci.sh`. A **Flaky job** issue does not get it. Triage still never adds
+it. D1's own text is unchanged: this ADR is a record.

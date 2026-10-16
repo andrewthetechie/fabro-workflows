@@ -50,8 +50,10 @@ _Avoid_: manually, by hand (the adverb, not the noun)
 
 **Automation**:
 A server-side row binding a workflow package to a target repo and environment, with
-triggers (`api:manual`, `schedule:every-15m`, `schedule:hourly`, `schedule:twice-weekly`). Four per repo,
-sixteen total. The `arch-review` schedules are the only enabled ones (ADR 0012).
+triggers (`api:manual`, `schedule:every-15m`, `schedule:hourly`, `schedule:twice-weekly`,
+`schedule:daily`, `schedule:sweep`). Seven per repo, twenty-eight total. The `arch-review`
+schedules are the only enabled ones (ADR 0012); the `scout` schedules are created disabled
+(ADR 0027 D16).
 _Avoid_: schedule, cron, job
 
 **Bridge** *(retired)*:

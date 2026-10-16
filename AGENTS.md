@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Five production Fabro workflows and the ops tooling for the host that runs them.
+Seven Fabro workflows and the ops tooling for the host that runs them.
 
 ## Pushing to `main` deploys
 
@@ -23,7 +23,7 @@ actually lives.
 
 | Path | What it is |
 |---|---|
-| `.fabro/workflows/<name>/` | **The only tree the automations read.** Six runnable packages — `backlog`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue` — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in (it has a queue mode that only `backlog`'s fast lane uses), and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
+| `.fabro/workflows/<name>/` | **The only tree the automations read.** Seven runnable packages — `backlog`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue` and `scout` (`merge-queue` and `scout` have no agent stage) — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in (it has a queue mode that only `backlog`'s fast lane uses), and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
 | `.fabro/workflows/_io/` | The **Stage manifest** and output schemas (ADR 0016): the only source of every `FABRO_IO_MANIFEST` block, generated into each `workflow.toml`. Never hand-edit the generated blocks; `check` fails on drift. |
 | `ops/` | Host replication: compose, the coder scheduler, profile images, provisioning, sweepers, and the offline checkers. No automation reads this tree. `ops/README.md` has its contents table and the runbooks. |
 | `docs/` | `docs/adr/` holds the decisions; every other folder is a task series or a set of design records. `docs/README.md` indexes them with their status. |
@@ -83,7 +83,7 @@ Baselines (as of 2026-10-13, fabro 0.362.0-nightly.0, verified by `make check-ho
 `Backlog (82 nodes, 210 edges)` with one warning, `issue_number` unbound in `claim`;
 `PrReview (39 nodes, 87 edges)` with one warning, `pr_number` unbound in `validate_input`;
 `IssueTriage (16 nodes, 36 edges)`, `ArchReview (24 nodes, 54 edges)`,
-`Dependabot (51 nodes, 115 edges)` and `MergeQueue (8 nodes, 10 edges)` clean. Both
+`Dependabot (51 nodes, 115 edges)` and `MergeQueue (8 nodes, 10 edges)` clean. `Scout (9 nodes, 11 edges)` is counted by hand and unverified until `make check-host` confirms it in task 07 of `docs/scout/`. Both
 warnings are deliberate: never bind those inputs in `[run.inputs]`. The fast-path series
 added `report_queued` to the three importing graphs (+1 node, +3 edges each), and
 `route_lane` and `demote_lane` to `backlog`. The gate-relief series (#29) added `refute_fix` and `refute_fix_gate` to the three importing graphs (+2 nodes, +5 edges each). The final-merge fix (2026-10-12) added `final_merge` to `backlog` (+1 node, +4 edges). The base-conflict fix (#37, 2026-10-13) added `resolve_base` and `resolve_base_gate` to the three importing graphs (+2 nodes, +6 edges each). The final-validation fix (#35, 2026-10-13) added `drop_unreviewed` and `final_fix_prep` to `backlog` (+2 nodes, +9 edges). The plan trial (#25, 2026-10-13) added `plan` to `backlog` (+1 node, +5 edges). The unmet-criteria series (#17, 2026-10-13) added `return_to_triage` and `task_block_gate` to `backlog` (+2 nodes, +6 edges). `make check-host` compares `fabro validate`'s node and edge counts against these.
@@ -118,7 +118,7 @@ bug surfaces. The coder scheduler is the only producer of `backlog` runs. Fire a
 hand only with `~/bin/fabro-fire-pr-review.sh <owner/repo> <pr>` or
 `~/bin/fabro-fire-backlog.sh <owner/repo> <issue>`. A `dependabot-<repo>` run fires through
 its `api:manual` trigger (task 10 records the command). A `merge-queue-<repo>` run fires from its
-schedule (every 20 minutes, created disabled) or its `api:manual` trigger; it takes no input. `docs/agents/server.md` says why the
+schedule (every 20 minutes, created disabled) or its `api:manual` trigger; it takes no input. A `scout-<repo>` run fires from its daily schedule (created disabled) or its `api:manual` trigger, and it takes no input. `docs/agents/server.md` says why the
 automation endpoint cannot carry the input, and covers the scheduler.
 
 The operational history is `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md` on the Mac,

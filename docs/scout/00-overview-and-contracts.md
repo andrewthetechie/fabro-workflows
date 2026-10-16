@@ -1,7 +1,7 @@
 # Scout: overview and canonical contracts
 
-**Status:** Designed 2026-10-16 (planning session for issue #32). Not started. ADR 0027
-(proposed). Roadmap B6, reduced.
+**Status:** Tasks 01-06 done 2026-10-16; task 07 (deploy, dry runs, go live, measure) is the
+operator's. ADR 0027 (proposed). Roadmap B6, reduced.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
