@@ -1,6 +1,6 @@
 # Refuter evidence: overview and canonical contracts
 
-**Status:** Deployed 2026-10-15 (pushed `2a2be46` ~20:55Z, `make deploy-scheduler` 20:56Z). Task 06, the live check and the 7-day measurement, is open (due 2026-10-22). Issue #40.
+**Status:** Deployed 2026-10-15 (pushed `2a2be46` ~20:55Z, `make deploy-scheduler` 20:56Z). Task 06 step 1, the live check, passed on 2026-10-16, and it added the test route to D7 (see `06-live-check-and-measure.md`). The 7-day measurement is open and covers 2026-10-17 to 2026-10-23. Issue #40.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
@@ -50,7 +50,7 @@ The fix has three parts:
 | D4 | Triage does not change (issue option 4 is not adopted). A command criterion still tells the coder what to run, and changing triage would not fix issues already queued. |
 | D5 | Going back to `gpt-6.1-sol` (issue option 5) is not adopted, because of the $100 hosted budget (ADR 0013 luna amendment). |
 | D6 | Missing evidence blocks the merge. If no validation is recorded for HEAD's tree, command criteria stay `unverifiable` and the merge is still blocked (consistent with ADR 0013 D5). |
-| D7 | "Runs that command" means that `ci.sh` runs the same tool over every file this PR changes. The run can be direct, or through a script or hook that `ci.sh` calls. A different config file or a narrower scope is acceptable when it still covers every changed file. |
+| D7 | "Runs that command" means that `ci.sh` runs the same tool over every file this PR changes. The run can be direct, or through a script, hook or test that `ci.sh` calls (a test that runs the command as a subprocess, added 2026-10-16 after the live check). A different config file or a narrower scope is acceptable when it still covers every changed file. |
 | D8 | Only `ci.sh` is evidence. `.fabro/test.toml` checks are not (they ran on earlier per-task trees, not on this tree). |
 | D9 | Add an over-blocking revert trigger. If `unverifiable`-only first verdicts stay above 5 a day across repositories for 3 consecutive days after this fix, reopen the choice of Refuter model. |
 
@@ -142,7 +142,7 @@ The scorecard reads them (task 04).
 | 03 | `refute_gate` reports two new fields (C4) — done (commit `d10e4fc`) | yes |
 | 04 | the scorecard split — done (commit `7b90344`) | yes |
 | 05 | ADR 0013 amendment, plan-trial note, docs; **stop** — done (commit `124690d`) | — |
-| 06 | live check and measurement (operator; pushed and scheduler deployed 2026-10-15, measure 2026-10-22) | — |
+| 06 | live check and measurement (operator; live check passed 2026-10-16; measure 2026-10-17 to 2026-10-23) | — |
 
 01, 03 and 04 change command nodes; 02 is a prompt. Do them in order so each commit is
 reviewable. 04 depends on 03's fields. 06 is write-only here; the operator carries it out.

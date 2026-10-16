@@ -73,13 +73,20 @@ was listed under that heading.
    these hold:
    - the `validation` input says a validation passed on this exact tree, and
    - `.fabro/ci.sh` runs the same tool over every file this PR changes, either directly
-     or through a script or hook it calls (a `package.json` script, a pre-commit hook).
-     A different config file or a narrower scope is fine when it still covers every
-     changed file.
+     or through a script, hook or test it calls (a `package.json` script, a pre-commit
+     hook, a test that runs the command as a subprocess). A different config file or a
+     narrower scope is fine when it still covers every changed file.
 
-   Cite the `.fabro/ci.sh` line, and the script or hook it calls, in `evidence`. For
-   example: "`.fabro/ci.sh:13` runs `bun run --filter frontend build`, whose `build`
-   script runs `tsc -p tsconfig.build.json`, which covers every changed file."
+   Before you call a command criterion `unverifiable` because `.fabro/ci.sh` does not
+   name the tool, search the test suites that `ci.sh` runs for the command (for
+   `uv run alembic check`, search for `alembic` and `check`). Repositories often wrap a
+   tool in a test.
+
+   Cite the `.fabro/ci.sh` line, and the script, hook or test it calls, in `evidence`.
+   For example: "`.fabro/ci.sh:13` runs `bun run --filter frontend build`, whose `build`
+   script runs `tsc -p tsconfig.build.json`, which covers every changed file", or
+   "`.fabro/ci.sh:15` runs `uv run pytest -n auto tests/`, which includes
+   `tests/test_migration_drift.py:23`, which runs `uv run alembic check`."
    It is `unverifiable` when the `validation` input says no validation is recorded for
    this tree, or when `.fabro/ci.sh` does not run that tool over the changed files. Say
    which in `evidence`. Checks in `.fabro/test.toml` are not evidence: they did not run

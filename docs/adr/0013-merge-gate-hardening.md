@@ -289,3 +289,12 @@ Consequences:
   counts CI-credited criteria over first verdicts. This **adds to** the 2026-10-14 luna amendment's
   consequences: if unverifiable-only first verdicts stay above 5 a day across repositories for 3
   consecutive days after this change, the choice of Refuter model is reopened.
+
+**Addendum (2026-10-16): a test that runs the command counts.** The first five Refuter visits after
+the deploy passed the live check: every visit was served and found its `validation`, and no behavioural
+criterion was credited to CI. One hold was false. Its criterion was "`uv run alembic check` reports no
+drift" (lawncare-saas#2847, hand-merged). `ci.sh` runs `pytest tests/`, and
+`tests/test_migration_drift.py` runs `uv run alembic check` in a subprocess, but the rule named only
+scripts and hooks as indirect routes. The rule now also accepts a test that `ci.sh` runs when that test
+runs the command itself. Before it marks a command criterion `unverifiable`, the Refuter must search the
+test suites for the command. The rule about behavioural criteria does not change.
