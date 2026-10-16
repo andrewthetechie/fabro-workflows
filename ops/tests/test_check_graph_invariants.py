@@ -64,6 +64,9 @@ class Counts(unittest.TestCase):
             "dependabot": (51, 115),
             # Task 05 skeleton (fast-path series): no agent stage. Expected, unverified until check-host.
             "merge-queue": (8, 10),
+            # Scout (ADR 0027, task 04): no agent stage. Counted by hand; `make check-host`
+            # confirms it in task 07 of docs/scout/.
+            "scout": (9, 11),
         })
 
 

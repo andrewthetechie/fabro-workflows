@@ -1,0 +1,46 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+# scout (ADR 0027): no agent stage, so there is no model, no fallbacks, no MCP server and no
+# FABRO_IO_MANIFEST / FABRO_AGENT_GUIDE block (ops/fabro-io-manifest.py WF_ORDER leaves this
+# package out for that reason, as it does merge-queue). It runs this repository's Ratchet rules
+# and reads its Flaky CI jobs, then files each new finding as an `agent` issue.
+#
+# The run branch exists for one reason: `enabled = true` is what gives the run its id through
+# the branch name (`basename "$(git rev-parse --abbrev-ref HEAD)"`). `push = false`, because a
+# daily run per repository must not push branches (00, rule 4: the queue never pushes).
+[run.run_branch]
+enabled = true
+push = false
+
+# GitHub permissions for the token, with the use each one serves:
+# - contents: read. The checkout runs ./.fabro/setup.sh and the declared Ratchet commands.
+# - issues: write. `gh issue create`, and the scout issue list in prep and in file.
+# - actions: read. The Flaky source lists workflow runs and their jobs, and reads job logs.
+[run.integrations.github.permissions]
+contents = "read"
+issues = "write"
+actions = "read"
+
+# Discord. Hooks run with sandbox = false, inside the fabro server container, and read the
+# webhook URL from /storage/secrets/discord_webhook_url.
+[[run.hooks]]
+id = "discord-failed"
+event = "run_failed"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh failed"
+
+# The scout summary (ADR 0027 D17): one message per run that has something to say. The hook is
+# on `finish`, not on `summarize`, because `finish` runs after `summarize` has published
+# scout_summary, so the hook can read it from the run state. A quiet run publishes an empty
+# summary and the script posts nothing. There is no once-an-hour state file: scout runs daily.
+[[run.hooks]]
+id = "discord-scout-summary"
+event = "stage_start"
+matcher = "^finish$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh scout-summary"

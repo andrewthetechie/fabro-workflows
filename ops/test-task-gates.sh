@@ -3885,6 +3885,15 @@ hy_repo
 mkdir -p "$T/wt/.fabro"; printf '%s\n' 'version = 1' > "$T/wt/.fabro/test.toml.example"; hy_commit; hy_run
 check "config_changed: example does not"    "0" "$(hy .tamper.config_changed)"
 
+# 13b. ADR 0027 D14: .fabro/scout.toml trips config_changed too; a sibling example does not.
+hy_repo
+mkdir -p "$T/wt/.fabro"; printf '%s\n' 'version = 1' > "$T/wt/.fabro/scout.toml"; hy_commit; hy_run
+check "config_changed: scout.toml trips"   "1"              "$(hy .tamper.config_changed)"
+check "config_changed: scout.toml blocks"  "config_changed" "$(hy '.blocking | join(",")')"
+hy_repo
+mkdir -p "$T/wt/.fabro"; printf '%s\n' 'version = 1' > "$T/wt/.fabro/scout.toml.example"; hy_commit; hy_run
+check "config_changed: scout example does not" "0" "$(hy .tamper.config_changed)"
+
 # 14. An invalid base config blocks rather than falling back silently.
 hy_repo '{"erosion_mode":"loud"}'; hy_lint
 check "invalid config: blocks"              "config_invalid" "$(hy '.blocking | join(",")')"
@@ -5308,7 +5317,7 @@ C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
 check "render: invalid config explained"    "1" "$(grep -c 'hygiene.json is not valid' <<<"$C")"
 echo '{"tamper":{"config_changed":1},"erosion":{},"erosion_mode":"report","blocking":["config_changed"],"samples":[]}' > "$T/review/hygiene.json"
 C=$( cd "$T" && sh "$T/render_comment.sh" blocked 2>&1 )
-check "render: config_changed names all three" "1" "$(grep -c '.fabro/hygiene.json, .fabro/test.toml or .fabro/ci.sh' <<<"$C")"
+check "render: config_changed names every protected file" "1" "$(grep -c '.fabro/hygiene.json, .fabro/test.toml, .fabro/ci.sh or .fabro/scout.toml' <<<"$C")"
 
 # Issue #19: the reason mark_needs_human builds from a failure signature is what the
 # needs-human comment shows, instead of "unspecified".
@@ -7871,6 +7880,220 @@ git -C "$T/repo" add -A; git -C "$T/repo" commit -qam 'red ci'
 OUT=$(tv_m_run)
 check "merge skip: a red run leaves no validated_tree" "absent" "$([ -f "$T/validated_tree" ] && echo present || echo absent)"
 
+
+
+# ---------------------------------------------------------------------------
+# scout (ADR 0027, task 04): the package's command nodes. gh, fabro-io and date are stubbed
+# in $SC_STUBS/bin and driven by environment variables, so one set of stubs serves every
+# case. Each node is extracted from the graph, rebased onto its own scratch git repository,
+# held to POSIX sh, and run.
+# ---------------------------------------------------------------------------
+echo ""
+echo "scout"
+SC="$REPO_ROOT/.fabro/workflows/scout/workflow.fabro"
+SC_STUBS="$WORK/scout-stubs"; mkdir -p "$SC_STUBS/bin"
+cat > "$SC_STUBS/bin/gh" <<'STUB'
+#!/bin/sh
+echo "gh $*" >> "$SC_LOG"
+case "$*" in
+  "repo view"*) echo "${SC_REPO-andrewthetechie/jelly-swipe}" ;;
+  *"/issues?labels=scout"*) [ -n "${SC_FAIL_ISSUES:-}" ] && exit 1; cat "${SC_ISSUES:-/dev/null}" ;;
+  *"/actions/runs?"*) [ -n "${SC_FAIL_RUNS:-}" ] && exit 1; cat "${SC_RUNS:-/dev/null}" ;;
+  *"/actions/runs/"*"/jobs?filter=all"*)
+      ID=""
+      for a in "$@"; do case "$a" in *"/actions/runs/"*"/jobs"*) ID=${a#*/actions/runs/}; ID=${ID%%/jobs*} ;; esac; done
+      [ -n "${SC_FAIL_JOBS:-}" ] && exit 1
+      cat "$SC_JOBS_DIR/jobs_$ID.json" ;;
+  *"/actions/jobs/"*"/logs")
+      [ -n "${SC_FAIL_LOG:-}" ] && exit 1
+      echo 'a job log line' ;;
+  "issue create"*)
+      [ -n "${SC_FAIL_CREATE:-}" ] && { echo 'create failed' >&2; exit 1; }
+      N=$(cat "$SC_COUNTER"); N=$((N + 1)); printf '%s' "$N" > "$SC_COUNTER"
+      echo "https://github.com/${SC_REPO-andrewthetechie/jelly-swipe}/issues/$N" ;;
+  "label create"*) exit 0 ;;
+  *) echo "gh $*" >&2; exit 1 ;;
+esac
+STUB
+cat > "$SC_STUBS/bin/fabro-io" <<'STUB'
+#!/bin/sh
+echo "fabro-io $*" >> "$SC_LOG"
+case "$1 $2" in
+  "scout config") [ -n "${SC_FAIL_CONFIG:-}" ] && exit "${SC_FAIL_CONFIG}"; cat "${SC_CONFIG:-/dev/null}" ;;
+  "scout ratchet") cat "${SC_RATCHET:-/dev/null}" ;;
+  "scout flaky") cat "${SC_FLAKY:-/dev/null}" ;;
+  "scout plan") cat "${SC_PLAN:-/dev/null}" ;;
+  "scout summary") cat "${SC_SUMMARY:-/dev/null}" ;;
+  *) echo "fabro-io $*" >&2; exit 2 ;;
+esac
+STUB
+cat > "$SC_STUBS/bin/date" <<'STUB'
+#!/bin/sh
+case "$*" in
+  "-u -d @"*) echo "${SC_SINCE-2026-10-02T02:00:00Z}" ;;
+  "-u +%Y-%m-%dT%H:%M:%SZ") echo "${SC_NOW-2026-10-16T02:00:00Z}" ;;
+  "+%s") echo "${SC_NOW_EPOCH-1760000000}" ;;
+  *) exec /bin/date "$@" ;;
+esac
+STUB
+chmod +x "$SC_STUBS/bin/gh" "$SC_STUBS/bin/fabro-io" "$SC_STUBS/bin/date"
+
+# $1 case name, $2 node. Prepares the scratch repository and the rebased script; the case
+# then writes whatever the node reads into $SC_DIR/scout/ and calls sc_run.
+sc_setup() {
+    SC_DIR="$WORK/scout-$1"; rm -rf "$SC_DIR" "$SC_DIR.sh" "$SC_DIR.err"
+    mkdir -p "$SC_DIR/scout/jobs" "$SC_DIR/scout/logs" "$SC_DIR/jobs-in"
+    git -C "$SC_DIR" init -q -b fabro/run/01SCOUT
+    git -C "$SC_DIR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    printf '100' > "$SC_DIR/counter"
+    extract_from "$SC" "$2" | sed "s#/tmp/fabro#$SC_DIR#g" > "$SC_DIR.sh"
+    if ! sh -n "$SC_DIR.sh" 2>"$SC_DIR.syntax"; then
+        FAIL=$((FAIL + 1)); printf '  FAIL scout %s is not valid POSIX sh\n' "$2"; sed 's/^/       /' "$SC_DIR.syntax"
+    fi
+}
+
+# $1 environment words. Runs the node in the scratch repository and leaves $SC_DIR.rc.
+sc_run() {
+    (cd "$SC_DIR" && env PATH="$SC_STUBS/bin:$ORIG_PATH" SC_LOG="$SC_DIR/gh.log" SC_COUNTER="$SC_DIR/counter" SC_JOBS_DIR="$SC_DIR/jobs-in" $1 sh "$SC_DIR.sh" </dev/null >"$SC_DIR.out" 2>"$SC_DIR.err"); echo $? > "$SC_DIR.rc"
+}
+
+# The small inputs the nodes read, built once.
+SC_FIX="$WORK/scout-fix"; mkdir -p "$SC_FIX"
+printf '%s' '{"present":true,"valid":true,"error":null,"filing":false,"ratchet":[],"flaky":{"min_flakes":3,"window_days":14}}' > "$SC_FIX/config.json"
+printf '%s' '{"filing":true,"ratchet":[{"index":0,"tool":"ruff","rule":"B006","command":"cmd","enforce_in":"pyproject.toml","enforce_how":"how","timeout_secs":900}],"flaky":{"min_flakes":3,"window_days":14}}' > "$SC_FIX/config_live.json"
+printf '%s' '{"repo":"andrewthetechie/jelly-swipe","sha":"abcdef1234567890"}' > "$SC_FIX/env.json"
+printf '%s\n' '{"number":1,"state":"open","state_reason":null,"closed_at":null,"body":"<!-- fabro:scout fp=ratchet:ruff:b006 -->"}' > "$SC_FIX/issues.raw"
+: > "$SC_FIX/no-issues.raw"
+
+# 1. prep: routes scout=run and writes env.json, config.json and an issues array.
+sc_setup prep-ok prep
+sc_run "SC_CONFIG=$SC_FIX/config.json SC_ISSUES=$SC_FIX/issues.raw"
+routing_check "scout prep, ok" "$SC_DIR" '.context_updates.scout'
+check "scout prep: routes scout=run" "run" "$ROUTED"
+check "scout prep: env.json has repo, sha and now" "now,repo,sha" "$(jq -r 'keys | join(",")' "$SC_DIR/scout/env.json")"
+check "scout prep: config.json is written" "1" "$(test -s "$SC_DIR/scout/config.json" && echo 1 || echo 0)"
+check "scout prep: issues.json is an array" "array" "$(jq -r 'type' "$SC_DIR/scout/issues.json")"
+
+# 2. prep: a failed issue list stops the run.
+sc_setup prep-issues prep
+sc_run "SC_CONFIG=$SC_FIX/config.json SC_FAIL_ISSUES=1"
+check "scout prep: issue list fails: exit 1" "1" "$(cat "$SC_DIR.rc")"
+check "scout prep: issue list fails: stop_reason" "could not list scout issues" "$(cat "$SC_DIR/scout/stop_reason")"
+
+# 3. prep: a fabro-io without the scout subcommand says to deploy the images.
+sc_setup prep-noio prep
+sc_run "SC_FAIL_CONFIG=2 SC_ISSUES=$SC_FIX/issues.raw"
+check "scout prep: fabro-io fails: exit 1" "1" "$(cat "$SC_DIR.rc")"
+check "scout prep: fabro-io fails: stop_reason names the deploy" "1" "$(grep -c 'make deploy-images' "$SC_DIR/scout/stop_reason")"
+
+# 4. ratchet: no declared rules never runs setup.sh.
+sc_setup ratchet-none ratchet
+cp "$SC_FIX/config.json" "$SC_DIR/scout/config.json"
+mkdir -p "$SC_DIR/.fabro"
+printf '%s\n' '#!/bin/sh' "touch '$SC_DIR/.fabro/setup-ran'" > "$SC_DIR/.fabro/setup.sh"
+chmod +x "$SC_DIR/.fabro/setup.sh"
+sc_run ""
+check "scout ratchet: no entries: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout ratchet: no entries: status ok" "ok" "$(jq -r .status "$SC_DIR/scout/ratchet.json")"
+check "scout ratchet: no entries: setup.sh was not run" "0" "$(test -e "$SC_DIR/.fabro/setup-ran" && echo 1 || echo 0)"
+
+# 5. ratchet: a failed setup.sh becomes the C3 skip and still exits 0.
+sc_setup ratchet-fail ratchet
+cp "$SC_FIX/config_live.json" "$SC_DIR/scout/config.json"
+mkdir -p "$SC_DIR/.fabro"
+printf '%s\n' '#!/bin/sh' 'exit 3' > "$SC_DIR/.fabro/setup.sh"
+chmod +x "$SC_DIR/.fabro/setup.sh"
+sc_run ""
+check "scout ratchet: setup.sh exit 3: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout ratchet: setup.sh exit 3: status skipped" "skipped" "$(jq -r .status "$SC_DIR/scout/ratchet.json")"
+check "scout ratchet: setup.sh exit 3: reason" "setup.sh failed (exit 3)" "$(jq -r .reason "$SC_DIR/scout/ratchet.json")"
+
+# 6. flaky: jobs are read only for runs with run_attempt >= 2, and a failed log read leaves none.
+sc_setup flaky-jobs flaky
+cp "$SC_FIX/config.json" "$SC_DIR/scout/config.json"
+cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+cat > "$SC_DIR/jobs-in/runs.raw" <<'JSON'
+{"id":111,"path":".github/workflows/ci.yml","name":"CI","run_attempt":1,"head_sha":"a","head_branch":"main","created_at":"2026-10-15T00:00:00Z","html_url":"https://x/111"}
+{"id":222,"path":".github/workflows/ci.yml","name":"CI","run_attempt":2,"head_sha":"b","head_branch":"main","created_at":"2026-10-15T00:00:00Z","html_url":"https://x/222"}
+JSON
+cat > "$SC_DIR/jobs-in/jobs_222.json" <<'JSON'
+{"id":2220,"name":"test","run_attempt":1,"conclusion":"failure","html_url":"https://x/222/1","steps":[{"name":"Set up job","number":1,"conclusion":"success"},{"name":"Run pytest","number":2,"conclusion":"failure"}]}
+{"id":2221,"name":"test","run_attempt":2,"conclusion":"success","html_url":"https://x/222/2","steps":[]}
+JSON
+printf '%s' '{"since":"2026-10-02T02:00:00Z","jobs":[{"fp":"flaky:.github/workflows/ci.yml:test","workflow":".github/workflows/ci.yml","job":"test","count":3,"occurrences":[{"run_id":222,"run_url":"https://x/222","attempt":1,"failed_job_id":2220,"failed_job_url":"https://x/222/1","failed_steps":["Run pytest"],"created_at":"2026-10-15T00:00:00Z","head_branch":"main","head_sha":"b"}]}]}' > "$SC_DIR/jobs-in/flaky.json"
+sc_run "SC_RUNS=$SC_DIR/jobs-in/runs.raw SC_FLAKY=$SC_DIR/jobs-in/flaky.json SC_FAIL_LOG=1"
+check "scout flaky: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout flaky: jobs read for the attempt-2 run" "1" "$(grep -c '/actions/runs/222/jobs' "$SC_DIR/gh.log")"
+check "scout flaky: no jobs read for the attempt-1 run" "0" "$(grep -c '/actions/runs/111/jobs' "$SC_DIR/gh.log")"
+check "scout flaky: a failed log read leaves no log file" "0" "$(test -e "$SC_DIR/scout/logs/2220.txt" && echo 1 || echo 0)"
+
+# 7. flaky: a failed run list stops the run.
+sc_setup flaky-runs flaky
+cp "$SC_FIX/config.json" "$SC_DIR/scout/config.json"
+cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+sc_run "SC_FAIL_RUNS=1"
+check "scout flaky: run list fails: exit 1" "1" "$(cat "$SC_DIR.rc")"
+check "scout flaky: run list fails: stop_reason" "could not read Actions runs" "$(cat "$SC_DIR/scout/stop_reason")"
+
+# 8. file: a dry repository writes nothing.
+sc_setup file-dry file
+cp "$SC_FIX/config.json" "$SC_DIR/scout/config.json"
+cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+printf '%s' '{"filing":false,"repo":"andrewthetechie/jelly-swipe","sources":{"ratchet":"ok","flaky":"ok"},"actions":[]}' > "$SC_DIR/scout/plan.json"
+sc_run ""
+check "scout file: dry: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout file: dry: no issue create" "0" "$(if [ -e "$SC_DIR/gh.log" ]; then grep -c '^gh issue create' "$SC_DIR/gh.log"; else echo 0; fi)"
+
+# Two file actions, for cases 9 to 11.
+SC_ACTIONS='{"filing":true,"repo":"andrewthetechie/jelly-swipe","sources":{"ratchet":"ok","flaky":"ok"},"actions":[{"kind":"file","source":"ratchet","fp":"ratchet:ruff:b006","issue":null,"title":"scout: one","body":"body one","labels":["agent","scout","ai-generated","bug","fast-path"],"detail":"1 finding in 1 file"},{"kind":"file","source":"flaky","fp":"flaky:.github/workflows/ci.yml:test","issue":null,"title":"scout: two","body":"body two","labels":["agent","scout","ai-generated","flaky-test"],"detail":"3 flakes in 14 days"}]}'
+
+# 9. file: two actions become two creates, each carrying every label.
+sc_setup file-live file
+cp "$SC_FIX/config_live.json" "$SC_DIR/scout/config.json"
+cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+printf '%s' "$SC_ACTIONS" > "$SC_DIR/scout/plan.json"
+sc_run "SC_ISSUES=$SC_FIX/no-issues.raw"
+check "scout file: live: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout file: live: two creates" "2" "$(grep -c '^gh issue create' "$SC_DIR/gh.log")"
+check "scout file: live: the ratchet labels" "1" "$(grep -c 'issue create --title scout: one --body-file .* --label agent --label scout --label ai-generated --label bug --label fast-path' "$SC_DIR/gh.log")"
+check "scout file: live: the flaky labels" "1" "$(grep -c 'issue create --title scout: two --body-file .* --label agent --label scout --label ai-generated --label flaky-test' "$SC_DIR/gh.log")"
+check "scout file: live: two filed entries" "filed,filed" "$(jq -r '[.[].outcome] | join(",")' "$SC_DIR/scout/filed.json")"
+check "scout file: live: the parsed numbers" "101,102" "$(jq -r '[.[].number] | map(tostring) | join(",")' "$SC_DIR/scout/filed.json")"
+
+# 10. file: a fingerprint that appeared before the write is `raced`.
+sc_setup file-raced file
+cp "$SC_FIX/config_live.json" "$SC_DIR/scout/config.json"
+cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+printf '%s' "$SC_ACTIONS" > "$SC_DIR/scout/plan.json"
+printf '%s\n' '{"number":9,"state":"open","state_reason":null,"closed_at":null,"body":"<!-- fabro:scout fp=flaky:.github/workflows/ci.yml:test -->"}' > "$SC_DIR/jobs-in/raced-issues.raw"
+sc_run "SC_ISSUES=$SC_DIR/jobs-in/raced-issues.raw"
+check "scout file: raced: one create" "1" "$(grep -c '^gh issue create' "$SC_DIR/gh.log")"
+check "scout file: raced: outcomes" "filed,raced" "$(jq -r '[.[].outcome] | join(",")' "$SC_DIR/scout/filed.json")"
+
+# 11. file: a failed create is recorded and stops the remaining writes.
+sc_setup file-fail file
+cp "$SC_FIX/config_live.json" "$SC_DIR/scout/config.json"
+cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+printf '%s' "$SC_ACTIONS" > "$SC_DIR/scout/plan.json"
+sc_run "SC_ISSUES=$SC_FIX/no-issues.raw SC_FAIL_CREATE=1"
+check "scout file: create fails: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout file: create fails: one entry" "1" "$(jq length "$SC_DIR/scout/filed.json")"
+check "scout file: create fails: the outcome is failed" "failed" "$(jq -r '.[0].outcome' "$SC_DIR/scout/filed.json")"
+check "scout file: create fails: no second create" "1" "$(grep -c '^gh issue create' "$SC_DIR/gh.log")"
+
+# 12. summarize: a stop is prefixed, and the routing object carries the line.
+sc_setup summarize-stop summarize
+printf '%s' 'prep could not read the repository' > "$SC_DIR/scout/stop_reason"
+printf '%s' 'prep' > "$SC_DIR/scout/stopped_at"
+printf '%s' '{"filing":false,"repo":"andrewthetechie/jelly-swipe","sources":{"ratchet":"ok","flaky":"ok"},"actions":[]}' > "$SC_DIR/scout/plan.json"
+printf '%s' 'scout jelly-swipe DRY RUN: would file 1' > "$SC_DIR/jobs-in/summary.txt"
+sc_run "SC_SUMMARY=$SC_DIR/jobs-in/summary.txt"
+routing_check "scout summarize, stop" "$SC_DIR" '.context_updates.scout_summary'
+check "scout summarize: the line starts Stopped at prep:" "1" "$(printf '%s' "$ROUTED" | grep -c '^Stopped at prep: prep could not read the repository')"
+check "scout summarize: no quote survives" "0" "$(printf '%s' "$ROUTED" | grep -c '"')"
+
+# The ratchet-flaky edge must stay unconditional: a ratchet failure must not stop flaky (D15).
+check "scout: ratchet -> flaky is unconditional" "1" "$(grep -c '^    ratchet -> flaky$' "$SC")"
 
 echo ""
 echo "the suite leaves the checkout alone"

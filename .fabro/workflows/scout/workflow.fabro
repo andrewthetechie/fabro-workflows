@@ -1,0 +1,213 @@
+digraph Scout {
+    graph [
+        goal="Scout: run this repository's Ratchet rules and read its flaky CI jobs, then file each new finding as an agent issue (ADR 0027)",
+        // Nothing is spliced in and there is no stylesheet: the graph has no agent stage. It has no
+        // cycle and imports nothing, so R1 (loop_restart_signature_limit) does not apply.
+        default_fidelity="truncate",
+        // Above every command node's timeout in this graph (the longest is ratchet at 65m), so R2
+        // holds. The 70m is 20m of setup.sh plus the ratchet subcommand's own 40m budget.
+        stall_timeout="70m"
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // Resets /tmp/fabro/scout, reads the repository, the head commit and the clock into env.json,
+    // normalises .fabro/scout.toml and lists every scout issue. Every GitHub read is written to a
+    // file first and its exit code checked before jq reads it: POSIX sh has no pipefail, so a
+    // failed `gh api | jq` would otherwise succeed. A missing fact writes stop_reason and exits 1,
+    // and summarize reads it. Prints scout=run so the routing edge to ratchet is taken.
+    prep [label="Prepare the run", shape=parallelogram, output_schema="routing", timeout="3m",
+        script="set -e
+S=/tmp/fabro/scout
+rm -rf /tmp/fabro/scout
+mkdir -p $S/logs $S/jobs
+stop() { printf '%s' \"$1\" > $S/stop_reason; printf prep > $S/stopped_at; echo \"$1\" >&2; exit 1; }
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
+SHA=$(git rev-parse HEAD 2>/dev/null || true)
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+[ -n \"$REPO\" ] || stop 'prep could not read the repository'
+[ -n \"$SHA\" ] || stop 'prep could not read the commit'
+jq -n --arg repo \"$REPO\" --arg sha \"$SHA\" --arg now \"$NOW\" '{repo: $repo, sha: $sha, now: $now}' > $S/env.json
+fabro-io scout config > $S/config.json || stop 'fabro-io has no scout subcommand: run make deploy-images'
+gh api --paginate \"repos/$REPO/issues?labels=scout&state=all&per_page=100\" --jq '.[] | select(.pull_request | not) | {number, state, state_reason, closed_at, body}' > $S/issues.raw || stop 'could not list scout issues'
+jq -s . $S/issues.raw > $S/issues.json || stop 'could not list scout issues'
+echo \"prep: repo=$REPO sha=$SHA\" >&2
+echo '{\"context_updates\":{\"scout\":\"run\"}}'"]
+
+    // Runs the Ratchet rules. A repository that declares none writes an empty ok result and never
+    // runs setup.sh. Otherwise setup.sh runs once under a 20-minute timeout, then the whole ratchet
+    // subcommand runs under its own 40-minute budget. D15: this node always exits 0, because a
+    // broken ratchet source must not stop the flaky source. A failure becomes the C3 skip shape,
+    // which plan reads as `skipped: <reason>`. Nothing is printed to stdout.
+    ratchet [label="Run the Ratchet rules", shape=parallelogram, timeout="65m",
+        script="S=/tmp/fabro/scout
+if [ \"$(jq '.ratchet | length' $S/config.json)\" = 0 ]; then
+  printf '%s' '{\"status\":\"ok\",\"reason\":null,\"entries\":[]}' > $S/ratchet.json
+  echo 'ratchet: no rules declared' >&2
+  exit 0
+fi
+if timeout 1200 ./.fabro/setup.sh > $S/setup.log 2>&1; then
+  if fabro-io scout ratchet --config $S/config.json > $S/ratchet.json; then
+    echo 'ratchet: the ratchet source ran' >&2
+  else
+    RC=$?
+    jq -n --arg r \"fabro-io scout ratchet failed (exit $RC)\" '{status:\"skipped\", reason:$r, entries:[]}' > $S/ratchet.json
+    echo \"ratchet: fabro-io scout ratchet failed (exit $RC)\" >&2
+  fi
+else
+  RC=$?
+  jq -n --arg r \"setup.sh failed (exit $RC)\" '{status:\"skipped\", reason:$r, entries:[]}' > $S/ratchet.json
+  echo \"ratchet: setup.sh failed (exit $RC)\" >&2
+fi
+exit 0"]
+
+    // Reads the last `window_days` days of workflow runs and, for every run with run_attempt >= 2,
+    // that run's jobs from every attempt. Any read failure writes stop_reason and exits 1: a
+    // partially-read run list would under-count flakes. Then the pure flaky subcommand finds the
+    // jobs that failed and then passed on a rerun, and the newest three log tails of every job at
+    // or above min_flakes are fetched. A log read that fails is not a stop: that occurrence is
+    // simply left out of the issue body.
+    flaky [label="Read the flaky CI jobs", shape=parallelogram, timeout="15m",
+        script="S=/tmp/fabro/scout
+stop() { printf '%s' \"$1\" > $S/stop_reason; printf flaky > $S/stopped_at; echo \"$1\" >&2; exit 1; }
+REPO=$(jq -r .repo $S/env.json)
+DAYS=$(jq -r '.flaky.window_days' $S/config.json)
+SINCE=$(date -u -d \"@$(( $(date +%s) - DAYS*86400 ))\" +%Y-%m-%dT%H:%M:%SZ)
+gh api --paginate \"repos/$REPO/actions/runs?created=>=${SINCE%%T*}&per_page=100\" --jq '.workflow_runs[]' > $S/runs.raw || stop 'could not read Actions runs'
+jq -s . $S/runs.raw > $S/runs.json || stop 'could not read Actions runs'
+jq -r '.[] | select(.run_attempt >= 2) | .id' $S/runs.json > $S/runids.txt
+while read -r ID; do
+  [ -n \"$ID\" ] || continue
+  gh api --paginate \"repos/$REPO/actions/runs/$ID/jobs?filter=all&per_page=100\" --jq '.jobs[]' > $S/jobs/jobs_$ID.raw || stop 'could not read Actions runs'
+  jq -s . $S/jobs/jobs_$ID.raw > $S/jobs/jobs_$ID.json || stop 'could not read Actions runs'
+done < $S/runids.txt
+fabro-io scout flaky --runs $S/runs.json --jobs-dir $S/jobs --since \"$SINCE\" > $S/flaky.json || stop 'fabro-io scout flaky failed'
+MIN=$(jq -r '.flaky.min_flakes' $S/config.json)
+for JID in $(jq -r --argjson m \"$MIN\" '[.jobs[] | select(.count >= $m)][0:10][] | .occurrences[0:3][] | .failed_job_id' $S/flaky.json); do
+  gh api \"repos/$REPO/actions/jobs/$JID/logs\" > $S/logs/$JID.txt || rm -f $S/logs/$JID.txt
+done
+echo \"flaky: since=$SINCE\" >&2
+exit 0"]
+
+    // The whole decision, and every issue's title and body, computed by the pure plan subcommand.
+    // Its stderr names every action so a wrong route is visible in the run log. A failure writes
+    // stop_reason and exits 1; the plan -> summarize edge then carries the stop.
+    plan [label="Plan the issues", shape=parallelogram, timeout="2m",
+        script="S=/tmp/fabro/scout
+REPO=$(jq -r .repo $S/env.json)
+SHA=$(jq -r .sha $S/env.json)
+if ! fabro-io scout plan --config $S/config.json --ratchet $S/ratchet.json --flaky $S/flaky.json --issues $S/issues.json --logs-dir $S/logs --repo \"$REPO\" --sha \"$SHA\" > $S/plan.json; then
+  printf '%s' 'plan: fabro-io scout plan failed' > $S/stop_reason
+  printf plan > $S/stopped_at
+  echo 'plan: fabro-io scout plan failed' >&2
+  exit 1
+fi
+jq -r '.actions[] | \"plan: \" + .kind + \" \" + .fp + \" \" + .detail' $S/plan.json >&2
+exit 0"]
+
+    // A dry repository (filing is not true) exits at once, which is the whole write path. A live
+    // one creates the six labels if missing, then writes each file or regression action. Before
+    // each write it re-lists the scout issues, so a fingerprint another run filed in the meantime
+    // is recorded as `raced` rather than filed twice. A failed write is recorded and stops the
+    // remaining writes (D15). The write log is $S/filed.json, which summarize reads (C8).
+    file [label="File the issues", shape=parallelogram, timeout="10m",
+        script="S=/tmp/fabro/scout
+if [ \"$(jq -r '.filing' $S/config.json)\" != true ]; then
+  echo 'file: dry run, nothing filed' >&2
+  exit 0
+fi
+REPO=$(jq -r .repo $S/env.json)
+cat > $S/labels.txt <<'LABELS'
+scout:1d76db:Filed by the scout (ADR 0027)
+flaky-test:fbca04:A CI job that fails at random
+ai-generated:ededed:Written by an automation
+fast-path:0e8a16:Short backlog lane (ADR 0023)
+bug:d73a4a:Something is not working
+agent:5319e7:Queued for the coder agents
+LABELS
+while IFS=: read -r NAME COLOR DESC; do
+  [ -n \"$NAME\" ] || continue
+  gh label create \"$NAME\" --color \"$COLOR\" --description \"$DESC\" 2>/dev/null || true
+done < $S/labels.txt
+record() {
+  jq -c --arg fp \"$1\" --arg o \"$2\" --arg n \"$3\" --arg e \"$4\" '. + [{fp: $fp, outcome: $o, number: (if $n == \"\" then null else ($n | tonumber) end), error: (if $e == \"\" then null else $e end)}]' $S/filed.json > $S/filed.tmp && mv $S/filed.tmp $S/filed.json
+}
+printf '[]' > $S/filed.json
+jq -c '.actions[] | select(.kind == \"file\" or .kind == \"regression\")' $S/plan.json > $S/actions.lines
+while IFS= read -r A; do
+  FP=$(printf '%s' \"$A\" | jq -r .fp)
+  if ! gh api --paginate \"repos/$REPO/issues?labels=scout&state=all&per_page=100\" --jq '.[] | select(.pull_request | not) | {body}' > $S/file_issues.raw; then
+    record \"$FP\" failed '' 'could not list scout issues'
+    break
+  fi
+  if ! jq -s . $S/file_issues.raw > $S/file_issues.json; then
+    record \"$FP\" failed '' 'could not list scout issues'
+    break
+  fi
+  if jq -e --arg m \"<!-- fabro:scout fp=$FP -->\" '[.[] | select((.body // \"\") | contains($m))] | length > 0' $S/file_issues.json > /dev/null; then
+    record \"$FP\" raced '' ''
+    continue
+  fi
+  T=$(printf '%s' \"$A\" | jq -r .title)
+  printf '%s' \"$A\" | jq -r .body > $S/body.md
+  set --
+  for L in $(printf '%s' \"$A\" | jq -r '.labels[]'); do set -- \"$@\" --label \"$L\"; done
+  if OUT=$(gh issue create --title \"$T\" --body-file $S/body.md \"$@\" 2>$S/create.err); then
+    N=$(printf '%s' \"$OUT\" | grep -o '[0-9]*$')
+    record \"$FP\" filed \"$N\" ''
+  else
+    record \"$FP\" failed '' \"$(tail -n 1 $S/create.err)\"
+    break
+  fi
+done < $S/actions.lines
+echo \"file: $(jq length $S/filed.json) write(s)\" >&2
+exit 0"]
+
+    // Builds the one line summarize publishes, always exits 0, and prints nothing to stdout but
+    // the routing object. A stop_reason is prefixed, so a failed prep or flaky node still reports.
+    // D17: an empty scout_summary means the Discord hook posts nothing, so a quiet run is silent.
+    // The line holds no quote, brace or backslash, which the hook's grep and the run state need.
+    summarize [label="Summarize the run", shape=parallelogram, output_schema="routing", timeout="1m",
+        script="S=/tmp/fabro/scout
+SUM=''
+if [ -s $S/stop_reason ]; then
+  STOP=$(cat $S/stop_reason | tr -d '[:cntrl:]' | cut -c1-300)
+  AT=$(cat $S/stopped_at 2>/dev/null || echo prep)
+  SUM=\"Stopped at $AT: $STOP\"
+fi
+if [ -f $S/plan.json ]; then
+  LINE=''
+  if [ -f $S/filed.json ]; then
+    LINE=$(fabro-io scout summary --plan $S/plan.json --filed $S/filed.json 2>/dev/null || true)
+  else
+    LINE=$(fabro-io scout summary --plan $S/plan.json 2>/dev/null || true)
+  fi
+  if [ -n \"$LINE\" ]; then
+    if [ -n \"$SUM\" ]; then SUM=\"$SUM | $LINE\"; else SUM=\"$LINE\"; fi
+  fi
+fi
+BS=$(awk 'BEGIN{printf \"%c\", 92}')
+SUM=$(printf '%s' \"$SUM\" | tr -d '\"{}' | tr -d \"$BS\" | head -c 1500)
+echo \"$SUM\" >&2
+jq -cn --arg m \"$SUM\" '{context_updates: {scout_summary: $m}}'
+exit 0"]
+
+    // The target of the summary hook (discord-scout-summary in workflow.toml).
+    finish [label="Finish", shape=parallelogram, timeout="1m", script="echo done"]
+
+    start -> prep
+    prep -> ratchet      [condition="outcome=succeeded && context.scout=run"]
+    prep -> summarize
+    // Deliberately unconditional: a ratchet failure must not stop the flaky source (D15). The
+    // ratchet node always exits 0, so it never takes a failure route of its own.
+    ratchet -> flaky
+    flaky -> plan        [condition="outcome=succeeded"]
+    flaky -> summarize
+    plan -> file         [condition="outcome=succeeded"]
+    plan -> summarize
+    file -> summarize
+    summarize -> finish
+    finish -> exit
+}
