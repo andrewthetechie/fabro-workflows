@@ -1,0 +1,81 @@
+[
+  {
+    "filePath": "/tmp/fabro-scout-test/src/app.ts",
+    "messages": [
+      {
+        "ruleId": "@typescript-eslint/no-floating-promises",
+        "severity": 2,
+        "message": "Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.",
+        "line": 10,
+        "column": 3,
+        "nodeType": "ExpressionStatement",
+        "messageId": "floatingVoid",
+        "endLine": 10,
+        "endColumn": 24
+      },
+      {
+        "ruleId": "@typescript-eslint/no-floating-promises",
+        "severity": 2,
+        "message": "Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.",
+        "line": 22,
+        "column": 7,
+        "nodeType": "ExpressionStatement",
+        "messageId": "floatingVoid",
+        "endLine": 22,
+        "endColumn": 30
+      },
+      {
+        "ruleId": "no-console",
+        "severity": 1,
+        "message": "Unexpected console statement.",
+        "line": 5,
+        "column": 1,
+        "nodeType": "MemberExpression",
+        "messageId": "unexpected",
+        "endLine": 5,
+        "endColumn": 12
+      }
+    ],
+    "suppressedMessages": [],
+    "errorCount": 2,
+    "fatalErrorCount": 0,
+    "warningCount": 1,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "/tmp/fabro-scout-test/src/index.ts",
+    "messages": [
+      {
+        "ruleId": "@typescript-eslint/no-floating-promises",
+        "severity": 2,
+        "message": "Promises must be awaited, end with a call to .catch, end with a call to .then with a rejection handler or be explicitly marked as ignored with the `void` operator.",
+        "line": 7,
+        "column": 5,
+        "nodeType": "ExpressionStatement",
+        "messageId": "floatingVoid",
+        "endLine": 7,
+        "endColumn": 18
+      }
+    ],
+    "suppressedMessages": [],
+    "errorCount": 1,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "/tmp/fabro-scout-test/src/clean.ts",
+    "messages": [],
+    "suppressedMessages": [],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  }
+]

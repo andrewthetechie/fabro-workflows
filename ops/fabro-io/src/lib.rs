@@ -13,6 +13,7 @@ pub mod inputs;
 pub mod manifest;
 pub mod pages;
 pub mod runtests;
+pub mod scout;
 pub mod serve;
 pub mod served;
 pub mod stage;

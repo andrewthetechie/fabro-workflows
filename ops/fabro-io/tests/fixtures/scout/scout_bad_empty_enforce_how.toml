@@ -1,0 +1,8 @@
+version = 1
+
+[[ratchet]]
+tool = "ruff"
+rule = "B006"
+command = "uv run ruff check --select B006 --output-format json src"
+enforce_in = "pyproject.toml"
+enforce_how = ""

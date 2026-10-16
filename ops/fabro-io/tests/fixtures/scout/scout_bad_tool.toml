@@ -1,0 +1,8 @@
+version = 1
+
+[[ratchet]]
+tool = "flake8"
+rule = "B006"
+command = "flake8 --format json"
+enforce_in = "setup.cfg"
+enforce_how = "select = B006"

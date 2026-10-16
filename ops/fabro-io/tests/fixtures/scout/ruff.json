@@ -1,0 +1,46 @@
+[
+  {
+    "cell": null,
+    "code": "B006",
+    "end_location": { "column": 30, "row": 10 },
+    "filename": "/tmp/fabro-scout-test/src/b.py",
+    "fix": null,
+    "location": { "column": 5, "row": 10 },
+    "message": "Do not use mutable data structures for argument defaults",
+    "noqa_row": 10,
+    "url": "https://docs.astral.sh/ruff/rules/mutable-argument-default"
+  },
+  {
+    "cell": null,
+    "code": "B006",
+    "end_location": { "column": 24, "row": 12 },
+    "filename": "src/a.py",
+    "fix": null,
+    "location": { "column": 5, "row": 12 },
+    "message": "Do not use mutable data structures for argument defaults",
+    "noqa_row": 12,
+    "url": "https://docs.astral.sh/ruff/rules/mutable-argument-default"
+  },
+  {
+    "cell": null,
+    "code": "B006",
+    "end_location": { "column": 28, "row": 14 },
+    "filename": "src/a.py",
+    "fix": null,
+    "location": { "column": 9, "row": 14 },
+    "message": "Do not use mutable data structures for argument defaults",
+    "noqa_row": 14,
+    "url": "https://docs.astral.sh/ruff/rules/mutable-argument-default"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": { "column": 120, "row": 3 },
+    "filename": "src/a.py",
+    "fix": null,
+    "location": { "column": 100, "row": 3 },
+    "message": "Line too long (119 > 88)",
+    "noqa_row": 3,
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  }
+]

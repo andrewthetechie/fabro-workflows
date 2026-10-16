@@ -1,0 +1,4 @@
+version = 1
+
+[flaky]
+min_flakes = 0
