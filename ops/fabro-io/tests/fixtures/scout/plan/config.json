@@ -1,0 +1,18 @@
+{
+  "present": true,
+  "valid": true,
+  "error": null,
+  "filing": false,
+  "ratchet": [
+    {
+      "index": 0,
+      "tool": "ruff",
+      "rule": "B006",
+      "command": "uv run ruff check --select B006 --output-format json src tests",
+      "enforce_in": "pyproject.toml",
+      "enforce_how": "add \"B006\" to `extend-select` under `[tool.ruff.lint]`",
+      "timeout_secs": 900
+    }
+  ],
+  "flaky": { "min_flakes": 3, "window_days": 14 }
+}

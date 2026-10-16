@@ -1,0 +1,23 @@
+{
+  "status": "ok",
+  "reason": null,
+  "entries": [
+    {
+      "index": 0,
+      "tool": "ruff",
+      "rule": "B006",
+      "fp": "ratchet:ruff:b006",
+      "status": "ok",
+      "error": null,
+      "count": 2,
+      "files": 1,
+      "findings": [
+        { "path": "src/a.py", "line": 12, "column": 5, "message": "Do not use mutable data structures for argument defaults" },
+        { "path": "src/a.py", "line": 14, "column": 9, "message": "Do not use mutable data structures for argument defaults" }
+      ],
+      "command": "uv run ruff check --select B006 --output-format json src tests",
+      "enforce_in": "pyproject.toml",
+      "enforce_how": "add \"B006\" to `extend-select` under `[tool.ruff.lint]`"
+    }
+  ]
+}

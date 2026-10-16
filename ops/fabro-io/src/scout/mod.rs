@@ -11,13 +11,15 @@
 
 pub mod config;
 pub mod flaky;
+pub mod plan;
 pub mod ratchet;
+pub mod text;
 
 use std::process::ExitCode;
 
 const USAGE: &str = concat!(
     "usage: fabro-io scout <command> [args]\n",
-    "commands: config [--file PATH] | ratchet --config FILE [--root DIR] | flaky --runs FILE --jobs-dir DIR --since TIMESTAMP\n"
+    "commands: config [--file PATH] | ratchet --config FILE [--root DIR] | flaky --runs FILE --jobs-dir DIR --since TIMESTAMP | plan --config F --ratchet F --flaky F --issues F --logs-dir D --repo O/N --sha S | summary --plan F [--filed F]\n"
 );
 
 /// Dispatches `fabro-io scout <command>` (C2, C3).
@@ -33,6 +35,8 @@ pub fn run_cli(args: &[String]) -> ExitCode {
         "config" => config::run_cli(&args[1..]),
         "ratchet" => ratchet::run_cli(&args[1..]),
         "flaky" => flaky::run_cli(&args[1..]),
+        "plan" => plan::run_cli(&args[1..]),
+        "summary" => text::run_cli(&args[1..]),
         other => {
             eprintln!("scout: unknown subcommand '{other}'");
             eprint!("{USAGE}");

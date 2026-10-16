@@ -1,0 +1,16 @@
+{
+  "since": "2026-10-02T02:00:00Z",
+  "jobs": [
+    {
+      "fp": "flaky:.github/workflows/ci.yml:test",
+      "workflow": ".github/workflows/ci.yml",
+      "job": "test",
+      "count": 3,
+      "occurrences": [
+        { "run_id": 4003, "run_url": "https://github.com/andrewthetechie/jelly-swipe/actions/runs/4003", "attempt": 1, "failed_job_id": 4301, "failed_job_url": "https://github.com/x/4301", "failed_steps": ["Run pytest"], "created_at": "2026-10-10T12:00:00Z", "head_branch": "feature/b", "head_sha": "333cccc333cccc333cccc333cccc333cccc333c" },
+        { "run_id": 4002, "run_url": "https://github.com/andrewthetechie/jelly-swipe/actions/runs/4002", "attempt": 1, "failed_job_id": 4201, "failed_job_url": "https://github.com/x/4201", "failed_steps": ["Run pytest"], "created_at": "2026-10-10T11:00:00Z", "head_branch": "feature/a", "head_sha": "222bbbb222bbbb222bbbb222bbbb222bbbb222b" },
+        { "run_id": 4001, "run_url": "https://github.com/andrewthetechie/jelly-swipe/actions/runs/4001", "attempt": 1, "failed_job_id": 4101, "failed_job_url": "https://github.com/x/4101", "failed_steps": ["Run pytest"], "created_at": "2026-10-10T10:00:00Z", "head_branch": "main", "head_sha": "111aaaa111aaaa111aaaa111aaaa111aaaa111a" }
+      ]
+    }
+  ]
+}

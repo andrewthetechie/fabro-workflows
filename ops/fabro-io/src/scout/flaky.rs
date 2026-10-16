@@ -12,7 +12,7 @@
 // Rust guideline compliant 2026-07-21
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
