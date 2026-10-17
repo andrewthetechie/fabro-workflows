@@ -2,7 +2,8 @@
 
 **Status:** designed 2026-10-16. Tasks 01-04 done 2026-10-17: deployed (02022b8, fabro-io
 0.7.0), lawncare-saas, womens-fantasy-sports and writers-app covered, and lawncare-saas live. ADR 0028 (proposed).
-andrewthetechie/flakeradar#5 shipped 2026-10-17. Task 05 still waits for #6. Every
+andrewthetechie/flakeradar#5 shipped 2026-10-17. #6 shipped and was deployed 2026-10-17, and
+task 05 (`05-write-back.md`, F12-F15, C11) is planned, not built. Every
 scout repository stays dry (`filing = false`) until tasks 01-03 are live, so the scout never
 files a job-level fingerprint that a per-test one then supersedes.
 
@@ -98,6 +99,31 @@ files a job-level fingerprint that a per-test one then supersedes.
   the `UI end-to-end (tauri-pilot)` job `explained`; attempt 2 was green, with an empty
   `failures`. The F8 rule below would have given that PR its second rerun instead of `ci_fix`.
 
+### Issue links (flakeradar#6, verified 2026-10-17)
+
+- `PUT /api/tests/{id}/issue` and `PUT /api/jobs/{id}/issue` set a link, and `DELETE` on the
+  same path removes it. Both need `X-API-Key: <FLAKERADAR_API_TOKEN>`. Without a valid key the
+  answer is `401 {"detail":"Invalid or missing X-API-Key"}`.
+- The body is `{"number": N}`. `url` is optional, and a `url` that is not that issue in the
+  entity's own repository is `422`. A `200` returns the test or job row with
+  `github_issue_number` set. The same number again is `200` and changes nothing.
+- A different issue already linked is `409` with
+  `{"detail":"Test already links issue #M; pass replace=true to replace it"}` (`Job` for a
+  job). `?replace=true` replaces it. An unknown id is `404`. A job whose pipeline is not
+  GitHub Actions is `422`.
+- `FLAKERADAR_API_TOKEN` is FlakeRadar's only token. It also uploads reports and sets
+  quarantine. Its copies: FlakeRadar's `.env`, and the `flakeradar` MCP header in the
+  operator's `~/.claude.json` on the Mac.
+- FlakeRadar's closed-issue sync and its own filer have one switch, `FLAKERADAR_GITHUB_TOKEN`.
+  It is unset (ADR 0028 D4 keeps filing off), so a link stays after its issue closes (F15).
+- The CI-run endpoint's `failed_jobs[].job_id` is the id `/api/jobs/{id}/issue` takes
+  (lawncare-saas run 38881352466: `job_id` 36, job `test` in `.github/workflows/frontend.yml`).
+  The fixtures `ops/fabro-io/tests/fixtures/flakeradar/run_*.json` already carry it. A test
+  candidate's id is C4b's `tests[].id`.
+- lawncare-saas #2919, #2920 and #2921 were filed before the write-back existed. Their test
+  ids are 1869302, 9554 and 9525 (each fingerprint matches its issue's marker), and none is
+  linked.
+
 ## Decisions
 
 | # | Decision |
@@ -113,6 +139,10 @@ files a job-level fingerprint that a per-test one then supersedes.
 | F9 | All failing checks known flaky → one more rerun (`ci_flaky_rerun_done`, cleared where `ci_rerun_done` is), when ≥ 15 minutes of `merge_deadline` are left and the node has run < 30 minutes. These are not the plain rerun's guards (30 and 20): the node has usually waited over 20 minutes by now, and they exist to leave `ci_fix` its time, which this path never spends. Green → the merge continues. Still red, or no time → `blocked`, with a reason naming the tests. Still red and FlakeRadar cannot judge the new attempt (C10's `unknown`: not reported yet, still processing, FlakeRadar down) → `blocked` too: after a second rerun only a failure shown to be real reaches `ci_fix`. The reason names the tests (and each one's `github_issue_number` when FlakeRadar has it, which task 05's write-back provides). `ci_fix` does not run on a known-flaky red in either case, including a first visit whose plain rerun the guards forbade. |
 | F10 | Otherwise `ci_fix` runs as today, and `ci_fix.md` gains `## Known flaky (FlakeRadar)`, listing those failures with "not caused by this PR: do not change, skip or retry these tests". `ci_fix.md.j2` tells the agent to fix the other failures, and to return `cannot_fix` when only those are left. |
 | F11 | `merge-queue` (queue mode) is unchanged in v1. |
+| F12 | Write-back (ADR 0028 D4, task 05): in a covered repository, the scout links each flaky issue it files to its FlakeRadar test or job, right after `gh issue create`. A Ratchet issue gets no link, and neither does a job that FlakeRadar never saw (no `job_id` in any of its lookups). The write-back is advisory (D3). A failed link is recorded and reported. It never stops the filing and never changes the plan. |
+| F13 | The token is the vault secret `FLAKERADAR_API_TOKEN`, put into the scout run only, as `{{ secrets.FLAKERADAR_API_TOKEN }}`. The run environment covers every node, so `setup.sh` and the Ratchet commands can read it. Accepted 2026-10-17: they already run with an `issues: write` GitHub token. The vault entry exists before the push that references it, because a missing secret aborts the run before its sandbox exists. `backlog`, `pr-review` and `dependabot` do not get the token. |
+| F14 | A `409` on a `regression` whose detail names the closed issue it regresses (the action's `issue`) is retried once with `?replace=true`. That link is the scout's own, and it went stale under F15. Any other `409` is a `conflict`: someone else linked another issue, the scout leaves it, and the summary names it. |
+| F15 | Stale links are accepted. FlakeRadar's sync stays off with its filer, and the scout never removes a link. A closed scout issue stays linked until a regression replaces it (F14), so F9's hold reason can name a closed issue. |
 
 ## Contracts (amendments to `docs/scout/`)
 
@@ -227,6 +257,69 @@ The `ci_flaky_rerun_done` file sits beside `ci_rerun_done` and `merge_gate` clea
 of `backlog`, `pr-review` and `dependabot` gains `FLAKERADAR_URL = "{{ vars.FLAKERADAR_URL }}"`,
 after task 02 has provisioned the variable.
 
+### C11: write-back (task 05, F12-F15)
+
+**C4b gains `jobs`.** The output gains `"jobs": [{"fp": <job fp>, "id": <FlakeRadar job id>}]`,
+sorted by `fp`. For each job in `--flaky`, take its occurrences newest first. The first one
+whose lookup (`run_<run>_<attempt>.json`) has a `failed_jobs` entry with
+`ci_job_id == failed_job_id` and a numeric `job_id` gives the id. `outcome` does not matter,
+because both outcomes name the same job. A job with no such occurrence is left out.
+`flakeradar::FailedJob` gains `job_id: Option<u64>` (`#[serde(default)]`). C10's output does
+not change. `FlakeradarOut.jobs` is `#[serde(default)]`, so `scout plan` still reads a 0.7.0
+`out.json`.
+
+**C5: the action gains `flakeradar`.** When the plan is `Radar::Read`, each `file` and
+`regression` action of source `flaky` gains `"flakeradar": {"entity": E, "id": N}`. A test
+candidate gets `{"entity": "tests", "id": <tests[].id>}`. A job candidate gets
+`{"entity": "jobs", "id": <jobs[].id>}` for its `fp`, and no key when `jobs` does not list it.
+`entity` is the API collection, so the URL is `<base>/api/<entity>/<id>/issue`. No other action
+has the key, and it is serialized only when set
+(`#[serde(skip_serializing_if = "Option::is_none")]`). An uncovered plan therefore stays byte
+for byte the same, and `an_uncovered_repository_plans_exactly_what_it_did_before` passes
+unchanged.
+
+**The write log gains `link`.** A `filed` entry whose action has `flakeradar` gains `link` and
+`link_detail` (both strings, `#[serde(default)]` on `text::Filed`):
+
+| `link` | When | `link_detail` |
+|---|---|---|
+| `linked` | the `PUT` answers 200 | null |
+| `replaced` | F14: a `409` names the action's `issue`, and the `?replace=true` retry answers 200 | null |
+| `conflict` | a `409` names any other issue | that issue's number, as a string (`"55"`) |
+| `failed` | anything else | the reason: `FLAKERADAR_URL is empty`, `FLAKERADAR_API_TOKEN is empty`, `HTTP 502`, `HTTP 409 with no issue number`, `replace returned HTTP 409`, `no response (<curl error>)` |
+
+`raced` and `failed` entries, and entries for actions without `flakeradar`, have no `link` key.
+
+**C8: one suffix.** Part 2's live `filed #N <source> <short>` gains ` (FlakeRadar already links
+#M)` for `conflict` and ` (FlakeRadar link failed: <link_detail>)` for `failed`. `linked`,
+`replaced` and no `link` add nothing. The header and the D17 empty rule do not change. The
+suffix is only ever added to a part that already exists.
+
+**C9: the `file` node.** After `record "$FP" filed "$N" ''`, when the action has `.flakeradar`:
+
+1. `B=${FLAKERADAR_URL%/}`. An empty `FLAKERADAR_URL` or `FLAKERADAR_API_TOKEN` is `failed`
+   with its reason, and no request is sent.
+2. `jq -cn --argjson n "$N" '{number: $n}' > $S/link_body.json`. A `.fabro` script allows no
+   backslash except `\"` (R6), so the body never goes inline in the shell.
+3. `curl -sS -m 20 -X PUT -H "X-API-Key: $FLAKERADAR_API_TOKEN" -H 'Content-Type: application/json' --data @$S/link_body.json -o $S/link.out -w '%{http_code}' "$B/api/$ENT/$ID/issue" < /dev/null 2> $S/link.err || echo 000`.
+   This is the `|| echo 000` idiom of the `flaky` node's `fr_get`.
+4. `200` is `linked`. `409`: `M=$(jq -r '.detail // ""' $S/link.out 2>/dev/null | grep -o '#[0-9][0-9]*' | head -n 1 | tr -d '#')`.
+   When the action's `kind` is `regression` and `M` equals its `issue`, send the same request
+   to `.../issue?replace=true`: `200` is `replaced`, and any other code is `failed`
+   (`replace returned HTTP C`). Otherwise a non-empty `M` is `conflict` and an empty `M` is
+   `failed`. A code starting `000` is `failed` with `no response (...)`, which is the first
+   120 characters of `link.err` with control characters removed. Any other code is `failed`
+   with `HTTP C`.
+5. Add the fields to the entry just recorded:
+   `jq -c --arg l "$L" --arg d "$D" '.[-1] += {link: $l, link_detail: (if $d == "" then null else $d end)}'`.
+6. Print one line to stderr, `file: FlakeRadar <entity>/<id> #N: <link>`, and go on to the next
+   action. A link outcome never `break`s the loop. The token never reaches a log, the write
+   log or stderr: no `set -x`, and no echo of a curl command line.
+
+`scout/workflow.toml` `[run.environment.env]` gains
+`FLAKERADAR_API_TOKEN = "{{ secrets.FLAKERADAR_API_TOKEN }}"` (F13). The node count and the edges
+do not change: `Scout (9 nodes, 11 edges)`.
+
 ## Tasks
 
 | Task | What | Files |
@@ -235,5 +328,5 @@ after task 02 has provisioned the variable.
 | 02 | Scout graph: the `flaky` node fetches FlakeRadar into `$S/flakeradar/` when `FLAKERADAR_URL` is set and the repository is covered; `FLAKERADAR_URL` variable provisioned first | `scout/workflow.{fabro,toml}`, `ops/provision-server-state.sh`, `ops/test-task-gates.sh` |
 | 03 | `[flakeradar]` in the three covered repositories' `scout.toml`; dry runs; then go live (scout task 07 step 10) | target repositories (operator) |
 | 04 | Merge phase F8-F10 (C10): `fabro-io flakeradar classify`, then `watch_checks`' fetch, second rerun, hold and `ci_fix.md` section. After task 02 (the variable and fabro-io 0.7.0); flakeradar#5 shipped | `ops/fabro-io/src/flakeradar/`, `_shared/review-merge/review-merge.fabro`, `backlog`/`pr-review`/`dependabot` `workflow.toml`, `ops/test-task-gates.sh`, invariants-merge |
-| 05 | Scout write-back of each filed issue's link, after flakeradar#6 ships | scout `file` node |
+| 05 | Scout write-back (F12-F15, C11): `05-write-back.md`. fabro-io 0.8.0, the `file` node, the vault secret, the backfill of lawncare-saas #2919-#2921 | `ops/fabro-io/src/{flakeradar,scout/flakeradar,scout/plan,scout/text}.rs`, tests, `scout/workflow.{fabro,toml}`, `ops/test-task-gates.sh`, ADR 0028, `ops/README.md` |
 | 06 | ADR 0028 accepted after the scout's 14-day measurement and a week of F9 holds read by hand | docs |
