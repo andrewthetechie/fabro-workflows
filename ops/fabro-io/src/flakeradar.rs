@@ -100,6 +100,10 @@ pub struct FailedJob {
     /// `explained` or `unexplained`.
     #[serde(default)]
     pub outcome: String,
+    /// FlakeRadar's job id, when it has one. It is what `/api/jobs/{id}/issue` takes, so
+    /// the scout's write-back links a filed job issue with it (ADR 0028 C11).
+    #[serde(default)]
+    pub job_id: Option<u64>,
 }
 
 /// C10's output.

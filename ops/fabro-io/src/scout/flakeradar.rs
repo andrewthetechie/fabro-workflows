@@ -117,6 +117,20 @@ pub struct FlakeradarOut {
     pub tests: Vec<FlakyTest>,
     /// The Flaky job occurrences FlakeRadar explains, by failed job id, ascending (F4).
     pub explained: Vec<u64>,
+    /// FlakeRadar's job id of every counted job it knows, by fingerprint, ascending
+    /// (C11). The write-back links a filed job issue with it, and it is empty when the
+    /// plan read an `out.json` from an older fabro-io.
+    #[serde(default)]
+    pub jobs: Vec<JobLink>,
+}
+
+/// FlakeRadar's id of one counted job (C11).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobLink {
+    /// The scout fingerprint of the job, C3's `flaky:<workflow>:<job>`.
+    pub fp: String,
+    /// FlakeRadar's job id, the value `/api/jobs/{id}/issue` takes.
+    pub id: u64,
 }
 
 /// One flaky test worth an issue (F2).
@@ -299,7 +313,30 @@ pub fn digest(input: &Inputs<'_>) -> Result<FlakeradarOut, String> {
             }
         }
     }
-    Ok(FlakeradarOut { tests, explained: explained.into_iter().collect() })
+    // C11: the newest occurrence whose lookup names this job with a numeric id gives the
+    // id. Occurrences are newest first, but sort so the rule does not depend on it.
+    let mut jobs: BTreeMap<String, u64> = BTreeMap::new();
+    for job in &input.flaky.jobs {
+        let mut occurrences: Vec<&super::flaky::Occurrence> = job.occurrences.iter().collect();
+        occurrences.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        for occurrence in occurrences {
+            let Some(lookup) = input.runs.get(&(occurrence.run_id, occurrence.attempt)) else {
+                continue;
+            };
+            let id = occurrence.failed_job_id.to_string();
+            if let Some(job_id) = lookup
+                .failed_jobs
+                .iter()
+                .find(|failed| failed.ci_job_id.as_deref() == Some(&id))
+                .and_then(|failed| failed.job_id)
+            {
+                jobs.insert(job.fp.clone(), job_id);
+                break;
+            }
+        }
+    }
+    let jobs: Vec<JobLink> = jobs.into_iter().map(|(fp, id)| JobLink { fp, id }).collect();
+    Ok(FlakeradarOut { tests, explained: explained.into_iter().collect(), jobs })
 }
 
 /// One timestamp normalised, or the error that names it.

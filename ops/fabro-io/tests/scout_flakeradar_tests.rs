@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use fabro_io::scout::config::ConfigOut;
-use fabro_io::scout::flakeradar::{self, History, Inputs, RunFailures, TestItem};
+use fabro_io::flakeradar::{FailedJob, Reports};
+use fabro_io::scout::flakeradar::{self, History, Inputs, JobLink, RunFailures, TestItem};
 use fabro_io::scout::flaky::{FlakyJob, FlakyOut, Occurrence};
 
 const REPO: &str = "andrewthetechie/writers-app";
@@ -243,4 +244,146 @@ fn the_cli_reads_the_graphs_files() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["tests"].as_array().unwrap().len(), 3);
     assert_eq!(json["explained"], serde_json::json!([117_191_778_924_u64]));
+}
+
+// ---- ADR 0028 C11: the FlakeRadar job id of every counted job, for the write-back ----
+
+/// The lawncare-saas 38779657986 lookup: job `alls-green-playwright` has FlakeRadar id 12.
+fn runs_lawncare() -> BTreeMap<(u64, u64), RunFailures> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/flakeradar/run_38779657986.json");
+    let one: RunFailures = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    BTreeMap::from([((38_779_657_986, 1), one)])
+}
+
+/// A CI-run lookup with one failed job, for the job-id tests.
+fn failed(ci_job_id: &str, job_id: Option<u64>) -> RunFailures {
+    RunFailures {
+        reports: Reports::default(),
+        truncated: false,
+        failures: vec![],
+        failed_jobs: vec![FailedJob {
+            ci_job_id: Some(ci_job_id.to_string()),
+            outcome: "unexplained".to_string(),
+            job_id,
+        }],
+    }
+}
+
+/// An occurrence at `created_at`, so the newest-first rule can be tested against order.
+fn occ_at(run_id: u64, attempt: u64, failed_job_id: u64, created_at: &str) -> Occurrence {
+    let mut occurrence = occ(run_id, attempt, failed_job_id);
+    occurrence.created_at = created_at.to_string();
+    occurrence
+}
+
+/// One Flaky job with `fp` and these occurrences.
+fn one_job(fp: &str, occurrences: Vec<Occurrence>) -> FlakyOut {
+    let count = occurrences.len();
+    FlakyOut {
+        since: SINCE.to_string(),
+        jobs: vec![FlakyJob {
+            fp: fp.to_string(),
+            workflow: ".github/workflows/playwright.yml".to_string(),
+            job: "alls-green-playwright".to_string(),
+            count,
+            occurrences,
+        }],
+    }
+}
+
+/// Digests a jobs-only flaky source against these lookups.
+fn digest_jobs(
+    flaky: &FlakyOut,
+    runs: &BTreeMap<(u64, u64), RunFailures>,
+) -> flakeradar::FlakeradarOut {
+    flakeradar::digest(&Inputs {
+        tests: &[],
+        histories: &BTreeMap::new(),
+        runs,
+        flaky,
+        config: &config(1),
+        since: SINCE,
+        base: BASE,
+        repo: REPO,
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_job_occurrence_lookup_gives_the_flakeradar_job_id() {
+    let fp = "flaky:.github/workflows/playwright.yml:alls-green-playwright";
+    let flaky = one_job(fp, vec![occ(38_779_657_986, 1, 116_582_572_835)]);
+    let out = digest_jobs(&flaky, &runs_lawncare());
+    assert_eq!(out.jobs, vec![JobLink { fp: fp.to_string(), id: 12 }]);
+}
+
+#[test]
+fn a_job_with_no_lookup_is_left_out() {
+    let flaky = one_job("flaky:.github/workflows/playwright.yml:alls-green-playwright", vec![occ(1, 1, 2)]);
+    let out = digest_jobs(&flaky, &BTreeMap::new());
+    assert!(out.jobs.is_empty(), "{:?}", out.jobs);
+}
+
+#[test]
+fn a_lookup_entry_without_a_job_id_gives_nothing() {
+    let flaky = one_job(
+        "flaky:.github/workflows/playwright.yml:alls-green-playwright",
+        vec![occ(38_779_657_986, 1, 116_582_572_835)],
+    );
+    let runs = BTreeMap::from([((38_779_657_986, 1), failed("116582572835", None))]);
+    let out = digest_jobs(&flaky, &runs);
+    assert!(out.jobs.is_empty(), "{:?}", out.jobs);
+}
+
+#[test]
+fn the_newest_matching_occurrence_wins() {
+    let fp = "flaky:.github/workflows/playwright.yml:alls-green-playwright";
+    // Oldest first, to prove the rule sorts rather than trusting the input order.
+    let flaky = one_job(
+        fp,
+        vec![
+            occ_at(111, 1, 5, "2026-10-15T00:00:00Z"),
+            occ_at(222, 1, 6, "2026-10-16T00:00:00Z"),
+        ],
+    );
+    let runs = BTreeMap::from([
+        ((111, 1), failed("5", Some(12))),
+        ((222, 1), failed("6", Some(99))),
+    ]);
+    let out = digest_jobs(&flaky, &runs);
+    assert_eq!(out.jobs, vec![JobLink { fp: fp.to_string(), id: 99 }]);
+}
+
+#[test]
+fn jobs_are_sorted_by_fingerprint() {
+    let flaky = FlakyOut {
+        since: SINCE.to_string(),
+        jobs: vec![
+            FlakyJob {
+                fp: "flaky:z".to_string(),
+                workflow: "z".to_string(),
+                job: "z".to_string(),
+                count: 1,
+                occurrences: vec![occ(38_779_657_986, 1, 116_582_572_835)],
+            },
+            FlakyJob {
+                fp: "flaky:a".to_string(),
+                workflow: "a".to_string(),
+                job: "a".to_string(),
+                count: 1,
+                occurrences: vec![occ(38_779_657_986, 1, 116_582_572_835)],
+            },
+        ],
+    };
+    let out = digest_jobs(&flaky, &runs_lawncare());
+    let fps: Vec<&str> = out.jobs.iter().map(|job| job.fp.as_str()).collect();
+    assert_eq!(fps, ["flaky:a", "flaky:z"]);
+}
+
+#[test]
+fn an_out_json_without_jobs_deserializes_to_an_empty_list() {
+    let out: flakeradar::FlakeradarOut =
+        serde_json::from_str(r#"{"tests":[],"explained":[]}"#).unwrap();
+    assert!(out.jobs.is_empty());
 }

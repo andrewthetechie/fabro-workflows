@@ -46,6 +46,13 @@ pub struct Filed {
     /// The error, when it failed.
     #[serde(default)]
     pub error: Option<String>,
+    /// The FlakeRadar link's outcome on a `filed` entry whose action had one (C11):
+    /// `linked`, `replaced`, `conflict` or `failed`. Absent otherwise.
+    #[serde(default)]
+    pub link: Option<String>,
+    /// The conflict's issue number, or the failure's reason (C11).
+    #[serde(default)]
+    pub link_detail: Option<String>,
 }
 
 /// C6's title for a Ratchet rule.
@@ -509,11 +516,15 @@ pub fn summary(plan: &PlanOut, filed: Option<&[Filed]>) -> String {
                         continue;
                     };
                     match entry.outcome.as_str() {
-                        "filed" => action_parts.push(format!(
-                            "filed #{} {} {short}",
-                            entry.number.unwrap_or(0),
-                            action.source
-                        )),
+                        "filed" => {
+                            let mut part = format!(
+                                "filed #{} {} {short}",
+                                entry.number.unwrap_or(0),
+                                action.source
+                            );
+                            part.push_str(&link_suffix(entry));
+                            action_parts.push(part);
+                        }
                         "raced" => action_parts.push(format!("raced {short}")),
                         "failed" => action_parts.push(format!(
                             "write failed {short}: {}",
@@ -553,6 +564,16 @@ pub fn summary(plan: &PlanOut, filed: Option<&[Filed]>) -> String {
     let mut parts = vec![header];
     parts.extend(action_parts);
     fit(&parts).replace('"', "").replace('\\', "")
+}
+
+/// C11's write-back suffix on a `filed` part. It is empty unless the link needs reporting.
+fn link_suffix(entry: &Filed) -> String {
+    let detail = entry.link_detail.clone().unwrap_or_default();
+    match entry.link.as_deref() {
+        Some("conflict") => format!(" (FlakeRadar already links #{detail})"),
+        Some("failed") => format!(" (FlakeRadar link failed: {detail})"),
+        _ => String::new(),
+    }
 }
 
 /// `<tool> <rule> (<detail>)` or `<job> (<detail>)`, plus the regression suffix (C8).

@@ -144,6 +144,22 @@ pub struct Action {
     /// carry either, and the summary has nothing else to read them from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
+    /// The FlakeRadar test or job this action's issue links to (C11). Only a `file` or
+    /// `regression` action of source `flaky` in a covered repository has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flakeradar: Option<RadarLink>,
+}
+
+/// The FlakeRadar entity a filed flaky issue links to (C11).
+///
+/// The `entity` is the API collection, so the link's URL is
+/// `<base>/api/<entity>/<id>/issue`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RadarLink {
+    /// `tests` for a flaky test, `jobs` for a flaky job.
+    pub entity: String,
+    /// FlakeRadar's id of the test or job.
+    pub id: u64,
 }
 
 /// Every fingerprint an issue body carries, in order, invalid ones dropped (C5).
@@ -248,6 +264,7 @@ pub fn plan(input: &PlanInput<'_>) -> PlanOut {
 
     let radar = if input.config.flakeradar.covered { input.flakeradar } else { Radar::Off };
     let mut explained: BTreeSet<u64> = BTreeSet::new();
+    let mut job_links: BTreeMap<String, u64> = BTreeMap::new();
     match radar {
         Radar::Off => {}
         Radar::Skipped(reason) => {
@@ -263,6 +280,9 @@ pub fn plan(input: &PlanInput<'_>) -> PlanOut {
         }
         Radar::Read(out) => {
             explained.extend(out.explained.iter().copied());
+            for link in &out.jobs {
+                job_links.insert(link.fp.clone(), link.id);
+            }
             for test in &out.tests {
                 if let Some(action) = test_action(test, &known, &open, &mut planned) {
                     actions.push(action);
@@ -353,6 +373,9 @@ pub fn plan(input: &PlanInput<'_>) -> PlanOut {
             labels: Some(labels),
             detail,
             subject: Some(job.job.clone()),
+            flakeradar: job_links
+                .get(&job.fp)
+                .map(|id| RadarLink { entity: "jobs".to_string(), id: *id }),
         });
     }
 
@@ -387,6 +410,7 @@ fn test_action<'a>(
         labels: None,
         detail: detail.clone(),
         subject: Some(text::test_subject(test)),
+        flakeradar: None,
     };
     if let Some(issue) = list.and_then(|list| list.iter().find(|i| i.state == "open")) {
         return Some(action("known", Some(issue.number)));
@@ -411,6 +435,7 @@ fn test_action<'a>(
     out.title = Some(text::test_title(test, &detail, closed));
     out.body = Some(text::test_body(test, closed));
     out.labels = Some(FLAKY_LABELS.iter().map(|l| (*l).to_string()).collect());
+    out.flakeradar = Some(RadarLink { entity: "tests".to_string(), id: test.id });
     Some(out)
 }
 
@@ -511,6 +536,7 @@ fn plain(
         labels: None,
         detail: detail.to_string(),
         subject: Some(format!("{} {}", entry.tool, entry.rule)),
+        flakeradar: None,
     }
 }
 
@@ -531,6 +557,7 @@ fn plain_flaky(
         labels: None,
         detail: detail.to_string(),
         subject: Some(job.job.clone()),
+        flakeradar: None,
     }
 }
 
@@ -555,6 +582,7 @@ fn with_body(
         labels: Some(labels),
         detail: detail.to_string(),
         subject: Some(format!("{} {}", entry.tool, entry.rule)),
+        flakeradar: None,
     }
 }
 

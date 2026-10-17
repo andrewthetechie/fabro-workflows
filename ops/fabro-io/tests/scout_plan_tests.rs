@@ -9,8 +9,8 @@ use serde::de::DeserializeOwned;
 
 use fabro_io::scout::config::ConfigOut;
 use fabro_io::scout::flaky::{FlakyJob, FlakyOut, Occurrence};
-use fabro_io::scout::flakeradar::{Failure, FlakeradarOut, FlakyTest};
-use fabro_io::scout::plan::{self, Action, Issue, PlanInput, PlanOut, Radar, Sources};
+use fabro_io::scout::flakeradar::{Failure, FlakeradarOut, FlakyTest, JobLink};
+use fabro_io::scout::plan::{self, Action, Issue, PlanInput, PlanOut, Radar, RadarLink, Sources};
 use fabro_io::scout::ratchet::{EntryOut, Finding, RatchetOut};
 use fabro_io::scout::text::{self, Filed};
 use fabro_io::scout::{flaky_fp, ratchet_fp};
@@ -145,6 +145,7 @@ fn act(kind: &str, source: &str, fp: &str, issue: Option<u64>, subject: &str, de
         labels: None,
         detail: detail.to_string(),
         subject: Some(subject.to_string()),
+        flakeradar: None,
     }
 }
 
@@ -508,6 +509,8 @@ fn summary_live_with_filed() {
         outcome: "filed".to_string(),
         number: Some(12),
         error: None,
+        link: None,
+        link_detail: None,
     }];
     let line = text::summary(&plan, Some(&filed));
     assert!(line.contains("filed #12 ratchet ruff B006 (2 findings in 1 file)"), "{line}");
@@ -551,12 +554,14 @@ fn summary_shows_raced_and_write_failed() {
         ],
     );
     let filed = vec![
-        Filed { fp: "ratchet:ruff:b001".to_string(), outcome: "raced".to_string(), number: None, error: None },
+        Filed { fp: "ratchet:ruff:b001".to_string(), outcome: "raced".to_string(), number: None, error: None, link: None, link_detail: None },
         Filed {
             fp: "ratchet:ruff:b002".to_string(),
             outcome: "failed".to_string(),
             number: None,
             error: Some("label create failed".to_string()),
+            link: None,
+            link_detail: None,
         },
     ];
     let line = text::summary(&plan, Some(&filed));
@@ -675,12 +680,14 @@ fn summary_live_header_counts_only_filed_outcomes() {
         ],
     );
     let filed = vec![
-        Filed { fp: "ratchet:ruff:b001".to_string(), outcome: "filed".to_string(), number: Some(7), error: None },
+        Filed { fp: "ratchet:ruff:b001".to_string(), outcome: "filed".to_string(), number: Some(7), error: None, link: None, link_detail: None },
         Filed {
             fp: "ratchet:ruff:b002".to_string(),
             outcome: "failed".to_string(),
             number: None,
             error: Some("boom".to_string()),
+            link: None,
+            link_detail: None,
         },
     ];
     let line = text::summary(&plan, Some(&filed));
@@ -788,6 +795,7 @@ fn flaky_tests_are_filed_before_jobs_and_share_their_cap() {
             radar_test("cccc", "folder picker", 0.6, 1, "2026-10-16T21:18:39Z"),
         ],
         explained: vec![],
+        jobs: vec![],
     };
     let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Read(&radar));
     assert_eq!(kinds(&out), ["file", "file", "file", "capped"]);
@@ -807,6 +815,7 @@ fn a_flaky_test_issue_names_the_test_and_its_failures() {
     let radar = FlakeradarOut {
         tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
         explained: vec![],
+        jobs: vec![],
     };
     let out = run_radar(&covered(false), &flaky(vec![]), &[], Radar::Read(&radar));
     let body = out.actions[0].body.clone().unwrap();
@@ -832,7 +841,7 @@ fn a_flaky_test_issue_names_the_test_and_its_failures() {
 
 #[test]
 fn a_job_whose_flakes_flakeradar_explains_is_not_filed() {
-    let radar = FlakeradarOut { tests: vec![], explained: vec![1] };
+    let radar = FlakeradarOut { tests: vec![], explained: vec![1], jobs: vec![] };
     let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Read(&radar));
     // Two unexplained flakes are below min_flakes (3), so the job's flake is its test's.
     assert_eq!(kinds(&out), ["explained"]);
@@ -845,7 +854,7 @@ fn a_job_whose_flakes_flakeradar_explains_is_not_filed() {
 fn a_job_with_enough_unexplained_flakes_is_filed_on_those_alone() {
     let occurrences = (1..=4).map(|i| occ(i, "2026-10-12T00:00:00Z")).collect();
     let flaky = flaky(vec![flaky_job(".github/workflows/ci.yml", "pre-commit", occurrences)]);
-    let radar = FlakeradarOut { tests: vec![], explained: vec![2] };
+    let radar = FlakeradarOut { tests: vec![], explained: vec![2], jobs: vec![] };
     let out = run_radar(&covered(false), &flaky, &[], Radar::Read(&radar));
     assert_eq!(kinds(&out), ["file"]);
     assert_eq!(out.actions[0].detail, "3 flakes in 14 days");
@@ -867,6 +876,7 @@ fn an_uncovered_repository_plans_exactly_what_it_did_before() {
     let radar = FlakeradarOut {
         tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
         explained: vec![1, 2, 3],
+        jobs: vec![],
     };
     let config = config(false);
     let before = serde_json::to_string(&run_radar(&config, &three_flakes(), &[], Radar::Off)).unwrap();
@@ -884,6 +894,7 @@ fn a_test_regresses_only_on_a_failure_after_its_issue_closed() {
     let after = FlakeradarOut {
         tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
         explained: vec![],
+        jobs: vec![],
     };
     let out = run_radar(&covered(false), &flaky(vec![]), &closed, Radar::Read(&after));
     assert_eq!(kinds(&out), ["regression"]);
@@ -893,6 +904,7 @@ fn a_test_regresses_only_on_a_failure_after_its_issue_closed() {
     let before = FlakeradarOut {
         tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-13T09:00:00Z")],
         explained: vec![],
+        jobs: vec![],
     };
     let out = run_radar(&covered(false), &flaky(vec![]), &closed, Radar::Read(&before));
     assert!(out.actions.is_empty(), "{:?}", kinds(&out));
@@ -906,6 +918,7 @@ fn a_flaky_test_with_an_open_or_not_planned_issue_is_known_or_suppressed() {
             radar_test("bbbb", "two", 0.6, 1, "2026-10-16T21:18:39Z"),
         ],
         explained: vec![],
+        jobs: vec![],
     };
     let issues = vec![
         issue(41, "open", None, None, "flaky:test-pilot:aaaa"),
@@ -922,6 +935,7 @@ fn the_summary_counts_explained_jobs() {
     let radar = FlakeradarOut {
         tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
         explained: vec![1],
+        jobs: vec![],
     };
     let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Read(&radar));
     assert_eq!(kinds(&out), ["file", "explained"]);
@@ -929,4 +943,204 @@ fn the_summary_counts_explained_jobs() {
         text::summary(&out, None),
         "scout writers-app DRY RUN: would file 1, explained 1 | would file flaky welcome mat shows (score 0.70, 2 proven flakes)"
     );
+}
+
+// ---- ADR 0028 C11: the action carries its FlakeRadar target, only for flaky file/regression ----
+
+/// The JSON of one action, for the presence of the C11 key.
+fn json_of(action: &Action) -> serde_json::Value {
+    serde_json::to_value(action).unwrap()
+}
+
+#[test]
+fn a_test_file_action_carries_its_flakeradar_link() {
+    let radar = FlakeradarOut {
+        tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
+        explained: vec![],
+        jobs: vec![],
+    };
+    let out = run_radar(&covered(false), &flaky(vec![]), &[], Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["file"]);
+    assert_eq!(out.actions[0].flakeradar, Some(RadarLink { entity: "tests".to_string(), id: 11850 }));
+    assert_eq!(json_of(&out.actions[0])["flakeradar"], serde_json::json!({"entity": "tests", "id": 11850}));
+}
+
+#[test]
+fn a_test_regression_carries_its_flakeradar_link() {
+    let closed = vec![issue(
+        40,
+        "closed",
+        Some("completed"),
+        Some("2026-10-14T00:00:00Z"),
+        "flaky:test-pilot:aaaa",
+    )];
+    let radar = FlakeradarOut {
+        tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
+        explained: vec![],
+        jobs: vec![],
+    };
+    let out = run_radar(&covered(false), &flaky(vec![]), &closed, Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["regression"]);
+    assert_eq!(out.actions[0].flakeradar, Some(RadarLink { entity: "tests".to_string(), id: 11850 }));
+}
+
+#[test]
+fn a_job_file_action_carries_the_job_id_when_flakeradar_lists_its_fingerprint() {
+    let fp = flaky_fp(".github/workflows/ci.yml", "UI end-to-end (tauri-pilot)");
+    let radar = FlakeradarOut {
+        tests: vec![],
+        explained: vec![],
+        jobs: vec![JobLink { fp: fp.clone(), id: 12 }],
+    };
+    let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["file"]);
+    assert_eq!(out.actions[0].flakeradar, Some(RadarLink { entity: "jobs".to_string(), id: 12 }));
+    assert_eq!(json_of(&out.actions[0])["flakeradar"], serde_json::json!({"entity": "jobs", "id": 12}));
+}
+
+#[test]
+fn a_job_flakeradar_never_saw_has_no_link_key() {
+    let radar = FlakeradarOut { tests: vec![], explained: vec![], jobs: vec![] };
+    let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["file"]);
+    assert_eq!(out.actions[0].flakeradar, None);
+    assert!(json_of(&out.actions[0]).get("flakeradar").is_none(), "{}", json_of(&out.actions[0]));
+}
+
+#[test]
+fn known_suppressed_capped_backpressure_and_explained_actions_have_no_link_key() {
+    // known and suppressed: an open and a not-planned issue for two test candidates.
+    let radar = FlakeradarOut {
+        tests: vec![
+            radar_test("aaaa", "one", 0.7, 2, "2026-10-16T21:18:39Z"),
+            radar_test("bbbb", "two", 0.6, 1, "2026-10-16T21:18:39Z"),
+        ],
+        explained: vec![],
+        jobs: vec![],
+    };
+    let issues = vec![
+        issue(41, "open", None, None, "flaky:test-pilot:aaaa"),
+        issue(42, "closed", Some("not_planned"), Some("2026-10-14T00:00:00Z"), "flaky:test-pilot:bbbb"),
+    ];
+    let out = run_radar(&covered(false), &flaky(vec![]), &issues, Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["known", "suppressed"]);
+    for action in &out.actions {
+        assert_eq!(action.flakeradar, None, "{:?}", action.kind);
+    }
+
+    // capped: three tests fill the cap, so the job candidate is capped.
+    let radar = FlakeradarOut {
+        tests: vec![
+            radar_test("aaaa", "one", 0.7, 2, "2026-10-16T21:18:39Z"),
+            radar_test("bbbb", "two", 0.6, 1, "2026-10-16T21:18:39Z"),
+            radar_test("cccc", "three", 0.6, 1, "2026-10-16T21:18:39Z"),
+        ],
+        explained: vec![],
+        jobs: vec![],
+    };
+    let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["file", "file", "file", "capped"]);
+    assert_eq!(out.actions[3].flakeradar, None);
+
+    // backpressure: three open flaky issues of another fingerprint hold the source back.
+    let issues = vec![
+        issue(51, "open", None, None, "flaky:other:a"),
+        issue(52, "open", None, None, "flaky:other:b"),
+        issue(53, "open", None, None, "flaky:other:c"),
+    ];
+    let radar = FlakeradarOut { tests: vec![], explained: vec![], jobs: vec![] };
+    let out = run_radar(&covered(false), &three_flakes(), &issues, Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["backpressure"]);
+    assert_eq!(out.actions[0].flakeradar, None);
+
+    // explained: the job's flakes are its tests'.
+    let radar = FlakeradarOut { tests: vec![], explained: vec![1], jobs: vec![] };
+    let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["explained"]);
+    assert_eq!(out.actions[0].flakeradar, None);
+}
+
+#[test]
+fn a_ratchet_file_action_has_no_link_key() {
+    let config = config(false);
+    let ratchet = ratchet(vec![entry_with("ruff", "B006", 2, 1)]);
+    let flaky = flaky(vec![]);
+    let out = run(&config, &ratchet, &flaky, &[]);
+    assert_eq!(kinds(&out), ["file"]);
+    assert_eq!(out.actions[0].source, "ratchet");
+    assert_eq!(out.actions[0].flakeradar, None);
+    assert!(json_of(&out.actions[0]).get("flakeradar").is_none());
+}
+
+// ---- ADR 0028 C11: the C8 suffix for a FlakeRadar link that conflicted or failed ----
+
+/// A live plan with one filed flaky action, for the write-back suffix tests.
+fn one_filed_plan() -> PlanOut {
+    plan_out(
+        true,
+        vec![act(
+            "file",
+            "flaky",
+            "flaky:test-pilot:aaaa",
+            None,
+            "welcome mat shows",
+            "score 0.70, 2 proven flakes",
+        )],
+    )
+}
+
+/// A `filed` write-log entry for that action, with the given link outcome.
+fn filed_with(link: Option<&str>, detail: Option<&str>) -> Filed {
+    Filed {
+        fp: "flaky:test-pilot:aaaa".to_string(),
+        outcome: "filed".to_string(),
+        number: Some(101),
+        error: None,
+        link: link.map(ToString::to_string),
+        link_detail: detail.map(ToString::to_string),
+    }
+}
+
+/// The line a filed flaky action with no link suffix prints.
+const PLAIN_FILED: &str =
+    "scout jelly-swipe: filed 1 | filed #101 flaky welcome mat shows (score 0.70, 2 proven flakes)";
+
+#[test]
+fn summary_reports_a_flakeradar_conflict() {
+    let plan = one_filed_plan();
+    let filed = vec![filed_with(Some("conflict"), Some("55"))];
+    assert_eq!(
+        text::summary(&plan, Some(&filed)),
+        "scout jelly-swipe: filed 1 | filed #101 flaky welcome mat shows (score 0.70, 2 proven flakes) (FlakeRadar already links #55)"
+    );
+}
+
+#[test]
+fn summary_reports_a_failed_flakeradar_link() {
+    let plan = one_filed_plan();
+    let filed = vec![filed_with(Some("failed"), Some("HTTP 502"))];
+    assert_eq!(
+        text::summary(&plan, Some(&filed)),
+        "scout jelly-swipe: filed 1 | filed #101 flaky welcome mat shows (score 0.70, 2 proven flakes) (FlakeRadar link failed: HTTP 502)"
+    );
+}
+
+#[test]
+fn summary_says_nothing_about_a_linked_or_replaced_write() {
+    let plan = one_filed_plan();
+    for link in ["linked", "replaced"] {
+        let filed = vec![filed_with(Some(link), None)];
+        assert_eq!(text::summary(&plan, Some(&filed)), PLAIN_FILED, "{link}");
+    }
+}
+
+#[test]
+fn a_write_log_entry_without_a_link_key_reads_as_before() {
+    let filed: Vec<Filed> = serde_json::from_str(
+        r#"[{"fp":"flaky:test-pilot:aaaa","outcome":"filed","number":101,"error":null}]"#,
+    )
+    .unwrap();
+    assert_eq!(filed[0].link, None);
+    assert_eq!(filed[0].link_detail, None);
+    assert_eq!(text::summary(&one_filed_plan(), Some(&filed)), PLAIN_FILED);
 }
