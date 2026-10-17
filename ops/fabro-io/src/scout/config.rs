@@ -38,6 +38,10 @@ const WINDOW_DAYS_MIN: u32 = 1;
 const WINDOW_DAYS_MAX: u32 = 30;
 /// The most job names `flaky.ignore_jobs` may hold (C1).
 const MAX_IGNORE_JOBS: usize = 20;
+/// `flakeradar.min_proven` when the key is absent (ADR 0028 F2).
+const MIN_PROVEN_DEFAULT: u32 = 1;
+/// `min_proven` may be at most this (F2's C1 amendment).
+const MIN_PROVEN_MAX: u32 = 20;
 /// The tools a Ratchet rule may name (C1, D4).
 const TOOLS: [&str; 3] = ["ruff", "eslint", "clippy"];
 /// The `--file` default, relative to the checkout root (C2).
@@ -54,6 +58,7 @@ struct Raw {
     #[serde(default)]
     ratchet: Vec<RawRatchet>,
     flaky: Option<RawFlaky>,
+    flakeradar: Option<RawFlakeradar>,
 }
 
 /// One `[[ratchet]]` entry (C1).
@@ -77,6 +82,14 @@ struct RawFlaky {
     ignore_jobs: Option<Vec<String>>,
 }
 
+/// The optional `[flakeradar]` table (ADR 0028, the C1 amendment).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFlakeradar {
+    covered: Option<bool>,
+    min_proven: Option<u32>,
+}
+
 /// C2's output, and the config JSON `ratchet` and `plan` read back.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConfigOut {
@@ -92,6 +105,10 @@ pub struct ConfigOut {
     pub ratchet: Vec<RatchetEntry>,
     /// The flaky thresholds.
     pub flaky: FlakyCfg,
+    /// Whether FlakeRadar covers this repository. A config JSON written before ADR 0028 has
+    /// no such key and reads as not covered.
+    #[serde(default)]
+    pub flakeradar: FlakeradarCfg,
 }
 
 /// One Ratchet rule as C2 prints it.
@@ -126,6 +143,21 @@ pub struct FlakyCfg {
     pub ignore_jobs: Vec<String>,
 }
 
+/// The `[flakeradar]` table, with its defaults filled in (ADR 0028 F2, F7).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FlakeradarCfg {
+    /// The operator's declaration that this repository uploads JUnit to FlakeRadar (F7).
+    pub covered: bool,
+    /// The proven flakes a flaky-tier test needs before it is filed (F2).
+    pub min_proven: u32,
+}
+
+impl Default for FlakeradarCfg {
+    fn default() -> Self {
+        FlakeradarCfg { covered: false, min_proven: MIN_PROVEN_DEFAULT }
+    }
+}
+
 impl Default for FlakyCfg {
     fn default() -> Self {
         FlakyCfg {
@@ -151,6 +183,7 @@ pub fn load(path: &Path) -> ConfigOut {
             filing: false,
             ratchet: Vec::new(),
             flaky: FlakyCfg::default(),
+            flakeradar: FlakeradarCfg::default(),
         },
         Err(e) => invalid(format!("cannot read {}: {e}", path.display())),
     }
@@ -185,6 +218,12 @@ pub fn parse(text: &str) -> ConfigOut {
         window_days: flaky.window_days.unwrap_or(WINDOW_DAYS_DEFAULT),
         ignore_jobs: flaky.ignore_jobs.clone().unwrap_or_default(),
     });
+    let flakeradar = raw.flakeradar.as_ref().map_or_else(FlakeradarCfg::default, |radar| {
+        FlakeradarCfg {
+            covered: radar.covered.unwrap_or(false),
+            min_proven: radar.min_proven.unwrap_or(MIN_PROVEN_DEFAULT),
+        }
+    });
     ConfigOut {
         present: true,
         valid: true,
@@ -192,6 +231,7 @@ pub fn parse(text: &str) -> ConfigOut {
         filing: raw.filing,
         ratchet,
         flaky,
+        flakeradar,
     }
 }
 
@@ -219,6 +259,7 @@ fn invalid(error: String) -> ConfigOut {
         filing: false,
         ratchet: Vec::new(),
         flaky: FlakyCfg::default(),
+        flakeradar: FlakeradarCfg::default(),
     }
 }
 
@@ -292,6 +333,13 @@ fn validate(raw: &Raw) -> Result<(), String> {
                 return Err("flaky.ignore_jobs must not hold an empty name".to_string());
             }
         }
+    }
+    if let Some(min_proven) = raw.flakeradar.as_ref().and_then(|radar| radar.min_proven)
+        && min_proven > MIN_PROVEN_MAX
+    {
+        return Err(format!(
+            "flakeradar.min_proven must be between 0 and {MIN_PROVEN_MAX}, found {min_proven}"
+        ));
     }
     Ok(())
 }

@@ -1,0 +1,51 @@
+{
+  "repo": "andrewthetechie/writers-app",
+  "ci_run_id": "38965640313",
+  "ci_run_attempt": 1,
+  "flake_threshold": 0.3,
+  "reports": {
+    "pending": 0,
+    "processed": 4,
+    "failed": 0
+  },
+  "total_failures": 1,
+  "truncated": false,
+  "failures": [
+    {
+      "test_id": 11850,
+      "project": "pilot",
+      "suite": "suite x",
+      "classname": "",
+      "name": "test 11850",
+      "run_id": 2901,
+      "ci_job_id": "117191778924",
+      "status": "failed",
+      "failed_attempts": 1,
+      "failure_category": "timing",
+      "message": "RPC error: eval timed out",
+      "tier": "flaky",
+      "flakiness_score": 0.7,
+      "confirmed_flake_count": 2,
+      "clean_streak": 26,
+      "quarantined": false,
+      "github_issue_number": null,
+      "github_issue_url": null
+    }
+  ],
+  "failed_jobs": [
+    {
+      "job_id": 30,
+      "pipeline": ".github/workflows/ci.yml",
+      "name": "UI end-to-end (tauri-pilot)",
+      "ci_job_id": "117191778924",
+      "url": "https://github.com/andrewthetechie/writers-app/actions/runs/38965640313/job/117191778924",
+      "outcome": "explained",
+      "tier": "flaky",
+      "flakiness_score": 0.6,
+      "confirmed_flake_count": 1,
+      "clean_streak": 2,
+      "github_issue_number": null,
+      "github_issue_url": null
+    }
+  ]
+}

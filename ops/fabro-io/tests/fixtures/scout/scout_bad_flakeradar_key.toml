@@ -1,0 +1,5 @@
+version = 1
+
+[flakeradar]
+covered = true
+project = "backend"

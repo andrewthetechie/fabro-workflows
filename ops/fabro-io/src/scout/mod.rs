@@ -1,15 +1,18 @@
 //! `scout`: the seventh package's pure logic (ADR 0027).
 //!
 //! `config` turns a repository's `.fabro/scout.toml` into normalised JSON and `ratchet`
-//! runs its declared Ratchet rules and counts one rule's findings. Tasks 02 and 03 add
-//! `flaky`, `plan` and `text`. Everything here is pure except `ratchet`, which runs the
+//! runs its declared Ratchet rules and counts one rule's findings. `flaky`, `plan` and
+//! `text` find the Flaky jobs and decide and write the issues, and `flakeradar` reads
+//! FlakeRadar's flaky tests (ADR 0028). Everything here is pure except `ratchet`, which runs the
 //! declared commands: no subcommand calls GitHub or reads the clock.
 //!
-//! Contracts: docs/scout/00-overview-and-contracts.md C1 to C8.
+//! Contracts: docs/scout/00-overview-and-contracts.md C1 to C8, and
+//! docs/flakeradar/00-overview-and-contracts.md C4b.
 
 // Rust guideline compliant 2026-07-21
 
 pub mod config;
+pub mod flakeradar;
 pub mod flaky;
 pub mod plan;
 pub mod ratchet;
@@ -19,7 +22,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = concat!(
     "usage: fabro-io scout <command> [args]\n",
-    "commands: config [--file PATH] | ratchet --config FILE [--root DIR] | flaky --runs FILE --jobs-dir DIR --since TIMESTAMP | plan --config F --ratchet F --flaky F --issues F --logs-dir D --repo O/N --sha S | summary --plan F [--filed F]\n"
+    "commands: config [--file PATH] | ratchet --config FILE [--root DIR] | flaky --runs FILE --jobs-dir DIR --since TIMESTAMP | flakeradar --tests F --history-dir D --runs-dir D --flaky F --config F --since TS --base URL --repo O/N | plan --config F --ratchet F --flaky F --issues F --logs-dir D --repo O/N --sha S [--flakeradar F | --flakeradar-skipped REASON] | summary --plan F [--filed F]\n"
 );
 
 /// Dispatches `fabro-io scout <command>` (C2, C3).
@@ -35,6 +38,7 @@ pub fn run_cli(args: &[String]) -> ExitCode {
         "config" => config::run_cli(&args[1..]),
         "ratchet" => ratchet::run_cli(&args[1..]),
         "flaky" => flaky::run_cli(&args[1..]),
+        "flakeradar" => flakeradar::run_cli(&args[1..]),
         "plan" => plan::run_cli(&args[1..]),
         "summary" => text::run_cli(&args[1..]),
         other => {

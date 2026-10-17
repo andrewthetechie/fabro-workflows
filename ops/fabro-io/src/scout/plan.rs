@@ -4,6 +4,10 @@
 //! graph writes. An open issue for a fingerprint is `known`; one closed as not planned or
 //! duplicate is `suppressed` forever; any other close lets it come back as a regression.
 //! GitHub is the only store: the markers in the issue bodies are the whole state (D6, D8).
+//!
+//! In a repository FlakeRadar covers (ADR 0028), the flaky source also files FlakeRadar's
+//! flaky tests, ahead of the jobs and under the same caps, and a job is judged only on the
+//! flakes no failing test explains. A failed FlakeRadar read plans no flaky action at all.
 
 // Rust guideline compliant 2026-07-21
 
@@ -14,6 +18,7 @@ use std::process::ExitCode;
 use serde::{Deserialize, Serialize};
 
 use super::config::ConfigOut;
+use super::flakeradar::{FlakeradarOut, FlakyTest};
 use super::ratchet::{EntryOut, RatchetOut};
 use super::text;
 use super::{flaky::FlakyOut, is_fingerprint, is_github_ts};
@@ -60,6 +65,17 @@ fn null_as_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<St
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// What FlakeRadar contributes to one plan (ADR 0028 C5 amendment).
+#[derive(Clone, Copy, Debug)]
+pub enum Radar<'a> {
+    /// No FlakeRadar input: the plan is the ADR 0027 one.
+    Off,
+    /// The repository is covered and the read failed, for this reason (F7).
+    Skipped(&'a str),
+    /// The repository is covered and this is C4b's output.
+    Read(&'a FlakeradarOut),
+}
+
 /// Everything the plan reads.
 pub struct PlanInput<'a> {
     /// The `.fabro/scout.toml` output (C2).
@@ -76,6 +92,8 @@ pub struct PlanInput<'a> {
     pub repo: &'a str,
     /// The head commit, of which the body shows the first 8 characters.
     pub sha: &'a str,
+    /// FlakeRadar's state. It is ignored unless the config says the repository is covered.
+    pub flakeradar: Radar<'a>,
 }
 
 /// C5's output.
@@ -96,15 +114,15 @@ pub struct PlanOut {
 pub struct Sources {
     /// `ok`, `absent`, or `skipped: <reason>`.
     pub ratchet: String,
-    /// Always `ok`.
+    /// `ok`, or `skipped: flakeradar <reason>` (ADR 0028 F7).
     pub flaky: String,
 }
 
 /// One thing the run would do (C5).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Action {
-    /// `file`, `regression`, `known`, `suppressed`, `too_big`, `backpressure`, `capped` or
-    /// `error`.
+    /// `file`, `regression`, `known`, `suppressed`, `too_big`, `backpressure`, `capped`,
+    /// `error` or `explained`.
     pub kind: String,
     /// `ratchet` or `flaky`.
     pub source: String,
@@ -228,6 +246,31 @@ pub fn plan(input: &PlanInput<'_>) -> PlanOut {
         actions.push(plain("known", "ratchet", entry, Some(open_issue.number), &detail));
     }
 
+    let radar = if input.config.flakeradar.covered { input.flakeradar } else { Radar::Off };
+    let mut explained: BTreeSet<u64> = BTreeSet::new();
+    match radar {
+        Radar::Off => {}
+        Radar::Skipped(reason) => {
+            return PlanOut {
+                filing: input.config.filing,
+                repo: input.repo.to_string(),
+                sources: Sources {
+                    ratchet: ratchet_source(input),
+                    flaky: format!("skipped: flakeradar {reason}"),
+                },
+                actions,
+            };
+        }
+        Radar::Read(out) => {
+            explained.extend(out.explained.iter().copied());
+            for test in &out.tests {
+                if let Some(action) = test_action(test, &known, &open, &mut planned) {
+                    actions.push(action);
+                }
+            }
+        }
+    }
+
     for job in {
         let mut jobs: Vec<&super::flaky::FlakyJob> = input.flaky.jobs.iter().collect();
         jobs.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.fp.cmp(&b.fp)));
@@ -268,6 +311,24 @@ pub fn plan(input: &PlanInput<'_>) -> PlanOut {
             actions.push(plain_flaky("suppressed", job, Some(issue.number), &detail));
             continue;
         }
+        // F4: an occurrence whose failed job FlakeRadar explains with a failing test is that
+        // test's flake. With no FlakeRadar input the set is empty and nothing changes here.
+        let unexplained: Vec<&super::flaky::Occurrence> = occurrences
+            .iter()
+            .copied()
+            .filter(|occurrence| !explained.contains(&occurrence.failed_job_id))
+            .collect();
+        if unexplained.len() < input.config.flaky.min_flakes as usize {
+            let detail = format!(
+                "{} of {} explained by FlakeRadar tests",
+                effective - unexplained.len(),
+                plural(effective, "flake")
+            );
+            actions.push(plain_flaky("explained", job, None, &detail));
+            continue;
+        }
+        let detail = flaky_detail(unexplained.len(), input.config.flaky.window_days);
+        let occurrences = unexplained;
         let state = censored("flaky", &open, &planned);
         if let Some(state) = state {
             actions.push(plain_flaky(state, job, None, &detail));
@@ -304,6 +365,58 @@ pub fn plan(input: &PlanInput<'_>) -> PlanOut {
         },
         actions,
     }
+}
+
+/// The action for one FlakeRadar test candidate, or `None` when it has nothing to do (C5
+/// amendment, F6).
+fn test_action<'a>(
+    test: &FlakyTest,
+    known: &BTreeMap<String, Vec<&Issue>>,
+    open: &BTreeMap<&'a str, usize>,
+    planned: &mut BTreeMap<&'a str, usize>,
+) -> Option<Action> {
+    let detail = test_detail(test);
+    let list = known.get(&test.fp);
+    let action = |kind: &str, issue: Option<u64>| Action {
+        kind: kind.to_string(),
+        source: "flaky".to_string(),
+        fp: test.fp.clone(),
+        issue,
+        title: None,
+        body: None,
+        labels: None,
+        detail: detail.clone(),
+        subject: Some(text::test_subject(test)),
+    };
+    if let Some(issue) = list.and_then(|list| list.iter().find(|i| i.state == "open")) {
+        return Some(action("known", Some(issue.number)));
+    }
+    let closed = list.and_then(|list| list.iter().find(|issue| issue.state != "open").copied());
+    if let Some(issue) = closed.filter(|issue| suppresses(issue)) {
+        return Some(action("suppressed", Some(issue.number)));
+    }
+    if let Some(issue) = closed {
+        // F6: a closed issue comes back only for a failure after it was closed.
+        let cut = issue.closed_at.as_deref().unwrap_or("0000");
+        let newest = test.failures.first().map(|failure| failure.created_at.as_str());
+        if !newest.is_some_and(|newest| newest > cut) {
+            return None;
+        }
+    }
+    if let Some(state) = censored("flaky", open, planned) {
+        return Some(action(state, None));
+    }
+    *planned.entry("flaky").or_default() += 1;
+    let mut out = action(if closed.is_some() { "regression" } else { "file" }, closed.map(|i| i.number));
+    out.title = Some(text::test_title(test, &detail, closed));
+    out.body = Some(text::test_body(test, closed));
+    out.labels = Some(FLAKY_LABELS.iter().map(|l| (*l).to_string()).collect());
+    Some(out)
+}
+
+/// `score 0.70, 2 proven flakes` (the C5 amendment's detail for a test).
+fn test_detail(test: &FlakyTest) -> String {
+    format!("score {:.2}, {}", test.score, plural(test.proven as usize, "proven flake"))
 }
 
 /// `capped` or `backpressure` when `source` has reached a limit, else `None` (C5 steps 5, 6).
@@ -455,11 +568,13 @@ pub fn run_cli(args: &[String]) -> ExitCode {
     let mut logs_dir = PathBuf::from(".");
     let mut repo: Option<String> = None;
     let mut sha: Option<String> = None;
+    let mut radar_arg: Option<PathBuf> = None;
+    let mut radar_skipped: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--config" | "--ratchet" | "--flaky" | "--issues" | "--logs-dir" | "--repo"
-            | "--sha" => {
+            | "--sha" | "--flakeradar" | "--flakeradar-skipped" => {
                 let flag = args[i].clone();
                 i += 1;
                 let Some(value) = args.get(i) else {
@@ -473,6 +588,8 @@ pub fn run_cli(args: &[String]) -> ExitCode {
                     "--issues" => issues_arg = Some(PathBuf::from(value)),
                     "--logs-dir" => logs_dir = PathBuf::from(value),
                     "--repo" => repo = Some(value.clone()),
+                    "--flakeradar" => radar_arg = Some(PathBuf::from(value)),
+                    "--flakeradar-skipped" => radar_skipped = Some(value.clone()),
                     _ => sha = Some(value.clone()),
                 }
             }
@@ -499,6 +616,23 @@ pub fn run_cli(args: &[String]) -> ExitCode {
         eprintln!("scout plan: --sha must be at least 8 hex characters, found \"{sha}\"");
         return ExitCode::from(2);
     }
+    if radar_arg.is_some() && radar_skipped.is_some() {
+        eprintln!("scout plan: --flakeradar and --flakeradar-skipped exclude each other");
+        return ExitCode::from(2);
+    }
+    let radar_out: Option<FlakeradarOut> = match radar_arg.as_deref().map(read_json) {
+        None => None,
+        Some(Ok(value)) => Some(value),
+        Some(Err(message)) => {
+            eprintln!("scout plan: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let flakeradar = match (&radar_out, &radar_skipped) {
+        (Some(out), _) => Radar::Read(out),
+        (None, Some(reason)) => Radar::Skipped(reason),
+        (None, None) => Radar::Off,
+    };
     let config: ConfigOut = match read_json(&config_arg) {
         Ok(value) => value,
         Err(message) => {
@@ -546,6 +680,7 @@ pub fn run_cli(args: &[String]) -> ExitCode {
         logs_dir: &logs_dir,
         repo: &repo,
         sha: &sha,
+        flakeradar,
     });
     let json = serde_json::to_string(&out).unwrap_or_else(|e| {
         eprintln!("scout plan: cannot serialize the result: {e}");

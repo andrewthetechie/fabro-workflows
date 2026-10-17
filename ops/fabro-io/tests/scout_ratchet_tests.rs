@@ -48,6 +48,7 @@ fn one_entry(command: &str, timeout_secs: u64) -> ConfigOut {
             timeout_secs,
         }],
         flaky: FlakyCfg::default(),
+        flakeradar: Default::default(),
     }
 }
 
@@ -193,6 +194,8 @@ fn config_valid_file_keeps_every_key() {
     assert_eq!(entry.enforce_in, "pyproject.toml");
     assert_eq!((out.flaky.min_flakes, out.flaky.window_days), (4, 7));
     assert_eq!(out.flaky.ignore_jobs, vec!["alls-green".to_string()]);
+    assert!(out.flakeradar.covered);
+    assert_eq!(out.flakeradar.min_proven, 2);
 }
 
 #[test]
@@ -203,6 +206,16 @@ fn config_minimal_file_uses_the_defaults() {
     assert!(!out.filing);
     assert!(out.ratchet.is_empty());
     assert_eq!((out.flaky.min_flakes, out.flaky.window_days), (3, 14));
+    assert!(!out.flakeradar.covered, "no [flakeradar] table means not covered");
+    assert_eq!(out.flakeradar.min_proven, 1);
+}
+
+#[test]
+fn a_config_json_from_before_flakeradar_reads_as_uncovered() {
+    let json = r#"{"present":true,"valid":true,"error":null,"filing":false,"ratchet":[],"flaky":{"min_flakes":3,"window_days":14}}"#;
+    let out: config::ConfigOut = serde_json::from_str(json).unwrap();
+    assert!(!out.flakeradar.covered);
+    assert_eq!(out.flakeradar.min_proven, 1);
 }
 
 #[test]
@@ -222,7 +235,7 @@ fn every_bad_config_is_invalid_and_dry() {
         assert!(!out.filing, "{name}");
         assert!(out.ratchet.is_empty(), "{name}");
     }
-    assert!(seen >= 12, "expected a scout_bad_*.toml per C1 rule, found {seen}");
+    assert!(seen >= 14, "expected a scout_bad_*.toml per C1 rule, found {seen}");
 }
 
 #[test]

@@ -1,0 +1,82 @@
+{
+  "test": {
+    "id": 11850,
+    "repo": "andrewthetechie/writers-app",
+    "project": "pilot",
+    "fingerprint": "de539bc6672291b6ffd4e5744d6d2bc087fa2b61",
+    "suite": "suite x",
+    "classname": "",
+    "name": "test 11850",
+    "file": null,
+    "line": null,
+    "flakiness_score": 0.7,
+    "tier": "flaky",
+    "confirmed_flake_count": 2,
+    "failure_category": "timing",
+    "clean_streak": 26,
+    "trend": "worsening",
+    "last_status": "passed",
+    "last_seen_at": "2026-10-17T01:32:23.167163Z",
+    "quarantined": false,
+    "quarantined_at": null,
+    "github_issue_number": null,
+    "github_issue_url": null
+  },
+  "location": null,
+  "last_failing_sha": "2621219947475f39b1c30e3d08d4f353fbf37172",
+  "last_failing_branch": "feature/ui",
+  "executions": [
+    {
+      "id": 3849910,
+      "status": "passed",
+      "duration": 0.143,
+      "message": "",
+      "details": "",
+      "created_at": "2026-10-17T01:32:23.167163Z",
+      "commit_sha": "0123456789abcdef0123456789abcdef01234569",
+      "branch": "feature/ui-869",
+      "ci_run_id": "38990420869",
+      "attempt": 0,
+      "failure_category": null
+    },
+    {
+      "id": 3816035,
+      "status": "passed",
+      "duration": 0.289,
+      "message": "",
+      "details": "",
+      "created_at": "2026-10-16T23:31:42.719836Z",
+      "commit_sha": "0123456789abcdef0123456789abcdef01234560",
+      "branch": "feature/ui-100",
+      "ci_run_id": "38980340100",
+      "attempt": 0,
+      "failure_category": null
+    },
+    {
+      "id": 3773342,
+      "status": "failed",
+      "duration": 10.002,
+      "message": "RPC error (-32603): Eval error: eval timed out after 10s",
+      "details": "",
+      "created_at": "2026-10-16T21:18:39.960470Z",
+      "commit_sha": "0123456789abcdef0123456789abcdef01234563",
+      "branch": "feature/ui-313",
+      "ci_run_id": "38965640313",
+      "attempt": 0,
+      "failure_category": "timing"
+    },
+    {
+      "id": 2321949,
+      "status": "failed",
+      "duration": 10.002,
+      "message": "RPC error (-32603): Eval error: eval timed out after 10s",
+      "details": "",
+      "created_at": "2026-10-12T22:54:06.878010Z",
+      "commit_sha": "0123456789abcdef0123456789abcdef01234562",
+      "branch": "feature/ui-882",
+      "ci_run_id": "38316038882",
+      "attempt": 0,
+      "failure_category": "timing"
+    }
+  ]
+}

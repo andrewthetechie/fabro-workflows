@@ -13,3 +13,7 @@ timeout_secs = 900
 min_flakes = 4
 window_days = 7
 ignore_jobs = ["alls-green"]
+
+[flakeradar]
+covered = true
+min_proven = 2

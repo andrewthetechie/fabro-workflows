@@ -9,7 +9,8 @@ use serde::de::DeserializeOwned;
 
 use fabro_io::scout::config::ConfigOut;
 use fabro_io::scout::flaky::{FlakyJob, FlakyOut, Occurrence};
-use fabro_io::scout::plan::{self, Action, Issue, PlanInput, PlanOut, Sources};
+use fabro_io::scout::flakeradar::{Failure, FlakeradarOut, FlakyTest};
+use fabro_io::scout::plan::{self, Action, Issue, PlanInput, PlanOut, Radar, Sources};
 use fabro_io::scout::ratchet::{EntryOut, Finding, RatchetOut};
 use fabro_io::scout::text::{self, Filed};
 use fabro_io::scout::{flaky_fp, ratchet_fp};
@@ -113,6 +114,7 @@ fn run(config: &ConfigOut, ratchet: &RatchetOut, flaky: &FlakyOut, issues: &[Iss
         logs_dir: Path::new("/nonexistent"),
         repo: "andrewthetechie/jelly-swipe",
         sha: "abcdef1234567890",
+        flakeradar: Radar::Off,
     })
 }
 
@@ -458,6 +460,7 @@ fn a_body_over_sixty_thousand_characters_drops_log_tails() {
         logs_dir: &logs,
         repo: "andrewthetechie/jelly-swipe",
         sha: "abcdef1234567890",
+        flakeradar: Radar::Off,
     });
     let body = out.actions[0].body.clone().unwrap();
     assert!(body.chars().count() <= 60_000, "the body is {} chars", body.chars().count());
@@ -716,4 +719,214 @@ fn an_ignored_job_is_never_planned() {
     let out = run(&config, &ratchet(vec![]), &flaky, &[]);
     assert_eq!(kinds(&out), vec!["file"]);
     assert_eq!(out.actions[0].fp, flaky_fp(".github/workflows/ci.yml", "test"));
+}
+
+// ---- ADR 0028: FlakeRadar in the flaky source (docs/flakeradar C4b, C5 amendment, C7b) ----
+
+/// A config whose repository FlakeRadar covers.
+fn covered(filing: bool) -> ConfigOut {
+    let mut config = config(filing);
+    config.flakeradar.covered = true;
+    config
+}
+
+/// One FlakeRadar candidate with one failure at `failed_at`.
+fn radar_test(fingerprint: &str, name: &str, score: f64, proven: u32, failed_at: &str) -> FlakyTest {
+    FlakyTest {
+        fp: format!("flaky:test-pilot:{fingerprint}"),
+        id: 11850,
+        url: "https://flakes.example/?repo=o/n&project=pilot&test=11850".to_string(),
+        project: "pilot".to_string(),
+        suite: Some("ui".to_string()),
+        classname: Some("welcome".to_string()),
+        name: name.to_string(),
+        file: Some("tests/ui/welcome.spec.ts".to_string()),
+        line: Some(12),
+        score,
+        proven,
+        category: Some("timing".to_string()),
+        last_seen_at: "2026-10-17T01:32:23Z".to_string(),
+        last_failing_sha: Some("2621219947475f39b1c30e3d08d4f353fbf37172".to_string()),
+        last_failing_branch: Some("chore/scout-toml".to_string()),
+        failures: vec![Failure {
+            created_at: failed_at.to_string(),
+            message: "RPC error: eval timed out after 10s".to_string(),
+            details: "Error: timed out\n```\n@someone".to_string(),
+            branch: Some("chore/scout-toml".to_string()),
+            ci_run_id: Some("38965640313".to_string()),
+        }],
+    }
+}
+
+/// Runs the plan with FlakeRadar's state.
+fn run_radar(config: &ConfigOut, flaky: &FlakyOut, issues: &[Issue], radar: Radar<'_>) -> PlanOut {
+    let ratchet = ratchet(vec![]);
+    plan::plan(&PlanInput {
+        config,
+        ratchet: &ratchet,
+        flaky,
+        issues,
+        logs_dir: Path::new("/nonexistent"),
+        repo: "andrewthetechie/writers-app",
+        sha: "abcdef1234567890",
+        flakeradar: radar,
+    })
+}
+
+/// Three occurrences of one job, with failed job ids 1 to 3.
+fn three_flakes() -> FlakyOut {
+    let occurrences = (1..=3).map(|i| occ(i, "2026-10-12T00:00:00Z")).collect();
+    flaky(vec![flaky_job(".github/workflows/ci.yml", "UI end-to-end (tauri-pilot)", occurrences)])
+}
+
+#[test]
+fn flaky_tests_are_filed_before_jobs_and_share_their_cap() {
+    let radar = FlakeradarOut {
+        tests: vec![
+            radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z"),
+            radar_test("bbbb", "drawer shows step 1", 0.6, 1, "2026-10-16T21:18:39Z"),
+            radar_test("cccc", "folder picker", 0.6, 1, "2026-10-16T21:18:39Z"),
+        ],
+        explained: vec![],
+    };
+    let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["file", "file", "file", "capped"]);
+    assert_eq!(out.actions[0].fp, "flaky:test-pilot:aaaa");
+    assert_eq!(out.actions[0].source, "flaky");
+    assert_eq!(out.actions[0].detail, "score 0.70, 2 proven flakes");
+    assert_eq!(
+        out.actions[0].title.as_deref(),
+        Some("scout: flaky test \"welcome mat shows\" in pilot (score 0.70, 2 proven flakes)")
+    );
+    assert_eq!(out.actions[3].fp, "flaky:.github/workflows/ci.yml:ui-end-to-end-tauri-pilot");
+    assert_eq!(out.sources.flaky, "ok");
+}
+
+#[test]
+fn a_flaky_test_issue_names_the_test_and_its_failures() {
+    let radar = FlakeradarOut {
+        tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
+        explained: vec![],
+    };
+    let out = run_radar(&covered(false), &flaky(vec![]), &[], Radar::Read(&radar));
+    let body = out.actions[0].body.clone().unwrap();
+    assert!(body.starts_with("<!-- fabro:scout fp=flaky:test-pilot:aaaa -->\n"), "{body}");
+    assert!(body.contains("`tests/ui/welcome.spec.ts:12`"), "{body}");
+    assert!(body.contains("https://flakes.example/?repo=o/n&project=pilot&test=11850"), "{body}");
+    assert!(body.contains("## Recent failures"), "{body}");
+    assert!(body.contains("2026-10-16 on `chore/scout-toml`"), "{body}");
+    assert!(body.contains("RPC error: eval timed out after 10s"), "{body}");
+    // The failure text is untrusted: no fence can be closed from inside it, and no one is pinged.
+    assert!(!body.contains("\n```\n@someone"), "{body}");
+    assert!(body.contains("@\u{200b}someone"), "{body}");
+    assert!(body.contains("## Last failing commit"), "{body}");
+    let at = radar_test("aaaa", "test_upgrade@migration", 0.7, 2, "2026-10-16T21:18:39Z");
+    assert!(text::test_body(&at, None).contains("`test_upgrade@migration`"), "a code span keeps its @");
+    assert!(body.contains("`26212199`"), "{body}");
+    assert!(body.contains("Do not quarantine the test in FlakeRadar."), "{body}");
+    assert_eq!(
+        out.actions[0].labels.clone().unwrap(),
+        ["agent", "scout", "ai-generated", "flaky-test"]
+    );
+}
+
+#[test]
+fn a_job_whose_flakes_flakeradar_explains_is_not_filed() {
+    let radar = FlakeradarOut { tests: vec![], explained: vec![1] };
+    let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Read(&radar));
+    // Two unexplained flakes are below min_flakes (3), so the job's flake is its test's.
+    assert_eq!(kinds(&out), ["explained"]);
+    assert_eq!(out.actions[0].issue, None);
+    assert_eq!(out.actions[0].title, None);
+    assert_eq!(out.actions[0].detail, "1 of 3 flakes explained by FlakeRadar tests");
+}
+
+#[test]
+fn a_job_with_enough_unexplained_flakes_is_filed_on_those_alone() {
+    let occurrences = (1..=4).map(|i| occ(i, "2026-10-12T00:00:00Z")).collect();
+    let flaky = flaky(vec![flaky_job(".github/workflows/ci.yml", "pre-commit", occurrences)]);
+    let radar = FlakeradarOut { tests: vec![], explained: vec![2] };
+    let out = run_radar(&covered(false), &flaky, &[], Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["file"]);
+    assert_eq!(out.actions[0].detail, "3 flakes in 14 days");
+    let body = out.actions[0].body.clone().unwrap();
+    assert!(!body.contains("[run 2,"), "an explained occurrence is not evidence: {body}");
+}
+
+#[test]
+fn a_failed_flakeradar_read_plans_no_flaky_action() {
+    let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Skipped("tests page 1 returned 502"));
+    assert!(out.actions.is_empty(), "{:?}", kinds(&out));
+    assert_eq!(out.sources.flaky, "skipped: flakeradar tests page 1 returned 502");
+    let line = text::summary(&out, None);
+    assert_eq!(line, "scout writers-app DRY RUN | flaky skipped: flakeradar tests page 1 returned 502");
+}
+
+#[test]
+fn an_uncovered_repository_plans_exactly_what_it_did_before() {
+    let radar = FlakeradarOut {
+        tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
+        explained: vec![1, 2, 3],
+    };
+    let config = config(false);
+    let before = serde_json::to_string(&run_radar(&config, &three_flakes(), &[], Radar::Off)).unwrap();
+    let read = serde_json::to_string(&run_radar(&config, &three_flakes(), &[], Radar::Read(&radar))).unwrap();
+    let skipped = serde_json::to_string(&run_radar(&config, &three_flakes(), &[], Radar::Skipped("x"))).unwrap();
+    assert_eq!(read, before);
+    assert_eq!(skipped, before);
+    assert!(before.contains("\"kind\":\"file\""), "{before}");
+}
+
+#[test]
+fn a_test_regresses_only_on_a_failure_after_its_issue_closed() {
+    let fp = "flaky:test-pilot:aaaa";
+    let closed = vec![issue(40, "closed", Some("completed"), Some("2026-10-14T00:00:00Z"), fp)];
+    let after = FlakeradarOut {
+        tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
+        explained: vec![],
+    };
+    let out = run_radar(&covered(false), &flaky(vec![]), &closed, Radar::Read(&after));
+    assert_eq!(kinds(&out), ["regression"]);
+    assert_eq!(out.actions[0].issue, Some(40));
+    assert!(out.actions[0].title.as_deref().unwrap().starts_with("scout (regression of #40): flaky test"));
+
+    let before = FlakeradarOut {
+        tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-13T09:00:00Z")],
+        explained: vec![],
+    };
+    let out = run_radar(&covered(false), &flaky(vec![]), &closed, Radar::Read(&before));
+    assert!(out.actions.is_empty(), "{:?}", kinds(&out));
+}
+
+#[test]
+fn a_flaky_test_with_an_open_or_not_planned_issue_is_known_or_suppressed() {
+    let radar = FlakeradarOut {
+        tests: vec![
+            radar_test("aaaa", "one", 0.7, 2, "2026-10-16T21:18:39Z"),
+            radar_test("bbbb", "two", 0.6, 1, "2026-10-16T21:18:39Z"),
+        ],
+        explained: vec![],
+    };
+    let issues = vec![
+        issue(41, "open", None, None, "flaky:test-pilot:aaaa"),
+        issue(42, "closed", Some("not_planned"), Some("2026-10-14T00:00:00Z"), "flaky:test-pilot:bbbb"),
+    ];
+    let out = run_radar(&covered(false), &flaky(vec![]), &issues, Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["known", "suppressed"]);
+    assert_eq!(out.actions[0].issue, Some(41));
+    assert_eq!(out.actions[1].issue, Some(42));
+}
+
+#[test]
+fn the_summary_counts_explained_jobs() {
+    let radar = FlakeradarOut {
+        tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
+        explained: vec![1],
+    };
+    let out = run_radar(&covered(false), &three_flakes(), &[], Radar::Read(&radar));
+    assert_eq!(kinds(&out), ["file", "explained"]);
+    assert_eq!(
+        text::summary(&out, None),
+        "scout writers-app DRY RUN: would file 1, explained 1 | would file flaky welcome mat shows (score 0.70, 2 proven flakes)"
+    );
 }

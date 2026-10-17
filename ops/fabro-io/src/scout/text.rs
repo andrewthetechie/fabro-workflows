@@ -13,6 +13,7 @@ use std::process::ExitCode;
 
 use serde::Deserialize;
 
+use super::flakeradar::FlakyTest;
 use super::flaky::{FlakyJob, Occurrence};
 use super::plan::{Action, Issue, PlanOut};
 use super::ratchet::EntryOut;
@@ -27,6 +28,8 @@ const MAX_TAIL_CHARS: usize = 3000;
 const MAX_TAIL_LINES: usize = 60;
 /// The line GitHub's runner writes when a step fails; the log tail ends at the first (C7).
 const ERROR_MARK: &str = "##[error]";
+/// The most characters of a test name a title or summary shows (C7b).
+const MAX_TEST_NAME_CHARS: usize = 120;
 /// The most characters the summary line may hold (C8).
 const MAX_SUMMARY_CHARS: usize = 1500;
 
@@ -213,6 +216,132 @@ fn render_flaky(
     out
 }
 
+/// The test's name as a title or the summary shows it: one line, cut to 120 characters.
+#[must_use]
+pub fn test_subject(test: &FlakyTest) -> String {
+    let name = collapse_all(&test.name);
+    if name.chars().count() > MAX_TEST_NAME_CHARS {
+        let cut: String = name.chars().take(MAX_TEST_NAME_CHARS - 3).collect();
+        format!("{cut}...")
+    } else {
+        name
+    }
+}
+
+/// C7b's title for a flaky test.
+#[must_use]
+pub fn test_title(test: &FlakyTest, detail: &str, regression: Option<&Issue>) -> String {
+    let body = format!("flaky test \"{}\" in {} ({detail})", test_subject(test), test.project);
+    match regression {
+        Some(issue) => format!("scout (regression of #{}): {body}", issue.number),
+        None => format!("scout: {body}"),
+    }
+}
+
+/// C7b's body for a flaky test.
+#[must_use]
+pub fn test_body(test: &FlakyTest, regression: Option<&Issue>) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("<!-- fabro:scout fp={} -->\n", test.fp));
+    let mut whereabouts = Vec::new();
+    if let Some(suite) = test.suite.as_deref().filter(|s| !s.is_empty()) {
+        whereabouts.push(format!("suite `{}`", inline(suite)));
+    }
+    if let Some(classname) =
+        test.classname.as_deref().filter(|c| !c.is_empty() && Some(*c) != test.suite.as_deref())
+    {
+        whereabouts.push(format!("class `{}`", inline(classname)));
+    }
+    if let Some(file) = test.file.as_deref().filter(|f| !f.is_empty()) {
+        match test.line {
+            Some(line) => whereabouts.push(format!("`{}:{line}`", inline(file))),
+            None => whereabouts.push(format!("`{}`", inline(file))),
+        }
+    }
+    let place = if whereabouts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", whereabouts.join(", "))
+    };
+    out.push_str(&format!(
+        "Found by the scout (ADR 0027, ADR 0028) in FlakeRadar. The test `{}` in project `{}`{place} fails at random: FlakeRadar scores it {:.2} and has seen it fail and pass on the same commit {}.",
+        inline(&test.name),
+        inline(&test.project),
+        test.score,
+        plural(test.proven as usize, "time")
+    ));
+    if let Some(category) = test.category.as_deref().filter(|c| !c.is_empty()) {
+        out.push_str(&format!(" It files the failures under `{}`.", inline(category)));
+    }
+    out.push_str(&format!(" Its history is on the [FlakeRadar dashboard]({}).\n", test.url));
+    if let Some(issue) = regression {
+        out.push_str(&format!(
+            "Regression of #{}, which was closed on {}.\n",
+            issue.number,
+            closed_date(issue)
+        ));
+    }
+    out.push_str("\n## Recent failures (newest first)\n\n");
+    if test.failures.is_empty() {
+        out.push_str("FlakeRadar holds no failure in the test's recent history.\n");
+    }
+    // Each failure gets its message; only the newest shows its traceback, which the others
+    // usually repeat.
+    for (index, failure) in test.failures.iter().enumerate() {
+        let mut heading = format!("### {}", date_of(&failure.created_at));
+        if let Some(branch) = failure.branch.as_deref().filter(|b| !b.is_empty()) {
+            heading.push_str(&format!(" on `{}`", inline(branch)));
+        }
+        if let Some(run) = failure.ci_run_id.as_deref().filter(|r| !r.is_empty()) {
+            heading.push_str(&format!(", run {}", inline(run)));
+        }
+        out.push_str(&format!("{heading}\n\n"));
+        if !failure.message.is_empty() {
+            out.push_str(&format!("`{}`\n\n", inline(&failure.message)));
+        }
+        if index == 0 && !failure.details.is_empty() {
+            out.push_str(&format!("````text\n{}\n````\n\n", sanitize(&failure.details)));
+        }
+    }
+    out.push_str("## Last failing commit\n\n");
+    match test.last_failing_sha.as_deref().filter(|sha| !sha.is_empty()) {
+        Some(sha) => {
+            let sha8: String = sha.chars().take(8).collect();
+            match test.last_failing_branch.as_deref().filter(|b| !b.is_empty()) {
+                Some(branch) => out.push_str(&format!("`{}` on `{}`.\n", inline(&sha8), inline(branch))),
+                None => out.push_str(&format!("`{}`.\n", inline(&sha8))),
+            }
+        }
+        None => out.push_str("Not known.\n"),
+    }
+    out.push_str("\n## Acceptance criteria\n\n");
+    out.push_str("- [ ] The PR description names the cause of the intermittent failure and cites the failures above.\n");
+    out.push_str("- [ ] The test, or the code it tests, is changed so that cause can no longer fail it.\n");
+    out.push_str("- [ ] `./.fabro/ci.sh` passes.\n");
+    out.push_str("\n## Non-goals\n\n");
+    out.push_str("- Do not skip, delete, quarantine or mark the failing test as flaky, and do not add a retry around it or around the job.\n");
+    out.push_str("- Do not quarantine the test in FlakeRadar.\n");
+    out.push_str("- Do not change the CI workflow's rerun or retry settings.\n");
+    out.push_str("- Do not edit `.fabro/scout.toml`, `.fabro/ci.sh` or `.fabro/test.toml`.\n");
+    out.push_str("\nFiled by the scout. Close as not planned to stop it filing this test again.\n");
+    out
+}
+
+/// Text for inline code: one line, with backticks replaced so it cannot close the span. An
+/// `@` is left alone: GitHub does not mention anyone from inside a code span, and a test
+/// named `test_x@migration` must stay searchable.
+fn inline(text: &str) -> String {
+    collapse_all(text).replace('`', "'")
+}
+
+/// Every whitespace or control run as one space, with no length limit.
+fn collapse_all(text: &str) -> String {
+    text.split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// C7's cleaning steps, in order: timestamps, ANSI codes, the cut at the first `##[error]`,
 /// size, then backticks and mentions.
 #[must_use]
@@ -253,10 +382,11 @@ fn strip_timestamp(line: &str) -> &str {
 }
 
 /// C7 step 2: remove `ESC [ ... <final in @..~>` sequences.
+#[must_use]
 ///
 /// Every other control byte but newline and tab goes too, so a stray `ESC` from a non-CSI
 /// sequence, or a carriage return, never reaches the issue body.
-fn strip_ansi(text: &str) -> String {
+pub fn strip_ansi(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -405,6 +535,9 @@ pub fn summary(plan: &PlanOut, filed: Option<&[Filed]>) -> String {
     if let Some(reason) = plan.sources.ratchet.strip_prefix("skipped: ") {
         action_parts.push(format!("ratchet skipped: {reason}"));
     }
+    if let Some(reason) = plan.sources.flaky.strip_prefix("skipped: ") {
+        action_parts.push(format!("flaky skipped: {reason}"));
+    }
     if action_parts.is_empty() {
         return String::new();
     }
@@ -456,6 +589,7 @@ fn counts(plan: &PlanOut, filed: Option<&[Filed]>) -> Vec<String> {
     }
     for (kind, label) in [
         ("known", "known"),
+        ("explained", "explained"),
         ("suppressed", "suppressed"),
         ("too_big", "too big"),
         ("capped", "capped"),
