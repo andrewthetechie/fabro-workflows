@@ -8161,7 +8161,8 @@ STUB
 # a refused connection does (curl prints 000 and exits 7). A GET still logs one `curl <url>`
 # line. A PUT (the write-back, C11) logs `curl PUT <url> key=<X-API-Key> body=<--data>` and
 # answers from `link_<entity>_<id>.code` and `.json`, or `..._replace.*` for ?replace=true: a
-# missing `.code` is 200, a missing `.json` is `{}`.
+# missing `.code` is 200, a missing `.json` is `{}`. A `.exit` file makes curl fail after it
+# prints the code, with that exit status, as a timeout does.
 cat > "$SC_STUBS/bin/curl" <<'STUB'
 #!/bin/sh
 OUT=/dev/null; URL=""; METHOD=GET; KEY=""; DATA=""
@@ -8191,6 +8192,7 @@ if [ "$METHOD" = PUT ]; then
   if [ -e "$SC_FR/$F.code" ]; then CODE=$(cat "$SC_FR/$F.code"); else CODE=200; fi
   if [ -e "$SC_FR/$F.json" ]; then cat "$SC_FR/$F.json" > "$OUT"; else printf '{}' > "$OUT"; fi
   printf '%s' "$CODE"
+  if [ -e "$SC_FR/$F.exit" ]; then echo 'curl: (28) Operation timed out after 20001 milliseconds' >&2; exit "$(cat "$SC_FR/$F.exit")"; fi
   exit 0
 fi
 P=${URL#*/api/}
@@ -8506,7 +8508,7 @@ printf '%s' '{"status":"ok","reason":null,"entries":[]}' > "$SC_DIR/scout/ratche
 sc_run "SC_PLAN=$SC_FIX/plan_empty.json"
 check "scout plan+radar: neither: the ADR 0027 call" "1" "$(grep -c -- '--sha abcdef1234567890$' "$SC_DIR/gh.log")"
 
-# 22-30. file + write-back (ADR 0028 C11, F12-F15). The flaky test file action carries
+# 22-32. file + write-back (ADR 0028 C11, F12-F15). The flaky test file action carries
 # `flakeradar`, so the node PUTs its issue number to FlakeRadar after the create. The second
 # action is a ratchet file, which proves an action without the key sends nothing and that a
 # failed link never stops the loop.
@@ -8534,6 +8536,7 @@ sc_run "$SC_LINK_ENV"
 check "scout file link: linked: exit 0" "0" "$(cat "$SC_DIR.rc")"
 check "scout file link: linked: one PUT, key and body" "1" \
     "$(grep -cF 'curl PUT https://fr.test/api/tests/7/issue key=tok body={"number":101}' "$SC_DIR/gh.log")"
+check "scout file link: linked: both entries filed" "filed,filed" "$(jq -r '[.[].outcome] | join(",")' "$SC_DIR/scout/filed.json")"
 check "scout file link: linked: the outcomes" "linked," "$(jq -r '[.[] | (.link // "")] | join(",")' "$SC_DIR/scout/filed.json")"
 check "scout file link: linked: the ratchet entry has no link key" "false" "$(jq '.[1] | has("link")' "$SC_DIR/scout/filed.json")"
 
@@ -8595,6 +8598,23 @@ sc_link_setup file-link-token "$SC_LINK_ACTIONS"
 sc_run "$SC_LINK_ENV"
 check "scout file link: the token is not in stderr" "0" "$(grep -c 'tok' "$SC_DIR.err")"
 check "scout file link: the token is not in the write log" "0" "$(grep -c 'tok' "$SC_DIR/scout/filed.json")"
+
+# 31. A 200 whose body then times out is still `linked`: curl printed the code before it failed.
+sc_link_setup file-link-late "$SC_LINK_ACTIONS"
+mkdir -p "$SC_DIR/fr"
+printf '28' > "$SC_DIR/fr/link_tests_7.exit"
+sc_run "$SC_LINK_ENV SC_FR=$SC_DIR/fr"
+check "scout file link: late body: the outcome" "linked|null" \
+    "$(jq -r '.[0].link + "|" + (.[0].link_detail | tostring)' "$SC_DIR/scout/filed.json")"
+
+# 32. A replace that gets no response is `failed` with curl's error, not `HTTP 000000`.
+sc_link_409 file-link-replace-down "$SC_REG_ACTIONS" '{"detail":"Test already links issue #55; pass replace=true to replace it"}'
+printf '000' > "$SC_DIR/fr/link_tests_7_replace.code"
+printf '28' > "$SC_DIR/fr/link_tests_7_replace.exit"
+sc_run "$SC_LINK_ENV SC_FR=$SC_DIR/fr"
+check "scout file link: replace down: the outcome" "failed|replace got no response (curl: (28) Operation timed out after 20001 milliseconds)" \
+    "$(jq -r '.[0].link + "|" + .[0].link_detail' "$SC_DIR/scout/filed.json")"
+check "scout file link: replace down: both issues created" "2" "$(grep -c '^gh issue create' "$SC_DIR/gh.log")"
 
 # The ratchet-flaky edge must stay unconditional: a ratchet failure must not stop flaky (D15).
 check "scout: ratchet -> flaky is unconditional" "1" "$(grep -c '^    ratchet -> flaky$' "$SC")"

@@ -117,9 +117,9 @@ pub struct FlakeradarOut {
     pub tests: Vec<FlakyTest>,
     /// The Flaky job occurrences FlakeRadar explains, by failed job id, ascending (F4).
     pub explained: Vec<u64>,
-    /// FlakeRadar's job id of every counted job it knows, by fingerprint, ascending
-    /// (C11). The write-back links a filed job issue with it, and it is empty when the
-    /// plan read an `out.json` from an older fabro-io.
+    /// FlakeRadar's job id of every Flaky job that a fetched lookup names, by fingerprint,
+    /// ascending (C11). The write-back links a filed job issue with it, and it is empty
+    /// when the plan read an `out.json` from an older fabro-io.
     #[serde(default)]
     pub jobs: Vec<JobLink>,
 }

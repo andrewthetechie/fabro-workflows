@@ -288,7 +288,7 @@ unchanged.
 | `linked` | the `PUT` answers 200 | null |
 | `replaced` | F14: a `409` names the action's `issue`, and the `?replace=true` retry answers 200 | null |
 | `conflict` | a `409` names any other issue | that issue's number, as a string (`"55"`) |
-| `failed` | anything else | the reason: `FLAKERADAR_URL is empty`, `FLAKERADAR_API_TOKEN is empty`, `HTTP 502`, `HTTP 409 with no issue number`, `replace returned HTTP 409`, `no response (<curl error>)` |
+| `failed` | anything else | the reason: `FLAKERADAR_URL is empty`, `FLAKERADAR_API_TOKEN is empty`, `HTTP 502`, `HTTP 409 with no issue number`, `replace returned HTTP 409`, `replace got no response (<curl error>)`, `no response (<curl error>)` |
 
 `raced` and `failed` entries, and entries for actions without `flakeradar`, have no `link` key.
 
@@ -304,16 +304,19 @@ suffix is only ever added to a part that already exists.
 2. `jq -cn --argjson n "$N" '{number: $n}' > $S/link_body.json`. A `.fabro` script allows no
    backslash except `\"` (R6), so the body never goes inline in the shell.
 3. `curl -sS -m 20 -X PUT -H "X-API-Key: $FLAKERADAR_API_TOKEN" -H 'Content-Type: application/json' --data @$S/link_body.json -o $S/link.out -w '%{http_code}' "$B/api/$ENT/$ID/issue" < /dev/null 2> $S/link.err || echo 000`.
-   This is the `|| echo 000` idiom of the `flaky` node's `fr_get`.
+   This is the `|| echo 000` idiom of the `flaky` node's `fr_get`. Only the first three
+   characters of the result are the code: curl prints the code before it fails, so a 200 whose
+   body then timed out is `200000`, and is still `linked`; no response is `000000`, so `000`.
 4. `200` is `linked`. `409`: `M=$(jq -r '.detail // ""' $S/link.out 2>/dev/null | grep -o '#[0-9][0-9]*' | head -n 1 | tr -d '#')`.
    When the action's `kind` is `regression` and `M` equals its `issue`, send the same request
-   to `.../issue?replace=true`: `200` is `replaced`, and any other code is `failed`
+   to `.../issue?replace=true`: `200` is `replaced`, `000` is `failed`
+   (`replace got no response (...)`), and any other code is `failed`
    (`replace returned HTTP C`). Otherwise a non-empty `M` is `conflict` and an empty `M` is
-   `failed`. A code starting `000` is `failed` with `no response (...)`, which is the first
+   `failed`. `000` is `failed` with `no response (...)`, which is the first
    120 characters of `link.err` with control characters removed. Any other code is `failed`
    with `HTTP C`.
 5. Add the fields to the entry just recorded:
-   `jq -c --arg l "$L" --arg d "$D" '.[-1] += {link: $l, link_detail: (if $d == "" then null else $d end)}'`.
+   `jq -c --arg l "$LINK" --arg d "$WHY" '.[-1] += {link: $l, link_detail: (if $d == "" then null else $d end)}'`.
 6. Print one line to stderr, `file: FlakeRadar <entity>/<id> #N: <link>`, and go on to the next
    action. A link outcome never `break`s the loop. The token never reaches a log, the write
    log or stderr: no `set -x`, and no echo of a curl command line.

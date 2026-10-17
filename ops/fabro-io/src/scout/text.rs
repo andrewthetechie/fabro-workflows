@@ -568,7 +568,7 @@ pub fn summary(plan: &PlanOut, filed: Option<&[Filed]>) -> String {
 
 /// C11's write-back suffix on a `filed` part. It is empty unless the link needs reporting.
 fn link_suffix(entry: &Filed) -> String {
-    let detail = entry.link_detail.clone().unwrap_or_default();
+    let detail = entry.link_detail.as_deref().unwrap_or_default();
     match entry.link.as_deref() {
         Some("conflict") => format!(" (FlakeRadar already links #{detail})"),
         Some("failed") => format!(" (FlakeRadar link failed: {detail})"),

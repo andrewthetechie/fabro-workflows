@@ -876,7 +876,7 @@ fn an_uncovered_repository_plans_exactly_what_it_did_before() {
     let radar = FlakeradarOut {
         tests: vec![radar_test("aaaa", "welcome mat shows", 0.7, 2, "2026-10-16T21:18:39Z")],
         explained: vec![1, 2, 3],
-        jobs: vec![],
+        jobs: vec![JobLink { fp: flaky_fp(".github/workflows/ci.yml", "UI end-to-end (tauri-pilot)"), id: 12 }],
     };
     let config = config(false);
     let before = serde_json::to_string(&run_radar(&config, &three_flakes(), &[], Radar::Off)).unwrap();

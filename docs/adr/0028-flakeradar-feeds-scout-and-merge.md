@@ -50,9 +50,9 @@ on FlakeRadar's silence.
 FlakeRadar's own GitHub filing stays off, and the scout records each issue it files (task 05,
 F12). The write-back is advisory: a link that fails is reported in the run's summary and the
 issue is filed as before (D3). Closed issues stay linked (F15), because FlakeRadar's closed-issue
-sync is off with its own filer. When FlakeRadar can link an externally filed issue
-(andrewthetechie/flakeradar#6), those records mean the dashboard shows it and FlakeRadar's
-filing could be turned on without duplicates. D2 needs FlakeRadar to report the failed tests of
+sync is off with its own filer. FlakeRadar links an externally filed issue since
+andrewthetechie/flakeradar#6, so the dashboard shows each scout issue, and FlakeRadar's filing
+could be turned on without duplicates. D2 needs FlakeRadar to report the failed tests of
 one CI run (andrewthetechie/flakeradar#5). Both are filed upstream, because any CI gate or
 external filer can use them.
 

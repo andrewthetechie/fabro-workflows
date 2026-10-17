@@ -216,6 +216,8 @@ exit 0"]
     // regression issue is retried with ?replace=true, because that link went stale when the closed
     // issue stayed linked (F14); any other 409 is a conflict the scout leaves alone. A link is
     // never removed (F15). The token is never logged, echoed or written to the write log.
+    // put keeps the first three characters of curl's code: `|| echo 000` appends to a code curl
+    // already printed, so a 200 whose body then timed out is still a 200, and no response is 000.
     file [label="File the issues", shape=parallelogram, timeout="10m",
         script="S=/tmp/fabro/scout
 if [ \"$(jq -r '.filing' $S/config.json)\" != true ]; then
@@ -238,55 +240,57 @@ done < $S/labels.txt
 record() {
   jq -c --arg fp \"$1\" --arg o \"$2\" --arg n \"$3\" --arg e \"$4\" '. + [{fp: $fp, outcome: $o, number: (if $n == \"\" then null else ($n | tonumber) end), error: (if $e == \"\" then null else $e end)}]' $S/filed.json > $S/filed.tmp && mv $S/filed.tmp $S/filed.json
 }
+put() {
+  C=$(curl -sS -m 20 -X PUT -H \"X-API-Key: $FLAKERADAR_API_TOKEN\" -H 'Content-Type: application/json' --data @$S/link_body.json -o $S/link.out -w '%{http_code}' \"$B/api/$ENT/$ID/issue$1\" < /dev/null 2> $S/link.err || echo 000)
+  C=$(printf '%s' \"$C\" | cut -c1-3)
+}
+gone() {
+  printf 'no response (%s)' \"$(head -c 120 $S/link.err | tr -d '[:cntrl:]')\"
+}
 link() {
   ENT=$(printf '%s' \"$A\" | jq -r '.flakeradar.entity // \"\"')
   ID=$(printf '%s' \"$A\" | jq -r '.flakeradar.id // \"\"')
   [ -n \"$ENT\" ] || return 0
   [ -n \"$ID\" ] || return 0
   B=${FLAKERADAR_URL%/}
-  L=''
-  D=''
+  LINK=''
+  WHY=''
   if [ -z \"$B\" ]; then
-    L=failed
-    D='FLAKERADAR_URL is empty'
+    LINK=failed
+    WHY='FLAKERADAR_URL is empty'
   elif [ -z \"$FLAKERADAR_API_TOKEN\" ]; then
-    L=failed
-    D='FLAKERADAR_API_TOKEN is empty'
+    LINK=failed
+    WHY='FLAKERADAR_API_TOKEN is empty'
   else
     jq -cn --argjson n \"$N\" '{number: $n}' > $S/link_body.json
-    C=$(curl -sS -m 20 -X PUT -H \"X-API-Key: $FLAKERADAR_API_TOKEN\" -H 'Content-Type: application/json' --data @$S/link_body.json -o $S/link.out -w '%{http_code}' \"$B/api/$ENT/$ID/issue\" < /dev/null 2> $S/link.err || echo 000)
+    put ''
     case \"$C\" in
-      200) L=linked ;;
+      200) LINK=linked ;;
       409)
         M=$(jq -r '.detail // \"\"' $S/link.out 2>/dev/null | grep -o '#[0-9][0-9]*' | head -n 1 | tr -d '#')
         K=$(printf '%s' \"$A\" | jq -r .kind)
         I=$(printf '%s' \"$A\" | jq -r '.issue // \"\"')
         if [ \"$K\" = regression ] && [ -n \"$M\" ] && [ \"$M\" = \"$I\" ]; then
-          C=$(curl -sS -m 20 -X PUT -H \"X-API-Key: $FLAKERADAR_API_TOKEN\" -H 'Content-Type: application/json' --data @$S/link_body.json -o $S/link.out -w '%{http_code}' \"$B/api/$ENT/$ID/issue?replace=true\" < /dev/null 2> $S/link.err || echo 000)
-          if [ \"$C\" = 200 ]; then
-            L=replaced
-          else
-            L=failed
-            D=\"replace returned HTTP $C\"
-          fi
+          put '?replace=true'
+          case \"$C\" in
+            200) LINK=replaced ;;
+            000) LINK=failed; WHY=\"replace got $(gone)\" ;;
+            *) LINK=failed; WHY=\"replace returned HTTP $C\" ;;
+          esac
         elif [ -n \"$M\" ]; then
-          L=conflict
-          D=\"$M\"
+          LINK=conflict
+          WHY=\"$M\"
         else
-          L=failed
-          D='HTTP 409 with no issue number'
+          LINK=failed
+          WHY='HTTP 409 with no issue number'
         fi
         ;;
-      *)
-        case \"$C\" in
-          000*) L=failed; D=\"no response ($(head -c 120 $S/link.err | tr -d '[:cntrl:]'))\" ;;
-          *) L=failed; D=\"HTTP $C\" ;;
-        esac
-        ;;
+      000) LINK=failed; WHY=$(gone) ;;
+      *) LINK=failed; WHY=\"HTTP $C\" ;;
     esac
   fi
-  jq -c --arg l \"$L\" --arg d \"$D\" '.[-1] += {link: $l, link_detail: (if $d == \"\" then null else $d end)}' $S/filed.json > $S/filed.tmp && mv $S/filed.tmp $S/filed.json
-  echo \"file: FlakeRadar $ENT/$ID #$N: $L\" >&2
+  jq -c --arg l \"$LINK\" --arg d \"$WHY\" '.[-1] += {link: $l, link_detail: (if $d == \"\" then null else $d end)}' $S/filed.json > $S/filed.tmp && mv $S/filed.tmp $S/filed.json
+  echo \"file: FlakeRadar $ENT/$ID #$N: $LINK\" >&2
 }
 printf '[]' > $S/filed.json
 jq -c '.actions[] | select(.kind == \"file\" or .kind == \"regression\")' $S/plan.json > $S/actions.lines
