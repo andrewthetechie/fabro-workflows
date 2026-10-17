@@ -69,7 +69,7 @@ digraph PrReview {
             // -- the adversarial value it exists for. It moved from gpt-6.1-sol on 2026-10-14
             // for cost: luna is a twentieth of Sol's price on every token line, and the
             // Refuter's ~65 visits a day had made it ~$300/month (ADR 0013 D6 amendment). Its
-            // fallback is `orfallback:hy4-preview`, non-OpenAI and non-GLM, so an OpenAI outage
+            // fallback is `orfallback:qwen3.8-27b`, non-OpenAI and non-GLM, so an OpenAI outage
             // still has an independent Refuter. Change the rule here AND in the other
             // importing graphs; the `"gpt-6-luna"` fallback row lives in each workflow.toml.
         model_stylesheet="

@@ -42,12 +42,12 @@ graph = "workflow.fabro"
 # so its fallback chain matters more. Same rungs as the boxes.
 "coders-d" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
 kimi-for-coding = ["zai:glm-5.3"]
-"glm-5.3" = ["kimi:kimi-k3", "orfallback:hy4-preview"]
+"glm-5.3" = ["kimi:kimi-k3", "orfallback:qwen3.8-27b"]
 # The adversarial reviewer (.refute), on gpt-6-luna since 2026-10-14 (cost; ADR 0013 D6
 # amendment). Its fallback is neither OpenAI nor GLM, so an OpenAI outage still leaves an
 # independent Refuter. Fallbacks are non-recursive, so this row never applies to a coder
 # box that escalated to gpt-6-luna above.
-"gpt-6-luna" = ["orfallback:hy4-preview"]
+"gpt-6-luna" = ["orfallback:qwen3.8-27b"]
 # The mechanical-check tier (.review-standards, .merge-standards) and, since
 # glm-4.7 was removed, the first hosted rung of the coder ladder (.coder-t2) and
 # the landing spot for a failed local box. It escalates UP to full glm-5.3 rather
@@ -56,10 +56,10 @@ kimi-for-coding = ["zai:glm-5.3"]
 # lives in the coders-a..coders-d rows (fallbacks are non-recursive).
 "glm-5.3-flash" = ["zai:glm-5.3"]
 # kimi-k3 spends Kimi's 7-day quota mid-week (78 of 176 runs failed over, 09-25..10-11).
-# hy4-preview (OpenRouter, provider `orfallback`) keeps the reviewer non-GLM; glm-5.3
+# qwen3.8-27b (OpenRouter, provider `orfallback`) keeps the reviewer non-GLM; glm-5.3
 # is the last rung if OpenRouter fails too.
-kimi-k3 = ["orfallback:hy4-preview", "zai:glm-5.3"]
-long-context = ["kimi:kimi-k3", "orfallback:hy4-preview"]
+kimi-k3 = ["orfallback:qwen3.8-27b", "zai:glm-5.3"]
+long-context = ["kimi:kimi-k3", "orfallback:qwen3.8-27b"]
 
 # Checkpoints still COMMIT after every stage, but fabro no longer PUSHES them
 # (ADR 0011 D1). Every checkpoint is an allow-empty commit, and once the PR exists

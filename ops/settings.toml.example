@@ -236,8 +236,8 @@ profile = "openai"
 [llm.providers.moonshot]
 enabled = false
 
-# hy4-preview (2026-10-11): the kimi quota fallback, through OpenRouter. It is the rung after
-# kimi-k3 in every [run.model.fallbacks] chain (as `orfallback:hy4-preview`), so a week with
+# qwen3.8-27b (2026-10-11): the kimi quota fallback, through OpenRouter. It is the rung after
+# kimi-k3 in every [run.model.fallbacks] chain (as `orfallback:qwen3.8-27b`), so a week with
 # Kimi's 7-day quota spent keeps a non-GLM model in review-frontier instead of glm-5.3.
 # A CUSTOM provider, not the built-in `openrouter`: the built-in's catalog carries kimi-k3,
 # glm and gpt ids, and a configured built-in wins over an overlay provider (the moonshot
@@ -247,9 +247,9 @@ display_name = "OpenRouter (kimi quota fallback)"
 base_url = "https://openrouter.ai/api/v1"
 auth = { type = "bearer" }
 
-[llm.providers.orfallback.models."hy4-preview"]
-display_name = "Tencent HY4 preview (OpenRouter)"
-api_model = "tencent/hy4-preview"
+[llm.providers.orfallback.models."qwen3.8-27b"]
+display_name = "Qwen3.8 27B (OpenRouter)"
+api_model = "qwen/qwen3.8-27b"
 limits = { context_tokens = 1048576, max_output_tokens = 64000 }
 capabilities = { text = true, tools = true, reasoning = true }
 

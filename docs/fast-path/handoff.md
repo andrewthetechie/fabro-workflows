@@ -19,7 +19,7 @@ gives the live state, what to run, and the open faults to watch for.
 | Retention | Host cron `07 5 * * *` runs `~/bin/fabro-run-prune.sh` (merge-queue runs older than 7d) | `~/.local/state/fabro-run-prune.log` on the host |
 | First batch | womens-fantasy-sports #1599 #1805 #1812 #1818 #1832 #1842 #1843 #1844 #1846 #1847, labelled `fast-path` + `agent`, no `priority` | `gh issue list -R andrewthetechie/womens-fantasy-sports --label fast-path --state all` |
 | Coder pools | Four: `coders-a`, `coders-b`, `coders-c` (spark, vLLM, 1M), `coders-d` (freellm router, model `auto`, capped at 256k) | scheduler `/api/pools` on :32280 |
-| Kimi quota fallback | `orfallback:hy4-preview` (OpenRouter) is the next rung after `kimi-k3` | `fabro events <run>` → `agent.route.failover` |
+| Kimi quota fallback | `orfallback:qwen3.8-27b` (OpenRouter) is the next rung after `kimi-k3` | `fabro events <run>` → `agent.route.failover` |
 
 The kill switches (P10): turn the four schedules off with
 `DRY_RUN=0 ~/bin/fabro-automation-schedule.sh merge-queue-<repo> off` (it is a **dry run** unless
@@ -105,7 +105,7 @@ Account for these when you read the numbers:
 | 5 | Markers count by the token's login (C7), and that login is the operator's own (`andrewthetechie`). A marker comment the operator types by hand counts. | Accepted. Mention it in the ADR if it matters. |
 | 6 | The operator fixes this issue class by hand in "cluster" PRs (#1917, #1918). They stopped that agent at go-live. | Before labelling the next batch, check for open cluster PRs touching the same files. |
 | 7 | **coders-d** (freellm) is unstable by design: a hung free model is not an error, so the stage times out instead of falling back. Its first `fabro model test` failed once (Network), then passed four times. | Count coders-d runs that end in a timeout or rescue. If they're frequent, drain it from the scheduler page. |
-| 8 | **hy4-preview** is the fallback after kimi-k3. It has not yet been seen in a live failover. `kimi-for-coding` (rework tier 3, the same Kimi quota) still falls back to glm-5.3. | Grep `agent.route.failover` for `orfallback`. Check spend on the OpenRouter key ($100 credit). Ask the operator before adding hy4 to `kimi-for-coding`. |
+| 8 | **qwen3.8-27b** is the fallback after kimi-k3. It has not yet been seen in a live failover. `kimi-for-coding` (rework tier 3, the same Kimi quota) still falls back to glm-5.3. | Grep `agent.route.failover` for `orfallback`. Check spend on the OpenRouter key ($100 credit). Ask the operator before adding qwen3.8-27b to `kimi-for-coding`. |
 | 9 | Do not store `OPENROUTER_API_KEY` (or a key for `fireworks`, `vercel` or `venice`): a built-in provider takes over unqualified `kimi-k3` (invariants-host). | Use a custom provider, as `orfallback` does. |
 
 ## Next batches

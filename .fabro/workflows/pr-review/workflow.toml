@@ -9,11 +9,11 @@ graph = "workflow.fabro"
 # Quoted keys are mandatory where the name contains a dot, or TOML builds a
 # nested table and the automation fire returns 422.
 [run.model.fallbacks]
-"glm-5.3" = ["kimi:kimi-k3", "orfallback:hy4-preview"]
+"glm-5.3" = ["kimi:kimi-k3", "orfallback:qwen3.8-27b"]
 # The adversarial reviewer (.refute) in the imported review-merge graph, on gpt-6-luna
 # since 2026-10-14 (cost; ADR 0013 D6 amendment). Its fallback is neither OpenAI nor
-# GLM, so an OpenAI outage degrades to hy4-preview rather than into the reviewer family.
-"gpt-6-luna" = ["orfallback:hy4-preview"]
+# GLM, so an OpenAI outage degrades to qwen3.8-27b rather than into the reviewer family.
+"gpt-6-luna" = ["orfallback:qwen3.8-27b"]
 # The mechanical-check tier (.merge-standards in the imported review-merge
 # graph). Escalates UP to full glm-5.3, never sideways.
 "glm-5.3-flash" = ["zai:glm-5.3"]
@@ -29,9 +29,9 @@ graph = "workflow.fabro"
 "coders-c" = ["zai:glm-5.3"]
 "coders-d" = ["zai:glm-5.3"]
 # kimi-k3 spends Kimi's 7-day quota mid-week (78 of 176 runs failed over, 09-25..10-11).
-# hy4-preview (OpenRouter, provider `orfallback`) keeps the reviewer non-GLM; glm-5.3
+# qwen3.8-27b (OpenRouter, provider `orfallback`) keeps the reviewer non-GLM; glm-5.3
 # is the last rung if OpenRouter fails too.
-kimi-k3 = ["orfallback:hy4-preview", "zai:glm-5.3"]
+kimi-k3 = ["orfallback:qwen3.8-27b", "zai:glm-5.3"]
 
 # The run works on the PR head branch, not on fabro/run/<id>.
 #   enabled = true  -> checkpoints still commit between stages, onto the PR branch

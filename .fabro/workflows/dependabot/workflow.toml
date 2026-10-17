@@ -8,11 +8,11 @@ graph = "workflow.fabro"
 # `.merge-spec` (glm-5.3) and `.refute` (gpt-6-luna). Keys containing a dot MUST be quoted.
 [run.model.fallbacks]
 "glm-5.3-flash" = ["zai:glm-5.3"]
-"glm-5.3" = ["kimi:kimi-k3", "orfallback:hy4-preview"]
+"glm-5.3" = ["kimi:kimi-k3", "orfallback:qwen3.8-27b"]
 # The adversarial reviewer (.refute) is on gpt-6-luna since 2026-10-14 (cost; ADR 0013 D6
 # amendment). Its fallback is neither OpenAI nor GLM, so the merge gate keeps its
 # independence through an OpenAI outage.
-"gpt-6-luna" = ["orfallback:hy4-preview"]
+"gpt-6-luna" = ["orfallback:qwen3.8-27b"]
 
 # The run branch holds the checkpoints. Only open_pr, deliver, ci_fix_gate and remerge_base
 # push (ADR 0011 D1), exactly as in backlog. The merge loop validates in this checkout and

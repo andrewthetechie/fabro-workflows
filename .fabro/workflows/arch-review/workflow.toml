@@ -7,9 +7,9 @@ graph = "workflow.fabro"
 # or errors, the stage falls back to Kimi's kimi-k3. No stage uses a coder box, so the
 # coder scheduler does not admit this workflow (ADR 0012 D7).
 [run.model.fallbacks]
-# hy4-preview (OpenRouter, provider `orfallback`) is the rung after kimi-k3, for the weeks
+# qwen3.8-27b (OpenRouter, provider `orfallback`) is the rung after kimi-k3, for the weeks
 # Kimi's 7-day coding-plan quota is spent: a non-GLM model instead of a failed stage.
-high-reasoning = ["kimi:kimi-k3", "orfallback:hy4-preview"]
+high-reasoning = ["kimi:kimi-k3", "orfallback:qwen3.8-27b"]
 
 # The review reads code and writes issues. It never writes code.
 [run.integrations.github.permissions]
