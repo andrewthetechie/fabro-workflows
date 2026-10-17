@@ -81,6 +81,8 @@ Not for the implementing agent. Every step writes to `main`, the host, or a targ
 10. Read the first scheduled day's four Discord lines. Then, one repository at a time, set
     `filing = true` in its `scout.toml`. Start with the one whose dry plan looks best. Record
     the date: the 14-day measurement starts from the first repository that goes live.
+    **2026-10-17:** lawncare-saas went live first (lawncare-saas#2918), after FlakeRadar
+    (`docs/flakeradar/`) landed. Its first live run filed #2919-#2921. Measurement starts 2026-10-17.
 11. Append a dated section to `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`.
 
 ## The 14-day measurement (ADR 0027 acceptance)

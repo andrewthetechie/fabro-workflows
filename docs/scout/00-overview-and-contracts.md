@@ -7,6 +7,9 @@ writers-app#1083), a dry run of each read, schedules on. **Every repository stay
 waited) until the scout's flaky source read FlakeRadar per test (operator decision 2026-10-16):
 going live first would have filed job-level flaky fingerprints that the per-test ones then
 supersede. That is `docs/flakeradar/` (ADR 0028), which amends C1, C2, C5, C8 and C9 below.
+**Step 10 started 2026-10-17:** lawncare-saas is live (lawncare-saas#2918, `filing = true`); its
+first live run filed #2919-#2921 (three flaky FlakeRadar tests), and a second run was quiet. The
+14-day measurement runs from 2026-10-17. The other three repositories stay dry, one at a time.
 ADR 0027 (proposed). Roadmap B6, reduced.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and

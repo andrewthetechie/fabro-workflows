@@ -1,6 +1,7 @@
 # FlakeRadar in fabro: overview and contracts
 
-**Status:** designed 2026-10-16. Tasks 01, 02 and 04 done 2026-10-17. ADR 0028 (proposed).
+**Status:** designed 2026-10-16. Tasks 01-04 done 2026-10-17: deployed (02022b8, fabro-io
+0.7.0), lawncare-saas, womens-fantasy-sports and writers-app covered, and lawncare-saas live. ADR 0028 (proposed).
 andrewthetechie/flakeradar#5 shipped 2026-10-17. Task 05 still waits for #6. Every
 scout repository stays dry (`filing = false`) until tasks 01-03 are live, so the scout never
 files a job-level fingerprint that a per-test one then supersedes.
