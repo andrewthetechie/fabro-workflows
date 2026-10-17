@@ -3,7 +3,9 @@
 **Status:** designed 2026-10-16. Tasks 01-04 done 2026-10-17: deployed (02022b8, fabro-io
 0.7.0), lawncare-saas, womens-fantasy-sports and writers-app covered, and lawncare-saas live. ADR 0028 (proposed).
 andrewthetechie/flakeradar#5 shipped 2026-10-17. #6 shipped and was deployed 2026-10-17, and
-task 05 (`05-write-back.md`, F12-F15, C11) is planned, not built. Every
+task 05 (`05-write-back.md`, F12-F15, C11) is built (fabro-io 0.8.0, 47fb574 and 1ca39f8) and
+not deployed: the write-back awaits the vault secret `FLAKERADAR_API_TOKEN`, which only the
+operator can set (F13). Every
 scout repository stays dry (`filing = false`) until tasks 01-03 are live, so the scout never
 files a job-level fingerprint that a per-test one then supersedes.
 

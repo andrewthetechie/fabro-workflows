@@ -47,14 +47,18 @@ on FlakeRadar's silence.
 
 ## D4. The scout is the only filer, and FlakeRadar records its issues
 
-FlakeRadar's own GitHub filing stays off. When FlakeRadar can link an externally filed issue
-(andrewthetechie/flakeradar#6), the scout records each issue it files, so the dashboard shows
-it and FlakeRadar's filing could be turned on without duplicates. D2 needs FlakeRadar to report
-the failed tests of one CI run (andrewthetechie/flakeradar#5). Both are filed upstream, because
-any CI gate or external filer can use them.
+FlakeRadar's own GitHub filing stays off, and the scout records each issue it files (task 05,
+F12). The write-back is advisory: a link that fails is reported in the run's summary and the
+issue is filed as before (D3). Closed issues stay linked (F15), because FlakeRadar's closed-issue
+sync is off with its own filer. When FlakeRadar can link an externally filed issue
+(andrewthetechie/flakeradar#6), those records mean the dashboard shows it and FlakeRadar's
+filing could be turned on without duplicates. D2 needs FlakeRadar to report the failed tests of
+one CI run (andrewthetechie/flakeradar#5). Both are filed upstream, because any CI gate or
+external filer can use them.
 
 ## D5. The coder agents do not get the FlakeRadar MCP in v1
 
 The issue body carries the traceback and history. The MCP (`/mcp/`, bearer token) is added to
 the agent stages once scout flaky PRs show that a coder needs fresher data than the issue has.
-That defers putting a FlakeRadar token on the host.
+That defers putting a FlakeRadar token on the host. The scout run itself now carries the token
+for the write-back (task 05, F13); D5 stays the rule for the MCP and the coder agents.

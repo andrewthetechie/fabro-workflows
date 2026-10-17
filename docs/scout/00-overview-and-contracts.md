@@ -512,8 +512,10 @@ stop the flaky source (D15). Say so in a `//` comment. That makes 9 nodes and 11
 attributes: `default_fidelity="truncate"`, `stall_timeout="70m"` (above `ratchet`'s 65m, R2: 20m of `setup.sh` plus the 40m budget fits).
 No cycle and no import, so no `loop_restart_signature_limit`.
 
-`workflow.toml`: `merge-queue`'s, minus `FABRO_API_*` and `FABRO_AUTO_MERGE`; its only
-`[run.environment.env]` key is `FLAKERADAR_URL = "{{ vars.FLAKERADAR_URL }}"` (ADR 0028 F1). It has `[run.run_branch] enabled = true, push = false`. The
+`workflow.toml`: `merge-queue`'s, minus `FABRO_API_*` and `FABRO_AUTO_MERGE`; its
+`[run.environment.env]` keys are `FLAKERADAR_URL = "{{ vars.FLAKERADAR_URL }}"` (ADR 0028 F1)
+and `FLAKERADAR_API_TOKEN = "{{ secrets.FLAKERADAR_API_TOKEN }}"`, the token the `file` node's
+write-back uses (ADR 0028 F13). It has `[run.run_branch] enabled = true, push = false`. The
 permissions are `contents = "read"`, `issues = "write"`, `actions = "read"`. The hooks are
 `discord-failed` and `discord-scout-summary` (`stage_start`, matcher `^finish$`,
 `/storage/scripts/discord-notify.sh scout-summary`).

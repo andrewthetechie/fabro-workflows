@@ -85,6 +85,11 @@ Checked on 2026-09-18, because the list below had drifted from the host:
   **cannot be rotated independently**: revoking a run's API access means rotating the
   server token, which also breaks the CLI and `discord-notify.sh`. Accepted, not
   overlooked.
+- The fabro vault holds `FLAKERADAR_API_TOKEN`, FlakeRadar's only token, used by the scout run
+  only (ADR 0028 F13, task 05). Its source copies are FlakeRadar's `.env` and the `flakeradar`
+  MCP header in the operator's `~/.claude.json` on the Mac (`docs/flakeradar` 00, *Issue links*).
+  Set it with `fabro secret set FLAKERADAR_API_TOKEN <token>`; the entry fails **closed**, so a
+  missing one aborts every scout run at startup once the token line reaches `main`.
 - Server env: `/storage/server.env` and `/storage/.home/server.json` in the container.
 - Discord webhook URL: `/storage/secrets/discord_webhook_url` in the container volume.
   `discord-notify.sh`'s `fallback` kind reuses it for the model-escalation alert.
@@ -1339,7 +1344,9 @@ The four schedules are created **disabled** (ADR 0027 D16); enable them with
   rest as `explained`). The base URL is the server variable `FLAKERADAR_URL`, created by
   `make provision`. If FlakeRadar cannot be read, or the variable is empty, a covered
   repository files no flaky issue that day and the summary says `flaky skipped: flakeradar
-  <reason>`; to go back to the job-only source, remove the `[flakeradar]` table instead. FlakeRadar's own GitHub issue filing stays off: the
+  <reason>`; to go back to the job-only source, remove the `[flakeradar]` table instead. The
+  scout links each issue it files to its FlakeRadar test or job (task 05, F12), and the summary
+  names a link that conflicted or failed: FlakeRadar's own GitHub issue filing stays off, and the
   scout is the only filer.
 - **Silence one finding.** Close its issue as **not planned** (or as a duplicate). Every run
   lists every `scout` issue, open and closed, and a close as not planned suppresses the
