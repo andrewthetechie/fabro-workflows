@@ -979,7 +979,7 @@ if [ \"$E\" = true ]; then
   gh pr view \"$PR\" --json title --jq .title > /tmp/fabro/commit_subject.txt
   git diff --name-only origin/\"$(cat /tmp/fabro/base_ref)\"...HEAD > /tmp/fabro/review/merge_base_files.txt 2>/dev/null || : > /tmp/fabro/review/merge_base_files.txt
   echo 0 > /tmp/fabro/gh_fix_attempts
-  rm -f /tmp/fabro/ci_rerun_done /tmp/fabro/ci_flaky_rerun_done
+  rm -f /tmp/fabro/ci_rerun_done /tmp/fabro/ci_flaky_rerun_done /tmp/fabro/flaky_tests.txt
   echo 0 > /tmp/fabro/strict_retry
   echo $(( $(date +%s) + 3600 )) > /tmp/fabro/merge_deadline
   echo '{\"context_updates\":{\"merge_eligible\":true}}'
@@ -1057,9 +1057,13 @@ fi"]
     // Its guards are its own (node under 30 min, 15 min of budget), because the 20-minute one
     // would forbid it almost always, and no ci_fix needs the time it protects. Otherwise
     // ci_fix runs as before, and ci_fix.md names the known flaky failures it must leave alone.
+    // After the second rerun, a red CI that FlakeRadar cannot judge (the new attempt not
+    // reported yet, FlakeRadar down) is held too: only a failure shown to be real reaches
+    // ci_fix from there. The FlakeRadar wait never runs past the node's 47-minute cap.
     // An empty FLAKERADAR_URL, an unreachable FlakeRadar or a run it never saw is never known
     // flaky, which is today's path (D3). The `[flaky] ignore_jobs` of the repository's
-    // scout.toml names its aggregator checks, which fail only because another check failed.
+    // scout.toml on the base branch names its aggregator checks, which fail only because another
+    // check failed. The PR head's copy is not trusted, as hygiene.json is not.
     watch_checks [label="Watch GitHub checks", shape=parallelogram, timeout="50m", output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 A=$(cat /tmp/fabro/gh_fix_attempts 2>/dev/null || echo 0)
@@ -1085,15 +1089,17 @@ rerun_failed() {
 }
 known_flaky() {
   KF=false
+  KUNK=false
   KFT=''
   FRD=/tmp/fabro/flakeradar
   : > /tmp/fabro/review/known_flaky.md
   [ -n \"$FLAKERADAR_URL\" ] || return 0
+  KUNK=true
   B=${FLAKERADAR_URL%/}
   rm -rf $FRD
   mkdir -p $FRD
   jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link | capture(\"github[.]com/(?<repo>[^/]+/[^/]+)/actions/runs/(?<run>[0-9]+)/\") | .repo + \" \" + .run] | unique | .[]' /tmp/fabro/checks.json > $FRD/runs.txt 2>/dev/null || return 0
-  [ -s $FRD/runs.txt ] || return 0
+  [ -s $FRD/runs.txt ] || { KUNK=false; return 0; }
   C=$(curl -sS -m 20 -o $FRD/repos.json -w '%{http_code}' \"$B/api/repos\" < /dev/null 2>/dev/null) || C=000
   [ \"$C\" = 200 ] || { echo \"flakeradar: the repository list returned $C\"; return 0; }
   while read -r REPO RID; do
@@ -1101,6 +1107,7 @@ known_flaky() {
     gh api \"repos/$REPO/actions/runs/$RID\" --jq .run_attempt > $FRD/att_$RID < /dev/null 2>/dev/null || rm -f $FRD/att_$RID
   done < $FRD/runs.txt
   FRT=$(( $(date +%s) + 180 ))
+  [ \"$FRT\" -le $((T0 + 2820)) ] || FRT=$((T0 + 2820))
   while : ; do
     WAIT=0
     while read -r REPO RID; do
@@ -1113,11 +1120,16 @@ known_flaky() {
     [ \"$WAIT\" = 1 ] && [ \"$(date +%s)\" -lt \"$FRT\" ] || break
     sleep 20
   done
-  IG=$(fabro-io scout config 2>/dev/null | jq -c '.flaky.ignore_jobs // []' 2>/dev/null)
-  [ -n \"$IG\" ] || IG='[]'
+  IG='[]'
+  if git show \"origin/$(cat /tmp/fabro/base_ref 2>/dev/null):.fabro/scout.toml\" > $FRD/scout.toml 2>/dev/null; then
+    IG=$(fabro-io scout config --file $FRD/scout.toml 2>/dev/null | jq -c '.flaky.ignore_jobs // []' 2>/dev/null)
+    [ -n \"$IG\" ] || IG='[]'
+  fi
   fabro-io flakeradar classify --checks /tmp/fabro/checks.json --failures-dir $FRD --ignore-jobs \"$IG\" --section /tmp/fabro/review/known_flaky.md > $FRD/classify.json 2>/dev/null || return 0
   KF=$(jq -r '.known_flaky' $FRD/classify.json 2>/dev/null)
-  KFT=$(jq -r '[.checks[].tests[] | .name + (if .issue then \" #\" + (.issue | tostring) else \"\" end)] | unique | join(\", \")' $FRD/classify.json 2>/dev/null | tr -d '\"{}' | cut -c1-160)
+  KUNK=$(jq -r '.unknown' $FRD/classify.json 2>/dev/null)
+  KFT=$(jq -r '[.checks[].tests[] | .name + (if .issue then \" #\" + (.issue | tostring) else \"\" end)] | unique | join(\", \")' $FRD/classify.json 2>/dev/null | tr -d '\"{}' | tr -d '[:cntrl:]' | cut -c1-160)
+  [ \"$KF\" != true ] || printf '%s' \"$KFT\" > /tmp/fabro/flaky_tests.txt
   jq -r '.checks[] | \"flakeradar: \" + .name + \": \" + (if .known_flaky then \"known flaky\" else .reason end)' $FRD/classify.json 2>/dev/null | tr -d '{}'
 }
 while : ; do
@@ -1152,6 +1164,9 @@ while : ; do
     echo 'nothing to rerun: no failing check is a GitHub Actions run'
   fi
   known_flaky
+  if [ -f /tmp/fabro/ci_flaky_rerun_done ] && [ \"$KF\" != true ] && [ \"$KUNK\" = true ]; then
+    blocked \"CI is still red after a second rerun of known flaky tests ($(cat /tmp/fabro/flaky_tests.txt 2>/dev/null)), and FlakeRadar cannot judge the new attempt, so ci_fix was not run. A human can rerun the failed jobs and merge this PR.\"
+  fi
   [ \"$KF\" = true ] || break
   if [ -f /tmp/fabro/ci_flaky_rerun_done ]; then
     blocked \"CI still fails only on known flaky tests ($KFT) after a second rerun, so ci_fix was not run. A human can rerun the failed jobs and merge this PR.\"

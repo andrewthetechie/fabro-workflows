@@ -106,24 +106,9 @@ pub struct Execution {
     pub ci_run_id: Option<String>,
 }
 
-/// One CI-run lookup (flakeradar#5), with the fields C4b reads.
-#[derive(Clone, Debug, Deserialize)]
-pub struct RunFailures {
-    /// The failed jobs of that attempt.
-    #[serde(default)]
-    pub failed_jobs: Vec<FailedJob>,
-}
-
-/// One failed job of one CI run attempt.
-#[derive(Clone, Debug, Deserialize)]
-pub struct FailedJob {
-    /// GitHub's job id, as a string.
-    #[serde(default)]
-    pub ci_job_id: Option<String>,
-    /// `explained` when a failing test in the job explains its failure.
-    #[serde(default)]
-    pub outcome: String,
-}
+/// One CI-run lookup (flakeradar#5); F4 reads its `failed_jobs`. It is the merge phase's
+/// type, so the two readers of the endpoint cannot drift apart.
+pub use crate::flakeradar::RunLookup as RunFailures;
 
 /// C4b's output.
 #[derive(Clone, Debug, Serialize, Deserialize)]

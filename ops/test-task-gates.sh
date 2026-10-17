@@ -2147,9 +2147,9 @@ case "$P" in
 esac
 if [ -e "$GH_STATE/fr/$F" ]; then cat "$GH_STATE/fr/$F" > "$OUT"; printf 200; else printf '{}' > "$OUT"; printf 404; fi
 STUB
-# fabro-io: `scout config` prints the ignore_jobs in WC_IGNORE; `flakeradar classify` prints
-# $GH_STATE/classify.json and writes $GH_STATE/section.md as its section. The rule itself is
-# fabro-io's, unit-tested in ops/fabro-io/tests/flakeradar_classify_tests.rs.
+# fabro-io: `scout config` prints the ignore_jobs in WC_IGNORE; the n-th `flakeradar classify`
+# prints $GH_STATE/classify_<n>.json, else classify.json, and writes section.md as its
+# section. The rule itself is fabro-io's (ops/fabro-io/tests/flakeradar_classify_tests.rs).
 cat > "$T/bin/fabro-io" <<'STUB'
 #!/bin/sh
 echo "fabro-io $*" >> "$GH_LOG"
@@ -2157,11 +2157,23 @@ case "$1 $2" in
   "scout config") printf '{"flaky":{"ignore_jobs":%s}}' "${WC_IGNORE-[]}" ;;
   "flakeradar classify")
       while [ $# -gt 0 ]; do [ "$1" = --section ] && cp "$GH_STATE/section.md" "$2"; shift; done
-      cat "$GH_STATE/classify.json" ;;
+      n=0; [ -f "$GH_STATE/classifies" ] && n=$(cat "$GH_STATE/classifies"); n=$((n + 1)); echo "$n" > "$GH_STATE/classifies"
+      if [ -f "$GH_STATE/classify_$n.json" ]; then cat "$GH_STATE/classify_$n.json"; else cat "$GH_STATE/classify.json"; fi ;;
   *) exit 2 ;;
 esac
 STUB
-chmod +x "$T/bin/sleep" "$T/bin/date" "$T/bin/gh" "$T/bin/curl" "$T/bin/fabro-io"
+# git: `git show origin/<base>:.fabro/scout.toml` answers from $GH_STATE/base_scout.toml.
+REAL_GIT=$(command -v git)
+cat > "$T/bin/git" <<STUB
+#!/bin/sh
+if [ "\$1" = show ]; then
+    echo "git \$*" >> "\$GH_LOG"
+    [ -f "\$GH_STATE/base_scout.toml" ] || exit 128
+    cat "\$GH_STATE/base_scout.toml"; exit 0
+fi
+exec $REAL_GIT "\$@"
+STUB
+chmod +x "$T/bin/sleep" "$T/bin/date" "$T/bin/gh" "$T/bin/curl" "$T/bin/fabro-io" "$T/bin/git"
 PATH="$T/bin:$SAVED_PATH"
 export GH_LOG="$T/gh.log" GH_STATE="$T"
 unset FLAKERADAR_URL WC_ATTEMPT WC_IGNORE
@@ -2171,7 +2183,9 @@ PASSING='[{"name":"test","state":"SUCCESS","bucket":"pass","link":"https://githu
 wc_setup() {
     rm -f "$T"/gh.log "$T"/polls "$T"/checks_*.json "$T"/ci_rerun_done "$T"/clock "$T"/clock_step \
           "$T"/gh_fix_attempts "$T"/merge_block_reason "$T"/feedback/ci_fix.md \
-          "$T"/ci_flaky_rerun_done "$T"/review/known_flaky.md "$T"/classify.json "$T"/section.md
+          "$T"/ci_flaky_rerun_done "$T"/review/known_flaky.md "$T"/classify.json "$T"/section.md \
+          "$T"/classify_*.json "$T"/classifies "$T"/base_scout.toml "$T"/flaky_tests.txt
+    echo main > "$T/base_ref"
     rm -rf "$T/flakeradar" "$T/fr"; mkdir -p "$T/fr"
     printf '%s' '[{"name":"o/r","projects":[]}]' > "$T/fr/repos.json"
     printf '%s' '{"reports":{"pending":0,"processed":1,"failed":0},"failures":[],"failed_jobs":[]}' > "$T/fr/run_111_2.json"
@@ -2287,12 +2301,14 @@ check "known flaky, still red: no ci_fix attempt" "absent" "$([ -f "$T/gh_fix_at
 wc_setup
 printf '%s' "$FAILING" > "$T/checks_1.json"
 printf '%s' "$MIXED" > "$T/classify.json"; printf '%s\n' "$SECTION" > "$T/section.md"
+printf '%s\n' 'version = 1' > "$T/base_scout.toml"
 OUT=$(FLAKERADAR_URL=https://fr.test WC_IGNORE='["alls-green"]' wc_run)
 check "mixed: routes to ci_fix" "false:1" \
     "$(jq -r '"\(.context_updates.checks_ok):\(.context_updates.gh_fix_attempts)"' <<<"$(lastjson "$OUT")")"
 check "mixed: one rerun" "1" "$(grep -c '^run rerun' "$T/gh.log")"
 check "mixed: ci_fix.md has the log, then the section" "1|1" \
     "$(grep -c 'the failing log' "$T/feedback/ci_fix.md")|$(grep -c '^## Known flaky (FlakeRadar)$' "$T/feedback/ci_fix.md")"
+check "mixed: scout.toml is read from the base branch" "1" "$(grep -c '^git show origin/main:.fabro/scout.toml$' "$T/gh.log")"
 check "mixed: the aggregators from scout.toml reach classify" "1" "$(grep -c -- '--ignore-jobs \["alls-green"\]' "$T/gh.log")"
 check "mixed: the run log says why" "1" "$(grep -c '^flakeradar: test: test x is stable$' <<<"$OUT")"
 
@@ -2334,7 +2350,33 @@ OUT=$(FLAKERADAR_URL=https://fr.test wc_run)
 check "known flaky, no time: blocked" "true" "$(jq -r '.context_updates.checks_blocked' <<<"$(lastjson "$OUT")")"
 check "known flaky, no time: no rerun" "0" "$(grep -c '^run rerun' "$T/gh.log")"
 check "known flaky, no time: the reason says so" "1" "$(grep -c 'no time left for a second rerun' "$T/merge_block_reason")"
-check "merge_gate clears both rerun markers" "1" "$(grep -c 'rm -f /tmp/fabro/ci_rerun_done /tmp/fabro/ci_flaky_rerun_done' "$SHARED")"
+check "merge_gate clears both rerun markers" "1" "$(grep -c 'rm -f /tmp/fabro/ci_rerun_done /tmp/fabro/ci_flaky_rerun_done /tmp/fabro/flaky_tests.txt' "$SHARED")"
+check "no base scout.toml: no aggregators" "1" "$(grep -c -- '--ignore-jobs \[\] ' "$T/gh.log")"
+
+# 15. After the second rerun FlakeRadar cannot judge the new attempt (not reported yet, or
+#     down): held, naming the tests the second rerun was for. No ci_fix.
+UNKNOWN='{"known_flaky":false,"unknown":true,"checks":[{"name":"test","run":111,"job":9,"known_flaky":false,"reason":"FlakeRadar has no report of the run","tests":[]}]}'
+wc_setup
+printf '%s' "$FAILING" > "$T/checks_1.json"
+printf '%s' "$KNOWN" > "$T/classify_1.json"; printf '%s' "$UNKNOWN" > "$T/classify_2.json"
+OUT=$(FLAKERADAR_URL=https://fr.test wc_run)
+check "unknown after the second rerun: blocked" "true" "$(jq -r '.context_updates.checks_blocked' <<<"$(lastjson "$OUT")")"
+check "unknown after the second rerun: the reason names the tests" "1" \
+    "$(grep -c 'second rerun of known flaky tests (welcome mat shows #41), and FlakeRadar cannot judge the new attempt' "$T/merge_block_reason")"
+check "unknown after the second rerun: no ci_fix attempt" "absent" "$([ -f "$T/gh_fix_attempts" ] && echo present || echo absent)"
+
+# 16. After the second rerun a failure shown to be real goes to ci_fix.
+wc_setup
+printf '%s' "$FAILING" > "$T/checks_1.json"
+printf '%s' "$KNOWN" > "$T/classify_1.json"; printf '%s' "$MIXED" > "$T/classify_2.json"
+OUT=$(FLAKERADAR_URL=https://fr.test wc_run)
+check "real failure after the second rerun: ci_fix" "false:1" \
+    "$(jq -r '"\(.context_updates.checks_ok):\(.context_updates.gh_fix_attempts)"' <<<"$(lastjson "$OUT")")"
+check "real failure after the second rerun: two reruns" "2" "$(grep -c '^run rerun' "$T/gh.log")"
+
+# 17. The FlakeRadar wait never runs past the node's 47-minute cap (T0 + 2820), which is what
+#     keeps the node inside its 50m timeout and its reason out of mark_needs_human.
+check "the FlakeRadar wait is clamped to the 47-minute cap" "1" "$(grep -cF -- '-le $((T0 + 2820)) ] || FRT=$((T0 + 2820))' "$SHARED")"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE

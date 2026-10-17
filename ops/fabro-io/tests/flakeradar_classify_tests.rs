@@ -188,3 +188,27 @@ fn the_cli_reads_the_graphs_files() {
         .unwrap();
     assert_eq!(bad.status.code(), Some(1));
 }
+
+#[test]
+fn unknown_means_no_failing_check_is_shown_to_be_a_real_failure() {
+    // No lookup at all (FlakeRadar down, or the rerun attempt not reported yet): unknown.
+    let out = flakeradar::classify(&[flaky_check()], &BTreeMap::new(), &[]);
+    assert!(!out.known_flaky);
+    assert!(out.unknown);
+    // Reports still pending: unknown.
+    let mut pending = lookups();
+    pending.get_mut(&38_881_352_466).unwrap().reports.pending = 1;
+    assert!(flakeradar::classify(&[flaky_check()], &pending, &[]).unknown);
+    // A job that failed outside its tests is evidence of a real failure: not unknown.
+    let pre_commit = check("pre-commit", "fail", 38_836_594_409, 116_767_008_074);
+    let out = flakeradar::classify(&[flaky_check(), pre_commit], &lookups(), &[]);
+    assert!(!out.unknown);
+    // So is a stable test, and a check that is not an Actions job.
+    let mut stable = lookups();
+    stable.get_mut(&38_881_352_466).unwrap().failures[0].tier = "stable".to_string();
+    assert!(!flakeradar::classify(&[flaky_check()], &stable, &[]).unknown);
+    let codeql = Check { name: "codeql".into(), bucket: "fail".into(), link: "https://github.com/o/r/runs/5".into() };
+    assert!(!flakeradar::classify(&[codeql], &lookups(), &[]).unknown);
+    // Known flaky is not unknown.
+    assert!(!flakeradar::classify(&[flaky_check()], &lookups(), &[]).unknown);
+}

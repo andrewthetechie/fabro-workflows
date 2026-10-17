@@ -382,10 +382,10 @@ fn strip_timestamp(line: &str) -> &str {
 }
 
 /// C7 step 2: remove `ESC [ ... <final in @..~>` sequences.
-#[must_use]
 ///
 /// Every other control byte but newline and tab goes too, so a stray `ESC` from a non-CSI
 /// sequence, or a carriage return, never reaches the issue body.
+#[must_use]
 pub fn strip_ansi(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

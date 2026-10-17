@@ -138,7 +138,7 @@ radar() {
     C=$(fr_get \"$B/api/tests?repo=$REPO&sort=score&page_size=100&page=$P\" $FR/page.json)
     [ \"$C\" = 200 ] || { bad \"tests page $P\" \"$C\"; return 1; }
     N=$(jq '.items | length' $FR/page.json 2>/dev/null) || { skip \"tests page $P is not JSON\"; return 1; }
-    T=$(jq '.total' $FR/page.json)
+    T=$(jq '.total // 0' $FR/page.json)
     jq -c '.items[]' $FR/page.json >> $FR/tests.raw
     [ \"$N\" -gt 0 ] && [ $((P * 100)) -lt \"$T\" ] && [ \"$P\" -lt 20 ] || break
     P=$((P + 1))

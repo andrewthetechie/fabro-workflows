@@ -443,5 +443,18 @@ _Avoid_: strict rule, extra lint, warning
 
 **Flaky job**:
 A CI job that failed and then passed on a rerun of the same commit. Counted per workflow and
-job, not per test: which test failed is evidence inside the issue, not part of its identity.
-_Avoid_: flaky test (the job is what is counted), flake (as a noun for the issue)
+job, not per test: which test failed is evidence inside the issue, not part of its identity. In
+a repository FlakeRadar covers, only its **unexplained** flakes count: one whose failed job
+FlakeRadar explains with a failing test is that **Flaky test**'s (ADR 0028).
+_Avoid_: flaky test (for the job), flake (as a noun for the issue)
+
+**Flaky test**:
+A test FlakeRadar rates `flaky` with at least one proven flake (it failed and passed on the
+same commit), filed by the scout as its own issue, keyed by FlakeRadar's fingerprint (ADR 0028).
+_Avoid_: flaky job (for the test)
+
+**Known flaky**:
+Said of a red check whose every failing test FlakeRadar rates `flaky`, or `suspect` with a
+proven flake. A red PR that fails only on known flaky checks gets a second rerun, then a hold,
+never `ci_fix` (ADR 0028 F8, F9).
+_Avoid_: flaky (alone, for a check FlakeRadar has not judged)

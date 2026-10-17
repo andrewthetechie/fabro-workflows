@@ -107,6 +107,10 @@ pub struct FailedJob {
 pub struct Classified {
     /// True only when there is a failing check and every one is known flaky (F8).
     pub known_flaky: bool,
+    /// True when it is not known flaky, yet no failing check is shown to be a real failure:
+    /// every one lacks FlakeRadar data (no report, still processing, failed or cut reports).
+    /// After a second rerun, F9 holds such a PR rather than send a likely flake to `ci_fix`.
+    pub unknown: bool,
     /// One entry per failing check, in `--checks` order.
     pub checks: Vec<Judged>,
 }
@@ -152,7 +156,12 @@ pub struct FlakyFailure {
 /// True when the test is a known flaky test (F8): `flaky`, or `suspect` with a proven flake.
 #[must_use]
 pub fn is_known_flaky(failure: &TestFailure) -> bool {
-    failure.tier == "flaky" || (failure.tier == "suspect" && failure.confirmed_flake_count >= 1)
+    is_known(&failure.tier, failure.confirmed_flake_count)
+}
+
+/// F8's rule on a tier and a proven-flake count.
+fn is_known(tier: &str, proven: u32) -> bool {
+    tier == "flaky" || (tier == "suspect" && proven >= 1)
 }
 
 /// The run and job ids of an Actions check's link.
@@ -174,7 +183,25 @@ pub fn classify(checks: &[Check], lookups: &BTreeMap<u64, RunLookup>, ignore: &[
     let aggregator = |j: &Judged| ignore.iter().any(|name| *name == j.name);
     let judged_ones: Vec<&Judged> = judged.iter().filter(|j| !aggregator(j)).collect();
     let known_flaky = !judged_ones.is_empty() && judged_ones.iter().all(|j| j.known_flaky);
-    Classified { known_flaky, checks: judged }
+    let unknown = !known_flaky
+        && !judged_ones.is_empty()
+        && judged_ones.iter().all(|j| j.known_flaky || j.reason.as_deref().is_some_and(is_missing_data));
+    Classified { known_flaky, unknown, checks: judged }
+}
+
+/// The reasons that say FlakeRadar lacks data, not that the failure is real.
+const MISSING_DATA: [&str; 4] = [
+    NO_REPORT,
+    "FlakeRadar is still processing the run's reports",
+    "some of the run's reports failed to process",
+    "the run has too many failures to judge",
+];
+/// The reason for a run FlakeRadar has no lookup of.
+const NO_REPORT: &str = "FlakeRadar has no report of the run";
+
+/// True when `reason` is one of [`MISSING_DATA`].
+fn is_missing_data(reason: &str) -> bool {
+    MISSING_DATA.contains(&reason)
 }
 
 /// One failing check, judged against its run's lookup.
@@ -197,7 +224,7 @@ fn judge(check: &Check, lookups: &BTreeMap<u64, RunLookup>, ignore: &[String]) -
         return out;
     };
     let Some(lookup) = lookups.get(&run) else {
-        out.reason = Some("FlakeRadar has no report of the run".to_string());
+        out.reason = Some(NO_REPORT.to_string());
         return out;
     };
     let reason = if lookup.reports.pending > 0 {
@@ -244,11 +271,11 @@ fn judge(check: &Check, lookups: &BTreeMap<u64, RunLookup>, ignore: &[String]) -
         out.reason = Some("no failing test is reported for the job".to_string());
         return out;
     }
-    if let Some(stranger) = failing.iter().find(|f| !is_known_flaky(f)) {
-        out.reason = Some(if stranger.tier == "suspect" {
-            format!("{} is suspect with no proven flake", stranger.name)
+    if let Some(real) = failing.iter().find(|f| !is_known_flaky(f)) {
+        out.reason = Some(if real.tier == "suspect" {
+            format!("{} is suspect with no proven flake", real.name)
         } else {
-            format!("{} is {}", stranger.name, stranger.tier)
+            format!("{} is {}", real.name, real.tier)
         });
         return out;
     }
@@ -261,7 +288,7 @@ fn judge(check: &Check, lookups: &BTreeMap<u64, RunLookup>, ignore: &[String]) -
 pub fn section(out: &Classified) -> String {
     let mut lines = Vec::new();
     for judged in &out.checks {
-        for test in judged.tests.iter().filter(|t| t.tier == "flaky" || (t.tier == "suspect" && t.proven >= 1)) {
+        for test in judged.tests.iter().filter(|t| is_known(&t.tier, t.proven)) {
             let mut line = format!(
                 "- `{}` in `{}`: {}, {} {} (check `{}`)",
                 code(&test.name),
