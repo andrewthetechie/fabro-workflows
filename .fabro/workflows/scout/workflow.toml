@@ -28,8 +28,17 @@ actions = "read"
 # scout.toml says `[flakeradar] covered = true`. `{{ vars.X }}` only, and no `id` key
 # (invariants-graph, Packages). ops/provision-server-state.sh creates the variable: an unset
 # one fails the run at compile, so it must exist on the host before this line reaches main.
+#
+# FlakeRadar's token (ADR 0028 F13), for the file node's write-back only (C11): it links each
+# flaky issue the scout files to its test or job. `{{ secrets.X }}` resolves from the fabro
+# vault, so the operator sets it with `fabro secret set FLAKERADAR_API_TOKEN <token>` before
+# this line reaches main; a missing secret aborts the run before its sandbox exists. The run
+# environment covers every node, so setup.sh and the Ratchet commands can read the token too.
+# That is accepted, because they already run with an `issues: write` GitHub token. Only the
+# scout gets it: backlog, pr-review and dependabot do not.
 [run.environment.env]
 FLAKERADAR_URL = "{{ vars.FLAKERADAR_URL }}"
+FLAKERADAR_API_TOKEN = "{{ secrets.FLAKERADAR_API_TOKEN }}"
 
 # Discord. Hooks run with sandbox = false, inside the fabro server container, and read the
 # webhook URL from /storage/secrets/discord_webhook_url.

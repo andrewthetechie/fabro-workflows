@@ -8158,22 +8158,41 @@ esac
 STUB
 # FlakeRadar (ADR 0028): answers from $SC_FR, one file per resource, and 404 for a missing
 # one. SC_FR_502 names a URL substring that answers 502; SC_FR_DOWN makes every call fail as
-# a refused connection does (curl prints 000 and exits 7).
+# a refused connection does (curl prints 000 and exits 7). A GET still logs one `curl <url>`
+# line. A PUT (the write-back, C11) logs `curl PUT <url> key=<X-API-Key> body=<--data>` and
+# answers from `link_<entity>_<id>.code` and `.json`, or `..._replace.*` for ?replace=true: a
+# missing `.code` is 200, a missing `.json` is `{}`.
 cat > "$SC_STUBS/bin/curl" <<'STUB'
 #!/bin/sh
-OUT=/dev/null; URL=""
+OUT=/dev/null; URL=""; METHOD=GET; KEY=""; DATA=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) OUT=$2; shift ;;
+    -X) METHOD=$2; shift ;;
+    -H) case "$2" in X-API-Key:*) KEY=${2#X-API-Key: }; KEY=${KEY# } ;; esac; shift ;;
+    --data) DATA=$2; DATA=${DATA#@}; shift ;;
     -w|-m) shift ;;
     -*) ;;
     *) URL=$1 ;;
   esac
   shift
 done
-echo "curl $URL" >> "$SC_LOG"
+if [ "$METHOD" = PUT ]; then
+  echo "curl PUT $URL key=$KEY body=$(cat "$DATA")" >> "$SC_LOG"
+else
+  echo "curl $URL" >> "$SC_LOG"
+fi
 if [ -n "${SC_FR_DOWN:-}" ]; then echo 'curl: (7) Failed to connect' >&2; printf 000; exit 7; fi
 case "$URL" in *"${SC_FR_502:-@none@}"*) printf 'bad gateway' > "$OUT"; printf 502; exit 0 ;; esac
+if [ "$METHOD" = PUT ]; then
+  R=${URL#*/api/}; ENT=${R%%/*}; R=${R#*/}; ID=${R%%/*}
+  F=link_${ENT}_${ID}
+  case "$R" in *replace=true*) F=${F}_replace ;; esac
+  if [ -e "$SC_FR/$F.code" ]; then CODE=$(cat "$SC_FR/$F.code"); else CODE=200; fi
+  if [ -e "$SC_FR/$F.json" ]; then cat "$SC_FR/$F.json" > "$OUT"; else printf '{}' > "$OUT"; fi
+  printf '%s' "$CODE"
+  exit 0
+fi
 P=${URL#*/api/}
 case "$P" in
   repos) F=repos.json ;;
@@ -8486,6 +8505,96 @@ cp "$SC_FIX/config.json" "$SC_DIR/scout/config.json"; cp "$SC_FIX/env.json" "$SC
 printf '%s' '{"status":"ok","reason":null,"entries":[]}' > "$SC_DIR/scout/ratchet.json"
 sc_run "SC_PLAN=$SC_FIX/plan_empty.json"
 check "scout plan+radar: neither: the ADR 0027 call" "1" "$(grep -c -- '--sha abcdef1234567890$' "$SC_DIR/gh.log")"
+
+# 22-30. file + write-back (ADR 0028 C11, F12-F15). The flaky test file action carries
+# `flakeradar`, so the node PUTs its issue number to FlakeRadar after the create. The second
+# action is a ratchet file, which proves an action without the key sends nothing and that a
+# failed link never stops the loop.
+SC_LINK_ACTIONS='{"filing":true,"repo":"andrewthetechie/jelly-swipe","sources":{"ratchet":"ok","flaky":"ok"},"actions":[{"kind":"file","source":"flaky","fp":"flaky:test-pilot:aaaa","issue":null,"title":"scout: one","body":"body one","labels":["agent","scout","ai-generated","flaky-test"],"detail":"score 0.70, 2 proven flakes","flakeradar":{"entity":"tests","id":7}},{"kind":"file","source":"ratchet","fp":"ratchet:ruff:b006","issue":null,"title":"scout: two","body":"body two","labels":["agent","scout","ai-generated","bug","fast-path"],"detail":"1 finding in 1 file"}]}'
+SC_REG_ACTIONS='{"filing":true,"repo":"andrewthetechie/jelly-swipe","sources":{"ratchet":"ok","flaky":"ok"},"actions":[{"kind":"regression","source":"flaky","fp":"flaky:test-pilot:aaaa","issue":55,"title":"scout (regression of #55): one","body":"body one","labels":["agent","scout","ai-generated","flaky-test"],"detail":"score 0.70, 2 proven flakes","flakeradar":{"entity":"tests","id":7}},{"kind":"file","source":"ratchet","fp":"ratchet:ruff:b006","issue":null,"title":"scout: two","body":"body two","labels":["agent","scout","ai-generated","bug","fast-path"],"detail":"1 finding in 1 file"}]}'
+SC_LINK_ENV="SC_ISSUES=$SC_FIX/no-issues.raw FLAKERADAR_URL=https://fr.test FLAKERADAR_API_TOKEN=tok"
+# $1 case name, $2 plan JSON. A live repository that the plan and env are written into.
+sc_link_setup() {
+    sc_setup "$1" file
+    cp "$SC_FIX/config_live.json" "$SC_DIR/scout/config.json"
+    cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+    printf '%s' "$2" > "$SC_DIR/scout/plan.json"
+}
+# $1 case name, $2 plan JSON, $3 the 409 detail. A 409 whose detail names an issue.
+sc_link_409() {
+    sc_link_setup "$1" "$2"
+    mkdir -p "$SC_DIR/fr"
+    printf '409' > "$SC_DIR/fr/link_tests_7.code"
+    printf '%s' "$3" > "$SC_DIR/fr/link_tests_7.json"
+}
+
+# 22. A 200 is `linked`, the body is the new issue's number, and the ratchet action sends nothing.
+sc_link_setup file-link "$SC_LINK_ACTIONS"
+sc_run "$SC_LINK_ENV"
+check "scout file link: linked: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout file link: linked: one PUT, key and body" "1" \
+    "$(grep -cF 'curl PUT https://fr.test/api/tests/7/issue key=tok body={"number":101}' "$SC_DIR/gh.log")"
+check "scout file link: linked: the outcomes" "linked," "$(jq -r '[.[] | (.link // "")] | join(",")' "$SC_DIR/scout/filed.json")"
+check "scout file link: linked: the ratchet entry has no link key" "false" "$(jq '.[1] | has("link")' "$SC_DIR/scout/filed.json")"
+
+# 23. A 409 that names someone else's issue is `conflict`, sends no replace, and files on.
+sc_link_409 file-link-conflict "$SC_LINK_ACTIONS" '{"detail":"Test already links issue #55; pass replace=true to replace it"}'
+sc_run "$SC_LINK_ENV SC_FR=$SC_DIR/fr"
+check "scout file link: conflict: outcome and detail" "conflict|55" \
+    "$(jq -r '.[0].link + "|" + .[0].link_detail' "$SC_DIR/scout/filed.json")"
+check "scout file link: conflict: no replace request" "0" "$(grep -c 'replace=true' "$SC_DIR/gh.log")"
+check "scout file link: conflict: the ratchet issue is still created" "2" "$(grep -c '^gh issue create' "$SC_DIR/gh.log")"
+
+# 24. A 409 that names the regression's own stale issue is retried with ?replace=true.
+sc_link_409 file-link-replace "$SC_REG_ACTIONS" '{"detail":"Test already links issue #55; pass replace=true to replace it"}'
+sc_run "$SC_LINK_ENV SC_FR=$SC_DIR/fr"
+check "scout file link: replace: plain then replace, each once" "1|1" \
+    "$(grep -cF 'curl PUT https://fr.test/api/tests/7/issue key=tok body={"number":101}' "$SC_DIR/gh.log")|$(grep -cF 'curl PUT https://fr.test/api/tests/7/issue?replace=true key=tok body={"number":101}' "$SC_DIR/gh.log")"
+check "scout file link: replace: the outcome" "replaced" "$(jq -r '.[0].link' "$SC_DIR/scout/filed.json")"
+
+# 25. A regression that meets someone else's link leaves it alone and is a `conflict`.
+sc_link_409 file-link-other "$SC_REG_ACTIONS" '{"detail":"Test already links issue #77; pass replace=true to replace it"}'
+sc_run "$SC_LINK_ENV SC_FR=$SC_DIR/fr"
+check "scout file link: other link: no replace request" "0" "$(grep -c 'replace=true' "$SC_DIR/gh.log")"
+check "scout file link: other link: the outcome and detail" "conflict|77" \
+    "$(jq -r '.[0].link + "|" + .[0].link_detail' "$SC_DIR/scout/filed.json")"
+
+# 26. A 502 is `failed` with `HTTP 502`, and the loop still files the next issue.
+sc_link_setup file-link-502 "$SC_LINK_ACTIONS"
+sc_run "$SC_LINK_ENV SC_FR_502=/api/tests/7/issue"
+check "scout file link: 502: the outcome" "failed|HTTP 502" \
+    "$(jq -r '.[0].link + "|" + .[0].link_detail' "$SC_DIR/scout/filed.json")"
+check "scout file link: 502: both issues created" "2" "$(grep -c '^gh issue create' "$SC_DIR/gh.log")"
+
+# 27. FlakeRadar down: the failure names curl's error, and the loop goes on.
+sc_link_setup file-link-down "$SC_LINK_ACTIONS"
+sc_run "$SC_LINK_ENV SC_FR_DOWN=1"
+check "scout file link: down: the outcome" "failed" "$(jq -r '.[0].link' "$SC_DIR/scout/filed.json")"
+check "scout file link: down: no response in the detail" "1" \
+    "$(jq -r '.[0].link_detail' "$SC_DIR/scout/filed.json" | grep -c '^no response')"
+check "scout file link: down: both issues created" "2" "$(grep -c '^gh issue create' "$SC_DIR/gh.log")"
+
+# 28. No token: nothing is sent, and the reason names it.
+sc_link_setup file-link-notoken "$SC_LINK_ACTIONS"
+sc_run "SC_ISSUES=$SC_FIX/no-issues.raw FLAKERADAR_URL=https://fr.test FLAKERADAR_API_TOKEN="
+check "scout file link: no token: no PUT" "0" "$(grep -c '^curl PUT' "$SC_DIR/gh.log")"
+check "scout file link: no token: the reason" "failed|FLAKERADAR_API_TOKEN is empty" \
+    "$(jq -r '.[0].link + "|" + .[0].link_detail' "$SC_DIR/scout/filed.json")"
+
+# 29. A dry repository sends nothing and files nothing.
+sc_setup file-link-dry file
+cp "$SC_FIX/config.json" "$SC_DIR/scout/config.json"
+cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+printf '%s' "$SC_LINK_ACTIONS" > "$SC_DIR/scout/plan.json"
+sc_run "$SC_LINK_ENV"
+check "scout file link: dry: no PUT" "0" "$(if [ -e "$SC_DIR/gh.log" ]; then grep -c '^curl PUT' "$SC_DIR/gh.log"; else echo 0; fi)"
+check "scout file link: dry: no create" "0" "$(if [ -e "$SC_DIR/gh.log" ]; then grep -c '^gh issue create' "$SC_DIR/gh.log"; else echo 0; fi)"
+
+# 30. The token never reaches the node's stderr or the write log.
+sc_link_setup file-link-token "$SC_LINK_ACTIONS"
+sc_run "$SC_LINK_ENV"
+check "scout file link: the token is not in stderr" "0" "$(grep -c 'tok' "$SC_DIR.err")"
+check "scout file link: the token is not in the write log" "0" "$(grep -c 'tok' "$SC_DIR/scout/filed.json")"
 
 # The ratchet-flaky edge must stay unconditional: a ratchet failure must not stop flaky (D15).
 check "scout: ratchet -> flaky is unconditional" "1" "$(grep -c '^    ratchet -> flaky$' "$SC")"

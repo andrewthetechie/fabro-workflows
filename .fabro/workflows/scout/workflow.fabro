@@ -209,6 +209,13 @@ exit 0"]
     // each write it re-lists the scout issues, so a fingerprint another run filed in the meantime
     // is recorded as `raced` rather than filed twice. A failed write is recorded and stops the
     // remaining writes (D15). The write log is $S/filed.json, which summarize reads (C8).
+    //
+    // After each write, a filed flaky action is linked to its FlakeRadar test or job (ADR 0028
+    // C11, F12). A link outcome never stops the loop: the next action is filed as before, and the
+    // write log carries the outcome for the summary. A 409 whose issue number is the action's own
+    // regression issue is retried with ?replace=true, because that link went stale when the closed
+    // issue stayed linked (F14); any other 409 is a conflict the scout leaves alone. A link is
+    // never removed (F15). The token is never logged, echoed or written to the write log.
     file [label="File the issues", shape=parallelogram, timeout="10m",
         script="S=/tmp/fabro/scout
 if [ \"$(jq -r '.filing' $S/config.json)\" != true ]; then
@@ -230,6 +237,56 @@ while IFS=: read -r NAME COLOR DESC; do
 done < $S/labels.txt
 record() {
   jq -c --arg fp \"$1\" --arg o \"$2\" --arg n \"$3\" --arg e \"$4\" '. + [{fp: $fp, outcome: $o, number: (if $n == \"\" then null else ($n | tonumber) end), error: (if $e == \"\" then null else $e end)}]' $S/filed.json > $S/filed.tmp && mv $S/filed.tmp $S/filed.json
+}
+link() {
+  ENT=$(printf '%s' \"$A\" | jq -r '.flakeradar.entity // \"\"')
+  ID=$(printf '%s' \"$A\" | jq -r '.flakeradar.id // \"\"')
+  [ -n \"$ENT\" ] || return 0
+  [ -n \"$ID\" ] || return 0
+  B=${FLAKERADAR_URL%/}
+  L=''
+  D=''
+  if [ -z \"$B\" ]; then
+    L=failed
+    D='FLAKERADAR_URL is empty'
+  elif [ -z \"$FLAKERADAR_API_TOKEN\" ]; then
+    L=failed
+    D='FLAKERADAR_API_TOKEN is empty'
+  else
+    jq -cn --argjson n \"$N\" '{number: $n}' > $S/link_body.json
+    C=$(curl -sS -m 20 -X PUT -H \"X-API-Key: $FLAKERADAR_API_TOKEN\" -H 'Content-Type: application/json' --data @$S/link_body.json -o $S/link.out -w '%{http_code}' \"$B/api/$ENT/$ID/issue\" < /dev/null 2> $S/link.err || echo 000)
+    case \"$C\" in
+      200) L=linked ;;
+      409)
+        M=$(jq -r '.detail // \"\"' $S/link.out 2>/dev/null | grep -o '#[0-9][0-9]*' | head -n 1 | tr -d '#')
+        K=$(printf '%s' \"$A\" | jq -r .kind)
+        I=$(printf '%s' \"$A\" | jq -r '.issue // \"\"')
+        if [ \"$K\" = regression ] && [ -n \"$M\" ] && [ \"$M\" = \"$I\" ]; then
+          C=$(curl -sS -m 20 -X PUT -H \"X-API-Key: $FLAKERADAR_API_TOKEN\" -H 'Content-Type: application/json' --data @$S/link_body.json -o $S/link.out -w '%{http_code}' \"$B/api/$ENT/$ID/issue?replace=true\" < /dev/null 2> $S/link.err || echo 000)
+          if [ \"$C\" = 200 ]; then
+            L=replaced
+          else
+            L=failed
+            D=\"replace returned HTTP $C\"
+          fi
+        elif [ -n \"$M\" ]; then
+          L=conflict
+          D=\"$M\"
+        else
+          L=failed
+          D='HTTP 409 with no issue number'
+        fi
+        ;;
+      *)
+        case \"$C\" in
+          000*) L=failed; D=\"no response ($(head -c 120 $S/link.err | tr -d '[:cntrl:]'))\" ;;
+          *) L=failed; D=\"HTTP $C\" ;;
+        esac
+        ;;
+    esac
+  fi
+  jq -c --arg l \"$L\" --arg d \"$D\" '.[-1] += {link: $l, link_detail: (if $d == \"\" then null else $d end)}' $S/filed.json > $S/filed.tmp && mv $S/filed.tmp $S/filed.json
+  echo \"file: FlakeRadar $ENT/$ID #$N: $L\" >&2
 }
 printf '[]' > $S/filed.json
 jq -c '.actions[] | select(.kind == \"file\" or .kind == \"regression\")' $S/plan.json > $S/actions.lines
@@ -254,6 +311,7 @@ while IFS= read -r A; do
   if OUT=$(gh issue create --title \"$T\" --body-file $S/body.md \"$@\" < /dev/null 2>$S/create.err); then
     N=$(printf '%s' \"$OUT\" | grep -o '[0-9]*$')
     record \"$FP\" filed \"$N\" ''
+    link
   else
     record \"$FP\" failed '' \"$(tail -n 1 $S/create.err)\"
     break
