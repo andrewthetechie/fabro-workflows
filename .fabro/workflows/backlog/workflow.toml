@@ -162,6 +162,9 @@ FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
 # review-merge phase for the host-wide one.
 FABRO_API_URL    = "{{ vars.FABRO_API_URL }}"
 FABRO_AUTO_MERGE = "{{ vars.FABRO_AUTO_MERGE }}"
+# FlakeRadar's base URL (ADR 0028 F1): watch_checks asks it whether a red check fails only on
+# known flaky tests. Empty means today's path.
+FLAKERADAR_URL   = "{{ vars.FLAKERADAR_URL }}"
 
 # Discord notifications. Hooks run with sandbox = false, which means they run
 # inside the fabro server container (Alpine: /bin/sh, wget, no bash, no jq, no

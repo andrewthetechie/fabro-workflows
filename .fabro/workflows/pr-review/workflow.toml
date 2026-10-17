@@ -157,6 +157,9 @@ rebase to finish), run the git commands it lists.
 '''
 # END fabro agent guide
 FABRO_AUTO_MERGE = "{{ vars.FABRO_AUTO_MERGE }}"
+# FlakeRadar's base URL (ADR 0028 F1): watch_checks asks it whether a red check fails only on
+# known flaky tests. Empty means today's path.
+FLAKERADAR_URL = "{{ vars.FLAKERADAR_URL }}"
 
 # io-stage (ADR 0016): writes stage.json with a fresh 128-bit visit at the start of
 # every agent stage; matcher ^agent$ fires on the agent handler type, so it covers

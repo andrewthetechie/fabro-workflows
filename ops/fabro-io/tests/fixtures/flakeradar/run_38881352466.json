@@ -1,0 +1,51 @@
+{
+  "repo": "o/r",
+  "ci_run_id": "38881352466",
+  "ci_run_attempt": 1,
+  "flake_threshold": 0.3,
+  "reports": {
+    "pending": 0,
+    "processed": 2,
+    "failed": 0
+  },
+  "total_failures": 1,
+  "truncated": false,
+  "failures": [
+    {
+      "test_id": 1869302,
+      "project": "frontend",
+      "suite": "suite x",
+      "classname": "suite x",
+      "name": "test 1869302",
+      "run_id": 2844,
+      "ci_job_id": "116909021192",
+      "status": "failed",
+      "failed_attempts": 1,
+      "failure_category": "assertion",
+      "message": "[2mexpect([22m[31melement[39m).not.toBeInTheDocument()",
+      "tier": "flaky",
+      "flakiness_score": 0.7,
+      "confirmed_flake_count": 2,
+      "clean_streak": 10,
+      "quarantined": false,
+      "github_issue_number": null,
+      "github_issue_url": null
+    }
+  ],
+  "failed_jobs": [
+    {
+      "job_id": 36,
+      "pipeline": ".github/workflows/frontend.yml",
+      "name": "test",
+      "ci_job_id": "116909021192",
+      "url": "https://github.com/o/r/actions/runs/38881352466/job/116909021192",
+      "outcome": "explained",
+      "tier": "stable",
+      "flakiness_score": 0,
+      "confirmed_flake_count": 0,
+      "clean_streak": 7,
+      "github_issue_number": null,
+      "github_issue_url": null
+    }
+  ]
+}

@@ -55,6 +55,11 @@ return `cannot_fix` and say what is wrong. This is the most likely way to
 satisfy this prompt dishonestly; it is also the one a gate cannot automatically
 detect. The check must pass because the cause is fixed.
 
+When `ci_fix.md` ends with `## Known flaky (FlakeRadar)`, the tests it lists fail at random
+on the base branch too, and this PR did not cause them. Do not change, skip, retry or
+quarantine those tests, and do not count them as the failure to fix: fix the other failures
+in the log. If they are the only failures left, return `cannot_fix` and say so.
+
 ## Git is forbidden here
 
 Every other agent in this deployment is forbidden from touching git, and this

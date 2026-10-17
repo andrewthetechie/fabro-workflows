@@ -1,7 +1,7 @@
 # FlakeRadar in fabro: overview and contracts
 
-**Status:** designed 2026-10-16. Tasks 01 and 02 done 2026-10-17. ADR 0028 (proposed).
-andrewthetechie/flakeradar#5 shipped 2026-10-17 (task 04, C10 below). Task 05 still waits for #6. Every
+**Status:** designed 2026-10-16. Tasks 01, 02 and 04 done 2026-10-17. ADR 0028 (proposed).
+andrewthetechie/flakeradar#5 shipped 2026-10-17. Task 05 still waits for #6. Every
 scout repository stays dry (`filing = false`) until tasks 01-03 are live, so the scout never
 files a job-level fingerprint that a per-test one then supersedes.
 
@@ -108,8 +108,8 @@ files a job-level fingerprint that a per-test one then supersedes.
 | F5 | Tests and jobs share the flaky source's caps (`PER_RUN_CAP`, `MAX_OPEN`). Order: tests by score descending, then proven count descending, then fingerprint; then jobs in C4's order. `ignore_jobs` still applies to jobs. |
 | F6 | D8 suppression and regression apply to tests unchanged. A test regression is filed only when its newest `failed` or `error` execution (normalised) is after the closed issue's `closed_at`; otherwise the candidate produces nothing. |
 | F7 | Fail toward filing less (ADR 0028 D3). Coverage is the operator's declaration, `[flakeradar] covered = true`. A covered repository whose FlakeRadar read fails (`FLAKERADAR_URL` empty, a non-2xx, a timeout, unparseable JSON, or the repository missing from `/api/repos`) gets `sources.flaky = "skipped: flakeradar <reason>"`, and **no** flaky action of either kind is planned, because the job source cannot tell explained from unexplained. An uncovered repository runs C4 exactly as today and never calls FlakeRadar. C8 part 5 adds `flaky skipped: <reason>`. |
-| F8 | Merge phase: after `watch_checks`' one rerun is still red, each failing check is classified with flakeradar#5's endpoint (C10), waiting up to 3 minutes for its reports to be processed. A **known-flaky test** is `tier == "flaky"`, or `tier == "suspect"` with `confirmed_flake_count >= 1`. A failing check is **known flaky** when it is an Actions job, its attempt's lookup succeeded with `reports.pending == 0`, `reports.failed == 0` and `truncated == false`, its `ci_job_id` is not in `failed_jobs` as `unexplained`, it has at least one failure with `status` `failed` or `error`, and every such failure is a known-flaky test. Anything else (a non-Actions check, lint, a job without JUnit, a 404, a timeout) is not known flaky. |
-| F9 | All failing checks known flaky → one more rerun (`ci_flaky_rerun_done`, cleared where `ci_rerun_done` is), under the same guards (≥ 30 minutes of `merge_deadline` left, the node has run < 20 minutes). Green → the merge continues. Still red, or the guards forbid the rerun → `blocked`, with a reason naming the tests (and each one's `github_issue_number` when FlakeRadar has it, which task 05's write-back provides). `ci_fix` does not run on a known-flaky red in either case. |
+| F8 | Merge phase: after `watch_checks`' one rerun is still red, each failing check is classified with flakeradar#5's endpoint (C10), waiting up to 3 minutes for its reports to be processed. A **known-flaky test** is `tier == "flaky"`, or `tier == "suspect"` with `confirmed_flake_count >= 1`. A failing check is **known flaky** when it is an Actions job, its attempt's lookup succeeded with `reports.pending == 0`, `reports.failed == 0` and `truncated == false`, its `ci_job_id` is not in `failed_jobs` as `unexplained`, it has at least one failure with `status` `failed` or `error`, and every such failure is a known-flaky test. Anything else (a non-Actions check, lint, a job without JUnit, a 404, a timeout) is not known flaky. A failing check named in the repository's `.fabro/scout.toml` `[flaky] ignore_jobs` is an aggregator (it fails because another check failed) and is judged by the others; alone it is not known flaky. Found live: womens-fantasy-sports' `alls-green-playwright` is `unexplained` in every Playwright red run. |
+| F9 | All failing checks known flaky → one more rerun (`ci_flaky_rerun_done`, cleared where `ci_rerun_done` is), when ≥ 15 minutes of `merge_deadline` are left and the node has run < 30 minutes. These are not the plain rerun's guards (30 and 20): the node has usually waited over 20 minutes by now, and they exist to leave `ci_fix` its time, which this path never spends. Green → the merge continues. Still red, or no time → `blocked`, with a reason naming the tests (and each one's `github_issue_number` when FlakeRadar has it, which task 05's write-back provides). `ci_fix` does not run on a known-flaky red in either case, including a first visit whose plain rerun the guards forbade. |
 | F10 | Otherwise `ci_fix` runs as today, and `ci_fix.md` gains `## Known flaky (FlakeRadar)`, listing those failures with "not caused by this PR: do not change, skip or retry these tests". |
 | F11 | `merge-queue` (queue mode) is unchanged in v1. |
 
@@ -182,7 +182,7 @@ failing commit` (8 characters and the branch); the acceptance criteria and non-g
 plus "Do not quarantine the test in FlakeRadar." Names in code spans keep their `@`: GitHub
 mentions no one from a code span. Labels as C7.
 
-### C10: `fabro-io flakeradar classify --checks FILE --failures-dir DIR` (task 04)
+### C10: `fabro-io flakeradar classify --checks FILE --failures-dir DIR [--ignore-jobs JSON] [--section FILE]` (task 04)
 
 fabro-io is already in every profile image (`backlog`'s `validate` runs `fabro-io task-check`),
 so the F8 rule is Rust with unit tests, not `jq` in `watch_checks`. Pure: no network.
@@ -192,6 +192,8 @@ so the F8 rule is Rust with unit tests, not `jq` in `watch_checks`. Pure: no net
   defines it today.
 - `--failures-dir` holds `run_<run>.json` for each failing Actions run, the C10 fetch below's
   last good response. A missing file means the lookup failed (404, timeout, still pending).
+- `--ignore-jobs` is the JSON array `fabro-io scout config` prints as `flaky.ignore_jobs` for
+  the checkout: the aggregator checks F8 judges by the others.
 - Output on stdout: `{"known_flaky": bool, "checks": [{name, run, job, known_flaky, reason,
   tests: [{name, project, tier, score, proven, category, issue, message}]}]}`. `known_flaky`
   at the top is true only when there is at least one failing check and every one of them is
@@ -207,9 +209,10 @@ so the F8 rule is Rust with unit tests, not `jq` in `watch_checks`. Pure: no net
 - Exit 0 on any well-formed input, including no FlakeRadar data at all (every check then
   `known_flaky: false`, F7's fail-toward-today). Exit 1 only on an unreadable `--checks`.
 
-The fetch, in `watch_checks` after the first rerun settles red, when `FLAKERADAR_URL` is
-non-empty: for each failing Actions run, `gh api repos/$REPO/actions/runs/<run> --jq
-.run_attempt > file` (exit code checked), then
+The fetch, in `watch_checks` once the plain rerun is spent (or forbidden) and CI is red, when
+`FLAKERADAR_URL` is non-empty: `/api/repos` once (a repository it does not list is not looked
+up, so jelly-swipe never waits); for each failing Actions run, `gh api
+repos/$REPO/actions/runs/<run> --jq .run_attempt > file` (exit code checked), then
 `curl -fsS -m 20 "$FLAKERADAR_URL/api/ci-runs/<run>/failures?repo=$REPO&ci_run_attempt=<n>" > tmp`,
 kept as `run_<run>.json` only when it parses and `reports.pending == 0`. Poll every 20
 seconds for at most 3 minutes, all runs together; a 404 counts as pending during the wait.

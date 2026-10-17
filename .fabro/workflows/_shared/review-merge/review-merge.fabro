@@ -979,7 +979,7 @@ if [ \"$E\" = true ]; then
   gh pr view \"$PR\" --json title --jq .title > /tmp/fabro/commit_subject.txt
   git diff --name-only origin/\"$(cat /tmp/fabro/base_ref)\"...HEAD > /tmp/fabro/review/merge_base_files.txt 2>/dev/null || : > /tmp/fabro/review/merge_base_files.txt
   echo 0 > /tmp/fabro/gh_fix_attempts
-  rm -f /tmp/fabro/ci_rerun_done
+  rm -f /tmp/fabro/ci_rerun_done /tmp/fabro/ci_flaky_rerun_done
   echo 0 > /tmp/fabro/strict_retry
   echo $(( $(date +%s) + 3600 )) > /tmp/fabro/merge_deadline
   echo '{\"context_updates\":{\"merge_eligible\":true}}'
@@ -1046,6 +1046,20 @@ fi"]
     // 4 of 7 "CI-fix could not fix" blocks in the 2026-09-24 review were flakes that
     // passed on a plain rerun (writers-app#966, womens-fantasy-sports#1245/#1246,
     // lawncare-saas#2608).
+    //
+    // FlakeRadar (ADR 0028 F8-F10, docs/flakeradar C10). Once the plain rerun is spent and CI
+    // is still red, each failing Actions run is looked up in FlakeRadar's CI-run endpoint at
+    // its current attempt, polling up to 3 minutes for its reports to be processed, and
+    // `fabro-io flakeradar classify` judges every failing check. All known flaky: one more
+    // rerun (`ci_flaky_rerun_done`, cleared by merge_gate with `ci_rerun_done`), and if CI is
+    // still red, or there is no time for it, the PR is held. ci_fix never runs on a known
+    // flaky red: a CI fixer is the stage most likely to skip, loosen or retry a failing test.
+    // Its guards are its own (node under 30 min, 15 min of budget), because the 20-minute one
+    // would forbid it almost always, and no ci_fix needs the time it protects. Otherwise
+    // ci_fix runs as before, and ci_fix.md names the known flaky failures it must leave alone.
+    // An empty FLAKERADAR_URL, an unreachable FlakeRadar or a run it never saw is never known
+    // flaky, which is today's path (D3). The `[flaky] ignore_jobs` of the repository's
+    // scout.toml names its aggregator checks, which fail only because another check failed.
     watch_checks [label="Watch GitHub checks", shape=parallelogram, timeout="50m", output_schema="routing",
         script="PR=$(cat /tmp/fabro/pr_number)
 A=$(cat /tmp/fabro/gh_fix_attempts 2>/dev/null || echo 0)
@@ -1055,6 +1069,56 @@ blocked() {
   printf '%s' \"$1\" > /tmp/fabro/merge_block_reason
   echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":true,\"gh_fix_attempts\":'$A'}}'
   exit 0
+}
+rerun_ok() {
+  NOW=$(date +%s)
+  if [ $((DL - NOW)) -lt \"$1\" ]; then echo 'not rerunning: under '$(($1 / 60))' minutes of the merge budget left'; return 1; fi
+  if [ $((NOW - T0)) -ge \"$2\" ]; then echo \"not rerunning: $3\"; return 1; fi
+  return 0
+}
+rerun_failed() {
+  RERAN=0
+  for RID in $(jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link] | .[]' /tmp/fabro/checks.json 2>/dev/null | sed 's|.*/actions/runs/||; s|/.*||' | sort -u); do
+    case \"$RID\" in '' | *[!0-9]*) continue ;; esac
+    if gh run rerun \"$RID\" --failed < /dev/null; then RERAN=$((RERAN+1)); fi
+  done
+}
+known_flaky() {
+  KF=false
+  KFT=''
+  FRD=/tmp/fabro/flakeradar
+  : > /tmp/fabro/review/known_flaky.md
+  [ -n \"$FLAKERADAR_URL\" ] || return 0
+  B=${FLAKERADAR_URL%/}
+  rm -rf $FRD
+  mkdir -p $FRD
+  jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link | capture(\"github[.]com/(?<repo>[^/]+/[^/]+)/actions/runs/(?<run>[0-9]+)/\") | .repo + \" \" + .run] | unique | .[]' /tmp/fabro/checks.json > $FRD/runs.txt 2>/dev/null || return 0
+  [ -s $FRD/runs.txt ] || return 0
+  C=$(curl -sS -m 20 -o $FRD/repos.json -w '%{http_code}' \"$B/api/repos\" < /dev/null 2>/dev/null) || C=000
+  [ \"$C\" = 200 ] || { echo \"flakeradar: the repository list returned $C\"; return 0; }
+  while read -r REPO RID; do
+    jq -e --arg r \"$REPO\" 'any(.[]; .name == $r)' $FRD/repos.json > /dev/null 2>&1 || continue
+    gh api \"repos/$REPO/actions/runs/$RID\" --jq .run_attempt > $FRD/att_$RID < /dev/null 2>/dev/null || rm -f $FRD/att_$RID
+  done < $FRD/runs.txt
+  FRT=$(( $(date +%s) + 180 ))
+  while : ; do
+    WAIT=0
+    while read -r REPO RID; do
+      [ -f $FRD/run_$RID.json ] && continue
+      ATT=$(cat $FRD/att_$RID 2>/dev/null)
+      case \"$ATT\" in '' | *[!0-9]*) continue ;; esac
+      C=$(curl -sS -m 20 -o $FRD/lookup.json -w '%{http_code}' \"$B/api/ci-runs/$RID/failures?repo=$REPO&ci_run_attempt=$ATT\" < /dev/null 2>/dev/null) || C=000
+      if [ \"$C\" = 200 ] && [ \"$(jq -r '.reports.pending' $FRD/lookup.json 2>/dev/null)\" = 0 ]; then mv $FRD/lookup.json $FRD/run_$RID.json; else WAIT=1; fi
+    done < $FRD/runs.txt
+    [ \"$WAIT\" = 1 ] && [ \"$(date +%s)\" -lt \"$FRT\" ] || break
+    sleep 20
+  done
+  IG=$(fabro-io scout config 2>/dev/null | jq -c '.flaky.ignore_jobs // []' 2>/dev/null)
+  [ -n \"$IG\" ] || IG='[]'
+  fabro-io flakeradar classify --checks /tmp/fabro/checks.json --failures-dir $FRD --ignore-jobs \"$IG\" --section /tmp/fabro/review/known_flaky.md > $FRD/classify.json 2>/dev/null || return 0
+  KF=$(jq -r '.known_flaky' $FRD/classify.json 2>/dev/null)
+  KFT=$(jq -r '[.checks[].tests[] | .name + (if .issue then \" #\" + (.issue | tostring) else \"\" end)] | unique | join(\", \")' $FRD/classify.json 2>/dev/null | tr -d '\"{}' | cut -c1-160)
+  jq -r '.checks[] | \"flakeradar: \" + .name + \": \" + (if .known_flaky then \"known flaky\" else .reason end)' $FRD/classify.json 2>/dev/null | tr -d '{}'
 }
 while : ; do
   GRACE=$(( $(date +%s) + 300 ))
@@ -1077,18 +1141,27 @@ while : ; do
     echo '{\"context_updates\":{\"checks_ok\":true,\"checks_blocked\":false,\"gh_fix_attempts\":'$A'}}'
     exit 0
   fi
-  NOW=$(date +%s)
-  if [ -f /tmp/fabro/ci_rerun_done ]; then break; fi
-  if [ $((DL - NOW)) -lt 1800 ]; then echo 'not rerunning: under 30 minutes of the merge budget left'; break; fi
-  if [ $((NOW - T0)) -ge 1200 ]; then echo 'not rerunning: this node has already waited 20 minutes'; break; fi
-  : > /tmp/fabro/ci_rerun_done
-  RERAN=0
-  for RID in $(jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link] | .[]' /tmp/fabro/checks.json 2>/dev/null | sed 's|.*/actions/runs/||; s|/.*||' | sort -u); do
-    case \"$RID\" in '' | *[!0-9]*) continue ;; esac
-    if gh run rerun \"$RID\" --failed; then RERAN=$((RERAN+1)); fi
-  done
-  if [ \"$RERAN\" = 0 ]; then echo 'nothing to rerun: no failing check is a GitHub Actions run'; break; fi
-  echo 'reran the failed jobs of '$RERAN' Actions run(s) once; waiting for them before calling ci_fix'
+  if [ ! -f /tmp/fabro/ci_rerun_done ] && rerun_ok 1800 1200 'this node has already waited 20 minutes'; then
+    : > /tmp/fabro/ci_rerun_done
+    rerun_failed
+    if [ \"$RERAN\" -gt 0 ]; then
+      echo 'reran the failed jobs of '$RERAN' Actions run(s) once; waiting for them before calling ci_fix'
+      sleep 60
+      continue
+    fi
+    echo 'nothing to rerun: no failing check is a GitHub Actions run'
+  fi
+  known_flaky
+  [ \"$KF\" = true ] || break
+  if [ -f /tmp/fabro/ci_flaky_rerun_done ]; then
+    blocked \"CI still fails only on known flaky tests ($KFT) after a second rerun, so ci_fix was not run. A human can rerun the failed jobs and merge this PR.\"
+  fi
+  if ! rerun_ok 900 1800 'this node has already waited 30 minutes'; then
+    blocked \"CI fails only on known flaky tests ($KFT) and there is no time left for a second rerun, so ci_fix was not run. A human can rerun the failed jobs and merge this PR.\"
+  fi
+  : > /tmp/fabro/ci_flaky_rerun_done
+  rerun_failed
+  echo 'every failing check is a known flaky test: reran the failed jobs of '$RERAN' Actions run(s) a second time'
   sleep 60
 done
 NAMES=$(jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .name] | join(\", \")' /tmp/fabro/checks.json 2>/dev/null || echo unknown)
@@ -1110,6 +1183,7 @@ rm -f /tmp/fabro/review/ci_fix_result.json
       gh run view \"$RID\" --log-failed 2>/dev/null | tail -c 20000 || echo '(logs unavailable)'
       echo
     done
+  cat /tmp/fabro/review/known_flaky.md 2>/dev/null
 } > /tmp/fabro/feedback/ci_fix.md
 echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"gh_fix_attempts\":'$A'}}'
 exit 0"]

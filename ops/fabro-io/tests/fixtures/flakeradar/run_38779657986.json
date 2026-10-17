@@ -1,0 +1,58 @@
+{
+  "repo": "o/r",
+  "ci_run_id": "38779657986",
+  "ci_run_attempt": 1,
+  "flake_threshold": 0.3,
+  "reports": {
+    "pending": 0,
+    "processed": 1,
+    "failed": 0
+  },
+  "total_failures": 0,
+  "truncated": false,
+  "failures": [],
+  "failed_jobs": [
+    {
+      "job_id": 12,
+      "pipeline": ".github/workflows/playwright.yml",
+      "name": "alls-green-playwright",
+      "ci_job_id": "116582572835",
+      "url": "https://github.com/o/r/actions/runs/38779657986/job/116582572835",
+      "outcome": "unexplained",
+      "tier": "flaky",
+      "flakiness_score": 0.7,
+      "confirmed_flake_count": 2,
+      "clean_streak": 0,
+      "github_issue_number": null,
+      "github_issue_url": null
+    },
+    {
+      "job_id": 2080,
+      "pipeline": ".github/workflows/playwright.yml",
+      "name": "test-playwright (1, 2)",
+      "ci_job_id": "116579234818",
+      "url": "https://github.com/o/r/actions/runs/38779657986/job/116579234818",
+      "outcome": "unexplained",
+      "tier": "flaky",
+      "flakiness_score": 0.6,
+      "confirmed_flake_count": 1,
+      "clean_streak": 0,
+      "github_issue_number": null,
+      "github_issue_url": null
+    },
+    {
+      "job_id": 2081,
+      "pipeline": ".github/workflows/playwright.yml",
+      "name": "test-playwright (2, 2)",
+      "ci_job_id": "116579234880",
+      "url": "https://github.com/o/r/actions/runs/38779657986/job/116579234880",
+      "outcome": "unexplained",
+      "tier": "flaky",
+      "flakiness_score": 0.6,
+      "confirmed_flake_count": 1,
+      "clean_streak": 0,
+      "github_issue_number": null,
+      "github_issue_url": null
+    }
+  ]
+}

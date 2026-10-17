@@ -324,8 +324,10 @@ fn normalise(ts: &str, test_id: u64) -> Result<String, String> {
     })
 }
 
-/// A message as one line with its colour codes removed, cut to C4b's size.
-fn one_line(raw: &str) -> String {
+/// A message as one line with its colour codes removed, with or without their `ESC`, cut
+/// to C4b's size. `flakeradar classify` shows FlakeRadar's messages the same way.
+#[must_use]
+pub fn one_line(raw: &str) -> String {
     let clean = strip_sgr(&text::strip_ansi(raw));
     let line = clean.split_whitespace().collect::<Vec<_>>().join(" ");
     line.chars().take(MAX_MESSAGE_CHARS).collect()

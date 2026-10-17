@@ -1,0 +1,44 @@
+{
+  "repo": "o/r",
+  "ci_run_id": "38836594409",
+  "ci_run_attempt": 1,
+  "flake_threshold": 0.3,
+  "reports": {
+    "pending": 0,
+    "processed": 1,
+    "failed": 0
+  },
+  "total_failures": 0,
+  "truncated": false,
+  "failures": [],
+  "failed_jobs": [
+    {
+      "job_id": 67,
+      "pipeline": ".github/workflows/pre-commit.yml",
+      "name": "pre-commit",
+      "ci_job_id": "116767008074",
+      "url": "https://github.com/o/r/actions/runs/38836594409/job/116767008074",
+      "outcome": "unexplained",
+      "tier": "stable",
+      "flakiness_score": 0,
+      "confirmed_flake_count": 0,
+      "clean_streak": 0,
+      "github_issue_number": null,
+      "github_issue_url": null
+    },
+    {
+      "job_id": 68,
+      "pipeline": ".github/workflows/pre-commit.yml",
+      "name": "pre-commit-alls-green",
+      "ci_job_id": "116767653248",
+      "url": "https://github.com/o/r/actions/runs/38836594409/job/116767653248",
+      "outcome": "unexplained",
+      "tier": "stable",
+      "flakiness_score": 0,
+      "confirmed_flake_count": 0,
+      "clean_streak": 0,
+      "github_issue_number": null,
+      "github_issue_url": null
+    }
+  ]
+}

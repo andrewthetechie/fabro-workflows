@@ -27,11 +27,14 @@ Rejected: replacing the job source. A job without a JUnit report would lose flak
 
 After the merge phase's one rerun (ADR 0011 D2), if CI is still red and FlakeRadar says every
 failing check's failures are known-flaky tests, the phase reruns the failed jobs once more,
-under the same budget guards. Green continues the merge. Still red holds the PR for a human,
+when the merge budget still has time for it. Green continues the merge. Still red holds the PR for a human,
 with a reason that names the tests and their scout issues. `ci_fix` is never sent to fix a flake
 the PR did not cause: a CI fixer is the stage most likely to skip, loosen or retry a failing
 test. A red check with any failure FlakeRadar does not explain goes to `ci_fix` as before, and
 `ci_fix.md` names the known-flaky failures so the agent leaves them alone.
+
+An aggregator check (one that fails because another check failed, named in the repository's
+scout `ignore_jobs`) is judged by the checks it waits on.
 
 Rejected: hold at once (fewer merges for no extra safety), and `ci_fix` with context only (the
 agent may still touch the flaky test).

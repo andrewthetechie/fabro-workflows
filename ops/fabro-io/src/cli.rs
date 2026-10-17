@@ -4,11 +4,11 @@
 
 use std::process::ExitCode;
 
-use crate::{gitguard, guard, inputs, runtests, scout, serve, stage, submit, taskcheck, taskplan, testenv};
+use crate::{flakeradar, gitguard, guard, inputs, runtests, scout, serve, stage, submit, taskcheck, taskplan, testenv};
 
 const USAGE: &str = concat!(
     "usage: fabro-io <command> [args]\n",
-    "commands: stage | serve [--port N] | guard | git-guard | inputs [<name> [--part N]] | submit --file <path> | test-env [--check] [--root DIR] | run-tests TARGET [args...] [--fresh] | task-plan [--base SHA] [--root DIR] | task-check [--gate] [--base SHA] [--out FILE] [--root DIR] | scout <command> | version\n"
+    "commands: stage | serve [--port N] | guard | git-guard | inputs [<name> [--part N]] | submit --file <path> | test-env [--check] [--root DIR] | run-tests TARGET [args...] [--fresh] | task-plan [--base SHA] [--root DIR] | task-check [--gate] [--base SHA] [--out FILE] [--root DIR] | scout <command> | flakeradar classify --checks F --failures-dir D [--ignore-jobs JSON] [--section F] | version\n"
 );
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -29,6 +29,7 @@ pub fn run(args: &[String]) -> ExitCode {
         "task-plan" => taskplan::run_cli(rest),
         "task-check" => taskcheck::run_cli(rest),
         "scout" => scout::run_cli(rest),
+        "flakeradar" => flakeradar::run_cli(rest),
         "version" | "--version" | "-V" => {
             println!("fabro-io {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

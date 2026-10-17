@@ -2125,18 +2125,58 @@ case "$1 $2" in
       cat "$GH_STATE/checks_$n.json"; exit 0 ;;
   "run rerun") exit 0 ;;
   "run view")  echo "the failing log"; exit 0 ;;
+  "api repos/"*) echo "${WC_ATTEMPT-2}"; exit 0 ;;
 esac
 exit 0
 STUB
-chmod +x "$T/bin/sleep" "$T/bin/date" "$T/bin/gh"
+# FlakeRadar (ADR 0028 F8): /api/repos from $GH_STATE/fr/repos.json, a CI-run lookup from
+# fr/run_<run>_<attempt>.json, and 404 for anything missing.
+cat > "$T/bin/curl" <<'STUB'
+#!/bin/sh
+OUT=/dev/null; URL=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) OUT=$2; shift ;; -w|-m) shift ;; -*) ;; *) URL=$1 ;; esac
+  shift
+done
+echo "curl $URL" >> "$GH_LOG"
+P=${URL#*/api/}
+case "$P" in
+  repos) F=repos.json ;;
+  ci-runs/*) ID=${P#ci-runs/}; F=run_${ID%%/*}_${P##*ci_run_attempt=}.json ;;
+  *) F=none ;;
+esac
+if [ -e "$GH_STATE/fr/$F" ]; then cat "$GH_STATE/fr/$F" > "$OUT"; printf 200; else printf '{}' > "$OUT"; printf 404; fi
+STUB
+# fabro-io: `scout config` prints the ignore_jobs in WC_IGNORE; `flakeradar classify` prints
+# $GH_STATE/classify.json and writes $GH_STATE/section.md as its section. The rule itself is
+# fabro-io's, unit-tested in ops/fabro-io/tests/flakeradar_classify_tests.rs.
+cat > "$T/bin/fabro-io" <<'STUB'
+#!/bin/sh
+echo "fabro-io $*" >> "$GH_LOG"
+case "$1 $2" in
+  "scout config") printf '{"flaky":{"ignore_jobs":%s}}' "${WC_IGNORE-[]}" ;;
+  "flakeradar classify")
+      while [ $# -gt 0 ]; do [ "$1" = --section ] && cp "$GH_STATE/section.md" "$2"; shift; done
+      cat "$GH_STATE/classify.json" ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "$T/bin/sleep" "$T/bin/date" "$T/bin/gh" "$T/bin/curl" "$T/bin/fabro-io"
 PATH="$T/bin:$SAVED_PATH"
 export GH_LOG="$T/gh.log" GH_STATE="$T"
+unset FLAKERADAR_URL WC_ATTEMPT WC_IGNORE
 
 FAILING='[{"name":"test","state":"FAILURE","bucket":"fail","link":"https://github.com/o/r/actions/runs/111/job/9"}]'
 PASSING='[{"name":"test","state":"SUCCESS","bucket":"pass","link":"https://github.com/o/r/actions/runs/111/job/10"}]'
 wc_setup() {
     rm -f "$T"/gh.log "$T"/polls "$T"/checks_*.json "$T"/ci_rerun_done "$T"/clock "$T"/clock_step \
-          "$T"/gh_fix_attempts "$T"/merge_block_reason "$T"/feedback/ci_fix.md
+          "$T"/gh_fix_attempts "$T"/merge_block_reason "$T"/feedback/ci_fix.md \
+          "$T"/ci_flaky_rerun_done "$T"/review/known_flaky.md "$T"/classify.json "$T"/section.md
+    rm -rf "$T/flakeradar" "$T/fr"; mkdir -p "$T/fr"
+    printf '%s' '[{"name":"o/r","projects":[]}]' > "$T/fr/repos.json"
+    printf '%s' '{"reports":{"pending":0,"processed":1,"failed":0},"failures":[],"failed_jobs":[]}' > "$T/fr/run_111_2.json"
+    printf '%s' '{"known_flaky":false,"checks":[]}' > "$T/classify.json"
+    : > "$T/section.md"
     : > "$T/gh.log"
     echo 7 > "$T/pr_number"
     echo $(( $("$REAL_DATE" +%s) + 3600 )) > "$T/merge_deadline"
@@ -2207,6 +2247,94 @@ OUT=$(wc_run)
 check "rerun never settles: one rerun" "1" "$(grep -c '^run rerun' "$T/gh.log")"
 check "rerun never settles: blocked" "true" "$(jq -r '.context_updates.checks_blocked' <<<"$(lastjson "$OUT")")"
 check "rerun never settles: names the cap" "1" "$(grep -c 'after 47 minutes' "$T/merge_block_reason")"
+
+# 8-14. FlakeRadar (ADR 0028 F8-F10, docs/flakeradar C10). classify.json is what
+# `fabro-io flakeradar classify` would decide; section.md is its F10 section.
+KNOWN='{"known_flaky":true,"checks":[{"name":"test","run":111,"job":9,"known_flaky":true,"reason":null,"tests":[{"name":"welcome mat shows","project":"pilot","tier":"flaky","score":0.7,"proven":2,"category":"timing","issue":41,"message":"timed out"}]}]}'
+MIXED='{"known_flaky":false,"checks":[{"name":"test","run":111,"job":9,"known_flaky":false,"reason":"test x is stable","tests":[]}]}'
+SECTION='## Known flaky (FlakeRadar)
+
+- `welcome mat shows` in `pilot`: flaky, 2 proven flakes (check `test`), issue #41'
+
+# 8. Known flaky after the plain rerun: a second rerun, which passes. No ci_fix.
+wc_setup
+printf '%s' "$FAILING" > "$T/checks_1.json"; printf '%s' "$FAILING" > "$T/checks_2.json"; printf '%s' "$PASSING" > "$T/checks_3.json"
+printf '%s' "$KNOWN" > "$T/classify.json"
+OUT=$(FLAKERADAR_URL=https://fr.test/ wc_run)
+check "known flaky: checks_ok after the second rerun" "true" "$(jq -r '.context_updates.checks_ok' <<<"$(lastjson "$OUT")")"
+check "known flaky: two reruns" "2" "$(grep -c '^run rerun 111 --failed$' "$T/gh.log")"
+check "known flaky: the second is recorded" "present" "$([ -f "$T/ci_flaky_rerun_done" ] && echo present || echo absent)"
+check "known flaky: no ci_fix attempt spent" "absent" "$([ -f "$T/gh_fix_attempts" ] && echo present || echo absent)"
+check "known flaky: the lookup is at the run's current attempt" "1" \
+    "$(grep -c '^curl https://fr.test/api/ci-runs/111/failures?repo=o/r&ci_run_attempt=2$' "$T/gh.log")"
+check "known flaky: a 200 lookup with nothing pending is kept for classify" "1" "$([ -f "$T/flakeradar/run_111.json" ] && echo 1 || echo 0)"
+check "known flaky: classify reads checks.json and the lookups" "1" \
+    "$(grep -c "^fabro-io flakeradar classify --checks $T/checks.json --failures-dir $T/flakeradar --ignore-jobs \[\] --section $T/review/known_flaky.md$" "$T/gh.log")"
+check "known flaky: no brace on any line but the routing object" "1" "$(grep -c '[{}]' <<<"$OUT")"
+
+# 9. Still red after the second rerun: held, naming the test and its issue. No ci_fix.
+wc_setup
+printf '%s' "$FAILING" > "$T/checks_1.json"
+printf '%s' "$KNOWN" > "$T/classify.json"
+OUT=$(FLAKERADAR_URL=https://fr.test wc_run)
+check "known flaky, still red: blocked" "true" "$(jq -r '.context_updates.checks_blocked' <<<"$(lastjson "$OUT")")"
+check "known flaky, still red: two reruns" "2" "$(grep -c '^run rerun' "$T/gh.log")"
+check "known flaky, still red: the reason names the test and issue" "1" \
+    "$(grep -c 'only on known flaky tests (welcome mat shows #41) after a second rerun, so ci_fix was not run' "$T/merge_block_reason")"
+check "known flaky, still red: no ci_fix attempt" "absent" "$([ -f "$T/gh_fix_attempts" ] && echo present || echo absent)"
+
+# 10. Not every failure is known flaky: ci_fix as before, and ci_fix.md carries the section.
+wc_setup
+printf '%s' "$FAILING" > "$T/checks_1.json"
+printf '%s' "$MIXED" > "$T/classify.json"; printf '%s\n' "$SECTION" > "$T/section.md"
+OUT=$(FLAKERADAR_URL=https://fr.test WC_IGNORE='["alls-green"]' wc_run)
+check "mixed: routes to ci_fix" "false:1" \
+    "$(jq -r '"\(.context_updates.checks_ok):\(.context_updates.gh_fix_attempts)"' <<<"$(lastjson "$OUT")")"
+check "mixed: one rerun" "1" "$(grep -c '^run rerun' "$T/gh.log")"
+check "mixed: ci_fix.md has the log, then the section" "1|1" \
+    "$(grep -c 'the failing log' "$T/feedback/ci_fix.md")|$(grep -c '^## Known flaky (FlakeRadar)$' "$T/feedback/ci_fix.md")"
+check "mixed: the aggregators from scout.toml reach classify" "1" "$(grep -c -- '--ignore-jobs \["alls-green"\]' "$T/gh.log")"
+check "mixed: the run log says why" "1" "$(grep -c '^flakeradar: test: test x is stable$' <<<"$OUT")"
+
+# 11. No FLAKERADAR_URL: today's path exactly, with no call to FlakeRadar or classify.
+wc_setup
+printf '%s' "$FAILING" > "$T/checks_1.json"
+printf '%s' "$KNOWN" > "$T/classify.json"
+OUT=$(FLAKERADAR_URL= wc_run)
+check "no URL: routes to ci_fix" "1" "$(jq -r '.context_updates.gh_fix_attempts' <<<"$(lastjson "$OUT")")"
+check "no URL: no curl, no classify" "0|0" "$(grep -c '^curl' "$T/gh.log")|$(grep -c 'flakeradar classify' "$T/gh.log")"
+check "no URL: ci_fix.md has no section" "0" "$(grep -c 'Known flaky' "$T/feedback/ci_fix.md")"
+
+# 12. A repository FlakeRadar does not list (jelly-swipe): no lookup and no 3-minute wait.
+wc_setup
+printf '%s' "$FAILING" > "$T/checks_1.json"
+printf '%s' '[{"name":"o/other","projects":[]}]' > "$T/fr/repos.json"
+OUT=$(FLAKERADAR_URL=https://fr.test wc_run)
+check "unlisted repository: no CI-run lookup" "0" "$(grep -c 'api/ci-runs' "$T/gh.log")"
+check "unlisted repository: routes to ci_fix" "1" "$(jq -r '.context_updates.gh_fix_attempts' <<<"$(lastjson "$OUT")")"
+
+# 13. Reports still pending: polled for 3 minutes (30s per date call), then judged without
+#     the lookup, which classify reads as no report.
+wc_setup
+echo 1000000 > "$T/clock"; echo 30 > "$T/clock_step"
+echo 1010000 > "$T/merge_deadline"
+printf '%s' "$FAILING" > "$T/checks_1.json"
+printf '%s' '{"reports":{"pending":1,"processed":0,"failed":0},"failures":[],"failed_jobs":[]}' > "$T/fr/run_111_2.json"
+OUT=$(FLAKERADAR_URL=https://fr.test wc_run)
+N=$(grep -c 'api/ci-runs/111' "$T/gh.log")
+check "pending: polled more than once, at most 10 times" "1" "$([ "$N" -gt 1 ] && [ "$N" -le 10 ] && echo 1 || echo 0)"
+check "pending: the lookup is not kept" "0" "$([ -f "$T/flakeradar/run_111.json" ] && echo 1 || echo 0)"
+
+# 14. Known flaky with no time for a second rerun: held at once, no rerun at all.
+wc_setup
+echo $(( $("$REAL_DATE" +%s) + 800 )) > "$T/merge_deadline"
+printf '%s' "$FAILING" > "$T/checks_1.json"
+printf '%s' "$KNOWN" > "$T/classify.json"
+OUT=$(FLAKERADAR_URL=https://fr.test wc_run)
+check "known flaky, no time: blocked" "true" "$(jq -r '.context_updates.checks_blocked' <<<"$(lastjson "$OUT")")"
+check "known flaky, no time: no rerun" "0" "$(grep -c '^run rerun' "$T/gh.log")"
+check "known flaky, no time: the reason says so" "1" "$(grep -c 'no time left for a second rerun' "$T/merge_block_reason")"
+check "merge_gate clears both rerun markers" "1" "$(grep -c 'rm -f /tmp/fabro/ci_rerun_done /tmp/fabro/ci_flaky_rerun_done' "$SHARED")"
 
 PATH="$SAVED_PATH"
 unset GH_LOG GH_STATE
