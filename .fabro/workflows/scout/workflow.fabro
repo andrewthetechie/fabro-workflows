@@ -74,6 +74,15 @@ exit 0"]
     // or above min_flakes, and not in ignore_jobs, are fetched. A log read that fails is not a stop: that occurrence is
     // simply left out of the issue body. A CI log is full of ANSI colour codes, and gh refuses to
     // print one without --allow-escape-sequences; fabro-io's clean_log strips them (C7).
+    //
+    // FlakeRadar (ADR 0028, docs/flakeradar C4b), only when scout.toml says `[flakeradar]
+    // covered = true`: the repository list, every flaky or suspect test, the history of the ten
+    // best candidates, and the CI-run lookup of each counted flake (at most 60), into
+    // $S/flakeradar/. Each read goes to a file with its HTTP code checked, under one 5-minute
+    // budget. Any failure writes $S/flakeradar_skip and the plan files no flaky issue at all
+    // (F7): with the read gone, an explained job cannot be told from an unexplained one. A 404
+    // from the CI-run endpoint only means FlakeRadar never saw that run. The log tails are then
+    // read for the flakes FlakeRadar does not explain, which are the ones a job issue shows.
     flaky [label="Read the flaky CI jobs", shape=parallelogram, timeout="15m",
         script="S=/tmp/fabro/scout
 stop() { printf '%s' \"$1\" > $S/stop_reason; printf flaky > $S/stopped_at; echo \"$1\" >&2; exit 1; }
@@ -102,13 +111,71 @@ done < $S/runids.txt
 fabro-io scout flaky --runs $S/runs.json --jobs-dir $S/jobs --since \"$SINCE\" > $S/flaky.json || stop 'fabro-io scout flaky failed'
 MIN=$(jq -r '.flaky.min_flakes' $S/config.json)
 IG=$(jq -c '.flaky.ignore_jobs // []' $S/config.json)
-for JID in $(jq -r --argjson m \"$MIN\" --argjson ig \"$IG\" '[.jobs[] | select(.count >= $m) | select(.job as $j | any($ig[]; . == $j) | not)][0:10][] | .occurrences[0:3][] | .failed_job_id' $S/flaky.json); do
+FR=$S/flakeradar
+FRD=$(( $(date +%s) + 300 ))
+skip() { printf '%s' \"$1\" > $S/flakeradar_skip; rm -f $FR/out.json; echo \"flaky: flakeradar skipped: $1\" >&2; }
+fr_get() {
+  if [ \"$(date +%s)\" -ge \"$FRD\" ]; then echo late; return 0; fi
+  curl -sS -m 20 -o \"$2\" -w '%{http_code}' \"$1\" < /dev/null 2> $FR/curl.err || echo 000
+}
+bad() {
+  case \"$2\" in
+    late) skip \"$1: the 5-minute FlakeRadar budget ran out\" ;;
+    000*) skip \"$1: no response ($(head -c 120 $FR/curl.err | tr -d '[:cntrl:]'))\" ;;
+    *) skip \"$1 returned HTTP $2\" ;;
+  esac
+}
+radar() {
+  [ -n \"$FLAKERADAR_URL\" ] || { skip 'FLAKERADAR_URL is empty'; return 1; }
+  B=${FLAKERADAR_URL%/}
+  mkdir -p $FR/history $FR/runs
+  C=$(fr_get \"$B/api/repos\" $FR/repos.json)
+  [ \"$C\" = 200 ] || { bad 'the repository list' \"$C\"; return 1; }
+  jq -e --arg r \"$REPO\" 'any(.[]; .name == $r)' $FR/repos.json > /dev/null 2>&1 || { skip \"$REPO is not a FlakeRadar repository\"; return 1; }
+  : > $FR/tests.raw
+  P=1
+  while :; do
+    C=$(fr_get \"$B/api/tests?repo=$REPO&sort=score&page_size=100&page=$P\" $FR/page.json)
+    [ \"$C\" = 200 ] || { bad \"tests page $P\" \"$C\"; return 1; }
+    N=$(jq '.items | length' $FR/page.json 2>/dev/null) || { skip \"tests page $P is not JSON\"; return 1; }
+    T=$(jq '.total' $FR/page.json)
+    jq -c '.items[]' $FR/page.json >> $FR/tests.raw
+    [ \"$N\" -gt 0 ] && [ $((P * 100)) -lt \"$T\" ] && [ \"$P\" -lt 20 ] || break
+    P=$((P + 1))
+  done
+  jq -s . $FR/tests.raw > $FR/tests.json || { skip 'the tests are not JSON'; return 1; }
+  MP=$(jq -r '.flakeradar.min_proven' $S/config.json)
+  for TID in $(jq -r --argjson mp \"$MP\" --arg s \"$SINCE\" '[.[] | select(.tier == \"flaky\" and (.quarantined | not) and .confirmed_flake_count >= $mp and ((.last_seen_at[0:19] + \"Z\") >= $s))] | sort_by([- .flakiness_score, - .confirmed_flake_count]) | .[0:10][] | .id' $FR/tests.json); do
+    C=$(fr_get \"$B/api/tests/$TID/history?limit=100\" $FR/history/test_$TID.json)
+    [ \"$C\" = 200 ] || { bad \"the history of test $TID\" \"$C\"; return 1; }
+  done
+  jq -r --argjson m \"$MIN\" --argjson ig \"$IG\" '[.jobs[] | select(.count >= $m) | select(.job as $j | any($ig[]; . == $j) | not) | .occurrences[]] | sort_by(.created_at) | reverse | .[0:60][] | (.run_id | tostring) + \" \" + (.attempt | tostring)' $S/flaky.json | sort -u > $FR/lookups.txt
+  while read -r RID ATT; do
+    [ -n \"$RID\" ] || continue
+    C=$(fr_get \"$B/api/ci-runs/$RID/failures?repo=$REPO&ci_run_attempt=$ATT\" $FR/runs/run_${RID}_$ATT.json)
+    case \"$C\" in
+      200) ;;
+      404) rm -f $FR/runs/run_${RID}_$ATT.json ;;
+      *) bad \"the CI-run lookup of run $RID\" \"$C\"; return 1 ;;
+    esac
+  done < $FR/lookups.txt
+  fabro-io scout flakeradar --tests $FR/tests.json --history-dir $FR/history --runs-dir $FR/runs --flaky $S/flaky.json --config $S/config.json --since \"$SINCE\" --base \"$B\" --repo \"$REPO\" > $FR/out.json || { skip 'fabro-io scout flakeradar failed'; return 1; }
+  echo \"flaky: flakeradar $(jq '.tests | length' $FR/out.json) test candidate(s), $(jq '.explained | length' $FR/out.json) explained flake(s)\" >&2
+}
+EX='[]'
+if [ \"$(jq -r '.flakeradar.covered // false' $S/config.json)\" = true ]; then
+  mkdir -p $FR
+  if radar; then EX=$(jq -c .explained $FR/out.json); fi
+fi
+for JID in $(jq -r --argjson m \"$MIN\" --argjson ig \"$IG\" --argjson ex \"$EX\" '[.jobs[] | select(.count >= $m) | select(.job as $j | any($ig[]; . == $j) | not)][0:10][] | [.occurrences[] | select(.failed_job_id as $f | any($ex[]; . == $f) | not)][0:3][] | .failed_job_id' $S/flaky.json); do
   gh api --allow-escape-sequences \"repos/$REPO/actions/jobs/$JID/logs\" > $S/logs/$JID.txt < /dev/null || rm -f $S/logs/$JID.txt
 done
 echo \"flaky: since=$SINCE\" >&2
 exit 0"]
 
     // The whole decision, and every issue's title and body, computed by the pure plan subcommand.
+    // A FlakeRadar skip or result from the flaky node is passed on (docs/flakeradar C5); with
+    // neither, the call and the plan are exactly the ADR 0027 ones.
     // Its stderr names every action so a wrong route is visible in the run log. A ratchet node
     // that hit its own 65m timeout leaves no ratchet.json, or a cut one, and still routes here
     // (the edge is unconditional), so that case becomes the C3 skip rather than a plan failure
@@ -122,7 +189,13 @@ if ! jq -e .entries $S/ratchet.json > /dev/null 2>&1; then
   jq -n '{status:\"skipped\", reason:\"the ratchet node did not finish\", entries:[]}' > $S/ratchet.json
   echo 'plan: no ratchet result, the source is skipped' >&2
 fi
-if ! fabro-io scout plan --config $S/config.json --ratchet $S/ratchet.json --flaky $S/flaky.json --issues $S/issues.json --logs-dir $S/logs --repo \"$REPO\" --sha \"$SHA\" > $S/plan.json; then
+set --
+if [ -s $S/flakeradar_skip ]; then
+  set -- --flakeradar-skipped \"$(cat $S/flakeradar_skip)\"
+elif [ -s $S/flakeradar/out.json ]; then
+  set -- --flakeradar $S/flakeradar/out.json
+fi
+if ! fabro-io scout plan --config $S/config.json --ratchet $S/ratchet.json --flaky $S/flaky.json --issues $S/issues.json --logs-dir $S/logs --repo \"$REPO\" --sha \"$SHA\" \"$@\" > $S/plan.json; then
   printf '%s' 'plan: fabro-io scout plan failed' > $S/stop_reason
   printf plan > $S/stopped_at
   echo 'plan: fabro-io scout plan failed' >&2

@@ -1332,6 +1332,15 @@ The four schedules are created **disabled** (ADR 0027 D16); enable them with
   and fails only because a job it `needs` failed, so it looks flaky whenever that job is. Name
   it in `ignore_jobs` under `[flaky]` in the repository's `.fabro/scout.toml` (exact job
   names, at most 20). The job it waits on is still counted on its own.
+- **FlakeRadar (ADR 0028).** A repository whose CI uploads JUnit to FlakeRadar declares it with
+  `[flakeradar] covered = true` (optional `min_proven`, default 1) in its `.fabro/scout.toml`.
+  Its flaky source then files one issue per flaky FlakeRadar test, ahead of the jobs and under
+  the same caps, and a job counts only the flakes no failing test explains (the plan shows the
+  rest as `explained`). The base URL is the server variable `FLAKERADAR_URL`, created by
+  `make provision`. If FlakeRadar cannot be read, or the variable is empty, a covered
+  repository files no flaky issue that day and the summary says `flaky skipped: flakeradar
+  <reason>`; to go back to the job-only source, remove the `[flakeradar]` table instead. FlakeRadar's own GitHub issue filing stays off: the
+  scout is the only filer.
 - **Silence one finding.** Close its issue as **not planned** (or as a duplicate). Every run
   lists every `scout` issue, open and closed, and a close as not planned suppresses the
   fingerprint forever; any other close lets it come back as a regression issue.

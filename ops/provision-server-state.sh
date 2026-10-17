@@ -321,6 +321,9 @@ provision_automation() {
 echo "Provisioning server variables..."
 provision_variable FABRO_AUTO_MERGE 1 || FAILED=$((FAILED+1))
 provision_variable FABRO_API_URL "http://10.10.0.32:32276/api/v1" || FAILED=$((FAILED+1))
+# FlakeRadar's base URL (ADR 0028 F1), read by `scout` and the review-merge phase. Every
+# scout run compiles `{{ vars.FLAKERADAR_URL }}`, so it is created before the automations.
+provision_variable FLAKERADAR_URL "https://flakes.herrington.services" || FAILED=$((FAILED+1))
 
 echo "Provisioning pr-review automations..."
 # The trailing `true` is the per-repo auto-merge switch, named explicitly: it is the

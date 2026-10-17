@@ -3,9 +3,10 @@
 **Status:** Tasks 01-06 done 2026-10-16; review fixes in 751e662. Task 07 steps 1-9 done
 2026-10-16: deployed, `Scout (9 nodes, 11 edges)` verified, `scout.toml` committed dry in all
 four repositories (jelly-swipe#460, lawncare-saas#2905, womens-fantasy-sports#2139,
-writers-app#1083), a dry run of each read, schedules on. **Every repository stays dry** (step 10 waits)
-until the scout's flaky source reads FlakeRadar per test (operator decision 2026-10-16): going
-live first would file job-level flaky fingerprints that the per-test ones then supersede.
+writers-app#1083), a dry run of each read, schedules on. **Every repository stayed dry** (step 10
+waited) until the scout's flaky source read FlakeRadar per test (operator decision 2026-10-16):
+going live first would have filed job-level flaky fingerprints that the per-test ones then
+supersede. That is `docs/flakeradar/` (ADR 0028), which amends C1, C2, C5, C8 and C9 below.
 ADR 0027 (proposed). Roadmap B6, reduced.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
@@ -147,6 +148,10 @@ timeout_secs = 900        # optional, default 1200, at most 3000
 min_flakes = 3            # 1..=20
 window_days = 14          # 1..=30
 ignore_jobs = ["alls-green-playwright"]   # job names never filed, matched exactly; at most 20
+
+[flakeradar]              # optional (ADR 0028); absent = not covered
+covered = true            # this repository uploads JUnit to FlakeRadar
+min_proven = 1            # 0..=20; proven flakes a flaky-tier test needs to be filed
 ```
 
 `ignore_jobs` is for an aggregator job (`re-actors/alls-green` and the like) that runs with
@@ -167,7 +172,8 @@ Default `--file` is `.fabro/scout.toml`. Always exits 0 (except 2 for bad argume
 {"present": true, "valid": true, "error": null, "filing": false,
  "ratchet": [{"index": 0, "tool": "ruff", "rule": "B006", "command": "...",
               "enforce_in": "pyproject.toml", "enforce_how": "...", "timeout_secs": 900}],
- "flaky": {"min_flakes": 3, "window_days": 14, "ignore_jobs": []}}
+ "flaky": {"min_flakes": 3, "window_days": 14, "ignore_jobs": []},
+ "flakeradar": {"covered": false, "min_proven": 1}}
 ```
 
 - Missing file: `present: false, valid: true, filing: false, ratchet: []`, default `flaky`.
@@ -259,7 +265,14 @@ attempt `a` qualifies as failed (D5: `conclusion == "failure"` and at least one 
 ```
 fabro-io scout plan --config CONFIG_JSON --ratchet RATCHET_JSON --flaky FLAKY_JSON
     --issues ISSUES_JSON --logs-dir DIR --repo OWNER/NAME --sha SHA
+    [--flakeradar FLAKERADAR_JSON | --flakeradar-skipped REASON]
 ```
+
+The two FlakeRadar flags are `docs/flakeradar`'s C5 amendment (ADR 0028). In a covered
+repository they add flaky-test candidates ahead of the jobs, under the same caps, an
+`explained` action for a job whose flakes FlakeRadar's tests explain, and a whole-source skip.
+Without them, or in a repository whose config is not covered, the plan is byte for byte what
+this section describes.
 
 `--issues` is a JSON array of `{number, state, state_reason, closed_at, body}`, every `scout`
 issue in the repository, any state, pull requests dropped. Known fingerprints come from markers
@@ -425,14 +438,15 @@ Prints one line (no trailing newline), at most 1500 characters, with no `"` and 
 
 1. Header: `scout NAME` (the repository name without owner), plus ` DRY RUN` when `filing` is
    false. Then `: ` and the counts that are non-zero, comma-separated, in this order:
-   `filed N` (live) or `would file N` (dry), `known N`, `suppressed N`, `too big N`,
-   `capped N`, `held back N` (backpressure), `errors N`.
+   `filed N` (live) or `would file N` (dry), `known N`, `explained N` (ADR 0028),
+   `suppressed N`, `too big N`, `capped N`, `held back N` (backpressure), `errors N`.
 2. One part per `file` or `regression` action: dry `would file <source> <short>` and live
    `filed #N <source> <short>`, `raced <short>` or `write failed <short>: <error>`. `short` is
    `<tool> <rule> (<detail>)` or `<job> (<detail>)`, with ` regression of #M` added when it applies.
 3. One part per `error` action: `error <tool> <rule>: <detail>`.
 4. Dry runs only, one part per `too_big`: `too big <tool> <rule> (<detail>)`.
-5. One part per source that is not `ok` or `absent`: `ratchet skipped: <reason>`.
+5. One part per source that is not `ok` or `absent`: `ratchet skipped: <reason>`, then
+   `flaky skipped: <reason>` (ADR 0028 F7, whose reason starts `flakeradar `).
 
 The line is **empty** when D17 says nothing is worth posting: no `file`, `regression` or
 `error` action, every source `ok` or `absent`, and, on a live run, nothing was written. When the
@@ -457,8 +471,8 @@ POSIX `sh` has no `pipefail`, so `gh api ... | jq -s . > out.json` succeeds when
 |---|---|---|
 | `prep` | `3m` | `rm -rf $S; mkdir -p $S/logs $S/jobs`. Reads `REPO` (`gh repo view --json nameWithOwner`), `SHA` (`git rev-parse HEAD`) and `NOW` (`date -u +%Y-%m-%dT%H:%M:%SZ`) into `$S/env.json`. Runs `fabro-io scout config > $S/config.json`; if that fails, `stop 'fabro-io has no scout subcommand: run make deploy-images'`. Lists every `scout` issue: `gh api --paginate "repos/$REPO/issues?labels=scout&state=all&per_page=100" --jq '.[] \| select(.pull_request \| not) \| {number, state, state_reason, closed_at, body}'`, slurped with `jq -s` into `$S/issues.json`; a failure is `stop 'could not list scout issues'`. Prints `{"context_updates":{"scout":"run"}}`, so `output_schema="routing"`. |
 | `ratchet` | `65m` | If `config.json` has no ratchet entries, writes `{"status":"ok","reason":null,"entries":[]}` and exits 0. Else runs `timeout 1200 ./.fabro/setup.sh > $S/setup.log 2>&1`. If that fails, writes the C3 skip with its exit code and exits 0. Else `fabro-io scout ratchet --config $S/config.json > $S/ratchet.json`; if that fails, writes the skip with reason `fabro-io scout ratchet failed (exit N)`. **Always exits 0** (D15). |
-| `flaky` | `15m` | `SINCE` = `NOW` minus `window_days` days (`date -u -d "@$(( $(date +%s) - DAYS*86400 ))" +%Y-%m-%dT%H:%M:%SZ`). `gh api "repos/$REPO/actions/runs?per_page=100&page=$P"`, one page at a time, newest first, until a page is short or reaches a run older than `SINCE` (a `created=` filter caps at 1,000 runs), projected to C4's fields and de-duplicated by `id` into `$S/runs.json`. For each run with `run_attempt >= 2`: `gh api --paginate "repos/$REPO/actions/runs/$ID/jobs?filter=all&per_page=100" --jq '.jobs[]'` slurped into `$S/jobs/jobs_$ID.json`. Any read failure is `stop 'could not read Actions runs'`. Then `fabro-io scout flaky ... > $S/flaky.json`. For the first 10 jobs with `count >= min_flakes` that are not in `ignore_jobs`, it fetches the log of each of the newest 3 occurrences: `gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$JID/logs" > $S/logs/$JID.txt` (without the flag gh refuses a log with ANSI codes, which is every CI log). A failed log read deletes that file and is not a stop. |
-| `plan` | `2m` | A missing or unparseable `ratchet.json` (the `ratchet` node hit its own timeout) first becomes the C3 skip with reason `the ratchet node did not finish`. Then `fabro-io scout plan ... > $S/plan.json`. Prints each action's `kind`, `fp` and `detail` to stderr. |
+| `flaky` | `15m` | `SINCE` = `NOW` minus `window_days` days (`date -u -d "@$(( $(date +%s) - DAYS*86400 ))" +%Y-%m-%dT%H:%M:%SZ`). `gh api "repos/$REPO/actions/runs?per_page=100&page=$P"`, one page at a time, newest first, until a page is short or reaches a run older than `SINCE` (a `created=` filter caps at 1,000 runs), projected to C4's fields and de-duplicated by `id` into `$S/runs.json`. For each run with `run_attempt >= 2`: `gh api --paginate "repos/$REPO/actions/runs/$ID/jobs?filter=all&per_page=100" --jq '.jobs[]'` slurped into `$S/jobs/jobs_$ID.json`. Any read failure is `stop 'could not read Actions runs'`. Then `fabro-io scout flaky ... > $S/flaky.json`. For the first 10 jobs with `count >= min_flakes` that are not in `ignore_jobs`, it fetches the log of each of the newest 3 occurrences: `gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$JID/logs" > $S/logs/$JID.txt` (without the flag gh refuses a log with ANSI codes, which is every CI log). A failed log read deletes that file and is not a stop. In a repository whose `config.json` says `flakeradar.covered`, it first reads FlakeRadar into `$S/flakeradar/` (`docs/flakeradar` C4b) and runs `fabro-io scout flakeradar > $S/flakeradar/out.json`; any failed read writes `$S/flakeradar_skip` instead (F7), and the log tails skip the flakes FlakeRadar explains. |
+| `plan` | `2m` | A missing or unparseable `ratchet.json` (the `ratchet` node hit its own timeout) first becomes the C3 skip with reason `the ratchet node did not finish`. Then `fabro-io scout plan ... > $S/plan.json`, adding `--flakeradar-skipped "$(cat $S/flakeradar_skip)"` or `--flakeradar $S/flakeradar/out.json` when the flaky node left one. Prints each action's `kind`, `fp` and `detail` to stderr. |
 | `file` | `10m` | Exits 0 at once when `filing` is false. Else it creates the labels once with `gh label create <name> --color <c> --description <d> 2>/dev/null \|\| true` (C9a). For each `file` or `regression` action in order: it re-lists the `scout` issues as `prep` does (a failure is a `failed` entry and stops). If the fingerprint is now present, it appends `raced`. Else it writes the body to a file and runs `gh issue create --title "$T" --body-file "$F" --label L1 --label L2 ...`. It appends `filed` with the number parsed from the returned URL, or `failed` with the last stderr line, and **stops** on `failed`. The log is `$S/filed.json` (C8). Exits 0. |
 | `summarize` | `1m` | `fabro-io scout summary --plan $S/plan.json [--filed $S/filed.json]` when `plan.json` exists. If `stop_reason` exists, prefixes `Stopped at <stopped_at>: <reason>` (with ` \| ` before the plan line when there is one). Strips `"`, `{`, `}` and backslashes, cuts to 1500 characters, prints the line to stderr, then `jq -cn --arg m "$SUM" '{context_updates: {scout_summary: $m}}'`. `output_schema="routing"`. Always exits 0. |
 | `finish` | `1m` | `echo done`. The summary hook's target. |
@@ -495,8 +509,8 @@ stop the flaky source (D15). Say so in a `//` comment. That makes 9 nodes and 11
 attributes: `default_fidelity="truncate"`, `stall_timeout="70m"` (above `ratchet`'s 65m, R2: 20m of `setup.sh` plus the 40m budget fits).
 No cycle and no import, so no `loop_restart_signature_limit`.
 
-`workflow.toml`: `merge-queue`'s, minus `FABRO_API_*` and `FABRO_AUTO_MERGE`, so no
-`[run.environment.env]` at all. It has `[run.run_branch] enabled = true, push = false`. The
+`workflow.toml`: `merge-queue`'s, minus `FABRO_API_*` and `FABRO_AUTO_MERGE`; its only
+`[run.environment.env]` key is `FLAKERADAR_URL = "{{ vars.FLAKERADAR_URL }}"` (ADR 0028 F1). It has `[run.run_branch] enabled = true, push = false`. The
 permissions are `contents = "read"`, `issues = "write"`, `actions = "read"`. The hooks are
 `discord-failed` and `discord-scout-summary` (`stage_start`, matcher `^finish$`,
 `/storage/scripts/discord-notify.sh scout-summary`).

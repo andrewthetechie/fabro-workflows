@@ -24,6 +24,13 @@ contents = "read"
 issues = "write"
 actions = "read"
 
+# FlakeRadar's base URL (ADR 0028 F1), read by the flaky node only when the repository's
+# scout.toml says `[flakeradar] covered = true`. `{{ vars.X }}` only, and no `id` key
+# (invariants-graph, Packages). ops/provision-server-state.sh creates the variable: an unset
+# one fails the run at compile, so it must exist on the host before this line reaches main.
+[run.environment.env]
+FLAKERADAR_URL = "{{ vars.FLAKERADAR_URL }}"
+
 # Discord. Hooks run with sandbox = false, inside the fabro server container, and read the
 # webhook URL from /storage/secrets/discord_webhook_url.
 [[run.hooks]]

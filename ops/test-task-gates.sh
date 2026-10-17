@@ -7971,6 +7971,7 @@ case "$1 $2" in
   "scout config") [ -n "${SC_FAIL_CONFIG:-}" ] && exit "${SC_FAIL_CONFIG}"; cat "${SC_CONFIG:-/dev/null}" ;;
   "scout ratchet") cat "${SC_RATCHET:-/dev/null}" ;;
   "scout flaky") cat "${SC_FLAKY:-/dev/null}" ;;
+  "scout flakeradar") [ -n "${SC_FAIL_RADAR:-}" ] && exit 1; cat "${SC_RADAR:-/dev/null}" ;;
   "scout plan") cat "${SC_PLAN:-/dev/null}" ;;
   "scout summary") cat "${SC_SUMMARY:-/dev/null}" ;;
   *) echo "fabro-io $*" >&2; exit 2 ;;
@@ -7985,7 +7986,35 @@ case "$*" in
   *) exec /bin/date "$@" ;;
 esac
 STUB
-chmod +x "$SC_STUBS/bin/gh" "$SC_STUBS/bin/fabro-io" "$SC_STUBS/bin/date"
+# FlakeRadar (ADR 0028): answers from $SC_FR, one file per resource, and 404 for a missing
+# one. SC_FR_502 names a URL substring that answers 502; SC_FR_DOWN makes every call fail as
+# a refused connection does (curl prints 000 and exits 7).
+cat > "$SC_STUBS/bin/curl" <<'STUB'
+#!/bin/sh
+OUT=/dev/null; URL=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) OUT=$2; shift ;;
+    -w|-m) shift ;;
+    -*) ;;
+    *) URL=$1 ;;
+  esac
+  shift
+done
+echo "curl $URL" >> "$SC_LOG"
+if [ -n "${SC_FR_DOWN:-}" ]; then echo 'curl: (7) Failed to connect' >&2; printf 000; exit 7; fi
+case "$URL" in *"${SC_FR_502:-@none@}"*) printf 'bad gateway' > "$OUT"; printf 502; exit 0 ;; esac
+P=${URL#*/api/}
+case "$P" in
+  repos) F=repos.json ;;
+  tests\?*) PG=${P##*page=}; F=tests_$PG.json ;;
+  tests/*/history*) ID=${P#tests/}; F=history_${ID%%/*}.json ;;
+  ci-runs/*) ID=${P#ci-runs/}; F=run_${ID%%/*}_${P##*ci_run_attempt=}.json ;;
+  *) F=none ;;
+esac
+if [ -e "$SC_FR/$F" ]; then cat "$SC_FR/$F" > "$OUT"; printf 200; else printf '{"detail":"Not found"}' > "$OUT"; printf 404; fi
+STUB
+chmod +x "$SC_STUBS/bin/gh" "$SC_STUBS/bin/fabro-io" "$SC_STUBS/bin/date" "$SC_STUBS/bin/curl"
 
 # $1 case name, $2 node. Prepares the scratch repository and the rebased script; the case
 # then writes whatever the node reads into $SC_DIR/scout/ and calls sc_run.
@@ -8170,6 +8199,123 @@ sc_run "SC_SUMMARY=$SC_DIR/jobs-in/summary.txt"
 routing_check "scout summarize, stop" "$SC_DIR" '.context_updates.scout_summary'
 check "scout summarize: the line starts Stopped at prep:" "1" "$(printf '%s' "$ROUTED" | grep -c '^Stopped at prep: prep could not read the repository')"
 check "scout summarize: no quote survives" "0" "$(printf '%s' "$ROUTED" | grep -c '"')"
+
+# 13-20. flaky + FlakeRadar (ADR 0028, docs/flakeradar C4b, F7). One covered repository's
+# FlakeRadar: one flaky candidate (5) and one suspect (6) on a page of 2, and the CI-run lookup
+# of the flake in run 222 attempt 1.
+SC_COV="$SC_FIX/config_covered.json"
+printf '%s' '{"present":true,"valid":true,"error":null,"filing":false,"ratchet":[],"flaky":{"min_flakes":1,"window_days":14,"ignore_jobs":[]},"flakeradar":{"covered":true,"min_proven":1}}' > "$SC_COV"
+SC_FRD="$SC_FIX/flakeradar"; mkdir -p "$SC_FRD"
+printf '%s' '[{"name":"andrewthetechie/jelly-swipe","projects":[]}]' > "$SC_FRD/repos.json"
+printf '%s' '{"items":[{"id":5,"tier":"flaky","quarantined":false,"confirmed_flake_count":2,"flakiness_score":0.7,"last_seen_at":"2026-10-15T00:00:00.123456Z"},{"id":6,"tier":"suspect","quarantined":false,"confirmed_flake_count":0,"flakiness_score":0.1,"last_seen_at":"2026-10-15T00:00:00.123456Z"}],"total":2,"page":1,"page_size":100}' > "$SC_FRD/tests_1.json"
+printf '%s' '{"test":{},"executions":[]}' > "$SC_FRD/history_5.json"
+printf '%s' '{"failed_jobs":[{"ci_job_id":"2220","outcome":"explained"}]}' > "$SC_FRD/run_222_1.json"
+printf '%s' '{"since":"2026-10-02T02:00:00Z","jobs":[{"fp":"flaky:.github/workflows/ci.yml:test","workflow":".github/workflows/ci.yml","job":"test","count":2,"occurrences":[{"run_id":222,"run_url":"https://x/222","attempt":1,"failed_job_id":2220,"failed_job_url":"https://x/222/1","failed_steps":["Run pytest"],"created_at":"2026-10-15T00:00:00Z","head_branch":"main","head_sha":"b"},{"run_id":333,"run_url":"https://x/333","attempt":1,"failed_job_id":3330,"failed_job_url":"https://x/333/1","failed_steps":["Run pytest"],"created_at":"2026-10-14T00:00:00Z","head_branch":"main","head_sha":"c"}]}]}' > "$SC_FIX/flaky_two.json"
+printf '%s' '{"tests":[{"fp":"flaky:test-default:abc"}],"explained":[2220]}' > "$SC_FIX/radar_out.json"
+printf '%s' '{"filing":false,"repo":"andrewthetechie/jelly-swipe","sources":{"ratchet":"ok","flaky":"ok"},"actions":[]}' > "$SC_FIX/plan_empty.json"
+SC_FR_ENV="SC_FR=$SC_FRD SC_RUNS=$SC_FIX/no-issues.raw SC_FLAKY=$SC_FIX/flaky_two.json SC_RADAR=$SC_FIX/radar_out.json"
+# $1 case name, $2 config. A flaky node with the run list empty and flaky_two.json as C4.
+sc_flaky_radar() {
+    sc_setup "$1" flaky
+    cp "$2" "$SC_DIR/scout/config.json"
+    cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+}
+sc_curls() { if [ -e "$SC_DIR/gh.log" ]; then grep -c '^curl ' "$SC_DIR/gh.log"; else echo 0; fi; }
+
+# 13. An uncovered repository never calls FlakeRadar, even with the URL set.
+jq -c '.flakeradar.covered = false' "$SC_COV" > "$SC_FIX/config_uncovered.json"
+sc_flaky_radar flaky-radar-uncovered "$SC_FIX/config_uncovered.json"
+sc_run "$SC_FR_ENV FLAKERADAR_URL=https://fr.test"
+check "scout flaky+radar: uncovered: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout flaky+radar: uncovered: no curl call" "0" "$(sc_curls)"
+check "scout flaky+radar: uncovered: no skip, no result" "0|0" \
+    "$(test -e "$SC_DIR/scout/flakeradar_skip" && echo 1 || echo 0)|$(test -e "$SC_DIR/scout/flakeradar/out.json" && echo 1 || echo 0)"
+check "scout flaky+radar: uncovered: both log tails read" "2" "$(grep -c '/actions/jobs/.*/logs' "$SC_DIR/gh.log")"
+
+# 14. Covered and reachable: the reads C4b names, then the digest; the explained flake's log
+# tail is not read.
+sc_flaky_radar flaky-radar-ok "$SC_COV"
+sc_run "$SC_FR_ENV FLAKERADAR_URL=https://fr.test/"
+check "scout flaky+radar: ok: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout flaky+radar: ok: the repository list" "1" "$(grep -c '^curl https://fr.test/api/repos$' "$SC_DIR/gh.log")"
+check "scout flaky+radar: ok: one tests page (total reached)" "1|0" \
+    "$(grep -c 'api/tests?repo=andrewthetechie/jelly-swipe&sort=score&page_size=100&page=1$' "$SC_DIR/gh.log")|$(grep -c 'page=2$' "$SC_DIR/gh.log")"
+check "scout flaky+radar: ok: history of the candidate only" "1|0" \
+    "$(grep -c 'api/tests/5/history?limit=100$' "$SC_DIR/gh.log")|$(grep -c 'api/tests/6/history' "$SC_DIR/gh.log")"
+check "scout flaky+radar: ok: a CI-run lookup per flake" "1|1" \
+    "$(grep -c 'api/ci-runs/222/failures?repo=andrewthetechie/jelly-swipe&ci_run_attempt=1$' "$SC_DIR/gh.log")|$(grep -c 'api/ci-runs/333/failures' "$SC_DIR/gh.log")"
+check "scout flaky+radar: ok: a 404 lookup leaves no file, a 200 one does" "0|1" \
+    "$(test -e "$SC_DIR/scout/flakeradar/runs/run_333_1.json" && echo 1 || echo 0)|$(test -e "$SC_DIR/scout/flakeradar/runs/run_222_1.json" && echo 1 || echo 0)"
+check "scout flaky+radar: ok: the digest's flags" "1" \
+    "$(grep -c "^fabro-io scout flakeradar --tests $SC_DIR/scout/flakeradar/tests.json --history-dir $SC_DIR/scout/flakeradar/history --runs-dir $SC_DIR/scout/flakeradar/runs --flaky $SC_DIR/scout/flaky.json --config $SC_DIR/scout/config.json --since 2026-10-02T02:00:00Z --base https://fr.test --repo andrewthetechie/jelly-swipe$" "$SC_DIR/gh.log")"
+check "scout flaky+radar: ok: no skip, the result kept" "0|1" \
+    "$(test -e "$SC_DIR/scout/flakeradar_skip" && echo 1 || echo 0)|$(test -s "$SC_DIR/scout/flakeradar/out.json" && echo 1 || echo 0)"
+check "scout flaky+radar: ok: only the unexplained flake's log tail" "0|1" \
+    "$(grep -c '/actions/jobs/2220/logs' "$SC_DIR/gh.log")|$(grep -c '/actions/jobs/3330/logs' "$SC_DIR/gh.log")"
+
+# 15. Covered with FLAKERADAR_URL empty: the F7 skip, and no call.
+sc_flaky_radar flaky-radar-nourl "$SC_COV"
+sc_run "$SC_FR_ENV FLAKERADAR_URL="
+check "scout flaky+radar: no URL: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout flaky+radar: no URL: the skip" "FLAKERADAR_URL is empty" "$(cat "$SC_DIR/scout/flakeradar_skip")"
+check "scout flaky+radar: no URL: no curl call" "0" "$(sc_curls)"
+
+# 16. A 502 on the tests page: the skip names it, the run goes on, and no result is left.
+sc_flaky_radar flaky-radar-502 "$SC_COV"
+sc_run "$SC_FR_ENV FLAKERADAR_URL=https://fr.test SC_FR_502=/api/tests?"
+check "scout flaky+radar: 502: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout flaky+radar: 502: the skip" "tests page 1 returned HTTP 502" "$(cat "$SC_DIR/scout/flakeradar_skip")"
+check "scout flaky+radar: 502: no result, no digest" "0|0" \
+    "$(test -e "$SC_DIR/scout/flakeradar/out.json" && echo 1 || echo 0)|$(grep -c '^fabro-io scout flakeradar' "$SC_DIR/gh.log")"
+check "scout flaky+radar: 502: log tails read as today" "2" "$(grep -c '/actions/jobs/.*/logs' "$SC_DIR/gh.log")"
+
+# 17. FlakeRadar down: no response is a skip too.
+sc_flaky_radar flaky-radar-down "$SC_COV"
+sc_run "$SC_FR_ENV FLAKERADAR_URL=https://fr.test SC_FR_DOWN=1"
+check "scout flaky+radar: down: exit 0" "0" "$(cat "$SC_DIR.rc")"
+check "scout flaky+radar: down: the skip names no response" "1" "$(grep -c '^the repository list: no response (curl: (7) Failed to connect)$' "$SC_DIR/scout/flakeradar_skip")"
+
+# 18. A 502 on a CI-run lookup is a skip; a 404 (case 14) is not.
+sc_flaky_radar flaky-radar-run502 "$SC_COV"
+sc_run "$SC_FR_ENV FLAKERADAR_URL=https://fr.test SC_FR_502=/ci-runs/222/"
+check "scout flaky+radar: lookup 502: the skip" "the CI-run lookup of run 222 returned HTTP 502" "$(cat "$SC_DIR/scout/flakeradar_skip")"
+
+# 19. A repository FlakeRadar does not list is a skip.
+sc_flaky_radar flaky-radar-norepo "$SC_COV"
+SC_FRN="$SC_DIR/fr"; cp -R "$SC_FRD" "$SC_FRN"
+printf '%s' '[{"name":"andrewthetechie/writers-app","projects":[]}]' > "$SC_FRN/repos.json"
+sc_run "$SC_FR_ENV SC_FR=$SC_FRN FLAKERADAR_URL=https://fr.test"
+check "scout flaky+radar: unknown repository: the skip" "andrewthetechie/jelly-swipe is not a FlakeRadar repository" "$(cat "$SC_DIR/scout/flakeradar_skip")"
+check "scout flaky+radar: unknown repository: no tests read" "0" "$(grep -c 'api/tests' "$SC_DIR/gh.log")"
+
+# 20. Paging stops at `total`: 150 tests read pages 1 and 2, never 3.
+sc_flaky_radar flaky-radar-pages "$SC_COV"
+SC_FRP="$SC_DIR/fr"; cp -R "$SC_FRD" "$SC_FRP"
+jq '.total = 150' "$SC_FRD/tests_1.json" > "$SC_FRP/tests_1.json"
+printf '%s' '{"items":[{"id":7,"tier":"stable","quarantined":false,"confirmed_flake_count":0,"flakiness_score":0,"last_seen_at":"2026-10-15T00:00:00Z"}],"total":150,"page":2,"page_size":100}' > "$SC_FRP/tests_2.json"
+sc_run "$SC_FR_ENV SC_FR=$SC_FRP FLAKERADAR_URL=https://fr.test"
+check "scout flaky+radar: paged: pages 1 and 2, not 3" "1|1|0" \
+    "$(grep -c 'page=1$' "$SC_DIR/gh.log")|$(grep -c 'page=2$' "$SC_DIR/gh.log")|$(grep -c 'page=3$' "$SC_DIR/gh.log")"
+check "scout flaky+radar: paged: three tests slurped" "3" "$(jq length "$SC_DIR/scout/flakeradar/tests.json")"
+
+# 21. plan passes FlakeRadar on: the skip, the result, or nothing at all.
+sc_setup plan-radar-skip plan
+cp "$SC_COV" "$SC_DIR/scout/config.json"; cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+printf '%s' '{"status":"ok","reason":null,"entries":[]}' > "$SC_DIR/scout/ratchet.json"
+printf '%s' 'tests page 1 returned HTTP 502' > "$SC_DIR/scout/flakeradar_skip"
+sc_run "SC_PLAN=$SC_FIX/plan_empty.json"
+check "scout plan+radar: skip: passed with its reason" "1" "$(grep -c -- '--sha abcdef1234567890 --flakeradar-skipped tests page 1 returned HTTP 502$' "$SC_DIR/gh.log")"
+sc_setup plan-radar-read plan
+cp "$SC_COV" "$SC_DIR/scout/config.json"; cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+printf '%s' '{"status":"ok","reason":null,"entries":[]}' > "$SC_DIR/scout/ratchet.json"
+mkdir -p "$SC_DIR/scout/flakeradar"; cp "$SC_FIX/radar_out.json" "$SC_DIR/scout/flakeradar/out.json"
+sc_run "SC_PLAN=$SC_FIX/plan_empty.json"
+check "scout plan+radar: result: passed" "1" "$(grep -c -- "--sha abcdef1234567890 --flakeradar $SC_DIR/scout/flakeradar/out.json$" "$SC_DIR/gh.log")"
+sc_setup plan-radar-none plan
+cp "$SC_FIX/config.json" "$SC_DIR/scout/config.json"; cp "$SC_FIX/env.json" "$SC_DIR/scout/env.json"
+printf '%s' '{"status":"ok","reason":null,"entries":[]}' > "$SC_DIR/scout/ratchet.json"
+sc_run "SC_PLAN=$SC_FIX/plan_empty.json"
+check "scout plan+radar: neither: the ADR 0027 call" "1" "$(grep -c -- '--sha abcdef1234567890$' "$SC_DIR/gh.log")"
 
 # The ratchet-flaky edge must stay unconditional: a ratchet failure must not stop flaky (D15).
 check "scout: ratchet -> flaky is unconditional" "1" "$(grep -c '^    ratchet -> flaky$' "$SC")"
