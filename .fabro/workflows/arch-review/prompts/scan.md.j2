@@ -1,146 +1,129 @@
 # Scan this repository for deepening candidates
 
-You look for architectural friction and propose **deepening candidates**: refactors
-that turn shallow modules into deep ones. The aim is testability and code that an AI
-agent can find its way around. You write one JSON file. The workflow validates it and
-files the strongest candidates as GitHub issues. Nobody reads your chat output.
+Find refactors that hide more behaviour behind simpler module interfaces. Prioritise testability and code that an AI agent can navigate. Submit candidates for later investigation and ticket improvement. Leave final interface design to that work.
 
-## Inputs
+Inspect only. Use read-only searches and file reads. Do not edit files, install dependencies, run tests, or invoke `git` or `gh`. Only `submit` may write the result. The workflow files issues. Chat output is not consumed.
 
-Call `inputs` first. It returns the repo map (may be absent), the hotspots list
-and the existing architecture issues. When it ends with `MORE:` lines, request
-each of those parts before continuing.
+## Workflow
 
-- `repomap.md` — a ranked outline of this checkout (the most-referenced
-  files and their top-level symbols). Read it before you search. It can be missing.
-  If it is, continue without it. It is the direct input to your job: a file with many
-  inbound edges and a thin interface is the shallow-module signal you are looking for.
-- The repository checkout in the current working directory, read-only.
-- `hotspots.txt` — the files changed most often in the last 90 days, as `count path`
-  lines, most changed first.
-- `existing.json` — the architecture issues that already exist, open and closed, as
-  `[{number, title, state, stateReason, slug}]`.
-- `CONTEXT.md` at the repository root, if it exists: the domain glossary.
-- `docs/adr/`, if it exists: decisions you must not re-argue.
+### 1. Load inputs and choose scope
 
-## Finding code
+Call `inputs` first. Request every part named by a `MORE:` continuation, including continuations returned by subsequent requests. Finish loading before repository exploration.
 
-Use the code tools for code names; `grep` is fine for other text. They return one
-symbol instead of a whole file:
+The inputs are:
 
-- `code_def` (name): where a symbol is defined.
-- `code_show` (name, or `path:line`): its source, what it calls, and what calls it.
-  Use this instead of reading a large file.
-- `code_search` (pattern, optional path): like `grep`, with each match grouped under
-  the function or class it is in.
-- `code_callers` / `code_callees` / `code_impact` (name): the call and import graph.
-- `code_tests` (paths): test files that exercise these files.
+- `repomap.md`: an optional ranked outline of referenced files and symbols. Read it before searching when present.
+- `hotspots.txt`: files changed during the last 90 days, ranked by change count as `count path`.
+- `existing.json`: existing architecture issues, including closed issues, as `[{number, title, state, stateReason, slug}]`.
 
-If those tools are not in your tool list, run the same verbs in the shell:
-`fabro-code def NAME`, `fabro-code show NAME`, `fabro-code search PATTERN`,
-`fabro-code callers NAME`, and so on.
+Continue without a missing repository map. If `hotspots.txt` or `existing.json` cannot be loaded, report the failure and stop without submitting a successful scan.
 
-Their answers include your own edits. They know calls and imports only, not attribute
-reads, string keys or config. They match a call by name, so a caller they list can be
-a call to a different function with the same name. Before you conclude that
-something is unused, or before you delete or rename it, confirm with
-`grep -rnw NAME`. If one answers `no code index`, use grep.
+Start with related areas near the top of `hotspots.txt`. Widen the search when changes span unrelated areas. Use the repository map to locate relevant code. Churn and inbound references guide attention. Neither establishes shallowness. A widely used module with a small interface may already be deep.
 
-Size a deepening candidate's blast radius with `code_impact` before you
-propose it: a candidate whose change reaches a few symbols is a safer refactor than
-one that reaches the whole tree.
+Read the root `CONTEXT.md` glossary when present. Read relevant decisions in `docs/adr/` before assessing an area.
 
-## Boundaries
+### 2. Trace behaviour and verify friction
 
-- Inspect only. Do not edit files, commit, push, install dependencies, or run `git`
-  or `gh`. The workflow files the issues. You do not.
-- You may run read-only searches and read any file.
+Explore within the selected areas. Look for caller knowledge spread across modules, repeated orchestration, leaked invariants, or tests coupled to implementation details.
 
-## Vocabulary
+For each lead, trace a representative behaviour through its implementation, callers, dependencies, and tests. Record verified facts and unresolved questions about:
 
-Use these terms exactly. Do not write "component", "service", "API" or "boundary".
+- Which responsibilities belong together, and where they currently live.
+- What callers must know or coordinate that the module could hide.
+- Which concrete change or test becomes difficult because of that arrangement.
+- What would become simpler if those responsibilities moved behind one interface.
 
-- **Module**: anything with an interface and an implementation: a function, class,
-  package, or a slice through several layers.
-- **Interface**: everything a caller must know to use the module correctly: the type
-  signature, and also the invariants, ordering constraints, error modes, required
-  configuration and performance characteristics.
+Apply the **deletion test**, preserving required behaviour:
+
+- If removing a module removes only indirection, consider absorbing it into an existing module.
+- If its responsibilities reappear across callers, it hides useful complexity. Identify what further deepening would improve.
+- Discard moves that leave caller obligations and testing friction unchanged.
+
+Small functions, thin adapters, large files, and missing tests are leads. Establish their effect on caller knowledge or behaviour tests before recommending a refactor.
+
+Inspect tests before claiming a testing gap. An empty `code_tests` result needs confirmation through repository searches.
+
+Run `code_impact` on the relevant symbols before retaining a candidate. Inspect important matches in source. Distinguish the verified change scope from the larger graph of potentially affected callers. If graph tools are unavailable, trace callers and imports with searches. State material uncertainty in the candidate.
+
+Compare leads with `existing.json` by underlying friction and intended outcome. Different wording or slugs do not make a duplicate new. Shared files alone do not establish duplication.
+
+Exclude anything already covered, regardless of issue state. A `NOT_PLANNED` decision remains a rejection. Use the supplied metadata. If a credible overlap cannot be resolved, omit the candidate.
+
+Exclude proposals that contradict an ADR unless verified friction warrants reopening its decision. For an exception, cite the ADR and explain the conflict and justification in `problem`.
+
+Finish this step when each retained lead has concrete source references and an explicit account of its evidence and uncertainty.
+
+### 3. Describe the deepening direction
+
+Describe the responsibilities to consolidate and the caller knowledge to hide. Explain how callers and tests would use the resulting module. Keep this at the level of responsibilities and observable behaviour. Leave method signatures and final interface design open.
+
+For each dependency relevant to testing, use the applicable category:
+
+- **In-process**: consolidate the behaviour and test it directly through the module's interface.
+- **Local-substitutable**: use a verified local stand-in. Keep substitution details inside the implementation where possible.
+- **Remote but owned**: consider an injected interface with production and in-memory adapters.
+- **True external**: consider an injected interface with production and mock adapters.
+
+Justify each proposed seam with actual variation, usually production and test adapters. Name the required adapters. Mark an unverified stand-in as an open question. Preserve useful internal seams without exposing them to callers solely for tests.
+
+Name a representative behaviour test that would improve. Explain which setup, coordination, or implementation coupling would disappear. Preserve coverage when proposing replacement of existing tests.
+
+### 4. Classify and rank
+
+Combine candidates that describe the same underlying friction. Assign strength from evidence:
+
+- **Strong**: verified friction in a hot spot, a clear reduction in caller knowledge, and a concrete testing improvement.
+- **Worth exploring**: verified friction, with uncertainty about the deeper module's shape or the size of its benefit.
+- **Speculative**: a structural hypothesis without verified friction. The workflow does not file it.
+
+Rank by strength, then expected benefit relative to verified change scope and uncertainty. Prefer fewer supported candidates. Twenty is a limit, not a target. Zero candidates is valid.
+
+### 5. Submit
+
+Verify every candidate against the contract below. Call `submit` with `candidates`, ordered best first, with at most 20 entries. Submit an empty list when the completed scan finds no candidates.
+
+Correct validation errors and retry. Stop when `submit` reports that it wrote the result. A manually written file or chat response is not a submission.
+
+## Design vocabulary
+
+Use these architecture terms consistently. Preserve repository identifiers verbatim. Use domain terms from `CONTEXT.md` in descriptions and titles.
+
+- **Module**: a function, class, package, or cross-layer slice with an interface and implementation.
+- **Interface**: everything a caller must know, including types, invariants, ordering, errors, configuration, and performance characteristics.
 - **Implementation**: the code inside a module.
-- **Depth**: the behaviour a caller or test can use per unit of interface it must
-  learn. A module is **deep** when a lot of behaviour sits behind a small interface,
-  and **shallow** when the interface is nearly as complex as the implementation.
-- **Seam**: the place where a module's interface lives, where behaviour can change
-  without an edit in that place.
-- **Adapter**: a concrete thing that satisfies an interface at a seam.
-- **Leverage**: what callers get from depth: more capability per unit of interface.
-- **Locality**: what maintainers get from depth: change, bugs and knowledge in one
-  place instead of spread across callers.
+- **Depth**: usable behaviour relative to required interface knowledge. Deep modules hide substantial behaviour behind simple interfaces.
+- **Seam**: where an interface permits behaviour to vary without changes to its callers.
+- **Adapter**: a concrete implementation of an interface at a seam.
+- **Leverage**: capability callers gain per unit of interface knowledge.
+- **Locality**: related knowledge, changes, bugs, and verification concentrated in one place.
 
-Use the domain words from `CONTEXT.md` for the domain. If it defines "Order", write
-"the Order intake module", not "the FooBarHandler".
+Use this vocabulary instead of substituting "component", "service", "API", or "boundary" in architectural prose.
 
-## Principles
+The **interface is the test surface**: assess behaviour through the module's interface. Useful internal seams can remain private. Assess depth by knowledge hidden from callers, rather than line counts.
 
-- **The deletion test.** Imagine you delete the module. If complexity disappears, it
-  was a pass-through. If complexity reappears across many callers, it earned its
-  place. A shallow module that fails the deletion test is a candidate.
-- **The interface is the test surface.** Callers and tests cross the same seam. If a
-  test must reach past the interface, the module has the wrong shape.
-- **One adapter is a hypothetical seam. Two adapters is a real one.** Do not propose a
-  seam unless something varies across it, usually production and test.
-- Classify each candidate's dependencies, because that decides how its tests work:
-  in-process (merge and test directly), local-substitutable (test with a local stand-in
-  such as an in-memory database), remote but owned (a port with an HTTP adapter and an
-  in-memory adapter), or true external (an injected port with a mock adapter).
+## Code tools
 
-## Process
+Use symbol tools for code exploration and `rg` for other text:
 
-1. **Scope first.** A deeper module pays off when the code around it changes often.
-   Start from the top of `hotspots.txt`. If the changes are scattered with no clear
-   hot spot, widen the search.
-2. Read `CONTEXT.md` and the ADRs in the area you are looking at.
-3. Explore. Note where you feel friction:
-   - Where does one concept require you to move between many small modules?
-   - Where are modules shallow, with an interface nearly as complex as the
-     implementation?
-   - Where were pure functions extracted only for testability, while the real bugs are
-     in how they are called?
-   - Where do tightly coupled modules leak across their seams?
-   - Which parts are untested, or hard to test through their current interface?
-4. Apply the deletion test to everything you think is shallow.
-5. Drop any candidate that an entry in `existing.json` already covers, whatever its
-   state. An entry with `stateReason` `NOT_PLANNED` was rejected by a human. Never
-   propose it again in other words.
-6. Drop a candidate that contradicts an ADR, unless the friction is severe. If you keep
-   one, say which ADR it contradicts and why it is worth reopening, in `problem`.
+- `code_def(name)` locates a definition.
+- `code_show(name or path:line)` shows source and immediate calls. Prefer it to large file reads.
+- `code_search(pattern, optional path)` groups matches by enclosing symbol.
+- `code_callers`, `code_callees`, and `code_impact` inspect calls, imports, and reach.
+- `code_tests(paths)` locates tests associated with files.
 
-## Strength
+If unavailable, use the matching `fabro-code` shell command, such as `fabro-code show NAME` or `fabro-code impact NAME`. If no index is available, use `rg` and targeted file reads.
 
-- `Strong`: it passes the deletion test clearly, it is in a hot spot, and the new
-  interface makes tests simpler. You would do it first.
-- `Worth exploring`: the friction is real, but the right shape of the deeper module is
-  not yet clear, or the benefit is smaller.
-- `Speculative`: a possible improvement without evidence of friction. It is not filed.
+Graph results cover calls and imports, and match calls by name. Verify decisive edges against source. Search for attribute access, string references, and configuration when relevant. Verify claims of non-use with text searches. Use `grep` when `rg` is unavailable.
 
-Zero candidates is a correct result for a healthy repository.
+## Candidate contract
 
-## Output
+Each candidate contains exactly these fields:
 
-Call `submit` with your `candidates`. It checks the shape and writes the file;
-do not write it yourself. A result `submit` did not write is refused.
-
-Each candidate:
-
-- `slug`: lowercase letters, digits and `-`, 3 to 60 characters, starting with a
-  letter or digit, unique in the file. It names the concept, not the files, so
-  that a later review of the same friction produces the same slug.
-- `title`: a Conventional Commit of type `refactor`, for example
-  `refactor(orders): deepen the order intake module`. No `!`.
-- `strength`: exactly `Strong`, `Worth exploring` or `Speculative`.
-- `files`: the paths involved, relative to the repository root. At least one.
-- `problem`, `solution`, `benefits`: non-empty.
-- `diagram`: Mermaid source that shows before and after, or an empty string.
-
-Rules, which `scan_gate` enforces: at most 20 candidates, best first.
-
-After `submit` writes your result, stop.
+- `slug`: 3-60 lowercase letters, digits, or hyphens, starting with a letter or digit. It must be unique within the submission. Name the domain concept and friction so repeated reviews tend toward the same slug.
+- `title`: a Conventional Commit title of type `refactor`, without `!`. Example: `refactor(orders): deepen the Order intake module`.
+- `strength`: exactly `Strong`, `Worth exploring`, or `Speculative`.
+- `files`: at least one existing path relative to the repository root. List files directly involved, rather than every transitive caller.
+- `problem`: non-empty. Cite inspected paths and symbols or line numbers. Describe current behaviour, architectural friction, and relevant uncertainty. Include any ADR conflict and its justification.
+- `solution`: non-empty. Describe the deepening direction, responsibilities, dependency categories, justified seams, and unresolved design questions.
+- `benefits`: non-empty. Explain the expected gains in leverage, locality, and testing. Include a representative behaviour test. Distinguish expected benefits from verified facts.
+- `diagram`: raw Mermaid source showing before and after, or an empty string. Use it when it clarifies the proposed structural change.
