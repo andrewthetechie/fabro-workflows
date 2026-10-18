@@ -9,7 +9,10 @@ going live first would have filed job-level flaky fingerprints that the per-test
 supersede. That is `docs/flakeradar/` (ADR 0028), which amends C1, C2, C5, C8 and C9 below.
 **Step 10 started 2026-10-17:** lawncare-saas is live (lawncare-saas#2918, `filing = true`); its
 first live run filed #2919-#2921 (three flaky FlakeRadar tests), and a second run was quiet. The
-14-day measurement runs from 2026-10-17. The other three repositories stay dry, one at a time.
+14-day measurement runs from 2026-10-17. **The other three went live 2026-10-18** (operator
+decision: jelly-swipe `bdd1f7c`, womens-fantasy-sports `ee2240a`, writers-app `459f3f7`, all
+`filing = true` by direct commit to their `main`), ahead of the one-at-a-time cadence because
+FlakeRadar is in and stable; the 14-day measurement for all four runs from 2026-10-18.
 ADR 0027 (proposed). Roadmap B6, reduced.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
