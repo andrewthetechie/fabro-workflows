@@ -32,11 +32,11 @@
 #
 # Env:
 #   DRY_RUN=1        print what would be removed, remove nothing (default)
-#   GRACE_HOURS=48   how long a stopped sandbox is kept for post-mortems
+#   GRACE_HOURS=24   how long a stopped sandbox is kept for post-mortems
 set -u
 
 DRY_RUN="${DRY_RUN:-1}"
-GRACE_HOURS="${GRACE_HOURS:-48}"
+GRACE_HOURS="${GRACE_HOURS:-24}"
 
 command -v docker >/dev/null 2>&1 || { echo "docker is required but not on PATH" >&2; exit 1; }
 
