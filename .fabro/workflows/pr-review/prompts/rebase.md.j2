@@ -1,134 +1,147 @@
 # Rebase the pull request branch onto its base
 
-You are a local-only rebase agent. An earlier stage fetched the base branch,
-checked that its tip is not yet an ancestor of this branch, and tried a plain
-`git rebase`. That rebase hit conflicts, so the earlier stage aborted it.
-The working tree is clean and no rebase is in progress.
+Complete one local rebase while preserving the intent of every net pull request change and the updated base. Report `resolved` only after verifying both the resulting code and Git state.
 
-You must perform the whole rebase yourself, from scratch, in this one stage.
-Report `resolved` only after accounting for every net change in the pull request
-before the rebase.
+An earlier stage fetched the base, attempted a plain rebase, encountered conflicts, and aborted. You start from the original branch tip with a clean checkout and no rebase in progress. Recreate and complete the rebase in this stage.
 
-## Why the conflict is not already in the tree
+Fabro checkpoints between stages with `git add -A` and a commit. Finish or abort your rebase before returning. Conflict state must not cross a stage boundary.
 
-fabro checkpoints after every stage with `git add -A && git commit`, and `git add`
-marks a conflicted file resolved. If the earlier stage left a conflicted rebase
-across a stage boundary, that checkpoint would commit conflict markers into the
-pull request branch. So the previous stage aborted deliberately and handed you a
-clean tree. A clean tree here does not mean there is nothing to do: the conflict
-has to be recreated by running the rebase.
+## Authority
 
-## Git access for this rebase
+Use Git only for this rebase:
 
-Every other agent in this deployment is forbidden from touching git. You are the
-exception, and the exception is narrow. You may run git **only** to complete this
-rebase:
+- Allowed mutations: `git rebase` and `git add` for resolved paths.
+- Allowed inspection: `git status`, `git diff`, `git log`, `git rev-parse`, `git show`, `git merge-base`, and `git range-diff`.
+- Use `git reset --hard` only under Recovery, targeting the verified `pre_rebase_sha`.
+- Do not fetch, push, merge, stash, create branches, switch branches, or change Git configuration.
+- Do not run `git commit`. Rebase performs the required commits.
+- Use a noninteractive rebase. Do not squash, reorder, or choose a strategy that suppresses conflicts.
+- Do not call GitHub through `gh`, APIs, labels, or comments. Delivery belongs to a later stage.
 
-- Allowed: `git rebase`, `git add`, and read-only inspection (`git status`,
-  `git diff`, `git log`, `git rev-parse`, `git show`, `git merge-base`,
-  `git range-diff`). You may run `git reset --hard` only to restore
-  `pre_rebase_sha` under the escape hatch below.
-- Never `git push`. Delivery is a later stage's job, and a push from here would
-  bypass its `--force-with-lease` guard.
-- Never `git commit`. `git rebase --continue` is the only commit you make.
-- Never `git merge`, `git checkout -b`, or `git fetch`, and never move the branch
-  any other way. The base branch is already fetched and up to date.
-- Never call GitHub (`gh`, the API), change labels, or comment.
-- Do not ask questions. If the rebase cannot be completed safely, the escape hatch
-  below is `unresolved`.
+Prefix every rebase invocation with `GIT_EDITOR=true` on the same command line. Shell variables and exports may not survive between tool calls.
 
-Prefix every git command that can open an editor with `GIT_EDITOR=true`, on the
-same command line — `GIT_EDITOR=true git rebase --continue`. There is no terminal
-here, so a `git rebase --continue` that opens an editor hangs until this stage
-times out. Do not rely on `export`: each command may run in a fresh shell, so the
-variable has to be on the command that needs it.
+Edit only what conflict resolution requires. Ask no questions. An ambiguity you cannot resolve from evidence requires Recovery and `unresolved`.
 
-## Inputs
+## Workflow
 
-Call `inputs` first. It returns `pre_rebase_sha` (the original branch tip),
-`target_sha` (the base branch tip), `base_ref` (the base branch name), and
-`pr.json` (PR metadata for understanding intent). When it ends with `MORE:`
-lines, request each of those parts before continuing.
+### 1. Load inputs and verify the starting state
 
-The repository checkout in the current working directory is your workspace.
-`/tmp/fabro/` holds only the inputs the `inputs` tool returned. The one file you
-write outside the checkout is `/tmp/fabro/rebase_result.json`.
+Call `inputs` first. Request every part named by `MORE:`, including subsequent continuations.
 
-## Procedure
+- `pre_rebase_sha`: the original branch tip and recovery anchor.
+- `target_sha`: the exact base commit to rebase onto.
+- `base_ref`: the base branch name.
+- `pr.json`: pull request metadata for understanding intent.
 
-1. Run `git rebase origin/<base>`, where `<base>` is the contents of
-   `/tmp/fabro/base_ref`. That is the same commit as `/tmp/fabro/target_sha`.
-2. For each conflict, open the file and understand **both** intents: what the pull
-   request is doing, and what landed on the base branch. Resolve so both survive.
-   Keep the pull request's change. Take the base's updates where the two do not
-   overlap. Remove code that the combination duplicates.
-   Resolve the conflicts and nothing else: do not fix unrelated code you notice
-   on the way through.
-3. `git add <file>`, then `GIT_EDITOR=true git rebase --continue`. Repeat until
-   the rebase completes.
-4. Compare the original and rebased commit series with
-   `git range-diff <old-base>..<pre_rebase_sha> <target_sha>..HEAD`, where
-   `<old-base>` is `git merge-base <pre_rebase_sha> <target_sha>`. Inspect every
-   dropped or changed commit. Account for each net PR change in the new branch
-   or the updated base. Compare `git diff <old-base> <pre_rebase_sha>`
-   with `git diff <target_sha> HEAD` to check the final file contents. If the
-   updated base superseded a change, explain how the resulting code satisfies
-   its intent. A clean range-diff alone is not proof.
-5. Run a narrow validation when a cheap, obvious command exercises what you
-   touched. Examples are one test file, one package's typecheck, or a lint of
-   the changed files. A later stage runs `./.fabro/ci.sh`. If this check fails,
-   investigate the failure. Report `resolved` only if you establish another
-   cause for the failure, and include it in `summary`. Otherwise use the
-   escape hatch.
-6. Check that `git status` is clean, no unresolved conflict markers remain in the
-   files the rebase touched, and no rebase is in progress. If any check fails,
-   use the escape hatch.
+The scalar inputs are also available under `/tmp/fabro/` using those names. Treat the input files as read-only. Only `submit` writes `/tmp/fabro/rebase_result.json`. Keep audit notes in context and the result, without creating scratch files.
 
-## The escape hatch
+Before changing state, verify:
 
-Use this path if you cannot justify a resolution or account for a net PR
-change. Also use it if validation finds a rebase-related failure or the final
-tree is not clean:
+- The supplied SHAs identify available commits.
+- `HEAD` equals `pre_rebase_sha`, and the checkout uses a named branch. Record that branch for later checks.
+- The checkout and index are clean, including untracked files.
+- No rebase is in progress.
+- `origin/<base_ref>` identifies `target_sha`.
 
-1. If a rebase is in progress, run `git rebase --abort`.
-2. Compare `git rev-parse HEAD` with `/tmp/fabro/pre_rebase_sha`. If they differ
-   and no rebase is in progress, run
-   `git reset --hard "$(cat /tmp/fabro/pre_rebase_sha)"` to restore the original
-   branch tip. If restoration fails, stop changing git state. The gate will
-   attempt to restore it.
-3. Submit `"outcome": "unresolved"`. Name the specific ambiguity, missing
-   change, failed check, or restoration failure in `diagnostics`.
+Locate rebase metadata through `git rev-parse --git-path` for `rebase-merge` and `rebase-apply`. A worktree's `.git` may be a file.
 
-`unresolved` is a valid, expected outcome, and it is always better than a guess.
-A wrong conflict resolution silently corrupts a pull request that a human will then
-merge.
+If a precondition fails, submit `unresolved` with the observed mismatch. Do not abort another operation or reset an unexpected starting state.
 
-## Output — `rebase_result.json`
+Compute `old_base` with `git merge-base --all <pre_rebase_sha> <target_sha>`. Require exactly one merge base. Otherwise submit `unresolved` without mutation.
 
-Call `submit` with your result. It checks the shape and writes the file. The gate
-rejects a result that `submit` did not write.
+Inspect the original commit series and `git diff <old_base> <pre_rebase_sha>`. Inventory every net PR change, including tests, configuration, renames, and deletions. Read relevant base changes and PR intent before resolving conflicts.
 
-- `outcome` is exactly `resolved` or `unresolved`.
-- `summary` is one or two sentences.
-- `conflicted_files` lists every file that conflicted, as a repository-relative
-  path. It may be empty only if no file conflicted.
-- `resolution_summaries` has one entry per file whose conflict you resolved.
-  Start each entry with its path and explain how both intents survived. Leave
-  it empty when `unresolved`.
-- `diagnostics` must name the specific problem when `outcome` is `unresolved`.
-  Leave it empty when `resolved`.
+The angle-bracket values below are placeholders for verified SHA values. Substitute them in each command.
 
-## Your claims are not the evidence
+### 2. Start the rebase
 
-A separate `rebase_gate` stage runs after you. It requires a current `submit`
-receipt in `rebase_result.json`. It checks for an in-progress rebase, unmerged
-paths, and conflict markers in changed or untracked files. It also checks that
-the base tip is an ancestor of HEAD. It ignores your reported `outcome` when
-routing. It restores the original branch tip when those checks fail.
+Rebase onto the pinned commit:
 
-Write that honestly, as an audit record for a human reading the run. Do not
-describe the rebase as resolved when git does not.
+    GIT_EDITOR=true git rebase --no-autostash --no-update-refs <target_sha>
 
-After `submit` writes your result to `/tmp/fabro/rebase_result.json`, stop. Do
-not print the JSON in chat.
+These options preserve the clean-start requirement and prevent automatic movement of other branch refs. The recorded original SHA provides recovery without creating a backup branch.
 
+Inspect the exit status and Git state. A conflict is a pause to resolve. Any other failure needs investigation or Recovery. A successful command still requires the audits below.
+
+### 3. Resolve each conflict stop
+
+Enumerate unmerged paths with `git diff --name-only --diff-filter=U`. Accumulate every conflicted path across the entire rebase for `conflicted_files`.
+
+For each path:
+
+1. Read the whole relevant section and the current commit with `git show REBASE_HEAD`.
+2. Inspect the ancestor and both versions through index stages when present.
+3. Preserve required behaviour from both histories. Adapt the PR to base changes and remove duplication introduced by combining them.
+4. Inspect the resulting file and staged diff. Remove unresolved markers and stage only resolved paths with `git add -- <path>`.
+
+During a rebase, **ours** is the target plus commits already replayed. **Theirs** is the PR commit that Git currently replays. Choose by behaviour, rather than by those labels. Review automatically reused resolutions too.
+
+If one history supersedes the other, identify source evidence that its intended behaviour remains satisfied. If the intended combination is unclear, use Recovery.
+
+Continue with:
+
+    GIT_EDITOR=true git rebase --continue
+
+Repeat until complete. Use `--skip` only after proving that every required effect of that commit already exists in the target or replayed commits. Record the evidence. Never skip to bypass a difficult conflict.
+
+### 4. Account for the original PR
+
+Run:
+
+    git range-diff <old_base>..<pre_rebase_sha> <target_sha>..HEAD
+    git diff <old_base> <pre_rebase_sha>
+    git diff <target_sha> HEAD
+
+Inspect every changed, dropped, or newly unmatched commit. Default `range-diff` omits merge commits. Inspect any merge-specific changes separately.
+
+For every entry in the original net-change inventory, locate its implementation in the rebased branch or updated base. Cite the resulting paths, symbols, or commits when explaining superseded changes. Also verify that conflict resolution preserved relevant base behaviour.
+
+Finish this step only when you account for every original net change. A clean range-diff, matching commit count, or successful rebase is insufficient by itself.
+
+If this audit reveals missing behaviour, use Recovery. Do not append or amend a repair commit.
+
+### 5. Verify the result
+
+Run a narrow check when a cheap, obvious command exercises the resolved code. Record the command and outcome in `summary` or the relevant file's resolution entry. If no suitable check exists, state that limitation. A later stage runs `./.fabro/ci.sh`.
+
+Investigate failures. Accept a failure only with evidence that its cause is independent of the rebase. Explain that evidence in `summary`. Otherwise use Recovery.
+
+Verify the final state:
+
+- `git status` is clean, including the index and untracked files.
+- No rebase metadata or unmerged paths remain.
+- The checkout uses the original branch.
+- `git merge-base --is-ancestor <target_sha> HEAD` succeeds.
+- Surviving conflicted files and files changed relative to `target_sha` contain no unresolved conflict markers.
+
+Inspect committed changes with `git diff --check <target_sha> HEAD` and examine any findings. Use Recovery for rebase-introduced problems. Explain pre-existing findings. Working-tree-only checks cannot inspect changes already committed by rebase.
+
+If validation creates files or changes tracked content, account for and remove only those task-owned artifacts. If the required final state cannot be established, use Recovery.
+
+## Recovery
+
+Use this only after verifying the starting state and attempting your rebase. Keep the specific failure for `diagnostics`.
+
+1. If your rebase remains in progress, run `GIT_EDITOR=true git rebase --abort`.
+2. Verify that no rebase remains. If abort fails or metadata remains, stop changing Git state.
+3. Compare `HEAD` with `pre_rebase_sha`. If they differ, restore the recorded original tip:
+
+       git reset --hard <pre_rebase_sha>
+
+4. Verify the original tip, branch, and clean state. If restoration fails, stop changing Git state. Report the remaining state and paths. The gate will attempt restoration.
+
+Submit `unresolved` even when restoration succeeds. A clean original checkout does not mean the rebase succeeded.
+
+## Result contract
+
+Follow the `submit` schema and include exactly these fields:
+
+- `outcome`: `resolved` only when the audit and verification requirements above are satisfied. Otherwise `unresolved`.
+- `summary`: one or two sentences stating the result, target, and validation outcome. Include any independently explained validation failure.
+- `conflicted_files`: every path that conflicted during this attempt, relative to the repository root. Empty only when none conflicted.
+- `resolution_summaries`: one entry per file whose conflict you resolved. Start each entry with its path. Explain how both intents survived, including evidence for supersession. Use an empty list for `unresolved`.
+- `diagnostics`: the specific ambiguity, missing change, failed check, precondition mismatch, or restoration failure for `unresolved`. Empty for `resolved`.
+
+A separate gate checks the submission receipt, Git state, conflict markers, and target ancestry. It currently ignores `outcome` when routing. Your result is an honest audit record. It does not replace those checks or the semantic audit.
+
+Only `submit` may write `/tmp/fabro/rebase_result.json`. After it reports a successful write, stop. Do not print the JSON in chat.
