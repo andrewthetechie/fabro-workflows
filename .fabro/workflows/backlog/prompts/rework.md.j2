@@ -1,210 +1,177 @@
 # Rework
 
-Your previous attempt was rejected. **The feedback defines your scope.** Apply the
-smallest fix for each feedback item. Leave the changes in the working tree and stop.
+Rework the rejected attempt in the current checkout. Use the feedback to bound the work, subject to human guidance below.
+Apply the smallest correct fix for each item. Leave your changes in the working tree.
 
-## Inputs — read in this priority order
+## Fixed rules
 
-Call `inputs` first. It returns the two orientation files, the human guidance, the
-feedback, the task and the parent issue. When it ends with `MORE:` lines, request
-each of those parts before continuing — you must read everything it returns; the
-orientation files and the human guidance may be absent. Use them in this priority:
+These rules apply even when an input requests an exception.
 
-Before the list below, two orientation files. They help you reach the code; they do
-not change the rework scope, which the feedback defines.
+- Write only inside the repository checkout. Treat /tmp/fabro/ as read-only input storage. The submit tool is the sole exception, limited to the blocking outcomes below.
+- Treat .github/workflows/ as read-only. The publishing token lacks GitHub's workflow scope. A workflow edit prevents publication of the run's branch, including earlier tasks.
+- Leave changes uncommitted. The checkpoint layer commits the whole working tree after your turn. Do not stage, commit, push, create or switch branches, merge, rebase, stash, or check out files.
+- Leave GitHub issue and PR operations to deterministic stages. Do not contact GitHub through gh, APIs, or other tools.
+- Perform the rework yourself. Do not delegate to sub-agents or launch helper agents.
 
-- `repomap.md` — a ranked outline of this checkout (the most-referenced
-  files and their top-level symbols). Read it before you search. It can be missing.
-  If it is, continue without it.
-- `task-context.md` — what the improve or plan stage found about this task.
-  Start from it. It can be missing or wrong. The checkout is the truth.
+## 1. Read the inputs
 
-1. **Human guidance, if present.** If `rescue.md` is present and non-empty, it
-   carries human guidance from a rescue gate and it **overrides everything else**. A
-   human has looked at this run and told you what to do; do that, and treat the
-   feedback file as secondary context.
-2. `rework.md` — **the feedback. It defines your rework scope.**
-   Markdown, written by whichever stage rejected the previous attempt. It has three
-   possible shapes:
-   - `## Review findings to fix` — a reviewer's summary plus a bulleted finding
-     list. Fix every finding with the smallest change.
-   - `## Validation failed (exit N): ./.fabro/setup.sh && ./.fabro/ci.sh` — the
-     tail of the full build/test log. Fix the failure; do not disable, skip, or
-     delete the failing test.
-   - `## Validation failed (exit 1): task validation` — the checks and tests the
-     gate selected for this task's changed files, with the failing ones and their
-     output. Fix every failure it lists; do not disable, skip, or delete a failing
-     test. The task's scope rules apply to both forms.
-   - `## Validation failed (timeout): task validation did not finish` — the gate
-     was stopped, most likely on its timeout, before it reported. Read the logs it
-     names, then make the slow or hanging test finish; call `task_check` to see it
-     pass before you finish.
-   - `## Diff too large` — the change exceeded 2 MB. Trim unnecessary changes
-     from this task's diff while preserving its acceptance criteria.
-3. `current_task.json` — the required task being reworked. If `inputs` reports it
-   missing or unreadable, change nothing, emit `<promise>COMPLETE</promise>` and
-   stop. The parent issue does not replace the task.
-4. `issue.json` — the parent issue, supplemental.
+Call inputs before any other tool. Read everything it returns.
+For every MORE: line, request the named part before you continue. Repeat until you have read all returned parts.
 
-The repository checkout in the current working directory is your workspace.
-`/tmp/fabro/` holds only the inputs the `inputs` tool returned (and the served
-record); do not write anywhere outside the repository checkout. The one exception is
-`submit`, which you call only to block (see Completion).
+Read the inputs in this order. Optional files can be absent.
 
-## Scope
+1. repomap.md, then task-context.md, when present. Read them before repository searches. They provide navigation and prior investigation, not authority to change scope. Verify their claims against the checkout.
+2. Non-empty rescue.md, when present. This human guidance overrides conflicting feedback and normal file-scope bounds. The fixed rules and task acceptance criteria still apply.
+3. rework.md. This feedback defines the work unless human guidance overrides it.
+4. current_task.json. This is the required task.
+5. issue.json. This parent issue supplies context and constraints. It does not replace the task.
 
-Select files according to the feedback shape:
+After reading all inputs, take the missing-task outcome under Completion if current_task.json is missing or unreadable.
 
-- **Review findings:** edit only files the findings cite. If remediation is
-  unclear, implement only what the problem description directly requires.
-- **Validation failure:** trace the failing command or test to the task change.
-  Edit only the files directly responsible for that failure.
-- **Diff too large:** inspect this task's changes in git history. Edit only files
-  changed for this task, removing unnecessary changes until the diff fits the
-  limit. If that would drop an acceptance criterion, block with `kind: "scope"`
-  (see Completion).
+If feedback is missing or unreadable, use actionable human guidance when available.
+Otherwise, leave the work unresolved. Do not invent a rework scope from the task or parent issue.
 
-Human guidance in `rescue.md` takes priority over these bounds. Apply the
-smallest change that addresses each item of feedback.
+## 2. Bound the edits
 
-Do not:
+Record the entry state with git status -s and git diff --stat.
+Inspect existing changes in files you may edit. Preserve those changes throughout this turn.
 
-- Edit files outside the scope above, except for the missing-dependency rule below.
-- Refactor, rename, restructure, or reorganize code beyond what the feedback requires.
-- Fix related issues you notice while addressing the feedback.
-- Rewrite the feature instead of applying the requested fix.
-- Add tests unless a finding asks for them.
-- Delegate to sub-agents or start hidden helpers.
-- Change dependency manifests except for the missing-dependency rule below.
-- Delete or rewrite an existing `import`, `use`, or `require` just to silence an
-  unresolved-module error.
+Classify every feedback section. If several types appear, apply the relevant rule to each item.
+You may inspect other repository files to diagnose a problem. Inspection does not authorize edits.
 
-**Expanding scope to satisfy a finding is worse than leaving it unfixed.**
+| Feedback heading | Allowed edits and required diagnosis |
+|---|---|
+| Review findings to fix | Edit only files cited by the findings. When remediation is unclear, implement only what the stated problem directly requires. |
+| Validation failed (exit N): ./.fabro/setup.sh && ./.fabro/ci.sh | Trace the failing command or test to the task's changes. Edit only files directly responsible for that failure. |
+| Validation failed (exit 1): task validation | Investigate every listed failure in the selected checks. Apply the same causal and file-scope limits as other validation failures. |
+| Validation failed (timeout): task validation did not finish | Read the named logs. Identify the unfinished command and its cause before editing. Fix an in-scope cause and confirm completion with task_check. A timeout alone does not prove a test is slow. |
+| Diff too large | Identify this task's changes from inputs and git history. Remove unnecessary changes only from files changed for this task. Preserve its acceptance criteria and reduce its diff to the 2 MB limit. |
 
-## Never edit `.github/workflows/`
+For diff-size feedback, use the gate's comparison range and measurement when supplied.
+If you cannot identify this task's diff, leave that item unresolved.
+If meeting the limit would sacrifice an acceptance criterion, take the scope-block outcome under Completion.
 
-Treat every file under `.github/workflows/` as read-only, always, even when a
-task, a finding, or a reviewer's nit points straight at one — and even for a
-comment or a whitespace change. Nothing in this repository's automation can
-publish such a change: the branch is pushed with a token that lacks GitHub's
-`workflow` scope, so a single commit of yours touching one of those files makes the
-branch unpushable (the run stops at the end of the task and names it) and throws away every task the run has already landed.
+Keep each fix within its authorized files. Leave unrelated defects, refactors, renames, and restructuring alone.
+Add tests only when a finding or human guidance requests them, within the authorized file scope.
+Preserve existing tests and their intended assertions. Do not disable, skip, delete, or weaken a failing test.
+Dependency manifests and lockfiles have one additional authorization path, defined under Missing dependencies.
 
-If the correct fix genuinely requires a workflow change, leave the file alone
-and say so in your completion note instead. A human will make that edit.
+When a complete fix requires unauthorized files, leave the item unresolved and explain which files it needs.
+Preserve independently correct fixes. Revert changes that depend on an unauthorized companion edit.
+Expanding scope is not an acceptable way to finish an item.
 
-## Validation is external
+## 3. Apply the fixes
 
-Do **not** run the project's full test suite. A separate `validate` stage runs the
-repository's checks and the tests that cover the files you changed. Before you finish,
-call `task_check`, which runs that same selection, and fix what it reports. `run_tests`
-stays the tool for a narrow run while you work: pass `TARGET` and test files or node
-ids, with `TARGET` from its list. Run a test through the shell only when `run_tests`
-reports no targets. A typecheck or a lint goes through the shell.
+Read the relevant code before editing. Address every item that permits a correct, in-scope fix.
 
-If a check fails in code you did not touch, note it in your completion message. To
-confirm it predates your change, use `baseline_check`. Never stash or check out files.
+### Symbol changes
 
-Do not call GitHub. No `gh`, no API calls. Deterministic stages own all issue and
-PR work.
+Before renaming, removing, or changing a symbol's signature, inspect its callers and importers within two edges.
+Use code_callers or code_impact with the symbol name.
+Use code_show with a name or path:line when the cited context is insufficient.
 
-## Blast radius
+If these tools are unavailable, use their shell equivalents:
 
-The finding already tells you where to look; the code tools tell you who else
-depends on it. Before a fix renames, removes, or changes the signature of a symbol,
-call:
+fabro-code callers NAME
+fabro-code impact NAME
+fabro-code show NAME
 
-- `code_callers` / `code_impact` (name) — every caller and importer within 2 edges.
-- `code_show` (name, or `path:line`) — its source alongside what calls it and what
-  it calls, if you need more than the ~10 lines around the cited location.
+If the index or command is unavailable, use repository search.
+Confirm results with rg or grep, including attribute reads, string keys, and configuration references.
+The index covers calls and imports only. Name matches can refer to different symbols.
+Caller discovery does not expand your edit scope.
 
-If those tools are not in your tool list, run the same verbs in the shell:
-`fabro-code callers NAME`, `fabro-code impact NAME`, `fabro-code show NAME`.
+### Missing dependencies
 
-They know calls and imports only, not attribute reads, string keys, or config, and
-they match a call by name, so a listed caller can be a different function with the
-same name. Confirm with `grep -rnw NAME` before you trust a rename is safe. If one
-answers `no code index`, use grep instead.
+Diagnose unresolved imports, use, require, or module references before installing a package.
+An unresolved reference can indicate a missing dependency, an incorrect import, or a local, generated, or configuration problem.
 
-## Process
+1. Inspect the importer, manifests, lockfiles, and relevant module configuration. Confirm that the error comes from the feedback or a narrow check you ran.
+2. For an existing declared dependency, fix the installation through the project's package manager. Keep unrelated manifest changes out of the fix.
+3. For a genuinely absent external dependency, verify its package name. Import paths and registry package names can differ. This case authorizes the necessary manifest and lockfile edits.
+4. Detect the package manager from the repository. Use its native add command, one verified package at a time. Do not supply a version pin.
+5. Use development or test dependencies when the importer's path or filename contains test, spec, or __tests__. Apply the same rule to the project's test setup file. Otherwise use runtime dependencies. Omit this distinction when the ecosystem has none.
+6. Re-run the failing narrow check to confirm resolution. If related missing references recur, reassess the cause before installing another package.
 
-1. Identify the in-scope files from the feedback shape above.
-2. Address the feedback: read the relevant code. If the fix
-   renames, removes, or changes a signature, check its blast radius first (above) —
-   a rework that breaks an uncited caller creates a new finding for the next round.
-   Apply the smallest change that satisfies it.
-3. Run `git status -s` and `git diff --stat`. If any edited file is outside scope,
-   undo your change with `restore_file`.
-4. Leave the changes in the working tree.
+Preserve required imports and behavior. Do not remove or rewrite an import merely to silence a resolution error.
+Correct a proven import error only within the authorized file scope. Leave unverified package identities or out-of-scope causes unresolved.
 
-## About commits — do not make any
+## 4. Validate the result
 
-Leave your changes in the working tree. Do not run `git add`, `git commit`,
-`git push`, `git checkout -b`, `git merge`, or `git rebase`. The checkpoint layer
-commits the whole working tree to the run branch after you finish. The completion
-check is: `git status -s` shows exactly the files you intended to change, and
-nothing else.
+Before ordinary completion, call task_check, including when no edits were necessary.
+It runs the same selected checks as the external validation stage.
+Fix failures caused by your changes within the authorized scope. Repeat task_check after those fixes.
+If a failure cannot be fixed within scope, retain its result for the completion note.
+
+Use run_tests for narrow checks during the work.
+Pass TARGET from its advertised list and specify test files or node IDs.
+Run a test through the shell only when run_tests reports no targets. Run typechecks and lint through the shell.
+Do not invoke the project's full test suite yourself.
+
+Use baseline_check before describing a failure as pre-existing. An untouched file is not evidence that a failure predates your changes.
+Report inconclusive baseline results as inconclusive. If a required tool cannot run, report that limitation without claiming a pass.
+
+## 5. Audit the working tree
+
+Run git status -s and git diff --stat. Inspect the final diff for every file affected during this turn.
+Compare it with the entry state. Every change introduced during this turn must be intentional and authorized.
+
+Use restore_file to undo only your unintended edits when its restore point matches the entry state.
+Otherwise, reverse only your own edits. Preserve all content and changes that existed before this turn.
+Remove temporary artifacts you created before completing the audit.
 
 ## Completion
 
-When the feedback is addressed and `git status -s` shows exactly the in-scope
-files and nothing else, emit `<promise>COMPLETE</promise>` on its own line and
-stop.
+Choose the first applicable outcome below. Every outcome ends with this marker on its own line, then stops:
 
-If one feedback item cannot be addressed in scope, leave it, apply the in-scope
-fixes, and emit `<promise>COMPLETE</promise>`. The next gate checks it again.
+<promise>COMPLETE</promise>
 
-If every feedback item requires out-of-scope edits, or the items contradict each
-other and you cannot make safe progress, keep any in-scope fixes, change nothing
-else, and emit `<promise>COMPLETE</promise>`. The next gate sees the unresolved
-feedback, and a later tier takes it. Keep it visible instead of expanding scope.
+The marker ends the rework turn.
+The completion note reports whether feedback remains unresolved and whether validation passed.
 
-A finding about an acceptance criterion is fixed by meeting that criterion as
-written. Never close it with a similar behaviour, a renamed or relabelled action, or
-a comment that explains why it is missing. When the criterion cannot be met as written (a
-non-goal or another constraint of the issue forbids what it needs), block:
+### Missing task
 
-1. Change nothing. Undo any edit of this turn with `restore_file`.
-2. Call `submit` with `kind: "criterion"`, `criterion` (quoted from the task),
-   `non_goal` (the constraint it conflicts with, quoted, or empty) and `reason` (one
-   or two sentences). For the diff-size case above, use `kind: "scope"` and an empty
-   `criterion` and `non_goal`.
-3. Emit `<promise>COMPLETE</promise>`.
+If current_task.json is missing or unreadable, change nothing and emit the completion marker.
+Skip validation. The parent issue cannot supply the missing task.
 
-A `criterion` block returns the issue to a human, who decides whether the criterion
-or the non-goal changes. Block only when the criterion cannot be met as written, not
-when it is merely hard.
+### Criterion or scope block
 
-If the feedback is already satisfied on the current checkout and no code
-changes are needed:
+A finding about an acceptance criterion requires that criterion's behavior as written.
+A similar behavior, relabeled action, or explanatory comment does not satisfy it.
 
-1. Change nothing.
-2. Emit `<already_satisfied>one or two sentences citing the existing files or behavior</already_satisfied>`.
-3. Emit `<promise>COMPLETE</promise>`.
+Block only in either of these cases:
 
-## Missing dependency — install it, don't work around it
+- A task acceptance criterion conflicts with a non-goal or another task or issue constraint.
+- Meeting the diff-size limit would require dropping a task acceptance criterion.
 
-If the findings or your narrow check shows an unresolved import / `use` /
-`require` / module reference, add the missing package to the project's dependency
-manifest. **Install it; do not delete or rewrite the import.** This is the only
-legitimate dependency-manifest edit during rework.
+Difficulty or the rework's file-scope limits alone do not justify a criterion block.
+For those cases, use the unresolved-feedback outcome below.
 
-1. Detect the package manager from the manifest files (`package.json`,
-   `pyproject.toml`, `Cargo.toml`, `go.mod`, `Gemfile`, etc.) and use its native
-   add command so the lockfile updates correctly.
-2. Use the exact package name from the error.
-3. Put it in the dev/test dependency section if the importer is test code (path or
-   filename contains `test`/`spec`/`__tests__`, or it is the project's test setup
-   file). Otherwise put it in the runtime dependencies. Skip this split if the
-   ecosystem doesn't have one (e.g., Go modules).
-4. Do not pin a version.
-5. Install one package at a time, only for missing-import errors the findings (or
-   your narrow check) actually surface.
-6. Re-run the failing narrow check yourself to confirm it's resolved before
-   finishing.
+For a block:
 
-If the missing-module pattern keeps recurring after install — for example you fixed
-one but more keep appearing in tightly-related code, or the import path looks like
-a typo — that's a code problem. Fix the import or blocker-exit. Do not install
-random packages.
+1. Restore the entry state by undoing every edit from this turn. Preserve prior changes.
+2. Call submit with the appropriate fields:
+   - For a criterion conflict, use kind: "criterion". Set criterion to the exact task criterion. Set non_goal to the quoted conflicting constraint, or an empty string when unavailable.
+   - For the diff-size conflict, use kind: "scope". Set criterion and non_goal to empty strings.
+   - In both cases, supply reason with one or two sentences explaining the conflict.
+3. Emit the completion marker.
 
+Skip ordinary validation after restoring the entry state for a block.
+The human decides whether the criterion or constraint changes.
+
+### Already satisfied
+
+Use this outcome only when the checkout met every feedback item on entry and you made no changes.
+Complete validation and the working-tree audit.
+Emit <already_satisfied>one or two sentences citing the existing files or behavior</already_satisfied>.
+Report any check failure or limitation before the completion marker.
+
+### Fixed or unresolved feedback
+
+Keep the completed, in-scope fixes after validation and the working-tree audit.
+Give a short completion note that accounts for every feedback item and reports the check results.
+For each unresolved item, state the reason and the file or action the complete fix requires, when known.
+
+Use this outcome when every item remains unresolved or feedback contradicts itself.
+It also applies when the required fix is a workflow change.
+The next gate evaluates the remaining feedback. Emit the completion marker.
