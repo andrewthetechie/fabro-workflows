@@ -1,8 +1,10 @@
 # Change compare: did a change to the factory help?
 
-**Status:** baseline taken 2026-10-18 (`result-2026-10-18.txt`). Two changes are under
-test. Neither has enough runs for an outcome verdict. Rerun when the targets in *What would
-settle it* are met, and write the result as `result-<date>.txt` next to this file.
+**Status:** baseline taken 2026-10-18 (`result-2026-10-18.txt`), rechecked 2026-10-19
+(`result-2026-10-19.txt`). coders-a's speed gain holds. Neither change has enough comparable
+runs for an outcome verdict, and the queue mix has moved away from the strata with baselines.
+Rerun when the targets in *What would settle it* are met, and write the result as
+`result-<date>.txt` next to this file.
 
 This is a handoff for the agent that does the rerun. It records the question, the exact
 change moments, the tool, the rules the 2026-10-18 analysis followed, and what it found.
@@ -109,6 +111,42 @@ Every figure is per run, from the summaries the scheduler's collector already bu
     refute 35 of 44).
   - writers-app on coders-c (#1066): 2 rework rounds and refute `fail`, against 2 old runs
     with none. n=2 against n=2 means nothing.
+
+## Result on 2026-10-19 (`result-2026-10-19.txt`)
+
+Named the in-window changes too (`refuter-d1fd673`, `flakeradar`, `orfallback`). All three
+predate both changes under test, so they mix the "before" side only. Since the baseline there
+has been no new overlay edit and no new `backlog` or `_shared` commit.
+
+- **coders-a speed: holds.** 9 runs since the swap (8 fair), median 32.4 tok/s, max 39.7. Each
+  one is above the old maximum of 12.1 (24 runs, median 9.1), exact p = 1/C(33,9) = 2.6e-8.
+  The tool prints `n/a` here because there are more than 300,000 arrangements.
+- **coders-a quality: still not measurable against its target.** Since the swap, coders-a has
+  had one womens-fantasy-sports run (#2104, `terminated` in the disk-full incident). It now
+  gets writers-app (6) and lawncare-saas (2), and neither has a coders-a baseline. Since the
+  prompt change, writers-app fast lane (#1078–#1080) had no rework and refute passed 2 of 3.
+  lawncare-saas#2920 merged with a refute pass. #2921 had refute `fail` (`not_met`), then
+  `pass`. writers-app#1091 had 8 standard-lane tasks, 270 min of coder time and no refute
+  verdict.
+- **Prompts: the standard lane is now exercised, still no outcome signal.**
+  - 17 runs after `9b2b7cb` visited `decompose`, `extra_decompose` and `plan`/`improve`.
+    Across all fair after-runs: 0 `demote_lane`, 1 `return_to_triage`
+    (womens-fantasy-sports#2162).
+  - Refute first-pass after the change: 11 of 22 (womens-fantasy-sports 4/5, writers-app
+    4/11, lawncare-saas 2/5, jelly-swipe 1/1). These are mostly standard-lane runs on pools
+    whose baselines are fast-lane, so they cannot be compared.
+  - **Do not read writers-app / coders-b's rework p = 0.036 as a prompt effect.** Its "before"
+    side has fast-lane runs that ended in `demote_lane`. Its "after" side has standard-lane
+    reruns of the same demoted issues (#1050, #1052, #1053 — the lane changed, not only the
+    prompts). writers-app's demote streak (#1050–#1060) also ended at #1061, before the
+    prompt change. The issues changed from panic-free/`Send`/`any` work to narrower lint
+    cleanups.
+  - The baseline's strongest stratum, lawncare-saas / coders-d (45 before), got 2 after-runs.
+    lawncare-saas work now goes to coders-a and coders-b on the standard lane.
+- **`merged` undercounts badly.** `run_history.merged` marks 7 post-change PRs as merged.
+  GitHub shows 19 of the 24 merged and 5 still open. All were merged under the
+  `andrewthetechie` login, which the factory's `--admin` merge also uses, so this cannot
+  tell auto-merge from a hand merge.
 
 ## What would settle it
 
