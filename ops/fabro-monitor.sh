@@ -15,15 +15,16 @@
 #   C2 api-unreachable  system/info fails, times out (10s), or 401s         🔴 4h
 #   C3 dead-scheduler   any schedule enabled AND newest run > IDLE_HOURS old 🔴 4h
 #                       (arch-review schedules excluded, ADR 0012; merge-queue runs
-#                       are skipped when finding the newest run, ADR 0024)
+#                       are skipped when finding the newest run, ADR 0024; quiet
+#                       while every undrained coder pool holds a live run)
 #   C4 stuck-run        non-terminal run older than STUCK_HOURS             🔴 4h
 #                       (MQ_STUCK_MINUTES for a merge-queue run)
 #                       (ARCH_STUCK_HOURS for an arch-review run)
 #   C5 starvation       zero open agent-labeled issues across the repos     🟡 7d
 #   C6 disk-pressure    df / use >= DISK_PCT                                🟠 24h
 #   C7 scheduler-down   GET SCHEDULER_URL/health does not answer 200 in 5s   🔴 4h
-#   C8 scheduler-wedged queue non-empty AND every coder pool idle AND not
-#                       drained, held for > WEDGE_MINUTES                    🔴 4h
+#   C8 scheduler-wedged queue non-empty AND every undrained coder pool idle
+#                       (at least one undrained), held for > WEDGE_MINUTES   🔴 4h
 #
 # C1 suppresses C2's connection failures (report the cause, not the symptom)
 # but never its 401 — a rejected token is its own problem. When the container
@@ -98,7 +99,8 @@
 #   DRY_RUN=1                     print what would send, send nothing, write
 #                                 no state (default, like the sweepers)
 #   IDLE_HOURS=2                  C3: newest run older than this with a
-#                                 schedule enabled  -> dead scheduler
+#                                 schedule enabled  -> dead scheduler, unless
+#                                 every undrained coder pool is busy
 #   STUCK_HOURS=3                 C4: non-terminal run older than this
 #   MQ_STUCK_MINUTES=30           C4: the limit for a merge-queue sweep, which ends in
 #                                 seconds (ADR 0024 D8)
@@ -113,7 +115,7 @@
 #                                 (LAN-only, unauthenticated) — /health,
 #                                 /api/queue, /api/pools
 #   WEDGE_MINUTES=20              C8: fire only after queued work with every
-#                                 coder pool idle for this long; 0 fires on
+#                                 undrained coder pool idle for this long; 0 fires on
 #                                 the first qualifying sample (the forced test)
 #   FABRO_MONITOR_REPOS="a/b c/d"  space-separated; an EMPTY value falls back
 #                                 to the four factory repos (`:-`), so pass a
@@ -356,6 +358,18 @@ if [ "$api_ok" = 1 ]; then
   fi
 fi
 
+# ---- the scheduler's coder pools, read once for C3 and C8 -------------------
+# The operator drains pools to use those boxes outside fabro, so a drained pool is
+# normal. C3 asks "is every undrained pool busy?" and C8 "has every undrained pool
+# sat idle?". Both read this one /api/pools sample. When it is unreadable, pools_ok
+# stays 0: C3 then judges by run age alone, and C8 skips.
+pools_ok=0
+phttp="$(curl -sS -o "$tmp/pools.json" -w '%{http_code}' -m 5 \
+  "$SCHEDULER_URL/api/pools" 2>/dev/null)" || phttp=000
+if [ "$phttp" = 200 ] && jq -e 'type == "array"' "$tmp/pools.json" >/dev/null 2>&1; then
+  pools_ok=1
+fi
+
 if [ "$api_ok" = 1 ]; then
   # ---- C3 and C4 read different run sets (ADR 0024 D8, rule 6) ------------
   # merge-queue sweeps (288 a day) would fill any fixed-size newest page, so C3 skips them and
@@ -422,7 +436,27 @@ if [ "$api_ok" = 1 ]; then
         if [ -n "$e" ]; then newest="$e"; newest_id="(none in the newest 500 runs)"; fi
       fi
 
+      # A full scheduler is not a dead one (2026-10-20). With pools drained, the
+      # undrained ones can each hold a run for over IDLE_HOURS, so no new run starts.
+      # Saturated means every undrained pool's lease names a run that C4 read as
+      # non-terminal. A lease on a finished or unknown run is a wedge, so it does not
+      # count. Every pool drained counts as saturated: the operator stopped dispatch.
+      # Without both reads, C3 judges by run age alone, as before.
+      saturated=""
+      if [ "$pools_ok" = 1 ] && [ "$c4_ok" = 1 ]; then
+        live_ids="$(cut -f1 "$tmp/c4.tsv" | jq -Rsc 'split("\n") | map(select(. != ""))')"
+        saturated="$(jq -r --argjson live "${live_ids:-[]}" '
+          [.[] | select(.drained == false)] as $open
+          | if length > 0 and ($open | all(.lease.run_id as $r | $r != null and ($live | any(.[]; . == $r))))
+            then "\($open | length) undrained pool(s) leased, \(length - ($open | length)) drained"
+            else "" end' "$tmp/pools.json" 2>/dev/null)"
+      fi
+
       if [ "$enabled_schedules" -gt 0 ] && [ "$newest" -gt 0 ] \
+        && [ $(( now - newest )) -gt $(( IDLE_HOURS * 3600 )) ] && [ -n "$saturated" ]; then
+        printf 'ok    C3 dead-scheduler: newest run %smin ago, over the %sh limit, but the scheduler is full (%s)\n' \
+          $(( (now - newest) / 60 )) "$IDLE_HOURS" "$saturated"
+      elif [ "$enabled_schedules" -gt 0 ] && [ "$newest" -gt 0 ] \
         && [ $(( now - newest )) -gt $(( IDLE_HOURS * 3600 )) ]; then
         fire C3 "$ALERT_SECONDS" "🔴" \
           "dead-scheduler — $enabled_schedules schedule(s) enabled but no run for $(( (now - newest) / 3600 ))h (newest run $newest_id, limit ${IDLE_HOURS}h)"
@@ -555,11 +589,13 @@ else
 fi
 
 # ----------------------------------------------- C8 scheduler-wedged --------
-# Queued work with every coder pool idle (no lease) and none drained, held for
+# Queued work with every undrained coder pool idle (no lease), held for
 # WEDGE_MINUTES. A box is momentarily idle between runs — the design keeps that
 # gap near 15s — so a single sample is never enough; the window is what stops
-# this from crying wolf. A drained pool is intentionally idle, so it is never a
-# wedge. The first qualifying sample's epoch lives in the state file under its
+# this from crying wolf. A drained pool is intentionally idle, so it is left out
+# of the count: two idle pools with two drained is a wedge (before 2026-10-20 any
+# drained pool silenced C8). With every pool drained there is nothing that should
+# dispatch, so C8 does not fire. The first qualifying sample's epoch lives in the state file under its
 # own key `C8_since`, seeded into `c8_since`; it is cleared the moment a sample
 # stops qualifying. WEDGE_MINUTES=0 fires on the FIRST qualifying sample — that
 # zero-length window is the documented forced test. C7 suppresses C8 (an
@@ -573,11 +609,8 @@ if [ "$c7_firing" = 1 ]; then
 else
   qhttp="$(curl -sS -o "$tmp/queue.json" -w '%{http_code}' -m 5 \
     "$SCHEDULER_URL/api/queue" 2>/dev/null)" || qhttp=000
-  phttp="$(curl -sS -o "$tmp/pools.json" -w '%{http_code}' -m 5 \
-    "$SCHEDULER_URL/api/pools" 2>/dev/null)" || phttp=000
-  if [ "$qhttp" != 200 ] || [ "$phttp" != 200 ] \
-    || ! jq -e 'type == "array"' "$tmp/queue.json" >/dev/null 2>&1 \
-    || ! jq -e 'type == "array"' "$tmp/pools.json" >/dev/null 2>&1; then
+  if [ "$qhttp" != 200 ] || [ "$pools_ok" != 1 ] \
+    || ! jq -e 'type == "array"' "$tmp/queue.json" >/dev/null 2>&1; then
     # /health answered but the data is unreadable: not definitive, so C8 is NOT
     # marked evaluated and its stamp is carried over rather than resolved.
     printf 'skip  C8 scheduler-wedged: /api/queue or /api/pools unreadable (HTTP %s/%s)\n' \
@@ -587,23 +620,25 @@ else
     c8_manage=1
     qlen="$(jq 'length' "$tmp/queue.json" 2>/dev/null)"
     n_pools="$(jq 'length' "$tmp/pools.json" 2>/dev/null)"
+    n_open="$(jq '[.[] | select(.drained == false)] | length' "$tmp/pools.json" 2>/dev/null)"
     n_idle="$(jq '[.[] | select((.lease == null) and (.drained == false))] | length' \
       "$tmp/pools.json" 2>/dev/null)"
-    if printf '%s' "$qlen$n_pools$n_idle" | grep -Eq '^[0-9]+$' \
-      && [ "$qlen" -gt 0 ] && [ "$n_pools" -gt 0 ] && [ "$n_idle" = "$n_pools" ]; then
+    n_drained=$(( ${n_pools:-0} - ${n_open:-0} ))
+    if printf '%s' "$qlen$n_pools$n_open$n_idle" | grep -Eq '^[0-9]+$' \
+      && [ "$qlen" -gt 0 ] && [ "$n_open" -gt 0 ] && [ "$n_idle" = "$n_open" ]; then
       c8_since="$(stamp_of C8_since)"
       printf '%s' "$c8_since" | grep -Eq '^[0-9]+$' || c8_since="$now"
       c8_since_write="$c8_since"
       if [ $(( now - c8_since )) -ge $(( WEDGE_MINUTES * 60 )) ]; then
         fire C8 "$ALERT_SECONDS" "🔴" \
-          "scheduler-wedged — $qlen item(s) queued and all $n_pools coder pool(s) idle for $(( (now - c8_since) / 60 ))min (limit ${WEDGE_MINUTES}min); none drained"
+          "scheduler-wedged — $qlen item(s) queued and all $n_open undrained coder pool(s) idle for $(( (now - c8_since) / 60 ))min (limit ${WEDGE_MINUTES}min); $n_drained drained"
       else
-        printf 'ok    C8 scheduler-wedged: %s queued, all %s pools idle for %smin/%smin\n' \
-          "$qlen" "$n_pools" $(( (now - c8_since) / 60 )) "$WEDGE_MINUTES"
+        printf 'ok    C8 scheduler-wedged: %s queued, all %s undrained pools idle for %smin/%smin (%s drained)\n' \
+          "$qlen" "$n_open" $(( (now - c8_since) / 60 )) "$WEDGE_MINUTES" "$n_drained"
       fi
     else
-      printf 'ok    C8 scheduler-wedged: %s queued, %s of %s pools idle\n' \
-        "$qlen" "$n_idle" "$n_pools"
+      printf 'ok    C8 scheduler-wedged: %s queued, %s of %s undrained pools idle (%s drained)\n' \
+        "$qlen" "$n_idle" "$n_open" "$n_drained"
     fi
   fi
 fi

@@ -1017,7 +1017,7 @@ absent on purpose; dispatching through it would reintroduce the contention the s
 exists to remove.
 
 `fabro-monitor.sh` watches this container through C7 (its `/health` does not answer
-200) and C8 (queued work with every coder pool idle for `WEDGE_MINUTES`) — both read
+200) and C8 (queued work with every undrained coder pool idle for `WEDGE_MINUTES`) — both read
 `SCHEDULER_URL`, default `http://127.0.0.1:32280`. C7 and C8 are independent of C1:
 the scheduler is a separate container, so a fabro outage neither hides nor invents a
 scheduler problem, and they are evaluated even while C1 fires.
@@ -1166,9 +1166,16 @@ which see the run context it cannot (ADR 0004,
   when nothing is firing; a clean tick writes no file at all.
 - **Knobs** (force a condition without breaking anything real):
   `DISK_PCT=1` fires C6, `FABRO_PORT=1` fires C2, `IDLE_HOURS=0` fires C3
-  once a schedule is enabled, `SCHEDULER_URL=http://127.0.0.1:1` fires C7, and
+  once a schedule is enabled and some undrained coder pool is idle, `SCHEDULER_URL=http://127.0.0.1:1` fires C7, and
   `WEDGE_MINUTES=0` fires C8 on the first qualifying sample. `DRY_RUN=1` (the
   default) prints the alerts it would send and writes nothing.
+- **Drained coder pools are normal** (2026-10-20): the operator drains pools to use
+  those boxes outside fabro. C3 stays quiet while every undrained pool's lease names
+  a run fabro lists as active: no new run can start, so a 2h gap means "full", not
+  "dead". It prints `ok C3 … the scheduler is full (…)` instead. A lease on a run
+  that has ended does not count as busy. C8 counts only undrained pools, so two idle
+  pools with two drained is a wedge. Every pool drained fires neither. C3 and C8 read
+  one `/api/pools` sample; when it is unreadable, C3 judges by run age alone and C8 skips.
 - **C7 suppresses C8**, exactly as C1 suppresses C2's connection failures: an
   unreachable scheduler cannot answer "queued work, idle boxes", so C7 reports
   the cause and C8 is skipped, not evaluated. C7 and C8 are evaluated even when

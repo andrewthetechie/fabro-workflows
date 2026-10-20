@@ -141,12 +141,12 @@ prevent runs from happening at all. While a condition persists it re-alerts
 |---|---|---|
 | 🔴 `container-down` | The fabro container is not running or not healthy. | See the operator runbook — server recovery. |
 | 🔴 `api-unreachable` | The API doesn't answer (or the token was rejected — the message says which). | Runbook; a 401 means the token rotated. |
-| 🔴 `dead-scheduler` | Schedules are on but nothing has run in 2h. With every schedule off (the current state) this condition is **inert** — `scheduler-down` and `scheduler-wedged` below are what watch the scheduler now. | Runbook — the scheduler is wedged. |
+| 🔴 `dead-scheduler` | Schedules are on but nothing has run in 2h, and at least one undrained coder pool is idle or holds a lease on a run that has ended. It stays quiet while every undrained pool holds a live run: a full scheduler starts nothing new, which is normal when you drain pools to use those boxes outside fabro. | Runbook — the scheduler is wedged. |
 | 🔴 `stuck-run` | A run has sat non-terminal for 3h. | Open the run; cancel or let it ride. |
 | 🟡 `starvation` | Zero `agent` issues on all four repos. | The queue is empty: file issues labeled `needs-triage` (or `agent`). |
 | 🟠 `disk-pressure` | The host disk is ≥ 85% full. | Runbook — run the sweepers. |
 | 🔴 `scheduler-down` | The scheduler's health endpoint stopped answering. | Runbook — the scheduler is down or its container is stopped. |
-| 🔴 `scheduler-wedged` | Work is queued and every coder box has sat idle for 20 minutes. | Runbook — the scheduler is running but not dispatching. |
+| 🔴 `scheduler-wedged` | Work is queued and every undrained coder box has sat idle for 20 minutes. Drained pools are left out of the count; with every pool drained it does not fire. | Runbook — the scheduler is running but not dispatching. |
 
 ### The silence signals
 

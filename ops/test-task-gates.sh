@@ -7801,6 +7801,10 @@ case "$url" in
   */automations) body=$(cat "$MM_AUTOS") ;;
   */runs\?status=*) body=$(cat "$MM_ACTIVE") ;;
   */runs\?*) body=$(cat "$MM_NEWEST") ;;
+  # the scheduler answers only when a test wrote its pools; otherwise C7 fires and C8 skips
+  */health) [ -f "$MM_POOLS" ] || { printf '000'; exit 7; }; body='{"status":"ok"}' ;;
+  */api/pools) [ -f "$MM_POOLS" ] || { printf '000'; exit 7; }; body=$(cat "$MM_POOLS") ;;
+  */api/queue) [ -f "$MM_POOLS" ] || { printf '000'; exit 7; }; body=$(cat "$MM_QUEUE") ;;
   *) printf '000'; exit 22 ;;
 esac
 [ -n "$out" ] && printf '%s' "$body" > "$out" || printf '%s' "$body"
@@ -7822,6 +7826,7 @@ mm_row() { jq -cn --arg id "$1" --arg slug "$2" --arg kind "$3" --arg at "$4" '{
 printf '{"data":[{"name":"backlog-x","workflow":"backlog","triggers":[{"type":"schedule","id":"s","enabled":true}]}]}' > "$MM/autos.json"
 mm_run() {
     env PATH="$MM/bin:$ORIG_PATH" MM_AUTOS="$MM/autos.json" MM_ACTIVE="$MM/active.json" MM_NEWEST="$MM/newest.json" \
+        MM_POOLS="$MM/pools.json" MM_QUEUE="$MM/queue.json" WEDGE_MINUTES="${MM_WEDGE:-20}" \
         DRY_RUN=1 FABRO_MONITOR_STATE="$MM/state" FABRO_MONITOR_REPOS="" SCHEDULER_URL=http://127.0.0.1:1 \
         sh "$REPO_ROOT/ops/fabro-monitor.sh" >"$MM/out" 2>"$MM/err" </dev/null
 }
@@ -7845,6 +7850,50 @@ check "monitor C3: only merge-queue rows are recent, so the scheduler is dead" "
 { for i in $(seq 1 30); do mm_row "MQ$i" merge-queue succeeded "$(mm_ago 60)"; done; mm_row BL1 backlog succeeded "$(mm_ago 600)"; } | jq -cs '{data: ., meta: {has_more: false}}' > "$MM/newest.json"
 mm_run
 check "monitor C3: a recent backlog run keeps it quiet" "0|1" "$(grep -c 'DRY.*dead-scheduler' "$MM/out")|$(grep -c 'ok    C3' "$MM/out")"
+
+# ---------------------------------------------------------------------------
+# fabro-monitor.sh C3/C8 with drained pools (2026-10-20): the operator drains coder pools to
+# use those boxes outside fabro. A full scheduler is not a dead one (C3), and idle undrained
+# pools are a wedge even while others are drained (C8). /api/pools and /api/queue are stubs.
+# ---------------------------------------------------------------------------
+echo ""
+echo "monitor: drained coder pools (C3 saturation, C8 undrained pools)"
+mm_pool() { # $1=pool $2=drained $3=run id or empty
+    if [ -n "$3" ]; then jq -cn --arg p "$1" --argjson d "$2" --arg r "$3" '{coder_pool: $p, drained: $d, lease: {run_id: $r}}'
+    else jq -cn --arg p "$1" --argjson d "$2" '{coder_pool: $p, drained: $d, lease: null}'; fi
+}
+# the newest backlog run is 3 hours old; the two undrained pools each hold a live run
+{ mm_row BLA backlog running "$(mm_ago 10800)"; mm_row BLB backlog running "$(mm_ago 9000)"; } | jq -cs '{data: ., meta: {has_more: false}}' > "$MM/active.json"
+{ mm_row MQ1 merge-queue succeeded "$(mm_ago 60)"; mm_row BLB backlog running "$(mm_ago 9000)"; mm_row BLA backlog running "$(mm_ago 10800)"; } | jq -cs '{data: ., meta: {has_more: false}}' > "$MM/newest.json"
+printf '[{"number":1}]' > "$MM/queue.json"
+{ mm_pool coders-a false BLA; mm_pool coders-b false BLB; mm_pool coders-c true ""; mm_pool coders-d true ""; } | jq -cs . > "$MM/pools.json"
+mm_run
+check "monitor C3: two drained, two leased on live runs, no run for 2h: full, not dead" "0|1" "$(grep -c 'DRY.*dead-scheduler' "$MM/out")|$(grep -c 'ok    C3 dead-scheduler: .*scheduler is full (2 undrained pool(s) leased, 2 drained)' "$MM/out")"
+check "monitor C8: both undrained pools busy is not a wedge" "1" "$(grep -c 'ok    C8 scheduler-wedged: 1 queued, 0 of 2 undrained pools idle (2 drained)' "$MM/out")"
+# a lease on a run fabro no longer lists as active is a wedge, so C3 fires
+{ mm_pool coders-a false BLA; mm_pool coders-b false GONE; mm_pool coders-c true ""; mm_pool coders-d true ""; } | jq -cs . > "$MM/pools.json"
+mm_run
+check "monitor C3: a lease on a finished run does not count as busy" "1" "$(grep -c 'DRY.*dead-scheduler' "$MM/out")"
+# an undrained idle pool is not full either
+{ mm_pool coders-a false BLA; mm_pool coders-b false ""; mm_pool coders-c true ""; mm_pool coders-d true ""; } | jq -cs . > "$MM/pools.json"
+mm_run
+check "monitor C3: an idle undrained pool with no new run for 2h fires" "1" "$(grep -c 'DRY.*dead-scheduler' "$MM/out")"
+# every pool drained: the operator stopped dispatch, so neither C3 nor C8 fires
+{ mm_pool coders-a true ""; mm_pool coders-b true ""; mm_pool coders-c true ""; mm_pool coders-d true ""; } | jq -cs . > "$MM/pools.json"
+MM_WEDGE=0 mm_run
+check "monitor C3/C8: every pool drained fires neither" "0|0" "$(grep -c 'DRY.*dead-scheduler' "$MM/out")|$(grep -c 'DRY.*scheduler-wedged' "$MM/out")"
+# two drained, two undrained and idle, work queued: a wedge (any drained pool used to hide it)
+{ mm_pool coders-a false ""; mm_pool coders-b false ""; mm_pool coders-c true ""; mm_pool coders-d true ""; } | jq -cs . > "$MM/pools.json"
+MM_WEDGE=0 mm_run
+check "monitor C8: two undrained pools idle with work queued is a wedge while two are drained" "1" "$(grep -c 'DRY.*scheduler-wedged — 1 item(s) queued and all 2 undrained coder pool(s) idle .*; 2 drained' "$MM/out")"
+# the same with an empty queue is not
+printf '[]' > "$MM/queue.json"
+MM_WEDGE=0 mm_run
+check "monitor C8: idle undrained pools with nothing queued is fine" "0" "$(grep -c 'DRY.*scheduler-wedged' "$MM/out")"
+# the scheduler unreachable: C3 judges by run age alone, and C8 skips
+rm -f "$MM/pools.json"
+mm_run
+check "monitor C3: an unreadable /api/pools falls back to run age" "1|1" "$(grep -c 'DRY.*dead-scheduler' "$MM/out")|$(grep -c 'skip  C8' "$MM/out")"
 
 
 # ---------------------------------------------------------------------------
