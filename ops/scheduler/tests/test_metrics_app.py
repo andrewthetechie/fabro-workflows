@@ -82,16 +82,6 @@ def test_api_scorecard_markdown(client, store):
     assert "| PRs opened / merged by the workflow | 1 / 1 (100%) |" in response.text
 
 
-def test_api_scorecard_arms(client):
-    """The plan trial (#25): both arms, `plan` first, as JSON and as the side-by-side table."""
-    body = client.get("/api/scorecard/arms?from=2026-10-06&to=2026-10-08").json()
-    assert [arm["arm"] for arm in body] == ["plan", "improve"]
-    assert body[0]["line"]["runs"] == 0
-    response = client.get("/api/scorecard/arms?from=2026-10-06&to=2026-10-08&format=md")
-    assert response.headers["content-type"].startswith("text/markdown")
-    assert "| Metric | plan (hosted glm-5.3) | improve (coder box) |" in response.text
-
-
 def test_api_scorecard_weeks(client):
     weeks = client.get("/api/scorecard/weeks?weeks=3").json()
     assert len(weeks) == 3

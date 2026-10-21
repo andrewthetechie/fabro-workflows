@@ -8,7 +8,6 @@
 #   ./ops/fabro-scorecard.sh --last-week             # the previous ISO week
 #   ./ops/fabro-scorecard.sh --json [...]            # the JSON behind the table
 #   ./ops/fabro-scorecard.sh --repo OWNER/REPO [...] # one repository only (ADR 0025, C10)
-#   ./ops/fabro-scorecard.sh --by-arm --from 2026-10-14   # the plan trial (#25), plan vs improve
 #
 # Both dates are inclusive (UTC). A window holds the runs dispatched in it.
 #
@@ -48,8 +47,7 @@ while [ $# -gt 0 ]; do
         --week) read -r FROM TO <<<"$(iso_week 0)"; shift ;;
         --last-week) read -r FROM TO <<<"$(iso_week 1)"; shift ;;
         --json) FORMAT="json"; shift ;;
-        --by-arm) ENDPOINT="api/scorecard/arms"; shift ;;
-        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "fabro-scorecard.sh: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
