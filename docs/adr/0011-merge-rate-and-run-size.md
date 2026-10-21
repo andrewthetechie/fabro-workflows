@@ -2,7 +2,9 @@
 
 **Status:** accepted and implemented (2026-09-24; series `docs/merge-rate/`). D4 and
 D5's target-repository halves are PRs in those repositories. D6 was amended after
-implementation: see *Amendment: extra-review follow-ups are exempt* below.
+implementation: see *Amendment: extra-review follow-ups are exempt* below, and
+*Amendment: the hosted planner is adopted* (2026-10-21) for the `.improve` item under
+*Not adopted*.
 Every number below is from the run store, the scheduler's `run_history` table and
 GitHub, measured on 2026-09-24, before any of this changed.
 
@@ -290,7 +292,8 @@ so that nobody proposes them again without new evidence.
 
 - Moving `.improve` back to a hosted model. On the box it is 27% of box-busy time, with a
   p50 of 7.6 min, against about 3 min on `glm-5.3`. *Reopened by the operator on 2026-10-13 as
-  a trial (#25, `docs/plan-trial/`): a hosted `plan` node beside `improve`, on half of the runs.*
+  a trial (#25, `docs/plan-trial/`): a hosted `plan` node beside `improve`, on half of the runs.
+  Adopted on 2026-10-21: see the amendment below.*
 - Releasing the coder lease at `pr_handoff`. The box is busy for only 60% of lease time,
   and the merge phase averages about 50 minutes per run.
 - Moving the merge phase's `rebase` to a hosted class.
@@ -298,6 +301,23 @@ so that nobody proposes them again without new evidence.
 
 The review also considered loosening `ci_fix`'s file boundary, and we did not do it. D4
 is the chosen way to handle out-of-diff failures.
+
+## Amendment: the hosted planner is adopted (2026-10-21)
+
+The first item of *Not adopted* is now adopted, and the other three are unaffected. ADR 0030
+replaces `improve` with the hosted `plan` node on every standard-lane task in `backlog`, on
+the measurement in `docs/plan-trial/result-2026-10-21.txt` (window 2026-10-14 to 10-21, 80
+`plan` runs over 182 tasks against 73 `improve` runs over 145). The numbers that decided it:
+coder box-minutes per task 10.9 against 12.3, cell-weighted by repo x coder pool 10.86
+against 12.32; rework visits per task 0.14 against 0.19; non-architecture merges 29 of 60
+(48%) against 25 of 59 (42%). Box-hours per merged PR (6.2 against 5.5) favoured `improve`
+and is task mix: the plan arm's PRs carried 2.60 tasks each against 2.13.
+
+What this ADR's own decisions still say, unchanged: the task budget (`tasks_coded`, 8
+decomposed tasks) and its extra-review exemption, the saturation ordering of D6, and the
+push rules of D1. Their comments name `improve` where they mean the planner; `improve_gate`,
+`improve_result.json` and the `improve_result` schema keep their names (ADR 0030, D2), so
+`backlog` still has exactly one node that writes them.
 
 ## Testing
 

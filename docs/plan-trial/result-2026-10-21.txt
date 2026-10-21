@@ -1,0 +1,235 @@
+Plan trial (#25) — result, 2026-10-21
+=====================================
+
+Question (docs/plan-trial/README.md): replace `improve` on the coder box with `plan` on
+hosted glm-5.3, which does improve's job and also writes the edit plan the coder follows.
+Arms split per run by issue parity in `route_lane`.
+
+Window: 2026-10-14 to 2026-10-21, UTC (inclusive dates; every run dispatched in it).
+Measured 2026-10-21 ~16:00Z, before any of the trial's code was deleted.
+
+VERDICT: option 1. `plan` wins. `improve` is deleted, `plan` is kept and its timeout is
+re-derived from this window (see *The timeout*, below). Recorded in ADR 0030, which reverses
+ADR 0011's 2026-09-24 decline of a hosted planner.
+
+The three numbers that decided it
+---------------------------------
+1. Coder box-minutes per task, 10.9 for `plan` against 12.3 for `improve`; stratified by
+   repo x coder pool and weighted by tasks, 10.86 against 12.32 (-12%). This is the number
+   the trial exists to move: the box is the scarce resource (ADR 0007).
+2. Rework visits per task, 0.14 against 0.19 (hosted rework tiers 0.05 against 0.06), and
+   coder + rework minutes per task, 12.3 against 14.0. Less reworking follows the plan.
+3. Non-architecture merges, 29 of 60 (48%) against 25 of 59 (42%); all PRs 30 of 70 (43%)
+   against 28 of 68 (41%). Same direction, inside a 50-PR-per-arm noise band the README
+   already said can only show a ~15-point gap.
+
+Two secondary readings also favour `plan`: the Refuter's first verdict passed 37 of 69
+against 33 of 66, and the planner costs the box nothing at all (0 planner box-minutes
+against 1278, i.e. 21.3 box-hours) while using fewer hosted tokens per run (0.13M input /
+1.33M cache-read / 37k output against 0.32M / 1.61M / 26k).
+
+Two readings favour `improve`, both recorded in *Where `improve` looked better*.
+
+How this was measured
+---------------------
+Read-only on the host. No event export to the Mac; the only events read were streamed on
+the host through `jq` filters (two runs, for the timeout derivation). The measurement
+scripts were passed to the container on stdin and are not committed, because the trial's
+code they called is being deleted in this same close; what they ran is written out here.
+
+    ./ops/fabro-scorecard.sh --by-arm --from 2026-10-14
+    # the headline cards, above
+
+    ssh andrew@10.10.0.32 'docker exec -i fabro-scheduler python -' <<'PY'
+    #   sqlite3.connect("file:/data/scheduler.db?mode=ro") then .backup() to
+    #   /tmp/measure-scheduler.db; every query below ran against the copy, never the live
+    #   file. The copy is a scratch file and was left there.
+    #   Rows: the six SELECTs of store.scorecard_rows (run_history, run_summary,
+    #   run_stage_stats, run_failovers, pr_facts, run_model_usage), windowed on
+    #   run_history.dispatched_at.
+    #   Numbers: trial.compute(rows, start, end) for the two cards and trial.trial_line(arm,
+    #   rows) for each arm's line, overall and per (repo, coder_pool). A run's arm is
+    #   trial.arm_of: the planning node that ran, `plan` first.
+    #   Repeated per question: the two arms' lines and strata; the plan arm's per-visit and
+    #   per-run minutes, timeouts and failure categories; each arm's `validate` failures by
+    #   run; and the dispositions of every run whose dispositions were not all `ready`.
+    PY
+
+    ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro events <run> \
+        | jq -r "select(...) | [.ts, .event, (.node_id // \"-\")] | @tsv"'
+    # streamed and filtered on the host: 01M58C5ZZC0GMCT743DDA2EWK7 (the recovered glm
+    # stall) and 01M5B0G5ZVJ2X5X5KZZACGKFRK (the excluded hang)
+
+Window shape: 399 runs dispatched, 398 summarized. 80 runs / 182 tasks in `plan`, 73 / 145
+in `improve`, 246 in neither arm: 148 were `failed/launch_failed` (never started), the rest
+took the fast lane or ended before their first task. Planner timeouts recorded: 1 for
+`plan`, 2 for `improve`; coder timeouts 0 in both arms.
+
+Headline cards (both arms side by side)
+--------------------------------------
+    Plan trial (#25), 2026-10-14 to 2026-10-21
+
+    | Metric | plan (hosted glm-5.3) | improve (coder box) |
+    |---|---|---|
+    | Runs / tasks coded | 80 / 182 | 73 / 145 |
+    | PRs opened / merged by the workflow | 70 / 30 (43%) | 68 / 28 (41%) |
+    | Non-architecture merged | 29 of 60 (48%) | 25 of 59 (42%) |
+    | Held PRs, by reason | refuter 19, diff hygiene 14, CI 4, unfixed findings 2, no report 1 | refuter 19, diff hygiene 10, CI 9, timeout 1, no report 1 |
+    | PRs with operator commits | 10 (14%) | 14 (21%) |
+    | Box-hours per merged PR | 6.2 | 5.5 |
+    | Planner minutes per run, p50 / p90 | 7.4 / 28.8 | 9.5 / 41.1 |
+    | Planner box-minutes | 0 | 1278 |
+    | Planner tokens per run | 0.13M in / 1.33M cached / 37k out (n=80) | 0.32M in / 1.61M cached / 26k out (n=73) |
+    | Coder box-minutes per task | 10.9 | 12.3 |
+    | Coder + rework minutes per task | 12.3 | 14.0 |
+    | Time to first edit, p50 / p90 min | 2.0 / 5.6 (n=178) | 2.0 / 6.5 (n=142) |
+    | Rework visits per task (hosted tiers) | 0.14 (0.05) | 0.19 (0.06) |
+    | validate failures per task | 0.05 | 0.02 |
+    | Coder timeouts | 0 | 0 |
+    | Refuter first verdict pass | 37 of 69 | 33 of 66 |
+    | Planner dispositions | ready 182 | ready 145, redundant 3, invalid 1 |
+    | Planner timeouts | 1 | 2 |
+
+The strata table (repo x coder pool x arm)
+------------------------------------------
+Both arms do not draw the same repositories on the same boxes (see *Confounds*), so the
+per-task numbers are read per stratum and then weighted by tasks. `plan min/run p50` is the
+planner's own clock, for cost, not for the comparison.
+
+    | repo | pool | arm | runs | tasks | coder min/task | coding min/task | rework/task | validate fails/task | first-edit p50 | PRs merged | plan min/run p50 |
+    |---|---|---|---|---|---|---|---|---|---|---|---|
+    | lawncare-saas | coders-a | improve | 1 | 2 | 2.0 | 2.0 | 0.00 | 0.00 | 0.6 | 0 of 1 | 8.5 |
+    | lawncare-saas | coders-a | plan | 2 | 9 | 20.2 | 22.4 | 0.11 | 0.00 | 3.6 | 1 of 2 | 24.7 |
+    | lawncare-saas | coders-b | improve | 7 | 20 | 12.8 | 13.4 | 0.05 | 0.00 | 3.3 | 3 of 7 | 28.2 |
+    | lawncare-saas | coders-b | plan | 10 | 30 | 16.4 | 17.3 | 0.07 | 0.00 | 3.6 | 1 of 8 | 18.0 |
+    | lawncare-saas | coders-c | improve | 1 | 6 | 13.9 | 13.9 | 0.00 | 0.00 | 0.8 | 0 of 1 | 15.3 |
+    | lawncare-saas | coders-c | plan | 1 | 10 | 12.2 | 15.5 | 0.30 | 0.00 | 0.7 | 0 of 0 | 63.2 |
+    | lawncare-saas | coders-d | improve | 2 | 2 | 5.7 | 13.0 | 1.50 | 0.00 | 0.2 | 1 of 2 | 5.1 |
+    | womens-fantasy-sports | coders-a | improve | 21 | 41 | 12.2 | 14.3 | 0.27 | 0.05 | 2.2 | 6 of 20 | 6.8 |
+    | womens-fantasy-sports | coders-a | plan | 26 | 64 | 11.6 | 12.1 | 0.05 | 0.00 | 2.5 | 11 of 25 | 8.4 |
+    | womens-fantasy-sports | coders-b | improve | 4 | 5 | 6.2 | 6.2 | 0.00 | 0.00 | 2.3 | 0 of 4 | 9.3 |
+    | womens-fantasy-sports | coders-b | plan | 3 | 6 | 12.8 | 12.8 | 0.00 | 0.00 | 3.0 | 0 of 2 | 3.6 |
+    | womens-fantasy-sports | coders-c | improve | 14 | 25 | 4.3 | 4.6 | 0.16 | 0.00 | 0.4 | 10 of 14 | 1.5 |
+    | womens-fantasy-sports | coders-c | plan | 15 | 17 | 4.7 | 5.3 | 0.18 | 0.06 | 0.3 | 9 of 15 | 3.2 |
+    | womens-fantasy-sports | coders-d | improve | 10 | 14 | 5.6 | 6.8 | 0.21 | 0.07 | 0.4 | 5 of 9 | 10.3 |
+    | womens-fantasy-sports | coders-d | plan | 9 | 18 | 4.0 | 6.1 | 0.22 | 0.11 | 0.2 | 5 of 7 | 7.5 |
+    | writers-app | coders-a | improve | 3 | 13 | 23.9 | 23.9 | 0.00 | 0.00 | 1.6 | 1 of 3 | 64.4 |
+    | writers-app | coders-a | plan | 4 | 9 | 11.8 | 12.9 | 0.11 | 0.00 | 0.9 | 1 of 3 | 22.9 |
+    | writers-app | coders-b | improve | 8 | 14 | 28.3 | 34.8 | 0.36 | 0.00 | 4.8 | 2 of 7 | 17.7 |
+    | writers-app | coders-b | plan | 3 | 3 | 12.5 | 12.5 | 0.00 | 0.00 | 2.5 | 1 of 2 | 7.3 |
+    | writers-app | coders-d | improve | 2 | 3 | 2.7 | 6.7 | 0.00 | 0.00 | 5.5 | 0 of 0 | 26.3 |
+    | writers-app | coders-d | plan | 7 | 16 | 4.0 | 9.5 | 0.56 | 0.44 | 0.4 | 1 of 6 | 20.2 |
+
+Cell-weighted coder box-minutes per task (sum of coder box ms / sum of tasks):
+`plan` 10.86 over 182 tasks; `improve` 12.32 over 145 tasks.
+
+Strata where `improve` was the cheaper planner: lawncare-saas on coders-b (12.8 against
+16.4), womens-fantasy-sports on coders-c (4.3 against 4.7) and coders-d (5.6 against 4.0),
+and writers-app on coders-d (2.7 against 4.0, on 3 tasks against 16). Strata where `plan`
+was cheaper are the large ones: womens-fantasy-sports on coders-a (11.6 against 12.2, on 64
+tasks against 41), writers-app on coders-b (12.5 against 28.3) and coders-a (11.8 against
+23.9). That is why the unweighted headline rows and the weighted number agree here but the
+per-cell signs do not: the plan arm's tasks are concentrated in womens-fantasy-sports on
+coders-a, the single largest cell.
+
+Confounds seen
+--------------
+- Repository and pool mix. The plan arm drew more lawncare-saas on coders-b (10 runs / 30
+  tasks against 7 / 20) and more womens-fantasy-sports on coders-a (26 / 64 against 21 /
+  41); lawncare-saas is the slowest repo per task and womens-fantasy-sports on coders-c the
+  fastest. Every per-task number above is therefore read per stratum and cell-weighted.
+- Task size per PR. The plan arm carried 2.60 tasks per PR against 2.13, and 6.07 tasks per
+  merge against 5.18. This is the confound behind the throughput row: lease hours per task
+  are 1.02 for `plan` and 1.07 for `improve` (plan better), but lease hours per merged PR
+  are 6.2 against 5.5 (plan worse) because plan's PRs averaged more tasks each. The
+  throughput row is mix, not the planner.
+- The window's shared changes. Task validation on womens-fantasy-sports (2026-10-15
+  01:11:50Z), the Refuter-evidence fix (#40, 10-15), coders-a's model swap (2026-10-18
+  04:53Z) and the prompt rewrite `9b2b7cb` (2026-10-18 06:59Z) all landed inside the
+  window and hit both arms. They are why the stratum, not the calendar, is the unit above,
+  and they make per-visit `validate` numbers incomparable across those dates (the README's
+  2026-10-14 cross-trial note).
+- writers-app#1040 (run 01M4X9JDEAADWWE64WFXZSVDYA, coders-d) alone is 7 of the plan arm's
+  10 `validate` failures, over 13 visits. The other 3 are 2 on womens-fantasy-sports#1578
+  and 1 on #1680. The improve arm's 3 failures are 2 on #1675 and 1 on #1515. So `0.05
+  against 0.02` per task is one bad PR against two small ones, not a planner property.
+- The plan disposition answer from #25 (comment 6305216639) stands for this window: `plan`
+  returned `ready` 182 times, `improve` returned `ready` 145, `redundant` 3 and `invalid`
+  1. The 3 redundants are one run (01M5CX023VKP67M9Y7R10E5YNG, writers-app#1089) re-reporting
+  a duplicate issue, and were correct; the 1 invalid is the gate's verdict after `improve`
+  failed to submit twice (run 01M59QSAH8S0XRPC28ZJX60ASR, womens-fantasy-sports#2163: two
+  `improve` visits, zero `plan` visits). Both are `improve`-arm runs. Nothing in the plan
+  arm's checkpoints marked an already-done task `ready`. `plan` was still never tested on
+  an overlap, because issue parity never gave it one.
+
+Where `improve` looked better
+-----------------------------
+- `validate` failures per task: 0.02 against 0.05, which is #1040 (above).
+- Box-hours per merged PR: 5.5 against 6.2, which is task mix (above).
+
+Nothing in the window says `improve` plans better. It says the plan arm's PRs carried more
+tasks and that one plan-arm PR had a bad validate history. On the share of PRs the operator
+had to touch, `plan` is ahead (10 of 70, 14%, against 14 of 68, 21%), a 4-PR difference that
+is recorded and not read.
+
+Verdict against the README's *What is measured* table
+-----------------------------------------------------
+    | Question | plan | improve | reading |
+    |---|---|---|---|
+    | Merge rate (non-architecture) | 29 of 60 (48%) | 25 of 59 (42%) | plan, inside the noise band |
+    | Code quality (rework, hosted tiers) | 0.14 (0.05) | 0.19 (0.06) | plan |
+    | Code quality (validate failures) | 0.05 | 0.02 | improve; one PR (#1040) |
+    | Code quality (Refuter first pass) | 37 of 69 | 33 of 66 | plan |
+    | Coder time (box-min per task) | 10.9 | 12.3 | plan |
+    | Coder time (coder + rework) | 12.3 | 14.0 | plan |
+    | Coder time (first edit p50/p90) | 2.0 / 5.6 | 2.0 / 6.5 | plan at p90 |
+    | Planner cost (box-minutes) | 0 | 1278 | plan |
+    | Planner cost (tokens per run) | 0.13M/1.33M/37k | 0.32M/1.61M/26k | plan, except output |
+    | Throughput (box-hours per merge) | 6.2 | 5.5 | improve by task mix, not by planner |
+
+Three of the five questions favour `plan` outright: merge rate, coder time and planner cost.
+Code quality splits two metrics to one, and the one it loses is a single PR (#1040).
+Throughput is the only question `improve` wins, and only because the plan arm's PRs carried
+more tasks each. Option 1.
+
+The timeout
+-----------
+Measured on this node, this window (n=182 successful `plan` visits over 79 runs; the
+terminated hang below is excluded, and 1 of 183 visits hit the cap):
+
+    per visit minutes: p50 4.7   p90 7.5   max 12.7
+    per run minutes:   p50 7.3   p90 27.7  max 63.2   (a run plans up to 8 tasks)
+    stage timeouts:    1 of 183 visits; failures: transient_infra 1
+    improve, same window, for the peer: per visit p50 6.4, p90 15.9, max 19.7
+
+The one stall: run 01M58C5ZZC0GMCT743DDA2EWK7 entered `plan` at 20:51:57Z on 2026-10-18,
+`stage.failed` at 21:11:57Z -- exactly the 20m timeout, no `agent.llm` output in the last
+minutes -- then `stage.retrying`, a second attempt at 21:12:02Z that completed at 21:20:10Z
+(8.1 min) and wrote `ready`. `max_retries=1` recovered it. The collector records only the
+successful attempt's 8.1 min in `run_stage_stats`, so this window's planner minutes
+under-count stalls by however long each timed-out attempt ran; the `Planner timeouts` row,
+not the minutes, is the stall count.
+
+Excluded outlier: run 01M5B0G5ZVJ2X5X5KZZACGKFRK (writers-app#1054, coders-d) records one
+`plan` visit of 25,742,196 ms (429 min) with `timeouts 0` and `failures {}`. Its events end
+at 21:30:40Z on 2026-10-19 and the run ends `failed/terminated` at 04:33:54Z on 10-20, with
+no stage failure, because the 10-19 disk fill killed the worker and the operator's fabro
+restart failed the phantom run (`~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`,
+"2026-10-20 ~04:00-04:40Z"). That is infrastructure, not planner time: it is a hung
+process, and it is the reason the timeout cannot be read from `wall_ms` alone.
+
+Choice: **keep `timeout="20m"`, now measured rather than peer-derived**, with
+`max_retries=1` unchanged.
+
+- 20m is 1.6x the slowest successful visit in the window and 2.7x p90. The review nodes'
+  house rule is 2.3x the slowest observed execution, which here would be 29m; that
+  headroom is not worth buying on this node, because `plan` has exactly one failure mode --
+  a provider stall that produces nothing -- and every minute of the timeout is a minute of
+  the run's lease and of z.ai's 3 concurrent sessions (ADR 0003).
+- 15m (the review peers) would leave 2.3 minutes over the observed max, on 1 visit in 182
+  above 12 minutes. Too close.
+- The measured stall already ends at 20m and its retry costs 8.1m, so a stall costs the run
+  ~28m of lease. Under 20m that bounded total is what the operator pays, and it is under
+  `improve`'s 45m single attempt.
+
+The graph's comment above `plan` carries these numbers.
