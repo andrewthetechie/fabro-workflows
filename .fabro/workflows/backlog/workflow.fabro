@@ -130,22 +130,14 @@ digraph Backlog {
             // `coders` group (ADR 0007, task 04 removed it with the LiteLLM provider);
             // the escape hatch fires an explicit `coder_pool` so it never relies on this.
             //
-            // `.improve` names the SAME pinned box as `.coder`, deliberately. Measured
-            // over two runs it was 19.1% of all hosted tokens (4.52M of 23.74M) for
-            // per-task spec sharpening on a peak context of 57k -- comfortably inside the
-            // box's 262144 window -- and a weak spec is caught immediately downstream by
-            // `review` and the rework ladder. It must resolve to the SAME box as the
-            // coder, not a second one: the scheduler leases exactly one box per run, so
-            // naming the other here would queue behind a run that holds it.
-            //
-            // `.plan` is the hosted arm of the plan trial (docs/plan-trial/, #25): the
-            // `plan` node does improve's job on glm-5.3 and also writes the edit plan the
-            // coder follows, the strong-model-plans, small-model-edits split. Runs on an
-            // even issue number take it and odd ones keep `.improve` on the box
-            // (`route_lane`). It names glm-5.3 with no `reasoning_effort`, exactly like
-            // `.decomp`, so it runs a configuration already proven on this server. It is
-            // one more glm-5.3 stage per task against z.ai's 3 concurrent sessions
-            // (ADR 0003), which is the cost the trial measures.
+            // `.plan` is the planner (ADR 0030): `glm-5.3` with no `reasoning_effort`,
+            // exactly like `.decomp`, so it runs a configuration already proven on this
+            // server. It does the dossier's job on a hosted model and also writes the edit
+            // plan the coder follows -- the strong-model-plans, small-model-edits split. It
+            // replaced `.improve`, which ran the same job on the run's own box at 24% of all
+            // stage time (#25); the box now only codes. It is one more glm-5.3 stage per task
+            // against z.ai's 3 concurrent sessions (ADR 0003), which is the cost the close of
+            // the trial accepted.
             //
             // The review classes are split one-per-node rather than sharing a `.review`
             // rule. They used to share it, which meant the three per-task reviewers and
@@ -169,7 +161,6 @@ digraph Backlog {
         model_stylesheet="
             *                 { model: coders-a; }
             .decomp           { model: glm-5.3; }
-            .improve          { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .plan             { model: glm-5.3; }
             .coder            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .coder-t2         { model: glm-5.3-flash; }
@@ -339,19 +330,15 @@ else echo 'agent guide: could not write .codex/instructions.md' >&2; fi"]
     //
     // The lane is exactly the label `fast-path`: `Fast-Path` and `fast-path-x` are standard.
     // In the fast lane the node writes the one task that `decompose` would have written, so
-    // `next_task` and the coder run unchanged: no decompose, no improve, no excerpts, no
+    // `next_task` and the coder run unchanged: no decompose, no plan, no excerpts, no
     // extra review. An empty issue body becomes `Resolve issue #N: <title>`, because the
     // coder needs a non-empty body. In the standard lane it writes only /tmp/fabro/lane
     // and leaves tasks.json for `decompose`.
     //
-    // It also picks the run's arm of the plan trial (docs/plan-trial/, #25), once, so
-    // every task of one PR is planned the same way: the merge outcome being compared is
-    // per PR. An even issue number is `plan` (hosted glm-5.3 writes the dossier and an
-    // edit plan), an odd one `improve` (the box, as before). A requeued issue keeps its
-    // number and so its arm. The fast lane never reaches either node and records `none`.
-    // `arm` is written on both branches and to /tmp/fabro/arm; a number that is not an
-    // integer gets `improve`, the unchanged path. Ending the trial is deleting this and
-    // the `context.arm` edges.
+    // It also used to pick the run's arm of the plan trial (docs/plan-trial/, #25): an
+    // even issue number planned on a hosted `plan` node and an odd one kept `improve` on
+    // the box. The trial closed on 2026-10-21 (`result-2026-10-21.txt`) and ADR 0030 kept
+    // `plan`, so `lane` is the only thing this node publishes now.
     route_lane [label="Choose the lane", shape=parallelogram, output_schema="routing", timeout="1m",
         script="set -e
 F=/tmp/fabro/issue.json
@@ -361,14 +348,10 @@ if jq -e '[.labels[].name] | index(\"fast-path\") != null' $F >/dev/null; then
   mv /tmp/fabro/tasks.new.json /tmp/fabro/tasks.json
   echo 0 > /tmp/fabro/task_index
   echo fast > /tmp/fabro/lane
-  echo none > /tmp/fabro/arm
-  echo '{\"context_updates\":{\"lane\":\"fast\",\"arm\":\"none\"}}'
+  echo '{\"context_updates\":{\"lane\":\"fast\"}}'
 else
-  N=$(jq -r '.number // empty' $F)
-  case \"$N\" in ''|*[!0-9]*) ARM=improve ;; *) if [ $((N % 2)) -eq 0 ]; then ARM=plan; else ARM=improve; fi ;; esac
   echo standard > /tmp/fabro/lane
-  echo $ARM > /tmp/fabro/arm
-  echo '{\"context_updates\":{\"lane\":\"standard\",\"arm\":\"'$ARM'\"}}'
+  echo '{\"context_updates\":{\"lane\":\"standard\"}}'
 fi"]
 
     // ---- Decomposition (agent writes file; gate validates) ----
@@ -427,7 +410,7 @@ if [ \"$S\" = issues ]; then
   if [ \"$OVER\" != 0 ]; then
     echo 'WARNING: '$OVER' task(s) declare more than three covers entries, which on measured history means they will not land in one coder stage:'
     jq -r '.[] | select((.covers | length) > 3) | \"  - \" + .id + \": \" + ((.covers | length) | tostring) + \" requirements\"' /tmp/fabro/tasks.json
-    echo 'improve decides what to do about it: it runs per task against the checkout as it will actually be, and can split.'
+    echo 'plan decides what to do about it: it runs per task against the checkout as it will actually be, and can split.'
   fi
 fi
 if [ \"$S\" = needs_human_review ]; then jq -r '.summary // empty' $F > /tmp/fabro/stuck_reason.md 2>/dev/null || true; fi
@@ -444,7 +427,7 @@ jq -nc --arg s \"$S\" --argjson c \"${CNT:-0}\" --argjson o \"${OVER:-0}\" --arg
 
     // ---- Sequential task loop ----
     // The task budget (ADR 0011 D6, amended 2026-09-24) bounds the DECOMPOSED scope
-    // of one run: at most 8 tasks from `decompose`, or slices `improve` split out of
+    // of one run: at most 8 tasks from `decompose`, or slices the planner split out of
     // one, reach a coder. `improve_gate` counts them in `tasks_coded`. Once the budget
     // is spent, every decomposed task still queued moves to remainder.json, which
     // `file_remainder` files as one held issue after open_pr.
@@ -458,7 +441,7 @@ jq -nc --arg s \"$S\" --argjson c \"${CNT:-0}\" --argjson o \"${OVER:-0}\" --arg
     // task has run -- so moving the decomposed ones out leaves the exempt ones in
     // order.
     // The map is re-rendered after the mainline refresh so it matches the tree the
-    // next task's improve starts from, and the task dossier and its code excerpts
+    // next task's `plan` starts from, and the task dossier and its code excerpts
     // (`excerpts`) are deleted at the start of each task (docs/code-context C1/C3,
     // task 04/07). `fabro-code map` is stubbed out
     // (nothing to do on an old image) and must not print to stdout -- this node's
@@ -570,7 +553,7 @@ fi"]
     // Measured across runs 01M2RX2SGJJT09WK5FS8GYJCDE, 01M2RB5QBNBPS6C0F9904V25AX and
     // 01M2SBJG92TX0DBRKY5881VM34 -- 29 executions, every one of them:
     //
-    //   extra_decompose  max  69s     improve   max 180s     spec      max 157s
+    //   extra_decompose  max  69s     spec      max 157s
     //   standards        max 216s     review    max 226s     quality   max 332s
     //   review_merge.standards max 384s   .spec max 262s   .review_fix max 309s
     //
@@ -589,54 +572,38 @@ fi"]
     // have real tails or no evidence, and the same arithmetic does not hold for them.
     // See docs/perf/00-overview-and-measurements.md.
     //
-    // `improve` IS retimed, to 45m, and every number in the table above is void for it.
-    // All of them were measured while `.improve` resolved to glm-5.3. `9b7f5ff` moved
-    // the class onto `{{ inputs.coder_pool }}` -- a single-slot llama.cpp box -- and
-    // left the timeout sized for the model it no longer runs on. That is what a
-    // measurement-derived timeout costs when the measurement's subject is swapped out
-    // from under it, and it is the rule this comment exists to state: MOVING A CLASS TO
-    // A DIFFERENT MODEL VOIDS EVERY TIMEOUT DERIVED FROM THE OLD ONE.
+    // That block used to carry a second half about `improve`, which `9b7f5ff` had moved
+    // from glm-5.3 to `{{ inputs.coder_pool }}` while leaving its 15m timeout sized for
+    // the hosted model. It is history now that `improve` is deleted (ADR 0030), but the
+    // rule it stated holds and is why `plan` below is re-derived from its own times:
+    // MOVING A CLASS TO A DIFFERENT MODEL VOIDS EVERY TIMEOUT DERIVED FROM THE OLD ONE.
     //
-    // What it cost: run 01M321VB0DC4N187GHA88RM0QB (writers-app#929, 2026-09-21) burned
-    // both attempts at exactly 900004ms and 900005ms. Neither stalled -- the last
-    // `agent.llm.started` of attempt 2 returned `first_output` 59s before the wall fell,
-    // with steady tool calls throughout. The run reached `human_rescue` having never run
-    // a coder, and `[P] Accept partial` then opened an empty PR (writers-app#949).
+    // `plan` is the planner (ADR 0030): hosted glm-5.3 writes the dossier and a `## Plan`
+    // section in task-context.md, ordered edits the coder makes in a fresh session. Its
+    // contract is the one `improve` wrote before it, unchanged: the same `submit` output
+    // (improve_result.json, schema improve_result), the same dispositions, the same
+    // `improve_gate` with its split guards, task budget, revert backstop and attempt
+    // counter, and the same `excerpts` after it. `improve_gate` sends a rejected result
+    // back here.
     //
-    // Why 45m and not a scaled 15m. Measured from the run store over runs
-    // 01M2ZYF5X7F97ARZ4SKXZ9NXBH and 01M305QY4SE7GHXSPNVGCCY1YN, output tok/s per node:
+    // timeout="20m" is MEASURED on this node, not a peer value: docs/plan-trial/result-
+    // 2026-10-21.txt, n=182 successful visits over 79 runs from 2026-10-14 to 10-21.
     //
-    //   improve (glm-5.3)  22.1 tok/s, n=11, max stage 326s
-    //   coder   (coders-a) 11.8 tok/s, n=10      rework_t1 (coders-a) 11.3 tok/s, n=1
+    //   per visit minutes: p50 4.7   p90 7.5   max 12.7
+    //   per run minutes:   p50 7.3   p90 27.7  max 63.2   (a run plans up to 8 tasks)
+    //   stage timeouts:    1 of 183 visits, and max_retries=1 recovered it
     //
-    // The box is ~1.9x slower on raw output, but run 929 proves the real factor for THIS
-    // node is worse than that: >900s against a hosted max of 326s is >2.8x, because
-    // `improve` re-reads the checkout every turn and the box pays prefill on all of it.
-    // So there is no honest arithmetic here -- scaling 326s by a guessed factor would be
-    // inventing a measurement. 45m is the PEER value instead: `rework_t1..t4` run the
-    // same box at 45m and `coder` at 180m, and `improve` is a smaller job than either.
-    // Re-derive it properly once a local `improve` has completed and can be measured.
-    //
-    // `max_retries=1` stays (the 6h park on 01M2PSA224HXTXJSSVBGTVPYF1 is why it exists),
-    // so the worst case on a genuinely dead box is 90m, up from 30m. That is the price of
-    // not failing every non-trivial issue outright, which is what 15m does today.
-    improve [label="Improve task spec", class="improve", timeout="45m", max_retries=1, prompt="@prompts/improve.md.j2"]
-
-    // `plan`: the trial arm of #25 (docs/plan-trial/). It is `improve` on a hosted model,
-    // with one more deliverable: a `## Plan` section in task-context.md, ordered edits
-    // the coder makes in a fresh session. Everything else is improve's contract
-    // unchanged: the same `submit` output (improve_result.json, schema improve_result),
-    // the same dispositions, the same `improve_gate` with its split guards, task budget,
-    // revert backstop and attempt counter, and the same `excerpts` after it. Only the
-    // arm `route_lane` picked reaches it, and `improve_gate` sends a retry back here.
-    //
-    // timeout="20m" is a peer value, not a measurement of this node. The only glm-5.3
-    // numbers for this job are improve's, from before 9b7f5ff moved it to the box:
-    // max 326s (n=11) and max 180s (29 executions). Writing the plan adds output, and
-    // glm-5.3's known stall is 15m39s before a 502, so 15m (the review peers) would be
-    // spent on one stall. 20m with max_retries=1 bounds a dead provider at 40m, under
-    // improve's 45m single attempt. Re-derive it from the trial's own stage times.
-    plan [label="Plan task (hosted)", class="plan", timeout="20m", max_retries=1, prompt="@prompts/plan.md.j2"]
+    // 20m is 1.6x the slowest successful visit and 2.7x p90. The review nodes' house rule
+    // is 2.3x the slowest observed execution, which here would be 29m, and it is NOT
+    // taken: this node has one failure mode -- a provider stall that produces nothing --
+    // and the one stall in the window ran the full 20m and then succeeded on an 8.1-minute
+    // retry. Every minute of the timeout is a minute of the run's lease (ADR 0006) and of
+    // z.ai's 3 concurrent sessions (ADR 0003), so a stall stays bounded at 20m plus one
+    // retry. 15m (the review peers) leaves 2.3 minutes over the observed maximum, on 1
+    // visit in 182 above 12 minutes. One record in that window is not planner time and is
+    // excluded: the 429-minute `plan` visit in run 01M5B0G5ZVJ2X5X5KZZACGKFRK is the
+    // 10-19 disk fill (`~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`), not a stall.
+    plan [label="Plan task", class="plan", timeout="20m", max_retries=1, prompt="@prompts/plan.md.j2"]
 
     // The `split` disposition, and why the size check lives HERE rather than in
     // `decompose`.
@@ -664,11 +631,11 @@ fi"]
     // does NOT reject: rejecting costs a full retry round, and some issues
     // genuinely carry one fat criterion.
     //
-    // `improve` is what acts on it, because that is where the information is. It
+    // `plan` is what acts on it, because that is where the information is. It
     // runs per task, immediately before the coder, against the checkout as it
     // ACTUALLY is -- earlier tasks in this run already committed -- so it can see
     // how much work genuinely remains. `decompose` is estimating work it has not
-    // inspected, before any of the run has happened; on this same run `improve`
+    // inspected, before any of the run has happened; on this same run `plan`
     // had already proved the point by catching drift the decomposer could not
     // have known about.
     //
@@ -685,10 +652,10 @@ fi"]
     // are prerequisites of each other and of nothing else, so appending them
     // after every remaining task would run them out of order.
     //
-    // Backstop (docs/coder-tweaks/06, C5): `improve` is read-only, but runs
+    // Backstop (docs/coder-tweaks/06, C5): `plan` is read-only, but runs
     // 01M3SN85YDECYRDVP3YYPYM6AM (edited 4 tracked files) and 01M3TN6GJK6PG1YEKCE786T16V
     // (stashed and popped the coder's work) show the prompt alone does not hold. The
-    // first lines revert anything improve's checkpoint changed: HEAD is improve's
+    // first lines revert anything the planner's checkpoint changed: HEAD is its
     // checkpoint and HEAD^ the previous stage's, which holds only while EVERY stage
     // commits (`--allow-empty`); if fabro ever skips empty checkpoints this would
     // revert the previous stage. The gate's own checkpoint commits the revert. The
@@ -701,10 +668,10 @@ fi"]
     // current_task.json, and a split of an extra-review follow-up stamps its slices
     // `from_extra: true`, because `source` becomes `split` and would otherwise lose
     // the exemption.
-    improve_gate [label="Validate improved task", shape=parallelogram, output_schema="routing",
+    improve_gate [label="Validate planned task", shape=parallelogram, output_schema="routing",
         script="if git rev-parse -q --verify HEAD^ >/dev/null 2>&1 && ! git diff --quiet HEAD^ HEAD; then
   N=$(git diff --name-only HEAD^ HEAD | wc -l | tr -d ' ')
-  git diff --name-only HEAD^ HEAD | sed 's/^/improve changed (reverted): /'
+  git diff --name-only HEAD^ HEAD | sed 's/^/plan changed (reverted): /'
   git revert --no-edit --no-commit HEAD
   echo $N > /tmp/fabro/improve_touched_tree
 fi
@@ -771,7 +738,7 @@ echo '{\"context_updates\":{\"task_disposition\":\"'$D'\",\"task_count\":'$TC'}}
     // first turns are edits rather than reads. On 2026-10-01 two coders (runs
     // 01M3WS83Z1736Y75GNZM89KV59, lawncare-saas#2659, and 01M3WRYJBFJVWJCEGDV6T4YRVF,
     // womens-fantasy-sports#1278) each spent ~17 minutes before their first edit. 5-7 of
-    // those were whole-file reads of the files `improve` had read minutes earlier on the
+    // those were whole-file reads of the files `plan` had read minutes earlier on the
     // same box (~100-120 KB at ~250 tok/s prefill), though the dossier already named every
     // range they edited. edit_file needs the exact text, so the coder had to re-read.
     //
@@ -781,7 +748,7 @@ echo '{\"context_updates\":{\"task_disposition\":\"'$D'\",\"task_count\":'$TC'}}
     // keeps the comment above it. A path alone, or a bare
     // `:N`, is skipped. Ranges are capped at 150 lines and merged per file, and the
     // whole file at 40000 bytes; anything past the cap is listed, not copied. The text
-    // is the checkout as it is now, after improve and before the coder, so it cannot be
+    // is the checkout as it is now, after plan and before the coder, so it cannot be
     // stale. Only `coder` reads task-code.md: rework and review run after the code
     // changed. next_task deletes it with the dossier.
     //
@@ -826,7 +793,7 @@ USED=0; OUT=0; SKIP=''
 {
   echo '# Code the task dossier cites'
   echo ''
-  echo 'Copied from the checkout by the excerpts node after improve, before this stage started. Each block is the current text of the lines in its heading, without line numbers, so a block can be used as the old_string of edit_file. Lines outside these ranges are not shown.'
+  echo 'Copied from the checkout by the excerpts node right after the planner wrote the dossier, before this stage started. Each block is the current text of the lines in its heading, without line numbers, so a block can be used as the old_string of edit_file. Lines outside these ranges are not shown.'
 } > $O.tmp
 while read F S E; do
   B=$(awk -v s=$S -v e=$E 'NR >= s && NR <= e' \"$F\" | wc -c)
@@ -1253,7 +1220,7 @@ echo 'dropped follow-up '$I': tree restored to the task base '$BASE"]
 
     // A fast-lane task that the whole rework ladder could not land. The label was wrong:
     // the issue is bigger than one commit, so it goes back to the queue for the standard
-    // lane (decompose, improve) instead of waiting 4h at human_rescue on a held coder box.
+    // lane (decompose, plan) instead of waiting 4h at human_rescue on a held coder box.
     //
     // The ORDER of the label calls is load-bearing. `fast-path` comes off first, and the
     // node stops if that fails or if a re-read still shows it. Only then does `agent` go
@@ -1381,7 +1348,7 @@ if [ \"$S\" = issues ]; then
   if [ \"$OVER\" != 0 ] && [ \"$OVER\" != \"\" ]; then
     echo 'WARNING: '$OVER' follow-up task(s) declare more than three covers entries and will not land in one coder stage:'
     jq -r '.[] | select(.source == \"extra-review\") | select((.covers | length) > 3) | \"  - \" + .id + \": \" + ((.covers | length) | tostring) + \" findings\"' /tmp/fabro/tasks.json
-    echo 'improve sees each of these before its coder runs and can split it.'
+    echo 'plan sees each of these before its coder runs and can split it.'
   fi
 fi
 echo '{\"context_updates\":{\"followup_status\":\"'$S'\",\"new_tasks\":'$NEWCNT'}}'"]
@@ -2486,7 +2453,7 @@ echo done"]
     prep -> route_lane              [condition="outcome=succeeded"]
     prep -> rescue_brief
 
-    // ADR 0023: a `fast-path` issue skips decompose, improve, excerpts and the extra
+    // ADR 0023: a `fast-path` issue skips decompose, plan, excerpts and the extra
     // review; every other stage, the per-task review and the rework ladder included, runs
     // as in the standard lane. `route_lane` publishes `lane` on every run.
     route_lane -> next_task         [condition="context.lane=fast"]
@@ -2511,18 +2478,19 @@ echo done"]
     decompose_gate -> rescue_brief
 
     // ADR 0023. extra_prep (the extra review) is skipped in the fast lane: tasks_done goes
-    // straight to final_merge. The coder edge skips improve, improve_gate and excerpts.
+    // straight to final_merge. The coder edge skips plan, improve_gate and excerpts.
     // `next_task` writes `rebase_failed` on every branch, so on tasks_done=true only one of
-    // these matches; resolve_merge keeps its own edge, and improve stays the standard
+    // these matches; resolve_merge keeps its own edge, and plan stays the standard
     // lane's unconditional fallthrough.
     next_task -> extra_prep         [condition="context.tasks_done=true && context.lane!=fast"]
     next_task -> final_merge        [condition="context.tasks_done=true && context.lane=fast"]
     next_task -> resolve_merge      [condition="context.rebase_failed=true"]
     next_task -> coder              [condition="context.tasks_done=false && context.rebase_failed=false && context.lane=fast"]
-    // The plan trial (#25): route_lane set `arm` once per run. `improve` stays the
-    // unconditional fallthrough, so a run without the key takes the unchanged path.
-    next_task -> plan               [condition="context.tasks_done=false && context.rebase_failed=false && context.lane!=fast && context.arm=plan"]
-    next_task -> improve
+    // The plan trial (#25) is closed (ADR 0030): every standard-lane task is planned, and
+    // `plan` is the unconditional fallthrough for the task case. The four conditional
+    // edges above are exclusive on tasks_done, rebase_failed and lane, so a run that
+    // matches none of them reaches this one.
+    next_task -> plan
 
     // A failed node still routes: resolve_merge's unconditional edge leads to its
     // gate, which detects the bad state and either retries once or asks for a
@@ -2531,23 +2499,18 @@ echo done"]
     resolve_merge -> resolve_merge_gate [condition="outcome=succeeded"]
     resolve_merge -> resolve_merge_gate
     // ADR 0023: after a resolved mainline merge the fast lane goes to the coder, skipping
-    // improve; the standard lane is unchanged. A merge final_merge handed over goes back
+    // plan; the standard lane is unchanged. A merge final_merge handed over goes back
     // to final_merge in either lane; the three success edges are exclusive on merge_return.
     resolve_merge_gate -> final_merge   [condition="context.merge_ok=true && context.merge_return=pr", weight=10]
-    resolve_merge_gate -> improve       [condition="context.merge_ok=true && context.merge_return=task && context.lane!=fast && context.arm!=plan", weight=10]
-    resolve_merge_gate -> plan          [condition="context.merge_ok=true && context.merge_return=task && context.lane!=fast && context.arm=plan", weight=10]
+    resolve_merge_gate -> plan          [condition="context.merge_ok=true && context.merge_return=task && context.lane!=fast", weight=10]
     resolve_merge_gate -> coder         [condition="context.merge_ok=true && context.merge_return=task && context.lane=fast", weight=10]
     resolve_merge_gate -> resolve_merge [condition="context.merge_attempts=1"]
     resolve_merge_gate -> rescue_brief
 
-    improve -> improve_gate         [condition="outcome=succeeded"]
-    improve -> rescue_brief
     plan -> improve_gate            [condition="outcome=succeeded"]
     plan -> rescue_brief
-    // A rejected result goes back to the node that wrote it. The two retry edges are
-    // exclusive on `arm`: a condition tie breaks lexically, and `improve` sorts first.
-    improve_gate -> improve         [condition="outcome=failed && context.arm!=plan"]
-    improve_gate -> plan            [condition="outcome=failed && context.arm=plan"]
+    // A rejected result goes back to `plan`, the node that wrote it.
+    improve_gate -> plan            [condition="outcome=failed"]
     improve_gate -> next_task       [condition="context.task_disposition=redundant"]
     // A split rewound `task_index` to the slot the oversized task occupied and
     // replaced it in place, so `next_task` re-selects that slot and picks up the

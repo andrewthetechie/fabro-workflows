@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "improve_result",
-  "title": "improve_result — backlog improve's improved task (task 10)",
-  "description": "The backlog improve agent's output (docs/stage-io, task 10). The `ready` task is FLAT (task_title, task_body, ...) because a local quantised model corrupted a nested `task` object in its tool call (run 01M3SFYASZQ7MEKVKR1A38C4J0); improve_gate assembles current_task.json from those fields and defaults id, files, covers and priority from the current task. `split` keeps a nested `tasks` array. improve_gate checks the disposition enum and the per-disposition shape; the split/queue logic and per-run budget stay in the gate. `reason` is always written for the human record. _io is stamped by the server.",
+  "title": "improve_result — the planner's result (backlog plan, task 10)",
+  "description": "The backlog planner's output (plan; ADR 0030; docs/stage-io, task 10); the file and schema keep the name `improve_result` from the node it replaced, and improve_gate still reads it. The `ready` task is FLAT (task_title, task_body, ...) because a local quantised model corrupted a nested `task` object in its tool call (run 01M3SFYASZQ7MEKVKR1A38C4J0); improve_gate assembles current_task.json from those fields and defaults id, files, covers and priority from the current task. `split` keeps a nested `tasks` array. improve_gate checks the disposition enum and the per-disposition shape; the split/queue logic and per-run budget stay in the gate. `reason` is always written for the human record. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
   "required": ["disposition", "reason"],

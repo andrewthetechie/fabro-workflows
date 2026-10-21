@@ -53,10 +53,11 @@ class Counts(unittest.TestCase):
             # gate-relief task 05 (#29): refute_fix and refute_fix_gate, +2 nodes and +5 edges in
             # each importer of _shared/review-merge. #37: resolve_base and resolve_base_gate, +2 nodes
             # and +6 edges in each importer. #35: drop_unreviewed and final_fix_prep, +2 nodes and +9
-            # edges in backlog only. The plan trial (#25): plan, +1 node and +5 edges in backlog
-            # only. #17 (docs/unmet-criteria): return_to_triage and task_block_gate, +2 nodes and
-            # +6 edges in backlog only. `fabro validate` (check-host) confirms them.
-            "backlog": (82, 210),
+            # edges in backlog only. #17 (docs/unmet-criteria): return_to_triage and task_block_gate,
+            # +2 nodes and +6 edges in backlog only. Closing the plan trial (#25, ADR 0030) removed
+            # `improve` (-1 node and -2 edges) and the three arm-split edge pairs (-3 edges); the
+            # trial had added plan at +1 node and +5 edges. `fabro validate` (check-host) confirms them.
+            "backlog": (81, 205),
             "pr-review": (39, 87),
             "issue-triage": (16, 36),
             "arch-review": (24, 54),

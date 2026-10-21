@@ -564,39 +564,6 @@
           "sealed": [],
           "also": []
         },
-        "improve": {
-          "live": true,
-          "prompt": ".fabro/workflows/backlog/prompts/improve.md.j2",
-          "inputs": [
-            {
-              "name": "repomap.md",
-              "path": "/tmp/fabro/repomap.md",
-              "required": false,
-              "about": "ranked outline of the checkout; can be missing, continue without it",
-              "absent": "the repository map is missing; proceed without it"
-            },
-            {
-              "name": "current_task.json",
-              "path": "/tmp/fabro/current_task.json",
-              "required": true,
-              "about": "the single task object being improved"
-            },
-            {
-              "name": "issue.json",
-              "path": "/tmp/fabro/issue.json",
-              "required": true,
-              "about": "the parent issue, for reporter intent and human discussion"
-            }
-          ],
-          "sealed": [],
-          "also": [
-            "/tmp/fabro/task-context.md"
-          ],
-          "output": {
-            "path": "/tmp/fabro/improve_result.json",
-            "schema": "improve_result"
-          }
-        },
         "plan": {
           "live": true,
           "prompt": ".fabro/workflows/backlog/prompts/plan.md.j2",
@@ -644,7 +611,7 @@
               "name": "task-context.md",
               "path": "/tmp/fabro/task-context.md",
               "required": false,
-              "about": "what improve or plan verified in this checkout minutes ago: files, line ranges, tests, traps, and the ordered edit plan when plan wrote it; treat it as verified",
+              "about": "what plan verified in this checkout minutes ago: files, line ranges, tests, traps, and the ordered edit plan; treat it as verified",
               "absent": "no dossier was written for this task; find the code with the code_* tools"
             },
             {
@@ -683,8 +650,8 @@
               "name": "task-context.md",
               "path": "/tmp/fabro/task-context.md",
               "required": false,
-              "about": "what the improve stage found about the task under review; can be missing or wrong",
-              "absent": "improve did not write a dossier for this task"
+              "about": "what the plan stage found about the task under review; can be missing or wrong",
+              "absent": "plan did not write a dossier for this task"
             },
             {
               "name": "diff.patch",
@@ -739,8 +706,8 @@
               "name": "task-context.md",
               "path": "/tmp/fabro/task-context.md",
               "required": false,
-              "about": "what the improve stage found about this task; can be missing or wrong",
-              "absent": "improve did not write a dossier for this task"
+              "about": "what the plan stage found about this task; can be missing or wrong",
+              "absent": "plan did not write a dossier for this task"
             },
             {
               "name": "rescue.md",
@@ -792,8 +759,8 @@
               "name": "task-context.md",
               "path": "/tmp/fabro/task-context.md",
               "required": false,
-              "about": "what the improve stage found about this task; can be missing or wrong",
-              "absent": "improve did not write a dossier for this task"
+              "about": "what the plan stage found about this task; can be missing or wrong",
+              "absent": "plan did not write a dossier for this task"
             },
             {
               "name": "rescue.md",
@@ -845,8 +812,8 @@
               "name": "task-context.md",
               "path": "/tmp/fabro/task-context.md",
               "required": false,
-              "about": "what the improve stage found about this task; can be missing or wrong",
-              "absent": "improve did not write a dossier for this task"
+              "about": "what the plan stage found about this task; can be missing or wrong",
+              "absent": "plan did not write a dossier for this task"
             },
             {
               "name": "rescue.md",
@@ -898,8 +865,8 @@
               "name": "task-context.md",
               "path": "/tmp/fabro/task-context.md",
               "required": false,
-              "about": "what the improve stage found about this task; can be missing or wrong",
-              "absent": "improve did not write a dossier for this task"
+              "about": "what the plan stage found about this task; can be missing or wrong",
+              "absent": "plan did not write a dossier for this task"
             },
             {
               "name": "rescue.md",
