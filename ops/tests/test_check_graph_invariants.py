@@ -68,6 +68,10 @@ class Counts(unittest.TestCase):
             # Scout (ADR 0027, task 04): no agent stage. Confirmed by `make check-host`
             # on 2026-10-16 (task 07 of docs/scout/).
             "scout": (9, 11),
+            # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
+            # this pair grows with each one; it is the offline parser's count, not a
+            # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.
+            "ralph": (10, 19),
         })
 
 

@@ -62,6 +62,11 @@ DEP="$REPO_ROOT/.fabro/workflows/dependabot/workflow.fabro"
 [ -f "$DEP" ] || { echo "ERROR: $DEP not found" >&2; exit 1; }
 INTRIAGE="$REPO_ROOT/.fabro/workflows/issue-triage/workflow.fabro"
 [ -f "$INTRIAGE" ] || { echo "ERROR: $INTRIAGE not found" >&2; exit 1; }
+# ralph is its own package: it imports no shared phase, so every node under test below lives
+# in its own graph, and its copies of backlog and review-merge nodes run against the same
+# fixtures as their originals wherever the R10 table says their text is identical.
+RAPH="$REPO_ROOT/.fabro/workflows/ralph/workflow.fabro"
+[ -f "$RAPH" ] || { echo "ERROR: $RAPH not found" >&2; exit 1; }
 
 command -v jq >/dev/null || { echo "ERROR: jq is required" >&2; exit 1; }
 
@@ -138,6 +143,18 @@ stage_into() {
     if ! sh -n "$T/$1.sh" 2>"$T/$1.syntax"; then
         FAIL=$((FAIL + 1))
         printf '  FAIL %s is not valid POSIX sh\n' "$1"
+        sed 's/^/       /' "$T/$1.syntax"
+    fi
+}
+
+extract_r() { extract_from "$RAPH" "$1"; }
+
+# `stage` for the ralph package. Same /tmp/fabro rebase and the same POSIX `sh` check.
+stage_r() {
+    extract_r "$1" | sed "s#/tmp/fabro#$T#g" > "$T/$1.sh"
+    if ! sh -n "$T/$1.sh" 2>"$T/$1.syntax"; then
+        FAIL=$((FAIL + 1))
+        printf '  FAIL %s (ralph) is not valid POSIX sh\n' "$1"
         sed 's/^/       /' "$T/$1.syntax"
     fi
 }
@@ -8676,6 +8693,147 @@ check "scout file link: replace down: both issues created" "2" "$(grep -c '^gh i
 
 # The ratchet-flaky edge must stay unconditional: a ratchet failure must not stop flaky (D15).
 check "scout: ratchet -> flaky is unconditional" "1" "$(grep -c '^    ratchet -> flaky$' "$SC")"
+
+# ---------------------------------------------------------------------------
+# ralph (docs/ralph): the Iteration workflow's command nodes. Each is extracted from
+# ralph's own graph and rebased onto its own scratch directory, exactly as the backlog
+# sections above do; the edge checks read the parsed graph rather than the text, because
+# a wrong route is invisible to `fabro validate`.
+# ---------------------------------------------------------------------------
+r_edges() {
+    python3.11 "$REPO_ROOT/ops/check-graph-invariants.py" --dump "$RAPH" | jq -r '
+        .statements[] | select(.Edge) | .Edge
+        | (([(.attrs // [])[] | select(.[0] == "condition") | .[1]] | .[0]) // "") as $c
+        | .nodes as $n | range(0; ($n | length) - 1) | "\($n[.])->\($n[. + 1]) \($c)"'
+}
+
+echo ""
+echo "ralph — prep"
+T="$WORK/ralph-prep"; mkdir -p "$T"
+RP_PREP="$WORK/ralph-prep-repo"; entry_repo "$RP_PREP"
+mkdir -p "$RP_PREP/repo/.fabro"
+printf '%s\n' '#!/bin/sh' 'true' > "$RP_PREP/repo/.fabro/setup.sh"
+chmod +x "$RP_PREP/repo/.fabro/setup.sh"
+extract_r prep | sed "s#/tmp/fabro#$RP_PREP/sb#g" > "$RP_PREP/prep.sh"
+if ! sh -n "$RP_PREP/prep.sh" 2>"$RP_PREP/syntax"; then
+    FAIL=$((FAIL + 1)); printf '  FAIL prep (ralph) is not valid POSIX sh\n'; sed 's/^/       /' "$RP_PREP/syntax"
+fi
+rp_prep() {   # $1 = issue body json
+    rm -rf "$RP_PREP/sb"; mkdir -p "$RP_PREP/sb"
+    jq -nc --arg b "$1" '{number:12,title:"t",body:$b,labels:[]}' > "$RP_PREP/sb/issue.json"
+    ( cd "$RP_PREP/repo" && PATH="$RP_PREP/bin:$PATH" FABRO_TEST_STATE="$RP_PREP/sb/code_index" \
+      FABRO_AGENT_GUIDE= sh "$RP_PREP/prep.sh" ) >/dev/null 2>&1
+}
+rp_prep 'Intro line.
+
+## Task map
+
+- first: the parser
+- second: the caller
+
+## Notes
+ignored'
+check "prep: task-map.md is the section" "2" "$(grep -c '^- ' "$RP_PREP/sb/task-map.md" 2>/dev/null)"
+check "prep: task-map.md stops at the next heading" "0" "$(grep -c 'ignored' "$RP_PREP/sb/task-map.md" 2>/dev/null)"
+rp_prep 'No map here, just prose.'
+check "prep: no Task map writes no file" "absent" "$([ -e "$RP_PREP/sb/task-map.md" ] && echo present || echo absent)"
+check "prep: phase starts pre" "pre" "$(cat "$RP_PREP/sb/phase" 2>/dev/null)"
+check "prep: five counters" "0|0|0|0|0" "$(cat "$RP_PREP/sb/iterations" 2>/dev/null)|$(cat "$RP_PREP/sb/post_iterations" 2>/dev/null)|$(cat "$RP_PREP/sb/refute_visits" 2>/dev/null)|$(cat "$RP_PREP/sb/final_fix_attempts" 2>/dev/null)|$(cat "$RP_PREP/sb/plan_attempts" 2>/dev/null)"
+printf 'x' > "$RP_PREP/sb/loop_exhausted"; printf 'x' > "$RP_PREP/sb/progress.md"
+rp_prep 'No map here, just prose.'
+check "prep: clears loop_exhausted"                "absent" "$([ -e "$RP_PREP/sb/loop_exhausted" ] && echo present || echo absent)"
+check "prep: clears progress.md"                   "absent" "$([ -e "$RP_PREP/sb/progress.md" ] && echo present || echo absent)"
+
+echo ""
+echo "ralph — plan_gate"
+T="$WORK/ralph-plan"; mkdir -p "$T"; stage_r plan_gate
+mkreadok ok1
+rp_setup() {   # $1 = the task_list object
+    rm -f "$T"/*.json "$T"/plan_attempts 2>/dev/null
+    printf '%s' "$1" | jq --arg v ok1 '._io.visit=$v' > "$T/task_list.json"
+}
+rp_task() { jq -nc --arg i "$1" --arg t "$2" '{id:$i,title:$t,body:"b",acceptance:["a"],files:[],covers:["c"],context:"## Plan
+1. path:1-2 do it"}'; }
+rp_run() { OUT=$(sh "$T/plan_gate.sh" 2>&1); RC=$?; J=$(lastjson "$OUT"); }
+rp_status() { jq -r '.context_updates.plan_status' <<<"$J" 2>/dev/null; }
+
+rp_setup "$(jq -nc --argjson t "[$(rp_task t1 A),$(rp_task t2 B),$(rp_task t3 C)]" \
+  '{disposition:"ready",summary:"s",contradictions:[],tasks:$t}')"
+rp_run
+check "pg ready: exits 0"            "0"     "$RC"
+check "pg ready: routes ready"       "ready" "$(rp_status)"
+check "pg ready: three tasks"        "3"     "$(jq length "$T/tasks.json")"
+check "pg ready: source stamped"     "plan"  "$(jq -r '.[0].source' "$T/tasks.json")"
+check "pg ready: round 0"            "0"     "$(jq -r '.[0].round' "$T/tasks.json")"
+check "pg ready: status open"        "open"  "$(jq -r '.[0].status' "$T/tasks.json")"
+check "pg ready: misses 0"           "0"     "$(jq -r '.[0].misses' "$T/tasks.json")"
+check "pg ready: task_index 0"       "0"     "$(cat "$T/task_index")"
+check "pg ready: remainder empty"    "0"     "$(jq length "$T/remainder.json")"
+check "pg ready: no stuck reason"    "absent" "$([ -e "$T/stuck_reason.md" ] && echo present || echo absent)"
+check "pg ready: one routing object" "1"     "$(grep -c 'context_updates' <<<"$OUT")"
+
+TEN=$(jq -nc --argjson t "[$(for i in $(seq 1 10); do rp_task "t$i" "T$i"; done | paste -sd, -)]" \
+  '{disposition:"ready",summary:"s",contradictions:[],tasks:$t}')
+rp_setup "$TEN"; rp_run
+check "pg ten: eight in tasks.json"  "8" "$(jq length "$T/tasks.json")"
+check "pg ten: two in the remainder" "2" "$(jq length "$T/remainder.json")"
+check "pg ten: remainder keeps titles" "T9|T10" "$(jq -r '[.[].title] | join("|")' "$T/remainder.json")"
+
+DUP=$(jq -nc --argjson t "[$(rp_task t1 A),$(rp_task t1 B)]" \
+  '{disposition:"ready",summary:"s",contradictions:[],tasks:$t}')
+rp_setup "$DUP"; rp_run
+check "pg duplicate id: first attempt exits 1" "1" "$RC"
+check "pg duplicate id: counter 1"             "1" "$(cat "$T/plan_attempts")"
+rp_run
+check "pg duplicate id: second attempt exits 0" "0"    "$RC"
+check "pg duplicate id: routes invalid"         "invalid" "$(rp_status)"
+
+rp_setup "$(jq -nc '{disposition:"ready",summary:"s",contradictions:[],tasks:[]}')"; rp_run
+check "pg ready with no tasks: first attempt exits 1" "1" "$RC"
+rp_run
+check "pg ready with no tasks: invalid" "invalid" "$(rp_status)"
+
+rp_setup "$(jq -nc '{disposition:"contradiction",summary:"Resend needs a backend the issue rules out.",
+  contradictions:[{criterion:"The screen offers a \"Resend email\" action",non_goal:"No backend changes",needed_surface:"a backend that calls the Auth0 resend API"}],
+  tasks:[]}')"
+rp_run
+check "pg contradiction: exits 0"        "0" "$RC"
+check "pg contradiction: routes"         "contradiction" "$(rp_status)"
+check "pg contradiction: return source"  "plan" "$(jq -r '.source' "$T/return.json")"
+check "pg contradiction: return why"     "a backend that calls the Auth0 resend API" "$(jq -r '.items[0].why' "$T/return.json")"
+check "pg contradiction: questions name it" "1" "$(jq -r '.context_updates.triage_questions' <<<"$J" | grep -c 'Resend email action (conflicts with: No backend changes)')"
+check "pg contradiction: no quote in questions" "0" "$(jq -r '.context_updates.triage_questions' <<<"$J" | grep -c '\"')"
+check "pg contradiction: no tasks written" "absent" "$([ -e "$T/tasks.json" ] && echo present || echo absent)"
+
+rp_setup "$(jq -nc '{disposition:"contradiction",summary:"s",contradictions:[],tasks:[]}')"; rp_run
+check "pg empty contradiction: retries" "1" "$RC"
+
+rp_setup "$(jq -nc '{disposition:"needs_human",summary:"blocked by #1278",contradictions:[],tasks:[]}')"; rp_run
+check "pg needs_human: routes"        "needs_human" "$(rp_status)"
+check "pg needs_human: writes reason" "blocked by #1278" "$(cat "$T/stuck_reason.md")"
+
+rp_setup "$(jq -nc '{disposition:"redundant",summary:"s",contradictions:[],tasks:[]}')"; rp_run
+check "pg redundant: routes" "redundant" "$(rp_status)"
+
+# No receipt for this visit: invalid, and the retry names the submit tool.
+rp_setup "$(jq -nc --argjson t "[$(rp_task t1 A)]" '{disposition:"ready",summary:"s",contradictions:[],tasks:$t}')"
+printf '%s' "$(jq -c '{disposition,summary,contradictions,tasks}' "$T/task_list.json")" > "$T/task_list.json"
+rp_run
+check "pg no receipt: first attempt exits 1" "1" "$RC"
+check "pg no receipt: names submit"          "1" "$(grep -c 'submit tool' <<<"$OUT")"
+
+echo ""
+echo "ralph — edges"
+REDG=$(r_edges)
+PG=$(grep '^plan_gate->' <<<"$REDG" | sed 's/^plan_gate->//')
+check "pg edges: seven exits" "7" "$(grep -c . <<<"$PG")"
+check "pg edges: the conditional set is exactly the five statuses" \
+  "close_noop context.plan_status=invalid|close_noop context.plan_status=redundant|mark_stuck context.plan_status=needs_human|return_to_triage context.plan_status=contradiction|stop_reason context.plan_status=ready" \
+  "$(grep 'context.plan_status' <<<"$PG" | sort | paste -sd'|' -)"
+check "pg edges: the retry is conditional on failure" "1" "$(grep -cxF 'plan outcome=failed' <<<"$PG")"
+check "pg edges: unconditional escape to stop_reason" "1" "$(grep -cxF 'stop_reason ' <<<"$PG")"
+check "pg edges: no bare exit"                        "0" "$(grep -c '^exit ' <<<"$PG")"
+check "edges: plan_gate has one unconditional edge"   "1" "$(grep -c ' $' <<<"$PG")"
 
 echo ""
 echo "the suite leaves the checkout alone"

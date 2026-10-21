@@ -1,0 +1,134 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+# Model escalation fallbacks. A model that errors or is rate-limited falls
+# through to the next one. Order follows the operator's quota policy:
+# z.ai before kimi. long-context and kimi-k3 never fall back into a coder
+# role, and kimi-k3 is never a primary coder.
+#
+# Targets name the provider directly (zai:/kimi:) since task 03 pointed the
+# hosted models at their own providers; the proxy is gone.
+#
+# Keys containing a dot MUST be quoted or the TOML parse fails with a 422 at
+# automation fire time.
+# Model escalation fallbacks. A model that errors or is rate-limited falls through
+# to the next one. Two rows differ from backlog's on purpose, and the graph comment
+# above `model_stylesheet` carries the reasoning:
+#
+#   kimi-k3 = ["zai:glm-5.3", "orfallback:qwen3.8-27b"]
+#     Reversed (O5): ralph's three hosted stages -- plan, standards, spec -- must reach
+#     z.ai BEFORE OpenRouter, because OpenRouter is only ever a fallback here.
+#
+#   "glm-5.3" = ["orfallback:qwen3.8-27b"]
+#     No `kimi:kimi-k3` rung. `.coder-t4` is the top rung of the Iteration ladder and
+#     requests glm-5.3; backlog's row would escalate it to Kimi, and Kimi's weekly quota
+#     is the reviewers'. A rung that spends it on coding starves plan, standards and spec.
+#
+# The rest are backlog's. Keys containing a dot MUST be quoted or the TOML parse fails
+# with a 422 at automation fire time. Fallbacks are non-recursive: one lookup from the
+# original request, so the `kimi-k3` row above is the whole chain for `.plan`,
+# `.review-standards` and `.review-spec`.
+[run.model.fallbacks]
+# The scheduler pins a run to one box by naming `coders-a` to `coders-d` in the run's
+# `coder_pool` input (see the stylesheet). Fallbacks are keyed on the REQUESTED model
+# name, so each pinned group needs its own entry or a pinned run has no fallback at all.
+# Nothing falls back to glm-4.7 and no stylesheet class may name it (backlog/workflow.toml
+# carries the full reasoning).
+"coders-a" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
+"coders-b" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
+"coders-c" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
+"coders-d" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
+# The adversarial reviewer (.refute): gpt-6-luna, and an OpenRouter model that is neither
+# OpenAI nor GLM as its fallback, so an OpenAI outage still leaves an independent Refuter.
+"gpt-6-luna" = ["orfallback:qwen3.8-27b"]
+# The mechanical-check tier and the first hosted rung of the Iteration ladder. Both
+# escalate UP to full glm-5.3 rather than sideways, so an outage degrades into a better
+# model and never a worse one. Non-recursive, so this row never applies to a coder chain.
+"glm-5.3-flash" = ["zai:glm-5.3"]
+kimi-for-coding = ["zai:glm-5.3"]
+# The top Iteration rung. See the header: no Kimi rung.
+"glm-5.3" = ["orfallback:qwen3.8-27b"]
+# The three hosted frontier stages: plan, standards, spec. Non-GLM first is backlog's
+# order and O5 reverses it here.
+kimi-k3 = ["zai:glm-5.3", "orfallback:qwen3.8-27b"]
+
+# Checkpoints still COMMIT after every stage, but fabro no longer PUSHES them
+# (ADR 0011 D1). Every checkpoint is an allow-empty commit, and once the PR exists
+# each push started a full CI run: womens-fantasy-sports#1247 carried 80 commits
+# and 78 Actions runs. The push after `watch_checks` also moved the head CI had
+# just passed, so `merge` timed out waiting for CI to start over.
+#   enabled = true  -> checkpoints still commit between stages
+#   push    = false -> only open_pr, deliver, ci_fix_gate and remerge_base push
+# open_pr widens the fetch refspec for the run branch; without that, every later
+# `--force-with-lease` push is rejected as `stale info` on this single-branch clone.
+# Nothing resumes from a pushed run branch (a server restart fails the run and any
+# retry starts from a fresh clone), so the old "survives a crash" reason is void.
+# Legal only because there is no [run.pull_request] block in this workflow.
+[run.run_branch]
+enabled = true
+push = false
+
+# The run needs a GitHub token for the gh CLI in claim/check/open_pr/merge
+# command stages and for agent use of gh. Fabro injects GITHUB_TOKEN into the
+# sandbox; these permissions declare what a token-mode run may do.
+[run.integrations.github.permissions]
+contents = "write"
+issues = "write"
+pull_requests = "write"
+
+# `FABRO_API_TOKEN` is how a command node reaches this server's own API: `pr_handoff`
+# reads the per-repo auto-merge switch off the `pr-review-<repo>` automation row, and
+# `merge_gate` reads the host-wide one. The token is a vault entry
+# resolved at launch; only its name appears here, because this repository is public.
+#
+# [run.environment.*] is a SPARSE OVERRIDE on the environment the automation already
+# selected. Do NOT add `[run.environment] id = "..."` — that would pin all four ralph
+# automations to one environment and break the per-repo image mapping
+# (jelly-swipe needs python, writers-app needs rust-node, and buildpack-deps:noble
+# fails CI on two of the four).
+# fabro-io (ADR 0016): one streamable-HTTP MCP server per agent stage, in the
+# profile-image sandbox (type = sandbox -> the image runs the static binary). The
+# server lists no tools until a stage is live; every ralph agent stage is live, so
+# this starts one server per stage (~0.3 s, spike check 2) and serves its manifest.
+# startup_timeout/tool_timeout are large for the cold sandbox first start.
+# docs/stage-io/.
+[run.agent.mcps.io]
+type = "sandbox"
+command = ["fabro-io", "serve", "--port", "7391"]
+port = 7391
+startup_timeout = "20s"
+# 660s (docs/coder-tweaks 04): `baseline_check` may run a command for up to 600s. The cost: a
+# hung `inputs` or `submit` now holds a stage for up to 11 minutes instead of 30 seconds.
+tool_timeout = "660s"
+
+[run.environment.env]
+FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
+# Read by pr_handoff for the per-repo auto-merge switch, and by the imported
+# review-merge phase for the host-wide one.
+FABRO_API_URL    = "{{ vars.FABRO_API_URL }}"
+FABRO_AUTO_MERGE = "{{ vars.FABRO_AUTO_MERGE }}"
+# FlakeRadar's base URL (ADR 0028 F1): watch_checks asks it whether a red check fails only on
+# known flaky tests. Empty means today's path.
+FLAKERADAR_URL   = "{{ vars.FLAKERADAR_URL }}"
+
+# The unexpected path: the run itself failed.
+[[run.hooks]]
+id = "discord-failed"
+event = "run_failed"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh failed"
+
+# A Contradiction returned the issue to triage: the same message issue triage sends for a
+# question, because the human answers it the same way. The routing gate before
+# return_to_triage publishes `triage_questions`, which this stage_start hook reads; the node
+# itself has not run yet when it fires.
+[[run.hooks]]
+id = "discord-triage-question"
+event = "stage_start"
+matcher = "^return_to_triage$"
+blocking = false
+sandbox = false
+script = "/storage/scripts/discord-notify.sh triage-question"

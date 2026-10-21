@@ -1,0 +1,480 @@
+digraph Ralph {
+    graph [
+        goal="Ralph: plan the agent-labelled issue, implement it one task per fresh coder session until a refuter cannot break it, review it, and merge the PR",
+        // The graph stall watchdog. A command node emits exactly two events (started,
+        // completed) and its output goes to a log blob, never into the event stream, so a
+        // node polling with `sleep 30` is invisible to the watchdog, which re-arms only from
+        // Emitter::last_activity(). `watch_checks` is exactly that shape. Raised from the 30m
+        // default so EVERY node's own timeout (the tallest command node is `watch_checks` at
+        // 50m) stays strictly below it: a node timeout ROUTES, a watchdog cancel does not, and
+        // the seven runs backlog lost that way on 2026-09-20..22 left open PRs and parked
+        // issues. The cost is 30 more minutes before a hung provider is caught on an agent
+        // stage, which carries its own timeout anyway.
+        stall_timeout="60m",
+        // Fabro's failure-signature breaker counts run-wide and never resets on success. The
+        // Iteration loop is a cycle through command nodes (`record` -> `pick`), many times per
+        // Task and up to 24 Iterations, so the default of 3 would end a healthy run. The loop's
+        // own bounds are the Iteration cap (O7), the rung ladder (O17) and the Refute round cap
+        // (O8); the breaker adds no protection the graph lacks.
+        loop_restart_signature_limit=100,
+        // Bound the preamble. `compact`, the default, prepends EVERY completed stage with up
+        // to 25 lines of its output: by Iteration 8 that is tens of thousands of tokens of jq
+        // gate chatter in front of the prompt, and on a local llama.cpp box prefill is a real
+        // share of per-turn latency. `truncate` is the floor, about sixty characters. Nothing
+        // here needs a recap: every prompt names its inputs by path (ADR 0016).
+        default_fidelity="truncate",
+        // One class per stage, and the decision each one comes from:
+        //
+        //   *                 the fallback. Every node that names no class resolves here; every
+        //                     class below is explicit so a stylesheet mistake is visible.
+        //   .plan             kimi-k3 (O4, O5): the planner runs once per run on the hosted
+        //                     frontier chain, never on the coder. It is the one stage that
+        //                     sees the whole issue, so it gets the strongest of the three.
+        //   .coder            the run's leased box, reasoning_effort medium (measured on the
+        //                     box: `high` is 1.38x the tokens of no parameter). The
+        //                     `default('coders-a')` filter is LOAD-BEARING and single quotes are
+        //                     mandatory: the stylesheet renders in strict mode, so an unbound
+        //                     input FAILS the run at compile, and an unescaped `"` would end
+        //                     this DOT attribute string. `coder_pool` is never bound in
+        //                     [run.inputs] (invariants-graph).
+        //   .coder-t2..t4     the Iteration ladder's hosted rungs (O17): glm-5.3-flash,
+        //                     kimi-for-coding, glm-5.3. A Task climbs one rung per two misses.
+        //   .merge-resolve    the resolved-mainline agent, on the run's box: a merge is an
+        //                     edit, and this is the run's own code.
+        //   .review-standards kimi-k3 (O5). The standards axis reads a documented rubric.
+        //   .review-spec      kimi-k3 (O5). The spec axis judges the issue against the diff.
+        //   .refute           gpt-6-luna, a family unlike the coder's and the reviewers' (ADR
+        //                     0013 D6 and its luna amendment): the independence is the product.
+        //                     Its fallback is qwen3.8-27b, never GLM and never OpenAI, so an
+        //                     OpenAI outage still leaves an independent Refuter.
+        //   .learn            the run's box, reasoning_effort medium: it reads one run's own
+        //                     record, and it is the coder pool's model by O25.
+        //
+        // NO CLASS MAY NAME glm-4.7: it is the only model in the catalog with
+        // `features.reasoning: false`, z.ai returns reasoning blocks from it anyway, and
+        // replaying one kills the stage (`does not support reasoning`) with no retry and no
+        // fallback. Every model named here must also exist in the server settings overlay.
+        model_stylesheet="
+            *                 { model: coders-a; }
+            .plan             { model: kimi-k3; }
+            .coder            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .coder-t2         { model: glm-5.3-flash; }
+            .coder-t3         { model: kimi-for-coding; }
+            .coder-t4         { model: glm-5.3; }
+            .merge-resolve    { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .review-standards { model: kimi-k3; }
+            .review-spec      { model: kimi-k3; }
+            .refute           { model: gpt-6-luna; }
+            .learn            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // ---- Claim the dispatched issue ----
+    // The scheduler chose the issue and passed it as `issue_number`; ralph never selects its
+    // own work. `claim` is a copy of backlog's: the label swap stays here as the manual
+    // path's fallback, because the scheduler already swapped `agent` -> `agent-in-progress`
+    // at dispatch but `ops/fabro-fire-ralph.sh` does not. It fails closed on an issue that
+    // is gone, closed, or does not carry `agent-in-progress` after the swap.
+    //
+    // The difference from backlog's is its destination, not its text: every failure edge in
+    // this graph lands on `stop_reason`, which ends the run at `mark_stuck` (R1: there is no
+    // human gate here). `mkdir -p /tmp/fabro` is load-bearing -- `claim` is the first node and
+    // nothing else creates that directory -- and `/tmp/fabro/issue_number` is written before
+    // any network call, because `mark_stuck` needs the number precisely when everything after
+    // that line failed.
+
+    // R10: copy of backlog.claim (C8). No script replacement; the edge target changed, which
+    // is not part of the node.
+    // ---- Claim the dispatched issue ----
+    // The scheduler chose the issue and passed it as `issue_number` (overview
+    // decision 3). The graph no longer selects an issue itself; the run input is the
+    // only way to decide what this run works. `args.inputs` values that reach
+    // this POSIX `case` guard are JSON numbers (the scheduler sends one and
+    // `ops/fabro-fire-backlog.sh` sends one); a string would either fail the guard
+    // or, worse, match it by accident. `pr-review`'s `validate_input` is the
+    // precedent for exactly this shape.
+    //
+    // The label swap stays here as a fallback. The scheduler already swapped
+    // `agent` -> `agent-in-progress` at dispatch (overview decision 9), but the
+    // manual path does not, so `claim` is idempotent about it: add
+    // `agent-in-progress` if absent, remove `agent` if present, never fail because
+    // either is already in the target state.
+    //
+    // Fail closed. The run's job description is exactly `issue_number`; working a
+    // different issue is the failure this whole design exists to prevent. So `claim`
+    // quits rather than continue when the issue is gone, closed, or does not carry
+    // `agent-in-progress` after the swap -- all three route to human_rescue via the
+    // node's unconditional edge. (The old optimistic-claim/ULID arbitration this
+    // replaced is recorded in ADR 0005 and the scheduler overview.)
+    // `mkdir -p /tmp/fabro` is load bearing. `claim` is the run's first node since draft
+    // 10 deleted `acquire`, and `acquire` was the only node that created that directory.
+    // Without it every redirect below fails with `/tmp/fabro/issue.json: No such file or
+    // directory` and the run parks on human_rescue for 4h holding its coder lease.
+    // `ops/test-task-gates.sh` stages this node against a path that does not exist, which
+    // is the only way a test can catch it -- neither `fabro validate` nor
+    // ops/check-graph-invariants.py runs a node's shell.
+    //
+    // `/tmp/fabro/issue_number` is written BEFORE the label swap and before any network
+    // call, because mark_stuck needs it precisely when everything after that line failed.
+    // issue.json is the usual source of the number and does not exist until the fetch
+    // below succeeds, so an issue whose receipt was already written but whose fetch then
+    // failed would reach mark_stuck with nothing to name, and the receipt would stay on
+    // the issue forever. `pr-review` writes /tmp/fabro/pr_number for the same reason.
+    //
+    // The fetch is retried three times, five seconds apart. It is the one network call
+    // between the receipt being written and the run being able to do anything, and a
+    // single transient `gh` failure costs a coder box for four hours: the unconditional
+    // edge parks the run on human_rescue, whose default choice is mark_stuck, so the run
+    // ends `succeeded` and the scheduler's requeue rule -- which keys on a FAILED run's
+    // reason -- never sees it. A genuinely missing or unreadable issue still fails closed,
+    // which is what the whole node is for. `state` is fetched so those checks can see a
+    // closed issue; the downstream readers (open_pr_prep, open_pr, mark_stuck) use
+    // number/title/body/labels.
+    //
+    // These comments live here rather than inside `script=` on purpose. Fabro writes a
+    // command node's whole script into `outcome.notes` and its preamble then prints it
+    // again, so every byte inside the attribute was paid twice in the next agent's prompt
+    // at any `summary:*` fidelity. `truncate` removes that cost today; keeping the prose
+    // out here means raising fidelity later cannot bring it back.
+    claim [label="Claim issue and fetch it", shape=parallelogram,
+        script="set -e
+mkdir -p /tmp/fabro
+ISSUE='{{ inputs.issue_number }}'
+case \"$ISSUE\" in '' | *[!0-9]*) echo 'issue_number must be a positive integer' >&2; exit 1;; esac
+if [ \"$ISSUE\" -lt 1 ]; then echo 'issue_number must be a positive integer' >&2; exit 1; fi
+echo $ISSUE > /tmp/fabro/issue_number
+gh label create agent-in-progress --color FBCA04 2>/dev/null || true
+gh label create agent-stuck --color D93F0B 2>/dev/null || true
+gh label create agent-authored --color 1D76DB 2>/dev/null || true
+gh label create Review --color 0E8A16 2>/dev/null || true
+gh issue edit $ISSUE --add-label agent-in-progress --remove-label agent || true
+A=1
+while :; do
+  if gh issue view $ISSUE --json state,number,title,body,labels > /tmp/fabro/issue.json 2>/tmp/fabro/issue_view.err; then break; fi
+  if [ $A -ge 3 ]; then
+    echo 'could not read issue '$ISSUE' after '$A' attempts:' >&2
+    cat /tmp/fabro/issue_view.err >&2
+    exit 1
+  fi
+  A=$((A + 1))
+  sleep 5
+done
+S=$(jq -r .state /tmp/fabro/issue.json)
+if [ \"$S\" != OPEN ]; then
+  echo 'issue '$ISSUE' is '$S', not OPEN; refusing to work a closed issue' >&2
+  exit 1
+fi
+if ! jq -e '.labels | map(.name) | index(\"agent-in-progress\")' /tmp/fabro/issue.json >/dev/null 2>&1; then
+  echo 'issue '$ISSUE' does not carry agent-in-progress after the label swap; refusing to work the wrong issue' >&2
+  exit 1
+fi"]
+
+    // `prep` is backlog's, with C3's counters. Three replacements, all named in the R10 row:
+    // the three stale counters become the five this run keeps (`iterations`,
+    // `post_iterations`, `refute_visits`, `final_fix_attempts`, `plan_attempts`) plus
+    // `phase=pre`; the cleanup list gains `loop_exhausted`, `progress.md` and this run's own
+    // `task-map.md`; and the tail writes `task-map.md` from the issue body's `## Task map`
+    // section, which `plan` reads as a hint (O16). Everything else -- `setup.sh`, the code
+    // index, the agent guide, `max_retries=1` -- is backlog's and is there for the same
+    // reasons.
+
+    // R10: copy of backlog.prep (C8, C3). Two replacements, both named above.
+    // `max_retries=1` because this node's whole job is one network-bound install and a
+    // single transient registry failure otherwise costs the entire run plus its coder
+    // lease. `prep` is the run's first real work, so there is nothing to lose by
+    // repeating it: `setup.sh` is already run again by `validate` and `open_pr_prep`, so
+    // it is idempotent by construction, and the three `echo 0` counters are being
+    // initialised rather than advanced -- rewriting them on a second attempt is correct.
+    //
+    // Run 01M310TQEWFMPHZ3XG5T22X09W (womens-fantasy-sports#1205, 2026-09-21) is the
+    // case: `uv` could not reach pypi.org for `hatchling` -- `Request failed after 3
+    // retries in 48.6s ... operation timed out` -- and the stage ended `failed` with
+    // `category: transient_infra, will_retry: false`. The classification was right and
+    // changed nothing, because a node with no `max_retries` inherits
+    // `default_max_retries=0`; being retry-ELIGIBLE is not the same as being retried.
+    // The proof that one retry was enough: `open_pr_prep` ran the same `./.fabro/setup.sh`
+    // 90 seconds later, on the same sandbox, and it PASSED. The run then walked the
+    // unconditional edge to `human_rescue` and opened an empty PR (#1236) instead.
+    //
+    // The cost is bounded at one extra 20m attempt on a genuinely broken setup, against
+    // a 4h `human_rescue` park holding one of two coder boxes. `uv`/`npm` already retry
+    // internally, so this only fires on an outage that outlasts their own backoff.
+    // Build the code index after .fabro/setup.sh (docs/code-context C2/C4), which can
+    // create or remove files the index should see. The `command -v` guard keeps an
+    // image built before task 02 working: prep runs `set -e`, and without it a missing
+    // fabro-code would exit 127 and fail every run. `fabro-code index` never exits
+    // non-zero and `map` has `|| true`, so an index failure cannot fail prep (ADR 0014
+    // D3) -- the index makes agents faster; correctness does not depend on it.
+    //
+    // The last lines install the agent guide (docs/coder-tweaks 02, C1): pebble loads
+    // `.codex/instructions.md` into the SYSTEM prompt next to AGENTS.md, which is where its
+    // `rg` advice lives. FABRO_AGENT_GUIDE is generated into workflow.toml from
+    // `_io/agent-guide.md`. It is skipped, with one stderr line, when the variable is empty
+    // or the repository tracks that file; the file is excluded like `.codegraph/`, so the
+    // checkpoint never commits it. It never fails the node.
+    prep [label="Prep workspace and install deps", shape=parallelogram, timeout="20m", max_retries=1,
+        script="set -e
+mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra
+echo 0 > /tmp/fabro/iterations
+echo 0 > /tmp/fabro/post_iterations
+echo 0 > /tmp/fabro/refute_visits
+echo 0 > /tmp/fabro/final_fix_attempts
+echo 0 > /tmp/fabro/plan_attempts
+echo pre > /tmp/fabro/phase
+rm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue /tmp/fabro/stuck_reason.md
+rm -f /tmp/fabro/loop_exhausted /tmp/fabro/progress.md /tmp/fabro/task-map.md
+./.fabro/setup.sh
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index; fabro-code map || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi
+if [ -z \"$FABRO_AGENT_GUIDE\" ]; then echo 'agent guide: FABRO_AGENT_GUIDE is empty, nothing installed' >&2
+elif git ls-files --error-unmatch .codex/instructions.md >/dev/null 2>&1; then echo 'agent guide: the repository tracks .codex/instructions.md, left alone' >&2
+elif mkdir -p .codex && printf '%s' \"$FABRO_AGENT_GUIDE\" > .codex/instructions.md; then grep -qx '.codex/instructions.md' .git/info/exclude 2>/dev/null || echo '.codex/instructions.md' >> .git/info/exclude
+else echo 'agent guide: could not write .codex/instructions.md' >&2; fi
+jq -r '.body // \"\"' /tmp/fabro/issue.json 2>/dev/null | awk '/^## Task map$/{s=1; next} s && /^## /{s=0} s && !/^[[:space:]]*$/{print}' > /tmp/fabro/task-map.md
+if [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi"]
+
+    // The plan (O4, O16, C2). It runs ONCE per run, before the loop, on the hosted frontier
+    // chain: `.plan` is kimi-k3 with `zai:glm-5.3` then `orfallback:qwen3.8-27b` behind it
+    // (O5). It is not backlog's `plan`, which plans one already-decomposed task from a
+    // dossier; this one reads the whole issue and writes the Task list the loop works.
+    //
+    // timeout="20m" is the plan trial's number, not a new measurement: the trial's `plan`
+    // node did the same job -- read an issue and a checkout, write an ordered task list --
+    // and 20m is 1.6x its slowest visit, derived from glm-5.3's 15m39s worst case
+    // (docs/plan-trial/, invariants-graph *Timeouts*). O5 moves `.plan` to kimi-k3, which
+    // this node has never been timed on, so the number carries the trial's subject, not this
+    // one; re-derive it from task 12's shakedown. `max_retries=1` because a provider error on
+    // the one stage that writes the whole Task list costs the entire run.
+    plan [label="Plan the issue", class="plan", timeout="20m", max_retries=1, prompt="@prompts/plan.md.j2"]
+
+    // ---- Validate the plan (C2) ----
+    // The receipt check, the attempt counter and the `QT=` line are decompose_gate's, word
+    // for word; the shape checks are the Task list's instead of a decomposition's. It
+    // validates what the schema cannot: `tasks` non-empty exactly for `ready`,
+    // `contradictions` non-empty exactly for `contradiction`, every id unique, and a `ready`
+    // Task carrying all seven fields.
+    //
+    // `ready` writes `/tmp/fabro/tasks.json` -- the first EIGHT Tasks, each stamped with
+    // `source: plan`, `round: 0`, `status: open`, `iterations: 0`, `misses: 0` -- and
+    // `/tmp/fabro/remainder.json` from the ninth on, in the shape `file_remainder` already
+    // files as one `agent-remainder` issue (O7: the Task budget of 8 holds). Only command
+    // nodes write `tasks.json`; no agent may (C10).
+    //
+    // `redundant` and `invalid` both end at `close_noop`; `needs_human` writes the plan's
+    // summary to `stuck_reason.md` and ends at `mark_stuck`. `triage_questions` is on every
+    // routing object because the Discord hook on `return_to_triage` fires at that node's
+    // stage_start, before it could publish its own.
+    plan_gate [label="Validate the plan", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro/task_list.json
+A=$(cat /tmp/fabro/plan_attempts 2>/dev/null || echo 0)
+case \"$A\" in '' | *[!0-9]*) A=0 ;; esac
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+RM=0
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then RM=1; S=invalid; else S=$(jq -r .disposition $F 2>/dev/null || echo invalid); fi
+case \"$S\" in ready | redundant | invalid | contradiction | needs_human) : ;; *) S=invalid ;; esac
+if [ \"$S\" = ready ]; then
+  GOOD=$(jq '((.tasks | type) == \"array\") and ((.tasks | length) > 0) and ((([.tasks[].id] | length) == ([.tasks[].id] | unique | length))) and (([.tasks[] | select((((.id // \"\") | tostring) == \"\") or (((.title // \"\") | tostring) == \"\") or (((.body // \"\") | tostring) == \"\") or (((.context // \"\") | tostring) == \"\") or ((.acceptance | type) != \"array\") or ((.acceptance | length) == 0) or (([.acceptance[] | select((tostring) == \"\")] | length) > 0) or ((.files | type) != \"array\") or ((.covers | type) != \"array\") or ((.context | length) > 12000))] | length) == 0)' $F 2>/dev/null || echo false)
+  if [ \"$GOOD\" != true ]; then S=invalid; fi
+fi
+if [ \"$S\" = contradiction ]; then
+  GOOD=$(jq '((.tasks | type) == \"array\") and ((.tasks | length) == 0) and ((.contradictions | type) == \"array\") and ((.contradictions | length) > 0) and (([.contradictions[] | select((((.criterion // \"\") | tostring) == \"\") or (((.non_goal // \"\") | tostring) == \"\") or (((.needed_surface // \"\") | tostring) == \"\"))] | length) == 0)' $F 2>/dev/null || echo false)
+  if [ \"$GOOD\" != true ]; then S=invalid; fi
+fi
+if [ \"$S\" = invalid ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/plan_attempts
+  if [ $A -lt 2 ]; then if [ $RM = 1 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; else echo 'task_list.json missing or invalid; rewrite it exactly per the contract' >&2; fi; exit 1; fi
+fi
+echo 0 > /tmp/fabro/plan_attempts
+if [ \"$S\" = ready ]; then
+  jq '[.tasks[] | . + {source: \"plan\", round: 0, status: \"open\", iterations: 0, misses: 0}] | .[0:8]' $F > /tmp/fabro/tasks.json
+  jq '[.tasks[] | . + {source: \"plan\", round: 0, status: \"open\", iterations: 0, misses: 0}] | .[8:]' $F > /tmp/fabro/remainder.json
+  echo 0 > /tmp/fabro/task_index
+  MOVED=$(jq length /tmp/fabro/remainder.json 2>/dev/null || echo 0)
+  if [ \"$MOVED\" != 0 ]; then echo 'plan: the first 8 Tasks run here and '$MOVED' go to the remainder, which file_remainder files as one issue after open_pr' >&2; fi
+fi
+if [ \"$S\" = needs_human ]; then jq -r '.summary // empty' $F > /tmp/fabro/stuck_reason.md 2>/dev/null || true; fi
+QT=''
+if [ \"$S\" = contradiction ]; then
+  jq '{source: \"plan\", summary: (.summary // \"\"), items: [.contradictions[] | {criterion, non_goal, why: .needed_surface}]}' $F > /tmp/fabro/return.json
+  QT=$(jq -r '[.items[] | \"- \" + .criterion + \" (conflicts with: \" + .non_goal + \")\"] | join(\"  \")' /tmp/fabro/return.json | tr -d '\"' | cut -c1-1200)
+fi
+jq -nc --arg s \"$S\" --arg q \"$QT\" '{context_updates:{plan_status:$s,triage_questions:$q}}'"]
+
+    // R10: copy of backlog.close_noop (C8). Three replacements: the summary comes from
+    // task_list.json, and the two fixed sentences name the planner, not the decomposer.
+    // Posts the decomposer's summary under the fixed sentence, because the summary says WHY
+    // there is no work (issue #10). Without it the operator reads a decomposer failure and
+    // re-labels the issue `agent`, which burns another run. Each gh call is its own
+    // statement, so a failed label cannot stop the receipt removal or the comment.
+    close_noop [label="Close (no actionable work)", shape=parallelogram,
+        script="N=$(jq -r .number /tmp/fabro/issue.json)
+S=$(jq -r '.summary // empty' /tmp/fabro/task_list.json 2>/dev/null || true)
+{
+  echo 'Agent run found no actionable plan for this issue; leaving it for human triage.'
+  if [ -n \"$(printf '%s' \"$S\" | tr -d '[:space:]')\" ]; then
+    echo
+    echo 'The planner reported:'
+    echo
+    printf '%s' \"$S\" | sed 's/^/> /'
+    echo
+  fi
+} > /tmp/fabro/noop_comment.md
+gh issue edit $N --remove-label agent-in-progress || true
+gh label create agent-noop --color D4C5F9 --description 'Agent run found nothing to do; read the comment before re-adding agent' 2>/dev/null || true
+gh issue edit $N --add-label agent-noop || true
+gh issue comment $N --body-file /tmp/fabro/noop_comment.md || true
+echo done"]
+
+    // R10: copy of backlog.return_to_triage (C8). One replacement: the comment's `$who`
+    // mapping learns `source: plan`, which is what plan_gate writes. The `decompose`
+    // branch is kept byte-for-byte so the two nodes stay comparable.
+    // ---- Return a Contradiction to triage (#17, docs/unmet-criteria C4) ----
+    // The issue asks for something its own non-goals forbid, found by `decompose` or by a
+    // coder that blocked on a criterion. Only a human can say which side gives, so the
+    // issue goes back to triage as a question instead of to `agent-stuck`, and the
+    // answer re-queues it without a relabel: the comment's first line is the triage
+    // marker, so issue-triage and arch-review wait for a human reply before they
+    // re-triage it. No PR is opened and the branch is dropped (backlog pushes nothing
+    // before open_pr), because the reviewed tasks were built on an issue about to change.
+    //
+    // The run ends succeeded at exit: the scheduler requeues some failed runs, and this
+    // issue must leave the queue. `agent-in-progress` comes off, or the scheduler's
+    // receipt scan would requeue it. stuck_reason.md is written before any gh call, so
+    // the unconditional edge to mark_stuck still names the Contradiction. gh output goes
+    // to return.log: stdout carries only the routing object (ADR 0020). The Discord
+    // `triage-question` hook fires on this node's stage_start and reads
+    // `triage_questions`, which the routing gate published.
+    return_to_triage [label="Return the issue to triage", shape=parallelogram, timeout="2m", output_schema="routing",
+        script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || true)
+case \"$N\" in '' | *[!0-9]*) N=$(cat /tmp/fabro/issue_number 2>/dev/null || echo 0) ;; esac
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+F=/tmp/fabro/return.json
+L=/tmp/fabro/return.log
+if ! jq -e '(.items | type) == \"array\" and (.items | length) > 0' $F >/dev/null 2>&1; then echo 'return_to_triage: return.json is missing or names no criterion; mark_stuck takes over' >&2; exit 1; fi
+jq -r '([10] | implode) as $nl | \"The issue asks for something its own boundaries forbid, so it was returned to triage:\" + $nl + $nl + ([.items[] | \"- \" + .criterion + \" (conflicts with: \" + .non_goal + \"): \" + .why] | join($nl))' $F > /tmp/fabro/stuck_reason.md
+if [ \"$N\" = 0 ]; then echo 'return_to_triage: no issue number; mark_stuck takes over' >&2; exit 1; fi
+jq -r '([10] | implode) as $nl
+| (if .source == \"decompose\" then \"the decomposer\" elif .source == \"plan\" then \"the planner\" else \"the coder\" end) as $who
+| \"<!-- fabro:triage-questions -->\" + $nl
++ \"> *This was generated by AI during an autonomous implementation run.*\" + $nl + $nl
++ \"## Returned to triage\" + $nl + $nl
++ \"The implementation run stopped before opening a pull request, because \" + $who + \" found an acceptance criterion that the boundaries of this issue forbid. A criterion that cannot be met as written is reported, never replaced by a similar behaviour, so nothing from this run was kept.\" + $nl + $nl
++ ([.items[] | \"- **Criterion:** \" + .criterion + $nl + \"  - **Conflicts with:** \" + .non_goal + $nl + \"  - **Why:** \" + .why] | join($nl + $nl)) + $nl + $nl
++ \"### Question\" + $nl + $nl
++ \"For each item: should the criterion change, or the non-goal? Edit the issue body to match, then answer in a new comment. The next triage reads the answer and, when nothing else is open, queues the issue for the agent again.\" + $nl + $nl
++ \"Answer by replying in a new comment. Editing this comment is not detected.\"' $F > /tmp/fabro/return_comment.md
+gh label create needs-info --color FEF2C0 --description 'Waiting on a human for triage answers' >> $L 2>&1 || true
+if ! gh issue comment $N --body-file /tmp/fabro/return_comment.md >> $L 2>&1; then echo 'return_to_triage: gh issue comment failed; see return.log' >&2; exit 1; fi
+if ! gh issue edit $N --remove-label agent --remove-label agent-in-progress --add-label needs-info >> $L 2>&1; then echo 'return_to_triage: gh issue edit failed; see return.log' >&2; exit 1; fi
+R=$(jq -r '\"Returned to triage: \" + ([.items[] | .criterion + \" conflicts with \" + .non_goal] | join(\"; \"))' $F | tr '[:cntrl:]' ' ' | cut -c1-300 | sed 's/ *$//')
+jq -nc --arg r \"$R\" '{context_updates:{return_reason:$r}}'"]
+
+    // R10: copy of backlog.mark_stuck (C8). One replacement: the `draft_reason.md` branch is
+    // dropped, because ralph has no `open_pr_prep` draft route and nothing writes that
+    // file.
+    // Taking the receipt off is the load-bearing half of this node, not the
+    // comment. `claim` swapped `agent` -> `agent-in-progress`, and an issue left
+    // wearing it is in no collection the scheduler reads: `agent` no longer has
+    // it, so it is out of the queue, and the only thing that repairs it is the
+    // scheduler's startup receipt scan plus the periodic one added with it.
+    //
+    // So the number is resolved from two sources, not one. issue.json is absent
+    // whenever `claim` failed before its fetch -- which is exactly the run that
+    // arrives here -- and the old `|| echo 0` then silently skipped the label work
+    // entirely. That is what stranded jelly-swipe#353 and lawncare-saas#2277 on
+    // 2026-09-19. /tmp/fabro/issue_number is written by `claim` before any network
+    // call, so it is there whenever the run got past input validation at all.
+    //
+    // The comment carries stuck_reason.md when one was written: the decomposer's summary
+    // when decompose_gate routed here on needs_human_review, or the Contradiction when
+    // return_to_triage failed after writing it (prep deletes the file). Otherwise it is
+    // the generic line. The comment file is written only when a number was found, and the
+    // directory exists whenever claim wrote that number.
+    mark_stuck [label="Mark stuck", shape=parallelogram,
+        script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || true)
+case \"$N\" in '' | *[!0-9]*) N=$(cat /tmp/fabro/issue_number 2>/dev/null || echo 0) ;; esac
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+if [ \"$N\" != 0 ]; then
+  gh issue edit $N --remove-label agent-in-progress --add-label agent-stuck || true
+  if [ -s /tmp/fabro/stuck_reason.md ]; then
+    { echo 'Agent run stopped before implementing this issue. The run reported:'; echo; cat /tmp/fabro/stuck_reason.md; } > /tmp/fabro/stuck_comment.md
+  else
+    echo 'Agent run could not complete this issue and gave up. See the fabro run for details.' > /tmp/fabro/stuck_comment.md
+  fi
+  gh issue comment $N --body-file /tmp/fabro/stuck_comment.md || true
+fi
+echo done"]
+
+    // ---- Why the run stopped (R1) ----
+    // `backlog` sends every failure to `human_rescue`, whose fixed label hides the cause
+    // unless `rescue_brief` writes it first. ralph has no human gate (R1), so this is that
+    // node's replacement: it reads the engine's `failure_signature` (`NODE|CLASS|message`,
+    // the same `stdin_source` rescue_brief reads), keeps a reason an earlier node already
+    // wrote, and ends the run by phase.
+    //
+    // `phase` is `pre` until `pr_handoff` writes `post`. `pre` -> `mark_stuck`: the issue
+    // gets `agent-stuck` and a comment, and no PR exists. `post` -> `mark_needs_human`, which
+    // needs BOTH reason files -- the blocked and needs-human renderers read different ones,
+    // and a reason written to only one leaves the other holding a previous stage's text
+    // (invariants-merge). R9 requires a sink into `mark_needs_human` to derive that reason
+    // from `failure_signature`, which is why `$SIG` is read here rather than in the reports.
+    //
+    // It never fails and prints only its routing object: fabro scans stdout AND stderr for
+    // brace-balanced objects, so a message containing a brace would make the object invalid
+    // and the key silently missing. Both reason files are written on every path; in `pre`
+    // there is no PR, so nothing reads `merge_block_reason` and a stale one cannot be
+    // mistaken for this run's.
+    stop_reason [label="Record why the run stopped", shape=parallelogram, timeout="1m",
+        output_schema="routing", stdin_source="failure_signature",
+        script="mkdir -p /tmp/fabro
+SIG=$(head -c 600)
+PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
+case \"$PH\" in pre | post) : ;; *) PH=pre ;; esac
+WHY=''
+if [ -n \"$SIG\" ]; then
+  NODE=${SIG%%|*}
+  REST=${SIG#*|}
+  WHY=\"$NODE failed (${REST%%|*}): ${REST#*|}\"
+fi
+if [ -z \"$WHY\" ] && [ -s /tmp/fabro/stuck_reason.md ]; then WHY=$(head -c 600 /tmp/fabro/stuck_reason.md | tr '[:cntrl:]' ' ' | sed 's/ *$//'); fi
+if [ -z \"$WHY\" ]; then
+  STG=$(jq -r '.node // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+  WHY=\"a gate rejected its agent's output after its retries. The last agent stage was ${STG:-unknown}. The run's events name the gate and its reason.\"
+fi
+printf '%s' \"$WHY\" | cut -c1-600 > /tmp/fabro/stuck_reason.md
+printf '%s' \"$WHY\" | cut -c1-300 > /tmp/fabro/merge_block_reason
+printf '%s' \"$WHY\" | cut -c1-300 > /tmp/fabro/needs_human_reason
+echo $PH > /tmp/fabro/stop_phase
+jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
+    // ---- Routing ----
+    // Every failure edge lands on `stop_reason`, which is the one node that ends a failed
+    // run (R1). The conditional edges out of `plan_gate` carry a status the node prints on
+    // every path, so exactly one of them can match; the unconditional edge is the escape
+    // and catches a node that failed before it printed.
+    start -> claim
+    claim -> prep                             [condition="outcome=succeeded"]
+    claim -> stop_reason
+    prep -> plan                              [condition="outcome=succeeded"]
+    prep -> stop_reason
+    plan -> plan_gate                         [condition="outcome=succeeded"]
+    plan -> stop_reason
+    plan_gate -> plan                         [condition="outcome=failed"]
+    plan_gate -> stop_reason                  [condition="context.plan_status=ready"]
+    plan_gate -> return_to_triage             [condition="context.plan_status=contradiction"]
+    plan_gate -> close_noop                   [condition="context.plan_status=redundant"]
+    plan_gate -> close_noop                   [condition="context.plan_status=invalid"]
+    plan_gate -> mark_stuck                   [condition="context.plan_status=needs_human"]
+    plan_gate -> stop_reason
+    return_to_triage -> exit                  [condition="outcome=succeeded"]
+    return_to_triage -> mark_stuck
+    stop_reason -> mark_stuck                 [condition="context.stop_phase=pre"]
+    close_noop -> exit
+    mark_stuck -> exit
+}
+
