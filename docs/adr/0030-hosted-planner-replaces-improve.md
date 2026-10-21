@@ -15,15 +15,19 @@ the comparison was the planner and nothing else.
 
 The window is 2026-10-14 to 2026-10-21: 80 `plan` runs over 182 tasks against 73 `improve`
 runs over 145. The two arms did not draw the same repositories on the same boxes, and the
-plan arm's PRs carried 2.60 tasks each against 2.13, so the numbers are read per
-repo x coder-pool stratum and weighted by tasks. That is why the headline rows and the
-stratified number agree.
+plan arm's PRs carried 2.60 tasks each against 2.13, so the per-task numbers are also
+read standardized: per repo x coder-pool stratum, both arms weighted by the stratum's
+combined tasks. Standardizing halves the coder-time gap (pooled -12%, standardized -5%) and
+keeps its sign.
 
 | Metric | `plan` (hosted) | `improve` (box) |
 |---|---|---|
-| Coder box-minutes per task, cell-weighted | **10.86** | 12.32 |
+| Coder box-minutes per task, pooled | **10.9** | 12.3 |
+| Coder box-minutes per task, standardized | **10.7** | 11.2 |
+| Planner box-minutes per task | **0** | 8.8 |
 | Rework visits per task (hosted tiers) | **0.14** (0.05) | 0.19 (0.06) |
-| Coder + rework minutes per task | **12.3** | 14.0 |
+| Rework visits per task, standardized | **0.13** | 0.16 |
+| Coder + rework minutes per task, pooled / standardized | **12.3 / 11.9** | 14.0 / 12.7 |
 | Non-architecture merged | **29 of 60 (48%)** | 25 of 59 (42%) |
 | All PRs merged by the workflow | 30 of 70 (43%) | 28 of 68 (41%) |
 | Refuter first verdict passed | **37 of 69** | 33 of 66 |
@@ -100,11 +104,15 @@ one.
   21.3 box-hours across 73 runs. Every task's dossier moves to the hosted provider, so the
   coder's lease is spent on coding and on waiting for a planner whose 3-session ceiling is
   shared with `decompose`, the reviews and the rework tiers.
-- **z.ai concurrency is now load-bearing for every task.** `backlog` has no `glm-5.3`
-  fallback row, so a z.ai outage stops the standard lane at `plan`; `improve_gate`'s retry
-  and `rescue_brief` are the only recovery. Watch planner timeouts by node on the scorecard.
-- **`plan` is worth about 1.5 coder box-minutes a task** at this window's numbers. That is
-  small per task and large per day: 182 plan-arm tasks in 7 days, on two coder boxes.
+- **z.ai concurrency is now load-bearing for every task.** An erroring or rate-limited
+  `glm-5.3` falls back through `backlog`'s `"glm-5.3"` row (`kimi:kimi-k3`, then
+  `orfallback:qwen3.8-27b`), but a stall that never errors reaches no fallback: the 20m
+  timeout and one retry bound it, then `rescue_brief`. Watch planner timeouts by node on
+  the scorecard.
+- **`plan` frees about 9 box-minutes a task**: the 8.8 minutes `improve` spent planning on
+  the box, plus about half a coder minute (standardized; 1.4 pooled). At this window's 327
+  standard-lane tasks in 7 days that is about 7 box-hours a day across the four coder
+  pools.
 - **Unchanged and unproven:** `plan` never ran a task that was already done, because issue
   parity never gave it an overlap. `improve`'s 3 `redundant` dispositions in the window are
   one run correctly reporting a duplicate issue. If a duplicate reaches `plan`, its

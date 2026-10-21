@@ -83,7 +83,7 @@ class Report(unittest.TestCase):
         self.assertIn("whole reads >= 12 KB: 0 = 0.00 per visit", out)
         self.assertIn("(grep 1, rg 0; 0 read a pipe)", out)
         self.assertIn("share 50.0%; without pipe filters 50.0%", out)
-        self.assertIn("1 of 1 improve visits", out)  # only the tracked edit counts
+        self.assertIn("1 of 1 planner visits", out)  # only the tracked edit counts
         self.assertIn("3.0 min over 2 coder visit(s)", out)
 
     def test_all_models_counts_hosted_search(self):

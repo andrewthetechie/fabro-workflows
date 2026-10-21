@@ -24,7 +24,8 @@ Definitions (docs/coder-tweaks/00-overview-and-contracts.md, C7):
       a 4 KB file whole is the right call, so the count alone overstates it.
   M4  mutating git run outside the exempt stages (C2's rule). A call whose result is
       an error that names a hook or guard is reported separately as blocked.
-  M5  improve visits that edited a tracked file: an edit_file/write_file outside
+  M5  planner visits (`plan`, or `improve` before ADR 0030) that edited a tracked
+      file: an edit_file/write_file outside
       /tmp/, or a mutating git command. A proxy: the events carry no diff, so this
       is the attempt, not the checkpoint. After task 06 the tree is reverted anyway.
   M6  agent sessions whose agent.memory.loaded lists .codex/instructions.md.
@@ -48,6 +49,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / ".fabro/workflows/_io/manifest.json"
 DEFAULT_EXEMPT = {"resolve_merge", "rebase_agent_t1", "rebase_agent_t2"}
 BIG_READ = 12 * 1024  # M3's whole reads of this size or more
+PLANNERS = ("plan", "improve")  # M5 and M8; `plan` replaced `improve` on 2026-10-21 (ADR 0030)
 
 READ_ONLY = {
     "status", "diff", "log", "show", "blame", "grep", "ls-files", "ls-tree", "rev-parse",
@@ -529,8 +531,9 @@ def report(runs: list[dict], local_only: bool) -> str:
         "",
     ]
 
-    # M5 - improve visits that edited tracked files
-    improves = [v for v in all_visits if v.node.rsplit(".", 1)[-1] == "improve" and v.tools and (v.local or not local_only)]
+    # M5 - planner visits that edited tracked files. `plan` replaced `improve` (ADR 0030);
+    # both are matched so a window that spans the change still counts every planner.
+    improves = [v for v in all_visits if v.node.rsplit(".", 1)[-1] in PLANNERS and v.tools and (v.local or not local_only)]
     touched = 0
     for v in improves:
         edited = False
@@ -543,8 +546,8 @@ def report(runs: list[dict], local_only: bool) -> str:
                 edited = edited or any(w[0] == "git" and git_is_mutating(w) for w in commands(str(t["args"].get("command", ""))))
         touched += edited
     lines += [
-        "M5  improve visits that edited a tracked file (attempt-based proxy)",
-        f"    {touched} of {len(improves)} improve visits",
+        "M5  planner visits that edited a tracked file (attempt-based proxy)",
+        f"    {touched} of {len(improves)} planner visits",
         "",
     ]
 
@@ -580,7 +583,7 @@ def report(runs: list[dict], local_only: bool) -> str:
     for r in runs:
         waiting = False
         for frm, to in r["edges"]:
-            if frm == "next_task" and to == "improve":
+            if frm == "next_task" and to in PLANNERS:
                 tasks += 1
                 waiting = True
             elif frm == "review_gate" and waiting:

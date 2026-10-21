@@ -262,7 +262,7 @@ fi
 # host. This fires as soon as the task is SELECTED, which is the whole point --
 # the compaction signal below only arrives once the stage is nearly out of time.
 if [ "${current_task_covers:-0}" -gt 3 ]; then
-    issues+=( "oversized task in flight: '$current_task_id' declares $current_task_covers requirements (>3) — improve should have split it" )
+    issues+=( "oversized task in flight: '$current_task_id' declares $current_task_covers requirements (>3) — plan should have split it" )
     [ "$verdict" -lt 1 ] && verdict=1
 elif [ "${oversized_queued:-0}" -gt 0 ]; then
     issues+=( "$oversized_queued queued task(s) declare more than three requirements — expect a split or a long coder stage" )

@@ -251,8 +251,7 @@ def compute(
 ) -> Scorecard:
     """The window's scorecard. `repo` narrows every series to one repository.
 
-    Filtering here rather than in SQL keeps one definition of the window and lets
-    `trial.compute`, which calls this, ignore the parameter.
+    Filtering here rather than in SQL keeps one definition of the window.
     """
     if repo:
         rows = _filter_repo(rows, repo)

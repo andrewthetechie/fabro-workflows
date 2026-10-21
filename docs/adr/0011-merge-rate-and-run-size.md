@@ -308,8 +308,9 @@ The first item of *Not adopted* is now adopted, and the other three are unaffect
 replaces `improve` with the hosted `plan` node on every standard-lane task in `backlog`, on
 the measurement in `docs/plan-trial/result-2026-10-21.txt` (window 2026-10-14 to 10-21, 80
 `plan` runs over 182 tasks against 73 `improve` runs over 145). The numbers that decided it:
-coder box-minutes per task 10.9 against 12.3, cell-weighted by repo x coder pool 10.86
-against 12.32; rework visits per task 0.14 against 0.19; non-architecture merges 29 of 60
+coder box-minutes per task 10.9 against 12.3, standardized over repo x coder pool 10.7
+against 11.2, plus the 8.8 box-minutes per task `improve` itself spent on the box; rework
+visits per task 0.14 against 0.19; non-architecture merges 29 of 60
 (48%) against 25 of 59 (42%). Box-hours per merged PR (6.2 against 5.5) favoured `improve`
 and is task mix: the plan arm's PRs carried 2.60 tasks each against 2.13.
 
