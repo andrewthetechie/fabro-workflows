@@ -178,7 +178,7 @@ Pointers, not duplication — the kill switches and how to use them live in
 ## The fast path and `merge-on-green`
 
 Add the `fast-path` label beside `agent` to an issue that is a one-commit change. `backlog` then
-skips `decompose`, `improve` and the extra review; the per-task review, the rework ladder, the
+skips `decompose`, `plan` and the extra review; the per-task review, the rework ladder, the
 merge-phase review and the Refuter still run. If the PR passes `merge_gate`, the run labels it
 `merge-on-green` and ends without waiting for CI. The merge queue (every 10 minutes) then merges
 it once checks are green. A change over 200 lines or 10 files, or one that takes the partial

@@ -15,13 +15,22 @@ Every rule here passes `fabro validate` and fails at runtime, usually silently. 
 | `apply_split` never copies `fast-path` to a child | A split child would skip decomposition it needs. |
 | `pr_handoff` writes `queue` only for the fast lane, no `remainder_kind`, inside 200 lines / 10 files | Over the ceiling the PR waits for CI like any other. |
 
-## The plan trial (#25, docs/plan-trial/)
+## The planner (`plan`, ADR 0030)
+
+The plan trial (#25) chose `plan` and deleted `improve` on 2026-10-21
+(`docs/plan-trial/result-2026-10-21.txt`). These are the rules the trial left behind.
 
 | Rule | What happens otherwise |
 |---|---|
-| `route_lane` writes `arm` on both branches: `none` in the fast lane, `plan` for an even issue number, `improve` otherwise | A missing or stale `arm` sends the task to the wrong planner, or to none. |
-| Every pair of edges into `plan` and `improve` is exclusive on `arm` (`arm=plan` / `arm!=plan`), and `next_task -> improve` stays unconditional | A condition tie breaks lexically, so `improve` would win every plan-arm task. Checked by `ops/test-task-gates.sh`. |
-| `plan` and `improve` share `improve_gate`, `improve_result.json` and `task-context.md`; their manifest stages carry the same inputs and output | The gate's receipt check and split guards stop matching one of the two writers. |
+| `plan` is the standard lane's only planner and `next_task -> plan` is unconditional; every other edge out of `next_task` and every other route into `plan` is conditional | Two matching conditional edges: the cascade picks by weight, not by what you meant. `next_task` writes `tasks_done` and `rebase_failed` on every branch, and `route_lane` writes `lane`, which is what makes the conditional ones exclusive. Covered by `ops/test-task-gates.sh`. |
+| Every stage that can hand a task to a planner reaches `plan`: `next_task`, `resolve_merge_gate` (`merge_return=task && lane!=fast`) and `improve_gate`'s retry (`outcome=failed`) | A retry or a resolved mainline merge would route to a node that no longer exists, or to nothing. An `improve_gate -> improve` edge left behind is the specific way this breaks: the graph validates and the run stops at the retry. Covered by `ops/test-task-gates.sh` (parsed edges). |
+| `plan` writes `/tmp/fabro/improve_result.json` (schema `improve_result`) to `improve_gate`, and the gate's `improve_result.json`, `improve_attempts`, `improve_touched_tree` and `excerpts` keep their names | Renaming them is churn across the Stage manifest, the schema, the receipt check, the split guards and the task budget, for no behaviour change. The names are the only thing the node and the gate share. |
+| `.plan` resolves to `glm-5.3` and never to `{{ inputs.coder_pool }}` | The scheduler leases exactly one box per run, so a planner naming the run's box queues behind the coder it is planning for. |
+| `plan`'s timeout is measured on this node (`timeout="20m"`, 1.6x the slowest visit in the trial window) and moving `.plan` to a different model voids it | A measurement-derived timeout whose subject changed is not a measurement; `improve` burned two 900s attempts that way in run 01M321VB0DC4N187GHA88RM0QB. |
+
+`_shared/triage/` has its own `improve` and `plan` stages (`issue-triage` and `arch-review`
+import that phase). They are different nodes with different prompts and contracts, unrelated
+to the trial: do not delete or re-time them when changing `backlog`'s planner.
 
 ## Unmet criteria (#17, docs/unmet-criteria/)
 

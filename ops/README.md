@@ -270,16 +270,15 @@ loudly:
 
 ```
 .coder   { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
-.improve { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
 .rebase  { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
 ```
 
-`backlog` has all three, `pr-review` only `.rebase` (its merge-phase classes stay
-hosted). The plan trial (#25) adds a hosted `.plan { model: glm-5.3; }` beside
-`.improve`; it names no box, so it cannot queue behind another run's lease. `.improve` joined them on 2026-09-21 — see `docs/plan/local-inference-tuning.md`
-for the measurement behind it. All three must name the **same** box: the scheduler leases
-exactly one per run, so a rule pointing at the other one would queue behind whoever holds
-it. The scheduler will pass `args.inputs.coder_pool = "coders-a"` on the intent;
+`backlog` has both; `pr-review` only `.rebase` (its merge-phase classes stay hosted).
+`backlog`'s `.refute-fix` and `.merge-resolve` name the box the same way. The planner,
+`.plan { model: glm-5.3; }`, is hosted and names no box, so it cannot queue behind another
+run's lease; it replaced the box's `.improve` on 2026-10-21 (ADR 0030). Every class that
+does name a box must name the **same** one: the scheduler leases exactly one per run, so a
+rule pointing at the other one would queue behind whoever holds it. The scheduler will pass `args.inputs.coder_pool = "coders-a"` on the intent;
 a hand-fired run passes nothing and gets the pinned `coders-a` box (the both-boxes
 `coders` group was retired with the LiteLLM provider, task 04). The `default()` is not
 cosmetic — the stylesheet renders strict at run time, so without it a fire carrying no

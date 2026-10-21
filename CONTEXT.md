@@ -348,10 +348,11 @@ most-referenced files and their top-level symbols. It is handed to agents as a f
 _Avoid_: repomap, codebase summary
 
 **Task dossier**:
-What the `improve` stage found about one task: the files and symbols it touches, the test
-to extend, the governing text and the known traps. It is written for the stages that
-implement and review that task. It is not the task's spec. The task's body is the spec.
-_Avoid_: task context, brief, handoff notes
+What the `plan` stage found about one task: the files and symbols it touches, the test
+to extend, the governing text, the known traps, and the ordered edit plan the coder
+follows in a fresh session. It is written for the stages that implement and review that
+task. It is not the task's spec. The task's body is the spec.
+_Avoid_: task context, brief, handoff notes, improve (the node it replaced, ADR 0030)
 
 **Canary** *(retired)*:
 Was to be the first repo whose `backlog` schedule is enabled at turn-on — `jelly-swipe`,

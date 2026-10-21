@@ -1,9 +1,16 @@
 # Plan trial: a hosted planner in place of `improve` (#25)
 
-**Status:** built 2026-10-13. The trial starts when it is deployed: the graph change goes live
-on its push to `main`, and the scorecard split needs `make deploy-scheduler`. It ends with at
-least 50 runs in each arm, which at about 30 runs a day is 4 to 5 days. The result goes in
-`result-<date>.txt` next to this file, and the chosen shape in an ADR.
+**Status: closed 2026-10-21 — option 1, `plan` wins.** `improve` is deleted, `plan` stays
+for every standard-lane task, and the trial's splitter (`trial.py`, `/api/scorecard/arms`,
+`--by-arm`) is gone with it. The measurement is `result-2026-10-21.txt` next to this file
+(window 2026-10-14 to 10-21, 80 `plan` runs over 182 tasks against 73 `improve` runs over
+145) and the decision is ADR 0030, which reverses ADR 0011's 2026-09-24 decline of a hosted
+planner. `docs/agents/invariants-backlog.md` holds the rules that still apply to `plan`.
+
+**Built 2026-10-13.** The trial started when it was deployed: the graph change went live
+on its push to `main`, and the scorecard split needed `make deploy-scheduler`. It ended with
+at least 50 runs in each arm, which at about 30 runs a day is 4 to 5 days, and was read at
+80 and 73.
 
 **2026-10-14 — a cross-trial note.** womens-fantasy-sports switches to Task validation
 (ADR 0025, `docs/task-validation/` task 09) when its `.fabro/test.toml` PR merges. From that
@@ -59,6 +66,10 @@ exclusivity.
 
 ## What is measured
 
+*As measured: this section describes the instrument as it ran to 2026-10-21. It is gone
+with the trial -- `--by-arm`, `GET /api/scorecard/arms` and `trial.py` were deleted -- so
+the numbers are in `result-2026-10-21.txt`, not reproducible from this checkout.*
+
 `./ops/fabro-scorecard.sh --by-arm --from <deploy date>`, or `GET /api/scorecard/arms`, prints
 both arms side by side. A run's arm is the planner node that ran (`trial.arm_of`). A fast-path
 run, or one that ended before its first task, is in neither arm.
@@ -99,6 +110,9 @@ across it.
   Re-derive it from the trial's planner minutes.
 
 ## Ending the trial
+
+*Done, 2026-10-21: option 1. `result-2026-10-21.txt`, ADR 0030, and the four steps below
+are the record of what closed it.*
 
 Then pick one of these, write the result next to this file, and record the choice in an ADR:
 

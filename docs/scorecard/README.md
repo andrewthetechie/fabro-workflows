@@ -68,18 +68,18 @@ are not in it.
 | Task validation | Every `backlog` `validate` visit (ADR 0025, `docs/task-validation/`), one entry per visit in `run_summary.task_validations`. **Mode** is `scoped` (the checks and the tests that cover the diff), `full` (the repository's `setup.sh && ci.sh`, on a fallback), `legacy` (a visit summarized before the change, or one with no routing keys) or `timeout`. The row gives the visits by mode with per-visit minutes p50 and p90 (and all visits together), the `full` visits by fallback reason class (`no_config`, `full_glob`, `deleted`, `index_unavailable`, `no_base`, `unowned_test`, `path_outside_cwd`, `too_many_tests`, `final_fix`, `task_check_error`), the red visits per mode, the unchecked changed files (`task_validation_unchecked`, summed: files no check watches and no target covers; a check that watches `**` makes it 0), and the untested changed files (`task_validation_untested`, summed: changed files that selected no test, the gap Final validation has to catch). A red legacy visit is recorded from its `stage.failed`, which is the only event it emits. |
 | Final validation | Runs that recorded a verdict at `open_pr_prep` (row label `verdicts / first route`), and the first `final_route` of each, split `pr` / `fix` / `drop` / `rescue` / `draft` (`run_summary.final_routes`; `open_pr_prep` can be visited twice after a `final_fix`, and only the first verdict counts). **Red final rate** is the runs whose first `final_route` is not `pr`, over the runs that recorded one. A run that visited `open_pr_prep` with no route recorded is shown as "N more with no route recorded" and never counted as red: `open_pr_prep` published no `final_route` before #35 (2026-10-13 22:13Z), so a window before then has no Final validation verdicts at all. |
 
-## The plan trial (#25)
+## The plan trial (#25), closed
 
-`GET /api/scorecard/arms` and `ops/fabro-scorecard.sh --by-arm` split one window by the
-planner node each run took, `plan` or `improve` (`trial.py`, `docs/plan-trial/`). Each arm
-gets the whole scorecard plus a per-task line: planner minutes and tokens, coder box-minutes
-per task, rework and `validate` failures per task, coder timeouts, the coder's time to first
-edit, and the planner's dispositions. The trial added three facts to every summary:
+The trial's splitter is gone with it (ADR 0030): `GET /api/scorecard/arms`,
+`ops/fabro-scorecard.sh --by-arm` and `trial.py` were deleted on 2026-10-21, and the
+result is `docs/plan-trial/result-2026-10-21.txt`. `backlog` now plans every standard-lane
+task on the hosted `plan` node, so there is nothing to split by. The three facts the trial
+added stay in every summary, and are read by the ordinary scorecard:
 `run_stage_stats.input_tokens/output_tokens/cache_read_tokens` (summed from each visit's
 `usage` in the stage list; output includes reasoning), `run_summary.first_edit_ms` (per
 `coder` attempt, `stage.started` to its first `edit_file`/`write_file`) and
 `run_summary.dispositions` (`improve_gate`'s `task_disposition`). Runs summarized before the
-scheduler deploy have NULLs there, which the split reads as "not measured".
+scheduler deploy have NULLs there, which reads as "not measured", never as zero.
 
 ## Re-summarizing a window (ADR 0025, C9)
 
