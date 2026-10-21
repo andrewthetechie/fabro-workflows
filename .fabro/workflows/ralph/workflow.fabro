@@ -306,6 +306,535 @@ if [ \"$S\" = contradiction ]; then
 fi
 jq -nc --arg s \"$S\" --arg q \"$QT\" '{context_updates:{plan_status:$s,triage_questions:$q}}'"]
 
+    // ---- The loop's head (C3) ----
+    // One node owns "what happens next", so the loop has one place to read. In order:
+    //
+    //   1. Clear the per-Iteration files, including the `base-tree` worktree, so nothing an
+    //      earlier visit left can be read as this one's.
+    //   2. In phase `pre` only, bring `origin/main` in. A conflict aborts the merge and
+    //      publishes `rebase_failed`, which routes to `resolve_merge`; a conflicted merge
+    //      must never cross a stage boundary, because the checkpoint's `git add -A` would
+    //      commit conflict markers. Phase `post` never merges main here: the merge stage
+    //      owns the base once the PR exists (C8).
+    //   3. Take the first Task that is still `open`. None: `done`, or `exhausted` when one
+    //      is `blocked` -- a Task that cannot be done in its files will not pass on a
+    //      stronger rung either (R2), so the loop ends rather than trying rung 4 again.
+    //   4. The cap (O7): `min(24, 3 x the Task list's length)` before the PR, and 2 after
+    //      it (O13). The list grows as the Refuter and the reviewers append, which is why
+    //      the cap is read here and not once per run.
+    //   5. The rung, from the Task's `misses`: 0-1 -> 1, 2-3 -> 2, 4-5 -> 3, 6-7 -> 4. At 8
+    //      the Task is `blocked` and the scan starts over (O17).
+    //   6. Write `current_task.json`, `task-context.md` (the Task's own `context`, plus
+    //      `## Last attempt` from the previous visit's feedback), `rung` and `task_base_sha`.
+    //
+    // Every branch prints ONE routing object with all of `loop`, `rung`, `phase`,
+    // `rebase_failed` and `loop_exhausted`, because a stale key from an earlier visit can
+    // satisfy an edge meant for this one. `excerpts` publishes nothing, so `rung` from this
+    // node is still the latest value when its edges are chosen.
+    //
+    // `rung` goes to a file as well as the context: `record` is a separate node and names
+    // the rung in the progress line, and a command node cannot read another's context
+    // updates.
+    pick [label="Next Iteration", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="git worktree remove --force /tmp/fabro/base-tree >/dev/null 2>&1
+rm -rf /tmp/fabro/base-tree
+git worktree prune >/dev/null 2>&1
+rm -f /tmp/fabro/iteration.json /tmp/fabro/task_block_scope.md /tmp/fabro/task-context.md /tmp/fabro/task-code.md /tmp/fabro/check_ok /tmp/fabro/rung
+echo 0 > /tmp/fabro/merge_attempts
+PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
+case \"$PH\" in pre | post) : ;; *) PH=pre ;; esac
+REBASE=false
+if [ \"$PH\" = pre ]; then
+  git rev-parse HEAD > /tmp/fabro/pre_merge_sha
+  if git fetch origin main && git merge --no-edit origin/main; then :; else
+    git merge --abort || true
+    REBASE=true
+    echo 'The mainline merge was attempted and aborted, so the next checkpoint cannot commit conflict markers. A dedicated resolve_merge stage redoes the merge and resolves it; no Iteration touches git.' > /tmp/fabro/feedback/rework.md
+  fi
+fi
+LOOP=work
+RUNG=0
+IDX=-1
+if [ \"$REBASE\" = true ]; then LOOP=work; else
+while :; do
+  IDX=-1
+  COUNT=$(jq length /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+  I=0
+  while [ $I -lt $COUNT ]; do
+    if [ \"$(jq -r \".[$I].status // empty\" /tmp/fabro/tasks.json 2>/dev/null)\" = open ]; then IDX=$I; break; fi
+    I=$((I + 1))
+  done
+  if [ $IDX -lt 0 ]; then
+    BLOCKED=$(jq '[.[] | select(.status == \"blocked\")] | length' /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+    case \"$BLOCKED\" in '' | *[!0-9]*) BLOCKED=0 ;; esac
+    if [ $BLOCKED -gt 0 ]; then LOOP=exhausted; else LOOP=done; fi
+    break
+  fi
+  if [ \"$PH\" = pre ]; then CAP=$((COUNT * 3)); if [ $CAP -gt 24 ]; then CAP=24; fi; DONE=$(cat /tmp/fabro/iterations 2>/dev/null || echo 0)
+  else CAP=2; DONE=$(cat /tmp/fabro/post_iterations 2>/dev/null || echo 0); fi
+  case \"$DONE\" in '' | *[!0-9]*) DONE=0 ;; esac
+  if [ $DONE -ge $CAP ]; then LOOP=exhausted; break; fi
+  MISSES=$(jq -r \".[$IDX].misses // 0\" /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+  case \"$MISSES\" in '' | *[!0-9]*) MISSES=0 ;; esac
+  if [ $MISSES -ge 8 ]; then
+    TID=$(jq -r \".[$IDX].id // empty\" /tmp/fabro/tasks.json 2>/dev/null)
+    jq --argjson i $IDX --arg s blocked '.[$i].status = $s' /tmp/fabro/tasks.json > /tmp/fabro/tasks.pick.json 2>/dev/null && mv /tmp/fabro/tasks.pick.json /tmp/fabro/tasks.json
+    echo 'pick: '${TID:-a task}' is blocked after 8 misses; the loop moves on' >&2
+    continue
+  fi
+  RUNG=$((1 + MISSES / 2))
+  break
+done
+fi
+if [ \"$LOOP\" = work ] && [ $IDX -ge 0 ] && [ \"$REBASE\" = false ]; then
+  jq --argjson i $IDX '.[$i]' /tmp/fabro/tasks.json > /tmp/fabro/current_task.json
+  CTX=$(jq -r '.context // empty' /tmp/fabro/current_task.json 2>/dev/null)
+  printf '%s' \"$CTX\" > /tmp/fabro/task-context.md
+  echo >> /tmp/fabro/task-context.md
+  MISSES=$(jq -r '.misses // 0' /tmp/fabro/current_task.json 2>/dev/null || echo 0)
+  case \"$MISSES\" in '' | *[!0-9]*) MISSES=0 ;; esac
+  if [ $MISSES -gt 0 ] && [ -s /tmp/fabro/feedback/rework.md ]; then
+    { echo; echo '## Last attempt'; echo; cat /tmp/fabro/feedback/rework.md; } >> /tmp/fabro/task-context.md
+  fi
+  git rev-parse HEAD > /tmp/fabro/task_base_sha
+  echo $RUNG > /tmp/fabro/rung
+fi
+case \"$LOOP\" in work | done | exhausted) : ;; *) LOOP=work ;; esac
+LE=false
+if [ -s /tmp/fabro/loop_exhausted ]; then LE=true; fi
+if [ \"$LOOP\" = exhausted ]; then
+  echo true > /tmp/fabro/loop_exhausted
+  LE=true
+  if [ \"$PH\" = post ]; then
+    echo 'CI is red after 2 post-PR Iterations' > /tmp/fabro/merge_block_reason
+    echo 'CI is red after 2 post-PR Iterations' > /tmp/fabro/needs_human_reason
+  fi
+fi
+jq -nc --arg l \"$LOOP\" --argjson r \"${RUNG:-0}\" --arg p \"$PH\" --argjson rb \"$REBASE\" --argjson le \"$LE\" '{context_updates:{loop:$l,rung:$r,phase:$p,rebase_failed:$rb,loop_exhausted:$le}}'"]
+
+    // R10: copy of backlog.excerpts (C8). No replacement: it reads `task-context.md`,
+    // which `pick` writes from the Task's `context`, so the contract is the same.
+    // excerpts: the code the task dossier cites, copied verbatim for the coder, so its
+    // first turns are edits rather than reads. On 2026-10-01 two coders (runs
+    // 01M3WS83Z1736Y75GNZM89KV59, lawncare-saas#2659, and 01M3WRYJBFJVWJCEGDV6T4YRVF,
+    // womens-fantasy-sports#1278) each spent ~17 minutes before their first edit. 5-7 of
+    // those were whole-file reads of the files `plan` had read minutes earlier on the
+    // same box (~100-120 KB at ~250 tok/s prefill), though the dossier already named every
+    // range they edited. edit_file needs the exact text, so the coder had to re-read.
+    //
+    // Every `path:N-M` in task-context.md naming a file in the checkout is copied, and
+    // every `path:N` becomes the narrowest symbol holding line N (fabro-code show, when
+    // that symbol is 3 to 80 lines long) or N-3..N+12 otherwise, so a one-line constant
+    // keeps the comment above it. A path alone, or a bare
+    // `:N`, is skipped. Ranges are capped at 150 lines and merged per file, and the
+    // whole file at 40000 bytes; anything past the cap is listed, not copied. The text
+    // is the checkout as it is now, after plan and before the coder, so it cannot be
+    // stale. Only `coder` reads task-code.md: rework and review run after the code
+    // changed. next_task deletes it with the dossier.
+    //
+    // Call sites (docs/coder-tweaks/07, C6): after the code blocks and before the "Not
+    // copied" list, `## Where these are used` lists `fabro-code callers NAME` for each
+    // backticked identifier under `## Files and symbols` (at most 12 symbols, 15 rows
+    // each, each row followed by its call line trimmed to 160 characters), so the
+    // coder's commonest search is answered before it asks. It shares the 40000-byte
+    // cap with the code blocks, which are counted first; a symbol's call sites are
+    // dropped whole when they would not fit, never a code block. Written only when
+    // fabro-code is on PATH and at least one symbol has callers.
+    //
+    // It ALWAYS succeeds and publishes no context key, like `autofix`: an empty or
+    // missing dossier means no task-code.md, and the coder reads files as it always did.
+    excerpts [label="Copy the code the dossier cites", shape=parallelogram, timeout="5m",
+        script="D=/tmp/fabro/task-context.md
+O=/tmp/fabro/task-code.md
+R=/tmp/fabro/excerpts.refs
+rm -f $O $O.tmp $R $R.merged
+if [ ! -s $D ]; then echo 'excerpts: no task dossier, so there is nothing to copy'; exit 0; fi
+FC=0; command -v fabro-code >/dev/null 2>&1 && FC=1
+: > $R
+for REF in $(grep -oE '[A-Za-z0-9_./-]+:[0-9]+(-[0-9]+)?' $D | sort -u); do
+  F=${REF%:*}; L=${REF##*:}; F=${F#./}
+  [ -f \"$F\" ] || continue
+  N=$(awk 'END {print NR}' \"$F\")
+  case $L in
+    *-*) S=${L%-*}; E=${L#*-} ;;
+    *) S=$((L - 3)); E=$((L + 12))
+       if [ $FC = 1 ]; then
+         SE=$(fabro-code show \"$F:$L\" 2>/dev/null | head -n 1 | awk '$1 == \"#\" {n = split($2, a, \":\"); split(a[n], b, \"-\"); if (b[1] + 0 > 0 && b[2] + 0 >= b[1] + 0) print b[1] \" \" b[2]}')
+         case \"$SE\" in *' '*) SS=${SE% *}; EE=${SE#* }; if [ $((EE - SS)) -ge 2 ] && [ $((EE - SS)) -lt 80 ]; then S=$SS; E=$EE; fi ;; esac
+       fi ;;
+  esac
+  if [ $S -lt 1 ]; then S=1; fi
+  if [ $E -gt $N ]; then E=$N; fi
+  if [ $((E - S)) -ge 150 ]; then E=$((S + 149)); fi
+  if [ $S -le $E ]; then echo \"$F $S $E\" >> $R; fi
+done
+sort -k1,1 -k2,2n $R | awk '$1 != f || $2 > e + 3 {if (f != \"\") print f, s, e; f = $1; s = $2; e = $3; next} $3 > e {e = $3} END {if (f != \"\") print f, s, e}' > $R.merged
+USED=0; OUT=0; SKIP=''
+{
+  echo '# Code the task dossier cites'
+  echo ''
+  echo 'Copied from the checkout by the excerpts node right after the planner wrote the dossier, before this stage started. Each block is the current text of the lines in its heading, without line numbers, so a block can be used as the old_string of edit_file. Lines outside these ranges are not shown.'
+} > $O.tmp
+while read F S E; do
+  B=$(awk -v s=$S -v e=$E 'NR >= s && NR <= e' \"$F\" | wc -c)
+  if [ $((USED + B)) -gt 40000 ]; then SKIP=\"$SKIP $F:$S-$E\"; continue; fi
+  USED=$((USED + B)); OUT=$((OUT + 1))
+  { echo ''; echo \"## $F:$S-$E\"; echo '````'; awk -v s=$S -v e=$E 'NR >= s && NR <= e' \"$F\"; echo '````'; } >> $O.tmp
+done < $R.merged
+CN=0
+if [ $FC = 1 ] && [ $OUT -gt 0 ]; then
+  SYMS=$(awk '/^## /{p=($0==\"## Files and symbols\"); next} p' $D | grep -o '`[^`]*`' | tr -d '`' | sed 's/(.*//' | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | awk '!s[$0]++' | head -n 12)
+  : > $O.cs; CB=200
+  for SYM in $SYMS; do
+    fabro-code callers \"$SYM\" 2>/dev/null | grep -E '^[^ ]+:[0-9]+  ' | head -n 15 > $O.rows
+    [ -s $O.rows ] || continue
+    { echo ''; echo \"### $SYM\"
+      while read ROW; do
+        REF=${ROW%% *}; P=${REF%:*}; LN=${REF##*:}
+        echo \"- $ROW\"
+        if [ -f \"$P\" ]; then TXT=$(awk -v l=$LN 'NR==l' \"$P\" | sed 's/^[[:space:]]*//' | cut -c1-160); if [ -n \"$TXT\" ]; then echo \"    $TXT\"; fi; fi
+      done < $O.rows; } > $O.sym
+    SB=$(wc -c < $O.sym)
+    if [ $((USED + CB + SB)) -gt 40000 ]; then break; fi
+    CB=$((CB + SB)); CN=$((CN + 1)); cat $O.sym >> $O.cs
+  done
+  if [ $CN -gt 0 ]; then
+    { echo ''; echo '## Where these are used'; echo ''; echo 'Call sites of the symbols the dossier names, from the code index (fabro-code callers). Each row is path:line, then the enclosing symbol, then the call line itself. An absent caller is not proof of none: grep still applies.'; cat $O.cs; } >> $O.tmp
+  fi
+  rm -f $O.cs $O.rows $O.sym
+fi
+if [ -n \"$SKIP\" ]; then
+  { echo ''; echo '## Not copied: over the 40000-byte cap. Read these with code_show or read_file'; for X in $SKIP; do echo \"- $X\"; done; } >> $O.tmp
+fi
+if [ $OUT -gt 0 ]; then
+  mv $O.tmp $O
+  echo \"excerpts: copied $OUT range(s), $USED bytes, to $O\"
+  if [ $CN -gt 0 ]; then echo \"excerpts: call sites for $CN symbol(s) appended\"; fi
+else
+  rm -f $O.tmp
+  echo 'excerpts: the dossier cites no line range in a file that exists; nothing to copy'
+fi
+rm -f $R $R.merged
+exit 0"]
+
+    // ---- One Iteration (O6, O17, C4) ----
+    // Four node ids, one prompt: the rung is a model, not a mode. Each is a FRESH coder
+    // session with no `thread_id`, so nothing carries over between Iterations and
+    // `progress.md` is the only memory. It takes the Task `pick` selected, implements it,
+    // runs `task_check`, and submits an `iteration` result; `record` decides pass or miss
+    // from that result, its Input receipt and `check_ok`. There is no LLM review per Task
+    // (O6) -- the mechanical gate is `check`, and the Refuter comes once at the end.
+    //
+    // timeout="60m" is a NEW number and the overview does not derive it: backlog's `coder`
+    // is 180m for a whole task with its own dossier, while an Iteration is meant to finish
+    // ONE planned Task that already carries its edit plan. 60m is the cap O17 states, and it
+    // is the bound `allow_partial` exists for: a timed-out Iteration keeps its work, the
+    // checkpoint commits it, and `check` judges whatever landed. Re-derive it from task 12's
+    // shakedown once Iteration times are recorded. max_retries=1 for a provider error;
+    // a dead provider that survives the retry is a MISS, never a stop (see the edges).
+    iterate_t1 [label="Iteration (rung 1, box)", class="coder", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
+    iterate_t2 [label="Iteration (rung 2, glm-5.3-flash)", class="coder-t2", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
+    iterate_t3 [label="Iteration (rung 3, kimi-for-coding)", class="coder-t3", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
+    iterate_t4 [label="Iteration (rung 4, glm-5.3)", class="coder-t4", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
+
+    // ---- Read the Iteration's block (R2, #17) ----
+    // NOT a copy of backlog's `task_block_gate`, and it cannot be. A stage has exactly one
+    // output contract (`ops/fabro-io/src/manifest.rs`, `Stage::output`), so an Iteration
+    // cannot submit `iteration` AND `task_blocked`: the block rides inside `iteration.json`
+    // as its optional `blocked` object (C4, docs/ralph task 01 decision A). Everything else
+    // is backlog's: the receipt check against `.io/stage.json`, `criterion` (with a
+    // non-empty criterion and reason) versus `scope`, the fallback to `scope` for a block
+    // the gate cannot read, `return.json` and the `QT=` line for the criterion branch, and
+    // `task_block_scope.md` for the scope branch.
+    //
+    // It never deletes the file: `record` needs it for the receipt and the summary. A block
+    // from an earlier visit is stale, and the receipt test is what says so.
+    task_block_gate [label="Read the Iteration's block", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro/iteration.json
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+K=''
+if [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then K=$(jq -r '.blocked.kind // empty' $F 2>/dev/null); fi
+if [ -z \"$K\" ]; then
+  rm -f /tmp/fabro/task_block_scope.md
+  jq -nc '{context_updates:{task_block:\"none\",triage_questions:\"\"}}'
+  exit 0
+fi
+C=$(jq -r '.blocked.criterion // empty' $F 2>/dev/null)
+W=$(jq -r '.blocked.reason // empty' $F 2>/dev/null)
+N=$(jq -r '.blocked.non_goal // empty' $F 2>/dev/null)
+B=scope
+QT=''
+rm -f /tmp/fabro/task_block_scope.md
+if [ \"$K\" = criterion ] && [ -n \"$C\" ] && [ -n \"$W\" ]; then B=criterion; fi
+if [ $B = criterion ]; then
+  jq --arg c \"$C\" --arg n \"$N\" --arg w \"$W\" -n '{source: \"coder\", summary: $w, items: [{criterion: $c, non_goal: (if $n == \"\" then \"the constraints of this task\" else $n end), why: $w}]}' > /tmp/fabro/return.json
+  QT=$(jq -r '[.items[] | \"- \" + .criterion + \" (conflicts with: \" + .non_goal + \")\"] | join(\"  \")' /tmp/fabro/return.json | tr -d '\"' | cut -c1-1200)
+else
+  T=$(jq -r '.title // empty' /tmp/fabro/current_task.json 2>/dev/null)
+  if [ -z \"$W\" ]; then W='it submitted a block the gate could not read (kind, criterion or reason missing)'; fi
+  echo \"The Iteration blocked on task ${T:-unknown}: $W\" | tr -d '{}' | head -c 600 > /tmp/fabro/task_block_scope.md
+fi
+jq -nc --arg b $B --arg q \"$QT\" '{context_updates:{task_block:$b,triage_questions:$q}}'"]
+
+    // R10: copy of backlog.autofix (C8). No replacement; only the destination of its failure
+    // edge changed.
+    // autofix: formatters and machine-applicable lint fixes between every coder or rework
+    // stage and its review (ADR 0011 D5). It runs the target repository's optional
+    // `.fabro/fix.sh` and ALWAYS succeeds: `validate` is the gate, not this node. Its
+    // edits are committed by the checkpoint after this stage, before prep_review computes
+    // the diff, so the reviewer reviews the formatted code. 31 of writers-app's 154
+    // validate visits failed, mostly on `cargo fmt` diffs and clippy lints, and each one
+    // cost a rework_t1 stage plus a second validate.
+    //
+    // It publishes `autofix_ran` (true when .fabro/fix.sh was started) and `autofix_rc`
+    // (its exit code, -1 when it did not run), so a recheck reads whether the repository's
+    // fix.sh ran from the events (ADR 0020, #13). The fix.sh output goes to autofix.log,
+    // and only its tail (through tr -d '{}') reaches stdout before the routing object. The
+    // `outcome=failed` edge sends a timeout on to prep_review as well, so a hung formatter
+    // costs at most 15m and never parks the run on human_rescue; the unconditional edge to
+    // human_rescue exists only because every command node must have one.
+    autofix [label="Autofix (formatters and lint --fix)", shape=parallelogram, timeout="15m", output_schema="routing",
+        script="exec 3>&1 >/tmp/fabro/autofix.log 2>&1
+if [ ! -f ./.fabro/fix.sh ]; then
+  echo 'autofix: no .fabro/fix.sh in this repository; nothing to do'
+  RAN=false; RC=-1
+else
+  RAN=true
+  if [ -x ./.fabro/fix.sh ]; then ./.fabro/fix.sh; RC=$?; else bash ./.fabro/fix.sh; RC=$?; fi
+  echo 'autofix: .fabro/fix.sh exited '$RC'; validate is the gate, so this stage succeeds either way'
+fi
+{ tail -n 40 /tmp/fabro/autofix.log; git status --short 2>/dev/null || true; } | tr -d '{}' >&3
+jq -nc --argjson ran $RAN --argjson rc $RC '{context_updates:{autofix_ran:$ran,autofix_rc:$rc}}' >&3
+exit 0"]
+
+    // R10: copy of backlog.validate (C8, C3). Two replacements: it deletes `check_ok` at the top
+    // and writes `1` to it on the green path just before its routing object, which is
+    // how `record` tells a passed Task from a red visit without reading another node's
+    // context.
+    // ---- Task validation (ADR 0025) ----
+    // The per-task gate. It used to run the repository's full `setup.sh && ci.sh` after
+    // every coder and rework round: 10% of all stage time over 2026-09-25..10-11, about
+    // 24 min a run. It now runs the repository's `.fabro/test.toml` checks and the tests
+    // that cover the files this task changed, selected from the diff by `fabro-io
+    // task-check`; Final validation in `open_pr_prep` stays the full net.
+    //
+    // It falls back to the full suite for anything it cannot attribute (C4): no task keys,
+    // a built-in or declared `full` glob, a deleted non-test file, the Code index
+    // unavailable, an unowned or out-of-cwd selected test, a `final_fix` task, or a
+    // `task-check` that errored. The fallback reason is published for the scorecard, and
+    // the counts are 0 on the full path.
+    //
+    // A red result exits 0 and routes by context: `validate -> review` requires
+    // `outcome=succeeded && context.task_validation_ok=true`, and the unconditional
+    // `validate -> rework_router` carries a red run. A timeout fails the node, applies no
+    // context update, so `outcome=succeeded` is false and a stale `task_validation_ok=true`
+    // from an earlier visit can never send it to review.
+    //
+    // The placeholder `rework.md` is written first because a timeout reaches
+    // `rework_router` with the previous round's feedback still in the file. The file it
+    // replaced is kept in /tmp/fabro/rework.prev and put back on a green visit, so a later
+    // reader (`rescue_brief` quotes rework.md once round > 0) never sees a timeout that did
+    // not happen. A preparation failure stops the targets; it is listed with its error,
+    // because no item result carries it. The routing object is the last command: if it
+    // cannot be built the node fails rather than exit 0 with no update, which would let a
+    // stale `task_validation_ok=true` through. Every line of
+    // the summary and the log tail goes through `tr -d '{}'`, because fabro scans stdout
+    // and stderr for brace-balanced objects and the log is arbitrary test output.
+    // `selected` is the number of test files passed as target arguments. A `task-check`
+    // that errored keeps its output in /tmp/fabro/task_check_error.log, because the full
+    // suite overwrites validate_output.log.
+    check [label="Task validation", shape=parallelogram, timeout="20m", output_schema="routing",
+        script="rm -f /tmp/fabro/check_ok /tmp/fabro/rework.prev /tmp/fabro/task_check.json /tmp/fabro/task_check_error.log
+if [ -f /tmp/fabro/feedback/rework.md ]; then cp /tmp/fabro/feedback/rework.md /tmp/fabro/rework.prev; fi
+echo '## Validation failed (timeout): task validation did not finish' > /tmp/fabro/feedback/rework.md
+echo 'The stage was stopped before it finished, most likely on its 20-minute timeout. Its output is in /tmp/fabro/validate_output.log, and for a scoped run in /tmp/fabro/task_check.log.' >> /tmp/fabro/feedback/rework.md
+FF=$(jq -r '.final_fix // false' /tmp/fabro/current_task.json 2>/dev/null || echo false)
+MODE=full
+REASON=task_check_error
+if [ \"$FF\" = true ]; then
+  REASON=final_fix
+else
+  fabro-io task-check --gate --base \"$(cat /tmp/fabro/task_base_sha)\" --out /tmp/fabro/task_check.json > /tmp/fabro/validate_output.log 2>&1
+  if jq -e . /tmp/fabro/task_check.json >/dev/null 2>&1; then
+    MODE=$(jq -r '.mode // \"full\"' /tmp/fabro/task_check.json)
+    REASON=$(jq -r '.reason // \"\"' /tmp/fabro/task_check.json)
+  else
+    cp /tmp/fabro/validate_output.log /tmp/fabro/task_check_error.log 2>/dev/null
+  fi
+fi
+SEL=0
+UNT=0
+UNCH=0
+PREP=0
+if [ \"$MODE\" = scoped ]; then
+  SEL=$(jq -r '[.targets[].args[]?] | length' /tmp/fabro/task_check.json 2>/dev/null || echo 0)
+  UNT=$(jq -r '.untested | length' /tmp/fabro/task_check.json 2>/dev/null || echo 0)
+  UNCH=$(jq -r '.unchecked | length' /tmp/fabro/task_check.json 2>/dev/null || echo 0)
+  PREP=$(jq -r '.prepared_seconds // 0' /tmp/fabro/task_check.json 2>/dev/null || echo 0)
+fi
+RC=0
+OK=true
+if [ \"$MODE\" = full ]; then
+  ./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1 || RC=$?
+  if [ $RC -ne 0 ]; then
+    OK=false
+  fi
+else
+  OK=$(jq -r '.ok // false' /tmp/fabro/task_check.json 2>/dev/null || echo false)
+fi
+if [ \"$OK\" = true ]; then
+  if [ -f /tmp/fabro/rework.prev ]; then mv /tmp/fabro/rework.prev /tmp/fabro/feedback/rework.md; else rm -f /tmp/fabro/feedback/rework.md; fi
+else
+  if [ \"$MODE\" = full ]; then
+    echo '## Validation failed (exit '$RC'): ./.fabro/setup.sh && ./.fabro/ci.sh' > /tmp/fabro/feedback/rework.md
+    echo >> /tmp/fabro/feedback/rework.md
+    tail -c 6000 /tmp/fabro/validate_output.log >> /tmp/fabro/feedback/rework.md
+  else
+    {
+      echo '## Validation failed (exit 1): task validation'
+      echo
+      echo 'Task validation ran the checks and tests that cover the files this task changed. The full output is in /tmp/fabro/task_check.log. Failed:'
+      echo
+      jq -r 'select((.prepare.exit_code // 0) != 0) | \"- preparation of the Test environment (exit \" + (.prepare.exit_code|tostring) + \")\"' /tmp/fabro/task_check.json
+      jq -r '. as $r | .results[] | select(.exit_code != null and .exit_code != 0) | .name as $n | \"- \" + .kind + \" `\" + $n + \"` (exit \" + (.exit_code|tostring) + \")\" + (if .kind == \"target\" then ((($r.targets[] | select(.name == $n) | .args) // []) | if length > 0 then \": \" + join(\" \") else \"\" end) else \"\" end)' /tmp/fabro/task_check.json
+      echo
+      {
+      jq -r 'select((.prepare.exit_code // 0) != 0) | \"### preparation\", (.prepare.error // \"\")' /tmp/fabro/task_check.json
+      jq -r '.results[] | select(.exit_code != null and .exit_code != 0) | .kind + \" \" + .name' /tmp/fabro/task_check.json | while read -r KIND NAME; do
+        echo \"### $KIND $NAME\"
+        jq -r --arg k \"$KIND\" --arg n \"$NAME\" '.results[] | select(.kind == $k and .name == $n) | .tail // \"\"' /tmp/fabro/task_check.json
+      done
+      } | head -c 6000
+    } > /tmp/fabro/feedback/rework.md
+  fi
+fi
+if [ \"$OK\" = true ]; then echo 1 > /tmp/fabro/check_ok; fi
+echo 'task validation: mode='$MODE' reason='$REASON' ok='$OK' selected='$SEL' untested='$UNT' unchecked='$UNCH' prepared='$PREP's' | tr -d '{}'
+tail -c 4000 /tmp/fabro/validate_output.log | tr -d '{}'
+jq -nc --argjson ok $OK --arg mode \"$MODE\" --arg reason \"$REASON\" --argjson sel $SEL --argjson unt $UNT --argjson unch $UNCH --argjson prep $PREP '{context_updates:{task_validation_ok:$ok,task_validation_mode:$mode,task_validation_reason:$reason,task_validation_selected:$sel,task_validation_untested:$unt,task_validation_unchecked:$unch,task_validation_prepare_s:$prep}}' || exit 1"]
+
+    // ---- Record the Iteration (C4, R8) ----
+    // It always succeeds and prints only its routing object: a bad Iteration is a MISS, and
+    // the loop continues at a stronger rung, so nothing here may stop the run.
+    //
+    // `passed` needs all four: `check_ok` is 1 (a red, timed-out or failed `check` leaves no
+    // `1`), the `iteration.json` carries this visit's receipt, its `status` is `done`, and no
+    // `task_block_scope.md` exists. It re-derives that from files rather than from context
+    // because `check` and `task_block_gate` are separate nodes and a command node cannot
+    // read another's context updates.
+    //
+    // It rewrites `tasks.json` whole -- it is one of the only two nodes allowed to write it
+    // -- appends to the progress log, and writes `task_index` as the number of PASSED Tasks,
+    // which is what the probe's "task i of n" reads (R8).
+    record [label="Record the Iteration", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro/iteration.json
+PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
+case \"$PH\" in pre | post) : ;; *) PH=pre ;; esac
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+OK=$(cat /tmp/fabro/check_ok 2>/dev/null || echo 0)
+STATUS=''
+SUM='(no result submitted)'
+if [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
+  STATUS=$(jq -r '.status // empty' $F 2>/dev/null)
+  SUM=$(jq -r '.summary // empty' $F 2>/dev/null)
+fi
+case \"$SUM\" in '') SUM='(no summary submitted)' ;; esac
+SCOPE=false
+if [ -s /tmp/fabro/task_block_scope.md ]; then SCOPE=true; fi
+PASSED=false
+if [ \"$OK\" = 1 ] && [ \"$STATUS\" = done ] && [ \"$SCOPE\" = false ] && [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then PASSED=true; fi
+ID=$(jq -r '.id // empty' /tmp/fabro/current_task.json 2>/dev/null)
+if [ -n \"$ID\" ] && [ -s /tmp/fabro/tasks.json ]; then
+  jq --arg id \"$ID\" --argjson p \"$PASSED\" --argjson b \"$SCOPE\" 'map(if .id == $id then (.iterations = ((.iterations // 0) + 1) | (if $p then .status = \"passed\" else ((.misses = ((.misses // 0) + 1)) | (if $b then .status = \"blocked\" else . end)) end)) else . end)' /tmp/fabro/tasks.json > /tmp/fabro/tasks.rec.json 2>/dev/null && mv /tmp/fabro/tasks.rec.json /tmp/fabro/tasks.json
+fi
+if [ \"$SCOPE\" = true ]; then cp /tmp/fabro/task_block_scope.md /tmp/fabro/feedback/rework.md 2>/dev/null || true; fi
+if [ \"$PH\" = post ]; then
+  N=$(cat /tmp/fabro/post_iterations 2>/dev/null || echo 0)
+  case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+  N=$((N + 1))
+  echo $N > /tmp/fabro/post_iterations
+else
+  N=$(cat /tmp/fabro/iterations 2>/dev/null || echo 0)
+  case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+  N=$((N + 1))
+  echo $N > /tmp/fabro/iterations
+fi
+RUNG=$(cat /tmp/fabro/rung 2>/dev/null || echo 0)
+case \"$RUNG\" in '' | *[!0-9]*) RUNG=0 ;; esac
+if [ \"$PASSED\" = true ]; then RES=passed; else RES='not passed'; fi
+{
+  echo \"## Iteration $N: ${ID:-unknown} $RES (rung $RUNG)\"
+  echo
+  echo \"$SUM\"
+  jq -r '.learnings // [] | .[] | \"- \" + .' $F 2>/dev/null || true
+  echo
+} >> /tmp/fabro/progress.md
+P=$(jq '[.[] | select(.status == \"passed\")] | length' /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+case \"$P\" in '' | *[!0-9]*) P=0 ;; esac
+echo $P > /tmp/fabro/task_index
+jq -nc --argjson p \"$PASSED\" '{context_updates:{iteration_passed:$p}}'"]
+
+    // R10: copy of backlog.resolve_merge (C8). No replacement; the node is the git exception and
+    // its manifest entry keeps `"git": "write"`.
+    // ---- Mainline conflict resolution ----
+    // next_task (before a task) or final_merge (before the PR) aborted the failed merge
+    // and left a clean tree. A conflicted merge
+    // cannot cross a stage boundary: fabro's checkpoint would `git add -A` the
+    // conflict-marked files, which git treats as resolved, and commit markers onto
+    // the run branch. So the agent performs the merge itself, in one stage, and
+    // resolve_merge_gate verifies the result from git rather than trusting a claim.
+    resolve_merge [label="Resolve the mainline merge", class="coder-t4", timeout="30m", max_retries=1, prompt="@prompts/resolve_merge.md.j2"]
+
+    // R10: copy of backlog.resolve_merge_gate (C8). No replacement; `merge_return=task` routes to
+    // `pick` here instead of `next_task`, which is an edge, not the node.
+    // The conflict-marker scan covers what this merge can have touched — the files
+    // changed since the pre-merge SHA, dirty tracked files, and untracked files the
+    // next checkpoint would `git add -A` — rather than the whole worktree, which
+    // would walk build output and would fire on any repository that legitimately
+    // commits a conflict-marker fixture.
+    //
+    // `merge_return` says where a resolved merge goes: `pr` back to final_merge when
+    // /tmp/fabro/final_merge_conflict exists, `task` on to the next task otherwise. It is
+    // written on both branches. next_task deletes that file and resets merge_attempts on
+    // every entry, its done branches included, so the final merge starts with both clean.
+    resolve_merge_gate [label="Verify the mainline merge", shape=parallelogram, output_schema="routing",
+        script="PRE=$(cat /tmp/fabro/pre_merge_sha 2>/dev/null || echo '')
+A=$(cat /tmp/fabro/merge_attempts 2>/dev/null || echo 0)
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"pre_merge_sha\",\"current_task.json\",\"issue.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+if [ \"$ROK\" != yes ]; then BAD=1; else BAD=0; fi
+if [ -e .git/MERGE_HEAD ]; then BAD=1; fi
+if git diff --name-only --diff-filter=U | grep -q . ; then BAD=1; fi
+: > /tmp/fabro/merge_scan.txt
+if [ -n \"$PRE\" ]; then git diff --name-only \"$PRE\" HEAD >> /tmp/fabro/merge_scan.txt 2>/dev/null || true; fi
+git diff --name-only HEAD >> /tmp/fabro/merge_scan.txt 2>/dev/null || true
+git ls-files --others --exclude-standard >> /tmp/fabro/merge_scan.txt 2>/dev/null || true
+while IFS= read -r f; do
+  [ -f \"$f\" ] || continue
+  if grep -qI '<<<<<<< ' \"$f\"; then BAD=1; fi
+done < /tmp/fabro/merge_scan.txt
+if ! git merge-base --is-ancestor origin/main HEAD; then BAD=1; fi
+MR=task
+if [ -s /tmp/fabro/final_merge_conflict ]; then MR=pr; fi
+if [ $BAD -ne 0 ]; then
+  git merge --abort 2>/dev/null || true
+  if [ -n \"$PRE\" ]; then git reset --hard \"$PRE\" || true; fi
+  A=$((A+1))
+  echo $A > /tmp/fabro/merge_attempts
+  echo 'The merge agent left conflict markers, an in-progress merge, or a branch that still does not contain origin/main.' > /tmp/fabro/needs_human_reason
+  echo '{\"context_updates\":{\"merge_ok\":false,\"merge_attempts\":'$A',\"merge_return\":\"'$MR'\"}}'
+else
+  git rev-parse HEAD > /tmp/fabro/task_base_sha
+  echo '{\"context_updates\":{\"merge_ok\":true,\"merge_attempts\":'$A',\"merge_return\":\"'$MR'\"}}'
+fi"]
+
     // R10: copy of backlog.close_noop (C8). Three replacements: the summary comes from
     // task_list.json, and the two fixed sentences name the planner, not the decomposer.
     // Posts the decomposer's summary under the fixed sentence, because the summary says WHY
@@ -465,12 +994,49 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     plan -> plan_gate                         [condition="outcome=succeeded"]
     plan -> stop_reason
     plan_gate -> plan                         [condition="outcome=failed"]
-    plan_gate -> stop_reason                  [condition="context.plan_status=ready"]
+    plan_gate -> pick                         [condition="context.plan_status=ready"]
     plan_gate -> return_to_triage             [condition="context.plan_status=contradiction"]
     plan_gate -> close_noop                   [condition="context.plan_status=redundant"]
     plan_gate -> close_noop                   [condition="context.plan_status=invalid"]
     plan_gate -> mark_stuck                   [condition="context.plan_status=needs_human"]
     plan_gate -> stop_reason
+    pick -> resolve_merge                     [condition="context.rebase_failed=true"]
+    pick -> excerpts                          [condition="context.loop=work && context.rebase_failed=false"]
+    pick -> stop_reason                       [condition="context.loop=done && context.phase=pre"]
+    pick -> stop_reason                       [condition="context.loop=exhausted && context.phase=pre"]
+    pick -> stop_reason
+    excerpts -> iterate_t1                    [condition="context.rung=1"]
+    excerpts -> iterate_t2                    [condition="context.rung=2"]
+    excerpts -> iterate_t3                    [condition="context.rung=3"]
+    excerpts -> iterate_t4                    [condition="context.rung=4"]
+    excerpts -> stop_reason
+    iterate_t1 -> task_block_gate             [condition="outcome=succeeded"]
+    iterate_t1 -> task_block_gate             [condition="outcome=partially_succeeded"]
+    iterate_t1 -> record
+    iterate_t2 -> task_block_gate             [condition="outcome=succeeded"]
+    iterate_t2 -> task_block_gate             [condition="outcome=partially_succeeded"]
+    iterate_t2 -> record
+    iterate_t3 -> task_block_gate             [condition="outcome=succeeded"]
+    iterate_t3 -> task_block_gate             [condition="outcome=partially_succeeded"]
+    iterate_t3 -> record
+    iterate_t4 -> task_block_gate             [condition="outcome=succeeded"]
+    iterate_t4 -> task_block_gate             [condition="outcome=partially_succeeded"]
+    iterate_t4 -> record
+    task_block_gate -> autofix                [condition="outcome=succeeded && context.task_block=none"]
+    task_block_gate -> return_to_triage       [condition="outcome=succeeded && context.task_block=criterion"]
+    task_block_gate -> record
+    autofix -> check                          [condition="outcome=succeeded"]
+    autofix -> check                          [condition="outcome=failed"]
+    autofix -> stop_reason
+    check -> record                           [condition="outcome=succeeded"]
+    check -> record                           [condition="outcome=failed"]
+    check -> stop_reason
+    record -> pick
+    resolve_merge -> resolve_merge_gate       [condition="outcome=succeeded"]
+    resolve_merge -> resolve_merge_gate
+    resolve_merge_gate -> pick                [condition="context.merge_ok=true && context.merge_return=task", weight=10]
+    resolve_merge_gate -> resolve_merge       [condition="context.merge_attempts=1"]
+    resolve_merge_gate -> stop_reason
     return_to_triage -> exit                  [condition="outcome=succeeded"]
     return_to_triage -> mark_stuck
     stop_reason -> mark_stuck                 [condition="context.stop_phase=pre"]

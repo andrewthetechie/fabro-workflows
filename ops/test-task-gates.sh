@@ -8828,12 +8828,218 @@ REDG=$(r_edges)
 PG=$(grep '^plan_gate->' <<<"$REDG" | sed 's/^plan_gate->//')
 check "pg edges: seven exits" "7" "$(grep -c . <<<"$PG")"
 check "pg edges: the conditional set is exactly the five statuses" \
-  "close_noop context.plan_status=invalid|close_noop context.plan_status=redundant|mark_stuck context.plan_status=needs_human|return_to_triage context.plan_status=contradiction|stop_reason context.plan_status=ready" \
+  "close_noop context.plan_status=invalid|close_noop context.plan_status=redundant|mark_stuck context.plan_status=needs_human|pick context.plan_status=ready|return_to_triage context.plan_status=contradiction" \
   "$(grep 'context.plan_status' <<<"$PG" | sort | paste -sd'|' -)"
 check "pg edges: the retry is conditional on failure" "1" "$(grep -cxF 'plan outcome=failed' <<<"$PG")"
 check "pg edges: unconditional escape to stop_reason" "1" "$(grep -cxF 'stop_reason ' <<<"$PG")"
 check "pg edges: no bare exit"                        "0" "$(grep -c '^exit ' <<<"$PG")"
 check "edges: plan_gate has one unconditional edge"   "1" "$(grep -c ' $' <<<"$PG")"
+
+echo ""
+echo "ralph — pick"
+RP="$WORK/ralph-pick"; mkdir -p "$RP/sb"; T="$RP/sb"; stage_r pick
+rp_repo() {
+    rm -rf "$RP/repo" "$RP/origin.git"
+    mkdir -p "$T"
+    # Keep the staged pick.sh: the fixtures rebuild the repository and the state directory,
+    # not the node under test.
+    find "$T" -mindepth 1 -maxdepth 1 ! -name 'pick.sh' -exec rm -rf {} +
+    git init -q --bare "$RP/origin.git"
+    git -C "$RP/origin.git" symbolic-ref HEAD refs/heads/main
+    git init -q -b main "$RP/repo"
+    git -C "$RP/repo" config user.email t@t
+    git -C "$RP/repo" config user.name t
+    echo base > "$RP/repo/a.txt"
+    git -C "$RP/repo" add -A
+    git -C "$RP/repo" commit -qm base
+    git -C "$RP/repo" remote add origin "$RP/origin.git"
+    git -C "$RP/repo" push -q origin main
+    echo pre > "$T/phase"
+}
+rp_tasks() { printf '%s' "$1" > "$T/tasks.json"; }
+rp_pick() { OUT=$( cd "$RP/repo" && sh "$T/pick.sh" 2>&1 ); RC=$?; J=$(lastjson "$OUT"); }
+rp_val() { jq -r ".context_updates.$1" <<<"$J" 2>/dev/null; }
+
+rp_repo
+rp_tasks '[{"id":"t1","status":"open","misses":0,"context":"PLAN ONE"},{"id":"t2","status":"open","misses":0},{"id":"t3","status":"open","misses":0}]'
+rp_pick
+check "pick: exits 0"                "0"    "$RC"
+check "pick: loop work"              "work" "$(rp_val loop)"
+check "pick: rung 1"                 "1"    "$(rp_val rung)"
+check "pick: phase pre"              "pre"  "$(rp_val phase)"
+check "pick: no rebase"              "false" "$(rp_val rebase_failed)"
+check "pick: loop_exhausted false"   "false" "$(rp_val loop_exhausted)"
+check "pick: first task selected"    "t1"   "$(jq -r .id "$T/current_task.json")"
+check "pick: task-context.md is the plan" "1" "$(grep -c 'PLAN ONE' "$T/task-context.md")"
+check "pick: no Last attempt on a first visit" "0" "$(grep -c '## Last attempt' "$T/task-context.md")"
+check "pick: task_base_sha written"  "1"    "$(git -C "$RP/repo" rev-parse HEAD | grep -c "$(cat "$T/task_base_sha")")"
+check "pick: one routing object"     "1"    "$(grep -c 'context_updates' <<<"$OUT")"
+
+rp_tasks '[{"id":"t1","status":"open","misses":3},{"id":"t2","status":"open","misses":0}]'
+rp_pick
+check "pick: 3 misses is rung 2"     "2" "$(rp_val rung)"
+rp_tasks '[{"id":"t1","status":"open","misses":6},{"id":"t2","status":"open","misses":0}]'
+rp_pick
+check "pick: 6 misses is rung 4"     "4" "$(rp_val rung)"
+rp_tasks '[{"id":"t1","status":"open","misses":8},{"id":"t2","status":"open","misses":0}]'
+rp_pick
+check "pick: 8 misses blocks the task" "blocked" "$(jq -r '.[0].status' "$T/tasks.json")"
+check "pick: 8 misses moves to the next" "t2" "$(jq -r .id "$T/current_task.json")"
+check "pick: the next task is still open" "open" "$(jq -r '.[1].status' "$T/tasks.json")"
+
+rp_tasks '[{"id":"t1","status":"passed"},{"id":"t2","status":"passed"}]'
+rp_pick
+check "pick: every task passed is done" "done" "$(rp_val loop)"
+check "pick: done has no rung"          "0"    "$(rp_val rung)"
+rp_tasks '[{"id":"t1","status":"passed"},{"id":"t2","status":"blocked"}]'
+rp_pick
+check "pick: a blocked task exhausts"   "exhausted" "$(rp_val loop)"
+check "pick: exhausted writes the file" "true" "$(cat "$T/loop_exhausted")"
+check "pick: exhausted sets the key"    "true" "$(rp_val loop_exhausted)"
+
+rp_tasks '[{"id":"t1","status":"open"},{"id":"t2","status":"open"},{"id":"t3","status":"open"}]'
+echo 9 > "$T/iterations"; rp_pick
+check "pick: the cap is 3x the list (9 of 9)" "exhausted" "$(rp_val loop)"
+rp_tasks "$(jq -nc '[range(30) | {id: ("t" + (. | tostring)), status: "open"}]')"
+echo 23 > "$T/iterations"; rp_pick
+check "pick: 23 of 24 still works" "work" "$(rp_val loop)"
+echo 24 > "$T/iterations"; rp_pick
+check "pick: the cap is at most 24"  "exhausted" "$(rp_val loop)"
+
+rp_tasks '[{"id":"t1","status":"open"}]'
+rm -f "$T/iterations" "$T/loop_exhausted"; rm -f "$T/merge_block_reason" "$T/needs_human_reason"
+echo post > "$T/phase"; echo 2 > "$T/post_iterations"; rp_pick
+check "pick post: 2 Iterations exhaust" "exhausted" "$(rp_val loop)"
+check "pick post: phase published"      "post" "$(rp_val phase)"
+check "pick post: merge_block_reason written" "CI is red after 2 post-PR Iterations" "$(cat "$T/merge_block_reason")"
+check "pick post: needs_human_reason written" "CI is red after 2 post-PR Iterations" "$(cat "$T/needs_human_reason")"
+
+rp_repo
+rp_tasks '[{"id":"t1","status":"open","misses":1,"context":"THE PLAN"}]'
+mkdir -p "$T/feedback"; printf 'THE REVIEWER SAID NO\n' > "$T/feedback/rework.md"
+rp_pick
+check "pick: last attempt appended"  "1" "$(grep -c '## Last attempt' "$T/task-context.md")"
+check "pick: the feedback is quoted" "1" "$(grep -c 'THE REVIEWER SAID NO' "$T/task-context.md")"
+check "pick: plan still first"       "1" "$(grep -c 'THE PLAN' "$T/task-context.md")"
+
+rp_repo
+rp_tasks '[{"id":"t1","status":"open"}]'
+git -C "$RP/repo" checkout -q -b other
+echo remote > "$RP/repo/a.txt"; git -C "$RP/repo" commit -qam remote
+git -C "$RP/repo" push -q origin other:main
+git -C "$RP/repo" checkout -q main
+echo local > "$RP/repo/a.txt"; git -C "$RP/repo" commit -qam local
+rp_pick
+check "pick conflict: rebase_failed true" "true" "$(rp_val rebase_failed)"
+check "pick conflict: loop stays work"    "work" "$(rp_val loop)"
+check "pick conflict: tree is clean"      "" "$(git -C "$RP/repo" status --porcelain)"
+check "pick conflict: no merge in progress" "absent" "$([ -e "$RP/repo/.git/MERGE_HEAD" ] && echo present || echo absent)"
+check "pick conflict: no current task"    "absent" "$([ -e "$T/current_task.json" ] && echo present || echo absent)"
+
+echo post > "$T/phase"; rm -f "$T/current_task.json"
+BEFORE=$(git -C "$RP/repo" rev-parse HEAD)
+rp_pick
+check "pick post: origin/main is not merged here" "$BEFORE" "$(git -C "$RP/repo" rev-parse HEAD)"
+check "pick post: no rebase"                     "false"  "$(rp_val rebase_failed)"
+
+echo ""
+echo "ralph — record"
+T="$WORK/ralph-record"; mkdir -p "$T"; stage_r record
+mkreadok ok1
+rr_setup() {   # $1 = iteration.json object or '' for none, $2 = check_ok or '', $3 = phase
+    rm -f "$T/iteration.json" "$T/check_ok" "$T/task_block_scope.md" "$T/feedback/rework.md" "$T/progress.md" "$T/task_index"
+    echo pre > "$T/phase"
+    mkdir -p "$T/feedback"
+    printf '%s' '[{"id":"t1","title":"A","status":"open","iterations":0,"misses":0},{"id":"t2","title":"B","status":"open","iterations":0,"misses":0}]' > "$T/tasks.json"
+    printf '%s' '{"id":"t1","title":"A"}' > "$T/current_task.json"
+    if [ -n "${1:-}" ]; then printf '%s' "$1" | jq --arg v ok1 '._io.visit=$v' > "$T/iteration.json"; fi
+    if [ -n "${2:-}" ]; then echo "$2" > "$T/check_ok"; fi
+    if [ -n "${3:-}" ]; then echo "$3" > "$T/phase"; fi
+    : > "$T/iterations"; echo 0 > "$T/iterations"
+    echo 0 > "$T/post_iterations"
+}
+rr_run() { OUT=$(sh "$T/record.sh" 2>&1); RC=$?; J=$(lastjson "$OUT"); }
+rr_val() { jq -r ".context_updates.$1" <<<"$J" 2>/dev/null; }
+
+rr_setup '{"status":"done","summary":"did it","learnings":["use make check"]}' 1
+rr_run
+check "record: exits 0"              "0"    "$RC"
+check "record: passed"               "true" "$(rr_val iteration_passed)"
+check "record: task passed"          "passed" "$(jq -r '.[0].status' "$T/tasks.json")"
+check "record: iterations bumped"    "1"    "$(jq -r '.[0].iterations' "$T/tasks.json")"
+check "record: misses untouched"     "0"    "$(jq -r '.[0].misses' "$T/tasks.json")"
+check "record: task_index counts passed" "1" "$(cat "$T/task_index")"
+check "record: run counter"          "1"    "$(cat "$T/iterations")"
+check "record: progress line"        "1"    "$(grep -c '^## Iteration 1: t1 passed (rung 0)$' "$T/progress.md")"
+check "record: the summary is logged" "1"   "$(grep -c 'did it' "$T/progress.md")"
+check "record: learnings are logged"  "1"   "$(grep -c '^- use make check$' "$T/progress.md")"
+
+rr_setup '{"status":"progress","summary":"half","learnings":[]}' 1
+rr_run
+check "record: check_ok 1 but progress is a miss" "false" "$(rr_val iteration_passed)"
+check "record: progress increments misses"        "1"     "$(jq -r '.[0].misses' "$T/tasks.json")"
+check "record: progress leaves the task open"     "open"  "$(jq -r '.[0].status' "$T/tasks.json")"
+rr_setup '{"status":"done","summary":"done","learnings":[]}' ''
+rr_run
+check "record: no check_ok is a miss"             "false" "$(rr_val iteration_passed)"
+
+rr_setup ''
+rr_run
+check "record: no result is a miss"               "false" "$(rr_val iteration_passed)"
+check "record: no result says so"                 "1"     "$(grep -c '(no result submitted)' "$T/progress.md")"
+
+rr_setup '{"status":"done","summary":"done","learnings":[]}' 1
+printf 'The Iteration blocked on task A: needs a workflow edit' > "$T/task_block_scope.md"
+rr_run
+check "record: a scope block is a miss"    "false"   "$(rr_val iteration_passed)"
+check "record: a scope block marks blocked" "blocked" "$(jq -r '.[0].status' "$T/tasks.json")"
+check "record: the scope text becomes the feedback" "1" "$(grep -c 'needs a workflow edit' "$T/feedback/rework.md")"
+
+rr_setup '{"status":"done","summary":"done","learnings":[]}' 1 post
+rr_run
+check "record post: post_iterations advances" "1" "$(cat "$T/post_iterations")"
+check "record post: iterations does not"      "0" "$(cat "$T/iterations")"
+check "record post: the Task still passes"    "passed" "$(jq -r '.[0].status' "$T/tasks.json")"
+
+# The edges: at most one conditional edge can match any state `pick` can publish.
+r_matches() { # <node> <k=v>... -> number of matching evaluable conditional edges
+    node="$1"; shift
+    awk -v node="$node" -v pairs="$*" '
+    BEGIN { n = split(pairs, ps, / /); for (i = 1; i <= n; i++) { split(ps[i], kv, "="); v[kv[1]] = kv[2] } }
+    $1 == node && $2 == "->" && match($0, /condition="[^"]*"/) {
+        c = substr($0, RSTART + 11, RLENGTH - 12); n2 = split(c, cl, / && /); ok = 1
+        for (i = 1; i <= n2 && ok; i++) {
+            if (cl[i] !~ /^context[.][a-z_]+!?=[A-Za-z0-9_]+$/) { ok = 0; break }
+            ne = (cl[i] ~ /!=/); split(cl[i], kv, /!?=/); k = kv[1]; sub(/^context[.]/, "", k)
+            if (!(k in v)) { ok = 0; break }
+            if (ne ? (v[k] == kv[2]) : (v[k] != kv[2])) ok = 0
+        }
+        if (ok) m++
+    }
+    END { print m + 0 }' "$RAPH"
+}
+RP_WORST=0; RP_ZERO=""
+for ph in pre post; do for le in true false; do
+  for st in "work 1 false" "work 4 false" "work 0 true" "done 0 false" "exhausted 0 false"; do
+    set -- $st
+    m=$(r_matches pick loop=$1 rung=$2 phase=$ph rebase_failed=$3 loop_exhausted=$le)
+    [ "$m" -gt "$RP_WORST" ] && RP_WORST=$m
+  done
+done; done
+check "pick: no state matches two conditional edges" "1" "$RP_WORST"
+EX_WORST=0
+for r in 1 2 3 4; do
+    m=$(r_matches excerpts rung=$r)
+    [ "$m" -gt "$EX_WORST" ] && EX_WORST=$m
+    [ "$m" -eq 1 ] || RP_ZERO="$RP_ZERO excerpts/rung=$r"
+done
+check "excerpts: no state matches two conditional edges" "1" "$EX_WORST"
+check "excerpts: every rung reaches a node" "" "$RP_ZERO"
+RPEDG=$(grep '^pick->' <<<"$REDG")
+check "pick: exactly one unconditional edge" "1" "$(grep -c ' $' <<<"$RPEDG")"
+check "pick: the unconditional edge is the escape" "1" "$(grep -cxF 'pick->stop_reason ' <<<"$RPEDG")"
+check "pick: excerpts is gated on no rebase" "1" "$(grep -cxF 'pick->excerpts context.loop=work && context.rebase_failed=false' <<<"$RPEDG")"
+check "pick: resolve_merge is gated on a rebase" "1" "$(grep -cxF 'pick->resolve_merge context.rebase_failed=true' <<<"$RPEDG")"
 
 echo ""
 echo "the suite leaves the checkout alone"
