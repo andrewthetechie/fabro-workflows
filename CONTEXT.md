@@ -215,6 +215,36 @@ bodies, passing the repository's checks, plus what each port needs from it. The 
 in the next task, and each port uses the skeleton's interface unchanged (ADR 0021).
 _Avoid_: stub task, scaffold, interface task
 
+**Task**:
+One unit of a **Run**'s work, small enough for one coder session to implement and check.
+Counted against the **Task budget**. Every workflow that implements an issue uses the same
+word, however its tasks are produced.
+_Avoid_: story (Ralph's word for the same thing), step, sub-task
+
+**Task list**:
+The ordered **Tasks** a `ralph` run's plan writes for one issue, each with its acceptance
+checks and whether it has passed. The run works from it and appends to it. It lives in the
+run, never on the issue, which is what separates it from triage's **Task map**.
+_Avoid_: PRD, plan (the stage that writes it), backlog
+
+**Iteration**:
+One fresh coder session in a `ralph` run that takes the first unpassed **Task** from the
+**Task list**, works it, and leaves what it learned for the next. It carries no
+conversation from the one before. One task may take several iterations.
+_Avoid_: loop (overloaded, see **Livelock**), turn (a turn is one model reply), pass
+
+**Refute round**:
+One visit of the **Refuter** to a `ralph` run whose every **Task** has passed. Each
+finding it can prove becomes a new task and the iterations resume. A run has a fixed
+number of rounds; the last unproven findings are reported as **Unmet criteria**.
+_Avoid_: refute loop, re-review
+
+**Learning**:
+A rule a `ralph` run proposes from its own **Iterations**, with the evidence that showed it
+and where it would belong. It waits for a human to accept it, and the run never applies it.
+Not a **Failure class**, which the **Retro** derives across many runs from enumerable keys.
+_Avoid_: lesson, insight, memory
+
 **Task budget**:
 The most tasks one **Run** implements, from any source: the decomposition, a split, or a
 follow-up from the extra review. Work beyond it becomes a **Remainder issue**. It limits
