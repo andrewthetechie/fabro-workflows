@@ -9,7 +9,7 @@ records) are done. The 2026-10-14 review's amendments (A1–A7, `fabro-io` 0.5.1
 and task 09 merged at **2026-10-15T01:11:50Z**, the trial's switch time. **Task 10 done
 2026-10-21** (`result-2026-10-21.txt`). The operator recorded a pass on cause: (a) and (b)
 passed, and (c) failed as written, but not because of Task validation. ADR 0025 is accepted.
-Task 11 is next, and #26 closes when it is done.
+Task 11's three PRs were opened on 2026-10-21 and are not merged yet (`11-other-repos.md`, *Progress*). #26 closes when task 11 is done.
 The live-run acceptance checks that need a 30-minute-to-4-hour run are in
 `handoff.md`.
 
