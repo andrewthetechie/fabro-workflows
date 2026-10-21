@@ -1255,6 +1255,472 @@
           }
         }
       }
+    },
+    "ralph": {
+      "stages": {
+        "plan": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/plan.md.j2",
+          "inputs": [
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the full parent issue; .body at body, .title at title, .number at number, human discussion at .comments"
+            },
+            {
+              "name": "task-map.md",
+              "path": "/tmp/fabro/task-map.md",
+              "required": false,
+              "about": "the issue body's '## Task map' section, cut out by prep; a hint about the intended split, never a contract",
+              "absent": "the issue has no Task map; plan the Tasks from the issue alone"
+            },
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": false,
+              "about": "ranked outline of the checkout; can be missing, continue without it",
+              "absent": "the repository map is missing; proceed without it"
+            }
+          ],
+          "sealed": [],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/task_list.json",
+            "schema": "task_list"
+          }
+        },
+        "iterate_t1": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/iterate.md.j2",
+          "inputs": [
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the Task to implement; .title and .body are the spec, .acceptance the definition of done, .files a hint"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, for reporter intent and human discussion; supplemental"
+            },
+            {
+              "name": "progress.md",
+              "path": "/tmp/fabro/progress.md",
+              "required": false,
+              "about": "every earlier Iteration of this run: the Task it took, whether it passed, the rung, and what it reported",
+              "absent": "No Iteration has run yet."
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": false,
+              "about": "what plan verified in this checkout minutes ago: files, line ranges, tests, traps, and the ordered edit plan; treat it as verified",
+              "absent": "no dossier was written for this task; find the code with the code_* tools"
+            },
+            {
+              "name": "task-code.md",
+              "path": "/tmp/fabro/task-code.md",
+              "required": false,
+              "about": "the current text of every line range the dossier cites, copied from this checkout; usable as edit_file old_string",
+              "absent": "no code was copied for this task; read the dossier's ranges with code_show or read_file"
+            }
+          ],
+          "sealed": [],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/iteration.json",
+            "schema": "iteration"
+          }
+        },
+        "iterate_t2": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/iterate.md.j2",
+          "inputs": [
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the Task to implement; .title and .body are the spec, .acceptance the definition of done, .files a hint"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, for reporter intent and human discussion; supplemental"
+            },
+            {
+              "name": "progress.md",
+              "path": "/tmp/fabro/progress.md",
+              "required": false,
+              "about": "every earlier Iteration of this run: the Task it took, whether it passed, the rung, and what it reported",
+              "absent": "No Iteration has run yet."
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": false,
+              "about": "what plan verified in this checkout minutes ago: files, line ranges, tests, traps, and the ordered edit plan; treat it as verified",
+              "absent": "no dossier was written for this task; find the code with the code_* tools"
+            },
+            {
+              "name": "task-code.md",
+              "path": "/tmp/fabro/task-code.md",
+              "required": false,
+              "about": "the current text of every line range the dossier cites, copied from this checkout; usable as edit_file old_string",
+              "absent": "no code was copied for this task; read the dossier's ranges with code_show or read_file"
+            }
+          ],
+          "sealed": [],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/iteration.json",
+            "schema": "iteration"
+          }
+        },
+        "iterate_t3": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/iterate.md.j2",
+          "inputs": [
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the Task to implement; .title and .body are the spec, .acceptance the definition of done, .files a hint"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, for reporter intent and human discussion; supplemental"
+            },
+            {
+              "name": "progress.md",
+              "path": "/tmp/fabro/progress.md",
+              "required": false,
+              "about": "every earlier Iteration of this run: the Task it took, whether it passed, the rung, and what it reported",
+              "absent": "No Iteration has run yet."
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": false,
+              "about": "what plan verified in this checkout minutes ago: files, line ranges, tests, traps, and the ordered edit plan; treat it as verified",
+              "absent": "no dossier was written for this task; find the code with the code_* tools"
+            },
+            {
+              "name": "task-code.md",
+              "path": "/tmp/fabro/task-code.md",
+              "required": false,
+              "about": "the current text of every line range the dossier cites, copied from this checkout; usable as edit_file old_string",
+              "absent": "no code was copied for this task; read the dossier's ranges with code_show or read_file"
+            }
+          ],
+          "sealed": [],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/iteration.json",
+            "schema": "iteration"
+          }
+        },
+        "iterate_t4": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/iterate.md.j2",
+          "inputs": [
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the Task to implement; .title and .body are the spec, .acceptance the definition of done, .files a hint"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue, for reporter intent and human discussion; supplemental"
+            },
+            {
+              "name": "progress.md",
+              "path": "/tmp/fabro/progress.md",
+              "required": false,
+              "about": "every earlier Iteration of this run: the Task it took, whether it passed, the rung, and what it reported",
+              "absent": "No Iteration has run yet."
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": false,
+              "about": "what plan verified in this checkout minutes ago: files, line ranges, tests, traps, and the ordered edit plan; treat it as verified",
+              "absent": "no dossier was written for this task; find the code with the code_* tools"
+            },
+            {
+              "name": "task-code.md",
+              "path": "/tmp/fabro/task-code.md",
+              "required": false,
+              "about": "the current text of every line range the dossier cites, copied from this checkout; usable as edit_file old_string",
+              "absent": "no code was copied for this task; read the dossier's ranges with code_show or read_file"
+            }
+          ],
+          "sealed": [],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/iteration.json",
+            "schema": "iteration"
+          }
+        },
+        "refute": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/refute.md.j2",
+          "inputs": [
+            {
+              "name": "issues",
+              "path": "/tmp/fabro/review/refute_issues.json",
+              "required": true,
+              "about": "the issues this PR closes, each with number, title and body; may be []"
+            },
+            {
+              "name": "diff",
+              "path": "/tmp/fabro/review/refute_diff.patch",
+              "required": true,
+              "about": "the diff of the PR against its base, smallest files first, cut off at about 300 KB"
+            },
+            {
+              "name": "hygiene",
+              "path": "/tmp/fabro/review/hygiene.json",
+              "required": true,
+              "about": "the diff-hygiene counters; samples lists where each fired"
+            },
+            {
+              "name": "validation",
+              "path": "/tmp/fabro/review/refute_validation.md",
+              "required": true,
+              "about": "which validation passed on this exact tree, and the text of .fabro/ci.sh; says so when none is recorded"
+            },
+            {
+              "name": "delta",
+              "path": "/tmp/fabro/review/refute_delta.patch",
+              "required": false,
+              "about": "from the second Refute round: what changed since the previous round's tree, nothing older",
+              "absent": "this is the first Refute round; there is no earlier tree to compare"
+            },
+            {
+              "name": "history",
+              "path": "/tmp/fabro/review/refute_history.md",
+              "required": false,
+              "about": "one line per earlier finding: the finding, the Task it became, and whether that Task passed",
+              "absent": "no earlier Refute round found anything"
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/progress.md",
+            "/tmp/fabro/iteration.json",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/current_task.json",
+            "/tmp/fabro/task-context.md",
+            "/tmp/fabro/task-code.md",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/review/refute.json",
+            "schema": "refute"
+          }
+        },
+        "standards": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/standards.md.j2",
+          "inputs": [
+            {
+              "name": "diff.patch",
+              "path": "/tmp/fabro/review/diff.patch",
+              "required": true,
+              "about": "the full unified diff of everything the pull request changed, origin/<base>...HEAD after the rebase"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/review/diffstat.txt",
+              "required": true,
+              "about": "the change's file-by-file size summary"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/review/changed_files.txt",
+              "required": true,
+              "about": "every path the change touches"
+            },
+            {
+              "name": "commits.txt",
+              "path": "/tmp/fabro/review/commits.txt",
+              "required": true,
+              "about": "the commits on the branch"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue the branch closes; .body at body, .title at title, human discussion at .comments"
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/progress.md",
+            "/tmp/fabro/iteration.json",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/current_task.json",
+            "/tmp/fabro/task-context.md",
+            "/tmp/fabro/task-code.md",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/review/standards.json",
+            "schema": "standards"
+          }
+        },
+        "spec": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/spec.md.j2",
+          "inputs": [
+            {
+              "name": "diff.patch",
+              "path": "/tmp/fabro/review/diff.patch",
+              "required": true,
+              "about": "the full unified diff of everything the pull request changed, origin/<base>...HEAD after the rebase"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/review/diffstat.txt",
+              "required": true,
+              "about": "the change's file-by-file size summary"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/review/changed_files.txt",
+              "required": true,
+              "about": "every path the change touches"
+            },
+            {
+              "name": "commits.txt",
+              "path": "/tmp/fabro/review/commits.txt",
+              "required": true,
+              "about": "the commits on the branch"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue the branch closes; .body at body, .title at title, human discussion at .comments"
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/progress.md",
+            "/tmp/fabro/iteration.json",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/current_task.json",
+            "/tmp/fabro/task-context.md",
+            "/tmp/fabro/task-code.md",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/review/refute.json",
+            "/tmp/fabro/review/refute_verdict",
+            "/tmp/fabro/review/refute_history.md",
+            "/tmp/fabro/review/refute_dropped.json"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/review/spec.json",
+            "schema": "ralph_spec"
+          }
+        },
+        "resolve_merge": {
+          "live": true,
+          "git": "write",
+          "prompt": ".fabro/workflows/ralph/prompts/resolve_merge.md.j2",
+          "inputs": [
+            {
+              "name": "pre_merge_sha",
+              "path": "/tmp/fabro/pre_merge_sha",
+              "required": true,
+              "about": "the commit the run branch was on before the failed merge; HEAD must be back at this on abort"
+            },
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "the task that starts once the merge lands, or the last task when every task has landed; for intent"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue the accumulated work belongs to, supplemental"
+            }
+          ],
+          "sealed": [],
+          "also": []
+        },
+        "resolve_base": {
+          "live": true,
+          "git": "write",
+          "prompt": ".fabro/workflows/ralph/prompts/resolve_base.md.j2",
+          "inputs": [
+            {
+              "name": "base_ref",
+              "path": "/tmp/fabro/base_ref",
+              "required": true,
+              "about": "the name of the base branch; origin/<base> is already fetched"
+            },
+            {
+              "name": "resolve_base_pre",
+              "path": "/tmp/fabro/resolve_base_pre",
+              "required": true,
+              "about": "the commit the branch was on before the merge; on abort, HEAD must be back here"
+            },
+            {
+              "name": "resolve_conflicts.txt",
+              "path": "/tmp/fabro/review/resolve_conflicts.txt",
+              "required": true,
+              "about": "the files the aborted rebase stopped on, one per line; the merge may conflict in others; may be empty"
+            },
+            {
+              "name": "pr",
+              "path": "/tmp/fabro/pr.json",
+              "required": true,
+              "about": "the PR number, title, body, refs and labels; for the branch's intent"
+            },
+            {
+              "name": "issues",
+              "path": "/tmp/fabro/review/refute_issues.json",
+              "required": false,
+              "about": "the issues this PR closes, each with number, title and body; supplemental",
+              "absent": "the linked issues are missing; use the PR description for intent"
+            }
+          ],
+          "sealed": [],
+          "also": []
+        },
+        "learn": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/learn.md.j2",
+          "inputs": [
+            {
+              "name": "inputs.md",
+              "path": "/tmp/fabro/learn/inputs.md",
+              "required": true,
+              "about": "this run's own record: the progress log, the Refute rounds, a table of every Task with its Iterations and misses, and how the run ended"
+            }
+          ],
+          "sealed": [],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/learnings.json",
+            "schema": "learnings"
+          }
+        }
+      }
     }
   }
 }

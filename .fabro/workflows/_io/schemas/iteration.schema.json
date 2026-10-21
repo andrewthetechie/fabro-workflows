@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "iteration",
+  "title": "iteration — one ralph Iteration's result (docs/ralph C4)",
+  "description": "The ralph iterate_t1..iterate_t4 output. It replaces backlog's pair of contracts on this node: a stage has exactly one output contract, so the block that backlog's coder submits as task_blocked rides here as the optional `blocked` object, and task_block_gate reads it from this file. record decides pass or miss from this file's status, its Input receipt and check_ok. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "learnings"],
+  "properties": {
+    "status": {
+      "enum": ["done", "progress"],
+      "description": "done: task_check passes and every acceptance statement of the current Task holds. progress: something is left, and the next Iteration starts from it. A status of done that check_ok contradicts is still a miss."
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 600,
+      "description": "What changed and what is left. It goes into the progress log verbatim."
+    },
+    "learnings": {
+      "type": "array",
+      "maxItems": 3,
+      "items": { "type": "string", "maxLength": 300 },
+      "description": "Facts about the repository the next Iteration would want: a command, a trap, a convention. Never a summary of this Iteration's work."
+    },
+    "blocked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "criterion", "non_goal", "reason"],
+      "description": "Present only when this Iteration could not do the Task. It is backlog's task_blocked contract (#17): a scope block ends the loop as exhausted, a criterion block goes back to triage.",
+      "properties": {
+        "kind": {
+          "enum": ["scope", "criterion"],
+          "description": "scope: the Task needs an edit the run may not make (for example .github/workflows/). criterion: an acceptance criterion cannot be met as written."
+        },
+        "criterion": {
+          "type": "string",
+          "description": "The exact criterion for criterion, or an empty string for scope."
+        },
+        "non_goal": {
+          "type": "string",
+          "description": "The conflicting non-goal or constraint, or an empty string for scope."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One or two sentences on why the Task cannot be completed within the constraints."
+        }
+      }
+    }
+  }
+}

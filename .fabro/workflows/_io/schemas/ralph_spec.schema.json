@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ralph_spec",
+  "title": "ralph_spec — ralph's spec verdict with a residual-risk rating (docs/ralph C6, R5)",
+  "description": "The ralph spec reviewer's output. It is review-merge's spec schema plus a required `risk`, because ralph has no review_fix to write fix_result.json: review_gate writes that file instead, and merge_gate's check 8 needs a risk to judge. Same decision and findings shape as spec. The gates only check decision; the schema enforces it (approve|findings|needs_human_review). _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "summary", "findings", "risk"],
+  "properties": {
+    "decision": {
+      "enum": ["approve", "findings", "needs_human_review"],
+      "description": "approve: nothing worth changing. findings: at least one finding is warranted. needs_human_review: the inputs cannot be judged safely; makes fix_outcome unmergeable and ends the run at mark_needs_human."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One or two sentences stating the verdict and why."
+    },
+    "findings": {
+      "type": "array",
+      "description": "The findings; [] when none. Only an `error` becomes a Task (R4); warning and info go into the PR report.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "message", "files"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "A stable id, e.g. SPEC-001."
+          },
+          "severity": {
+            "enum": ["info", "warning", "error"],
+            "description": "How seriously this finding blocks merging. Only `error` blocks."
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The requirement at stake, how the change misses or contradicts it, and what must change."
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Repository-relative paths; may be empty but must be present."
+          },
+          "line": {
+            "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }],
+            "description": "The line of the finding, or null when it has no single line."
+          },
+          "suggestion": {
+            "type": "string",
+            "description": "The concrete remediation, noting any unresolved architecture decision."
+          }
+        }
+      }
+    },
+    "risk": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5,
+      "description": "How much residual risk a human merging this PR is taking: 1 is nothing to worry about, 5 is do not merge without reading carefully (review_fix's rubric, which starts at 0; a change that needs nothing is `approve`, so there is no 0 here). merge_gate rejects a merge without it and blocks a rating above 3; a PR rated 3 or below that has no outstanding finding is merged automatically, so this number decides whether a human ever reads the change. Rate it honestly: do not inflate it to force review, and do not deflate it to force a merge."
+    }
+  }
+}

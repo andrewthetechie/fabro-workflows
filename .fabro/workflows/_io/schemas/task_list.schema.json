@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task_list",
+  "title": "task_list — the ralph plan's Task list and its disposition (docs/ralph C2)",
+  "description": "The ralph plan agent's output. It encodes plan_gate's shape checks at the structural level: the disposition enum, non-empty strings on every contradiction field, and the seven Task fields with a non-empty acceptance list and a 12,000-byte context. The cross-field rules (tasks only for ready, contradictions only for contradiction, unique ids, the remainder split at 8) are gate checks and stay in plan_gate, because a schema cannot see the other fields. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["disposition", "summary", "contradictions", "tasks"],
+  "properties": {
+    "disposition": {
+      "enum": ["ready", "redundant", "invalid", "contradiction", "needs_human"],
+      "description": "ready: the tasks array is the run's Task list. redundant and invalid: there is no work, and close_noop ends the run. contradiction: the issue asks for something its own non-goals forbid, and return_to_triage sends it back with a question. needs_human: a human decision blocks the work, and mark_stuck ends the run with the summary."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Two or three sentences for the operator: what the issue needs, and why this disposition."
+    },
+    "contradictions": {
+      "type": "array",
+      "description": "The criteria the issue's own boundaries forbid; [] unless the disposition is contradiction.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "non_goal", "needed_surface"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "non_goal": { "type": "string", "minLength": 1 },
+          "needed_surface": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "description": "The ordered Task list; non-empty only for ready. The first 8 are worked in this run and the rest become the Remainder issue.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "body", "acceptance", "files", "covers", "context"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Unique within the Task list, e.g. t1. Every later Tasks.json entry keeps it."
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What to change and why, in the reporter's terms."
+          },
+          "acceptance": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 },
+            "description": "One checkable statement each, traceable to the issue. This is the definition of done for the Iteration that works the Task."
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Repository-relative paths the Task expects to touch; a hint, not a ceiling."
+          },
+          "covers": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The issue requirements this Task serves."
+          },
+          "context": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000,
+            "description": "Markdown for the Iteration: '## Files and symbols', '## Plan' (one step per edit, each with path:N-M) and '## Done when'. excerpts copies every path:N-M it finds."
+          }
+        }
+      }
+    }
+  }
+}

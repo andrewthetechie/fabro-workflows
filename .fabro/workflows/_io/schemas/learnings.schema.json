@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "learnings",
+  "title": "learnings — the rules a ralph run proposes for future runs (docs/ralph C9)",
+  "description": "The ralph learn agent's output. Nothing applies it: learn_post posts the surviving entries as one comment on the target repository's `ralph learnings` issue and a human decides. The evidence check (a path:N or a backticked command) is learn_post's, because it needs the checkout to test the path; the schema only bounds the count and the vocabulary. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["learnings"],
+  "properties": {
+    "learnings": {
+      "type": "array",
+      "maxItems": 5,
+      "description": "At most five rules. [] is a good answer: a run that learned nothing should say so.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule", "evidence", "home"],
+        "properties": {
+          "rule": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One sentence a future run in this repository should follow. About the repository, or about how ralph should work; never about this issue."
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The Task id, Iteration or Refute round that showed it, plus a path:N or the failing command. No evidence, no entry: learn_post drops it."
+          },
+          "home": {
+            "enum": ["agents_md", "test_toml", "ci_sh", "ralph_prompt"],
+            "description": "Where the rule would live if a human accepts it: AGENTS.md, .fabro/test.toml, .fabro/ci.sh, or a ralph prompt in this repository."
+          }
+        }
+      }
+    }
+  }
+}

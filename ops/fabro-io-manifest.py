@@ -312,6 +312,17 @@ def check() -> int:
 
     fails.extend(guide_problems(guide_text()))
 
+    # rule 6: ralph's four Iteration stages are ONE stage under four node ids -- the same
+    # prompt, inputs and output, reached by four rungs of the ladder -- and the manifest
+    # has no way to alias one spec to several ids. So they are listed four times, and this
+    # check is what keeps them from drifting apart (docs/ralph task 01).
+    iters = [src["workflows"].get("ralph", {}).get("stages", {}).get(f"iterate_t{i}")
+             for i in (1, 2, 3, 4)]
+    if any(s is None for s in iters):
+        fails.append("rule6: ralph is missing one of iterate_t1..iterate_t4")
+    elif len({json.dumps(s, sort_keys=True) for s in iters}) != 1:
+        fails.append("rule6: ralph's iterate_t1..iterate_t4 specs differ; they are one stage under four node ids")
+
     # drift
     for wf in WF_ORDER:
         p = WORKFLOWS / wf / "workflow.toml"
