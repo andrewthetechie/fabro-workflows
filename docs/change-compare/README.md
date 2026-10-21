@@ -1,10 +1,12 @@
 # Change compare: did a change to the factory help?
 
 **Status:** baseline taken 2026-10-18 (`result-2026-10-18.txt`), rechecked 2026-10-19
-(`result-2026-10-19.txt`). coders-a's speed gain holds. Neither change has enough comparable
-runs for an outcome verdict, and the queue mix has moved away from the strata with baselines.
-Rerun when the targets in *What would settle it* are met, and write the result as
-`result-<date>.txt` next to this file.
+(`result-2026-10-19.txt`) and 2026-10-20 (`result-2026-10-20.txt`, the 30-run checkpoint of
+fabro-workflows#46). coders-a's speed gain is settled. On writers-app, coders-a's outcomes
+match the other pools in the same window, but its own womens-fantasy-sports target still has
+4 of 10–15 runs. The prompts have no outcome verdict: the gains that look like prompt effects
+started before `9b2b7cb`. Rerun when the targets in *What would settle it* are met, and write the
+result as `result-<date>.txt` next to this file.
 
 This is a handoff for the agent that does the rerun. It records the question, the exact
 change moments, the tool, the rules the 2026-10-18 analysis followed, and what it found.
@@ -95,6 +97,14 @@ Every figure is per run, from the summaries the scheduler's collector already bu
 5. **Fast-lane runs exercise only part of a prompt change.** Every run after `9b2b7cb` so
    far did one task. `decompose`, `extra_decompose`, `plan`/`improve` and `resolve_merge`
    are untested until standard-lane runs arrive.
+6. **Split by lane and by issue family before crediting a change.** The tool does not split
+   by lane. A run that visited `decompose` is standard lane. `result-2026-10-20.txt` shows
+   the ad hoc split. A rerun of a demoted issue changes lane as well as prompts. A run of
+   outcomes that ends just before the change moment belongs to the issues, not the change.
+7. **Read each give-up by hand.** `gave_up` counts correct stops (an issue already fixed on
+   `main`, an undeclared prerequisite, an out-of-scope flake) the same as failures. Look at
+   `fabro events <run> -p` and the issue's `mark_stuck` comment before counting one against
+   a change.
 
 ## Result on 2026-10-18 (`result-2026-10-18.txt`)
 
@@ -148,6 +158,61 @@ has been no new overlay edit and no new `backlog` or `_shared` commit.
   `andrewthetechie` login, which the factory's `--admin` merge also uses, so this cannot
   tell auto-merge from a hand merge.
 
+## Result on 2026-10-20 (`result-2026-10-20.txt`)
+
+61 runs since `9b2b7cb` (22 on coders-a since the swap), so this is #46's 30-run checkpoint. New
+excludes: `01M5AQF992` and `01M5AQZZVN`. Both died in the 10-19 disk fill and were recorded as
+`workflow_error`. coders-c has been drained since 10-18 18:50Z and coders-d since 10-20 03:58Z,
+so most runs after 10-20 04:00Z are coders-a and coders-b. The result file appends three ad hoc
+reads that the tool does not do: a lane split, the GitHub state of each run's PR, and why each
+give-up stopped.
+
+- **coders-a speed: settled.** 21 after-runs with a speed figure, median 33.5 tok/s, against 23
+  before at median 9.1 (max 12.1). 20 of 21 are above the old max. The exception is
+  writers-app#1109 at 10.9. A permutation test gives p < 5e-6.
+- **coders-a quality, measured against the other pools: no worse.** After `9b2b7cb` every pool
+  runs the same prompts, and the scheduler gives each issue to whichever pool is free. So
+  coders-a against coders-b/-d on the same repo, lane and window compares the models. This is
+  the cleanest model read available. On writers-app:
+  - **Fast lane:** coders-a had refute first-pass 2/7, no rework 7/7 and 54 min median, at
+    36.8 tok/s. coders-b had 3/6, 7/7 and 91 min, at 10.4 tok/s. coders-d had 0/3 and 1/3.
+  - **Standard lane:** coders-a had refute 2/3 and no rework 4/5. coders-b had 1/7 and 6/7.
+    coders-d had 1/4 and 5/6.
+
+  coders-a matches coders-b at about 3.5× the speed. The samples are too small for a test.
+- **coders-a quality on womens-fantasy-sports (the README target): 4 fair of 10–15.**
+  - #2166 merged with refute pass and no rework.
+  - #2165 had refute `fail` and 2 rework rounds. Its PR #2184 is open.
+  - #2182 and #2167 ended `mark_stuck`. Neither was decided by coders-a: `extra_decompose`
+    (kimi-k3) and `decompose` (glm-5.3) asked for a human, and both were right. #2182 is a
+    runner-side flake. #2167 depends on #2165, which has not landed and was not declared a
+    blocker.
+  - Against the baseline (refute 11/21, no rework 20/23, merged 4/23), the after-side reads
+    1/2, 3/4 and 1/4. That is no signal.
+- **Prompts: still no outcome signal. The large writers-app / coders-b swing is the issue
+  mix.**
+  - **writers-app / coders-b, fast lane only:** gave up 9 of 14 before against 1 of 7 after.
+    No rework went from 2 of 14 to 7 of 7. But the demote streak was one issue family
+    (#1047–#1060). The new family's runs before the push (#1061–#1065, fast lane, coders-a/b/c)
+    already had 3 of 4 with no rework, no demotes and refute 1 of 4, the same as after.
+  - **Standard lane:** the seven demoted issues were rerun on the standard lane after the push.
+    All reached a PR, and #1047, #1050, #1052, #1053, #1054 and #1055 merged on GitHub. That
+    credits the lane (decompose + improve). It cannot credit the new prompts, because no
+    old-prompt standard-lane run on those issues exists.
+  - **lawncare-saas / coders-d:** still 2 after-runs. coders-d is drained, and lawncare-saas
+    work now goes to coders-a and coders-b on the standard lane.
+- **Give-ups after the push are mostly correct stops.** There were 5 `mark_stuck` in 61 runs,
+  against 2 in 112 before:
+  - 2 were stale issues whose work was already on `main` (writers-app#1055, #1106). One cost a
+    4 h rescue timeout and the other cost an operator answer. A fast-lane empty diff goes to
+    `human_rescue`, not `close_noop`. This is the same class as #44.
+  - 2 were correct decomposer stops (above).
+  - 1 was a stage misbehaving. wfs#2163's `improve` stage, on coders-d, edited 7 repo files
+    and skipped the submit tool twice. `improve.md.j2` was rewritten in `9b2b7cb`. One case is
+    not a trend, but if it recurs, it points at the improve prompt.
+- **GitHub merge state does not discriminate.** 207 of 213 factory PRs since 10-14 merged, on
+  both sides of the change.
+
 ## What would settle it
 
 | Question | Stratum | Target | Baseline to beat (since 10-15) |
@@ -158,7 +223,18 @@ has been no new overlay edit and no new `backlog` or `_shared` commit.
 | prompts, fast lane | the busiest coders-b or coders-c stratum | ~20 after-runs | from the rerun's own "before" rows |
 | prompts, standard lane | any | a handful of runs that visit `decompose` | read their run lines by hand; too few for a test |
 
-At about 30 runs a day across four pools, that is several days. Check the queue mix first:
+Progress at 2026-10-20 ~20:30Z:
+- **coders-a speed:** met (21 runs).
+- **coders-a / womens-fantasy-sports:** 4 fair runs. coders-a holds wfs#2168, and 5 wfs issues
+  are queued.
+- **lawncare-saas / coders-d:** 2 runs. It cannot fill while coders-d is drained.
+- **Busiest coders-b stratum** (writers-app / coders-b): 14 fair after-runs, but its before
+  side is the demote-streak issue family, so the comparison is not fair.
+- **Standard lane:** about 41 after-runs, read by hand.
+
+With two pools undrained the rate is about 12–15 runs a day, not 30.
+
+Check the queue mix first:
 coders-a quality needs womens-fantasy-sports issues to reach coders-a, and that depends on
 what the queue holds.
 
