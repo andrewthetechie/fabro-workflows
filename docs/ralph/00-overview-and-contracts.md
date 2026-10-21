@@ -55,7 +55,7 @@ issue [agent]  (even number, ralph_share=50, not fast-path)
 | # | Precondition | Why |
 |---|---|---|
 | P1 | The plan trial (#25) has closed with its option 1: `improve` deleted, `plan` kept, `trial.py`, `/api/scorecard/arms` and `--by-arm` deleted (`docs/plan-trial/README.md`, *Ending the trial*). | The control arm must be one stable `backlog`, and issue parity must be free. |
-| P2 | The Task validation result (`docs/task-validation/`, due 2026-10-22) and the Refuter-evidence measurement (`docs/refuter-evidence/`; written 2026-10-21, `result-2026-10-21.txt`, after the operator ended the window early) are written. | Their windows must not overlap a trial that changes which workflow runs half the issues. |
+| P2 | The Task validation result and the Refuter-evidence measurement are written. **Met 2026-10-21:** both `docs/task-validation/result-2026-10-21.txt` and `docs/refuter-evidence/result-2026-10-21.txt` were written that day, after the operator read both windows early. | Their windows must not overlap a trial that changes which workflow runs half the issues. |
 | P3 | `make check-host` passes with the `Ralph` node and edge counts recorded in `AGENTS.md`. | `fabro validate` exists only in the container. |
 
 Tasks 01-11 can be built before P1 and P2 hold. Task 10 is written against the scheduler

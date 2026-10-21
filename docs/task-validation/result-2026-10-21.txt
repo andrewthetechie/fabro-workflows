@@ -1,0 +1,127 @@
+Task validation trial (#26, ADR 0025) — result, 2026-10-21
+=========================================================
+
+Trial: womens-fantasy-sports. The switch is 2026-10-15T01:11:50Z (wfs#2088, `4fa6bb8`).
+C10 (00-overview-and-contracts.md) passes when all three hold:
+  (a) the median per-visit `validate` minutes after the switch are at most 50% of baseline
+  (b) the red final rate after the switch is at most baseline + 5 points
+  (c) box-hours per merged PR after the switch are no higher than baseline
+
+Windows (runs dispatched, womens-fantasy-sports only):
+  baseline  2026-10-14T00:00Z .. 2026-10-15T00:00Z     57 runs, all summarized
+  after     2026-10-15T01:11:50Z .. 2026-10-21T20:06:55Z 57 runs, all summarized
+The after-window was read on 2026-10-21 at 20:07Z, not on the morning of 10-22, by operator
+decision, so the ralph trial's P2 (ADR 0029) does not wait. It is ~4 hours short of 10-21's
+end. Both sides have well over 15 runs. The two pre-switch runs the 10-15 handoff named
+(01M4YEA2KV6G, 01M4YFG5YSRC) were dispatched before the switch time and are not in it.
+
+VERDICT: PASS ON CAUSE (operator decision, 2026-10-21).
+- (a) and (b) pass with wide margins.
+- (c) FAILS as written: 1.74 box-hours per merged PR against 8.77.
+- The cause of (c) is not Task validation. (c) exists to catch test time moving from
+  `validate` into the coder stage, where (a) cannot see it. Measured directly, that move
+  is about 2.8 box-hours over the after-window, against about 9.2 box-hours that `validate`
+  saved: a net saving of about 6.4 box-hours. The rest of the rise in (c) comes from
+  changes that landed in the same window (*Decomposing (c)*, below).
+- ADR 0025 is accepted with this note. Task 11 (the other three repositories) may start.
+  #26 stays open until task 11 is done, as the series says.
+
+The three criteria
+------------------
+    | | baseline | after | target | |
+    |---|---|---|---|---|
+    | (a) validate minutes per visit, median (all visits) | 6.03 | 0.48 | <= 3.01 | PASS (8% of baseline) |
+    | (b) red final rate (first final_route != pr) | 0 of 56 (0%) | 0 of 45 (0%) | <= 5% | PASS |
+    | (c) box-hours per PR merged by the workflow | 1.74 (60.9 h / 35) | 8.77 (131.6 h / 15) | <= 1.74 | FAIL as written |
+
+Recorded alongside (task 10, step 2)
+------------------------------------
+- validate per visit by mode (after): scoped 103 visits, p50 0.37 / p90 1.02 min; full 30
+  visits, p50 5.90 / p90 6.23 min; all 133, p50 0.48 / p90 5.92. Baseline: 81 visits (77
+  legacy, 4 full), p50 6.03 / p90 6.71.
+- Full visits by reason (after): full_glob 17, too_many_tests 11, deleted 2. There was no
+  `unowned_test` and no `index_unavailable`, so there is no configuration or index fault.
+  The 17 full_glob visits include the `.pre-commit-config.yaml` and
+  `frontend/openapi-ts.config.ts` globs, left open on 10-15 by choice (#26 handoff, item 3).
+- Red visits: scoped 5 (after), legacy 6 (baseline). None reached Final validation red.
+- Untested files 17, unchecked 0 (after).
+- Preparation per scoped visit (`task_validation_prepare_s`, from the events): p50 3 s,
+  p90 4 s. A scoped visit's p50 is 22 s, so preparation is about 14%, under half. It is
+  not the next lever.
+- The coder's minutes per visit (per-run average), p50: 3.61 baseline, 8.55 after.
+  rework_t1: 3.84 and 4.23.
+- `task_check` calls per run (after): mean 4.0, median 3, over the 51 runs that reached an
+  agent stage. Baseline: 0.16 (8 calls of 0 s each, before the switch made the tool live).
+
+Where the test time went (events, filtered on the host)
+-------------------------------------------------------
+Every test-tool call in coder and rework stages: `task_check`, `run_tests`,
+`baseline_check`, and a shell command that runs a test runner (pytest, vitest, jest,
+playwright, npm/bun test, cargo test, fabro-test, ci.sh). The time is from each tool call's
+start event to its completion event.
+
+    | | baseline | after |
+    |---|---|---|
+    | coder + rework visits | 82 | 135 |
+    | test-tool minutes inside them | 77.3 | 295.1 |
+    | per visit | 0.94 min | 2.19 min |
+    |   of which coder task_check | 0 | 67.4 min (154 calls, p50 12.5 s) |
+    |   coder run_tests | 25.0 | 98.2 |
+    |   coder shell test runners | 50.1 | 95.0 |
+    |   coder baseline_check | 0.4 | 10.4 |
+
+The test time Task validation moved into the coder stage is at most (2.19 − 0.94) × 135 ≈
+169 min ≈ 2.8 box-hours. `validate` itself ran 3.8 h over 133 visits. At the baseline's 5.85
+min per visit it would have run 13.0 h, so it saved about 9.2 h. Net: about 6.4 box-hours
+saved over the after-window, about 6.5 a week.
+
+Decomposing (c)
+---------------
+Box-hours by lease category (`scorecard.lease_hours`):
+
+    | | baseline | after | change |
+    |---|---|---|---|
+    | writing code (coder box) | 6.8 | 37.8 | +31.0 |
+    | improve (box planner) | 2.2 | 6.1 | +3.9 |
+    | hosted agents | 12.2 | 27.6 | +15.4 |
+    | validate | 7.9 | 3.8 | -4.1 |
+    | merge phase | 19.0 | 32.5 | +13.5 |
+    | human gates | 1.9 | 14.3 | +12.4 |
+    | other commands | 9.8 | 8.5 | -1.3 |
+    | overhead | 1.1 | 1.1 | 0 |
+    | total | 60.9 | 131.6 | +70.7 |
+
+- Bigger runs. 1.27 coder visits per run in the baseline against 2.47 after. The baseline
+  day was dominated by one-task runs.
+- Coder time per task tripled, and tests explain little of it. Writing code was 5.7 min per
+  coder visit in the baseline and 18.7 after, and test tools account for about 1.3 of the
+  13-minute rise. Inside the window: coders-a's model swap (2026-10-18 04:53Z) and the
+  coder prompt rewrite (`9b2b7cb`, 10-18 06:59Z). Pool mix: coders-c carried 25 of the 57
+  baseline runs and 9 of the 57 after (it was drained from 10-18 18:50), and coders-a went
+  from 21 to 32.
+- Fewer merges by the workflow. 35 of 56 PRs in the baseline against 15 of 45 after, and
+  the operator merged 21 against 30. The luna Refuter (from 2026-10-14 15:25Z, so mostly
+  after the baseline) and its `unverifiable` holds (#40, then #52), plus 10 CI holds, cut the
+  denominator. Held after: refuter 15, CI 10, diff hygiene 5.
+- The disk fill. Run 01M57028F6TE3678NWB5R070KF (wfs#2104) failed after holding coders-a
+  for 10.5 h, and 2 runs failed outright, 11.0 h between them.
+- Human gates: 1.9 h against 14.3 h, runs waiting at `human_rescue`. Red `validate` visits went
+  from 6 to 5, so `validate` failures are not what sent runs there.
+- Also in both windows: the plan trial (#25, closed 2026-10-21 by ADR 0030).
+
+None of these is Task validation, and all of them push (c) up. (c) cannot be read in this
+window. The cause it guards against is measured directly above, and it is a saving.
+
+Commands
+--------
+    ssh andrew@10.10.0.32 'docker exec -i fabro-scheduler python -' < tv.py
+    #   sqlite backup of /data/scheduler.db to /tmp/measure-tv.db (left there); every query
+    #   on the copy. scorecard.compute(_filter_repo(Store.scorecard_rows(a, b), wfs)) for
+    #   both windows (the same numbers `ops/fabro-scorecard.sh --repo ... --from --to` prints,
+    #   with the after-window cut at the switch and read time); run_stage_stats for coder and
+    #   rework per-visit minutes; run_history for box-hours by ending and pool.
+    ssh andrew@10.10.0.32 'bash /tmp/tvscan.sh && python3 /tmp/tvagg.py'
+    #   for each run id: `docker compose exec -T fabro fabro events <run> --json </dev/null
+    #   | jq` that keeps only test-tool start events, their completion events, and
+    #   `validate`'s stage.completed (mode, prepare_s). Written to a host tsv and aggregated
+    #   there. No event left the host.

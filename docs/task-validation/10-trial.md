@@ -38,3 +38,17 @@ The result file is committed, and the statuses match it.
 
 ## Depends on
 09, plus seven days of runs.
+
+## Result (2026-10-21): pass on cause
+
+Read on 2026-10-21 at 20:07Z instead of 10-22, by operator decision. The after-window is
+2026-10-15T01:11:50Z to 10-21T20:06:55Z, with 57 runs on each side. The numbers are in
+`result-2026-10-21.txt`.
+
+- (a) passed, 6.03 → 0.48 min. (b) passed, 0% → 0%.
+- (c) failed as written, 1.74 → 8.77 box-hours per merged PR. The cause was measured:
+  Task validation moved about 2.8 box-hours of test time into the coder stage and saved
+  about 9.2 in `validate`. The rise came from other changes in the window.
+- The operator chose to treat it as a pass: no rollback, and ADR 0025 is accepted. #26 got
+  the result as a comment and stays open until task 11 is done.
+

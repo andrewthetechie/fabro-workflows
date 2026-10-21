@@ -1,13 +1,15 @@
 # Task validation: overview and canonical contracts
 
-**Status:** designed 2026-10-14 (issue #26, ADR 0025 proposed). Tasks 01 (the scorecard
+**Status:** designed 2026-10-14 (issue #26, ADR 0025 proposed then, accepted 2026-10-21). Tasks 01 (the scorecard
 rows and the re-summarize command; deployed, history re-summarized), 02 (`fabro-code
 tests --json` + `list-tests`), 03 (the `test.toml` Task validation keys), 04 (`fabro-io
 task-plan`), 05 (`fabro-io task-check`, the `task_check` tool, `fabro-test --task`,
 `fabro-io` 0.5.0), 06 (the images and `min_binary`) and 07+08 (the graph and the agents and
 records) are done. The 2026-10-14 review's amendments (A1–A7, `fabro-io` 0.5.1) are deployed,
-and task 09 merged at **2026-10-15T01:11:50Z**, the trial's switch time; task 10 reads its
-result after 2026-10-21, and task 11 follows a pass.
+and task 09 merged at **2026-10-15T01:11:50Z**, the trial's switch time. **Task 10 done
+2026-10-21** (`result-2026-10-21.txt`). The operator recorded a pass on cause: (a) and (b)
+passed, and (c) failed as written, but not because of Task validation. ADR 0025 is accepted.
+Task 11 is next, and #26 closes when it is done.
 The live-run acceptance checks that need a 30-minute-to-4-hour run are in
 `handoff.md`.
 

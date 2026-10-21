@@ -1,7 +1,13 @@
 # Task validation is scoped to the diff, and Final validation is the net
 
-**Status:** proposed (2026-10-14). It becomes accepted when the womens-fantasy-sports trial
-(`docs/task-validation/` task 10) meets both targets of issue #26. The task series is
+**Status:** accepted (2026-10-21), on the womens-fantasy-sports trial
+(`docs/task-validation/result-2026-10-21.txt`). (a) passed: the median `validate` visit fell
+from 6.03 to 0.48 minutes. (b) passed: the red final rate was 0% before and after. (c),
+box-hours per merged PR, failed as written (1.74 against 8.77). The operator accepted the ADR
+because the cause is elsewhere. Measured directly, Task validation moved about 2.8 box-hours
+of test time into the coder stage and saved about 9.2 in `validate`. The rise in (c) came from
+other changes in the same window: twice the tasks per run, the coders-a model and coder
+prompt changes, pool mix, and the luna Refuter's holds. Proposed 2026-10-14. The task series is
 `docs/task-validation/`. It amends one consequence of ADR 0018 (below).
 
 `backlog`'s per-task `validate` ran the repository's full `setup.sh && ci.sh` after every
