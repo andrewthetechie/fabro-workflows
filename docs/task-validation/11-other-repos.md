@@ -51,7 +51,7 @@ decides the merge order.
 | jelly-swipe | [#469](https://github.com/andrewthetechie/jelly-swipe/pull/469) | 15 s green | `setup.sh` now runs the frontend's `npm ci`. A fresh sandbox had no `frontend/node_modules` until `ci.sh`, so every scoped frontend check failed with `tsc: not found`, and so does today's `run_tests frontend`. The frontend tests sit in `frontend/` itself: `tests = ["frontend/*.test.ts", "frontend/*.test.tsx", "frontend/test/**"]`. |
 | writers-app | [#1158](https://github.com/andrewthetechie/writers-app/pull/1158) | 47 s frontend-only, 94 s with Rust | Measured at 4 CPU / 8 GB. The frontend `tests` also owns `tests/eslint/**` and `scripts/**` (vitest's default include). No `max_tests` (largest selection 18 s). `lint` stays whole-repo because of `eslint-suppressions.json`. |
 
-Each PR body has its plans and timings. Two gaps were found in both Python backends: a
+Each PR body has its plans and timings. One gap shows in both Python backends: a
 router edit selects no test, because the API tests reach routers through the app and the
 import index doesn't follow that. Final validation covers it.
 
