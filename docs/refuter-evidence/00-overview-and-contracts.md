@@ -1,6 +1,6 @@
 # Refuter evidence: overview and canonical contracts
 
-**Status:** Deployed 2026-10-15 (pushed `2a2be46` ~20:55Z, `make deploy-scheduler` 20:56Z). Task 06 step 1, the live check, passed on 2026-10-16, and it added the test route to D7 (see `06-live-check-and-measure.md`). The 7-day measurement is open and covers 2026-10-17 to 2026-10-23. Issue #40.
+**Status:** Deployed 2026-10-15 (pushed `2a2be46` ~20:55Z, `make deploy-scheduler` 20:56Z). Task 06 step 1, the live check, passed on 2026-10-16, and it added the test route to D7 (see `06-live-check-and-measure.md`). **Measured and closed 2026-10-21** (`result-2026-10-21.txt`): the operator ended the window early, at 2026-10-21 19:25Z. No command criterion that `ci.sh` runs was held. The *Done when* counts were still exceeded on 10-18 and 10-19, by process criteria, the class D1 put out of scope. That class moves to #52. D9 did not fire. Issue #40 (closed).
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report

@@ -1,0 +1,134 @@
+Refuter evidence (#40) — result, 2026-10-21
+==========================================
+
+Question (00-overview-and-contracts.md, *Done when*): after the fix that lets the Refuter
+credit `ci.sh` for command criteria (2a2be46, deployed 2026-10-15 20:56Z; test-route
+addendum d1fd673, 2026-10-16), are
+  C1  `unverifiable`-only first verdicts <= 5 a day across repositories,
+  C2  fast-lane PRs held by the Refuter <= 1 a day, and
+  C3  CI-credited criteria not rising while operator fixes or reverts on merged PRs rise?
+
+Window: runs dispatched 2026-10-17T00:00Z to 2026-10-21T19:25Z. The planned window was
+10-17 to 10-23 (06-live-check-and-measure.md). The operator ended it early on 2026-10-21 so
+the `ralph` trial (ADR 0029, precondition P2) does not have to wait for it. Every run
+dispatched in the window was summarized at measurement (279 runs, 0 unsummarized; 2 leases
+were still in flight and are not in `run_history` yet). 10-21 is a partial day.
+
+VERDICT: the fix works for the class it targeted, and the done-when criteria as written are
+NOT met, because the class D1 put out of scope came back and now causes most holds.
+- Command criteria that `ci.sh` runs: 0 false holds in the window (against 17 holds in the
+  ~30 hours on luna before the fix). The 3 command-criterion holds that remain are correct
+  under D7: `ci.sh` does not run that invocation.
+- C1 fails on 10-18 (7) and 10-19 (8). C2 fails on the same two days (5 and 7). C3 holds.
+- D9's over-blocking trigger (> 5 a day for 3 consecutive days) did not fire: 2 days.
+- 13 of the 18 `unverifiable`-only holds are process criteria ("run X and commit the result",
+  "load these guideline files before writing Rust") from one writers-app tech-debt issue
+  template. Follow-up issue: see *Next*.
+
+How this was measured
+---------------------
+Read-only on the host. The scheduler database was copied with sqlite's backup API inside
+the container to /tmp/measure-refuter.db (left there; a scratch file), and every query ran
+against the copy. The script was piped on stdin and is not committed:
+
+    ssh andrew@10.10.0.32 'docker exec -i fabro-scheduler python -' < measure.py
+    #   Store("/tmp/measure-refuter.db").scorecard_rows(day_start, min(day_end, cut))
+    #   scorecard.compute(...) per day, for the window, and for fast-lane runs only.
+    #   Fast lane = a run with a `route_lane` stage, no `decompose` stage, and a Refuter
+    #   stage (run_stage_stats). Baselines: the same compute over 10-07..10-14T15:25Z (Sol)
+    #   and 10-14T15:25Z..10-15T20:55Z (luna, before the fix).
+
+    gh pr view <pr> -R <repo> --json state,mergedBy,comments
+    # each held PR's merge-phase report, *Unmet criteria* section, for the classification
+
+    gh api repos/andrewthetechie/<repo>/commits?since=2026-10-17T00:00:00Z
+    # reverts on the four target repositories' default branches
+
+No fabro events were read. The reports came from the PR comments the merge phase posts.
+
+Per day (by dispatch day, UTC)
+------------------------------
+    | day | runs | Refuter runs | pass | not_met | defects | unverifiable-only | CI-credited | held by Refuter | fast-lane held by Refuter |
+    |---|---|---|---|---|---|---|---|---|---|
+    | 10-17 | 42 | 35 | 29 | 6 | 0 | 0 | 96 | 0 | 0 (30 fast runs) |
+    | 10-18 | 179 | 24 | 12 | 5 | 0 | 7 | 35 | 6 | 5 (13) |
+    | 10-19 | 32 | 26 | 11 | 6 | 1 | 8 | 31 | 9 | 7 (17) |
+    | 10-20 | 19 | 11 | 1 | 6 | 2 | 2 | 10 | 4 | 0 (0 fast runs) |
+    | 10-21 to 19:25Z | 7 | 5 | 2 | 1 | 1 | 1 | 3 | 2 | 0 (0 fast runs) |
+    | window | 279 | 101 | 55 | 24 | 4 | 18 | 175 | 21 | 12 (60) |
+
+10-18's 179 runs are mostly `failed/launch_failed` dispatches that never started; the
+Refuter column is the one to read. No fast-lane run was dispatched on 10-20 or 10-21, so C2
+has no data for those days.
+
+Baselines (same compute):
+    Sol, 10-07..10-14T15:25Z:      250 Refuter runs, pass 199, not_met 11, other 9 (the split
+                                   into unverifiable-only did not exist yet); operator-commit
+                                   PRs 37 of 252 (15%)
+    luna before the fix, 10-14T15:25Z..10-15T20:55Z: 45 Refuter runs, pass 16, not_met 5,
+                                   other 24 (the #40 holds); operator-commit PRs 4 of 45 (9%)
+
+The 18 `unverifiable`-only first verdicts, classified
+------------------------------------------------------
+From the *Unmet criteria* section of each PR's merge-phase report. 17 of 18 were merged by
+hand; lawncare-saas#2972 is open.
+
+  Process criterion: "run `npx eslint --prune-suppressions` and commit the pruned file" — 9
+    writers-app #1094 #1096 #1112 #1115 #1116 #1117 #1118 #1121 (fast lane) and #1125
+    (standard lane). In every one the Refuter confirmed the RESULTING state
+    ("eslint-suppressions.json contains no entries for the listed rules") and held only
+    because the act of running the command is not recorded.
+  Process criterion: "follow code-standards-rust.md and load the ms-rust skill's guideline
+    files before writing Rust" — 4
+    writers-app #1101 #1102 #1103 #1137. Not observable in any tree.
+  External-state condition — 1
+    lawncare-saas#2944: "when issue #2891 and its sibling are both closed, remove the ignore";
+    the Refuter has no issue-state input.
+  Missing input — 1
+    writers-app#1124: "the issues input was empty", although the PR body says
+    `Resolves #1068`. A possible `refute_prep` defect; one run.
+  Command criteria that `ci.sh` does not run — 3, all correct under D7
+    writers-app#1140: `cargo clippy --no-default-features` and three feature selections;
+      ci.sh:12 runs only `--all-features`.
+    lawncare-saas#2972: `npm run lint`; ci.sh:19-21 does not run it.
+    lawncare-saas#2950: "each touched script still runs"; tests cover some, not all.
+
+Both process-criterion families come from one writers-app issue template (sections Why /
+How to fix / How this debt is suppressed today / Findings / Done when / Scope). Its
+*Done when* lines name an action, not a state.
+
+Step 3: the out-of-scope classes (D1)
+-------------------------------------
+D1 named three non-command classes and asked whether they recur.
+- Lint-probe / process step (lawncare-saas#2841's class): recurred, 13 holds. The dominant cause.
+- "Tests pass unchanged" (wfs#2097's class): no hold in the window. It was credited to
+  `cargo test` once on 10-16 (live check, writers-app#1046).
+- Diagnosis comment (wfs#2080's class): no hold in the window.
+- New: an external-state condition (1), and an empty issues input (1).
+
+C3: CI credit against operator fixes and reverts
+------------------------------------------------
+- Reverts: none on any of the four target repositories since 2026-10-17. The one regex hit
+  (womens-fantasy-sports ee566e22) is a feat commit whose body describes reverting a file
+  inside its own change.
+- Operator-commit PRs rose: 30 of 106 (28%) against 15% (Sol) and 9% (luna before the fix).
+  That is not the under-blocking C3 guards against. 22 of the 30 are PRs the merge phase
+  blocked (8 Refuter `pass`, 7 fail, 7 unverifiable-only) and the operator merged by hand.
+  The three workflow-queued PRs with an operator commit (lawncare-saas#2939, #2943,
+  writers-app#1120) each have one commit, the change itself. None of the 30 is a fix to
+  a criterion the Refuter credited to CI.
+- CI-credited criteria per day follow the Refuter volume (96, 35, 31, 10, 3). They do not rise.
+C3 holds.
+
+Next
+----
+1. #40 is done for its class: no command criterion that `ci.sh` runs was held in the window.
+2. A follow-up issue for process criteria: #52. The Refuter already confirms the resulting state.
+   The options are:
+   (a) a prompt rule: a criterion that names an action is judged on the state the action
+       leaves, and a step that leaves no trace in the tree is out of scope like a
+       post-deploy check;
+   (b) fix writers-app's tech-debt issue template so *Done when* states the end state;
+   (c) give the Refuter issue state for conditions on other issues.
+   And check `refute_prep`'s empty issues input on writers-app#1124.
+3. D9 did not fire, so the Refuter model stays gpt-6-luna.

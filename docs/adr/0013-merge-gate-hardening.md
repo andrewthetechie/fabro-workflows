@@ -298,3 +298,10 @@ drift" (lawncare-saas#2847, hand-merged). `ci.sh` runs `pytest tests/`, and
 scripts and hooks as indirect routes. The rule now also accepts a test that `ci.sh` runs when that test
 runs the command itself. Before it marks a command criterion `unverifiable`, the Refuter must search the
 test suites for the command. The rule about behavioural criteria does not change.
+
+**Result (2026-10-21).** Measured over runs dispatched from 2026-10-17 to 2026-10-21 19:25Z
+(`docs/refuter-evidence/result-2026-10-21.txt`; the window was ended two days early). No
+command criterion that `ci.sh` runs was held. `unverifiable`-only first verdicts were 7 and
+8 on 10-18 and 10-19, so the over-blocking trigger above did not fire (2 days, not 3). 13 of
+the 18 were process criteria ("run X and commit", "load these guidelines first"), the class
+#40 left out of scope. They are tracked in #52.

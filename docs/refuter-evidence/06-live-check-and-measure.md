@@ -51,3 +51,22 @@ lawncare-saas issues. The rule (D7, the ADR 0013 addendum) now also counts a tes
 `ci.sh` runs when that test runs the command itself, and the Refuter must search for one
 before it marks a command criterion `unverifiable`. That change makes the window start
 on 2026-10-17: measure with `--from 2026-10-17 --to 2026-10-23`.
+
+## Result of steps 2 and 3 (2026-10-21): the window ended early
+
+The operator ended the window at 2026-10-21 19:25Z, two days early, so that the `ralph`
+trial's precondition P2 (ADR 0029) does not wait for it. The window covers runs dispatched
+from 2026-10-17 to 2026-10-21 19:25Z: 279 runs and 101 Refuter visits, all summarized. The
+numbers are in `result-2026-10-21.txt`.
+
+- **C1:** `unverifiable`-only first verdicts per day were 0, 7, 8, 2 and 1. 10-18 and 10-19
+  are over 5. **C2:** fast-lane PRs held by the Refuter were 0, 5, 7, 0 and 0, with no fast
+  run dispatched on 10-20 or 10-21. **C3** holds: there were no reverts, and no operator fix
+  traces to a criterion credited to CI.
+- No command criterion that `ci.sh` runs was held, against 17 holds before the fix. The 3
+  command holds left are correct under D7.
+- 13 of the 18 holds are process criteria from one writers-app tech-debt template ("run
+  `eslint --prune-suppressions` and commit", "load the ms-rust guidelines first"). This is
+  step 3's lint-probe class recurring. It moves to #52. The other two D1 classes did not
+  recur.
+- D9 did not fire (2 days over 5, not 3). The model stays gpt-6-luna.
