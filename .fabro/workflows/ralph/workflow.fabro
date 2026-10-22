@@ -966,6 +966,7 @@ RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
 if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   echo invalid > $R/refute_verdict
   echo 'The refuter wrote no valid result for this round, so it has no verdict and the merge is refused.' > $R/refute_reason.txt
+  echo hold > /tmp/fabro/refute_route
   jq -nc --argjson le \"$LE\" '{context_updates:{refute_verdict:\"invalid\",refute_not_met:false,refute_unverifiable_only:false,refute_ci_credited:0,refute_route:\"hold\",loop_exhausted:$le}}'
   exit 0
 fi
@@ -1040,7 +1041,140 @@ if [ \"$ROUTE\" = tasks ]; then
   rm -f /tmp/fabro/refute_tasks.json
   echo 'refuter round '$VIS': '$NM' criterion(a) and '$DF' defect(s) became Tasks' >&2
 fi
+echo $ROUTE > /tmp/fabro/refute_route
 jq -nc --arg v \"$V\" --argjson n \"$NOT\" --argjson u \"$UO\" --argjson c \"$CC\" --arg r \"$ROUTE\" --argjson le \"$LE\" '{context_updates:{refute_verdict:$v,refute_not_met:$n,refute_unverifiable_only:$u,refute_ci_credited:$c,refute_route:$r,loop_exhausted:$le}}'"]
+
+    // ---- Prepare the reviewers' inputs (C6) ----
+    // NOT a copy of the shared `prep_review`, though it starts from its lines: there is no
+    // `base_ref` yet (the merge stage owns that file and has not run), so the base is
+    // `origin/main`, and ralph has no `open_pr_prep` to write one. Everything else is the
+    // shared node's: it clears all three review contracts first, so a stale file from an
+    // earlier Refute round can never be read as this round's result, then re-takes the diff,
+    // the stat, the changed-file list and the commits.
+    //
+    // The shared node's 2 MB ceiling stays. Over it, the shared phase writes
+    // `needs_human_reason` and lets the merge phase stop; ralph has no PR yet, so it writes
+    // `stuck_reason.md` and fails, which ends the run at `mark_stuck` with the reason.
+    review_prep [label="Prepare review inputs", shape=parallelogram, timeout="2m",
+        script="set -e
+B=main
+rm -f /tmp/fabro/review/standards.json /tmp/fabro/review/spec.json /tmp/fabro/review/fix_result.json
+git fetch origin \"$B\"
+git diff origin/\"$B\"...HEAD > /tmp/fabro/review/diff.patch
+git diff --stat origin/\"$B\"...HEAD > /tmp/fabro/review/diffstat.txt
+git diff --name-only origin/\"$B\"...HEAD > /tmp/fabro/review/changed_files.txt
+git log origin/\"$B\"..HEAD --format='%h %s' > /tmp/fabro/review/commits.txt
+BYTES=$(wc -c < /tmp/fabro/review/diff.patch | tr -d ' ')
+if [ $BYTES -gt 2000000 ]; then
+  echo 'The branch diff exceeds 2000000 bytes and is not safely reviewable in one pass. Split the issue.' > /tmp/fabro/stuck_reason.md
+  exit 1
+fi
+echo 'review inputs: '$BYTES' diff bytes'"]
+
+    // ---- The two pre-PR reviews (O9, C6, R4, R5) ----
+    // They run AFTER the Refuter passes or holds, and before the pull request exists, so
+    // neither sees a PR number and neither is part of the shared merge phase.
+    //
+    // timeout="25m" (standards) and "15m" (spec) are the shared phase's numbers, chosen
+    // there for the shared prompts. They were measured with `.merge-standards` on
+    // glm-5.3-flash and `.merge-spec` on glm-5.3; O5 puts both on kimi-k3, which is
+    // UNMEASURED on these prompts, so the numbers carry the old subject and the shakedown
+    // must re-derive them (invariants-graph, *Timeouts*). Once a finding blocks, it becomes
+    // a Task for the loop, and the next round re-runs both reviews.
+    standards [label="Standards review", class="review-standards", timeout="25m", max_retries=1, prompt="@prompts/standards.md.j2"]
+    spec [label="Spec review", class="review-spec", timeout="15m", max_retries=1, prompt="@prompts/spec.md.j2"]
+
+    // ---- Decide what the reviews mean (C6) ----
+    // A finding BLOCKS when its severity is `error` (R4); `warning` and `info` go into the
+    // report only, because a loop that fixed every style warning would spend its round
+    // budget on style.
+    //
+    // Receipts: the two results carry DIFFERENT visits, because two stages wrote them, so
+    // this cannot compare them to the one `.io/stage.json` it sees. What it checks instead
+    // is that each file names its own reviewer and carries a non-empty visit, which a file
+    // written by hand does not; the stale-file guard is `review_prep`, which deletes both
+    // before the reviewers run. A missing or invalid result fails the node: no PR exists, so
+    // stopping is cheaper than opening one nobody reviewed.
+    //
+    // `tasks` needs a blocking finding, Refute rounds left (`refute_visits < 3`) and a
+    // Refuter that passed -- `refute_gate` records its route in `/tmp/fabro/refute_route`
+    // for exactly this, since a command node cannot read another's context. Each blocking
+    // finding becomes a Task that keeps the finding's id, so the next round's
+    // `fixes_applied` can name it.
+    //
+    // On the `pass` route it writes `/tmp/fabro/review/fix_result.json` in `review_fix`'s
+    // shape (R5), because ralph has no fixer to write one: `outcome` is `fixed` when the
+    // loop fixed something and `no_changes_needed` when there was nothing to fix, `risk`
+    // comes from `spec.json`, `fixes_applied` lists every `review`-sourced Task that passed
+    // (this round's and earlier rounds'), and `not_fixed` lists the blocking findings the
+    // round budget left. That keeps the copied `merge_gate`'s checks 7-10 working unchanged:
+    // 7 refuses anything but `fixed`/`no_changes_needed`, 8 needs a risk, 9 refuses a
+    // non-empty `not_fixed`, and 10 wants every `own_findings` error accounted for -- so
+    // `own_findings` is empty here: this gate raises no findings of its own, and everything
+    // it saw is either in `fixes_applied` or in `not_fixed`.
+    review_gate [label="Decide the reviews", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="R=/tmp/fabro/review
+OK=yes
+for X in standards spec; do
+  F=$R/$X.json
+  if [ ! -s $F ]; then OK=no; fi
+  if [ \"$(jq -r '._io.stage // empty' $F 2>/dev/null)\" != \"$X\" ]; then OK=no; fi
+  if [ -z \"$(jq -r '._io.visit // empty' $F 2>/dev/null)\" ]; then OK=no; fi
+done
+if [ \"$OK\" != yes ]; then
+  echo 'A reviewer wrote no valid result for this round, so nothing has been reviewed and no pull request is opened.' > /tmp/fabro/stuck_reason.md
+  exit 1
+fi
+LE=false
+if [ -s /tmp/fabro/loop_exhausted ]; then LE=true; fi
+SF=$R/standards.json
+PF=$R/spec.json
+D1=$(jq -r '.decision // empty' $SF 2>/dev/null)
+D2=$(jq -r '.decision // empty' $PF 2>/dev/null)
+RISK=$(jq -r 'if ((.risk | type) == \"number\") and (.risk >= 1) and (.risk <= 5) then .risk else 3 end' $PF 2>/dev/null || echo 3)
+jq -n --slurpfile a $SF --slurpfile b $PF '([$a[0].findings[]? | select(.severity == \"error\")] + [$b[0].findings[]? | select(.severity == \"error\")])' > $R/blocks.json 2>/dev/null || echo '[]' > $R/blocks.json
+BLOCK=$(jq length $R/blocks.json)
+VIS=$(cat /tmp/fabro/refute_visits 2>/dev/null || echo 0)
+case \"$VIS\" in '' | *[!0-9]*) VIS=0 ;; esac
+RR=$(cat /tmp/fabro/refute_route 2>/dev/null || echo pass)
+ROUTE=pass
+if [ \"$BLOCK\" -gt 0 ] && [ \"$VIS\" -lt 3 ] && [ \"$RR\" = pass ]; then ROUTE=tasks; fi
+if [ \"$ROUTE\" = tasks ]; then
+  jq -n --slurpfile a $SF --slurpfile b $PF --argjson r $VIS '
+    def nl: [10] | implode;
+    ([$a[0].findings[]? | select(.severity == \"error\") | {axis: \"standards\"} + .]
+     + [$b[0].findings[]? | select(.severity == \"error\") | {axis: \"spec\"} + .])
+    | to_entries
+    | map(.value as $f | .key as $i | {
+        id: (\"rv\" + ($r | tostring) + (if $f.axis == \"standards\" then \"s\" else \"p\" end) + (($i + 1) | tostring)),
+        title: (($f.id // \"finding\") + \" \" + $f.message),
+        body: (\"The \" + $f.axis + \" review found this in the branch: \" + $f.message + \" Files: \" + (($f.files // []) | join(\", \")) + \". Suggestion: \" + ($f.suggestion // \"none given\") + \".\"),
+        acceptance: [\"the finding no longer applies to the branch\"],
+        files: ($f.files // []), covers: [],
+        context: (\"## Files and symbols\" + nl + nl + (($f.files // []) | map(\"- \" + . + (if ($f.line // null) == null then \"\" else \":\" + ($f.line | tostring) end)) | join(nl)) + nl + nl + \"## Done when\" + nl + nl + \"- \" + $f.message),
+        source: \"review\", axis: $f.axis, finding_id: $f.id, severity: $f.severity,
+        round: $r, status: \"open\", iterations: 0, misses: 0 })' > /tmp/fabro/review_tasks.json
+  jq -s '.[0] + .[1]' /tmp/fabro/tasks.json /tmp/fabro/review_tasks.json > /tmp/fabro/tasks.new.json 2>/dev/null && mv /tmp/fabro/tasks.new.json /tmp/fabro/tasks.json
+  rm -f /tmp/fabro/review_tasks.json
+  echo 'review: '$BLOCK' blocking finding(s) became Tasks' >&2
+else
+  jq '[.[] | select(.source == \"review\" and .status == \"passed\")]' /tmp/fabro/tasks.json > $R/fixed.json 2>/dev/null || echo '[]' > $R/fixed.json
+  jq '[.[] | {finding_id: (.finding_id // .id), axis: (.axis // \"standards\"), severity: (.severity // \"error\"), message: (.title // .id)}]' $R/fixed.json > $R/fixes.json
+  jq --slurpfile fx $R/fixes.json '[ $fx[0][].finding_id ] as $ids | [ .[] | select((.id as $i | $ids | index($i)) == null) | {finding_id: .id, original_finding: .message, reason: \"the Refute round budget was spent before this finding was fixed\"} ]' $R/blocks.json > $R/notfixed.json
+  FA=$(jq length $R/fixes.json)
+  NF=$(jq length $R/notfixed.json)
+  OUT=no_changes_needed
+  if [ \"$FA\" != 0 ]; then OUT=fixed; fi
+  RSN=''
+  if [ \"$D1\" = needs_human_review ]; then OUT=needs_human; RSN='the standards review asked for a human decision'; fi
+  if [ \"$D2\" = needs_human_review ]; then OUT=needs_human; RSN='the spec review asked for a human decision'; fi
+  if [ \"$NF\" != 0 ] && [ -z \"$RSN\" ]; then OUT=needs_human; RSN='the round budget left '$NF' blocking finding(s) unfixed'; fi
+  SUM='Ralph reviews: standards '$D1', spec '$D2'. '$FA' finding(s) were fixed by the loop and '$NF' left.'
+  jq -n --arg o \"$OUT\" --argjson r \"$RISK\" --arg s \"$SUM\" --slurpfile fa $R/fixes.json --slurpfile nf $R/notfixed.json --arg d1 \"$D1\" --arg d2 \"$D2\" '{outcome: $o, risk: $r, summary: $s, own_findings: [], fixes_applied: $fa[0], not_fixed: $nf[0], notes: (\"standards=\" + $d1 + \" spec=\" + $d2)}' > $R/fix_result.json
+  if [ -n \"$RSN\" ]; then printf '%s' \"$RSN\" > /tmp/fabro/merge_block_reason; fi
+  rm -f $R/blocks.json $R/fixed.json $R/fixes.json $R/notfixed.json
+fi
+jq -nc --arg r \"$ROUTE\" --argjson le \"$LE\" '{context_updates:{review_route:$r,loop_exhausted:$le}}'"]
 
     // R10: copy of backlog.close_noop (C8). Three replacements: the summary comes from
     // task_list.json, and the two fixed sentences name the planner, not the decomposer.
@@ -1212,10 +1346,19 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     refute -> refute_gate                     [condition="outcome=succeeded"]
     refute -> refute_gate
     refute_gate -> pick                       [condition="context.refute_route=tasks"]
-    refute_gate -> stop_reason                [condition="context.refute_route=pass"]
-    refute_gate -> stop_reason                [condition="context.refute_route=hold && context.loop_exhausted=false"]
+    refute_gate -> review_prep                [condition="context.refute_route=pass"]
+    refute_gate -> review_prep                [condition="context.refute_route=hold && context.loop_exhausted=false"]
     refute_gate -> stop_reason                [condition="context.refute_route=hold && context.loop_exhausted=true"]
     refute_gate -> stop_reason
+    review_prep -> standards                  [condition="outcome=succeeded"]
+    review_prep -> stop_reason
+    standards -> spec                         [condition="outcome=succeeded"]
+    standards -> stop_reason
+    spec -> review_gate                       [condition="outcome=succeeded"]
+    spec -> stop_reason
+    review_gate -> pick                       [condition="context.review_route=tasks"]
+    review_gate -> stop_reason                [condition="context.review_route=pass"]
+    review_gate -> stop_reason
     pick -> resolve_merge                     [condition="context.rebase_failed=true"]
     pick -> excerpts                          [condition="context.loop=work && context.rebase_failed=false"]
     pick -> stop_reason                       [condition="context.loop=done && context.phase=pre"]

@@ -9181,6 +9181,85 @@ check "rp round 2: the history names the task" "1" "$(grep -c 'r1c1' "$T/review/
 check "rp round 2: the history names the status" "1" "$(grep -c '(open)' "$T/review/refute_history.md")"
 
 echo ""
+echo "ralph — review_gate"
+RW="$WORK/ralph-review-gate"; mkdir -p "$RW/sb/review"; T="$RW/sb"; stage_r review_gate
+rw_setup() {   # $1 = standards object, $2 = spec object, $3 = refute_visits, $4 = refute_route, $5 = tasks
+    mkdir -p "$T/review"
+    rm -f "$T"/review/* "$T"/refute_visits "$T"/refute_route "$T"/merge_block_reason "$T"/stuck_reason.md "$T"/tasks.json "$T"/loop_exhausted
+    printf '%s' "$1" | jq --arg n standards '._io={stage:$n,visit:"v1"}' > "$T/review/standards.json"
+    printf '%s' "$2" | jq --arg n spec '._io={stage:$n,visit:"v2"}' > "$T/review/spec.json"
+    echo "${3:-1}" > "$T/refute_visits"
+    echo "${4:-pass}" > "$T/refute_route"
+    printf '%s' "${5:-[]}" > "$T/tasks.json"
+}
+rw_run() { OUT=$(sh "$T/review_gate.sh" 2>&1); RC=$?; J=$(lastjson "$OUT"); }
+rw_val() { jq -r ".context_updates.$1" <<<"$J" 2>/dev/null; }
+rw_fix() { jq -r ".$1" "$T/review/fix_result.json" 2>/dev/null; }
+rw_find() { jq -nc --arg id "$1" --arg sev "$2" --arg m "$3" --arg f "$4" '{id:$id,severity:$sev,message:$m,files:[$f],line:1,suggestion:"do it"}'; }
+STD_OK='{"decision":"approve","summary":"clean","findings":[]}'
+SPEC_APPROVE='{"decision":"approve","summary":"clean","findings":[],"risk":2}'
+
+rw_setup "$STD_OK" "$SPEC_APPROVE" 1 pass
+rw_run
+check "rv pass: exits 0"              "0"    "$RC"
+check "rv pass: routes pass"          "pass" "$(rw_val review_route)"
+check "rv pass: outcome mergeable"    "no_changes_needed" "$(rw_fix outcome)"
+check "rv pass: risk from spec"       "2"    "$(rw_fix risk)"
+check "rv pass: not_fixed empty"      "0"    "$(jq length "$T/review/fix_result.json".not_fixed 2>/dev/null || jq .not_fixed "$T/review/fix_result.json" | jq length)"
+check "rv pass: fixes_applied empty"  "0"    "$(jq '.fixes_applied | length' "$T/review/fix_result.json")"
+check "rv pass: nothing became a task" "0"   "$(jq length "$T/tasks.json")"
+check "rv pass: the file matches the schema" "1" "$(jq -e --slurpfile s "$REPO_ROOT/.fabro/workflows/_io/schemas/fix_result.schema.json" '(. as $f | (($s[0].required - ($f | keys)) | length) == 0 and ((($f | keys) - ($s[0].properties | keys)) | length) == 0 and (($s[0].properties.outcome.enum | index($f.outcome)) != null) and (($f.risk | type) == "number"))' "$T/review/fix_result.json" >/dev/null 2>&1 && echo 1 || echo 0)"
+check "rv pass: one routing object"   "1"    "$(grep -c 'context_updates' <<<"$OUT")"
+
+rw_setup "$(jq -nc --argjson f "[$(rw_find STD-001 error 'the retry never happens' src/a.py)]" '{decision:"findings",summary:"one",findings:$f}')" "$SPEC_APPROVE" 1 pass
+rw_run
+check "rv error: routes tasks"        "tasks"  "$(rw_val review_route)"
+check "rv error: one task"            "1"      "$(jq length "$T/tasks.json")"
+check "rv error: source review"       "review" "$(jq -r '.[0].source' "$T/tasks.json")"
+check "rv error: axis standards"      "standards" "$(jq -r '.[0].axis' "$T/tasks.json")"
+check "rv error: it keeps the finding id" "STD-001" "$(jq -r '.[0].finding_id' "$T/tasks.json")"
+check "rv error: no fix_result yet"   "absent" "$([ -e "$T/review/fix_result.json" ] && echo present || echo absent)"
+
+rw_setup "$STD_OK" "$(jq -nc --argjson f "[$(rw_find STD-001 error 'the retry never happens' src/a.py)]" '{decision:"findings",summary:"one",findings:$f,risk:2}')" 3 pass
+rw_run
+check "rv round cap: routes pass"     "pass" "$(rw_val review_route)"
+check "rv round cap: no task"         "0"    "$(jq length "$T/tasks.json")"
+check "rv round cap: not mergeable"   "needs_human" "$(rw_fix outcome)"
+check "rv round cap: not_fixed lists it" "STD-001" "$(jq -r '.not_fixed[0].finding_id' "$T/review/fix_result.json")"
+check "rv round cap: merge_block_reason" "1" "$(grep -c 'blocking finding' "$T/merge_block_reason")"
+
+rw_setup "$(jq -nc --argjson f "[$(rw_find STD-002 warning 'this could be tidier' src/b.py)]" '{decision:"findings",summary:"style",findings:$f}')" "$SPEC_APPROVE" 1 pass
+rw_run
+check "rv warning only: routes pass"  "pass" "$(rw_val review_route)"
+check "rv warning only: mergeable"    "no_changes_needed" "$(rw_fix outcome)"
+check "rv warning only: no task"      "0"    "$(jq length "$T/tasks.json")"
+
+rw_setup "$(jq -nc --argjson f "[$(rw_find STD-003 error 'the retry never happens' src/a.py)]" '{decision:"findings",summary:"one",findings:$f}')" "$SPEC_APPROVE" 1 hold
+rw_run
+check "rv refuter held: no task"      "0"    "$(jq length "$T/tasks.json")"
+check "rv refuter held: not mergeable" "needs_human" "$(rw_fix outcome)"
+
+rw_setup '{"decision":"needs_human_review","summary":"inputs disagree","findings":[]}' "$(jq -nc '{decision:"approve",summary:"ok",findings:[],risk:2}')" 1 pass
+rw_run
+check "rv human review: not mergeable" "needs_human" "$(rw_fix outcome)"
+check "rv human review: reason names it" "1" "$(grep -c 'standards review asked for a human' "$T/merge_block_reason")"
+
+rw_setup "$STD_OK" "$(jq -nc '{decision:"approve",summary:"ok",findings:[],risk:4}')" 1 pass
+rw_run
+check "rv risk 4: outcome still mergeable" "no_changes_needed" "$(rw_fix outcome)"
+check "rv risk 4: the value is written"    "4" "$(rw_fix risk)"
+
+rw_setup "$STD_OK" "$SPEC_APPROVE" 1 pass '[{"id":"rv1s1","title":"STD-001 the retry never happens","source":"review","axis":"standards","finding_id":"STD-001","severity":"error","status":"passed"}]'
+rw_run
+check "rv fixes_applied: earlier round listed" "STD-001" "$(jq -r '.fixes_applied[0].finding_id' "$T/review/fix_result.json")"
+check "rv fixes_applied: outcome fixed"        "fixed"   "$(rw_fix outcome)"
+
+printf '%s' '{"decision":"approve","summary":"x","findings":[]}' > "$T/review/standards.json"
+rw_run
+check "rv bad receipt: exits 1"      "1" "$RC"
+check "rv bad receipt: names the cause" "1" "$(grep -c 'no valid result' "$T/stuck_reason.md")"
+
+echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
 if [ "$FAIL" -eq 0 ]; then
