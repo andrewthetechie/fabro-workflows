@@ -88,13 +88,10 @@ Baselines (fabro 0.362.0-nightly.0, last verified by `make check-host` on 2026-1
 `Dependabot (51 nodes, 115 edges)`, `MergeQueue (8 nodes, 10 edges)` and `Scout (9 nodes, 11 edges)` clean (Scout verified by `make check-host` on 2026-10-16). Both
 warnings are deliberate: never bind those inputs in `[run.inputs]`. The fast-path series
 added `report_queued` to the three importing graphs (+1 node, +3 edges each), and
-`route_lane` and `demote_lane` to `backlog`. The gate-relief series (#29) added `refute_fix` and `refute_fix_gate` to the three importing graphs (+2 nodes, +5 edges each). The final-merge fix (2026-10-12) added `final_merge` to `backlog` (+1 node, +4 edges). The base-conflict fix (#37, 2026-10-13) added `resolve_base` and `resolve_base_gate` to the three importing graphs (+2 nodes, +6 edges each). The final-validation fix (#35, 2026-10-13) added `drop_unreviewed` and `final_fix_prep` to `backlog` (+2 nodes, +9 edges). The unmet-criteria series (#17, 2026-10-13) added `return_to_triage` and `task_block_gate` to `backlog` (+2 nodes, +6 edges). The plan trial (#25, 2026-10-13) added `plan` to `backlog` (+1 node, +5 edges); closing it (2026-10-21, ADR 0030) deleted `improve` and the three arm-split edge pairs, so **`Backlog` is expected to be 81 nodes and 205 edges**. That count is from the offline parser only: it is unverified until the operator runs `make check-host`, which compares `fabro validate`'s node and edge counts against these.
+`route_lane` and `demote_lane` to `backlog`. The gate-relief series (#29) added `refute_fix` and `refute_fix_gate` to the three importing graphs (+2 nodes, +5 edges each). The final-merge fix (2026-10-12) added `final_merge` to `backlog` (+1 node, +4 edges). The base-conflict fix (#37, 2026-10-13) added `resolve_base` and `resolve_base_gate` to the three importing graphs (+2 nodes, +6 edges each). The final-validation fix (#35, 2026-10-13) added `drop_unreviewed` and `final_fix_prep` to `backlog` (+2 nodes, +9 edges). The unmet-criteria series (#17, 2026-10-13) added `return_to_triage` and `task_block_gate` to `backlog` (+2 nodes, +6 edges). The plan trial (#25, 2026-10-13) added `plan` to `backlog` (+1 node, +5 edges); closing it (2026-10-21, ADR 0030) deleted `improve` and the three arm-split edge pairs, so **`Backlog` is expected to be 81 nodes and 205 edges**. `make check-host` confirmed it on 2026-10-22.
 
-`Ralph` has no `fabro validate` baseline yet: the series built it on `main` over tasks
-01-08, and the operator records its counts with `make check-host` in task 12 before the
-switch. The offline parser says 51 nodes and 135 edges, which is what
-`ops/tests/test_check_graph_invariants.py` asserts until then. Like `Backlog`, it will
-carry one deliberate warning — `issue_number` unbound in `claim` — for the same reason:
+`Ralph (51 nodes, 135 edges)`, verified by `make check-host` on 2026-10-22, carries one
+deliberate warning like `Backlog`'s, `issue_number` unbound in `claim`, for the same reason:
 binding it in `[run.inputs]` would route every hand-fired run to one box.
 
 `docs/agents/validating.md` says what each gate covers and misses, why the warnings are
@@ -127,8 +124,8 @@ bug surfaces. The coder scheduler is the only producer of `backlog` runs. Fire a
 hand only with `~/bin/fabro-fire-pr-review.sh <owner/repo> <pr>`,
 `~/bin/fabro-fire-backlog.sh <owner/repo> <issue>` or
 `~/bin/fabro-fire-ralph.sh <owner/repo> <issue>`. The scheduler routes an issue to
-`ralph` instead of `backlog` only while `SCHEDULER_RALPH_SHARE=50` (ADR 0029 O2): 0 is the
-default and the kill switch. A `dependabot-<repo>` run fires through
+`ralph` instead of `backlog` only while `SCHEDULER_RALPH_SHARE=50` (ADR 0029 O2), which
+`ops/docker-compose.yaml` sets since the trial's switch on 2026-10-22; 0 is the kill switch. A `dependabot-<repo>` run fires through
 its `api:manual` trigger (task 10 records the command). A `merge-queue-<repo>` run fires from its
 schedule (every 20 minutes, created disabled) or its `api:manual` trigger; it takes no input. A `scout-<repo>` run fires from its daily schedule (created disabled) or its `api:manual` trigger, and it takes no input. `docs/agents/server.md` says why the
 automation endpoint cannot carry the input, and covers the scheduler.
