@@ -1535,8 +1535,11 @@ unset GH_LOG GH_STATE
 echo ""
 echo "open_pr_prep"
 SAVED_PATH="$PATH"
-PATH="$ORIG_PATH"
-T="$WORK/prep"; mkdir -p "$T"; stage open_pr_prep; stage final_merge
+T="$WORK/prep"; mkdir -p "$T/bin"; stage open_pr_prep; stage final_merge
+# Final validation retries a red CI once after `sleep 5`; nine cases here take that path,
+# which was 45s of real waiting. Stub it, as the other retry sections do.
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/sleep"; chmod +x "$T/bin/sleep"
+PATH="$T/bin:$ORIG_PATH"
 
 # A fresh upstream + clone per case. $1 is the run branch's content disposition:
 # "empty" leaves the tree equal to main, "work" puts a real change on it.
