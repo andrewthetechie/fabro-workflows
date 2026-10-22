@@ -27,9 +27,10 @@ def store(tmp_path) -> Store:
 
 
 def run(store, run_id, *, hours=2.0, at=T0 + timedelta(hours=1), repo=REPO, pr=None,
-        merged=None, kind="succeeded", reason="completed"):
+        merged=None, kind="succeeded", reason="completed", workflow="backlog"):
     store.acquire_lease(
-        coder_pool="coders-a", repo=repo, issue_number=1, run_id=run_id, dispatched_at=at
+        coder_pool="coders-a", repo=repo, issue_number=1, run_id=run_id, dispatched_at=at,
+        workflow=workflow,
     )
     store.archive_and_release_lease(
         run_id,
@@ -53,7 +54,8 @@ def facts(*, state="open", labels=("agent-authored",), reason=None, report="comp
 
 
 def summary(run_id, stages, *, terminal="exit_node", failovers=None, refute=(),
-            task_validations=(), unchecked=0, untested=0, final_routes=()):
+            task_validations=(), unchecked=0, untested=0, final_routes=(),
+            post_iterations=0, loop_exhausted=False, task_sources=None):
     return RunSummary(
         run_id=run_id,
         stages={s.node_id: s for s in stages},
@@ -66,6 +68,9 @@ def summary(run_id, stages, *, terminal="exit_node", failovers=None, refute=(),
         task_validation_unchecked=unchecked,
         task_validation_untested=untested,
         final_routes=list(final_routes),
+        post_iterations=post_iterations,
+        loop_exhausted=loop_exhausted,
+        task_sources=Counter(task_sources or {}),
     )
 
 
@@ -475,3 +480,103 @@ def test_untested_files_are_counted_per_scoped_visit(store):
     card = compute(store)
     assert card.task_validation.untested == 3
     assert "| Task validation: untested files | 3 (1.5 per scoped visit) |" in scorecard.to_markdown(card)
+
+
+# --- the trial's two arms (ADR 0029 C12) -------------------------------------------
+
+
+def stage(node, visits=1, handler="command"):
+    return StageStat(node, handler, visits=visits, wall_ms=60_000 * visits)
+
+
+def test_a_window_splits_into_one_card_per_workflow_and_a_strata_table(store):
+    run(store, "B1", pr=1, merged=True)
+    run(store, "B2", repo=OTHER, pr=2, merged=False)
+    run(store, "B3", merged=False)  # no PR
+    run(store, "R1", pr=3, merged=True, workflow="ralph")
+    run(store, "R2", repo=OTHER, pr=4, merged=False, workflow="ralph")
+    store.save_pr_facts(REPO, 1, facts(state="merged", merged_at="2026-10-05T05:00:00Z"))
+    store.save_pr_facts(OTHER, 2, facts())
+    store.save_pr_facts(REPO, 3, facts(state="merged", merged_at="2026-10-05T05:00:00Z"))
+    store.save_pr_facts(OTHER, 4, facts())
+
+    card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
+
+    assert set(card.cards) == {"backlog", "ralph"}
+    assert card.cards["backlog"].runs == 3
+    assert card.cards["ralph"].runs == 2
+    assert card.cards["backlog"].merged_workflow == 1
+    assert card.cards["ralph"].merged_workflow == 1
+    # A row per repo x pool, per arm, with each arm's own counts.
+    assert {(row.repo, row.workflow): row.runs for row in card.strata} == {
+        (REPO, "backlog"): 2,
+        (OTHER, "backlog"): 1,
+        (REPO, "ralph"): 1,
+        (OTHER, "ralph"): 1,
+    }
+    cell = next(
+        row for row in card.strata if row.repo == REPO and row.workflow == "backlog"
+    )
+    assert (cell.prs, cell.merged) == (1, 1)
+    assert cell.box_hours == pytest.approx(4.0)
+    assert cell.box_hours_per_merge == pytest.approx(4.0)
+
+
+def test_a_window_with_no_ralph_run_keeps_the_column_at_zero(store):
+    run(store, "B1", pr=1, merged=True)
+    card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
+    assert card.cards["ralph"].runs == 0
+    assert card.ralph.runs == 0
+    assert card.ralph.iterations.count == 0
+
+
+def test_the_ralph_line_reads_its_own_stage_rows(store):
+    """Iterations, Refute visits, sources, exhaustion, the post-PR budget and the
+    queued hand-offs, from the arm's own rows (C12)."""
+    run(store, "R1", pr=1, merged=True, workflow="ralph")
+    run(store, "R2", merged=False, workflow="ralph")  # ran out, no PR
+    store.save_run_summary(
+        summary(
+            "R1",
+            [stage("iterate_t1", 3), stage("iterate_t2", 2), stage("refute", 2)],
+            post_iterations=1,
+            task_sources={"plan": 4, "ci": 1},
+        )
+    )
+    store.save_run_summary(
+        summary(
+            "R2",
+            [stage("iterate_t1", 1)],
+            terminal="report_queued",
+            loop_exhausted=True,
+            post_iterations=1,
+            task_sources={"plan": 2, "refute": 2},
+        )
+    )
+    store.save_pr_facts(REPO, 1, facts(state="merged", merged_at="2026-10-05T05:00:00Z"))
+
+    card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
+    r = card.ralph
+
+    assert r.runs == 2
+    assert r.iterations.count == 2
+    assert (r.iterations.p50, r.iterations.p90) == (3.0, pytest.approx(4.6))
+    assert r.refute_visits.count == 2
+    assert r.refute_visits.p50 == 1.0
+    assert r.tasks_by_source == {"ci": 1, "plan": 6, "refute": 2}
+    assert r.runs_exhausted == 1
+    assert r.post_iterations == 2
+    assert r.queued_handoffs == 1
+
+
+def test_the_workflows_markdown_names_both_arms_and_the_strata(store):
+    run(store, "R1", pr=1, merged=True, workflow="ralph")
+    run(store, "B1", pr=2, merged=True)
+    card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
+    text = scorecard.workflows_to_markdown(card)
+    assert "|  | backlog | ralph |" in text
+    assert "## Strata: repo x coder pool" in text
+    assert "## ralph" in text
+    payload = scorecard.workflows_to_json(card)
+    assert set(payload["workflows"]) == {"backlog", "ralph"}
+    assert payload["ralph"]["runs"] == 1

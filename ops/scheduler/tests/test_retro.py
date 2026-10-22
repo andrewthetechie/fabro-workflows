@@ -31,9 +31,11 @@ def store(tmp_path) -> Store:
 
 
 def run(store, run_id, *, hours=2.0, at=T0 + timedelta(hours=1), repo=REPO, pr=None,
-        merged=None, kind="succeeded", reason="completed", category=None, pr_lookup=None):
+        merged=None, kind="succeeded", reason="completed", category=None, pr_lookup=None,
+        workflow="backlog"):
     store.acquire_lease(
-        coder_pool="coders-a", repo=repo, issue_number=1, run_id=run_id, dispatched_at=at
+        coder_pool="coders-a", repo=repo, issue_number=1, run_id=run_id, dispatched_at=at,
+        workflow=workflow,
     )
     store.archive_and_release_lease(
         run_id,
@@ -120,6 +122,25 @@ def test_ending_classes(store):
     }
     assert classified.unsummarized == 0
     assert classified.classes["ending:unknown:lost"].runs[0].run_id == "LOST"
+
+
+def test_a_ralph_ending_is_classed_under_ralph(store):
+    """ADR 0029 R7: the two workflows share node names, so a `ralph` key carries the
+    workflow. A `backlog` key must not change, or every known class re-files."""
+    run(store, "B1", kind="failed", reason="workflow_error", category="deterministic")
+    run(store, "R1", kind="failed", reason="workflow_error", category="deterministic",
+        workflow="ralph")
+    store.save_run_summary(summary("B1", [], terminal="mark_stuck"))
+    store.save_run_summary(summary("R1", [], terminal="mark_stuck"))
+
+    classified = classify(store)
+
+    assert set(classified.classes) == {
+        "ending:mark_stuck:deterministic",
+        "ending:ralph.mark_stuck:deterministic",
+    }
+    assert [r.run_id for r in classified.classes["ending:ralph.mark_stuck:deterministic"].runs] == ["R1"]
+    assert [r.run_id for r in classified.classes["ending:mark_stuck:deterministic"].runs] == ["B1"]
 
 
 def test_held_classes(store):

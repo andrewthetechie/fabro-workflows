@@ -24,8 +24,10 @@ Each tick does a little of two jobs:
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -93,6 +95,31 @@ class ScorecardCollector:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+    def _task_sources(self, run_id: str) -> Counter[str]:
+        """A `ralph` run's Task list counted by `source`. Never raises.
+
+        The summary is worth having even when this read fails, so a 404 (the sandbox
+        is gone), a malformed body or a run whose graph wrote no `tasks.json` all
+        return an empty Counter.
+        """
+        try:
+            raw = self._fabro.read_sandbox_file(run_id, "/tmp/fabro/tasks.json")
+        except FabroError:
+            return Counter()
+        if not raw:
+            return Counter()
+        try:
+            tasks = json.loads(raw)
+        except ValueError:
+            return Counter()
+        if not isinstance(tasks, list):
+            return Counter()
+        return Counter(
+            str(task.get("source") or "unknown")
+            for task in tasks
+            if isinstance(task, Mapping)
+        )
+
     def tick(self) -> CollectReport:
         """One pass of both jobs. Errors per run or PR are recorded, not raised."""
         now = self._now()
@@ -103,9 +130,19 @@ class ScorecardCollector:
             limit=self._runs_per_tick,
         ):
             try:
+                workflow = self._store.history_workflow(run_id)
                 summary = summarize(
-                    run_id, self._fabro.summary_stages(run_id), self._fabro.iter_events(run_id)
+                    run_id,
+                    self._fabro.summary_stages(run_id),
+                    self._fabro.iter_events(run_id),
+                    workflow=workflow,
                 )
+                if workflow == "ralph":
+                    # C12: the Tasks by `source` line needs the Task list, which only
+                    # the run has. One read at summary time, as the probe does; a
+                    # missing file or an older graph leaves the counts empty, which
+                    # the scorecard renders as "not measured" rather than zero.
+                    summary.task_sources = self._task_sources(run_id)
             except FabroError as exc:
                 status = "missing" if exc.status_code == 404 else "error"
                 self._store.save_summary_failure(run_id, status, str(exc), at=now)

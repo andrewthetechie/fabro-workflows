@@ -225,7 +225,12 @@ CREATE TABLE IF NOT EXISTS run_summary (
   task_validations TEXT,           -- JSON array: per `validate` visit {mode, reason_class, ok, ms}
   task_validation_unchecked INTEGER, -- summed task_validation_unchecked over validate visits
   task_validation_untested INTEGER, -- summed task_validation_untested over validate visits
-  final_routes  TEXT               -- JSON array: each open_pr_prep visit's final_route, in order
+  final_routes  TEXT,              -- JSON array: each open_pr_prep visit's final_route, in order
+  -- ralph only (ADR 0029 C12). Zero/empty/NULL for a backlog run, and NULL for any
+  -- run summarized before the trial: the scorecard reads NULL as "not measured".
+  post_iterations INTEGER,
+  loop_exhausted  INTEGER,
+  task_sources    TEXT             -- JSON object: a Task's source -> count
 );
 
 -- One row per node per run: every visit's totals. `box_ms` is the part of
@@ -336,6 +341,10 @@ ADDED_COLUMNS = {
         # `none` (fabro reported no model usage), `missing` (404) or `error` (retried).
         "model_usage": "model_usage TEXT",
         "model_usage_at": "model_usage_at TEXT",
+        # ADR 0029 C12, the trial's ralph line. NULL on a run summarized before it.
+        "post_iterations": "post_iterations INTEGER",
+        "loop_exhausted": "loop_exhausted INTEGER",
+        "task_sources": "task_sources TEXT",
     },
 }
 
@@ -1109,6 +1118,21 @@ class Store:
             ).fetchall()
         return [row["run_id"] for row in rows]
 
+    def history_workflow(self, run_id: str) -> str:
+        """The workflow a released run ran, from its `run_history` row (C12).
+
+        Defaults to `backlog` for a row that predates the column, which is what it
+        was. Read per summarized run rather than joined into `runs_to_summarize`,
+        so that query keeps returning ids.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT workflow FROM run_history WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        if row is None:
+            return "backlog"
+        return row["workflow"] or "backlog"
+
     def save_run_summary(self, summary: RunSummary, *, at: datetime | None = None) -> None:
         """Replace one run's summary rows, in one transaction."""
         stamp = _stamp(at)
@@ -1157,8 +1181,8 @@ class Store:
                 "INSERT INTO run_summary (run_id, status, attempts, summarized_at,"
                 " terminal_node, path, refute, events, error, first_edit_ms, dispositions,"
                 " task_validations, task_validation_unchecked, task_validation_untested,"
-                " final_routes)"
-                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?) "
+                " final_routes, post_iterations, loop_exhausted, task_sources)"
+                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO UPDATE SET status = 'ok',"
                 "  attempts = run_summary.attempts + 1, summarized_at = excluded.summarized_at,"
                 "  terminal_node = excluded.terminal_node, path = excluded.path,"
@@ -1167,7 +1191,10 @@ class Store:
                 "  task_validations = excluded.task_validations,"
                 "  task_validation_unchecked = excluded.task_validation_unchecked,"
                 "  task_validation_untested = excluded.task_validation_untested,"
-                "  final_routes = excluded.final_routes",
+                "  final_routes = excluded.final_routes,"
+                "  post_iterations = excluded.post_iterations,"
+                "  loop_exhausted = excluded.loop_exhausted,"
+                "  task_sources = excluded.task_sources",
                 (
                     summary.run_id,
                     stamp,
@@ -1181,6 +1208,9 @@ class Store:
                     summary.task_validation_unchecked,
                     summary.task_validation_untested,
                     json.dumps(summary.final_routes),
+                    summary.post_iterations,
+                    1 if summary.loop_exhausted else 0,
+                    json.dumps(dict(sorted(summary.task_sources.items()))),
                 ),
             )
 

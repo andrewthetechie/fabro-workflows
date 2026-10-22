@@ -306,3 +306,96 @@ def test_untested_files_are_summed_over_validate_visits():
              "task_validation_untested": 1}}},
     ]
     assert summarize("R1", [], lines).task_validation_untested == 3
+
+
+# --- the trial's second workflow (ADR 0029 C12) ------------------------------------
+
+
+def test_a_ralph_summary_reads_its_own_node_ids():
+    """`ralph`'s first edit comes from `iterate_t1`, its Refuter is its own
+    `refute_gate`, and its Task validation is `check` -- none of which `backlog`'s
+    ids would ever match."""
+    stages = [
+        {"node_id": "iterate_t1", "handler": "agent", "wall_time_ms": 60_000},
+        {"node_id": "refute_gate", "handler": "command", "wall_time_ms": 1_000},
+        {"node_id": "check", "handler": "command", "wall_time_ms": 30_000},
+    ]
+    events = [
+        {"event": "stage.started", "node_id": "iterate_t1", "ts": "2026-10-21T10:00:00Z"},
+        {
+            "event": "agent.tool.started",
+            "node_id": "iterate_t1",
+            "ts": "2026-10-21T10:00:30Z",
+            "properties": {"event": {"ToolCallStarted": {"tool_name": "edit_file"}}},
+        },
+        {
+            "event": "stage.completed",
+            "node_id": "refute_gate",
+            "properties": {
+                "context_updates": {
+                    "refute_verdict": "fail",
+                    "refute_not_met": True,
+                    "refute_unverifiable_only": False,
+                    "refute_ci_credited": 2,
+                }
+            },
+        },
+        {
+            "event": "stage.completed",
+            "node_id": "refute_gate",
+            "properties": {
+                "context_updates": {"refute_verdict": "pass", "refute_not_met": False}
+            },
+        },
+        {
+            "event": "stage.completed",
+            "node_id": "check",
+            "properties": {
+                "context_updates": {
+                    "task_validation_mode": "scoped",
+                    "task_validation_ok": True,
+                    "task_validation_untested": 1,
+                }
+            },
+        },
+        {
+            "event": "stage.completed",
+            "node_id": "pick",
+            "properties": {"context_updates": {"phase": "post", "loop_exhausted": True}},
+        },
+        {"event": "stage.started", "node_id": "iterate_t2", "ts": "2026-10-21T11:00:00Z"},
+        {
+            "event": "edge.selected",
+            "properties": {"from_node": "mark_stuck", "to_node": "learn_prep"},
+        },
+        {"event": "stage.started", "node_id": "learn_post", "ts": "2026-10-21T11:30:00Z"},
+    ]
+
+    summary = summarize("R1", stages, events, workflow="ralph")
+
+    assert summary.first_edit_ms == [30_000]
+    assert [v.verdict for v in summary.refute] == ["fail", "pass"]
+    assert summary.refute[0].ci_credited == 2
+    assert [v.mode for v in summary.task_validations] == ["scoped"]
+    assert summary.task_validation_untested == 1
+    assert summary.post_iterations == 1
+    assert summary.loop_exhausted is True
+    # The ending is the node that routed into `learn_prep`, not `learn_post`.
+    assert summary.terminal_node == "mark_stuck"
+
+
+def test_a_backlog_summary_ignores_ralphs_ids():
+    """The table is a lookup, not a union: a stray `iterate_t1` row in a backlog run
+    must not be read as a coder attempt."""
+    stages = [{"node_id": "iterate_t1", "handler": "agent", "wall_time_ms": 1_000}]
+    events = [
+        {"event": "stage.started", "node_id": "iterate_t1", "ts": "2026-10-21T10:00:00Z"},
+        {
+            "event": "agent.tool.started",
+            "node_id": "iterate_t1",
+            "ts": "2026-10-21T10:00:30Z",
+            "properties": {"event": {"ToolCallStarted": {"tool_name": "edit_file"}}},
+        },
+    ]
+    summary = summarize("R1", stages, events)
+    assert summary.first_edit_ms == []

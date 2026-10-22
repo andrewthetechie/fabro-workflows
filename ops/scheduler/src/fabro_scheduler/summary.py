@@ -70,17 +70,54 @@ CODER_MODEL_PREFIX = "coders-"
 # got where it stopped (`... -> human_rescue -> exit`), small enough to store.
 PATH_TAIL = 8
 
-REFUTE_GATE = "review_merge.refute_gate"
+@dataclass(frozen=True)
+class WorkflowNodes:
+    """The node ids one workflow's summary reads (ADR 0029 C12).
 
-# The plan trial's coder measurements (#25).
-CODER_NODE = "coder"
+    Two workflows share this module and none of these ids: `backlog`'s refute gate
+    is the imported phase's `review_merge.refute_gate`, and `ralph`'s is its own
+    `refute_gate`; `backlog`'s coder attempts start at `coder`, `ralph`'s at any of
+    the four `iterate_t*` rungs. A summary that guessed would read zeroes and look
+    like a healthy run, so the ids are a table rather than a constant.
+    """
+
+    refute_gate: str
+    # Every node that opens a coder attempt. A first edit is measured per attempt,
+    # so a rung-2 Iteration counts exactly as a rung-1 one does.
+    coder_nodes: frozenset[str]
+    validate: str
+    final_validation: str
+    # `backlog`'s decomposer gate publishes the disposition; `ralph` has no
+    # per-task decomposition, so it publishes nothing and this is empty.
+    disposition_gate: str
+
+
+NODES: dict[str, WorkflowNodes] = {
+    "backlog": WorkflowNodes(
+        refute_gate="review_merge.refute_gate",
+        coder_nodes=frozenset({"coder"}),
+        validate="validate",
+        final_validation="open_pr_prep",
+        disposition_gate="improve_gate",
+    ),
+    "ralph": WorkflowNodes(
+        refute_gate="refute_gate",
+        coder_nodes=frozenset({"iterate_t1", "iterate_t2", "iterate_t3", "iterate_t4"}),
+        validate="check",
+        final_validation="final_check",
+        disposition_gate="",
+    ),
+}
+
+# The node every terminal `ralph` node routes through before `exit` (C9). The edge
+# INTO it names the ending: `report_queued -> learn_prep` says the run handed its PR
+# to the merge queue, which is the fact the Retro's ending key wants. Without this
+# every ralph run would be classed by `learn_post`, the last node it started.
+LEARN_PREP_NODE = "learn_prep"
+
+# The plan trial's coder measurements (#25). Superseded by `NODES`, kept because the
+# docstrings and the tests below name them.
 EDIT_TOOLS = frozenset({"edit_file", "write_file"})
-DISPOSITION_GATE = "improve_gate"
-
-# Task validation (ADR 0025). Matched exactly: `validate` must never match
-# `review_merge.validate`, whose visits are the merge phase's, not the gate's.
-VALIDATE_NODE = "validate"
-FINAL_VALIDATION_NODE = "open_pr_prep"
 
 
 @dataclass(frozen=True)
@@ -144,10 +181,23 @@ class RunSummary:
     task_validation_unchecked: int = 0
     task_validation_untested: int = 0
     final_routes: list[str] = field(default_factory=list)
+    # --- ralph only (ADR 0029 C12). Zero/empty for a backlog run. ---------------
+    # Iterations that ran after `pr_handoff`: the loop's post-PR budget is 2 (O13),
+    # and how often it is spent is a trial number.
+    post_iterations: int = 0
+    # Whether the loop ever published `loop=exhausted`: the run ran out of rungs,
+    # rounds or budget rather than finishing.
+    loop_exhausted: bool = False
+    # Task id -> `source` (`plan`, `refute`, `review`, `final_fix`, `ci`). Filled by
+    # the collector, which is the only reader of the run's `tasks.json`.
+    task_sources: Counter[str] = field(default_factory=Counter)
 
 
 def summarize(
-    run_id: str, stages: Iterable[Mapping[str, object]], events: Iterable[Mapping[str, object]]
+    run_id: str,
+    stages: Iterable[Mapping[str, object]],
+    events: Iterable[Mapping[str, object]],
+    workflow: str = "backlog",
 ) -> RunSummary:
     """Reduce one run's stage list and event stream to a `RunSummary`.
 
@@ -156,6 +206,7 @@ def summarize(
     Malformed rows are skipped rather than raised on. A summary missing one
     event is still worth having, and a raise would retry the whole run forever.
     """
+    nodes = NODES.get(workflow, NODES["backlog"])
     stats: dict[str, StageStat] = {}
     for stage in stages:
         node = _str(stage.get("node_id"))
@@ -190,6 +241,10 @@ def summarize(
     task_validation_unchecked = 0
     task_validation_untested = 0
     final_routes: list[str] = []
+    post_iterations = 0
+    loop_exhausted = False
+    phase = "pre"
+    ending: str | None = None
     count = 0
 
     for event in events:
@@ -203,9 +258,11 @@ def summarize(
         if name == "stage.started":
             if node and node != "exit":
                 terminal = node
-            if node == CODER_NODE:
+            if node in nodes.coder_nodes:
                 coder_started = _ts(event.get("ts"))
-        elif name == "agent.tool.started" and node == CODER_NODE and coder_started is not None:
+                if phase == "post":
+                    post_iterations += 1
+        elif name == "agent.tool.started" and node in nodes.coder_nodes and coder_started is not None:
             inner = props.get("event")
             call = inner.get("ToolCallStarted") if isinstance(inner, Mapping) else None
             if isinstance(call, Mapping) and _str(call.get("tool_name")) in EDIT_TOOLS:
@@ -223,7 +280,7 @@ def summarize(
                 if timeout:
                     stat.timeouts += 1
                 stat.failures[_str(failure.get("category")) or "unknown"] += 1
-                if node == VALIDATE_NODE:
+                if node == nodes.validate:
                     # A red legacy visit has no `stage.completed` (verified live on 0.362);
                     # recording it here keeps the baseline's visit count whole.
                     task_validations.append(
@@ -249,13 +306,27 @@ def summarize(
                 path.append(f"{src}>{dst}")
                 if len(path) > PATH_TAIL:
                     del path[0]
-        elif name == "stage.completed" and node == DISPOSITION_GATE:
+                if dst == LEARN_PREP_NODE and src:
+                    ending = src
+        elif name == "stage.completed" and node == "pick":
+            # `ralph`'s loop head: it publishes the phase it is about to run in and
+            # whether the loop has ever run out. Both are read here rather than from
+            # a file, because a summary must come from the run's own event stream.
+            updates = props.get("context_updates")
+            if isinstance(updates, Mapping):
+                here = _str(updates.get("phase"))
+                if here in ("pre", "post"):
+                    phase = here
+                exhausted = updates.get("loop_exhausted")
+                if exhausted is True or _bool_text(exhausted) is True:
+                    loop_exhausted = True
+        elif name == "stage.completed" and node == nodes.disposition_gate and nodes.disposition_gate:
             updates = props.get("context_updates")
             if isinstance(updates, Mapping):
                 disposition = _str(updates.get("task_disposition"))
                 if disposition:
                     dispositions[disposition] += 1
-        elif name == "stage.completed" and node == VALIDATE_NODE:
+        elif name == "stage.completed" and node == nodes.validate:
             updates = props.get("context_updates")
             if not isinstance(updates, Mapping):
                 updates = {}
@@ -276,13 +347,13 @@ def summarize(
             )
             task_validation_unchecked += _int(updates.get("task_validation_unchecked"))
             task_validation_untested += _int(updates.get("task_validation_untested"))
-        elif name == "stage.completed" and node == FINAL_VALIDATION_NODE:
+        elif name == "stage.completed" and node == nodes.final_validation:
             updates = props.get("context_updates")
             if isinstance(updates, Mapping):
                 route = _str(updates.get("final_route"))
                 if route:
                     final_routes.append(route)
-        elif name == "stage.completed" and node == REFUTE_GATE:
+        elif name == "stage.completed" and node == nodes.refute_gate:
             updates = props.get("context_updates")
             if isinstance(updates, Mapping):
                 verdict = _str(updates.get("refute_verdict"))
@@ -304,7 +375,9 @@ def summarize(
         stages=stats,
         failovers=failovers,
         path=path,
-        terminal_node=terminal,
+        # A `ralph` run's last started node is always `learn_post`; the ending is the
+        # node that routed into `learn_prep` (see LEARN_PREP_NODE).
+        terminal_node=ending or terminal,
         refute=refute,
         events=count,
         first_edit_ms=first_edit,
@@ -313,6 +386,8 @@ def summarize(
         task_validation_unchecked=task_validation_unchecked,
         task_validation_untested=task_validation_untested,
         final_routes=final_routes,
+        post_iterations=post_iterations,
+        loop_exhausted=loop_exhausted,
     )
 
 

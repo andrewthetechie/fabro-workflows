@@ -8,6 +8,10 @@
 #   ./ops/fabro-scorecard.sh --last-week             # the previous ISO week
 #   ./ops/fabro-scorecard.sh --json [...]            # the JSON behind the table
 #   ./ops/fabro-scorecard.sh --repo OWNER/REPO [...] # one repository only (ADR 0025, C10)
+#   ./ops/fabro-scorecard.sh --by-workflow [...]     # both trial arms, side by side
+#                                                    # (ADR 0029 C12); --repo does not
+#                                                    # apply, the strata table is per
+#                                                    # repo already
 #
 # Both dates are inclusive (UTC). A window holds the runs dispatched in it.
 #
@@ -47,6 +51,7 @@ while [ $# -gt 0 ]; do
         --week) read -r FROM TO <<<"$(iso_week 0)"; shift ;;
         --last-week) read -r FROM TO <<<"$(iso_week 1)"; shift ;;
         --json) FORMAT="json"; shift ;;
+        --by-workflow) ENDPOINT="api/scorecard/workflows"; shift ;;
         -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "fabro-scorecard.sh: unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -63,6 +68,13 @@ QUERY="format=$FORMAT"
 [ -n "$FROM" ] && QUERY="$QUERY&from=$FROM"
 [ -n "$TO" ] && QUERY="$QUERY&to=$TO"
 [ -n "$REPO" ] && QUERY="$QUERY&repo=$REPO"
+
+# `/api/scorecard/workflows` has no `repo` parameter: its strata table is per repo
+# already, and narrowing an arm to one repository is what the plain window is for.
+if [ "$ENDPOINT" = "api/scorecard/workflows" ] && [ -n "$REPO" ]; then
+    echo "fabro-scorecard.sh: --by-workflow does not take --repo; its strata table has every repo in it" >&2
+    exit 2
+fi
 
 curl -fsS --max-time 60 "$SCHEDULER/$ENDPOINT?$QUERY"
 [ "$FORMAT" = json ] && echo

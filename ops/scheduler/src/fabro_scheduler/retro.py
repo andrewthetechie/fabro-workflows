@@ -235,7 +235,14 @@ def classify(rows: ScorecardRows) -> Classified:
         node = node or "unknown"
         if node in EXCLUDED_ENDING_NODES:
             continue
-        add(f"ending:{slug(node)}:{slug(detail)}", "ending", [ref(row)], 1)
+        # A `ralph` run's node part is `ralph.<node>` (ADR 0029 R7): the two
+        # workflows share node names (`mark_stuck`, `report_blocked`), and one class
+        # for both would file a `backlog` fix for a `ralph` ending. `backlog`'s keys
+        # do not change, because the marker comments on the retro issues hold them
+        # and a changed key would re-file every known class.
+        workflow = row["workflow"] or "backlog"
+        node_part = node if workflow == "backlog" else f"{workflow}.{node}"
+        add(f"ending:{slug(node_part)}:{slug(detail)}", "ending", [ref(row)], 1)
 
     # --- held ---------------------------------------------------------------------
     facts = {(row["repo"], row["pr_number"]): row for row in rows.prs}
@@ -921,14 +928,26 @@ def _card_line(card: Scorecard, prev: Scorecard) -> str:
     per_merge = (
         "n/a" if card.box_hours_per_merge is None else f"{card.box_hours_per_merge:.1f}"
     )
-    return " · ".join(
-        [
-            f"Runs {card.runs} ({_signed(card.runs - prev.runs)})",
-            f"PRs {card.prs} ({_signed(card.prs - prev.prs)})",
-            f"merged by the workflow {card.merged_workflow} = {rate} ({_pp(card.merge_rate, prev.merge_rate)})",
-            f"box-hours per merge {per_merge} ({_delta(per_merge, card, prev)})",
-        ]
-    )
+    parts = [
+        f"Runs {card.runs} ({_signed(card.runs - prev.runs)})",
+    ]
+    # During the trial the reader has to know how the week split between the arms
+    # before any merge rate means anything (ADR 0029 C12). Emitted only when a
+    # `ralph` run is in the window, so a pre-trial week's line is unchanged.
+    if card.workflow_runs.get("ralph"):
+        parts.append(
+            "arms "
+            + " / ".join(
+                f"{name} {card.workflow_runs.get(name, 0)}"
+                for name in ("backlog", "ralph")
+            )
+        )
+    parts += [
+        f"PRs {card.prs} ({_signed(card.prs - prev.prs)})",
+        f"merged by the workflow {card.merged_workflow} = {rate} ({_pp(card.merge_rate, prev.merge_rate)})",
+        f"box-hours per merge {per_merge} ({_delta(per_merge, card, prev)})",
+    ]
+    return " · ".join(parts)
 
 
 def _delta(formatted: str, card: Scorecard, prev: Scorecard) -> str:

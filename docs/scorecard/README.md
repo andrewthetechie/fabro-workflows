@@ -11,10 +11,36 @@ host, and shows them in two places:
 - the coder scheduler's **Metrics** tab (`http://10.10.0.32:32280/metrics`): stat tiles,
   week-by-week trends, and one window in detail;
 - `ops/fabro-scorecard.sh`, which prints the weekly table for a window
-  (`--from/--to`, `--week`, `--last-week`, `--json`).
+  (`--from/--to`, `--week`, `--last-week`, `--json`, `--by-workflow`).
 
 Both read `GET /api/scorecard`, which is one computation (`scorecard.compute`), so they can
 never disagree.
+
+## The trial's two arms (ADR 0029 C12)
+
+`GET /api/scorecard/workflows`, and `ops/fabro-scorecard.sh --by-workflow`, print the same
+window split by `run_history.workflow`: one ordinary card per arm (so every number below is
+defined once), a **repo × coder pool strata table** per arm — runs, PRs, merged, box-hours,
+box-hours per merge — and a `ralph` line with the numbers only that arm has:
+
+| Field | What it is |
+|---|---|
+| Iterations per run (p50/p90) | visits to `iterate_t1`..`iterate_t4`. One Task may take several; the cap is `min(24, 3 × the Task list)` before the PR (O7). |
+| Refute visits per run (p50/p90) | visits to `refute`. O8 allows at most 3 rounds. |
+| Tasks by source | every Task in the run's `tasks.json`, counted by `source` (`plan`, `refute`, `review`, `final_fix`, `ci`). A run whose Tasks are mostly `refute` ones is a run whose plan missed. The collector reads the file once at summary time. |
+| runs that ran out | summaries whose loop published `loop_exhausted` (O18). |
+| post-PR Iterations | Iterations that ran after `pr_handoff`. O13 allows 2. |
+| queued hand-offs | runs whose ending was `report_queued`: the PR passed every gate and went to merge-on-green (O12). |
+| Refuter tokens (in / cached / out) | the `refute` rows' tokens, so task 12 can price them at luna's rates. The catalog has no cost rows for OpenAI or z.ai, so the money columns read $0 for both. |
+
+A window with no `ralph` run still gets the arm's column, at zero: a table that loses a
+column when the arm is idle is a table nobody can read. `--by-workflow` has no `--repo`,
+because its strata table already has every repo in it.
+
+The arm's two numbers that O3 guards are the split's reason to exist: PRs merged with no
+operator commit, and box-hours per merged PR, each per repo × pool. A merge rate that rose
+because `ralph` ran on the faster box would be an artefact, and the strata table is what
+shows it.
 
 ## How the numbers are collected
 
@@ -82,6 +108,13 @@ added stay in every summary, and are read by the ordinary scorecard:
 scheduler deploy have NULLs there, which reads as "not measured", never as zero.
 
 ## Re-summarizing a window (ADR 0025, C9)
+
+The node ids a summary reads are per workflow (`summary.NODES`, ADR 0029 C12): `backlog`
+summarizes `review_merge.refute_gate`, `coder`, `validate` and `open_pr_prep`; `ralph`
+summarizes `refute_gate`, `iterate_t1`..`iterate_t4`, `check` and `final_check`. A `ralph`
+run's ending is the node that routed into `learn_prep`, taken from the run's last edge,
+because every terminal node there goes through the learnings stage and its last started
+node is always `learn_post`.
 
 A summary is built once, so a field added to `summary.py` exists for an old run only
 after it is re-summarized. `python -m fabro_scheduler resummarize --from D --to D`, run

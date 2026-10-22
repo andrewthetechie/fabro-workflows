@@ -224,6 +224,9 @@ class Scorecard:
     final_validation: FinalValidationRow = field(
         default_factory=lambda: FinalValidationRow(0, {}, None)
     )
+    # How many of the window's runs each workflow ran (ADR 0029 C12, O21). One entry
+    # for a window before the trial, so nothing else changes shape.
+    workflow_runs: dict[str, int] = field(default_factory=dict)
 
     @property
     def merge_rate(self) -> float | None:
@@ -422,6 +425,11 @@ def compute(
         models_runs=models_runs,
         task_validation=task_validation,
         final_validation=final_validation,
+        workflow_runs=dict(
+            sorted(
+                Counter(row["workflow"] or "backlog" for row in history).items()
+            )
+        ),
     )
 
 
@@ -870,3 +878,305 @@ def _num(value: float | None) -> str:
 
 def _counts(counter: dict[str, int]) -> str:
     return ", ".join(f"{name} {count}" for name, count in counter.items())
+
+# --------------------------------------------------------------------------- #
+# The trial's two arms (ADR 0029 C12)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class StrataRow:
+    """One repo x coder-pool cell, for one workflow: what O3 asks to be compared.
+
+    The trial's guardrails are per stratum, not per arm: a merge rate that rises
+    because `ralph` ran on the faster box would be an artefact, so the table shows
+    the runs, the merges and the box-hours per merge for each cell.
+    """
+
+    repo: str
+    coder_pool: str
+    workflow: str
+    runs: int
+    prs: int
+    merged: int
+    box_hours: float
+    box_hours_per_merge: float | None
+
+
+@dataclass(frozen=True)
+class RalphLine:
+    """The numbers only a `ralph` run has (C12).
+
+    `iterations` and `refute_visits` are per run, so a run that used four Iterations
+    and one that used one are both visible. `tasks_by_source` answers "where did the
+    work come from": a run whose Tasks are mostly `refute` ones is a run whose plan
+    missed. `runs_exhausted` counts the loop running out (O18), `post_iterations`
+    the post-PR budget being spent (O13), and `queued_handoffs` the PRs that went to
+    merge-on-green instead of merging here (O12).
+    """
+
+    runs: int = 0
+    iterations: Percentiles = field(default_factory=lambda: Percentiles(0, None, None))
+    refute_visits: Percentiles = field(default_factory=lambda: Percentiles(0, None, None))
+    tasks_by_source: dict[str, int] = field(default_factory=dict)
+    runs_exhausted: int = 0
+    post_iterations: int = 0
+    queued_handoffs: int = 0
+    # The Refuter's tokens, so task 12 can price them at luna's rates: the catalog
+    # has no cost rows for OpenAI or z.ai, and the scorecard shows $0 for both.
+    refute_input_tokens: int = 0
+    refute_cache_read_tokens: int = 0
+    refute_output_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class WorkflowsCard:
+    """Both arms over one window, side by side (C12, O3).
+
+    `cards` is keyed by workflow and holds an ordinary `Scorecard`, so every number
+    the single-arm view has is available per arm with no second definition. `strata`
+    is the repo x pool table, and `ralph` is the line only the trial's arm has.
+    """
+
+    start: datetime
+    end: datetime
+    cards: dict[str, Scorecard]
+    strata: list[StrataRow] = field(default_factory=list)
+    ralph: RalphLine = field(default_factory=RalphLine)
+
+
+def by_workflow(rows: ScorecardRows, start: datetime, end: datetime) -> WorkflowsCard:
+    """Split one window's rows by `run_history.workflow` and compute a card each.
+
+    Pure, and deliberately a split of `compute` rather than a second computation:
+    the arm's card is the same code over the arm's rows, so the two views cannot
+    disagree about what "merged by the workflow" means.
+    """
+    by_name: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in rows.history:
+        by_name[row["workflow"] or "backlog"].append(row)
+    # A window with no `ralph` run still gets the arm's column, at zero: a table
+    # that loses a column when the arm is idle is a table nobody can read.
+    for name in ("backlog", "ralph"):
+        by_name.setdefault(name, [])
+
+    workflow_of_pr: dict[tuple[str, int], str] = {}
+    for row in rows.history:
+        if row["pr_lookup"] == "found" and row["pr_number"] is not None:
+            workflow_of_pr.setdefault((row["repo"], row["pr_number"]), row["workflow"] or "backlog")
+
+    # A stable column order for every renderer: `backlog` first (the control arm),
+    # then `ralph`, then anything a later series adds.
+    order = ["backlog", "ralph"] + sorted(n for n in by_name if n not in ("backlog", "ralph"))
+    cards: dict[str, Scorecard] = {}
+    for name in order:
+        history = by_name[name]
+        run_ids = {row["run_id"] for row in history}
+        cards[name] = compute(
+            ScorecardRows(
+                history=history,
+                summaries=[row for row in rows.summaries if row["run_id"] in run_ids],
+                stages=[row for row in rows.stages if row["run_id"] in run_ids],
+                failovers=[row for row in rows.failovers if row["run_id"] in run_ids],
+                prs=[
+                    row
+                    for row in rows.prs
+                    if workflow_of_pr.get((row["repo"], row["pr_number"])) == name
+                ],
+                models=[row for row in rows.models if row["run_id"] in run_ids],
+            ),
+            start,
+            end,
+        )
+
+    facts = {(row["repo"], row["pr_number"]): row for row in rows.prs}
+    pr_runs: dict[tuple[str, int], list[sqlite3.Row]] = defaultdict(list)
+    for row in rows.history:
+        if row["pr_lookup"] == "found" and row["pr_number"] is not None:
+            pr_runs[(row["repo"], row["pr_number"])].append(row)
+
+    strata: dict[tuple[str, str, str], dict[str, object]] = {}
+    for row in rows.history:
+        key = (row["repo"], row["coder_pool"], row["workflow"] or "backlog")
+        cell = strata.setdefault(
+            key, {"runs": 0, "prs": 0, "merged": 0, "lease_ms": 0}
+        )
+        cell["runs"] = int(cell["runs"]) + 1
+        cell["lease_ms"] = int(cell["lease_ms"]) + _lease_ms(row)
+    for (repo, number), opened in pr_runs.items():
+        fact = facts.get((repo, number))
+        merged = merged_by_workflow(opened, fact)
+        for row in opened:
+            key = (row["repo"], row["coder_pool"], row["workflow"] or "backlog")
+            cell = strata[key]
+            cell["prs"] = int(cell["prs"]) + 1
+            if merged:
+                cell["merged"] = int(cell["merged"]) + 1
+
+    table = []
+    for (repo, pool, name), cell in sorted(strata.items()):
+        hours = int(cell["lease_ms"]) / 3_600_000
+        merges = int(cell["merged"])
+        table.append(
+            StrataRow(
+                repo=repo,
+                coder_pool=pool,
+                workflow=name,
+                runs=int(cell["runs"]),
+                prs=int(cell["prs"]),
+                merged=merges,
+                box_hours=hours,
+                box_hours_per_merge=(hours / merges if merges else None),
+            )
+        )
+
+    return WorkflowsCard(
+        start=start,
+        end=end,
+        cards=cards,
+        strata=table,
+        ralph=_ralph_line(by_name["ralph"], rows),
+    )
+
+
+def _ralph_line(history: Sequence[sqlite3.Row], rows: ScorecardRows) -> RalphLine:
+    """The ralph-only numbers, from the arm's own rows. Zeroes for an idle arm."""
+    if not history:
+        return RalphLine()
+    run_ids = {row["run_id"] for row in history}
+    summaries = {
+        row["run_id"]: row
+        for row in rows.summaries
+        if row["run_id"] in run_ids and row["status"] == "ok"
+    }
+
+    iterations: dict[str, int] = defaultdict(int)
+    refute_visits: dict[str, int] = defaultdict(int)
+    refute_in = refute_cache = refute_out = 0
+    for row in rows.stages:
+        if row["run_id"] not in run_ids:
+            continue
+        node = row["node_id"]
+        if node in ("iterate_t1", "iterate_t2", "iterate_t3", "iterate_t4"):
+            iterations[row["run_id"]] += int(row["visits"])
+        elif node == "refute":
+            refute_visits[row["run_id"]] += int(row["visits"])
+            refute_in += int(row["input_tokens"] or 0)
+            refute_cache += int(row["cache_read_tokens"] or 0)
+            refute_out += int(row["output_tokens"] or 0)
+
+    sources: Counter[str] = Counter()
+    exhausted = post_iterations = queued = 0
+    for row in summaries.values():
+        raw = row["task_sources"]
+        if raw:
+            try:
+                sources.update(json.loads(raw))
+            except ValueError:
+                pass
+        if row["loop_exhausted"]:
+            exhausted += 1
+        post_iterations += int(row["post_iterations"] or 0)
+        if row["terminal_node"] == "report_queued":
+            queued += 1
+
+    return RalphLine(
+        runs=len(history),
+        iterations=_percentiles([iterations[run_id] for run_id in run_ids]),
+        refute_visits=_percentiles([refute_visits[run_id] for run_id in run_ids]),
+        tasks_by_source=dict(sorted(sources.items())),
+        runs_exhausted=exhausted,
+        post_iterations=post_iterations,
+        queued_handoffs=queued,
+        refute_input_tokens=refute_in,
+        refute_cache_read_tokens=refute_cache,
+        refute_output_tokens=refute_out,
+    )
+
+
+def workflows_to_json(card: WorkflowsCard) -> dict[str, object]:
+    """The JSON `GET /api/scorecard/workflows` returns."""
+    return {
+        "window": {"from": card.start.isoformat(), "to": card.end.isoformat()},
+        "workflows": {name: to_json(one) for name, one in card.cards.items()},
+        "strata": [asdict(row) for row in card.strata],
+        "ralph": asdict(card.ralph),
+    }
+
+
+def workflows_to_markdown(card: WorkflowsCard) -> str:
+    """Both arms as one table, then the strata, then the ralph line."""
+    names = list(card.cards)
+    header = ["", *names]
+    summary_rows = [
+        ["runs", *[str(card.cards[n].runs) for n in names]],
+        ["PRs", *[str(card.cards[n].prs) for n in names]],
+        ["merged by the workflow", *[str(card.cards[n].merged_workflow) for n in names]],
+        ["merge rate", *[_arm_rate(card.cards[n].merge_rate) for n in names]],
+        ["box-hours", *[f"{card.cards[n].box_hours:.1f}" for n in names]],
+        [
+            "box-hours per merge",
+            *[
+                "—" if card.cards[n].box_hours_per_merge is None
+                else f"{card.cards[n].box_hours_per_merge:.2f}"
+                for n in names
+            ],
+        ],
+    ]
+    lines = _md_rows(header, summary_rows)
+    lines += ["", "## Strata: repo x coder pool", ""]
+    lines += _md_rows(
+        ["repo", "pool", "workflow", "runs", "PRs", "merged", "box-h", "box-h/merge"],
+        [
+            [
+                row.repo,
+                row.coder_pool,
+                row.workflow,
+                str(row.runs),
+                str(row.prs),
+                str(row.merged),
+                f"{row.box_hours:.1f}",
+                "—" if row.box_hours_per_merge is None else f"{row.box_hours_per_merge:.2f}",
+            ]
+            for row in card.strata
+        ],
+    )
+    r = card.ralph
+    lines += ["", "## ralph", ""]
+    lines += _md_rows(
+        ["number", "value"],
+        [
+            ["runs", str(r.runs)],
+            ["Iterations per run p50 / p90", _arm_pct(r.iterations)],
+            ["Refute visits per run p50 / p90", _arm_pct(r.refute_visits)],
+            [
+                "Tasks by source",
+                ", ".join(f"{k} {v}" for k, v in r.tasks_by_source.items()) or "—",
+            ],
+            ["runs that ran out", str(r.runs_exhausted)],
+            ["post-PR Iterations", str(r.post_iterations)],
+            ["queued hand-offs", str(r.queued_handoffs)],
+            [
+                "Refuter tokens (in / cached / out)",
+                f"{tokens(r.refute_input_tokens)} / {tokens(r.refute_cache_read_tokens)} / "
+                f"{tokens(r.refute_output_tokens)}",
+            ],
+        ],
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _arm_rate(value: float | None) -> str:
+    return "—" if value is None else f"{value * 100:.0f}%"
+
+
+def _arm_pct(value: Percentiles) -> str:
+    if value.p50 is None or value.p90 is None:
+        return "—"
+    return f"{value.p50:g} / {value.p90:g}"
+
+
+def _md_rows(header: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:
+    out = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    out += ["| " + " | ".join(row) + " |" for row in rows]
+    return out

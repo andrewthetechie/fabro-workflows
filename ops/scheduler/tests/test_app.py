@@ -1436,3 +1436,18 @@ def test_retro_last_week_and_week_of_together_exit_two():
     with pytest.raises(SystemExit) as caught:
         app_module.main(["retro", "--last-week", "--week-of", "2026-10-08"])
     assert caught.value.code == 2
+
+
+def test_the_workflows_endpoint_splits_the_window_by_arm(client):
+    """ADR 0029 C12: `/api/scorecard/workflows` answers both arms, the strata table
+    and the ralph line, over the same window parameters as `/api/scorecard`."""
+    body = client.get("/api/scorecard/workflows?days=7").json()
+    assert set(body["workflows"]) == {"backlog", "ralph"}
+    assert "window" in body
+    assert isinstance(body["strata"], list)
+    assert "runs_exhausted" in body["ralph"]
+
+    text = client.get("/api/scorecard/workflows?days=7&format=md")
+    assert text.status_code == 200
+    assert text.headers["content-type"].startswith("text/markdown")
+    assert "## ralph" in text.text

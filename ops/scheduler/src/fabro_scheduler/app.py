@@ -494,6 +494,25 @@ def build_app(
             return PlainTextResponse(scorecard.to_markdown(card), media_type="text/markdown")
         return scorecard.to_json(card)
 
+    @app.get("/api/scorecard/workflows", response_model=None)
+    def api_scorecard_workflows(
+        request: Request,
+    ) -> dict[str, object] | PlainTextResponse:
+        """Both trial arms over one window (ADR 0029 C12, O3).
+
+        The same window parameters as `/api/scorecard`, and the same `?format=md`
+        switch, because it is the same numbers split by `run_history.workflow`: a
+        card per arm, the repo x coder-pool strata table, and the `ralph` line.
+        """
+        params = request.query_params
+        start, end = _window(params.get("from"), params.get("to"), params.get("days"))
+        card = scorecard.by_workflow(store.scorecard_rows(start, end), start, end)
+        if (params.get("format") or "").lower() in ("md", "markdown"):
+            return PlainTextResponse(
+                scorecard.workflows_to_markdown(card), media_type="text/markdown"
+            )
+        return scorecard.workflows_to_json(card)
+
     @app.get("/api/scorecard/weeks")
     def api_scorecard_weeks(weeks: str | None = None) -> list[dict[str, object]]:
         """One scorecard per ISO week (Monday 00:00 UTC), oldest first, the last partial."""
