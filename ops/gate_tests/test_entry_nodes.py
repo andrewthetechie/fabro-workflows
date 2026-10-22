@@ -10,7 +10,6 @@ and issue-triage `acquire` (no set -e, no stdout). Each runs twice with a `fabro
 prints to stdout, and once with no `fabro-code` at all -- an image built before task 02.
 """
 
-import os
 from pathlib import Path
 
 from harness import (ARCH, GRAPH, INTRIAGE, ORIG_PATH, PR, cat, count, extract, git, grep,

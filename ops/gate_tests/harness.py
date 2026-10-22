@@ -443,3 +443,63 @@ def set_visit(path: Path, visit: str, text: str | None = None) -> None:
     if text is not None:
         path.write_text(text)
     path.write_text(jq("._io.visit=$v", file=path, args=["--arg", "v", visit], raw=False) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# The routing contract (ADR 0020): a node prints one routing object as the LAST stdout
+# line, and no other line of stdout or stderr has a brace, because fabro scans both.
+# ---------------------------------------------------------------------------
+
+def tail1(path: Path | str) -> str:
+    """$(tail -1 path)."""
+    try:
+        s = Path(path).read_text(errors="replace")
+    except FileNotFoundError:
+        return ""
+    if s.endswith("\n"):
+        s = s[:-1]
+    return s.split("\n")[-1]
+
+
+def run_files(argv: list, prefix: Path | str, *, cwd: Path | str | None = None,
+              path: str | None = None, env: dict[str, str] | None = None,
+              unset: tuple[str, ...] = (), stdin: str = "") -> int:
+    """`(cd cwd && argv < stdin > prefix.out 2> prefix.err); echo $? > prefix.rc`.
+
+    Output goes straight to the files, not through a pipe: a node that leaves a background
+    child holding stdout (a `timeout`-killed ci.sh's `sleep`) must not hold the test up.
+    """
+    out, err = Path(f"{prefix}.out"), Path(f"{prefix}.err")
+    with open(out, "w") as o, open(err, "w") as e:
+        r = subprocess.run([str(a) for a in argv], cwd=str(cwd if cwd is not None else DEFAULT_CWD),
+                           input=stdin, stdout=o, stderr=e, text=True,
+                           env=env_for(path, env, unset))
+    Path(f"{prefix}.rc").write_text(f"{r.returncode}\n")
+    return r.returncode
+
+
+def run_node(ck, node: str, graph: Path, d: Path, bin_dir: Path,
+             env: dict[str, str] | None = None, stdin: str = "", label: str | None = None) -> None:
+    """Run node's script with /tmp/fabro rebased onto d, from inside d, with bin_dir first on
+    PATH. Leaves d.sh, d.out, d.err and d.rc beside d."""
+    d.mkdir(parents=True, exist_ok=True)
+    script = Path(f"{d}.sh")
+    script.write_text(rebase(extract(graph, node), d))
+    ok, err = syntax_ok(script)
+    if not ok:
+        ck.fail(f"{label or node} is not valid POSIX sh", err)
+    run_files(["sh", script], d, cwd=d, path=f"{bin_dir}:{ORIG_PATH}", env=env, stdin=stdin)
+
+
+def routing_check(ck, label: str, d: Path, filt: str) -> str:
+    """Check the contract over d.out/d.err/d.rc; return `filt` applied to the last line."""
+    last = tail1(f"{d}.out")
+    ck(f"{label}: exit 0", "0", cat(f"{d}.rc"))
+    ck(f"{label}: last stdout line is JSON", "0", jq_ok(last))
+    out = Path(f"{d}.out").read_text(errors="replace")
+    body = out[:-1] if out.endswith("\n") else out
+    rest = "\n".join(body.split("\n")[:-1])
+    rest = rest + "\n" if rest else ""
+    ck(f"{label}: no other stdout or stderr line has a brace", "0",
+       count("[{}]", rest + Path(f"{d}.err").read_text(errors="replace"), pipe=True))
+    return jq(filt, last)
