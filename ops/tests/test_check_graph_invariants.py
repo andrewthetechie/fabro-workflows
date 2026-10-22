@@ -71,8 +71,58 @@ class Counts(unittest.TestCase):
             # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
             # this pair grows with each one; it is the offline parser's count, not a
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.
-            "ralph": (35, 89),
+            "ralph": (48, 130),
         })
+
+
+class Copies(unittest.TestCase):
+    """R10: ralph's copies must equal their originals plus the recorded replacements."""
+
+    def _root(self, tmp, copy_script, original_script):
+        root = Path(tmp)
+        (root / ".fabro/workflows/ralph").mkdir(parents=True)
+        (root / ".fabro/workflows/orig").mkdir(parents=True)
+        (root / ".fabro/workflows/orig/workflow.fabro").write_text(
+            f'digraph O {{ a [script="{original_script}"] }}\n')
+        (root / ".fabro/workflows/ralph/workflow.fabro").write_text(
+            f'digraph R {{ b [script="{copy_script}"] }}\n')
+        return root
+
+    def _violations(self, tmp, copy_script, original_script, repls):
+        saved = cgi.R10_COPIES, cgi.R10_PROMPTS
+        try:
+            cgi.R10_COPIES = [("b", ".fabro/workflows/orig/workflow.fabro", "a", tuple(repls))]
+            cgi.R10_PROMPTS = []
+            return cgi.r10_copies(self._root(tmp, copy_script, original_script))
+        finally:
+            cgi.R10_COPIES, cgi.R10_PROMPTS = saved
+
+    def test_a_byte_identical_copy_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._violations(tmp, "echo hi", "echo hi", []), [])
+
+    def test_one_character_of_drift_fails_and_names_the_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self._violations(tmp, "echo ho", "echo hi", [])
+            self.assertEqual([(r, n) for _, r, n, _ in found], [("R10", "b")], found)
+            self.assertIn("drifted", found[0][3])
+
+    def test_a_replacement_that_occurs_twice_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self._violations(tmp, "echo hi one", "echo hi one; echo hi one", [("echo hi", "echo hey")])
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("occurs 2 times", found[0][3])
+
+    def test_a_replacement_that_does_not_occur_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self._violations(tmp, "echo hi", "echo hi", [("echo bye", "echo hey")])
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("occurs 0 times", found[0][3])
+
+    def test_a_recorded_replacement_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                self._violations(tmp, "echo hey", "echo hi", [("echo hi", "echo hey")]), [])
 
 
 class RealTree(unittest.TestCase):

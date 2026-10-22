@@ -547,6 +547,182 @@ def r9_needs_human_reason(graph: Graph) -> list[tuple]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# R10: ralph's copies of backlog's entry nodes and the shared merge stage
+# --------------------------------------------------------------------------- #
+# ADR 0029 D4 / docs/ralph C8. `ralph` owns its merge stage, so its copies of the
+# shared phase's command nodes and of backlog's entry nodes must not drift from their
+# originals: a fix to a shared node now needs a decision about the copy, and this rule
+# is what forces one. A row is (ralph node, original .fabro, original node id,
+# replacements); the original's `script` with every replacement applied, in order, must
+# equal the copy's, and every replacement's `old` must occur in the original exactly
+# once. Attributes other than `script` (and `prompt`, for the prompt rows) are not
+# compared: a label or a class may differ.
+#
+# A copy that must differ in a way a replacement cannot express is NOT in the table;
+# its `//` comment above the node says why. `merge_prep` is `rm_setup` under another id,
+# which is why the row's replacements are empty and the node text is not.
+
+RALPH_GRAPH = ".fabro/workflows/ralph/workflow.fabro"
+
+R10_COPIES: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
+    ('claim', '.fabro/workflows/backlog/workflow.fabro', 'claim', (
+    )),
+    ('prep', '.fabro/workflows/backlog/workflow.fabro', 'prep', (
+        ('echo 0 > /tmp/fabro/extra_round\necho 0 > /tmp/fabro/split_rounds\necho 0 > /tmp/fabro/tasks_coded\nrm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue /tmp/fabro/stuck_reason.md',
+         'echo 0 > /tmp/fabro/iterations\necho 0 > /tmp/fabro/post_iterations\necho 0 > /tmp/fabro/refute_visits\necho 0 > /tmp/fabro/final_fix_attempts\necho 0 > /tmp/fabro/plan_attempts\necho pre > /tmp/fabro/phase\nrm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue /tmp/fabro/stuck_reason.md\nrm -f /tmp/fabro/loop_exhausted /tmp/fabro/progress.md /tmp/fabro/task-map.md'),
+        ("else echo 'agent guide: could not write .codex/instructions.md' >&2; fi",
+         'else echo \'agent guide: could not write .codex/instructions.md\' >&2; fi\njq -r \'.body // ""\' /tmp/fabro/issue.json 2>/dev/null | awk \'/^## Task map$/{s=1; next} s && /^## /{s=0} s && !/^[[:space:]]*$/{print}\' > /tmp/fabro/task-map.md\nif [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi'),
+    )),
+    ('excerpts', '.fabro/workflows/backlog/workflow.fabro', 'excerpts', (
+    )),
+    ('autofix', '.fabro/workflows/backlog/workflow.fabro', 'autofix', (
+    )),
+    ('check', '.fabro/workflows/backlog/workflow.fabro', 'validate', (
+        ('rm -f /tmp/fabro/rework.prev /tmp/fabro/task_check.json /tmp/fabro/task_check_error.log',
+         'rm -f /tmp/fabro/check_ok /tmp/fabro/rework.prev /tmp/fabro/task_check.json /tmp/fabro/task_check_error.log'),
+        ("echo 'task validation: mode='$MODE' reason='$REASON' ok='$OK'",
+         'if [ "$OK" = true ]; then echo 1 > /tmp/fabro/check_ok; fi\necho \'task validation: mode=\'$MODE\' reason=\'$REASON\' ok=\'$OK\''),
+    )),
+    ('resolve_merge_gate', '.fabro/workflows/backlog/workflow.fabro', 'resolve_merge_gate', (
+    )),
+    ('final_merge', '.fabro/workflows/backlog/workflow.fabro', 'final_merge', (
+    )),
+    ('hygiene', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'hygiene', (
+    )),
+    ('open_pr', '.fabro/workflows/backlog/workflow.fabro', 'open_pr', (
+        ('N=$(jq -r .number /tmp/fabro/issue.json)\nT=$(cat /tmp/fabro/pr_title.txt)',
+         'N=$(jq -r .number /tmp/fabro/issue.json)\nT=$(cat /tmp/fabro/pr_title.txt)\nif [ -s /tmp/fabro/loop_exhausted ]; then\n  { echo; echo \'### Unmet criteria\'; echo; echo \'The loop ran out before these Tasks passed, so this pull request must not merge automatically:\'; echo; jq -r \'.[] | select(.status != "passed") | "- " + (.title // .id) + " (" + (.status // "open") + ")"\' /tmp/fabro/tasks.json; } >> /tmp/fabro/pr_body.md\nfi'),
+    )),
+    ('file_remainder', '.fabro/workflows/backlog/workflow.fabro', 'file_remainder', (
+    )),
+    ('pr_handoff', '.fabro/workflows/backlog/workflow.fabro', 'pr_handoff', (
+        ('MM=watch\nif [ "$(cat /tmp/fabro/lane 2>/dev/null || echo standard)" = fast ] && [ ! -e /tmp/fabro/remainder_kind ]; then',
+         'echo post > /tmp/fabro/phase\nMM=watch\nif false; then'),
+        ('echo $MM > /tmp/fabro/merge_mode',
+         'echo $MM > /tmp/fabro/merge_mode'),
+    )),
+    ('deliver', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'deliver', (
+    )),
+    ('merge_gate', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'merge_gate', (
+    )),
+    ('watch_checks', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'watch_checks', (
+        ('    if [ "$NOW" -ge "$DL" ]; then blocked \'The 60-minute merge budget is exhausted; the merge phase was abandoned before CI settled.\'; fi',
+         'printf \'%s\' \'The 60-minute merge budget ran out with CI still pending, so the pull request was approved and handed to merge-queue.\' > /tmp/fabro/merge_block_reason\n    echo \'{"context_updates":{"checks_ok":false,"checks_blocked":false,"checks_deadline":true,"gh_fix_attempts":\'$A\'}}\'\n    exit 0'),
+        ("    if [ $((NOW - T0)) -ge 2820 ]; then blocked 'CI had not settled after 47 minutes of waiting for checks; the merge phase stopped before its watch timeout. A human can merge this PR once its checks are green.'; fi",
+         'printf \'%s\' \'CI had not settled after 47 minutes, so the pull request was approved and handed to merge-queue rather than blocking it.\' > /tmp/fabro/merge_block_reason\n    echo \'{"context_updates":{"checks_ok":false,"checks_blocked":false,"checks_deadline":true,"gh_fix_attempts":\'$A\'}}\'\n    exit 0'),
+    )),
+    ('merge', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'merge', (
+    )),
+    ('remerge_base', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'remerge_base', (
+        ('    echo 1 > /tmp/fabro/resolve_base_attempts\n    git rev-parse HEAD > /tmp/fabro/resolve_base_pre',
+         '    echo 1 > /tmp/fabro/resolve_base_attempts\n    PI=$(cat /tmp/fabro/post_iterations 2>/dev/null || echo 0)\n    case "$PI" in \'\' | *[!0-9]*) PI=0 ;; esac\n    echo $((PI + 1)) > /tmp/fabro/post_iterations\n    git rev-parse HEAD > /tmp/fabro/resolve_base_pre'),
+    )),
+    ('resolve_base_gate', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'resolve_base_gate', (
+        ('resolved the conflict; validate, the diff-hygiene counters and the refuter then ran again on the result.',
+         'resolved the conflict; the final validation, the diff-hygiene counters and the review then ran again on the result.'),
+    )),
+    ('report_merged', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'report_merged', (
+    )),
+    ('report_blocked', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'report_blocked', (
+    )),
+    ('report_queued', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'report_queued', (
+    )),
+    ('mark_needs_human', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'mark_needs_human', (
+        ("    *' standards '*|*' spec '*|*' review_fix '*|*' refute '*|*' ci_fix_t1 '*|*' ci_fix_t2 '*) FA=yes ;;",
+         "    *' standards '*|*' spec '*|*' refute '*|*' resolve_base '*|*' resolve_merge '*) FA=yes ;;"),
+    )),
+    ('close_noop', '.fabro/workflows/backlog/workflow.fabro', 'close_noop', (
+        ("S=$(jq -r '.summary // empty' /tmp/fabro/decomposition.json 2>/dev/null || true)",
+         "S=$(jq -r '.summary // empty' /tmp/fabro/task_list.json 2>/dev/null || true)"),
+        ("echo 'Agent run found no actionable decomposition for this issue; leaving it for human triage.'",
+         "echo 'Agent run found no actionable plan for this issue; leaving it for human triage.'"),
+        ("echo 'The decomposer reported:'",
+         "echo 'The planner reported:'"),
+    )),
+    ('return_to_triage', '.fabro/workflows/backlog/workflow.fabro', 'return_to_triage', (
+        ('(if .source == "decompose" then "the decomposer" else "the coder" end)',
+         '(if .source == "decompose" then "the decomposer" elif .source == "plan" then "the planner" else "the coder" end)'),
+    )),
+    ('mark_stuck', '.fabro/workflows/backlog/workflow.fabro', 'mark_stuck', (
+        ('  if [ -s /tmp/fabro/draft_reason.md ]; then\n    gh issue edit $N --remove-label Review 2>/dev/null || true\n    cp /tmp/fabro/draft_reason.md /tmp/fabro/stuck_comment.md\n  elif [ -s /tmp/fabro/stuck_reason.md ]; then',
+         '  if [ -s /tmp/fabro/stuck_reason.md ]; then'),
+    )),
+]
+
+R10_PROMPTS: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
+    ('resolve_merge', '.fabro/workflows/backlog/workflow.fabro', 'resolve_merge', (
+    )),
+    ('resolve_base', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'resolve_base', (
+    )),
+]
+
+
+def _script_of(path: Path, node: str) -> str | None:
+    if not path.exists():
+        return None
+    attrs = Graph(read_graph(path.read_text())).nodes.get(node)
+    return None if attrs is None else attrs.get("script")
+
+
+def _prompt_of(path: Path, node: str) -> Path | None:
+    if not path.exists():
+        return None
+    attrs = Graph(read_graph(path.read_text())).nodes.get(node) or {}
+    ref = attrs.get("prompt", "")
+    if not ref.startswith("@"):
+        return None
+    return (path.parent / ref[1:]).resolve()
+
+
+def _apply(text: str, repls) -> tuple[str | None, str | None]:
+    """The original with its replacements applied, or (None, why) when one does not fit."""
+    for old, new in repls:
+        n = text.count(old)
+        if n != 1:
+            return None, f"replacement occurs {n} times in the original: {old[:60]!r}"
+        text = text.replace(old, new)
+    return text, None
+
+
+def r10_copies(root: Path) -> list[tuple]:
+    """R10: every ralph copy still equals its original plus its recorded replacements."""
+    graph = root / RALPH_GRAPH
+    if not graph.exists():
+        return []
+    out = []
+    for target, src, src_id, repls in R10_COPIES:
+        original = _script_of(root / src, src_id)
+        if original is None:
+            out.append(("ralph", "R10", target, f"original node {src_id} is missing from {src}"))
+            continue
+        expected, why = _apply(original, repls)
+        if expected is None:
+            out.append(("ralph", "R10", target, why))
+            continue
+        copy = _script_of(graph, target)
+        if copy is None:
+            out.append(("ralph", "R10", target, "the copy is missing its script"))
+        elif copy != expected:
+            out.append(("ralph", "R10", target,
+                        f"drifted from {src} {src_id}; record the difference as a replacement or "
+                        "take the node out of the table and say why"))
+    for target, src, src_id, repls in R10_PROMPTS:
+        original_p, copy_p = _prompt_of(root / src, src_id), _prompt_of(graph, target)
+        if original_p is None or copy_p is None:
+            out.append(("ralph", "R10", target, "a prompt file is missing"))
+            continue
+        if not original_p.exists() or not copy_p.exists():
+            out.append(("ralph", "R10", target, "a prompt file does not exist"))
+            continue
+        expected, why = _apply(original_p.read_text(), repls)
+        if expected is None:
+            out.append(("ralph", "R10", target, why))
+        elif copy_p.read_text() != expected:
+            out.append(("ralph", "R10", target, f"prompt drifted from {src} {src_id}"))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Drivers
 # ---------------------------------------------------------------------------
@@ -631,6 +807,7 @@ def run(root_dir: Path) -> list[tuple]:
             violations += v
     for phase in sorted((workflows / "_shared").glob("*/*.fabro")) if (workflows / "_shared").is_dir() else []:
         violations += phase_violations(f"_shared/{phase.parent.name}", phase)
+    violations += r10_copies(root_dir)
     return violations
 
 

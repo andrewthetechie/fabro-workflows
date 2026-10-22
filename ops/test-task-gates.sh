@@ -9371,14 +9371,207 @@ check "fc red post: route"             "needs_human" "$(fc_val final_route)"
 
 # The edges.
 FCE=$(grep '^final_check->' <<<"$REDG")
-check "fc edges: four exits" "4" "$(grep -c . <<<"$FCE")"
-check "fc edges: pr needs final_route=pr" "1" "$(grep -cxF 'final_check->hygiene outcome=succeeded && context.final_route=pr' <<<"$FCE")"
+check "fc edges: six exits" "6" "$(grep -c . <<<"$FCE")"
+check "fc edges: pr needs final_route=pr in phase pre" "1" "$(grep -cxF 'final_check->hygiene outcome=succeeded && context.final_route=pr && context.phase=pre' <<<"$FCE")"
+check "fc edges: pr needs final_route=pr in phase post" "1" "$(grep -cxF 'final_check->hygiene outcome=succeeded && context.final_route=pr && context.phase=post' <<<"$FCE")"
+check "fc edges: a human is needed in post" "1" "$(grep -cxF 'final_check->mark_needs_human outcome=succeeded && context.final_route=needs_human' <<<"$FCE")"
 check "fc edges: fix returns to pick"     "1" "$(grep -cxF 'final_check->pick outcome=succeeded && context.final_route=fix' <<<"$FCE")"
 check "fc edges: stuck goes to mark_stuck" "1" "$(grep -cxF 'final_check->mark_stuck outcome=succeeded && context.final_route=stuck' <<<"$FCE")"
 check "fc edges: one unconditional escape" "1" "$(grep -cxF 'final_check->stop_reason ' <<<"$FCE")"
 HYE=$(grep '^hygiene->' <<<"$REDG")
 check "hygiene edges: the pre-PR route only" "1" "$(grep -cxF 'hygiene->refute_prep outcome=succeeded && context.phase=pre' <<<"$HYE")"
 check "hygiene edges: one unconditional escape" "1" "$(grep -cxF 'hygiene->stop_reason ' <<<"$HYE")"
+
+echo ""
+echo "ralph — ci_task"
+CT="$WORK/ralph-ci-task"; T="$CT/sb"; mkdir -p "$T/feedback"; stage_r ci_task
+ct_setup() {   # $1 = post_iterations, $2 = the ci_fix log
+    mkdir -p "$T/feedback"
+    echo "${1:-0}" > "$T/post_iterations"
+    printf '%s' "${2:-}" > "$T/feedback/ci_fix.md"
+    printf '%s' '[{"id":"t1","status":"passed"}]' > "$T/tasks.json"
+    echo pre > "$T/phase"
+    rm -f "$T/merge_block_reason" "$T/needs_human_reason" "$T/ci_task.json"
+}
+ct_run() { OUT=$(sh "$T/ci_task.sh" 2>&1); RC=$?; J=$(lastjson "$OUT"); }
+ct_val() { jq -r ".context_updates.$1" <<<"$J" 2>/dev/null; }
+
+ct_setup 0 '## Failing GitHub checks
+
+test (pull_request)
+### Failing log for run 123
+FAIL src/widget.test.ts > renders'
+ct_run
+check "ci_task: exits 0"           "0"    "$RC"
+check "ci_task: routes task"       "task" "$(ct_val ci_route)"
+check "ci_task: phase is post"     "post" "$(ct_val phase)"
+check "ci_task: one Task appended" "1"    "$(jq '[.[] | select(.source == "ci")] | length' "$T/tasks.json")"
+check "ci_task: the Task is open"  "open" "$(jq -r '.[1].status' "$T/tasks.json")"
+check "ci_task: the failing check is in it" "1" "$(jq -r '.[1].body' "$T/tasks.json" | grep -c 'test (pull_request)')"
+check "ci_task: the log tail is in it" "1" "$(jq -r '.[1].body' "$T/tasks.json" | grep -c 'FAIL src/widget.test.ts')"
+check "ci_task: acceptance names the check" "1" "$(jq -r '.[1].acceptance[0]' "$T/tasks.json" | grep -c 'passes on the pushed head')"
+
+ct_setup 1 'second round'
+ct_run
+check "ci_task round 2: the id moves" "ci2" "$(jq -r '.[1].id' "$T/tasks.json")"
+
+ct_setup 2 'the cap is spent'
+ct_run
+check "ci_task at the cap: routes stop" "stop" "$(ct_val ci_route)"
+check "ci_task at the cap: no Task"     "1"    "$(jq length "$T/tasks.json")"
+check "ci_task at the cap: merge_block_reason" "1" "$(grep -c 'CI is red after 2 post-PR Iterations' "$T/merge_block_reason")"
+check "ci_task at the cap: needs_human_reason" "1" "$(grep -c 'CI is red after 2 post-PR Iterations' "$T/needs_human_reason")"
+
+echo ""
+echo "ralph — merge_gate"
+MG="$WORK/ralph-merge-gate"; T="$MG/sb"; mkdir -p "$T/bin" "$T/review" "$MG/repo"; stage_r merge_gate
+git -C "$MG/repo" init -q -b main
+git -C "$MG/repo" config user.email t@t; git -C "$MG/repo" config user.name t
+echo x > "$MG/repo/a.txt"; git -C "$MG/repo" add -A; git -C "$MG/repo" commit -qm base
+git init -q --bare "$MG/origin.git"; git -C "$MG/origin.git" symbolic-ref HEAD refs/heads/main
+git -C "$MG/repo" remote add origin "$MG/origin.git"; git -C "$MG/repo" push -q origin main
+echo y >> "$MG/repo/a.txt"; git -C "$MG/repo" commit -qam 'feat: the work'
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr view")
+    J=""; P=""
+    for a in "$@"; do [ "$P" = "--jq" ] && J="$a"; P="$a"; done
+    if [ -n "$J" ]; then jq -r "$J" "$GH_STATE/pr.fixture.json"; else cat "$GH_STATE/pr.fixture.json"; fi
+    exit 0 ;;
+  "api graphql") echo 0; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+PATH="$T/bin:$ORIG_PATH"
+export GH_LOG="$T/gh.log" GH_STATE="$T"
+mg_setup() {   # $1 = live PR title, $2 = labels json, $3 = fix_result object, $4 = hygiene blocking, $5 = refute verdict
+    mkdir -p "$T/review"
+    LAB=${2:-}
+    if [ -z "$LAB" ]; then LAB='[{"name":"agent-authored"}]'; fi
+    jq -nc --arg t "${1:-feat: Add a widget (#12)}" --argjson l "$LAB" \
+      '{labels:$l, state:"OPEN", isDraft:false, reviewDecision:"APPROVED", commits:[], title:$t,
+        body:"## Summary\n\n<!-- fabro:commit-body:start -->\nResolves #12\n<!-- fabro:commit-body:end -->\n"}' > "$T/pr.fixture.json"
+    jq -nc '{number:7, url:"https://github.com/o/r/pull/7", title:"t", body:"b", state:"OPEN", headRefName:"b", baseRefName:"main", labels:[], closingIssuesReferences:[]}' > "$T/pr.json"
+    FIX=${3:-}
+    # ${3:-{...}} would swallow the first `}` of a JSON default, so the default is
+    # assigned in two steps.
+    if [ -z "$FIX" ]; then FIX='{"outcome":"fixed","risk":2,"summary":"s","own_findings":[],"fixes_applied":[],"not_fixed":[]}'; fi
+    printf '%s' "$FIX" > "$T/review/fix_result.json"
+    jq -nc --argjson b "${4:-[]}" --arg h "$(git -C "$MG/repo" rev-parse HEAD)" '{version:1, config:"default", tamper:{}, erosion:{}, blocking:$b, samples:[], head:$h}' > "$T/review/hygiene.json"
+    printf '%s' "${5:-pass}" > "$T/review/refute_verdict"
+    echo 'hygiene blocked' > "$T/review/hygiene_reason.txt"
+    echo 1 > "$T/auto_merge"; echo 7 > "$T/pr_number"; echo main > "$T/base_ref"
+    rm -f "$T/merge_block_reason" "$T/merge_deadline" "$T/gh_fix_attempts"
+}
+mg_run() { OUT=$( cd "$MG/repo" && sh "$T/merge_gate.sh" 2>&1 ); RC=$?; J=$(lastjson "$OUT"); }
+mg_val() { jq -r ".context_updates.$1" <<<"$J" 2>/dev/null; }
+
+mg_setup
+mg_run
+check "mg green: exits 0"            "0"    "$RC"
+check "mg green: eligible"           "true" "$(mg_val merge_eligible)"
+check "mg green: the deadline is set" "1"   "$(grep -cE '^[0-9]+$' "$T/merge_deadline")"
+check "mg green: fix attempts reset"  "0"   "$(cat "$T/gh_fix_attempts")"
+check "mg green: no block reason"     "absent" "$([ -e "$T/merge_block_reason" ] && echo present || echo absent)"
+
+mg_setup '' '' '' '["test_skipped"]'
+mg_run
+check "mg tamper: not eligible"      "false" "$(mg_val merge_eligible)"
+check "mg tamper: the hygiene reason is the block" "1" "$(grep -c 'hygiene blocked' "$T/merge_block_reason")"
+
+mg_setup '' '' '' '[]' fail
+mg_run
+check "mg refuter fail: not eligible" "false" "$(mg_val merge_eligible)"
+
+mg_setup '' '' '{"outcome":"needs_human","risk":2,"summary":"s","own_findings":[],"fixes_applied":[],"not_fixed":[]}'
+mg_run
+check "mg unmergeable fix_result: not eligible" "false" "$(mg_val merge_eligible)"
+check "mg unmergeable fix_result: says so" "1" "$(grep -c 'did not end in a mergeable state' "$T/merge_block_reason")"
+
+mg_setup '' '' '{"outcome":"fixed","risk":2,"summary":"s","own_findings":[],"fixes_applied":[],"not_fixed":[{"finding_id":"STD-001"}]}'
+mg_run
+check "mg not_fixed: not eligible"   "false" "$(mg_val merge_eligible)"
+check "mg not_fixed: says so"        "1" "$(grep -c 'unfixed findings' "$T/merge_block_reason")"
+
+mg_setup '' '' '{"outcome":"fixed","risk":4,"summary":"s","own_findings":[],"fixes_applied":[],"not_fixed":[]}'
+mg_run
+check "mg risk 4: not eligible"      "false" "$(mg_val merge_eligible)"
+check "mg risk 4: says so"           "1" "$(grep -c 'risk rating is missing or above 3' "$T/merge_block_reason")"
+
+mg_setup 'Add a widget (#12)'
+mg_run
+check "mg title not conventional: not eligible" "false" "$(mg_val merge_eligible)"
+
+mg_setup '' '[{"name":"agent-authored"},{"name":"do-not-merge"}]'
+mg_run
+check "mg do-not-merge: not eligible" "false" "$(mg_val merge_eligible)"
+
+echo ""
+echo "ralph — deliver"
+DL="$WORK/ralph-deliver"; T="$DL/sb"; mkdir -p "$T" "$DL/bin"; stage_r deliver
+rm -rf "$DL/repo" "$DL/origin.git"
+git init -q --bare "$DL/origin.git"; git -C "$DL/origin.git" symbolic-ref HEAD refs/heads/main
+git init -q -b main "$DL/repo"
+git -C "$DL/repo" config user.email t@t; git -C "$DL/repo" config user.name t
+echo base > "$DL/repo/a.txt"; git -C "$DL/repo" add -A; git -C "$DL/repo" commit -qm base
+git -C "$DL/repo" remote add origin "$DL/origin.git"
+git -C "$DL/repo" push -q origin main
+git -C "$DL/repo" checkout -q -b fabro/run/x
+echo work >> "$DL/repo/a.txt"; git -C "$DL/repo" commit -qam 'feat: the work'
+git -C "$DL/repo" push -q origin fabro/run/x
+git -C "$DL/repo" reset -q --hard HEAD~1
+echo more >> "$DL/repo/a.txt"; git -C "$DL/repo" commit -qam 'feat: the review edit'
+cat > "$DL/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$DL_LOG"
+exit 0
+STUB
+chmod +x "$DL/bin/gh"
+export DL_LOG="$T/gh.log"
+echo 7 > "$T/pr_number"; echo fabro/run/x > "$T/head_ref"; echo main > "$T/base_ref"
+OUT=$( cd "$DL/repo" && PATH="$DL/bin:$ORIG_PATH" sh "$T/deliver.sh" 2>&1 ); RC=$?
+check "deliver: exits 0"             "0"     "$RC"
+check "deliver: delivered"           "true"  "$(jq -r '.context_updates.delivered' <<<"$(lastjson "$OUT")")"
+check "deliver: the new head is on the remote" "feat: the review edit" "$(git -C "$DL/origin.git" log -1 --format=%s refs/heads/fabro/run/x)"
+check "deliver: the marker is written" "delivered" "$(cat "$T/delivery")"
+check "deliver: the label is added"  "1"     "$(grep -c 'ai-review-complete' "$T/gh.log")"
+
+# The edges of the merge stage.
+MGEDGE=$(grep -E '^(merge_prep|deliver|merge_gate|watch_checks|ci_task|merge|remerge_base|resolve_base|resolve_base_gate)->' <<<"$REDG")
+check "merge edges: the stage is entered through merge_prep" "1" "$(grep -cxF 'pr_handoff->merge_prep outcome=succeeded' <<<"$REDG")"
+check "merge edges: merge_prep reaches merge_gate" "1" "$(grep -cxF 'merge_prep->merge_gate outcome=succeeded' <<<"$MGEDGE")"
+check "merge edges: a red check becomes a Task" "2" "$(grep -c '^watch_checks->ci_task context.checks_ok=false && context.gh_fix_attempts=' <<<"$MGEDGE")"
+check "merge edges: the deadline queues instead of blocking" "1" "$(grep -cxF 'watch_checks->report_queued context.checks_deadline=true' <<<"$MGEDGE")"
+check "merge edges: a flake block outranks the fix tier" "1" "$(grep -cxF 'watch_checks->report_blocked context.checks_blocked=true' <<<"$MGEDGE")"
+check "merge edges: ci_task returns to the loop" "1" "$(grep -cxF 'ci_task->pick context.ci_route=task' <<<"$MGEDGE")"
+check "merge edges: a base conflict revalidates" "1" "$(grep -cxF 'resolve_base_gate->final_check context.resolve_ok=true' <<<"$MGEDGE")"
+check "merge edges: post-PR Iterations end at hygiene" "1" "$(grep -cxF 'pick->hygiene context.loop=done && context.phase=post' <<<"$REDG")"
+check "merge edges: post-PR exhaustion reports" "1" "$(grep -cxF 'pick->report_blocked context.loop=exhausted && context.phase=post' <<<"$REDG")"
+check "merge edges: post failures reach mark_needs_human" "1" "$(grep -cxF 'stop_reason->mark_needs_human context.stop_phase=post' <<<"$REDG")"
+check "merge edges: final_check's pr routes split on phase" "2" "$(grep -c '^final_check->hygiene outcome=succeeded && context.final_route=pr && context.phase=' <<<"$REDG")"
+check "merge edges: every merge-stage node has one unconditional escape" "10" \
+  "$(grep -cE '^(deliver|merge_gate|watch_checks|ci_task|merge|remerge_base|resolve_base|resolve_base_gate|report_merged|report_blocked)->[a-z_]+ $' <<<"$REDG")"
+
+# merge_prep's two heredocs must be rm_setup's, byte for byte: the renderers are shell
+# programs, so a drift would change every review comment silently.
+mp_block() {  # $1 = graph, $2 = node: print the two heredocs
+    python3.11 - "$1" "$2" <<'PY'
+import sys
+sys.path.insert(0, "ops")
+import importlib.util
+spec = importlib.util.spec_from_file_location("cgi", "ops/check-graph-invariants.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+from pathlib import Path
+g = m.Graph(m.read_graph(Path(sys.argv[1]).read_text()))
+s = g.nodes[sys.argv[2]]["script"]
+print(s[s.index("cat > /tmp/fabro/render.jq"):s.index("RENDER_SH\n") + 9])
+PY
+}
+check "merge_prep: render.jq and render_comment.sh are rm_setup's" \
+  "$(mp_block "$SHARED" rm_setup)" "$(mp_block "$RAPH" merge_prep)"
 
 echo ""
 echo "the suite leaves the checkout alone"
