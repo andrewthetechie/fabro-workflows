@@ -200,3 +200,32 @@ To stop it for one repository, flip its switch: `ops/fabro-auto-merge-switch.sh 
 auto-merge on the host, set `FABRO_AUTO_MERGE` to `0`. To stop the runs, turn the schedule off with
 `ops/fabro-automation-schedule.sh dependabot-<repo> off`.
 
+
+## The `ralph` trial, from GitHub
+
+For a while half the issues are worked by a second workflow, `ralph`, instead of `backlog`. You
+do not choose which: the scheduler sends an **even** issue number to `ralph` and an odd one to
+`backlog` when the operator has set the split, and a `fast-path` issue always stays on `backlog`.
+Both open one PR per issue and label it `agent-authored`, so from the issue's side nothing in the
+labels changes.
+
+What you will see differently on a `ralph` issue:
+
+- **One PR, still**, but with a Task list worked in a loop: the run plans once, then fresh coder
+  sessions take one Task at a time, each judged by the repository's own tests rather than by a
+  reviewer. A Task can take several attempts, and a stronger model each two attempts.
+- **A harder check at the end.** Before the PR opens, a separate Refuter (on a different model
+  family) is told the work is done and tries to prove it is not. Each finding it can *prove* —
+  with a file and line, or a command — becomes another Task. At most three rounds of this.
+- **The same merge gate** as `backlog`: the PR still needs the hygiene counters, the Refuter's
+  pass, the review, and a Conventional Commit title, and a PR whose Tasks did not all pass is
+  opened with them listed under **Unmet criteria** and is not merged automatically.
+- **A `ralph learnings` issue** in the repository. Once a run has implemented something, it adds
+  one comment with up to five rules it learned, each with the evidence, and where the rule would
+  live. Nothing reads that issue automatically: a Learning is a proposal, and a human decides.
+  It is labelled `learning`, never `agent`, so it never enters the queue.
+
+Nothing about your side of the process changes: add `agent`, answer triage questions in a
+comment, and read the PR. If you want to know which workflow worked an issue, ask the operator —
+the run history records it, and so does the PR body's report comment. If you want to stop the
+trial for an issue, there is no per-issue switch; a `fast-path` issue always stays on `backlog`.
