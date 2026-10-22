@@ -636,6 +636,8 @@ R10_COPIES: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
         ('echo $MM > /tmp/fabro/merge_mode',
          'echo $MM > /tmp/fabro/merge_mode'),
     )),
+    ('merge_prep', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'rm_setup', (
+    )),
     ('deliver', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'deliver', (
     )),
     ('merge_gate', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'merge_gate', (

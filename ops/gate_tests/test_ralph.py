@@ -3,7 +3,7 @@ own graph and rebased onto its own scratch directory; the edge checks read the p
 rather than the text, because a wrong route is invisible to `fabro validate`."""
 
 
-from harness import (ORIG_PATH, RAPH, REPO_ROOT, SHARED, WF, cat, count, edges, extract, git,
+from harness import (ORIG_PATH, RAPH, WF, cat, count, edges, extract, git,
                      grep, head1, jq, jq_n, lastjson, mkreadok, present, rebase, rm, run, sh,
                      stage, stub, syntax_ok, write)
 
@@ -867,21 +867,6 @@ exit 0
     ck("mg do-not-merge: not eligible", "false", eligible())
 
 
-def mp_block(graph, node):
-    """The two heredocs merge_prep shares with rm_setup, as the invariant checker parses them."""
-    program = '''import sys
-sys.path.insert(0, "ops")
-import importlib.util
-spec = importlib.util.spec_from_file_location("cgi", "ops/check-graph-invariants.py")
-m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-from pathlib import Path
-g = m.Graph(m.read_graph(Path(sys.argv[1]).read_text()))
-s = g.nodes[sys.argv[2]]["script"]
-print(s[s.index("cat > /tmp/fabro/render.jq"):s.index("RENDER_SH\\n") + 9])
-'''
-    return run(["python3.11", "-", str(graph), node], cwd=REPO_ROOT, stdin=program, stderr="drop").out
-
-
 def test_ralph_deliver_and_merge_edges(ck, tmp_path):
     DL = tmp_path / "ralph-deliver"
     T = DL / "sb"
@@ -920,9 +905,44 @@ def test_ralph_deliver_and_merge_edges(ck, tmp_path):
     ck("merge edges: every merge-stage node has one unconditional escape", "10",
        count("^(deliver|merge_gate|watch_checks|ci_task|merge|remerge_base|resolve_base|resolve_base_gate|report_merged|report_blocked)->[a-z_]+ $", redg, flags="E"))
 
-    # merge_prep's two heredocs must be rm_setup's, byte for byte: the renderers are shell
-    # programs, so a drift would change every review comment silently.
-    ck("merge_prep: render.jq and render_comment.sh are rm_setup's", mp_block(SHARED, "rm_setup"), mp_block(RAPH, "merge_prep"))
+
+def test_ralph_merge_prep(ck, tmp_path):
+    # merge_prep is rm_setup byte for byte (R10). This checks the part ralph's first copy left
+    # out: without the switch resolution merge_gate finds no auto_merge file and blocks every PR.
+    T = tmp_path / "sb"
+    T.mkdir()
+    (tmp_path / "bin").mkdir()
+    mp = stage_r(ck, "merge_prep", tmp_path / "stage", root=T)
+    stub(tmp_path / "bin", "gh", '#!/bin/sh\necho "$*" >> "$MP_LOG"\nexit 0\n')
+
+    def go(repo_switch, host_switch):
+        for p in T.iterdir():
+            rm(p)
+        (T / "review").mkdir()
+        for f, v in (("pr_number", "7"), ("base_ref", "main"), ("head_ref", "fabro/run/x"),
+                     ("pr.json", "{}"), ("linked_issues.json", "[]"), ("run_base_sha", "abc"),
+                     ("merge_mode", "watch"), ("auto_merge_repo", repo_switch)):
+            write(T / f, v + "\n")
+        write(T / "fix_attempts", "3\n"); write(T / "delivery", "x\n")
+        r = sh(mp, cwd=tmp_path, path=f"{tmp_path / 'bin'}:{ORIG_PATH}",
+               env={"MP_LOG": T / "gh.log", "FABRO_AUTO_MERGE": host_switch})
+        return r
+
+    r = go("1", "1")
+    ck("merge_prep: exits 0", "0", r.rc)
+    ck("merge_prep: both switches on: auto_merge 1", "1", cat(T / "auto_merge"))
+    ck("merge_prep: both switches on: no off reason", "", cat(T / "auto_merge_off_reason"))
+    ck("merge_prep: resets fix_attempts", "0", cat(T / "fix_attempts"))
+    ck("merge_prep: clears delivery", "absent", present(T / "delivery"))
+    ck("merge_prep: removes merge-on-green", "1", count("pr edit 7 --remove-label merge-on-green", file=T / "gh.log"))
+    ck("merge_prep: publishes watch", "watch", ctx(lastjson(r.out), "merge_mode"))
+    ck("merge_prep: writes the renderers", "present|present", present(T / "render.jq") + "|" + present(T / "render_comment.sh"))
+    go("0", "1")
+    ck("merge_prep: repo switch off: auto_merge 0", "0", cat(T / "auto_merge"))
+    ck("merge_prep: repo switch off: says so", "1", count("switched off for this repository", file=T / "auto_merge_off_reason"))
+    go("1", "0")
+    ck("merge_prep: host switch off: auto_merge 0", "0", cat(T / "auto_merge"))
+    ck("merge_prep: host switch off: says so", "1", count("switched off host-wide", file=T / "auto_merge_off_reason"))
 
 
 def test_ralph_learn_prep(ck, tmp_path):

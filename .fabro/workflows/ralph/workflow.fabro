@@ -1877,17 +1877,40 @@ echo handoff ready"]
     // nothing wrote them. This node is `review_merge.rm_setup` itself, with no script
     // replacement: its entry contract, its auto-merge switch resolution, its
     // `merge-on-green` removal, its `review_entry_tree` and the two heredocs are all
-    // wanted here. `ops/gate_tests/` fail if the heredocs drift from the
-    // shared node's.
+    // wanted here. R10 fails if this script drifts from the shared node's by one byte.
+    // Without the switch resolution `merge_gate` finds no `/tmp/fabro/auto_merge` and
+    // blocks every PR as "Auto-merge is switched off".
     merge_prep [label="Prepare the merge stage", shape=parallelogram, timeout="5m",
         output_schema="routing",
         script="set -e
-mkdir -p /tmp/fabro /tmp/fabro/review
+mkdir -p /tmp/fabro /tmp/fabro/review /tmp/fabro/feedback
 PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
-case \"$PR\" in '' | *[!0-9]*) echo 'merge_prep: /tmp/fabro/pr_number must hold a positive integer' >&2; exit 1;; esac
+case \"$PR\" in '' | *[!0-9]*) echo 'review-merge entry contract: /tmp/fabro/pr_number must hold a positive integer' >&2; exit 1;; esac
 for f in base_ref head_ref pr.json linked_issues.json run_base_sha; do
-  test -s /tmp/fabro/$f || { echo \"merge_prep: /tmp/fabro/$f is missing or empty\" >&2; exit 1; }
+  test -s /tmp/fabro/$f || { echo \"review-merge entry contract: /tmp/fabro/$f is missing or empty\" >&2; exit 1; }
 done
+AM=$(cat /tmp/fabro/auto_merge_repo 2>/dev/null || echo 1)
+case \"$AM\" in 1) ;; *) AM=0 ;; esac
+H=\"${FABRO_AUTO_MERGE:-0}\"
+case \"$H\" in 1) ;; *) H=0 ;; esac
+if [ \"$AM\" = 1 ] && [ \"$H\" = 1 ]; then
+  echo 1 > /tmp/fabro/auto_merge
+  : > /tmp/fabro/auto_merge_off_reason
+elif [ \"$AM\" != 1 ]; then
+  echo 0 > /tmp/fabro/auto_merge
+  echo 'Auto-merge is switched off for this repository. Flip it with ops/fabro-auto-merge-switch.sh.' > /tmp/fabro/auto_merge_off_reason
+else
+  echo 0 > /tmp/fabro/auto_merge
+  echo 'Auto-merge is switched off host-wide: the FABRO_AUTO_MERGE server variable is not 1. Re-arm it with ops/fabro-auto-merge-switch.sh host on.' > /tmp/fabro/auto_merge_off_reason
+fi
+echo 0 > /tmp/fabro/fix_attempts
+echo 0 > /tmp/fabro/recheck_done
+rm -f /tmp/fabro/delivery /tmp/fabro/review/resolve_base.md /tmp/fabro/review/resolve_conflicts.txt
+MM=$(cat /tmp/fabro/merge_mode 2>/dev/null || echo watch)
+case \"$MM\" in queue) ;; *) MM=watch ;; esac
+echo \"$MM\" > /tmp/fabro/merge_mode
+gh pr edit \"$PR\" --remove-label merge-on-green >/dev/null 2>&1 || true
+git rev-parse 'HEAD^{tree}' > /tmp/fabro/review_entry_tree 2>/dev/null || rm -f /tmp/fabro/review_entry_tree
 cat > /tmp/fabro/render.jq <<'RENDER_JQ'
 def NL: [10] | implode;
 def nz($a): ($a // []);
@@ -2042,7 +2065,7 @@ fi
 jq -s . $T/cm.ndjson > $T/cm.json
 jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile rfx $T/refute_fix.json --rawfile pd $T/post_deploy.md --rawfile rb $T/resolve_base.md --slurpfile hyg $T/hygiene.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\" --arg qhead \"${2:-}\"
 RENDER_SH
-echo '{\"context_updates\":{\"merge_prep_ok\":true}}'"]
+echo '{\"context_updates\":{\"review_merge_outcome\":\"needs_human\",\"merge_mode\":\"'$MM'\"}}'"]
 
     // copy: copy of review_merge.deliver (C8). No replacement.
     // A rejected lease push used to say only "the branch moved", even when a human had
