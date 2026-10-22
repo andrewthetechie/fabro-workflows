@@ -45,4 +45,21 @@ log on the Mac (dated section).
 
 ## Log
 
-(empty)
+**2026-10-22.** Steps 1-4 and 6 done; step 5 skipped.
+
+- 1: reviewed tasks 01-11 and fixed them (bdc5a0d..8e38f94); `make check` green.
+- 3: pushed 8e38f94. The first `make check-host` failed: `fabro validate` rejected ralph
+  (`stop_reason` had only conditional edges). Fixed in c0b9e5e, which also adds R12 to
+  check it offline. `make check-host` then passed: `Ralph (51 nodes, 135 edges)`, one warning
+  (`issue_number` in `claim`). `fabro preflight` with the inputs bound fails only on the Kimi
+  weekly quota, the same as `backlog`'s.
+- 4 and 6 together: the operator chose to start the trial without a shakedown. b583473 set the
+  compose default to 50, and `deploy-host.sh scripts compose scheduler verify` deployed it
+  (verify all ok). **Switch: scheduler started 2026-10-22T21:28:06Z, the trial window's
+  start.** Fabro was not restarted; the two in-flight `backlog` runs (lawncare-saas#2962,
+  #2963) kept their leases.
+- 5: not run. The first trial runs are the shakedown, so step 5's checks (receipts, the
+  loop's routes, a Refute round, the merge stage, `learn_post`, the timeouts, the Discord
+  notices) apply to them. They count in `run_history`, unlike manual fires, so read the
+  first `ralph` runs before trusting the arm's numbers. The first queued candidate was
+  lawncare-saas#2970.
