@@ -3185,6 +3185,13 @@ echo done"]
     // the same `stdin_source` rescue_brief reads), keeps a reason an earlier node already
     // wrote, and ends the run by phase.
     //
+    // The reason is the signature's, except after a deterministic failure of a command node
+    // that wrote `stuck_reason.md` before it exited 1 (`open_pr`'s refusals, `review_prep`,
+    // `review_gate`): the signature then says only "exit 1", and the file says why. An agent
+    // stage or a `transient_infra` failure always takes the signature, as `mark_needs_human`
+    // decides (invariants-merge). Every node that writes `stuck_reason.md` either ends the
+    // run or exits into this node, and `prep` deletes it, so the file is never stale here.
+    //
     // `phase` is `pre` until `pr_handoff` writes `post`. `pre` -> `mark_stuck`: the issue
     // gets `agent-stuck` and a comment, and no PR exists. `post` -> `mark_needs_human`, which
     // needs BOTH reason files -- the blocked and needs-human renderers read different ones,
@@ -3207,7 +3214,14 @@ WHY=''
 if [ -n \"$SIG\" ]; then
   NODE=${SIG%%|*}
   REST=${SIG#*|}
-  WHY=\"$NODE failed (${REST%%|*}): ${REST#*|}\"
+  CLS=${REST%%|*}
+  case \"$NODE\" in
+    plan | iterate_t1 | iterate_t2 | iterate_t3 | iterate_t4 | refute | standards | spec | resolve_merge | resolve_base | learn) FA=yes ;;
+    *) FA=no ;;
+  esac
+  if [ \"$FA\" = no ] && [ \"$CLS\" != transient_infra ] && [ -s /tmp/fabro/stuck_reason.md ]; then :; else
+    WHY=\"$NODE failed ($CLS): ${REST#*|}\"
+  fi
 fi
 if [ -z \"$WHY\" ] && [ -s /tmp/fabro/stuck_reason.md ]; then WHY=$(head -c 600 /tmp/fabro/stuck_reason.md | tr '[:cntrl:]' ' ' | sed 's/ *$//'); fi
 if [ -z \"$WHY\" ]; then

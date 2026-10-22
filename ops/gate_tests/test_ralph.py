@@ -991,6 +991,35 @@ def test_ralph_merge_prep(ck, tmp_path):
     ck("merge_prep: host switch off: says so", "1", count("switched off host-wide", file=T / "auto_merge_off_reason"))
 
 
+def test_ralph_stop_reason(ck, tmp_path):
+    T = tmp_path / "sb"
+    stop = stage_r(ck, "stop_reason", tmp_path / "stage", root=T)
+
+    def go(sig, reason=None, phase="pre"):
+        rm(T); T.mkdir()
+        write(T / "phase", phase + "\n")
+        if reason:
+            write(T / "stuck_reason.md", reason + "\n")
+        r = sh(stop, stdin=sig)
+        return r, cat(T / "stuck_reason.md")
+
+    workflows = "refusing to open a pull request: a commit on this branch changes a file under .github/workflows/"
+    r, why = go("open_pr|deterministic|script exited with code 1", workflows)
+    ck("stop_reason: exits 0", "0", r.rc)
+    ck("stop_reason: a command node's own reason is kept", workflows, why)
+    ck("stop_reason: and reaches the needs-human file", "1", count(".github/workflows", file=T / "needs_human_reason", flags="F"))
+    ck("stop_reason: pre routes pre", "pre", ctx(lastjson(r.out), "stop_phase"))
+    _, why = go("open_pr|deterministic|script exited with code 1")
+    ck("stop_reason: no file: the signature", "open_pr failed (deterministic): script exited with code 1", why)
+    _, why = go("spec|deterministic|the stage timed out", "an older reason")
+    ck("stop_reason: an agent stage takes the signature", "spec failed (deterministic): the stage timed out", why)
+    _, why = go("review_prep|transient_infra|connection reset", "an older reason")
+    ck("stop_reason: transient takes the signature", "review_prep failed (transient_infra): connection reset", why)
+    r, why = go("", None, "post")
+    ck("stop_reason: no signature, no file: names the last agent stage", "1", count("The last agent stage was unknown", why, flags="F"))
+    ck("stop_reason: post routes post", "post", ctx(lastjson(r.out), "stop_phase"))
+
+
 def test_ralph_endings(ck):
     # learn_prep reads the ending from /tmp/fabro/ending; a node id is not otherwise available.
     into = [l.split("->")[0] for l in edges(RAPH).split("\n") if l.split(" ")[0].endswith("->learn_prep")]

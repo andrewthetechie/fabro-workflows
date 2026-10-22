@@ -56,7 +56,7 @@ particular to `ralph`.
 | `watch_checks`' two deadline stops publish `checks_deadline=true` and a reason, and do NOT call `blocked` | `checks_blocked=true` outranks everything and routes to `report_blocked`. A PR that passed every gate but ran out of time must reach `report_queued` instead (O12), which is the only node that adds `merge-on-green`. |
 | `ci_task` appends a Task and publishes `phase=post`; at two post-PR Iterations it writes BOTH reason files and routes `stop` | The bound is O13's budget. `pick`'s edges read `phase`, and `report_blocked` renders `merge_block_reason` while `mark_needs_human` renders `needs_human_reason`. |
 | `final_check` writes `/tmp/fabro/base_ref` = `main` | `hygiene` reads `origin/<base>`. The shared phase gets that file from the PR in `rm_setup`, and `ralph` has not opened one when it first runs. |
-| `stop_reason` is the only node with an edge into `mark_needs_human` that is not a report, and it derives the reason from `failure_signature` and writes both reason files | R9's rule. A sink that writes one file leaves the other renderer reading a previous stage's text. |
+| `stop_reason` is the only node with an edge into `mark_needs_human` that is not a report, and it derives the reason from `failure_signature` and writes both reason files, except that a deterministic failure of a command node keeps the `stuck_reason.md` that node wrote | R9's rule. A sink that writes one file leaves the other renderer reading a previous stage's text. A command node that writes its reason and exits 1 (`open_pr`'s refusals, `review_prep`, `review_gate`) has a signature that says only "exit 1". Every writer of `stuck_reason.md` ends the run or exits into `stop_reason`, so the file it keeps is never stale. |
 
 ## The end of a run
 
