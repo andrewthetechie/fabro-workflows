@@ -623,14 +623,22 @@ R10_COPIES: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
          'resolved the conflict; the final validation, the diff-hygiene counters and the review then ran again on the result.'),
     )),
     ('report_merged', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'report_merged', (
+        ('echo merged > /tmp/fabro/review_merge_outcome',
+         'echo report_merged > /tmp/fabro/ending\necho merged > /tmp/fabro/review_merge_outcome'),
     )),
     ('report_blocked', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'report_blocked', (
+        ('echo blocked > /tmp/fabro/review_merge_outcome',
+         'echo report_blocked > /tmp/fabro/ending\necho blocked > /tmp/fabro/review_merge_outcome'),
     )),
     ('report_queued', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'report_queued', (
+        ('echo queued > /tmp/fabro/review_merge_outcome',
+         'echo report_queued > /tmp/fabro/ending\necho queued > /tmp/fabro/review_merge_outcome'),
     )),
     ('mark_needs_human', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'mark_needs_human', (
         ("    *' standards '*|*' spec '*|*' review_fix '*|*' refute '*|*' ci_fix_t1 '*|*' ci_fix_t2 '*) FA=yes ;;",
          "    *' standards '*|*' spec '*|*' refute '*|*' resolve_base '*|*' resolve_merge '*) FA=yes ;;"),
+        ('echo needs_human > /tmp/fabro/review_merge_outcome',
+         'echo mark_needs_human > /tmp/fabro/ending\necho needs_human > /tmp/fabro/review_merge_outcome'),
     )),
     ('close_noop', '.fabro/workflows/backlog/workflow.fabro', 'close_noop', (
         ("S=$(jq -r '.summary // empty' /tmp/fabro/decomposition.json 2>/dev/null || true)",
@@ -639,6 +647,8 @@ R10_COPIES: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
          "echo 'Agent run found no actionable plan for this issue; leaving it for human triage.'"),
         ("echo 'The decomposer reported:'",
          "echo 'The planner reported:'"),
+        ('echo done',
+         'echo close_noop > /tmp/fabro/ending\necho done'),
     )),
     ('return_to_triage', '.fabro/workflows/backlog/workflow.fabro', 'return_to_triage', (
         ('(if .source == "decompose" then "the decomposer" else "the coder" end)',
@@ -647,14 +657,12 @@ R10_COPIES: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
     ('mark_stuck', '.fabro/workflows/backlog/workflow.fabro', 'mark_stuck', (
         ('  if [ -s /tmp/fabro/draft_reason.md ]; then\n    gh issue edit $N --remove-label Review 2>/dev/null || true\n    cp /tmp/fabro/draft_reason.md /tmp/fabro/stuck_comment.md\n  elif [ -s /tmp/fabro/stuck_reason.md ]; then',
          '  if [ -s /tmp/fabro/stuck_reason.md ]; then'),
+        ('echo done',
+         'echo mark_stuck > /tmp/fabro/ending\necho done'),
     )),
 ]
 
 R10_PROMPTS: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
-    ('resolve_merge', '.fabro/workflows/backlog/workflow.fabro', 'resolve_merge', (
-    )),
-    ('resolve_base', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'resolve_base', (
-    )),
 ]
 
 

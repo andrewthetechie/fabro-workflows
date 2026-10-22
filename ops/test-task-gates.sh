@@ -9574,6 +9574,126 @@ check "merge_prep: render.jq and render_comment.sh are rm_setup's" \
   "$(mp_block "$SHARED" rm_setup)" "$(mp_block "$RAPH" merge_prep)"
 
 echo ""
+echo "ralph — learn_prep"
+LP="$WORK/ralph-learn-prep"; T="$LP/sb"; mkdir -p "$T"; stage_r learn_prep
+lp_setup() {   # $1 = iterations, $2 = ending
+    mkdir -p "$T"
+    find "$T" -mindepth 1 -maxdepth 1 ! -name 'learn_prep.sh' -exec rm -rf {} +
+    echo "${1:-0}" > "$T/iterations"
+    if [ -n "${2:-}" ]; then echo "$2" > "$T/ending"; fi
+    printf '%s' '[{"id":"t1","source":"plan","status":"passed","iterations":2,"misses":1},{"id":"r1c1","source":"refute","status":"blocked","iterations":0,"misses":8}]' > "$T/tasks.json"
+    printf '## Iteration 1: t1 not passed (rung 1)\n\nstuck on a trap\n' > "$T/progress.md"
+    mkdir -p "$T/review"; printf -- '- The parser rejects a bad token -> task r1c1 (blocked)\n' > "$T/review/refute_history.md"
+    echo 2 > "$T/refute_visits"
+}
+lp_run() { OUT=$(sh "$T/learn_prep.sh" 2>&1); RC=$?; J=$(lastjson "$OUT"); }
+lp_val() { jq -r ".context_updates.$1" <<<"$J" 2>/dev/null; }
+
+lp_setup 0 mark_stuck
+lp_run
+check "learn_prep: exits 0"          "0"    "$RC"
+check "learn_prep: no Iteration is a skip" "skip" "$(lp_val learn)"
+check "learn_prep: no inputs written" "absent" "$([ -e "$T/learn/inputs.md" ] && echo present || echo absent)"
+
+lp_setup 3 report_merged
+lp_run
+check "learn_prep: Iterations mean run" "run" "$(lp_val learn)"
+check "learn_prep: the inputs exist"    "1"   "$([ -s "$T/learn/inputs.md" ] && echo 1 || echo 0)"
+check "learn_prep: the ending is named" "1"   "$(grep -c 'Ending: report_merged' "$T/learn/inputs.md")"
+check "learn_prep: the counters are named" "1" "$(grep -c 'Iterations: 3' "$T/learn/inputs.md")"
+check "learn_prep: the Task table is there" "1" "$(grep -c 't1 \[plan\] passed, iterations=2, misses=1, highest rung=1' "$T/learn/inputs.md")"
+check "learn_prep: the rung is derived from misses" "1" "$(grep -c 'r1c1 \[refute\] blocked, iterations=0, misses=8, highest rung=4' "$T/learn/inputs.md")"
+check "learn_prep: the progress log is quoted" "1" "$(grep -c 'stuck on a trap' "$T/learn/inputs.md")"
+check "learn_prep: the refute history is quoted" "1" "$(grep -c 'The parser rejects a bad token' "$T/learn/inputs.md")"
+
+lp_setup 1 ''
+lp_run
+check "learn_prep: an unknown ending says so" "1" "$(grep -c 'Ending: unknown' "$T/learn/inputs.md")"
+
+echo ""
+echo "ralph — learn_post"
+LW="$WORK/ralph-learn-post"; T="$LW/sb"; mkdir -p "$T/bin" "$LW/repo"; stage_r learn_post
+git -C "$LW/repo" init -q -b fabro/run/x
+git -C "$LW/repo" config user.email t@t; git -C "$LW/repo" config user.name t
+git -C "$LW/repo" commit -q --allow-empty -m base
+cat > "$T/bin/gh" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$LW_LOG"
+case "$1 $2" in
+  "issue list")
+    [ -n "$LW_LIST_FAIL" ] && exit 1
+    cat "${LW_LIST:-/dev/null}" ;;
+  "issue create")
+    [ -n "$LW_CREATE_FAIL" ] && exit 1
+    echo "https://github.com/o/r/issues/77" ;;
+  "issue comment") [ -n "$LW_COMMENT_FAIL" ] && exit 1; exit 0 ;;
+  "label create") [ -n "$LW_LABEL_FAIL" ] && exit 1; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$T/bin/gh"
+export LW_LOG="$T/gh.log"
+echo 7 > "$T/pr_number"; jq -nc '{number:12}' > "$T/issue.json"
+lw_setup() {   # $1 = learnings json or '' for none
+    rm -f "$T/learnings.json" "$T/gh.log" "$T/learn/keep.json"
+    mkdir -p "$T/learn"
+    if [ -n "${1:-}" ]; then printf '%s' "$1" > "$T/learnings.json"; fi
+    rm -f "$T/learn/comment.md" "$T/learn/issue.md"
+}
+lw_run() { OUT=$( cd "$LW/repo" && PATH="$T/bin:$ORIG_PATH" sh "$T/learn_post.sh" 2>&1 ); RC=$?; }
+lw_calls() { if [ -f "$T/gh.log" ]; then grep -c "$1" "$T/gh.log"; else echo 0; fi; }
+lw_ent() { jq -nc --arg r "$1" --arg e "$2" --arg h "$3" '{rule:$r,evidence:$e,home:$h}'; }
+
+lw_setup ''
+lw_run
+check "learn_post: no file exits 0" "0" "$RC"
+check "learn_post: no file calls no gh" "0" "$(lw_calls .)"
+check "learn_post: no file says so on stderr" "1" "$(grep -c 'no learnings result' <<<"$OUT")"
+
+lw_setup "$(jq -nc --argjson l "[$(lw_ent 'run the formatter' 'because it is nice' agents_md)]" '{learnings:$l}')"
+lw_run
+check "learn_post: no evidence exits 0" "0" "$RC"
+check "learn_post: no evidence calls no gh" "0" "$(lw_calls .)"
+check "learn_post: no evidence says why" "1" "$(grep -c 'no Learning had evidence' <<<"$OUT")"
+
+lw_setup "$(jq -nc --argjson l "[$(lw_ent 'run uv run ruff' 'Iteration 2 on t1: `uv run ruff check` passed where bare ruff failed' test_toml),$(lw_ent 'read the i18n file' 't1 missed apps/web/src/i18n/en.json:3' ralph_prompt)]" '{learnings:$l}')"
+echo '[{"number":42,"body":"<!-- fabro:ralph-learnings -->\n\nhow to accept"}]' > "$T/issues.json"
+LW_LIST="$T/issues.json" lw_run
+check "learn_post: an existing issue exits 0" "0" "$RC"
+check "learn_post: it did not create an issue" "0" "$(grep -c '^issue create' "$T/gh.log")"
+check "learn_post: one comment"              "1" "$(grep -c '^issue comment' "$T/gh.log")"
+check "learn_post: the comment names the run" "1" "$(grep -c 'fabro/run/x' "$T/learn/comment.md")"
+check "learn_post: the comment names the PR"  "1" "$(grep -c 'pull request #7' "$T/learn/comment.md")"
+check "learn_post: the rule is quoted"        "1" "$(grep -c 'run uv run ruff' "$T/learn/comment.md")"
+check "learn_post: the evidence is quoted"    "1" "$(grep -c 'uv run ruff check' "$T/learn/comment.md")"
+check "learn_post: the home is named"         "1" "$(grep -c 'test_toml' "$T/learn/comment.md")"
+
+lw_setup "$(jq -nc --argjson l "[$(lw_ent 'run uv run ruff' 'Iteration 2 on t1: `uv run ruff check`' test_toml)]" '{learnings:$l}')"
+LW_LIST="$T/empty.json" lw_run
+check "learn_post: no issue exits 0"          "0" "$RC"
+check "learn_post: the label is created"      "1" "$(grep -c '^label create' "$T/gh.log")"
+check "learn_post: the issue is created"      "1" "$(grep -c '^issue create' "$T/gh.log")"
+check "learn_post: the body carries the marker" "1" "$(grep -c 'fabro:ralph-learnings' "$T/learn/issue.md")"
+check "learn_post: the body says how to accept" "1" "$(grep -c 'A Learning is a proposal' "$T/learn/issue.md")"
+check "learn_post: one comment on the new issue" "1" "$(grep -c '^issue comment 77' "$T/gh.log")"
+
+lw_setup "$(jq -nc --argjson l "[$(lw_ent 'run uv run ruff' 'Iteration 2 on t1: `uv run ruff check`' test_toml)]" '{learnings:$l}')"
+LW_LIST_FAIL=1 lw_run
+check "learn_post: a gh failure exits 0"      "0" "$RC"
+check "learn_post: a gh failure says so once"  "1" "$(grep -c 'could not list the learning issues' <<<"$OUT")"
+check "learn_post: a gh failure posts nothing" "0" "$(lw_calls '^issue comment')"
+
+check "learn_post: the issue body never names the agent label" "0" "$(lw_calls 'agent')"
+
+# The edges: exit is reachable only through the learnings stage.
+LEARN_INTO_EXIT=$(grep -E -- '->exit( |$)' <<<"$REDG")
+LEARN_BAD=$(grep -vE '^(learn_prep|learn_post)->exit( |$)' <<<"$LEARN_INTO_EXIT" | grep -c . || true)
+check "learn edges: only learn_prep and learn_post reach exit" "0" "$LEARN_BAD"
+check "learn edges: learn_prep is the guard"  "1" "$(grep -cxF 'learn_prep->learn context.learn=run' <<<"$REDG")"
+check "learn edges: every terminal node reaches learn_prep" "7" \
+  "$(grep -cE '^(close_noop|return_to_triage|mark_stuck|report_merged|report_blocked|report_queued|mark_needs_human)->learn_prep' <<<"$REDG")"
+
+echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
 if [ "$FAIL" -eq 0 ]; then

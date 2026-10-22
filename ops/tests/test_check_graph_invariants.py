@@ -71,7 +71,7 @@ class Counts(unittest.TestCase):
             # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
             # this pair grows with each one; it is the offline parser's count, not a
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.
-            "ralph": (48, 130),
+            "ralph": (51, 135),
         })
 
 

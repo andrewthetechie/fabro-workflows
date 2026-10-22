@@ -1,0 +1,77 @@
+# Propose learnings
+
+You read one finished run of `ralph` and propose **Learnings**: rules that would get a future
+run in this repository past a **wall** this run hit. A human reads your list on the
+repository's `ralph learnings` issue and decides what to adopt. An empty list is the correct
+answer when the run hit no wall worth a rule.
+
+## Steps
+
+1. **Read the run.** Call `inputs`. It returns `inputs.md`: the node the run ended at; the
+    progress log (each Iteration's Task, pass/fail, rung, and its reported summary and
+    learnings); the Refute rounds (each finding that became a Task, and how that Task ended);
+    and a table of every Task with source, status, Iterations, misses and highest rung.
+
+2. **Find the walls.** A wall is anywhere the run lost time or made a mistake. Examine each of:
+    - every Task with a miss, a failed Iteration, or more than one Iteration,
+    - every Task that climbed above its first rung,
+    - every Refute finding that became a Task,
+    - the ending node, if the run stopped short of done.
+
+    This step is done when each item is traced to a cause or set aside as one-off (flaky,
+    unrelated to the repository or `ralph`). The learnings that Iterations reported are leads
+    to check against the log, not entries to copy.
+
+3. **Draft one Learning per wall with a reusable cause.** Keep a candidate only if it passes
+    the test: a future run hitting the same wall would have saved time or avoided the mistake
+    by following this one sentence.
+
+4. **Verify against the checkout.** The repository is in the current directory. Open every
+    `path:N` you cite and confirm the line exists and supports the rule. Read `AGENTS.md` and
+    `CLAUDE.md`, and drop any candidate they already state; the next run reads those.
+
+5. **Submit.** Keep at most five entries; three strong ones beat five weak ones. Call
+    `submit` with `{"learnings": [...]}`; it checks the shape and names what to fix. Your only
+    output is the `submit` call: leave the checkout as you found it, and stop once `submit`
+    succeeds. The list reaches the human through the issue, not chat.
+
+## What a Learning is
+
+A checkable rule about **this repository** or about **how `ralph` should work**, drawn from
+a wall in this run. A future run can tell whether it followed it.
+
+Candidates that fail, and how to fix them:
+
+- A fact about the run ("The plan needed two Iterations."): state the rule the fact
+  implies, or drop it.
+- An uncheckable caution ("Be careful with big files."): name the file and the action.
+- A pointer with no rule ("`src/a.py` is important."): say what to do with it.
+- A summary of the issue, or a note on code the run never struggled with: drop it.
+
+## Entry fields
+
+- `rule`: one imperative sentence a future run can follow.
+- `evidence`: the Task id, the Iteration or Refute round where the wall showed, and at least
+  one **anchor**: a `path:N` that exists in this checkout, or a backticked command that
+  failed in the run. The evidence gate drops any entry without an anchor.
+- `home`: where the rule would live if accepted:
+  - `agents_md`: a repository convention every agent working here should know
+  - `test_toml`: `ralph`'s test and gate configuration for this repository
+  - `ci_sh`: the CI script
+  - `ralph_prompt`: `ralph`'s own behaviour, independent of this repository
+
+Examples:
+
+```json
+{"rule": "Run ruff as `uv run ruff check`, not the bare `ruff` binary, which is a different version and flags code CI accepts.",
+  "evidence": "T4, Iteration 2: `ruff check backend/` failed on code CI passes; `backend/pyproject.toml:31` pins the project's ruff.",
+  "home": "agents_md"}
+
+{"rule": "Add keys to `apps/web/src/i18n/en.json` in any Task that adds user-visible text, even when the Task's `files` hint omits it.",
+  "evidence": "T7, Iterations 1-3 missed on untranslated strings; Iteration 4 passed after adding keys at `apps/web/src/i18n/en.json:212`.",
+  "home": "agents_md"}
+
+{"rule": "Set `DATABASE_URL` before starting the app or the test suite.",
+  "evidence": "T2, Refute round 1: `uv run pytest` failed at fixture setup; `tests/conftest.py:12` reads `DATABASE_URL`.",
+  "home": "test_toml"}
+```

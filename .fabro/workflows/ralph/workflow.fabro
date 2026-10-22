@@ -777,8 +777,9 @@ echo $P > /tmp/fabro/task_index
 jq -nc --argjson p \"$PASSED\" '{context_updates:{iteration_passed:$p}}'"]
 
     // copy: copy of backlog.resolve_merge (C8). No replacement; the node is the git exception and
-    // its manifest entry keeps `"git": "write"`. Its prompt is a byte copy too,
-    // checked by R10's prompt row.
+    // its manifest entry keeps `"git": "write"`. NOT an R10 prompt row: the
+    // operator revised this prompt on 2026-10-21, so it is a deliberate variant of
+    // backlog's and a byte comparison would report that decision as drift.
     // ---- Mainline conflict resolution ----
     // next_task (before a task) or final_merge (before the PR) aborted the failed merge
     // and left a clean tree. A conflicted merge
@@ -2663,8 +2664,8 @@ else
 fi
 exit 0"]
 
-    // copy: copy of review_merge.resolve_base (C8). No script replacement; its prompt is a byte
-    // copy, checked by R10's prompt row.
+    // copy: copy of review_merge.resolve_base (C8). No script replacement. NOT an R10 prompt row:
+    // the operator revised this prompt on 2026-10-21, so it is a deliberate variant.
     // The base moved after the review and conflicts with the branch (#37). The agent merges
     // origin/<base> into the branch and resolves the conflicts inside this one stage, as
     // backlog's resolve_merge does; it is the third git exception ("git": "write" in the Stage
@@ -2772,7 +2773,8 @@ jq -nc '{context_updates:{ci_route:\"task\",phase:\"post\"}}'"]
     // the merge has already happened, and a reporting failure must not turn a correct
     // merge into a failed run.
     report_merged [label="Report merged", shape=parallelogram, output_schema="routing",
-        script="echo merged > /tmp/fabro/review_merge_outcome
+        script="echo report_merged > /tmp/fabro/ending
+echo merged > /tmp/fabro/review_merge_outcome
 PR=$(cat /tmp/fabro/pr_number)
 N=$(jq -r '.[0].number // 0' /tmp/fabro/linked_issues.json 2>/dev/null || echo 0)
 if ! sh /tmp/fabro/render_comment.sh merged > /tmp/fabro/pr_comment.md; then
@@ -2792,6 +2794,7 @@ exit 0"]
     // copy: copy of review_merge.report_blocked (C8). No replacement.
     report_blocked [label="Report blocked", shape=parallelogram, output_schema="routing",
         script="exec 3>&1 >>/tmp/fabro/report.log 2>&1
+echo report_blocked > /tmp/fabro/ending
 echo blocked > /tmp/fabro/review_merge_outcome
 PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
 R=$(cat /tmp/fabro/merge_block_reason 2>/dev/null || echo 'The merge was blocked for an unspecified reason.')
@@ -2818,6 +2821,7 @@ exit 0"]
     // `mark_needs_human`. Prints only its routing object on fd 3.
     report_queued [label="Report queued", shape=parallelogram, output_schema="routing", timeout="2m",
         script="exec 3>&1 >>/tmp/fabro/report.log 2>&1
+echo report_queued > /tmp/fabro/ending
 echo queued > /tmp/fabro/review_merge_outcome
 fail() {
   printf '%s' \"$1\" > /tmp/fabro/needs_human_reason
@@ -2842,6 +2846,119 @@ N=$(jq -r '.[0].number // 0' /tmp/fabro/linked_issues.json 2>/dev/null || echo 0
 jq -nc --arg h \"$H\" --arg u \"$(cat /tmp/fabro/pr_url 2>/dev/null || true)\" --argjson n \"$N\" '{context_updates:{merge_mode:\"queue\",queued_head:$h,pr_url:$u,issue_number:$n}}' >&3
 exit 0"]
 
+    // ---- Learnings (O19, O25, O26, C9) ----
+    // Every terminal node of this graph now goes through `learn_prep`, so every ending that
+    // had at least one Iteration proposes rules for the next run. Nothing applies them: a
+    // human reads one comment on the target repository's `ralph learnings` issue.
+    //
+    // `learn_prep` decides whether there is anything to learn from (`iterations` is 0 when
+    // the plan never produced a Task, or the loop never ran), writes ONE input file, and
+    // records the ending. The ending comes from `/tmp/fabro/ending`, which each terminal
+    // node writes with its own id: a node id is not otherwise available to a later stage,
+    // and "the run stopped at mark_stuck" is the first thing a reader of a Learning wants.
+    learn_prep [label="Prepare the learnings input", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro
+IT=$(cat $F/iterations 2>/dev/null || echo 0)
+case \"$IT\" in '' | *[!0-9]*) IT=0 ;; esac
+LEARN=skip
+if [ \"$IT\" -gt 0 ]; then LEARN=run; fi
+if [ \"$LEARN\" = run ]; then
+  mkdir -p $F/learn
+  ENDING=$(cat $F/ending 2>/dev/null || echo unknown)
+  RV=$(cat $F/refute_visits 2>/dev/null || echo 0)
+  {
+    echo '# The run'
+    echo
+    echo 'Ending: '$ENDING
+    echo 'Iterations: '$IT
+    echo 'Refute rounds: '$RV
+    echo
+    echo '## Progress log'
+    echo
+    if [ -s $F/progress.md ]; then cat $F/progress.md; else echo '(no progress log)'; fi
+    echo
+    echo '## Refute rounds'
+    echo
+    if [ -s $F/review/refute_history.md ]; then cat $F/review/refute_history.md; else echo '(no Refute round became a Task)'; fi
+    echo
+    echo '## Tasks'
+    echo
+    jq -r '.[]? | \"- \" + (.id // \"?\") + \" [\" + (.source // \"?\") + \"] \" + (.status // \"?\") + \", iterations=\" + ((.iterations // 0) | tostring) + \", misses=\" + ((.misses // 0) | tostring) + \", highest rung=\" + (if ((1 + (((.misses // 0) / 2) | floor)) > 4) then 4 else (1 + (((.misses // 0) / 2) | floor)) end | tostring)' $F/tasks.json 2>/dev/null || echo '(no Task list)'
+  } > $F/learn/inputs.md
+fi
+jq -nc --arg l \"$LEARN\" '{context_updates:{learn:$l}}'"]
+
+    // The Learnings stage (O25). It runs on the run's own box with `reasoning_effort:
+    // medium`, reads ONE file, and proposes at most five rules. `max_retries=0` is
+    // deliberate: the stage is optional and never blocks, so a provider error costs one
+    // attempt and nothing else -- a retry would hold a leased box for ten more minutes to
+    // produce a comment a human may not read.
+    //
+    // timeout="10m" is O25's bound, not a measurement: the input is one file of a few
+    // hundred lines and the output is at most five rules. Nothing here reads the checkout
+    // beyond what the input quotes.
+    learn [label="Propose learnings", class="learn", timeout="10m", max_retries=0, prompt="@prompts/learn.md.j2"]
+
+    // ---- Post the learnings (O26, C9) ----
+    // Nothing here may change the run's ending, so every path exits 0: no result file, no
+    // surviving entry, a gh failure, and a missing label all end quietly (one stderr line
+    // for a gh failure, because a silent loss is worse than a logged one).
+    //
+    // The gate rule is C9's: an entry whose evidence names no `path:N` and no backticked
+    // command is dropped. That is the same test `refute_gate` applies to the Refuter's
+    // findings, for the same reason: an unsupported claim is not a Learning.
+    //
+    // The issue is found by its hidden marker, not by its title, so a human may retitle it.
+    // It is labelled `learning` and never `agent`, and the scheduler never reads that
+    // label, so nothing in this comment can queue work. Nothing is printed on stdout: this
+    // node publishes no context key and prints no routing object.
+    learn_post [label="Post the learnings", shape=parallelogram, timeout="2m",
+        script="F=/tmp/fabro/learnings.json
+mkdir -p /tmp/fabro/learn
+if [ ! -s $F ]; then echo 'learn_post: no learnings result; nothing to post' >&2; exit 0; fi
+jq '[.learnings[]? | select(((.evidence // \"\") | test(\"[A-Za-z0-9_./-]+:[0-9]+\")) or ((.evidence // \"\") | test(\"`[^`]*`\")))]' $F > /tmp/fabro/learn/keep.json 2>/dev/null || rm -f /tmp/fabro/learn/keep.json
+K=$(jq length /tmp/fabro/learn/keep.json 2>/dev/null || echo 0)
+case \"$K\" in '' | *[!0-9]*) K=0 ;; esac
+if [ \"$K\" = 0 ]; then echo 'learn_post: no Learning had evidence, so nothing is posted' >&2; rm -f /tmp/fabro/learn/keep.json; exit 0; fi
+RUN=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo fabro/run/unknown)
+PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+ISS=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || echo '')
+if ! gh issue list --label learning --state open --json number,body > /tmp/fabro/learn/issues.json 2>/dev/null; then
+  echo 'learn_post: could not list the learning issues; the learnings are in the run log only' >&2
+  rm -f /tmp/fabro/learn/keep.json
+  exit 0
+fi
+NUM=$(jq -r '.[] | select(((.body // \"\") | contains(\"<!-- fabro:ralph-learnings -->\"))) | .number' /tmp/fabro/learn/issues.json 2>/dev/null | head -1)
+if [ -z \"$NUM\" ]; then
+  gh label create learning --color 0E8A16 --description 'A rule a ralph run proposed; a human accepts or ignores it' > /dev/null 2>&1 || true
+  {
+    echo '<!-- fabro:ralph-learnings -->'
+    echo
+    echo 'Each fabro `ralph` run that implemented something adds one comment here: up to five rules it learned about this repository, each with the evidence that produced it.'
+    echo
+    echo 'A Learning is a proposal, never an instruction. To accept one, make the change in the place the entry names (AGENTS.md, .fabro/test.toml, .fabro/ci.sh or a ralph prompt), then reply or resolve the comment. Nothing reads this issue automatically, and no run edits any file to apply a Learning.'
+  } > /tmp/fabro/learn/issue.md
+  if ! gh issue create --title 'ralph learnings' --body-file /tmp/fabro/learn/issue.md --label learning > /tmp/fabro/learn/create.log 2>&1; then
+    echo 'learn_post: could not create the learning issue; the learnings are in the run log only' >&2
+    rm -f /tmp/fabro/learn/keep.json
+    exit 0
+  fi
+  NUM=$(sed 's|.*/||' /tmp/fabro/learn/create.log | tr -d '[:space:]')
+  case \"$NUM\" in '' | *[!0-9]*) echo 'learn_post: the new learning issue has no number; nothing was commented' >&2; rm -f /tmp/fabro/learn/keep.json; exit 0 ;; esac
+fi
+{
+  echo 'Run `'$RUN'`'$(if [ -n \"$PR\" ]; then echo ', pull request #'$PR; else echo ''; fi)$(if [ -n \"$ISS\" ]; then echo ', issue #'$ISS; else echo ''; fi)'. Proposed learnings:'
+  echo
+  jq -r '(def nl: [10] | implode; .[] | \"- **\" + (.home // \"agents_md\") + \"**: \" + .rule + nl + nl + \"  _evidence: \" + .evidence + \"_\")' /tmp/fabro/learn/keep.json
+  echo
+  echo '_Nothing here was applied. A human decides._'
+} > /tmp/fabro/learn/comment.md
+if ! gh issue comment \"$NUM\" --body-file /tmp/fabro/learn/comment.md > /dev/null 2>&1; then
+  echo 'learn_post: could not comment on the learning issue; the learnings are in the run log only' >&2
+fi
+rm -f /tmp/fabro/learn/keep.json
+exit 0"]
+
     // copy: copy of review_merge.mark_needs_human (C8). One replacement: the agent-node list that
     // decides whether to derive a reason from `failure_signature` names ralph's agent
     // stages instead of the shared phase's.
@@ -2857,6 +2974,7 @@ exit 0"]
         stdin_source="failure_signature",
         script="SIG=$(head -c 600)
 exec 3>&1 >>/tmp/fabro/report.log 2>&1
+echo mark_needs_human > /tmp/fabro/ending
 echo needs_human > /tmp/fabro/review_merge_outcome
 if [ -n \"$SIG\" ]; then
   FN=${SIG%%|*}
@@ -2929,6 +3047,7 @@ gh issue edit $N --remove-label agent-in-progress || true
 gh label create agent-noop --color D4C5F9 --description 'Agent run found nothing to do; read the comment before re-adding agent' 2>/dev/null || true
 gh issue edit $N --add-label agent-noop || true
 gh issue comment $N --body-file /tmp/fabro/noop_comment.md || true
+echo close_noop > /tmp/fabro/ending
 echo done"]
 
     // copy: copy of backlog.return_to_triage (C8). One replacement: the comment's `$who`
@@ -3009,6 +3128,7 @@ if [ \"$N\" != 0 ]; then
   fi
   gh issue comment $N --body-file /tmp/fabro/stuck_comment.md || true
 fi
+echo mark_stuck > /tmp/fabro/ending
 echo done"]
 
     // ---- Why the run stopped (R1) ----
@@ -3140,10 +3260,15 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     resolve_base_gate -> final_check         [condition="context.resolve_ok=true", weight=10]
     resolve_base_gate -> report_blocked      [condition="context.resolve_ok=false"]
     resolve_base_gate -> mark_needs_human
-    report_merged -> exit
-    report_blocked -> exit
-    report_queued -> exit
-    mark_needs_human -> exit
+    report_merged -> learn_prep
+    report_blocked -> learn_prep
+    report_queued -> learn_prep
+    mark_needs_human -> learn_prep
+    learn_prep -> learn                       [condition="context.learn=run"]
+    learn_prep -> exit
+    learn -> learn_post                       [condition="outcome=succeeded"]
+    learn -> learn_post
+    learn_post -> exit
     pick -> resolve_merge                     [condition="context.rebase_failed=true"]
     pick -> excerpts                          [condition="context.loop=work && context.rebase_failed=false"]
     pick -> hygiene                          [condition="context.loop=done && context.phase=post"]
@@ -3181,11 +3306,11 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     resolve_merge_gate -> pick                [condition="context.merge_ok=true && context.merge_return=task", weight=10]
     resolve_merge_gate -> resolve_merge       [condition="context.merge_attempts=1"]
     resolve_merge_gate -> stop_reason
-    return_to_triage -> exit                  [condition="outcome=succeeded"]
+    return_to_triage -> learn_prep            [condition="outcome=succeeded"]
     return_to_triage -> mark_stuck
     stop_reason -> mark_stuck                 [condition="context.stop_phase=pre"]
     stop_reason -> mark_needs_human           [condition="context.stop_phase=post"]
-    close_noop -> exit
-    mark_stuck -> exit
+    close_noop -> learn_prep
+    mark_stuck -> learn_prep
 }
 
