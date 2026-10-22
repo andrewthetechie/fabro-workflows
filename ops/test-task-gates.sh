@@ -9260,6 +9260,127 @@ check "rv bad receipt: exits 1"      "1" "$RC"
 check "rv bad receipt: names the cause" "1" "$(grep -c 'no valid result' "$T/stuck_reason.md")"
 
 echo ""
+echo "ralph — final_check"
+FC="$WORK/ralph-final-check"; T="$FC/sb"; mkdir -p "$T"; stage_r final_check
+fc_repo() {
+    rm -rf "$FC/repo" "$FC/origin.git"
+    mkdir -p "$T"
+    find "$T" -mindepth 1 -maxdepth 1 ! -name 'final_check.sh' -exec rm -rf {} +
+    git init -q --bare "$FC/origin.git"
+    git -C "$FC/origin.git" symbolic-ref HEAD refs/heads/main
+    git init -q -b main "$FC/repo"
+    git -C "$FC/repo" config user.email t@t
+    git -C "$FC/repo" config user.name t
+    mkdir -p "$FC/repo/.fabro"
+    printf '%s\n' '#!/bin/sh' 'exit 0' > "$FC/repo/.fabro/setup.sh"
+    printf '%s\n' '#!/bin/sh' 'exit 0' > "$FC/repo/.fabro/ci.sh"
+    chmod +x "$FC/repo/.fabro/setup.sh" "$FC/repo/.fabro/ci.sh"
+    echo base > "$FC/repo/a.txt"
+    git -C "$FC/repo" add -A
+    git -C "$FC/repo" commit -qm base
+    git -C "$FC/repo" remote add origin "$FC/origin.git"
+    git -C "$FC/repo" push -q origin main
+    echo work >> "$FC/repo/a.txt"
+    git -C "$FC/repo" commit -qam 'feat: the work'
+    jq -nc '{number:12,title:"Add a widget",body:"A paragraph of prose about the widget.\n\n## Post-deploy checks\n\n- [ ] the widget deploys\n",labels:[]}' > "$T/issue.json"
+    printf 'The first Iteration summary\n' > "$T/completed.md"
+    echo pre > "$T/phase"
+    echo 0 > "$T/final_fix_attempts"
+    echo 1 > "$T/iterations"
+    printf '%s' '[{"id":"t1","status":"passed"}]' > "$T/tasks.json"
+}
+fc_run() { OUT=$( cd "$FC/repo" && sh "$T/final_check.sh" 2>&1 ); RC=$?; J=$(lastjson "$OUT"); }
+fc_val() { jq -r ".context_updates.$1" <<<"$J" 2>/dev/null; }
+
+fc_repo; fc_run
+check "fc green: exits 0"              "0"  "$RC"
+check "fc green: final_ok"             "true" "$(fc_val final_ok)"
+check "fc green: routes pr"            "pr" "$(fc_val final_route)"
+check "fc green: phase published"      "pre" "$(fc_val phase)"
+check "fc green: validated_tree"       "$(git -C "$FC/repo" rev-parse 'HEAD^{tree}') final" "$(cat "$T/validated_tree")"
+check "fc green: final_validated_tree" "$(git -C "$FC/repo" rev-parse 'HEAD^{tree}')" "$(cat "$T/final_validated_tree")"
+check "fc green: base_ref is main"     "main" "$(cat "$T/base_ref")"
+check "fc green: the subject is conventional" "1" "$(grep -cE '^chore: Add a widget \(#12\)$' "$T/commit_subject.txt")"
+check "fc green: the body resolves the issue" "1" "$(grep -c '^Resolves #12$' "$T/commit_body.md")"
+check "fc green: the PR title is the subject" "chore: Add a widget (#12)" "$(head -1 "$T/pr_title.txt")"
+check "fc green: the body carries the marker" "1" "$(grep -c 'fabro:commit-body:start' "$T/pr_body.md")"
+check "fc green: post-deploy checks are in the body" "1" "$(grep -c 'the widget deploys' "$T/pr_body.md")"
+
+fc_repo
+printf '%s\n' '#!/bin/sh' 'echo "FAIL src/widget.test.ts > renders"' 'exit 1' > "$FC/repo/.fabro/ci.sh"
+chmod +x "$FC/repo/.fabro/ci.sh"
+git -C "$FC/repo" add -A; git -C "$FC/repo" commit -qm 'a red check'
+fc_run
+check "fc red: routes fix"             "fix"  "$(fc_val final_route)"
+check "fc red: no validated_tree"      "absent" "$([ -e "$T/validated_tree" ] && echo present || echo absent)"
+check "fc red: one final_fix Task"     "1"    "$(jq '[.[] | select(.source == "final_fix")] | length' "$T/tasks.json")"
+check "fc red: the Task is a final_fix" "true" "$(jq -r '.[1].final_fix' "$T/tasks.json")"
+check "fc red: the failing name is in it" "1" "$([ "$(jq -r '.[1].body' "$T/tasks.json" | grep -c 'FAIL src/widget.test.ts')" -ge 1 ] && echo 1 || echo 0)"
+check "fc red: the counter is spent"   "1"    "$(cat "$T/final_fix_attempts")"
+check "fc red: the full suite is asked for" "1" "$(jq -r '.[1].acceptance[0]' "$T/tasks.json" | grep -c 'exits 0')"
+fc_run
+check "fc red again: routes stuck"     "stuck" "$(fc_val final_route)"
+check "fc red again: the reason names the failure" "1" "$(grep -c 'FAIL src/widget.test.ts' "$T/stuck_reason.md")"
+check "fc red again: no second Task"   "2"    "$(jq length "$T/tasks.json")"
+
+fc_repo
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$FC/repo/.fabro/ci.sh"
+chmod +x "$FC/repo/.fabro/ci.sh"
+git -C "$FC/repo" add -A; git -C "$FC/repo" commit -qm 'red'
+echo 3 > "$T/iterations"
+fc_run
+check "fc red at the cap: routes stuck" "stuck" "$(fc_val final_route)"
+check "fc red at the cap: no Task"      "1"     "$(jq length "$T/tasks.json")"
+
+fc_repo
+git -C "$FC/repo" reset -q --hard origin/main
+fc_run
+check "fc empty tree: routes stuck"     "stuck" "$(fc_val final_route)"
+check "fc empty tree: says why"         "1"     "$(grep -c 'identical to origin/main' "$T/stuck_reason.md")"
+
+fc_repo
+mkdir -p "$FC/repo/.github/workflows"
+printf 'on: push\n' > "$FC/repo/.github/workflows/x.yml"
+git -C "$FC/repo" add -A; git -C "$FC/repo" commit -qm 'ci: touch a workflow'
+fc_run
+check "fc workflow edit: routes stuck"  "stuck" "$(fc_val final_route)"
+check "fc workflow edit: names it"      "1"     "$(grep -c 'changes a file under .github/workflows/' "$T/stuck_reason.md")"
+check "fc workflow edit: names the commit" "1" "$(grep -c 'x.yml' "$T/stuck_reason.md")"
+
+# A merge commit of main that carries a workflow change is not refused.
+fc_repo
+git -C "$FC/repo" checkout -q -b other
+mkdir -p "$FC/repo/.github/workflows"; printf 'on: pull_request\n' > "$FC/repo/.github/workflows/y.yml"
+git -C "$FC/repo" add -A; git -C "$FC/repo" commit -qm 'ci: main adds a workflow'
+git -C "$FC/repo" push -q origin other:main
+git -C "$FC/repo" checkout -q main
+git -C "$FC/repo" merge -q --no-edit origin/main
+echo more >> "$FC/repo/a.txt"; git -C "$FC/repo" commit -qam 'feat: the local work'
+fc_run
+check "fc workflow on main: not refused" "pr" "$(fc_val final_route)"
+
+fc_repo
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$FC/repo/.fabro/ci.sh"
+chmod +x "$FC/repo/.fabro/ci.sh"
+git -C "$FC/repo" add -A; git -C "$FC/repo" commit -qm 'red again'
+echo post > "$T/phase"; echo 1 > "$T/final_fix_attempts"
+fc_run
+check "fc red post: both reason files" "1" "$(grep -c 'Final validation' "$T/merge_block_reason")"
+check "fc red post: needs_human reason" "1" "$(grep -c 'Final validation' "$T/needs_human_reason")"
+check "fc red post: route"             "needs_human" "$(fc_val final_route)"
+
+# The edges.
+FCE=$(grep '^final_check->' <<<"$REDG")
+check "fc edges: four exits" "4" "$(grep -c . <<<"$FCE")"
+check "fc edges: pr needs final_route=pr" "1" "$(grep -cxF 'final_check->hygiene outcome=succeeded && context.final_route=pr' <<<"$FCE")"
+check "fc edges: fix returns to pick"     "1" "$(grep -cxF 'final_check->pick outcome=succeeded && context.final_route=fix' <<<"$FCE")"
+check "fc edges: stuck goes to mark_stuck" "1" "$(grep -cxF 'final_check->mark_stuck outcome=succeeded && context.final_route=stuck' <<<"$FCE")"
+check "fc edges: one unconditional escape" "1" "$(grep -cxF 'final_check->stop_reason ' <<<"$FCE")"
+HYE=$(grep '^hygiene->' <<<"$REDG")
+check "hygiene edges: the pre-PR route only" "1" "$(grep -cxF 'hygiene->refute_prep outcome=succeeded && context.phase=pre' <<<"$HYE")"
+check "hygiene edges: one unconditional escape" "1" "$(grep -cxF 'hygiene->stop_reason ' <<<"$HYE")"
+
+echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
 if [ "$FAIL" -eq 0 ]; then
