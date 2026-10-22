@@ -6,7 +6,7 @@ Usage:
   check-graph-invariants.py --dump FILE.fabro   print the reader's statements in fabro parse's shape
   check-graph-invariants.py --normalize         normalize a `fabro parse` JSON read from stdin
 
-A package is a directory with a workflow.toml. Every package's root graph gets R1-R8; every
+A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11; every
 `_shared/*/*.fabro` phase gets the file rules (the reader, R6 and R8). Each violation prints as
 `<package> <rule> <node or hook> <why>`, then `VIOLATIONS: N`. Exit status is min(N, 125).
 
@@ -486,23 +486,57 @@ def r6_script_text(nodes_raw: dict[str, str], raw_lines: list[str]) -> list[tupl
     return out
 
 
-def r7_checkpoint_hooks(package: str, phases: list[Graph], import_ids: dict[str, str], hooks: list[dict]) -> list[tuple]:
-    """R7: each importing graph has a checkpoint_saved hook for each review-merge report node it
-    must report (invariants-merge.md, Reporting). R7_EXCEPTIONS names the omitted ones.
+def r7_checkpoint_hooks(package: str, root: Graph, phases: list[Graph], import_ids: dict[str, str],
+                        hooks: list[dict]) -> list[tuple]:
+    """R7: each graph that runs a review-merge report node, imported or its own copy (ralph's),
+    has a checkpoint_saved hook for it (invariants-merge.md, Reporting). R7_EXCEPTIONS names the
+    omitted ones.
     """
     out = []
     saved = [h for h in hooks if h.get("event") == "checkpoint_saved" and h.get("matcher")]
+    targets = [(report, report) for report in REPORT_NODES if report in root.nodes]
     for x, phase in import_ids.items():
         graph = next(g for g in phases if g.name == phase)
-        for report in REPORT_NODES:
-            if report not in graph.nodes:
-                continue
-            if (package, report) in R7_EXCEPTIONS:
-                continue
-            target = f"{x}.{report}"
-            covered = any(re.search(h["matcher"], target) for h in saved)
-            if not covered:
-                out.append(("R7", report, f"no checkpoint_saved hook for {target}"))
+        targets += [(report, f"{x}.{report}") for report in REPORT_NODES if report in graph.nodes]
+    for report, target in targets:
+        if (package, report) in R7_EXCEPTIONS:
+            continue
+        if not any(re.search(h["matcher"], target) for h in saved):
+            out.append(("R7", report, f"no checkpoint_saved hook for {target}"))
+    return out
+
+
+def r11_io_hooks(package: str, toml: dict, import_ids: dict[str, str], manifest: dict | None,
+                 hooks: list[dict]) -> list[tuple]:
+    """R11: a package that declares the `io` MCP server has the `io-stage` hook (stage_start on
+    ^agent$, `fabro-io stage`) and the `git-guard` hook (pre_tool_use on ^shell$, `fabro-io
+    git-guard`), and every stage with Sealed paths in the Stage manifest is matched by a
+    pre_tool_use hook that runs `fabro-io guard` (invariants-graph.md, Stage I/O). Without
+    io-stage no stage has a visit, so every receipt gate reads every agent stage as a miss.
+    """
+    mcps = ((toml.get("run") or {}).get("agent") or {}).get("mcps") or {}
+    if "io" not in mcps:
+        return []
+    out = []
+
+    def has(event: str, target: str, script: str) -> bool:
+        return any(h.get("event") == event and h.get("matcher") and re.search(h["matcher"], target)
+                   and script in h.get("script", "") for h in hooks)
+
+    if not has("stage_start", "agent", "fabro-io stage"):
+        out.append(("R11", "io-stage", "no stage_start hook runs `fabro-io stage` on ^agent$"))
+    if not has("pre_tool_use", "shell", "fabro-io git-guard"):
+        out.append(("R11", "git-guard", "no pre_tool_use hook runs `fabro-io git-guard` on ^shell$"))
+    if manifest is None:
+        return out
+    sealed = [sid for sid, st in ((manifest.get("workflows") or {}).get(package) or {}).get("stages", {}).items()
+              if st.get("sealed")]
+    for x, phase in import_ids.items():
+        stages = (manifest.get("phases") or {}).get(phase) or {}
+        sealed += [f"{x}.{sid}" for sid, st in stages.items() if isinstance(st, dict) and st.get("sealed")]
+    for sid in sealed:
+        if not has("pre_tool_use", sid, "fabro-io guard"):
+            out.append(("R11", sid, "has Sealed paths but no pre_tool_use hook runs `fabro-io guard` on it"))
     return out
 
 
@@ -799,8 +833,11 @@ def package_violations(pkg_dir: Path, workflows: Path) -> tuple[list[tuple], int
     out += [(package, *v) for v in r4_stylesheet_and_inputs(root, run_inputs, phase_graphs)]
     running = set(nodes)
     out += [(package, *v) for v in r5_hooks(hooks, running)]
-    out += [(package, *v) for v in r7_checkpoint_hooks(
-        package, phase_graphs, {x: phases[p].name for x, p in imports if p in phases}, hooks)]
+    import_ids = {x: phases[p].name for x, p in imports if p in phases}
+    out += [(package, *v) for v in r7_checkpoint_hooks(package, root, phase_graphs, import_ids, hooks)]
+    manifest_path = workflows / "_io" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
+    out += [(package, *v) for v in r11_io_hooks(package, t, import_ids, manifest, hooks)]
     out += [(package, *v) for v in r8_routing(root.nodes)]
     out += [(package, *v) for v in r9_needs_human_reason(root)]
     return out, len(nodes)

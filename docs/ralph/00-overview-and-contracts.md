@@ -539,9 +539,11 @@ The issue is never labelled `agent`, and the scheduler never reads `learning`.
 Sealed for `refute`, `standards` and `spec`: `/tmp/fabro/progress.md`,
 `/tmp/fabro/iteration.json`, `/tmp/fabro/tasks.json`, `/tmp/fabro/current_task.json`,
 `/tmp/fabro/task-context.md`, `/tmp/fabro/task-code.md`, `/tmp/fabro/task_list.json`,
-`/tmp/fabro/feedback/`. Also sealed for `standards` and `spec`: `/tmp/fabro/refute.json`,
-`/tmp/fabro/refute_verdict`, `/tmp/fabro/review/refute_history.md`,
-`/tmp/fabro/refute_dropped.json`. `io-guard` is wired with matcher `^(refute|standards|spec)$`.
+`/tmp/fabro/feedback/`. Also sealed for `standards` and `spec`: the Refuter's files,
+`/tmp/fabro/review/refute.json`, `refute_verdict`, `refute_history.md`, `refute_dropped.json`,
+`refute_survivors.json` and `refute_reason.txt` (all under `/tmp/fabro/review/`). `io-guard`
+is wired with matcher `^(refute|standards|spec)$`, and `ops/check-graph-invariants.py` R11
+fails a sealed stage that no `fabro-io guard` hook matches.
 
 ### C11. The scheduler
 

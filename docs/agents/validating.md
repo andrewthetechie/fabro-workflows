@@ -26,7 +26,7 @@ checks it offline, in `make check`: a node that declares `output_schema="routing
 prints no routing object fails deterministically with no retry, which cost run
 `01M2R057XAWN8ZG0A7ZV7YPJXK` at `pr_handoff` with the PR already open.
 
-`ops/check-graph-invariants.py` (ADR 0019) reads the six `.fabro` files with its own stdlib reader, splices the imports and checks R1-R8: the breaker floor, the stall and timeout durations, the stylesheet classes, the hook matchers, the script and backslash rules, the report hooks and the routing schema. It runs offline in `make check`. `make check-host` proves that its reader agrees with `fabro parse` on the six graphs. It does not run a script, judge a prompt, or check the rows of the invariants files that carry no `Checked by` line; those still need a run or a review.
+`ops/check-graph-invariants.py` (ADR 0019) reads the six `.fabro` files with its own stdlib reader, splices the imports and checks R1-R11: the breaker floor, the stall and timeout durations, the stylesheet classes, the hook matchers, the script and backslash rules, the report hooks (imported, or a graph's own copies), the routing schema, the needs-human reason sink, `ralph`'s copies (R10), and the Stage I/O hooks (R11). It runs offline in `make check`. `make check-host` proves that its reader agrees with `fabro parse` on the six graphs. It does not run a script, judge a prompt, or check the rows of the invariants files that carry no `Checked by` line; those still need a run or a review.
 
 The Agent profile (ADR 0017) is checked the same way, against the tracked template — and
 in `make verify-host`, against the live overlay.

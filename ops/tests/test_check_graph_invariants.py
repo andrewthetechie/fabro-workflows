@@ -6,6 +6,7 @@ The fixtures under fixtures/graph-invariants/ are one package and one phase (`ok
 `r<N>` breaks exactly rule N. The real tree must have no violation: `make check` runs the checker on it.
 """
 import importlib.util
+import json
 import shutil
 import tempfile
 import unittest
@@ -45,6 +46,61 @@ class Fixtures(unittest.TestCase):
                 'label="Work"', "label=\"Work\", prompt=\"Issue {{ inputs.issue | default('0') }}\""))
             found = [(rule, node) for _, rule, node, _ in cgi.run(root)]
             self.assertEqual(found, [("R4", "phase.work.prompt")], found)
+
+
+    def _ok_copy(self, tmp: str) -> Path:
+        root = Path(tmp) / "ok"
+        shutil.copytree(FIXTURES / "ok", root)
+        return root
+
+    def test_r7_covers_a_report_node_of_the_root_graph(self):
+        # ralph copies the merge stage instead of importing it, so its report nodes are its own.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._ok_copy(tmp)
+            graph = root / ".fabro/workflows/ok/workflow.fabro"
+            graph.write_text(graph.read_text().replace(
+                "    start -> phase -> check -> exit",
+                "    report_blocked [shape=parallelogram, label=\"Blocked\", script=\"true\"]\n"
+                "    start -> phase -> check -> exit\n    check -> report_blocked -> exit"))
+            found = [(rule, node) for _, rule, node, _ in cgi.run(root)]
+            self.assertEqual(found, [("R7", "report_blocked")], found)
+
+    def test_r11_needs_the_io_hooks_when_the_io_server_is_declared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._ok_copy(tmp)
+            toml = root / ".fabro/workflows/ok/workflow.toml"
+            toml.write_text(toml.read_text() + '\n[run.agent.mcps.io]\ntype = "sandbox"\n')
+            found = sorted((rule, node) for _, rule, node, _ in cgi.run(root))
+            self.assertEqual(found, [("R11", "git-guard"), ("R11", "io-stage")], found)
+            toml.write_text(toml.read_text().replace(
+                'matcher = "^agent$"', 'matcher = "^agent$"\nscript = "fabro-io stage"') +
+                '\n[[run.hooks]]\nevent = "pre_tool_use"\nmatcher = "^shell$"\n'
+                'script = "fabro-io git-guard; [ $? -eq 2 ] && exit 2; exit 0"\n')
+            self.assertEqual(cgi.run(root), [])
+
+    def test_r11_needs_io_guard_on_every_stage_with_sealed_paths(self):
+        # The manifest names the sealed stages: the root package's own, and an imported phase's
+        # under its import id.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._ok_copy(tmp)
+            toml = root / ".fabro/workflows/ok/workflow.toml"
+            toml.write_text(toml.read_text().replace(
+                'matcher = "^agent$"', 'matcher = "^agent$"\nscript = "fabro-io stage"') +
+                '\n[[run.hooks]]\nevent = "pre_tool_use"\nmatcher = "^shell$"\nscript = "fabro-io git-guard"\n'
+                '\n[run.agent.mcps.io]\ntype = "sandbox"\n')
+            io = root / ".fabro/workflows/_io"
+            io.mkdir()
+            (io / "manifest.json").write_text(json.dumps({
+                "workflows": {"ok": {"stages": {"check": {"sealed": ["/tmp/fabro/x"]}}}},
+                "phases": {"phase": {"work": {"sealed": ["/tmp/fabro/y"]}}}}))
+            found = sorted((rule, node) for _, rule, node, _ in cgi.run(root))
+            self.assertEqual(found, [("R11", "check"), ("R11", "phase.work")], found)
+            toml.write_text(toml.read_text().replace(
+                "[run.agent.mcps.io]",
+                '[[run.hooks]]\nevent = "pre_tool_use"\nmatcher = "^check$"\nscript = "fabro-io guard"\n\n'
+                "[run.agent.mcps.io]"))
+            found = [(rule, node) for _, rule, node, _ in cgi.run(root)]
+            self.assertEqual(found, [("R11", "phase.work")], found)
 
 
 class Counts(unittest.TestCase):

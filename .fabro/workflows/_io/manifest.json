@@ -1578,7 +1578,13 @@
             "/tmp/fabro/task-context.md",
             "/tmp/fabro/task-code.md",
             "/tmp/fabro/task_list.json",
-            "/tmp/fabro/feedback/"
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/review/refute.json",
+            "/tmp/fabro/review/refute_verdict",
+            "/tmp/fabro/review/refute_history.md",
+            "/tmp/fabro/review/refute_dropped.json",
+            "/tmp/fabro/review/refute_survivors.json",
+            "/tmp/fabro/review/refute_reason.txt"
           ],
           "also": [],
           "output": {
@@ -1633,7 +1639,9 @@
             "/tmp/fabro/review/refute.json",
             "/tmp/fabro/review/refute_verdict",
             "/tmp/fabro/review/refute_history.md",
-            "/tmp/fabro/review/refute_dropped.json"
+            "/tmp/fabro/review/refute_dropped.json",
+            "/tmp/fabro/review/refute_survivors.json",
+            "/tmp/fabro/review/refute_reason.txt"
           ],
           "also": [],
           "output": {
