@@ -335,7 +335,7 @@ jq -nc --arg s \"$S\" --arg q \"$QT\" '{context_updates:{plan_status:$s,triage_q
     // `rung` goes to a file as well as the context: `record` is a separate node and names
     // the rung in the progress line, and a command node cannot read another's context
     // updates.
-    pick [label="Next Iteration", shape=parallelogram, timeout="1m", output_schema="routing",
+    pick [label="Next Iteration", shape=parallelogram, timeout="5m", output_schema="routing",
         script="git worktree remove --force /tmp/fabro/base-tree >/dev/null 2>&1
 rm -rf /tmp/fabro/base-tree
 git worktree prune >/dev/null 2>&1
@@ -1879,7 +1879,7 @@ echo handoff ready"]
     // `merge-on-green` removal, its `review_entry_tree` and the two heredocs are all
     // wanted here. `ops/test-task-gates.sh` fails if the heredocs drift from the
     // shared node's.
-    merge_prep [label="Prepare the merge stage", shape=parallelogram, timeout="1m",
+    merge_prep [label="Prepare the merge stage", shape=parallelogram, timeout="5m",
         output_schema="routing",
         script="set -e
 mkdir -p /tmp/fabro /tmp/fabro/review
