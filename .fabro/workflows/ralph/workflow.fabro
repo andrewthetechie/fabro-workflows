@@ -956,6 +956,11 @@ echo 'refuter inputs: round '$V', '$(jq length $R/refute_issues.json)' issue(s),
     // otherwise: the verdict stays `fail`, so `merge_gate` check 14 refuses the merge and
     // the report lists the criteria still held. `pass` goes to the review.
     //
+    // A loop that ran out (O18) is `hold` whatever the verdict, `pass` and `invalid`
+    // included, and goes straight to `open_pr` with a `needs_human` `fix_result.json`
+    // listing the unpassed Tasks: the Refuter only reports, and no review runs on a PR a
+    // human must finish. `review_gate` refuses it too, in case a later edit routes it there.
+    //
     // It publishes `loop_exhausted` itself because `pick` was not the last node to run, and
     // its edges read that key.
     refute_gate [label="Validate refuter output", shape=parallelogram, timeout="1m", output_schema="routing",
@@ -963,12 +968,16 @@ echo 'refuter inputs: round '$V', '$(jq length $R/refute_issues.json)' issue(s),
 R=/tmp/fabro/review
 LE=false
 if [ -s /tmp/fabro/loop_exhausted ]; then LE=true; fi
+exhausted_result() {
+  jq -n --slurpfile t /tmp/fabro/tasks.json '{outcome: \"needs_human\", risk: 3, summary: \"The loop ran out with Tasks unpassed, so this pull request is not merged automatically.\", own_findings: [], fixes_applied: [], not_fixed: ([$t[0][] | select(.status != \"passed\") | {finding_id: .id, original_finding: (.title // .id), reason: \"not passed when the loop ran out\"}])}' > $R/fix_result.json
+}
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
 if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   echo invalid > $R/refute_verdict
   echo 'The refuter wrote no valid result for this round, so it has no verdict and the merge is refused.' > $R/refute_reason.txt
   echo hold > /tmp/fabro/refute_route
+  if [ \"$LE\" = true ]; then exhausted_result; fi
   jq -nc --argjson le \"$LE\" '{context_updates:{refute_verdict:\"invalid\",refute_not_met:false,refute_unverifiable_only:false,refute_ci_credited:0,refute_route:\"hold\",loop_exhausted:$le}}'
   exit 0
 fi
@@ -1043,8 +1052,9 @@ if [ \"$ROUTE\" = tasks ]; then
   rm -f /tmp/fabro/refute_tasks.json
   echo 'refuter round '$VIS': '$NM' criterion(a) and '$DF' defect(s) became Tasks' >&2
 fi
-if [ \"$ROUTE\" = hold ] && [ \"$LE\" = true ]; then
-  jq -n --slurpfile t /tmp/fabro/tasks.json '{outcome: \"needs_human\", risk: 3, summary: \"The loop ran out with Tasks unpassed, so this pull request is not merged automatically.\", own_findings: [], fixes_applied: [], not_fixed: ([$t[0][] | select(.status != \"passed\") | {finding_id: .id, original_finding: (.title // .id), reason: \"not passed when the loop ran out\"}])}' > $R/fix_result.json
+if [ \"$LE\" = true ]; then
+  ROUTE=hold
+  exhausted_result
 fi
 echo $ROUTE > /tmp/fabro/refute_route
 jq -nc --arg v \"$V\" --argjson n \"$NOT\" --argjson u \"$UO\" --argjson c \"$CC\" --arg r \"$ROUTE\" --argjson le \"$LE\" '{context_updates:{refute_verdict:$v,refute_not_met:$n,refute_unverifiable_only:$u,refute_ci_credited:$c,refute_route:$r,loop_exhausted:$le}}'"]
@@ -1111,8 +1121,12 @@ echo 'review inputs: '$BYTES' diff bytes'"]
     // shape (R5), because ralph has no fixer to write one: `outcome` is `fixed` when the
     // loop fixed something and `no_changes_needed` when there was nothing to fix, `risk`
     // comes from `spec.json`, `fixes_applied` lists every `review`-sourced Task that passed
-    // (this round's and earlier rounds'), and `not_fixed` lists the blocking findings the
-    // round budget left. That keeps the copied `merge_gate`'s checks 7-10 working unchanged:
+    // (this round's and earlier rounds'), and `not_fixed` lists EVERY blocking finding of this
+    // round: each was raised against the tree about to become the PR, so none is fixed yet.
+    // It is never filtered by id against `fixes_applied`, because the reviewers restart
+    // their ids every round (`STD-001`), and a round-3 error would match a round-1 fix.
+    // A loop that ran out is `needs_human` here too (O18), though `refute_gate` already
+    // sends that run straight to `open_pr`. That keeps the copied `merge_gate`'s checks 7-10 working unchanged:
     // 7 refuses anything but `fixed`/`no_changes_needed`, 8 needs a risk, 9 refuses a
     // non-empty `not_fixed`, and 10 wants every `own_findings` error accounted for -- so
     // `own_findings` is empty here: this gate raises no findings of its own, and everything
@@ -1143,7 +1157,7 @@ VIS=$(cat /tmp/fabro/refute_visits 2>/dev/null || echo 0)
 case \"$VIS\" in '' | *[!0-9]*) VIS=0 ;; esac
 RR=$(cat /tmp/fabro/refute_route 2>/dev/null || echo pass)
 ROUTE=pass
-if [ \"$BLOCK\" -gt 0 ] && [ \"$VIS\" -lt 3 ] && [ \"$RR\" = pass ]; then ROUTE=tasks; fi
+if [ \"$BLOCK\" -gt 0 ] && [ \"$VIS\" -lt 3 ] && [ \"$RR\" = pass ] && [ \"$LE\" = false ]; then ROUTE=tasks; fi
 if [ \"$ROUTE\" = tasks ]; then
   jq -n --slurpfile a $SF --slurpfile b $PF --argjson r $VIS '
     def nl: [10] | implode;
@@ -1165,7 +1179,7 @@ if [ \"$ROUTE\" = tasks ]; then
 else
   jq '[.[] | select(.source == \"review\" and .status == \"passed\")]' /tmp/fabro/tasks.json > $R/fixed.json 2>/dev/null || echo '[]' > $R/fixed.json
   jq '[.[] | {finding_id: (.finding_id // .id), axis: (.axis // \"standards\"), severity: (.severity // \"error\"), message: (.title // .id)}]' $R/fixed.json > $R/fixes.json
-  jq --slurpfile fx $R/fixes.json '[ $fx[0][].finding_id ] as $ids | [ .[] | select((.id as $i | $ids | index($i)) == null) | {finding_id: .id, original_finding: .message, reason: \"the Refute round budget was spent before this finding was fixed\"} ]' $R/blocks.json > $R/notfixed.json
+  jq '[ .[] | {finding_id: .id, original_finding: .message, reason: \"this review round found it and no Iteration round was left to fix it\"} ]' $R/blocks.json > $R/notfixed.json
   FA=$(jq length $R/fixes.json)
   NF=$(jq length $R/notfixed.json)
   OUT=no_changes_needed
@@ -1174,6 +1188,7 @@ else
   if [ \"$D1\" = needs_human_review ]; then OUT=needs_human; RSN='the standards review asked for a human decision'; fi
   if [ \"$D2\" = needs_human_review ]; then OUT=needs_human; RSN='the spec review asked for a human decision'; fi
   if [ \"$NF\" != 0 ] && [ -z \"$RSN\" ]; then OUT=needs_human; RSN='the round budget left '$NF' blocking finding(s) unfixed'; fi
+  if [ \"$LE\" = true ]; then OUT=needs_human; RSN='the loop ran out with Tasks unpassed'; fi
   SUM='Ralph reviews: standards '$D1', spec '$D2'. '$FA' finding(s) were fixed by the loop and '$NF' left.'
   jq -n --arg o \"$OUT\" --argjson r \"$RISK\" --arg s \"$SUM\" --slurpfile fa $R/fixes.json --slurpfile nf $R/notfixed.json --arg d1 \"$D1\" --arg d2 \"$D2\" '{outcome: $o, risk: $r, summary: $s, own_findings: [], fixes_applied: $fa[0], not_fixed: $nf[0], notes: (\"standards=\" + $d1 + \" spec=\" + $d2)}' > $R/fix_result.json
   if [ -n \"$RSN\" ]; then printf '%s' \"$RSN\" > /tmp/fabro/merge_block_reason; fi

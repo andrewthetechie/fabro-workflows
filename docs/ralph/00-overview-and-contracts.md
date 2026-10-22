@@ -389,16 +389,18 @@ unchanged).
    `merge_gate` check 14 reads) and publishes `refute_verdict`, `refute_not_met`,
    `refute_unverifiable_only` and `refute_ci_credited` (the scorecard's keys).
 4. The route, published as `refute_route`:
-   - `pass` → `standards`.
+   - `pass` → `standards`, unless `loop_exhausted` is true: an exhausted loop is always
+     `hold` (O18; the Refuter only reports), whatever the verdict.
    - `tasks` when the verdict is `fail`, at least one `not_met` criterion or defect
      survived, `refute_visits < 3` and `loop_exhausted` is false. Each survivor becomes
      a Task (`source: refute`, `round: <visit>`, title from the criterion or
      `Fix: <file>`, body with the evidence or scenario, `acceptance` = the criterion or
      "the scenario no longer happens"), appended to `tasks.json`. → `pick`.
    - `hold` otherwise (round cap spent, only `unverifiable` left, exhausted, or invalid).
-     → `standards` when `loop_exhausted` is false, else `open_pr`. The verdict stays
-     `fail`, so `merge_gate` check 14 blocks the merge and the report lists the Unmet
-     criteria from `refute.json`.
+     → `standards` when `loop_exhausted` is false, else `open_pr` with C7's
+     `needs_human` `fix_result.json`, written on the invalid path too. The verdict stays
+     `fail` (or `pass`, when the loop ran out and the Refuter passed), so `merge_gate`
+     check 14 or check 7 blocks the merge and the report lists the Unmet criteria.
 
 ### C6. The pre-PR review
 
@@ -419,7 +421,8 @@ integer 1-5, with `review_fix.md.j2`'s risk rubric, R5).
 - `pass` otherwise → `open_pr`. It writes `/tmp/fabro/fix_result.json` in the shape
   `review_fix` writes (task 05 reads `review_fix.md.j2`'s contract): `fix_outcome` mergeable
   only when no finding blocks and either decision is `approve` or `findings`; `risk` from
-  `spec.json`; `not_fixed` the blocking findings left; `fixes_applied` the ids of every
+  `spec.json`; `not_fixed` every blocking finding of this round (never filtered by id: the
+  reviewers restart their ids every round); `fixes_applied` the ids of every
   `review`-sourced Task that `passed`. A `needs_human_review` decision on either axis makes
   `fix_outcome` not mergeable and the reason goes to `merge_block_reason`.
 

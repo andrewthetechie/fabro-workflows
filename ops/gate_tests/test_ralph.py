@@ -476,6 +476,7 @@ def test_ralph_refute_gate(ck, tmp_path):
     ck("rg exhausted: routes hold", "hold", val("refute_route"))
     ck("rg exhausted: no task", "0", ntasks())
     ck("rg exhausted: key published", "true", val("loop_exhausted"))
+    ck("rg exhausted: not mergeable", "needs_human", jq(".outcome", file=T / "review/fix_result.json"))
 
     write(T / "review/refute.json", '{"summary":"s","criteria":[],"defects":[]}')
     rm(T / "loop_exhausted")
@@ -483,6 +484,18 @@ def test_ralph_refute_gate(ck, tmp_path):
     ck("rg no receipt: invalid", "invalid", val("refute_verdict"))
     ck("rg no receipt: hold", "hold", val("refute_route"))
     ck("rg no receipt: no task", "0", ntasks())
+
+    # O18: a loop that ran out never reaches the reviews, even when the Refuter passes.
+    setup(f"[{crit('met', bad_token, 'src/a.py:12 shows the raise')}]", "[]", "1", exhausted=True)
+    write(T / "tasks.json", '[{"id":"t1","title":"The parser","status":"open"}]'); go()
+    ck("rg exhausted pass: routes hold", "hold", val("refute_route"))
+    ck("rg exhausted pass: the verdict stays pass", "pass", val("refute_verdict"))
+    ck("rg exhausted pass: not mergeable", "needs_human", jq(".outcome", file=T / "review/fix_result.json"))
+    ck("rg exhausted pass: lists the unpassed Task", "t1", jq(".not_fixed[0].finding_id", file=T / "review/fix_result.json"))
+
+    write(T / "review/refute.json", '{"summary":"s","criteria":[],"defects":[]}'); rm(T / "review/fix_result.json"); go()
+    ck("rg exhausted no receipt: hold", "hold", val("refute_route"))
+    ck("rg exhausted no receipt: not mergeable", "needs_human", jq(".outcome", file=T / "review/fix_result.json"))
 
 
 def test_ralph_refute_prep(ck, tmp_path):
@@ -615,6 +628,19 @@ def test_ralph_review_gate(ck, tmp_path):
     setup(std_ok, spec_approve, "1", "pass", '[{"id":"rv1s1","title":"STD-001 the retry never happens","source":"review","axis":"standards","finding_id":"STD-001","severity":"error","status":"passed"}]'); go()
     ck("rv fixes_applied: earlier round listed", "STD-001", jq(".fixes_applied[0].finding_id", file=fix))
     ck("rv fixes_applied: outcome fixed", "fixed", fx("outcome"))
+
+    # Reviewer ids restart every round: a round-3 STD-001 is a new error, not the round-1 fix.
+    setup(findings(find("STD-001", "error", "a different bug", "src/c.py")), spec_approve, "3", "pass",
+          '[{"id":"rv1s1","title":"STD-001 the retry never happens","source":"review","axis":"standards","finding_id":"STD-001","severity":"error","status":"passed"}]'); go()
+    ck("rv reused id: not mergeable", "needs_human", fx("outcome"))
+    ck("rv reused id: not_fixed lists this round's error", "a different bug", jq(".not_fixed[0].original_finding", file=fix))
+
+    setup(std_ok, spec_approve, "1", "pass"); write(T / "loop_exhausted", "true\n"); go()
+    ck("rv exhausted: not mergeable", "needs_human", fx("outcome"))
+    ck("rv exhausted: reason names it", "1", count("loop ran out", file=T / "merge_block_reason"))
+    setup(findings(find("STD-004", "error", "the retry never happens", "src/a.py")), spec_approve, "1", "pass")
+    write(T / "loop_exhausted", "true\n"); go()
+    ck("rv exhausted: a blocking finding is no task", "0", ntasks())
 
     write(T / "review/standards.json", '{"decision":"approve","summary":"x","findings":[]}')
     go()
