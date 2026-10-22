@@ -74,72 +74,25 @@ digraph Ralph {
     exit  [shape=Msquare, label="Exit"]
 
     // ---- Claim the dispatched issue ----
+    // copy: copy of backlog.claim (C8), with no script replacement. backlog's comment above
+    // its own `claim` has the full reasoning; only what differs here is repeated.
+    //
     // The scheduler chose the issue and passed it as `issue_number`; ralph never selects its
-    // own work. `claim` is a copy of backlog's: the label swap stays here as the manual
-    // path's fallback, because the scheduler already swapped `agent` -> `agent-in-progress`
-    // at dispatch but `ops/fabro-fire-ralph.sh` does not. It fails closed on an issue that
-    // is gone, closed, or does not carry `agent-in-progress` after the swap.
+    // own work. The label swap stays here as the manual path's fallback, because the
+    // scheduler already swapped `agent` -> `agent-in-progress` at dispatch but
+    // `ops/fabro-fire-ralph.sh` does not. It fails closed on an issue that is gone, closed,
+    // or does not carry `agent-in-progress` after the swap.
     //
     // The difference from backlog's is its destination, not its text: every failure edge in
     // this graph lands on `stop_reason`, which ends the run at `mark_stuck` (R1: there is no
     // human gate here). `mkdir -p /tmp/fabro` is load-bearing -- `claim` is the first node and
     // nothing else creates that directory -- and `/tmp/fabro/issue_number` is written before
     // any network call, because `mark_stuck` needs the number precisely when everything after
-    // that line failed.
-
-    // copy: copy of backlog.claim (C8). No script replacement; the edge target changed, which
-    // is not part of the node.
-    // ---- Claim the dispatched issue ----
-    // The scheduler chose the issue and passed it as `issue_number` (overview
-    // decision 3). The graph no longer selects an issue itself; the run input is the
-    // only way to decide what this run works. `args.inputs` values that reach
-    // this POSIX `case` guard are JSON numbers (the scheduler sends one and
-    // `ops/fabro-fire-backlog.sh` sends one); a string would either fail the guard
-    // or, worse, match it by accident. `pr-review`'s `validate_input` is the
-    // precedent for exactly this shape.
+    // that line failed. The fetch is retried three times, five seconds apart.
     //
-    // The label swap stays here as a fallback. The scheduler already swapped
-    // `agent` -> `agent-in-progress` at dispatch (overview decision 9), but the
-    // manual path does not, so `claim` is idempotent about it: add
-    // `agent-in-progress` if absent, remove `agent` if present, never fail because
-    // either is already in the target state.
-    //
-    // Fail closed. The run's job description is exactly `issue_number`; working a
-    // different issue is the failure this whole design exists to prevent. So `claim`
-    // quits rather than continue when the issue is gone, closed, or does not carry
-    // `agent-in-progress` after the swap -- all three route to human_rescue via the
-    // node's unconditional edge. (The old optimistic-claim/ULID arbitration this
-    // replaced is recorded in ADR 0005 and the scheduler overview.)
-    // `mkdir -p /tmp/fabro` is load bearing. `claim` is the run's first node since draft
-    // 10 deleted `acquire`, and `acquire` was the only node that created that directory.
-    // Without it every redirect below fails with `/tmp/fabro/issue.json: No such file or
-    // directory` and the run parks on human_rescue for 4h holding its coder lease.
-    // `ops/gate_tests/` stages this node against a path that does not exist, which
-    // is the only way a test can catch it -- neither `fabro validate` nor
-    // ops/check-graph-invariants.py runs a node's shell.
-    //
-    // `/tmp/fabro/issue_number` is written BEFORE the label swap and before any network
-    // call, because mark_stuck needs it precisely when everything after that line failed.
-    // issue.json is the usual source of the number and does not exist until the fetch
-    // below succeeds, so an issue whose receipt was already written but whose fetch then
-    // failed would reach mark_stuck with nothing to name, and the receipt would stay on
-    // the issue forever. `pr-review` writes /tmp/fabro/pr_number for the same reason.
-    //
-    // The fetch is retried three times, five seconds apart. It is the one network call
-    // between the receipt being written and the run being able to do anything, and a
-    // single transient `gh` failure costs a coder box for four hours: the unconditional
-    // edge parks the run on human_rescue, whose default choice is mark_stuck, so the run
-    // ends `succeeded` and the scheduler's requeue rule -- which keys on a FAILED run's
-    // reason -- never sees it. A genuinely missing or unreadable issue still fails closed,
-    // which is what the whole node is for. `state` is fetched so those checks can see a
-    // closed issue; the downstream readers (open_pr_prep, open_pr, mark_stuck) use
-    // number/title/body/labels.
-    //
-    // These comments live here rather than inside `script=` on purpose. Fabro writes a
-    // command node's whole script into `outcome.notes` and its preamble then prints it
-    // again, so every byte inside the attribute was paid twice in the next agent's prompt
-    // at any `summary:*` fidelity. `truncate` removes that cost today; keeping the prose
-    // out here means raising fidelity later cannot bring it back.
+    // These comments live here rather than inside `script=` on purpose: fabro writes a
+    // command node's whole script into `outcome.notes`, so every byte inside the attribute
+    // is paid again in the next agent's prompt at any `summary:*` fidelity.
     claim [label="Claim issue and fetch it", shape=parallelogram,
         script="set -e
 mkdir -p /tmp/fabro
