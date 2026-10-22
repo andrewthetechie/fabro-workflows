@@ -1487,6 +1487,12 @@
               "about": "the diff of the PR against its base, smallest files first, cut off at about 300 KB"
             },
             {
+              "name": "omitted",
+              "path": "/tmp/fabro/review/refute_omitted.txt",
+              "required": true,
+              "about": "the changed files that did not fit in the diff, one per line with their changed-line count; may be empty"
+            },
+            {
               "name": "hygiene",
               "path": "/tmp/fabro/review/hygiene.json",
               "required": true,

@@ -835,6 +835,213 @@ else
   echo '{\"context_updates\":{\"merge_ok\":true,\"merge_attempts\":'$A',\"merge_return\":\"'$MR'\"}}'
 fi"]
 
+    // ---- Prepare the Refuter's inputs (C5) ----
+    // NOT a copy of the shared `refute_prep`; its inputs differ. There is no PR and no
+    // `linked_issues.json` (the run has one issue), no `standards.json`, `spec.json` or
+    // `fix_result.json` has been written yet, and it adds the delta and the history. It
+    // reuses the shared node's issue-and-post-deploy lines and its `refute_validation.md`
+    // block verbatim (the #40 rule: the Refuter credits `ci.sh` for a command criterion
+    // only when a validation passed on this exact tree).
+    //
+    // The diff is the whole branch against `origin/main`, smallest files first and cut at
+    // 300 KB exactly like the shared node, because a criterion checklist cannot be judged
+    // from a delta (R3). From round 2 it also writes `refute_delta.patch` -- what changed
+    // since the tree the previous round judged -- and `refute_history.md`, one line per
+    // earlier finding with the Task it became and that Task's status, which is how the
+    // Refuter is stopped from re-arguing a settled point.
+    //
+    // It never copies an Iteration's text: the Refuter's independence is the product (O20).
+    // `refute_tree` holds this visit's tree, so the next visit can diff against it.
+    refute_prep [label="Prepare refuter inputs", shape=parallelogram, timeout="5m",
+        script="set -e
+R=/tmp/fabro/review
+mkdir -p $R
+V=$(cat /tmp/fabro/refute_visits 2>/dev/null || echo 0)
+case \"$V\" in '' | *[!0-9]*) V=0 ;; esac
+V=$((V + 1))
+echo $V > /tmp/fabro/refute_visits
+rm -f $R/refute.json $R/refute_verdict $R/refute_reason.txt $R/refute_dropped.json $R/refute_survivors.json
+rm -f $R/refute_issues.json $R/refute_diff.patch $R/refute_omitted.txt $R/refute_delta.patch $R/refute_history.md $R/post_deploy.md
+if jq -r '.body // \"\"' /tmp/fabro/issue.json 2>/dev/null | grep -q '^## Post-deploy checks$'; then
+  jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Post-deploy checks$/{s=1; next} s && /^## /{s=0} !s{print}' > $R/refute_body.txt
+  jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Post-deploy checks$/{s=1; next} s && /^## /{s=0} s && /^- [[] []] /{print}' > $R/post_items.txt
+  if [ -s $R/post_items.txt ]; then cat $R/post_items.txt > $R/post_deploy.md; fi
+  jq -c --rawfile b $R/refute_body.txt '{number: .number, title: .title, body: $b}' /tmp/fabro/issue.json > $R/refute_issue.json
+else
+  jq -c '{number, title, body}' /tmp/fabro/issue.json > $R/refute_issue.json
+fi
+jq -s '.' $R/refute_issue.json > $R/refute_issues.json 2>/dev/null || echo '[]' > $R/refute_issues.json
+rm -f $R/refute_issue.json $R/refute_body.txt $R/post_items.txt
+git diff --numstat --no-renames \"origin/main...HEAD\" | awk 'BEGIN { FS = sprintf(\"%c\", 9) } { n = ($1 == \"-\" ? 0 : $1) + ($2 == \"-\" ? 0 : $2); print n \" \" $3 }' | sort -n > $R/refute_files.txt
+: > $R/refute_diff.patch
+: > $R/refute_omitted.txt
+SIZE=0
+while read -r N P; do
+  git diff --no-renames \"origin/main...HEAD\" -- \"$P\" > $R/refute_one.patch
+  S=$(wc -c < $R/refute_one.patch | tr -d ' ')
+  if [ $((SIZE + S)) -le 300000 ]; then
+    cat $R/refute_one.patch >> $R/refute_diff.patch
+    SIZE=$((SIZE + S))
+  else
+    echo \"$P ($N lines changed)\" >> $R/refute_omitted.txt
+  fi
+done < $R/refute_files.txt
+rm -f $R/refute_one.patch $R/refute_files.txt
+if [ \"$V\" -ge 2 ] && [ -s /tmp/fabro/refute_tree ]; then
+  PREVT=$(cat /tmp/fabro/refute_tree)
+  git diff \"$PREVT\" HEAD > $R/refute_delta.patch 2>/dev/null || rm -f $R/refute_delta.patch
+  jq -r '.[] | select(.source == \"refute\") | \"- \" + (.title // .id) + \" -> task \" + (.id // \"?\") + \" (\" + (.status // \"open\") + \")\"' /tmp/fabro/tasks.json > $R/refute_history.md 2>/dev/null || rm -f $R/refute_history.md
+fi
+git rev-parse 'HEAD^{tree}' > /tmp/fabro/refute_tree
+HT=$(git rev-parse 'HEAD^{tree}')
+VT=$(cut -d' ' -f1 /tmp/fabro/validated_tree 2>/dev/null || true)
+VS=$(cut -d' ' -f2 /tmp/fabro/validated_tree 2>/dev/null || true)
+{
+  echo '# Validation of this tree'
+  echo
+  if [ -n \"$VT\" ] && [ \"$VT\" = \"$HT\" ] && git diff --quiet HEAD; then
+    if [ \"$VS\" = final ]; then
+      echo 'Final validation passed on this exact tree ('$HT'): ./.fabro/setup.sh and ./.fabro/ci.sh exited 0 before the pull request was opened.'
+    else
+      echo 'The merge phase validate passed on this exact tree ('$HT'): ./.fabro/setup.sh and ./.fabro/ci.sh exited 0.'
+    fi
+  else
+    echo 'No validation is recorded for this tree ('$HT'). Every command criterion is unverifiable.'
+  fi
+  echo
+  echo '## .fabro/ci.sh'
+  echo
+  echo '```sh'
+  cat .fabro/ci.sh 2>/dev/null || echo '(this checkout has no .fabro/ci.sh)'
+  echo '```'
+} > $R/refute_validation.md
+echo 'refuter inputs: round '$V', '$(jq length $R/refute_issues.json)' issue(s), '$SIZE' diff bytes, '$(wc -l < $R/refute_omitted.txt | tr -d ' ')' file(s) omitted'"]
+
+    // ---- The Refuter (O8, C5) ----
+    // gpt-6-luna with `orfallback:qwen3.8-27b` behind it (ADR 0013 D6 and its luna
+    // amendment): a model family unlike the coder's and the reviewers', which is the
+    // independence the node exists for, and a fallback that is neither OpenAI nor GLM, so
+    // an OpenAI outage still leaves an independent Refuter. It is told the work is done and
+    // to prove otherwise; each finding it can prove becomes a Task for the same loop.
+    //
+    // timeout="15m" and max_retries=1 are the shared phase's numbers, measured on the same
+    // prompt family (the tallest refute visit measured 384s). `.refute` moves to luna here
+    // exactly as it did there, so the measurement's subject is unchanged.
+    //
+    // A timed-out or failed Refuter still reaches `refute_gate`, whose receipt check makes
+    // it `invalid` -> hold, never a pass and never a retry loop.
+    refute [label="Refute", class="refute", timeout="15m", max_retries=1, prompt="@prompts/refute.md.j2"]
+
+    // ---- The Refuter's gate (C5) ----
+    // NOT a copy of the shared `refute_gate`: the evidence rule and the route are new, and
+    // there is no fix turn. What is kept is the verdict computation and the four keys the
+    // scorecard reads (`summary.py`): `refute_verdict`, `refute_not_met`,
+    // `refute_unverifiable_only`, `refute_ci_credited`. `refute_verdict` is written to
+    // `review/refute_verdict`, which is the file `merge_gate` check 14 reads.
+    //
+    // Step 1, the receipt: a missing or invalid result is `invalid`, which blocks the merge
+    // and routes `hold`. There is no repair turn -- the shared gate's one retry exists to
+    // rescue a JSON shape error, and here a second round costs a whole loop.
+    //
+    // Step 2, the evidence rule (O8): a `not_met` criterion survives when its `evidence`
+    // names a `path:N` whose path exists in the checkout, or a backticked command. A defect
+    // survives when its `file` exists. Everything else is dropped and listed in
+    // `refute_dropped.json`, because "I looked and could not find it" is not a Task. An
+    // `unverifiable` criterion is kept -- it is honest -- but never becomes a Task.
+    //
+    // Step 3, the route. `tasks` needs a surviving finding, fewer than 3 Refute rounds
+    // (`refute_visits`, counted by `refute_prep`) and a loop that has not run out. `hold`
+    // otherwise: the verdict stays `fail`, so `merge_gate` check 14 refuses the merge and
+    // the report lists the criteria still held. `pass` goes to the review.
+    //
+    // It publishes `loop_exhausted` itself because `pick` was not the last node to run, and
+    // its edges read that key.
+    refute_gate [label="Validate refuter output", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro/review/refute.json
+R=/tmp/fabro/review
+LE=false
+if [ -s /tmp/fabro/loop_exhausted ]; then LE=true; fi
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
+  echo invalid > $R/refute_verdict
+  echo 'The refuter wrote no valid result for this round, so it has no verdict and the merge is refused.' > $R/refute_reason.txt
+  jq -nc --argjson le \"$LE\" '{context_updates:{refute_verdict:\"invalid\",refute_not_met:false,refute_unverifiable_only:false,refute_ci_credited:0,refute_route:\"hold\",loop_exhausted:$le}}'
+  exit 0
+fi
+KC='{\"criteria\":[],\"defects\":[]}'
+DROPPED='[]'
+N=$(jq '.criteria | length' $F)
+I=0
+while [ $I -lt $N ]; do
+  C=$(jq -c --argjson i $I '.criteria[$i]' $F)
+  ST=$(printf '%s' \"$C\" | jq -r '.status // empty')
+  OK=false
+  case \"$ST\" in
+    met | unverifiable) OK=true ;;
+    not_met)
+      EV=$(printf '%s' \"$C\" | jq -r '.evidence // empty')
+      P=$(printf '%s' \"$EV\" | grep -oE '[A-Za-z0-9_./-]+:[0-9]+' | head -1 | sed 's/:.*//')
+      if [ -n \"$P\" ] && [ -f \"$P\" ]; then OK=true; fi
+      if printf '%s' \"$EV\" | grep -q '`[^`]*`'; then OK=true; fi ;;
+  esac
+  if [ \"$OK\" = true ]; then KC=$(printf '%s' \"$KC\" | jq --argjson c \"$C\" '.criteria += [$c]'); else DROPPED=$(printf '%s' \"$DROPPED\" | jq --argjson c \"$C\" '. + [$c]'); fi
+  I=$((I + 1))
+done
+N=$(jq '.defects // [] | length' $F)
+I=0
+while [ $I -lt $N ]; do
+  D=$(jq -c --argjson i $I '.defects[$i]' $F)
+  DF=$(printf '%s' \"$D\" | jq -r '.file // empty')
+  if [ -n \"$DF\" ] && [ -f \"$DF\" ]; then KC=$(printf '%s' \"$KC\" | jq --argjson d \"$D\" '.defects += [$d]'); else DROPPED=$(printf '%s' \"$DROPPED\" | jq --argjson d \"$D\" '. + [$d]'); fi
+  I=$((I + 1))
+done
+printf '%s' \"$DROPPED\" | jq '.' > $R/refute_dropped.json 2>/dev/null || echo '[]' > $R/refute_dropped.json
+printf '%s' \"$KC\" | jq '.' > $R/refute_survivors.json
+V=$(printf '%s' \"$KC\" | jq -r 'if ([.criteria[] | select(.status != \"met\")] | length) == 0 and (.defects | length) == 0 then \"pass\" else \"fail\" end')
+echo $V > $R/refute_verdict
+NM=$(printf '%s' \"$KC\" | jq '[.criteria[] | select(.status == \"not_met\")] | length')
+DF=$(printf '%s' \"$KC\" | jq '.defects | length')
+CC=$(printf '%s' \"$KC\" | jq '[.criteria[] | select(.status == \"met\" and ((.evidence // \"\") | test(\"ci[.]sh\")))] | length')
+NOT=false
+if [ \"$NM\" -gt 0 ]; then NOT=true; fi
+UO=false
+if [ \"$V\" = fail ] && [ \"$NM\" -eq 0 ] && [ \"$DF\" -eq 0 ]; then UO=true; fi
+if [ \"$V\" = fail ]; then
+  printf '%s' \"$KC\" | jq -r '\"The refuter could not confirm the work is done: \" + ([.criteria[] | select(.status != \"met\") | .status + \": \" + .criterion] + [.defects[] | \"defect at \" + .file + (if (.line | type) == \"number\" then \":\" + (.line | tostring) else \"\" end) + \": \" + .scenario] | .[:5] | join(\"; \")) + \".\"' > $R/refute_reason.txt
+else
+  rm -f $R/refute_reason.txt
+fi
+VIS=$(cat /tmp/fabro/refute_visits 2>/dev/null || echo 0)
+case \"$VIS\" in '' | *[!0-9]*) VIS=0 ;; esac
+ROUTE=pass
+if [ \"$V\" = fail ]; then
+  ROUTE=hold
+  if [ $((NM + DF)) -gt 0 ] && [ $VIS -lt 3 ] && [ \"$LE\" = false ]; then ROUTE=tasks; fi
+fi
+if [ \"$ROUTE\" = tasks ]; then
+  printf '%s' \"$KC\" | jq --argjson r $VIS --argjson n $NM --argjson d $DF '
+    def nl: [10] | implode;
+    . as $doc | ([range($n) | . as $i | [$doc.criteria[] | select(.status == \"not_met\")][$i] | {
+       id: (\"r\" + ($r | tostring) + \"c\" + (($i + 1) | tostring)),
+       title: .criterion,
+       body: (\"The Refuter could not confirm this: \" + .evidence),
+       acceptance: [.criterion], files: [], covers: [],
+       context: (\"## Files and symbols\" + nl + nl + \"- the evidence names: \" + .evidence + nl + nl + \"## Done when\" + nl + nl + \"- \" + .criterion),
+       source: \"refute\", round: $r, status: \"open\", iterations: 0, misses: 0 }]
+     + [range($d) | . as $i | $doc.defects[$i] | {
+       id: (\"r\" + ($r | tostring) + \"d\" + (($i + 1) | tostring)),
+       title: (\"Fix: \" + .file),
+       body: .scenario,
+       acceptance: [\"the scenario no longer happens\"], files: [.file], covers: [],
+       context: (\"## Files and symbols\" + nl + nl + \"- \" + .file + nl + nl + \"## Done when\" + nl + nl + \"- \" + .scenario),
+       source: \"refute\", round: $r, status: \"open\", iterations: 0, misses: 0 }])' > /tmp/fabro/refute_tasks.json
+  jq -s '.[0] + .[1]' /tmp/fabro/tasks.json /tmp/fabro/refute_tasks.json > /tmp/fabro/tasks.new.json 2>/dev/null && mv /tmp/fabro/tasks.new.json /tmp/fabro/tasks.json
+  rm -f /tmp/fabro/refute_tasks.json
+  echo 'refuter round '$VIS': '$NM' criterion(a) and '$DF' defect(s) became Tasks' >&2
+fi
+jq -nc --arg v \"$V\" --argjson n \"$NOT\" --argjson u \"$UO\" --argjson c \"$CC\" --arg r \"$ROUTE\" --argjson le \"$LE\" '{context_updates:{refute_verdict:$v,refute_not_met:$n,refute_unverifiable_only:$u,refute_ci_credited:$c,refute_route:$r,loop_exhausted:$le}}'"]
+
     // R10: copy of backlog.close_noop (C8). Three replacements: the summary comes from
     // task_list.json, and the two fixed sentences name the planner, not the decomposer.
     // Posts the decomposer's summary under the fixed sentence, because the summary says WHY
@@ -1000,6 +1207,15 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     plan_gate -> close_noop                   [condition="context.plan_status=invalid"]
     plan_gate -> mark_stuck                   [condition="context.plan_status=needs_human"]
     plan_gate -> stop_reason
+    refute_prep -> refute                     [condition="outcome=succeeded"]
+    refute_prep -> stop_reason
+    refute -> refute_gate                     [condition="outcome=succeeded"]
+    refute -> refute_gate
+    refute_gate -> pick                       [condition="context.refute_route=tasks"]
+    refute_gate -> stop_reason                [condition="context.refute_route=pass"]
+    refute_gate -> stop_reason                [condition="context.refute_route=hold && context.loop_exhausted=false"]
+    refute_gate -> stop_reason                [condition="context.refute_route=hold && context.loop_exhausted=true"]
+    refute_gate -> stop_reason
     pick -> resolve_merge                     [condition="context.rebase_failed=true"]
     pick -> excerpts                          [condition="context.loop=work && context.rebase_failed=false"]
     pick -> stop_reason                       [condition="context.loop=done && context.phase=pre"]

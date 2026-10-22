@@ -9042,6 +9042,145 @@ check "pick: excerpts is gated on no rebase" "1" "$(grep -cxF 'pick->excerpts co
 check "pick: resolve_merge is gated on a rebase" "1" "$(grep -cxF 'pick->resolve_merge context.rebase_failed=true' <<<"$RPEDG")"
 
 echo ""
+echo "ralph — refute_gate"
+RG="$WORK/ralph-refute-gate"; mkdir -p "$RG/repo/src" "$RG/sb/review"; T="$RG/sb"; stage_r refute_gate
+echo x > "$RG/repo/src/a.py"
+mkreadok ok1
+rg_setup() {   # $1 = criteria array, $2 = defects array, $3 = refute_visits, $4 = loop_exhausted
+    rm -f "$T"/review/* "$T"/refute_visits "$T"/loop_exhausted
+    printf '[]' > "$T/tasks.json"
+    jq -nc --argjson c "$1" --argjson d "$2" '{summary:"s",criteria:$c,defects:$d,_io:{visit:"ok1"}}' > "$T/review/refute.json"
+    echo "${3:-1}" > "$T/refute_visits"
+    if [ -n "${4:-}" ]; then echo true > "$T/loop_exhausted"; fi
+}
+rg_run() { OUT=$( cd "$RG/repo" && sh "$T/refute_gate.sh" 2>&1 ); RC=$?; J=$(lastjson "$OUT"); }
+rg_val() { jq -r ".context_updates.$1" <<<"$J" 2>/dev/null; }
+rg_crit() { jq -nc --arg s "$1" --arg c "$2" --arg e "$3" '{criterion:$c,status:$s,evidence:$e}'; }
+rg_def() { jq -nc --arg f "$1" --arg s "$2" '{file:$f,line:1,scenario:$s}'; }
+
+rg_setup "[$(rg_crit met 'The parser rejects a bad token' 'src/a.py:12 shows the raise')]" '[]'
+rg_run
+check "rg pass: exits 0"            "0"    "$RC"
+check "rg pass: routes pass"        "pass" "$(rg_val refute_route)"
+check "rg pass: verdict pass"       "pass" "$(rg_val refute_verdict)"
+check "rg pass: the verdict file"   "pass" "$(cat "$T/review/refute_verdict")"
+check "rg pass: no task appended"   "0"    "$(jq length "$T/tasks.json")"
+check "rg pass: one routing object" "1"    "$(grep -c 'context_updates' <<<"$OUT")"
+
+rg_setup "[$(rg_crit not_met 'The parser rejects a bad token' 'src/a.py:12 shows the raise is missing')]" '[]' 1
+rg_run
+check "rg evidence: routes tasks"   "tasks" "$(rg_val refute_route)"
+check "rg evidence: verdict fail"   "fail"  "$(rg_val refute_verdict)"
+check "rg evidence: not_met true"   "true"  "$(rg_val refute_not_met)"
+check "rg evidence: one task"       "1"     "$(jq length "$T/tasks.json")"
+check "rg evidence: source refute"  "refute" "$(jq -r '.[0].source' "$T/tasks.json")"
+check "rg evidence: round 1"        "1"     "$(jq -r '.[0].round' "$T/tasks.json")"
+check "rg evidence: acceptance is the criterion" "The parser rejects a bad token" "$(jq -r '.[0].acceptance[0]' "$T/tasks.json")"
+check "rg evidence: task is open"   "open"  "$(jq -r '.[0].status' "$T/tasks.json")"
+
+rg_setup "[$(rg_crit not_met 'The parser rejects a bad token' 'src/missing.py:12 shows the raise is missing')]" '[]' 1
+rg_run
+check "rg missing path: routes pass"     "pass" "$(rg_val refute_route)"
+check "rg missing path: dropped listed"  "1"    "$(jq length "$T/review/refute_dropped.json")"
+check "rg missing path: nothing dropped is a task" "0" "$(jq length "$T/tasks.json")"
+
+rg_setup "[$(rg_crit not_met 'The suite passes' '`./.fabro/ci.sh` exits 0')]" '[]' 1
+rg_run
+check "rg backticked command: survives"  "tasks" "$(rg_val refute_route)"
+check "rg backticked command: one task"  "1" "$(jq length "$T/tasks.json")"
+
+rg_setup "[$(rg_crit met 'The parser rejects a bad token' 'src/a.py:12')]" "[$(rg_def src/gone.py 'it crashes')]" 1
+rg_run
+check "rg missing defect file: dropped"  "pass" "$(rg_val refute_route)"
+check "rg missing defect file: listed"   "1" "$(jq length "$T/review/refute_dropped.json")"
+
+rg_setup "[$(rg_crit not_met 'The parser rejects a bad token' 'src/a.py:12')]" "[$(rg_def src/a.py 'it crashes')]" 1
+rg_run
+check "rg defect: two tasks"        "2" "$(jq length "$T/tasks.json")"
+check "rg defect: title names it"   "Fix: src/a.py" "$(jq -r '.[1].title' "$T/tasks.json")"
+check "rg defect: files holds it"   "src/a.py" "$(jq -r '.[1].files[0]' "$T/tasks.json")"
+
+rg_setup "[$(rg_crit not_met 'The parser rejects a bad token' 'src/a.py:12')]" '[]' 3
+rg_run
+check "rg round cap: routes hold"    "hold" "$(rg_val refute_route)"
+check "rg round cap: verdict fail"   "fail" "$(cat "$T/review/refute_verdict")"
+check "rg round cap: no task"        "0"    "$(jq length "$T/tasks.json")"
+check "rg round cap: reason written" "1"    "$(grep -c 'could not confirm' "$T/review/refute_reason.txt")"
+
+rg_setup "[$(rg_crit unverifiable 'The screen looks right' 'needs a browser')]" '[]' 1
+rg_run
+check "rg unverifiable only: routes hold" "hold" "$(rg_val refute_route)"
+check "rg unverifiable only: flag"        "true" "$(rg_val refute_unverifiable_only)"
+check "rg unverifiable only: no task"     "0"    "$(jq length "$T/tasks.json")"
+
+rg_setup "[$(rg_crit not_met 'The parser rejects a bad token' 'src/a.py:12')]" '[]' 1 yes
+rg_run
+check "rg exhausted: routes hold"   "hold" "$(rg_val refute_route)"
+check "rg exhausted: no task"       "0"    "$(jq length "$T/tasks.json")"
+check "rg exhausted: key published" "true" "$(rg_val loop_exhausted)"
+
+printf '%s' '{"summary":"s","criteria":[],"defects":[]}' > "$T/review/refute.json"
+rm -f "$T/loop_exhausted"
+rg_run
+check "rg no receipt: invalid"      "invalid" "$(rg_val refute_verdict)"
+check "rg no receipt: hold"         "hold"    "$(rg_val refute_route)"
+check "rg no receipt: no task"      "0"       "$(jq length "$T/tasks.json")"
+
+echo ""
+echo "ralph — refute_prep"
+RQ="$WORK/ralph-refute-prep"; T="$RQ/sb"; mkdir -p "$T"
+rm -rf "$RQ/repo" "$RQ/origin.git"
+git init -q --bare "$RQ/origin.git"; git -C "$RQ/origin.git" symbolic-ref HEAD refs/heads/main
+git init -q -b main "$RQ/repo"
+git -C "$RQ/repo" config user.email t@t; git -C "$RQ/repo" config user.name t
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$RQ/repo/ci.sh"
+mkdir -p "$RQ/repo/.fabro"; cp "$RQ/repo/ci.sh" "$RQ/repo/.fabro/ci.sh"
+echo one > "$RQ/repo/a.txt"; git -C "$RQ/repo" add -A; git -C "$RQ/repo" commit -qm base
+git -C "$RQ/repo" remote add origin "$RQ/origin.git"; git -C "$RQ/repo" push -q origin main
+echo two >> "$RQ/repo/a.txt"; git -C "$RQ/repo" commit -qam work
+stage_r refute_prep
+rq_setup() {   # $1 = issue body, $2 = refute_visits already used
+    mkdir -p "$T"
+    # Keep the staged refute_prep.sh: the fixtures rebuild the run's state, not the node.
+    find "$T" -mindepth 1 -maxdepth 1 ! -name 'refute_prep.sh' -exec rm -rf {} +
+    jq -nc --arg b "$1" '{number:12,title:"An issue",body:$b,labels:[],comments:[]}' > "$T/issue.json"
+    printf '%s' '[{"id":"r1c1","title":"The parser rejects a bad token","status":"open","source":"refute","round":1}]' > "$T/tasks.json"
+    if [ -n "${2:-}" ]; then echo "$2" > "$T/refute_visits"; git -C "$RQ/repo" rev-parse 'HEAD^{tree}' > "$T/refute_tree"; fi
+}
+rq_run() { OUT=$( cd "$RQ/repo" && sh "$T/refute_prep.sh" 2>&1 ); RC=$?; }
+rq_setup 'Body text.
+
+## Post-deploy checks
+
+- [ ] The deploy page shows the new field
+
+## Notes
+keep me'
+rq_run
+check "rp: exits 0"                   "0" "$RC"
+check "rp: visit counter is 1"        "1" "$(cat "$T/refute_visits")"
+check "rp: the issue is one entry"    "1" "$(jq length "$T/review/refute_issues.json")"
+check "rp: the issue number survives" "12" "$(jq -r '.[0].number' "$T/review/refute_issues.json")"
+check "rp: post-deploy is cut"        "0" "$(grep -c 'Post-deploy' "$T/review/refute_issues.json")"
+check "rp: the checklist item is cut" "0" "$(grep -c 'deploy page shows' "$T/review/refute_issues.json")"
+check "rp: the rest of the body survives" "1" "$(grep -c 'keep me' "$T/review/refute_issues.json")"
+check "rp: post_deploy.md holds the checklist" "1" "$(grep -c 'deploy page shows' "$T/review/post_deploy.md")"
+check "rp: the diff is written"       "1" "$([ -s "$T/review/refute_diff.patch" ] && echo 1 || echo 0)"
+check "rp: visit 1 writes no delta"   "absent" "$([ -e "$T/review/refute_delta.patch" ] && echo present || echo absent)"
+check "rp: visit 1 writes no history" "absent" "$([ -e "$T/review/refute_history.md" ] && echo present || echo absent)"
+check "rp: the validation input"      "1" "$(grep -c 'No validation is recorded' "$T/review/refute_validation.md")"
+check "rp: the tree is recorded"      "$(git -C "$RQ/repo" rev-parse 'HEAD^{tree}')" "$(cat "$T/refute_tree")"
+
+rq_setup 'No post-deploy section here.' 1
+echo three >> "$RQ/repo/a.txt"; git -C "$RQ/repo" commit -qam 'a second round of work'
+rq_run
+check "rp round 2: visit counter is 2" "2" "$(cat "$T/refute_visits")"
+check "rp round 2: the delta is written" "1" "$([ -s "$T/review/refute_delta.patch" ] && echo 1 || echo 0)"
+check "rp round 2: the history is written" "1" "$(grep -c 'The parser rejects a bad token' "$T/review/refute_history.md")"
+check "rp round 2: the history names the task" "1" "$(grep -c 'r1c1' "$T/review/refute_history.md")"
+check "rp round 2: the history names the status" "1" "$(grep -c '(open)' "$T/review/refute_history.md")"
+
+echo ""
 echo "the suite leaves the checkout alone"
 check "repo HEAD and tree are unchanged" "$REPO_STATE_BEFORE" "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)|$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | cksum)"
 if [ "$FAIL" -eq 0 ]; then
