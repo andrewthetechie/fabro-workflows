@@ -3095,9 +3095,10 @@ gh issue comment $N --body-file /tmp/fabro/noop_comment.md || true
 echo close_noop > /tmp/fabro/ending
 echo done"]
 
-    // copy: copy of backlog.return_to_triage (C8). One replacement: the comment's `$who`
-    // mapping learns `source: plan`, which is what plan_gate writes. The `decompose`
-    // branch is kept byte-for-byte so the two nodes stay comparable.
+    // copy: copy of backlog.return_to_triage (C8). Two replacements: the comment's `$who`
+    // mapping learns `source: plan`, which is what plan_gate writes, and the node records
+    // its id in `/tmp/fabro/ending` for `learn_prep`, as every terminal node does. The
+    // `decompose` branch is kept byte-for-byte so the two nodes stay comparable.
     // ---- Return a Contradiction to triage (#17, docs/unmet-criteria C4) ----
     // The issue asks for something its own non-goals forbid, found by `decompose` or by a
     // coder that blocked on a criterion. Only a human can say which side gives, so the
@@ -3137,6 +3138,7 @@ gh label create needs-info --color FEF2C0 --description 'Waiting on a human for 
 if ! gh issue comment $N --body-file /tmp/fabro/return_comment.md >> $L 2>&1; then echo 'return_to_triage: gh issue comment failed; see return.log' >&2; exit 1; fi
 if ! gh issue edit $N --remove-label agent --remove-label agent-in-progress --add-label needs-info >> $L 2>&1; then echo 'return_to_triage: gh issue edit failed; see return.log' >&2; exit 1; fi
 R=$(jq -r '\"Returned to triage: \" + ([.items[] | .criterion + \" conflicts with \" + .non_goal] | join(\"; \"))' $F | tr '[:cntrl:]' ' ' | cut -c1-300 | sed 's/ *$//')
+echo return_to_triage > /tmp/fabro/ending
 jq -nc --arg r \"$R\" '{context_updates:{return_reason:$r}}'"]
 
     // copy: copy of backlog.mark_stuck (C8). One replacement: the `draft_reason.md` branch is

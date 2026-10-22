@@ -991,6 +991,14 @@ def test_ralph_merge_prep(ck, tmp_path):
     ck("merge_prep: host switch off: says so", "1", count("switched off host-wide", file=T / "auto_merge_off_reason"))
 
 
+def test_ralph_endings(ck):
+    # learn_prep reads the ending from /tmp/fabro/ending; a node id is not otherwise available.
+    into = [l.split("->")[0] for l in edges(RAPH).split("\n") if l.split(" ")[0].endswith("->learn_prep")]
+    ck("endings: seven nodes end in learn_prep", "7", str(len(set(into))))
+    for node in sorted(set(into)):
+        ck(f"endings: {node} records its id", "1", count(f"echo {node} > /tmp/fabro/ending", extract(RAPH, node), flags="F"))
+
+
 def test_ralph_learn_prep(ck, tmp_path):
     LP = tmp_path / "ralph-learn-prep"
     T = LP / "sb"

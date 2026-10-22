@@ -689,6 +689,8 @@ R10_COPIES: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
     ('return_to_triage', '.fabro/workflows/backlog/workflow.fabro', 'return_to_triage', (
         ('(if .source == "decompose" then "the decomposer" else "the coder" end)',
          '(if .source == "decompose" then "the decomposer" elif .source == "plan" then "the planner" else "the coder" end)'),
+        ('jq -nc --arg r "$R" \'{context_updates:{return_reason:$r}}\'',
+         'echo return_to_triage > /tmp/fabro/ending\njq -nc --arg r "$R" \'{context_updates:{return_reason:$r}}\''),
     )),
     ('mark_stuck', '.fabro/workflows/backlog/workflow.fabro', 'mark_stuck', (
         ('  if [ -s /tmp/fabro/draft_reason.md ]; then\n    gh issue edit $N --remove-label Review 2>/dev/null || true\n    cp /tmp/fabro/draft_reason.md /tmp/fabro/stuck_comment.md\n  elif [ -s /tmp/fabro/stuck_reason.md ]; then',
