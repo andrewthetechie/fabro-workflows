@@ -289,7 +289,7 @@ def test_ralph_pick(ck, tmp_path):
     ck("pick: plan still first", "1", count("THE PLAN", file=T / "task-context.md"))
 
     rp_repo()
-    tasks('[{"id":"t1","status":"open"}]')
+    tasks('[{"id":"t0","status":"passed"},{"id":"t1","status":"open"}]')
     git("-C", repo, "checkout", "-q", "-b", "other")
     write(repo / "a.txt", "remote\n"); git("-C", repo, "commit", "-qam", "remote")
     git("-C", repo, "push", "-q", "origin", "other:main")
@@ -300,7 +300,11 @@ def test_ralph_pick(ck, tmp_path):
     ck("pick conflict: loop stays work", "work", val("loop"))
     ck("pick conflict: tree is clean", "", git("-C", repo, "status", "--porcelain"))
     ck("pick conflict: no merge in progress", "absent", present(repo / ".git/MERGE_HEAD"))
-    ck("pick conflict: no current task", "absent", present(T / "current_task.json"))
+    # resolve_merge requires current_task.json, and on the first visit no Task has written it.
+    ck("pick conflict, first visit: the first open Task is resolve_merge's", "t1", cur())
+    ck("pick conflict: no rung file", "absent", present(T / "rung"))
+    write(T / "current_task.json", '{"id":"t9"}'); go()
+    ck("pick conflict, later visit: the current Task is kept", "t9", cur())
 
     write(T / "phase", "post\n"); rm(T / "current_task.json")
     before = git("-C", repo, "rev-parse", "HEAD")
@@ -544,6 +548,22 @@ def test_ralph_refute_prep(ck, tmp_path):
     ck("rp round 2: the history is written", "1", count("The parser rejects a bad token", file=T / "review/refute_history.md"))
     ck("rp round 2: the history names the task", "1", count("r1c1", file=T / "review/refute_history.md"))
     ck("rp round 2: the history names the status", "1", count("(open)", file=T / "review/refute_history.md"))
+
+    # The prompt promises "Dropped by the gate last round"; the node deletes that file, so it
+    # must read it first.
+    setup("No post-deploy section here.", "2")
+    write(T / "review/refute_dropped.json", '[{"criterion":"The form validates","status":"not_met","evidence":"I could not find it"},{"file":"src/gone.py","line":1,"scenario":"it crashes"}]')
+    append(repo / "a.txt", "four\n"); git("-C", repo, "commit", "-qam", "a third round of work")
+    go()
+    hist = T / "review/refute_history.md"
+    ck("rp round 3: the dropped criterion is in the history", "1", count("Dropped by the gate last round: The form validates (evidence given: I could not find it)", file=hist, flags="F"))
+    ck("rp round 3: the dropped defect is in the history", "1", count("Dropped by the gate last round: defect at src/gone.py: it crashes", file=hist, flags="F"))
+    ck("rp round 3: the dropped file is cleared", "absent", present(T / "review/refute_dropped.json"))
+    setup("No post-deploy section here.", "3")
+    write(T / "tasks.json", "[]")
+    append(repo / "a.txt", "five\n"); git("-C", repo, "commit", "-qam", "a fourth round of work")
+    go()
+    ck("rp: nothing earlier writes no history", "absent", present(hist))
 
 
 def test_ralph_review_gate(ck, tmp_path):

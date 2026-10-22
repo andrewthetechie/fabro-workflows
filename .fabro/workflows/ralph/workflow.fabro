@@ -315,7 +315,9 @@ jq -nc --arg s \"$S\" --arg q \"$QT\" '{context_updates:{plan_status:$s,triage_q
     //      publishes `rebase_failed`, which routes to `resolve_merge`; a conflicted merge
     //      must never cross a stage boundary, because the checkpoint's `git add -A` would
     //      commit conflict markers. Phase `post` never merges main here: the merge stage
-    //      owns the base once the PR exists (C8).
+    //      owns the base once the PR exists (C8). `resolve_merge` requires
+    //      `current_task.json`, which no Task has written on the first visit, so a conflict
+    //      then writes the first open Task there: the next task, as its prompt says.
     //   3. Take the first Task that is still `open`. None: `done`, or `exhausted` when one
     //      is `blocked` -- a Task that cannot be done in its files will not pass on a
     //      stronger rung either (R2), so the loop ends rather than trying rung 4 again.
@@ -349,6 +351,7 @@ if [ \"$PH\" = pre ]; then
   if git fetch origin main && git merge --no-edit origin/main; then :; else
     git merge --abort || true
     REBASE=true
+    if [ ! -s /tmp/fabro/current_task.json ]; then jq '([.[] | select(.status == \"open\")] + .)[0] // {}' /tmp/fabro/tasks.json > /tmp/fabro/current_task.json 2>/dev/null || echo '{}' > /tmp/fabro/current_task.json; fi
     echo 'The mainline merge was attempted and aborted, so the next checkpoint cannot commit conflict markers. A dedicated resolve_merge stage redoes the merge and resolves it; no Iteration touches git.' > /tmp/fabro/feedback/rework.md
   fi
 fi
@@ -850,7 +853,8 @@ fi"]
     // from a delta (R3). From round 2 it also writes `refute_delta.patch` -- what changed
     // since the tree the previous round judged -- and `refute_history.md`, one line per
     // earlier finding with the Task it became and that Task's status, which is how the
-    // Refuter is stopped from re-arguing a settled point.
+    // Refuter is stopped from re-arguing a settled point, plus one line per finding the gate
+    // dropped last round (no `path:N` or command), read before this node deletes the file.
     //
     // It never copies an Iteration's text: the Refuter's independence is the product (O20).
     // `refute_tree` holds this visit's tree, so the next visit can diff against it.
@@ -862,6 +866,7 @@ V=$(cat /tmp/fabro/refute_visits 2>/dev/null || echo 0)
 case \"$V\" in '' | *[!0-9]*) V=0 ;; esac
 V=$((V + 1))
 echo $V > /tmp/fabro/refute_visits
+DROP=$(cat $R/refute_dropped.json 2>/dev/null || echo '[]')
 rm -f $R/refute.json $R/refute_verdict $R/refute_reason.txt $R/refute_dropped.json $R/refute_survivors.json
 rm -f $R/refute_issues.json $R/refute_diff.patch $R/refute_omitted.txt $R/refute_delta.patch $R/refute_history.md $R/post_deploy.md
 if jq -r '.body // \"\"' /tmp/fabro/issue.json 2>/dev/null | grep -q '^## Post-deploy checks$'; then
@@ -893,6 +898,8 @@ if [ \"$V\" -ge 2 ] && [ -s /tmp/fabro/refute_tree ]; then
   PREVT=$(cat /tmp/fabro/refute_tree)
   git diff \"$PREVT\" HEAD > $R/refute_delta.patch 2>/dev/null || rm -f $R/refute_delta.patch
   jq -r '.[] | select(.source == \"refute\") | \"- \" + (.title // .id) + \" -> task \" + (.id // \"?\") + \" (\" + (.status // \"open\") + \")\"' /tmp/fabro/tasks.json > $R/refute_history.md 2>/dev/null || rm -f $R/refute_history.md
+  printf '%s' \"$DROP\" | jq -r '.[]? | \"- Dropped by the gate last round: \" + (if .criterion then .criterion + \" (evidence given: \" + (.evidence // \"none\") + \")\" else \"defect at \" + (.file // \"?\") + \": \" + (.scenario // \"\") end)' >> $R/refute_history.md 2>/dev/null || true
+  if [ ! -s $R/refute_history.md ]; then rm -f $R/refute_history.md; fi
 fi
 git rev-parse 'HEAD^{tree}' > /tmp/fabro/refute_tree
 HT=$(git rev-parse 'HEAD^{tree}')
