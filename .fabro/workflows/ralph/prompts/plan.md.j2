@@ -30,12 +30,12 @@ yourself, and never call `write_file`.
 Call `inputs` first, and fetch every part named by a trailing `MORE:` line.
 
 - `issue.json`: the issue in `.body` and `.title`, human discussion in `.comments`,
-  `.number` for the parent number.
+`.number` for the parent number.
 - `task-map.md`: optional. The issue body's `## Task map` section, when it has one. It is
-  a hint about the intended split written by an earlier triage pass, not a contract: it
-  may be empty, stale, or wrong about this checkout.
+a hint about the intended split written by an earlier triage pass, not a contract: it
+may be empty, stale, or wrong about this checkout.
 - `repomap.md`: optional. A ranked outline of files and top-level symbols. Read it before
-  searching, and continue if it is absent.
+searching, and continue if it is absent.
 
 Complete this step when you have the issue, the Task map if there is one, and the repo map
 or the knowledge that it is absent.
@@ -49,10 +49,10 @@ cover it, and the repository documentation that governs it (`AGENTS.md`, `CONTEX
 Separate four kinds of statement, and never present one as another:
 
 - **Verified fact**: cite the inspected path, symbol, or command output. Record the
-  revision when it matters.
+revision when it matters.
 - **Requested behaviour**: cite the issue text or the human comment.
 - **Proposed design**: mark it as a proposal and tie it to a requirement or a repository
-  pattern you inspected.
+pattern you inspected.
 - **Open question**: state what is unknown and what it would change.
 
 Complete this step when every requirement in the issue has an owner: a Task, a non-goal
@@ -61,19 +61,19 @@ that excludes it, or a human decision this plan asks for.
 ### 3. Choose the disposition
 
 - `ready`: the work splits into one or more Tasks, each of which one fresh coder session
-  can implement and check. This is the normal answer.
+can implement and check. This is the normal answer.
 - `redundant`: the checkout already satisfies the issue. Cite the files, symbols or
-  commits that prove it. An unimplemented Task elsewhere in the queue is not proof.
+commits that prove it. An unimplemented Task elsewhere in the queue is not proof.
 - `invalid`: the issue cannot be worked as written for a reason that is not a
-  contradiction — it names no behaviour, it is a question, or it is already closed by a
-  decision recorded in the repository.
+contradiction — it names no behaviour, it is a question, or it is already closed by a
+decision recorded in the repository.
 - `contradiction`: an acceptance criterion needs a surface that the issue's own non-goals
-  exclude (see *Contradictions*). Never plan around one and never reword a criterion to
-  make it satisfiable.
+exclude (see *Contradictions*). Never plan around one and never reword a criterion to
+make it satisfiable.
 - `needs_human`: the work is blocked on a decision only a human can make, and the block is
-  not a contradiction: two reasonable designs with different behaviour, a migration the
-  repository does not authorize, or a requirement that depends on an unmerged change in
-  another repository.
+not a contradiction: two reasonable designs with different behaviour, a migration the
+repository does not authorize, or a requirement that depends on an unmerged change in
+another repository.
 
 Complete this step when the disposition accounts for every requirement, and the reason you
 can cite for each one you excluded.
@@ -84,18 +84,18 @@ A Task is one cohesive change and its tests, small enough for one coder session.
 one or two requirements per Task.
 
 - Order them so each leaves the repository building and its tests green. Put a shared
-  interface or skeleton before its callers.
+interface or skeleton before its callers.
 - The first eight are worked in this run. Anything past eight becomes the Remainder issue,
-  so order the ones that matter most first — the loop stops at eight.
+so order the ones that matter most first — the loop stops at eight.
 - Keep each Task's `files` to the paths it expects to touch. It is a hint for the coder,
-  not a ceiling.
+not a ceiling.
 - `covers` names the issue requirement the Task serves. Quote the requirement, do not
-  paraphrase it into something easier.
+paraphrase it into something easier.
 - For a shared interface with several callers, use the skeleton-first sequence: land the
-  compiling interface, then its implementation and tests, then the callers in at most two
-  migration slices.
+compiling interface, then its implementation and tests, then the callers in at most two
+migration slices.
 - Do not cut a Task so small that it cannot be checked on its own, and do not leave one so
-  large that a 60-minute session cannot finish it.
+large that a 60-minute session cannot finish it.
 
 Complete this step when every Task is self-contained: a coder that reads only that Task,
 the issue, and `context` can start without asking anything.
@@ -123,13 +123,13 @@ the issue, and `context` can start without asking anything.
 Rules for `## Plan`:
 
 - One step per edit. Full repository-relative path plus the inspected line range. Mark a
-  new file as `new file`.
+new file as `new file`.
 - Name the existing helper or fixture to reuse instead of describing a new one.
 - For added behaviour, make the first step the test that exposes it, with the expected
-  result.
+result.
 - A snippet of non-obvious logic may appear inside its step, fifteen lines at most. Never
-  paste a whole file: `excerpts` copies every `path:N-M` you cite, and it has a 40,000-byte
-  budget for the whole Task.
+paste a whole file: `excerpts` copies every `path:N-M` you cite, and it has a 40,000-byte
+budget for the whole Task.
 - Cite only ranges you read in this session.
 
 `excerpts` scans `context` for `path:start-end` and `path:line` and copies the current text
@@ -146,13 +146,13 @@ non-empty only for `ready`; `contradictions` is non-empty only for `contradictio
 Task carries `id`, `title`, `body`, `acceptance`, `files`, `covers` and `context`.
 
 - `id` is unique within this list, short and stable, e.g. `t1`. Later Tasks appended by the
-  Refuter or the reviewers get their own ids, so a new attempt at the same work keeps the
-  old id.
+Refuter or the reviewers get their own ids, so a new attempt at the same work keeps the
+old id.
 - `title` is imperative and short; it becomes the commit subject's source.
 - `body` says what to change and why, in the reporter's terms.
 - `acceptance` is a list of checkable statements, each traceable to the issue. This is the
-  definition of done for the Iteration that works the Task, so "works correctly" is not
-  one.
+definition of done for the Iteration that works the Task, so "works correctly" is not
+one.
 
 If submission fails validation, correct the reported fields and submit again. Stop
 immediately after a successful submit, and do not print the JSON.
