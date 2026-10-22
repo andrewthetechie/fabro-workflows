@@ -63,6 +63,10 @@ class Lease:
     # the contract; see the module docstring for what it is for and what it costs
     # to leave out.
     queued_since: datetime | None = None
+    # `backlog` or `ralph` (ADR 0029 O21). Carried on the lease so the release can
+    # copy it into `run_history` without asking fabro, which no longer knows the run
+    # once it is gone, and so the queue page can say which arm holds each box.
+    workflow: str = "backlog"
 
 
 class LeaseConflict(RuntimeError):
@@ -151,6 +155,7 @@ class LeaseStore:
             run_id=lease.run_id,
             dispatched_at=lease.dispatched_at,
             queued_since=lease.queued_since,
+            workflow=lease.workflow,
         )
         if stored:
             return
@@ -195,4 +200,5 @@ def _lease_from_row(row) -> Lease:
             if row["queued_since"] is None
             else datetime.fromisoformat(row["queued_since"])
         ),
+        workflow=row["workflow"],
     )

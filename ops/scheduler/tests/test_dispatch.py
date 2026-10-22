@@ -34,7 +34,7 @@ from fabro_scheduler.github import Issue
 from fabro_scheduler.lease import Lease, LeaseConflict, LeaseStore
 from fabro_scheduler.queue import QueueItem
 from fabro_scheduler.reconcile import reconcile_leases
-from fabro_scheduler.store import Store
+from fabro_scheduler.store import RunOutcome, Store
 from fabro_scheduler.workflow_version import WorkflowVersionError
 
 TRACKED_REPOS = Path(__file__).resolve().parents[1] / "repos.toml"
@@ -87,13 +87,11 @@ def loop(config, store, leases, fabro) -> DispatchLoop:
     return DispatchLoop(config, store, leases, fabro, "ghp_test")
 
 
-def issue(repo: str, number: int) -> Issue:
+def issue(repo: str, number: int, labels: frozenset[str] = frozenset({"agent"})) -> Issue:
     # Measured from the *real* clock: `tick()` reads `datetime.now`, so a fixed
     # `first_seen` in the past would put every item past the starvation ceiling and
     # the priority ordering these tests lean on would stop applying.
-    return Issue(
-        repo, number, f"issue {number}", frozenset({"agent"}), datetime.now(UTC)
-    )
+    return Issue(repo, number, f"issue {number}", labels, datetime.now(UTC))
 
 
 def seed(store: Store, repo: str, number: int) -> Issue:
@@ -876,3 +874,99 @@ def test_an_agent_shaped_ending_is_not_dispatched_again(config, store, leases, f
     assert leases.active() == []
 
     assert loop.tick() == []
+
+
+# --- the arm: which workflow works the issue (ADR 0029 O2, O21) --------------------
+
+
+@pytest.mark.parametrize(
+    "share, number, labels, expected",
+    [
+        (0, 2, frozenset({"agent"}), "backlog"),
+        (0, 3, frozenset({"agent"}), "backlog"),
+        (0, 4, frozenset({"agent", "fast-path"}), "backlog"),
+        (50, 2, frozenset({"agent"}), "ralph"),
+        (50, 3, frozenset({"agent"}), "backlog"),
+        (50, 8, frozenset({"agent", "fast-path"}), "backlog"),
+        # The label is matched exactly: an upper-case spelling is a different label,
+        # which is how the graph's own lane check reads it too.
+        (50, 10, frozenset({"agent", "Fast-Path"}), "ralph"),
+        (50, 11, frozenset({"agent", "review"}), "backlog"),
+    ],
+)
+def test_choose_workflow(share, number, labels, expected):
+    from fabro_scheduler.dispatch import choose_workflow
+
+    assert choose_workflow(issue("o/a", number, labels), share) == expected
+
+
+def test_choose_workflow_reads_the_issue_number_not_its_repo():
+    """Parity is per issue, so a Remainder or Child issue takes its OWN parity."""
+    from fabro_scheduler.dispatch import choose_workflow
+
+    assert choose_workflow(
+        Issue("o/a", 12, "t", frozenset({"agent"}), NOW), 50
+    ) == "ralph"
+    assert choose_workflow(
+        Issue("o/b", 12, "t", frozenset({"agent"}), NOW), 50
+    ) == "ralph"
+
+
+@respx.mock
+def test_share_50_sends_an_even_issue_to_ralphs_entrypoint(store, leases, fabro):
+    """The whole arm, end to end: the version, the run's label, the lease and the
+    history row all say `ralph`, and the version registered is ralph's graph."""
+    config = load_config(TRACKED_REPOS, env={"SCHEDULER_RALPH_SHARE": "50"})
+    loop = DispatchLoop(config, store, leases, fabro, "ghp_test")
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    seed(store, JELLY, 8)
+
+    attempts = loop.tick()
+
+    assert attempts[0].run_id == "R1"
+    registered = recorder.bodies("POST", "/api/v1/workflow-versions")[0]
+    assert registered["entrypoint"] == "workflows/ralph/workflow.fabro"
+    intent = recorder.bodies("POST", "/api/v1/runs")[0]
+    assert intent["args"]["labels"]["workflow"] == "ralph"
+    assert leases.active()[0].workflow == "ralph"
+
+    leases.archive_and_release("R1", RunOutcome(kind="succeeded"))
+    assert store.history_rows()[0]["workflow"] == "ralph"
+
+
+@respx.mock
+def test_share_50_sends_an_odd_issue_to_backlog(store, leases, fabro):
+    config = load_config(TRACKED_REPOS, env={"SCHEDULER_RALPH_SHARE": "50"})
+    loop = DispatchLoop(config, store, leases, fabro, "ghp_test")
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    seed(store, JELLY, 9)
+
+    loop.tick()
+
+    registered = recorder.bodies("POST", "/api/v1/workflow-versions")[0]
+    assert registered["entrypoint"] == "workflows/backlog/workflow.fabro"
+    assert recorder.bodies("POST", "/api/v1/runs")[0]["args"]["labels"]["workflow"] == "backlog"
+    assert leases.active()[0].workflow == "backlog"
+
+
+@respx.mock
+def test_share_0_keeps_every_even_issue_on_backlog(store, leases, fabro):
+    """The default, and the kill switch: nothing changes until the operator sets 50."""
+    config = load_config(TRACKED_REPOS, env={})
+    assert config.ralph_share == 0
+    loop = DispatchLoop(config, store, leases, fabro, "ghp_test")
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    seed(store, JELLY, 8)
+
+    loop.tick()
+
+    assert recorder.bodies("POST", "/api/v1/workflow-versions")[0]["entrypoint"] == (
+        "workflows/backlog/workflow.fabro"
+    )
+    assert leases.active()[0].workflow == "backlog"

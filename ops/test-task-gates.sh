@@ -47,6 +47,14 @@ if [ "$CANARY_GIT" != "$(cd "$CANARY" && pwd -P)/.git" ]; then
 fi
 rm -rf "$CANARY"
 
+# The fixtures commit hundreds of times, and so do the gates they run. An operator's
+# global `commit.gpgsign=true` signs every one: ~240ms a commit instead of ~24ms, which
+# was most of this suite's wall time (2026-10-21: 340s). No sandbox signs. This must come
+# after the unset above, which clears GIT_CONFIG_COUNT; nothing below clears it again.
+export GIT_CONFIG_COUNT=2 \
+    GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
+    GIT_CONFIG_KEY_1=tag.gpgsign GIT_CONFIG_VALUE_1=false
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GRAPH="$REPO_ROOT/.fabro/workflows/backlog/workflow.fabro"
 SHARED="$REPO_ROOT/.fabro/workflows/_shared/review-merge/review-merge.fabro"

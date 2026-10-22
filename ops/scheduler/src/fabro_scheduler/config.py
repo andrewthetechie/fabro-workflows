@@ -56,6 +56,14 @@ DEFAULT_STARVATION_CEILING_SECONDS = 4 * 60 * 60
 # Decision 8: GitHub every 60s, conditionally.
 DEFAULT_GITHUB_POLL_SECONDS = 60
 
+# The `ralph` trial's share of the queue (ADR 0029 D2, O2, O21). Only 0 and 50 are
+# allowed: 0 is the kill switch, 50 is the trial's issue parity. A percentage is not
+# a knob to tune mid-trial, because every value in between changes what the two arms
+# are compared on. When `ralph` wins the trial the share becomes a lane decision of
+# its own series, not a third value here.
+DEFAULT_RALPH_SHARE = 0
+RALPH_SHARES = (0, 50)
+
 # The run probe's beat: how often the background thread refreshes the cached
 # per-lease task count and current stage that the page renders. Stages last tens
 # of seconds to minutes each, so 30s keeps the display visibly current while
@@ -121,6 +129,8 @@ class SchedulerConfig:
     run_probe_seconds: int = DEFAULT_RUN_PROBE_SECONDS
     scorecard_seconds: int = DEFAULT_SCORECARD_SECONDS
     automation_author: str = DEFAULT_AUTOMATION_AUTHOR
+    # 0 or 50; see `DEFAULT_RALPH_SHARE`. Read by `choose_workflow`.
+    ralph_share: int = DEFAULT_RALPH_SHARE
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -195,6 +205,7 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
         automation_author=_env_str(
             environ, "SCHEDULER_AUTOMATION_AUTHOR", DEFAULT_AUTOMATION_AUTHOR
         ),
+        ralph_share=_env_ralph_share(environ),
     )
 
 
@@ -311,6 +322,31 @@ def _parse_repo(
 def _env_str(environ: Mapping[str, str], key: str, default: str) -> str:
     value = environ.get(key, "").strip()
     return value or default
+
+
+def _env_ralph_share(environ: Mapping[str, str]) -> int:
+    """`SCHEDULER_RALPH_SHARE`: 0 (the default, and the kill switch) or 50.
+
+    Anything else — `25`, `yes`, `-1`, an empty-but-present value — is a
+    `ConfigError` naming the key. A share the trial never validated is worse than no
+    trial at all: the two arms would stop being comparable, and nothing in a run's
+    history says which share produced it.
+    """
+    key = "SCHEDULER_RALPH_SHARE"
+    raw = environ.get(key, "").strip()
+    if not raw:
+        return DEFAULT_RALPH_SHARE
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(
+            f"{key}: {raw!r} is not an integer; use 0 (off) or 50 (the trial)"
+        ) from exc
+    if value not in RALPH_SHARES:
+        raise ConfigError(
+            f"{key}: {value} is not one of {', '.join(str(v) for v in RALPH_SHARES)}"
+        )
+    return value
 
 
 def _env_positive_int(environ: Mapping[str, str], key: str, default: int) -> int:

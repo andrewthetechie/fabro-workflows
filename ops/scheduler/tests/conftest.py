@@ -40,9 +40,15 @@ class FakeCheckout:
 def fake_checkout(tmp_path: Path) -> FakeCheckout:
     root = tmp_path / "wf" / ".fabro"
     (root / "workflows/backlog").mkdir(parents=True)
+    (root / "workflows/ralph").mkdir(parents=True)
     (root / "workflows/_shared/review-merge").mkdir(parents=True)
     (root / "workflows/backlog/workflow.fabro").write_text("digraph B {}")
     (root / "workflows/backlog/workflow.toml").write_text('name = "backlog"\n')
+    # Both entrypoints are in every checkout: a version is the whole `.fabro/`
+    # tree plus one graph, so the trial's second graph travels in the same files
+    # (ADR 0029 O21).
+    (root / "workflows/ralph/workflow.fabro").write_text("digraph R {}")
+    (root / "workflows/ralph/workflow.toml").write_text('name = "ralph"\n')
     (root / "workflows/_shared/review-merge/review-merge.fabro").write_text(
         "digraph S {}"
     )

@@ -36,6 +36,7 @@
     <tr>
       {% for column, heading, numeric in [
           ('coder_pool',      'Coder instance', false),
+          ('workflow',        'Workflow',       false),
           ('repo',            'Issue',          false),
           (none,              'Run',            false),
           ('finished_at',     'Window',         true),
@@ -62,6 +63,7 @@
     {% set row = view.row %}
     <tr class="hover:bg-slate-800/60">
       <td class="whitespace-nowrap px-4 py-3 align-top font-medium text-slate-200">{{ row.coder_pool }}</td>
+      <td class="whitespace-nowrap px-4 py-3 align-top text-slate-400">{{ row.workflow }}</td>
       <td class="px-4 py-3 align-top">
         <span class="block whitespace-nowrap"><a class="text-sky-400 hover:underline" href="https://github.com/{{ row.repo }}">{{ row.repo }}</a></span>
         <span class="block whitespace-nowrap text-xs text-slate-500"><a class="text-sky-400 hover:underline" href="https://github.com/{{ row.repo }}/issues/{{ row.issue_number }}">#{{ row.issue_number }}</a></span>

@@ -42,6 +42,11 @@ services:
       # bind one port while compose publishes another when the value is set in the
       # shell instead of ~/fabro/.env.
       SCHEDULER_PORT: "${SCHEDULER_PORT:-32280}"
+      # The ralph trial's share (ADR 0029 O2, O21): 0 or 50. Set here to 0
+      # explicitly so the switch is one visible edit on the host, not a default
+      # nobody can find. 0 is the kill switch; 50 sends even, non-fast-path issue
+      # numbers to `ralph` and everything else to `backlog`.
+      SCHEDULER_RALPH_SHARE: "${SCHEDULER_RALPH_SHARE:-0}"
     # Deliberately **not** `env_file: .env`. That file carries fabro's
     # SESSION_SECRET — a cookie-signing key this service has no use for — and the
     # scheduler's credentials are its own two: GITHUB_TOKEN today, FABRO_API_TOKEN

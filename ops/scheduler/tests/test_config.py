@@ -412,3 +412,28 @@ def test_repo_named_folds_case_and_reports_a_disabled_row(tmp_path):
     # "not configured" from "configured but switched off".
     assert cfg.repo_named("o/off").enabled is False
     assert cfg.repo_named("o/nope") is None
+
+
+# --- the ralph trial's share (ADR 0029 O21) ----------------------------------------
+
+
+def test_the_ralph_share_defaults_to_zero_and_reads_fifty(tmp_path):
+    """0 is the kill switch and the default: a host that has never heard of the
+    trial behaves exactly as it did before it."""
+    cfg = load_config(write(tmp_path, repo()), env={})
+    assert cfg.ralph_share == 0
+    assert load_config(
+        write(tmp_path, repo()), env={"SCHEDULER_RALPH_SHARE": "50"}
+    ).ralph_share == 50
+    assert load_config(
+        write(tmp_path, repo()), env={"SCHEDULER_RALPH_SHARE": " 0 "}
+    ).ralph_share == 0
+
+
+@pytest.mark.parametrize("raw", ["25", "yes", "-1", "100", "50.0"])
+def test_a_ralph_share_the_trial_never_validated_names_the_key(tmp_path, raw):
+    """Only 0 and 50 exist. A value in between would change what the two arms are
+    compared on, and nothing in a run's history would say which share produced it.
+    """
+    with pytest.raises(ConfigError, match="SCHEDULER_RALPH_SHARE"):
+        load_config(write(tmp_path, repo()), env={"SCHEDULER_RALPH_SHARE": raw})

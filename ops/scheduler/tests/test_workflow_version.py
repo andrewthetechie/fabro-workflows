@@ -17,7 +17,9 @@ from pathlib import Path
 import pytest
 
 from fabro_scheduler.workflow_version import (
+    BACKLOG_ENTRYPOINT,
     MAX_FILE_BYTES,
+    RALPH_ENTRYPOINT,
     VersionCache,
     WorkflowVersionError,
     build_version_payload,
@@ -147,13 +149,19 @@ def test_clone_fabro_tree_refuses_a_repo_without_a_fabro_directory(tmp_path):
             pass  # pragma: no cover - the error is raised on entry
 
 
-def test_version_cache_is_keyed_by_sha():
+def test_version_cache_is_keyed_by_sha_and_entrypoint():
+    """One commit of `main` is two versions, one per workflow (ADR 0029 O21)."""
     cache = VersionCache()
-    assert cache.get("a" * 40) is None
-    cache.put("a" * 40, "v1")
-    cache.put("b" * 40, "v2")
-    assert cache.get("a" * 40) == "v1"
-    assert cache.get("b" * 40) == "v2"
+    sha, other = "a" * 40, "b" * 40
+    backlog, ralph = RALPH_ENTRYPOINT, BACKLOG_ENTRYPOINT
+    assert cache.get(sha, backlog) is None
+    cache.put(sha, backlog, "v1")
+    cache.put(sha, ralph, "v2")
+    cache.put(other, backlog, "v3")
+    assert cache.get(sha, backlog) == "v1"
+    assert cache.get(sha, ralph) == "v2"
+    assert cache.get(other, backlog) == "v3"
+    assert cache.get(other, ralph) is None
 
 
 # --- helpers -------------------------------------------------------------------

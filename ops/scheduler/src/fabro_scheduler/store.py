@@ -98,7 +98,8 @@ CREATE TABLE IF NOT EXISTS leases (
   issue_number  INTEGER NOT NULL,
   run_id        TEXT NOT NULL UNIQUE,
   dispatched_at TEXT NOT NULL,  -- ISO-8601 UTC
-  queued_since  TEXT            -- ISO-8601 UTC; `issue_cache.first_seen`
+  queued_since  TEXT,           -- ISO-8601 UTC; `issue_cache.first_seen`
+  workflow      TEXT NOT NULL DEFAULT 'backlog'  -- ADR 0029 O21: the arm
 );
 
 -- The box that last ran each repo, kept after its lease is gone. Rewritten on
@@ -197,7 +198,8 @@ CREATE TABLE IF NOT EXISTS run_history (
   local_tokens    INTEGER,        -- token counts at release; NULL = no usage data
   hosted_tokens   INTEGER,
   local_cost_usd_micros  INTEGER,
-  hosted_cost_usd_micros INTEGER
+  hosted_cost_usd_micros INTEGER,
+  workflow      TEXT NOT NULL DEFAULT 'backlog'  -- ADR 0029 O21: `backlog` | `ralph`
 );
 
 -- Issue #22, the scorecard. Five tables the collector fills after a run is released
@@ -299,6 +301,9 @@ CREATE TABLE IF NOT EXISTS pr_facts (
 # inline in the migration) means the fresh-table shape and the migrated shape
 # cannot diverge.
 RUN_HISTORY_COLUMNS = {
+    # ADR 0029 O21. A row written before the trial is a `backlog` run by
+    # construction, which is what the DEFAULT says.
+    "workflow": "workflow TEXT NOT NULL DEFAULT 'backlog'",
     "local_tokens": "local_tokens INTEGER",
     "hosted_tokens": "hosted_tokens INTEGER",
     "local_cost_usd_micros": "local_cost_usd_micros INTEGER",
@@ -310,6 +315,9 @@ RUN_HISTORY_COLUMNS = {
 # scorecard reads as "not measured", never as zero.
 ADDED_COLUMNS = {
     "run_history": RUN_HISTORY_COLUMNS,
+    # The lease carries the arm from dispatch to release, so `run_history` can copy
+    # it there without asking fabro about a run it no longer has.
+    "leases": {"workflow": "workflow TEXT NOT NULL DEFAULT 'backlog'"},
     "run_stage_stats": {
         "input_tokens": "input_tokens INTEGER",
         "output_tokens": "output_tokens INTEGER",
@@ -340,6 +348,7 @@ HISTORY_SORT_COLUMNS = frozenset({
     "finished_at",
     "repo",
     "coder_pool",
+    "workflow",
     "kind",
     "merged",
     "requeue_attempt",
@@ -544,7 +553,7 @@ class Store:
         with self._lock:
             return self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since FROM leases ORDER BY coder_pool"
+                "queued_since, workflow FROM leases ORDER BY coder_pool"
             ).fetchall()
 
     def history_rows(
@@ -873,7 +882,7 @@ class Store:
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since FROM leases WHERE run_id = ?",
+                "queued_since, workflow FROM leases WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if row is None:
@@ -903,7 +912,7 @@ class Store:
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since FROM leases WHERE run_id = ?",
+                "queued_since, workflow FROM leases WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if row is None:
@@ -913,8 +922,8 @@ class Store:
                 "  run_id, coder_pool, repo, issue_number, dispatched_at, finished_at,"
                 "  kind, reason, category, requeue_attempt, pr_lookup, pr_number,"
                 "  pr_url, merged, local_tokens, hosted_tokens,"
-                "  local_cost_usd_micros, hosted_cost_usd_micros"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "  local_cost_usd_micros, hosted_cost_usd_micros, workflow"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO NOTHING",
                 (
                     row["run_id"],
@@ -939,6 +948,7 @@ class Store:
                     outcome.hosted_tokens,
                     outcome.local_cost_usd_micros,
                     outcome.hosted_cost_usd_micros,
+                    row["workflow"],
                 ),
             )
             self._conn.execute("DELETE FROM leases WHERE run_id = ?", (run_id,))
@@ -1021,6 +1031,7 @@ class Store:
         run_id: str,
         dispatched_at: datetime,
         queued_since: datetime | None = None,
+        workflow: str = "backlog",
     ) -> bool:
         """Take one coder instance, or report that someone else holds it.
 
@@ -1039,8 +1050,9 @@ class Store:
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 "INSERT INTO leases "
-                "(coder_pool, repo, issue_number, run_id, dispatched_at, queued_since) "
-                "VALUES (?, ?, ?, ?, ?, ?) "
+                "(coder_pool, repo, issue_number, run_id, dispatched_at, queued_since, "
+                " workflow) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(coder_pool) DO NOTHING",
                 (
                     coder_pool,
@@ -1049,6 +1061,7 @@ class Store:
                     run_id,
                     stamp,
                     None if queued_since is None else queued_since.isoformat(),
+                    workflow,
                 ),
             )
             if cursor.rowcount == 0:

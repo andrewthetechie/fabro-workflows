@@ -63,6 +63,7 @@ from .github import (
     IN_PROGRESS_LABEL,
     REQUIRED_LABEL,
     GitHubError,
+    Issue,
     add_label,
     remove_label,
 )
@@ -187,6 +188,33 @@ def choose_next(
     )
 
 
+def choose_workflow(issue: Issue, share: int) -> str:
+    """Which workflow works this issue: `ralph` or `backlog` (ADR 0029 D2, O2).
+
+    Pure and total: same inputs, same answer, no I/O. The rule is the trial's:
+
+    * `share` is 0 (the default, and the kill switch) -> always `backlog`;
+    * `share` is 50 -> an EVEN issue number is `ralph`, an odd one `backlog`;
+    * a `fast-path` issue is always `backlog`, whatever its number: the fast lane is
+      `backlog`'s own feature (ADR 0023), and splitting it would compare two things
+      at once.
+
+    Parity is the issue's own number, so a Remainder issue or a Child issue takes
+    the parity of ITS number, not its parent's. That is deliberate: the arms are
+    compared per run, and a child run is a run. A requeued issue keeps its arm
+    because its number does not change.
+
+    The label is matched exactly (`fast-path`), never case-folded: GitHub label
+    names are case-sensitive, and the graph's own lane check matches it the same
+    way.
+    """
+    if share == 0:
+        return "backlog"
+    if "fast-path" in issue.labels:
+        return "backlog"
+    return "ralph" if issue.number % 2 == 0 else "backlog"
+
+
 class DispatchLoop:
     """The 5-second loop, and the one-tick pass it runs each time.
 
@@ -279,6 +307,10 @@ class DispatchLoop:
                 **fields,  # type: ignore[arg-type]
             )
 
+        # One call, one arm: the lease, the run's label and `run_history` all read
+        # this value, so a second call could only disagree with it.
+        workflow = choose_workflow(item.issue, self._config.ralph_share)
+
         row = self._config.repo_named(repo)
         if row is None or not row.enabled:
             # Cannot happen for an item `build_queue` produced, which only keeps
@@ -319,6 +351,7 @@ class DispatchLoop:
                 issue_number=number,
                 coder_pool=coder_pool,
                 environment_id=row.environment_id,
+                workflow=workflow,
             )
         except RunNotStarted as exc:
             self._rollback_labels(repo, number)
@@ -350,6 +383,7 @@ class DispatchLoop:
             # cache row within a minute of this label write and draft 09's requeue
             # needs the original wait to put back.
             queued_since=item.issue.first_seen,
+            workflow=workflow,
         )
         try:
             self._leases.acquire(lease)
@@ -383,11 +417,12 @@ class DispatchLoop:
             )
 
         log.info(
-            "dispatch: %s#%s -> run %s on %s (env=%s)",
+            "dispatch: %s#%s -> run %s on %s (%s, env=%s)",
             repo,
             number,
             result.run_id,
             coder_pool,
+            workflow,
             row.environment_id,
         )
         return attempt(run_id=result.run_id)

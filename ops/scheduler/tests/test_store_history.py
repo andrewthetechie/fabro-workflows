@@ -23,6 +23,8 @@ def test_run_history_table_has_every_column(store):
         "pr_lookup", "pr_number", "pr_url", "merged",
         "local_tokens", "hosted_tokens",
         "local_cost_usd_micros", "hosted_cost_usd_micros",
+        # ADR 0029 O21: the run's arm, copied from its lease on release.
+        "workflow",
     ]
     not_null = {r["name"] for r in rows if r["notnull"]}
     # `requeue_attempt` is `NOT NULL DEFAULT 0` in the canonical schema block, so
@@ -31,6 +33,9 @@ def test_run_history_table_has_every_column(store):
     assert not_null == {
         "coder_pool", "repo", "issue_number", "dispatched_at",
         "finished_at", "kind", "pr_lookup", "requeue_attempt",
+        # `NOT NULL DEFAULT 'backlog'`: a row written before the trial is a
+        # `backlog` run by construction (ADR 0029 O21).
+        "workflow",
     }
     assert [r["name"] for r in rows if r["pk"]] == ["run_id"]
 
@@ -393,3 +398,61 @@ def test_refute_row_round_trips_the_new_field_keys(tmp_path):
                        '"unverifiable_only": true, "ci_credited": 3}]')
     finally:
         store.close()
+
+
+def test_the_migration_adds_the_workflow_column_to_leases_and_history(tmp_path):
+    """ADR 0029 O21. A host DB that predates the trial has neither table's
+    `workflow` column; `__init__` must ALTER both in on open, and a row written
+    before it reads `backlog`, which is what it was."""
+    import sqlite3
+
+    path = tmp_path / "scheduler.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE leases (
+          coder_pool TEXT PRIMARY KEY, repo TEXT NOT NULL,
+          issue_number INTEGER NOT NULL, run_id TEXT NOT NULL UNIQUE,
+          dispatched_at TEXT NOT NULL, queued_since TEXT
+        );
+        CREATE TABLE run_history (
+          run_id TEXT PRIMARY KEY, coder_pool TEXT NOT NULL,
+          repo TEXT NOT NULL, issue_number INTEGER NOT NULL,
+          dispatched_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+          kind TEXT NOT NULL, reason TEXT, category TEXT,
+          requeue_attempt INTEGER NOT NULL DEFAULT 0,
+          pr_lookup TEXT NOT NULL, pr_number INTEGER, pr_url TEXT, merged INTEGER
+        );
+        INSERT INTO run_history
+          (run_id, coder_pool, repo, issue_number, dispatched_at, finished_at,
+           kind, pr_lookup)
+        VALUES ('R0', 'coders-a', 'o/a', 1, '2026-09-01T00:00:00+00:00',
+                '2026-09-01T01:00:00+00:00', 'succeeded', 'none');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = Store(path)
+    try:
+        for table in ("leases", "run_history"):
+            columns = {
+                r["name"]
+                for r in reopened._conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            assert "workflow" in columns, table
+        assert reopened.history_rows()[0]["workflow"] == "backlog"
+
+        # And a lease taken after the migration still round-trips its arm.
+        LeaseStore(reopened).acquire(
+            Lease("coders-b", "o/a", 2, "R2", datetime.now(UTC), workflow="ralph")
+        )
+        assert LeaseStore(reopened).active()[0].workflow == "ralph"
+        LeaseStore(reopened).archive_and_release(
+            "R2", RunOutcome(kind="succeeded")
+        )
+        assert {
+            row["run_id"]: row["workflow"] for row in reopened.history_rows()
+        } == {"R0": "backlog", "R2": "ralph"}
+    finally:
+        reopened.close()

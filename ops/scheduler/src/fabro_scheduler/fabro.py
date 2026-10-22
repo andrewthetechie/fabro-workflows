@@ -42,7 +42,7 @@ import httpx
 from urllib.parse import quote
 
 from .workflow_version import (
-    BACKLOG_ENTRYPOINT,
+    ENTRYPOINTS,
     WORKFLOWS_REF,
     WORKFLOWS_REPO,
     FabroTree,
@@ -654,7 +654,6 @@ class FabroClient:
         *,
         workflows_repo: str = WORKFLOWS_REPO,
         workflows_ref: str = WORKFLOWS_REF,
-        entrypoint: str = BACKLOG_ENTRYPOINT,
         branch: str = DEFAULT_BRANCH,
         register_timeout: float = REGISTER_TIMEOUT_SECONDS,
         call_timeout: float = DEFAULT_TIMEOUT_SECONDS,
@@ -664,7 +663,6 @@ class FabroClient:
         self._token = token
         self._workflows_repo = workflows_repo
         self._workflows_ref = workflows_ref
-        self._entrypoint = entrypoint
         self._branch = branch
         self._register_timeout = register_timeout
         self._call_timeout = call_timeout
@@ -678,39 +676,46 @@ class FabroClient:
         """Whether this client can call fabro at all. Never the token itself."""
         return bool(self._token.strip())
 
-    def ensure_version(self) -> tuple[str, str, bool]:
+    def ensure_version(self, workflow: str = "backlog") -> tuple[str, str, bool]:
         """`(workflow_version_id, commit_sha, reused)` for `main` right now.
 
         Clones first and consults the cache afterwards, which sounds backwards and
-        is not: the cache key *is* the commit sha, and the only honest source for
-        it is the tree the files came from. A `git ls-remote` first would save a
-        ~1s shallow clone of a 300 KB repository on a path that runs once per
-        dispatch — not worth a second subprocess and a second way to fail.
+        is not: the cache key is the commit sha AND the entrypoint, and the only
+        honest source for the sha is the tree the files came from. A `git ls-remote`
+        first would save a ~1s shallow clone of a 300 KB repository on a path that
+        runs once per dispatch — not worth a second subprocess and a second way to
+        fail.
+
+        `workflow` picks the graph, from the same tree. The cache keeps the two
+        apart, so a `ralph` dispatch can never be handed `backlog`'s version.
         """
+        entrypoint = ENTRYPOINTS[workflow]
         with self._clone(self._workflows_repo, self._workflows_ref) as tree:
-            cached = self._versions.get(tree.sha)
+            cached = self._versions.get(tree.sha, entrypoint)
             if cached is not None:
                 log.info(
-                    "fabro: %s@%s unchanged, reusing workflow version %s",
+                    "fabro: %s@%s unchanged for %s, reusing workflow version %s",
                     self._workflows_repo,
                     tree.sha[:12],
+                    workflow,
                     cached[:12],
                 )
                 return cached, tree.sha, True
 
-            payload = build_version_payload(tree.directory, self._entrypoint)
+            payload = build_version_payload(tree.directory, entrypoint)
             version_id = register_version(
                 self._api,
                 self._token,
                 payload,
                 timeout=self._register_timeout,
             )
-            self._versions.put(tree.sha, version_id)
+            self._versions.put(tree.sha, entrypoint, version_id)
             log.info(
-                "fabro: registered workflow version %s for %s@%s (%d file(s))",
+                "fabro: registered workflow version %s for %s@%s %s (%d file(s))",
                 version_id[:12],
                 self._workflows_repo,
                 tree.sha[:12],
+                workflow,
                 len(payload["files"]),
             )
             return version_id, tree.sha, False
@@ -722,13 +727,16 @@ class FabroClient:
         issue_number: int,
         coder_pool: str,
         environment_id: str,
+        workflow: str = "backlog",
     ) -> DispatchResult:
-        """Create and start one `backlog` run for one issue on one coder pool.
+        """Create and start one run of `workflow` for one issue on one coder pool.
 
         Raises `FabroError` before `run_id` exists (nothing was created), and
         `RunNotStarted` after it (a run is in `submitted` and needs cancelling).
         """
-        version_id, sha, reused = self.ensure_version()
+        if workflow not in ENTRYPOINTS:
+            raise ValueError(f"unknown workflow {workflow!r}")
+        version_id, sha, reused = self.ensure_version(workflow)
         intent = build_run_intent(
             workflow_version_id=version_id,
             repo=repo,
@@ -738,7 +746,10 @@ class FabroClient:
             branch=self._branch,
             # The graph version this run uses: the fabro-workflows commit the clone came
             # from (ADR 0020, #13). `GET /runs` does not carry it for scheduler runs.
-            labels={"workflow_sha": sha},
+            # `workflow` is the run's arm for the scorecard, the lease and the
+            # Retro (O21). It is a label because a run's labels are the only thing
+            # `run_history` can be told about a run after it is gone.
+            labels={"workflow_sha": sha, "workflow": workflow},
         )
         run_id = create_run(self._api, self._token, intent, timeout=self._call_timeout)
         try:
@@ -755,10 +766,11 @@ class FabroClient:
             ) from exc
 
         log.info(
-            "fabro: dispatched %s#%s -> run %s status=%s pool=%s env=%s version=%s sha=%s reused=%s",
+            "fabro: dispatched %s#%s -> run %s (%s) status=%s pool=%s env=%s version=%s sha=%s reused=%s",
             repo,
             issue_number,
             run_id,
+            workflow,
             status,
             coder_pool,
             environment_id,

@@ -54,9 +54,13 @@ log = logging.getLogger(__name__)
 WORKFLOWS_REPO = "andrewthetechie/fabro-workflows"
 WORKFLOWS_REF = "main"
 
-# The graph a `backlog` run runs. Relative to `.fabro/`, and the key it must
-# appear under in `files`.
+# The graph each workflow runs. Relative to `.fabro/`, and the key it must appear
+# under in `files`. A version is the whole `.fabro/` tree PLUS one entrypoint, so the
+# two workflows share every file and differ only in which graph is entered; that is
+# why the cache below is keyed by the pair and not by the commit.
 BACKLOG_ENTRYPOINT = "workflows/backlog/workflow.fabro"
+RALPH_ENTRYPOINT = "workflows/ralph/workflow.fabro"
+ENTRYPOINTS = {"backlog": BACKLOG_ENTRYPOINT, "ralph": RALPH_ENTRYPOINT}
 
 # The server's limits, from the `WorkflowVersion` schema: at most 512 files, 512
 # KiB per file, and 2 MiB of compact canonical JSON. Checked here rather than
@@ -217,12 +221,18 @@ def clone_fabro_tree(
 
 
 class VersionCache:
-    """`commit sha` → `workflow_version_id`.
+    """`(commit sha, entrypoint)` → `workflow_version_id`.
 
     Process-local and deliberately not persisted. Registration is content
     addressed and idempotent, so the only thing this buys is one POST per commit
     of `main` instead of one per dispatch; a restart that lost it would re-POST
     identical bytes and get the identical id back.
+
+    The key is the PAIR. One commit of `main` is two versions — `backlog`'s graph
+    and `ralph`'s — because the entrypoint is part of the version, not of the tree.
+    A cache keyed by the sha alone would hand a `ralph` dispatch `backlog`'s version
+    silently: the run would work the issue with the other workflow, and nothing in
+    the run would say so.
 
     No lock. Two dispatches racing on a cold cache both clone and both register,
     which is idempotent and harmless — unlike a lock held across a `git clone`,
@@ -230,13 +240,13 @@ class VersionCache:
     """
 
     def __init__(self) -> None:
-        self._by_sha: dict[str, str] = {}
+        self._by_key: dict[tuple[str, str], str] = {}
 
-    def get(self, sha: str) -> str | None:
-        return self._by_sha.get(sha)
+    def get(self, sha: str, entrypoint: str) -> str | None:
+        return self._by_key.get((sha, entrypoint))
 
-    def put(self, sha: str, version_id: str) -> None:
-        self._by_sha[sha] = version_id
+    def put(self, sha: str, entrypoint: str, version_id: str) -> None:
+        self._by_key[(sha, entrypoint)] = version_id
 
 
 def _relative_paths(root: Path) -> list[str]:
