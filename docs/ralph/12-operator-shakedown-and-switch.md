@@ -13,7 +13,9 @@ log on the Mac (dated section).
    fires it.
 4. **Deploy the scheduler** with `SCHEDULER_RALPH_SHARE=0` (`make deploy-scheduler`), and
    `make deploy-scripts` for `fabro-fire-ralph.sh`. Check `/` and `/history` show the
-   workflow column, every row `backlog`.
+   workflow column, every row `backlog`. Create no `ralph-<repo>` automation row: the
+   scheduler takes the environment from its own repository config, and `fabro-fire-ralph.sh`
+   falls back to the `backlog-<repo>` row, which names the same image.
 5. **Shakedown**, one manual run per repository, each on an issue the operator picked as
    ordinary (not `fast-path`, not architecture): `~/bin/fabro-fire-ralph.sh <owner/repo>
    <issue>`. For each run, check with `fabro events <run> -p`:
@@ -24,8 +26,10 @@ log on the Mac (dated section).
      fire a fifth run on an issue with a known gap);
    - the reviews run, the PR opens, `merge_gate` decides, and the run merges or reports;
    - `learn_post` comments on the repository's `ralph learnings` issue, or skips with a reason;
-   - the Iteration times against the 60m timeout, the `plan`, `standards`, `spec` and `refute`
-     times against theirs (re-time in a commit if any is wrong).
+   - the Iteration times against the 60m timeout, the `plan` (20m), `standards` (25m),
+     `spec` (15m) and `refute` (15m) times against theirs, and `pick` and `merge_prep` (5m
+     each, set by the build without a measurement); re-time in a commit if any is wrong;
+   - the Discord notices: one on `open_pr` and one on the merge-stage report.
    Shakedown runs are Manual fires, so they are outside `run_history` and the trial.
 6. **Switch.** Set `SCHEDULER_RALPH_SHARE=50` in the compose file, `make deploy-scheduler`.
    Record the switch time: the trial window starts there.

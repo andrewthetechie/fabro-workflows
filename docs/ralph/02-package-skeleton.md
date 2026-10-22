@@ -24,6 +24,11 @@ write a short comment above each fallback row saying why it differs from `backlo
 reviewers'). Run `ops/fabro-io-manifest.py generate` to write `FABRO_IO_MANIFEST` and
 `FABRO_AGENT_GUIDE`.
 
+> **As built (2026-10-22):** the generated `FABRO_IO_MANIFEST` block landed with task 08, not
+> here, so a hand-fired run of a checkout between tasks 02 and 08 could not have worked. C1's
+> hooks were not written by any task; they were added in the review after task 11, with R11 in
+> `ops/check-graph-invariants.py` to catch a package that declares the `io` server without them.
+
 ### `workflow.fabro`
 
 - Graph attributes and stylesheet from C1 and *The graph*. Write the comment block above the
