@@ -3146,7 +3146,8 @@ echo done"]
     // run or exits into this node, and `prep` deletes it, so the file is never stale here.
     //
     // `phase` is `pre` until `pr_handoff` writes `post`. `pre` -> `mark_stuck`: the issue
-    // gets `agent-stuck` and a comment, and no PR exists. `post` -> `mark_needs_human`, which
+    // gets `agent-stuck` and a comment, and no PR exists. That edge is the unconditional one,
+    // because fabro rejects a node whose every edge has a condition (R12). `post` -> `mark_needs_human`, which
     // needs BOTH reason files -- the blocked and needs-human renderers read different ones,
     // and a reason written to only one leaves the other holding a previous stage's text
     // (invariants-merge). R9 requires a sink into `mark_needs_human` to derive that reason
@@ -3322,7 +3323,7 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     resolve_merge_gate -> stop_reason
     return_to_triage -> learn_prep            [condition="outcome=succeeded"]
     return_to_triage -> mark_stuck
-    stop_reason -> mark_stuck                 [condition="context.stop_phase=pre"]
+    stop_reason -> mark_stuck
     stop_reason -> mark_needs_human           [condition="context.stop_phase=post"]
     close_noop -> learn_prep
     mark_stuck -> learn_prep

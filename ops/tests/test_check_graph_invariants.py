@@ -65,6 +65,21 @@ class Fixtures(unittest.TestCase):
             found = [(rule, node) for _, rule, node, _ in cgi.run(root)]
             self.assertEqual(found, [("R7", "report_blocked")], found)
 
+    def test_r12_needs_an_unconditional_edge_out_of_every_node_with_edges(self):
+        # fabro validate's all_conditional_edges: ralph's stop_reason had only conditional ones.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._ok_copy(tmp)
+            graph = root / ".fabro/workflows/ok/workflow.fabro"
+            graph.write_text(graph.read_text().replace(
+                "    start -> phase -> check -> exit",
+                "    start -> phase -> check\n    check -> exit [condition=\"outcome=succeeded\"]"))
+            found = [(rule, node) for _, rule, node, _ in cgi.run(root)]
+            self.assertEqual(found, [("R12", "check")], found)
+            graph.write_text(graph.read_text().replace(
+                '    check -> exit [condition="outcome=succeeded"]',
+                '    check -> exit [condition="outcome=succeeded"]\n    check -> exit'))
+            self.assertEqual(cgi.run(root), [])
+
     def test_r11_needs_the_io_hooks_when_the_io_server_is_declared(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._ok_copy(tmp)

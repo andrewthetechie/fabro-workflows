@@ -947,6 +947,7 @@ def test_ralph_deliver_and_merge_edges(ck, tmp_path):
     ck("merge edges: post-PR Iterations end at hygiene", "1", count("pick->hygiene context.loop=done && context.phase=post", redg, flags="xF"))
     ck("merge edges: post-PR exhaustion reports", "1", count("pick->report_blocked context.loop=exhausted && context.phase=post", redg, flags="xF"))
     ck("merge edges: post failures reach mark_needs_human", "1", count("stop_reason->mark_needs_human context.stop_phase=post", redg, flags="xF"))
+    ck("merge edges: every other stop reaches mark_stuck unconditionally", "1", count("stop_reason->mark_stuck ", redg, flags="xF"))
     ck("merge edges: final_check's pr routes split on phase", "2", count("^final_check->hygiene outcome=succeeded && context.final_route=pr && context.phase=", redg))
     ck("merge edges: every merge-stage node has one unconditional escape", "10",
        count("^(deliver|merge_gate|watch_checks|ci_task|merge|remerge_base|resolve_base|resolve_base_gate|report_merged|report_blocked)->[a-z_]+ $", redg, flags="E"))

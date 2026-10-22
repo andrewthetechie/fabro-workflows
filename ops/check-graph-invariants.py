@@ -6,8 +6,8 @@ Usage:
   check-graph-invariants.py --dump FILE.fabro   print the reader's statements in fabro parse's shape
   check-graph-invariants.py --normalize         normalize a `fabro parse` JSON read from stdin
 
-A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11; every
-`_shared/*/*.fabro` phase gets the file rules (the reader, R6 and R8). Each violation prints as
+A package is a directory with a workflow.toml. Every package's root graph gets R1-R9, R11 and R12;
+every `_shared/*/*.fabro` phase gets the file rules (the reader, R6, R8, R9 and R12). Each violation prints as
 `<package> <rule> <node or hook> <why>`, then `VIOLATIONS: N`. Exit status is min(N, 125).
 
 Standard library only (Python 3.11+, tomllib). It reads the graphs itself, so it runs offline
@@ -581,6 +581,19 @@ def r9_needs_human_reason(graph: Graph) -> list[tuple]:
     return out
 
 
+def r12_fallback_edge(graph: Graph) -> list[tuple]:
+    """R12: every node with an outgoing edge has at least one edge without a condition.
+    `fabro validate` rejects the graph otherwise (all_conditional_edges), and only
+    `make check-host` runs it; ralph's `stop_reason` reached `main` that way. A labelled edge
+    of a human gate has no condition, so it counts as the fallback.
+    """
+    conditional: dict[str, bool] = {}
+    for a, _, attrs in graph.edges:
+        conditional[a] = conditional.get(a, True) and bool(attrs.get("condition"))
+    return [("R12", nid, "every outgoing edge has a condition; add an unconditional fallback edge")
+            for nid, every in sorted(conditional.items()) if every]
+
+
 # --------------------------------------------------------------------------- #
 # R10: ralph's copies of backlog's entry nodes and the shared merge stage
 # --------------------------------------------------------------------------- #
@@ -792,6 +805,7 @@ def phase_violations(package: str, path: Path) -> list[tuple]:
     if graph:
         out += [(package, *v) for v in r8_routing(graph.nodes)]
         out += [(package, *v) for v in r9_needs_human_reason(graph)]
+        out += [(package, *v) for v in r12_fallback_edge(graph)]
     return out
 
 
@@ -844,6 +858,7 @@ def package_violations(pkg_dir: Path, workflows: Path) -> tuple[list[tuple], int
     out += [(package, *v) for v in r11_io_hooks(package, t, import_ids, manifest, hooks)]
     out += [(package, *v) for v in r8_routing(root.nodes)]
     out += [(package, *v) for v in r9_needs_human_reason(root)]
+    out += [(package, *v) for v in r12_fallback_edge(root)]
     return out, len(nodes)
 
 

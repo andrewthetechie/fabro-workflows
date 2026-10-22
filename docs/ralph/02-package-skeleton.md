@@ -28,6 +28,10 @@ reviewers'). Run `ops/fabro-io-manifest.py generate` to write `FABRO_IO_MANIFEST
 > here, so a hand-fired run of a checkout between tasks 02 and 08 could not have worked. C1's
 > hooks were not written by any task; they were added in the review after task 11, with R11 in
 > `ops/check-graph-invariants.py` to catch a package that declares the `io` server without them.
+> The build also dropped the unconditional `stop_reason -> mark_stuck` edge below and kept
+> only the `pre` one, which `fabro validate` rejects (`all_conditional_edges`); the first
+> `make check-host` found it, and R12 now checks it offline. The graph keeps the
+> unconditional edge only: `pre` is the default phase.
 
 ### `workflow.fabro`
 
