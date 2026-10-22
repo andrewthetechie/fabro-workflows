@@ -4,6 +4,8 @@
 
 Statuses below were moved verbatim from `AGENTS.md` on 2026-10-09; update a row when its series changes state.
 
+The series and ADRs written before 2026-10-22 name `ops/test-task-gates.sh` as the offline test for a node's shell, and tell a task to "add a section" to it. The gate tests in `ops/gate_tests/` (pytest, run by `ops/test-gates.sh`) replaced it on that date, and every section became a test of the same name; read such an instruction as "add a test there". The old suite is `git show d67f31c:ops/test-task-gates.sh`.
+
 | Path | What it is |
 |---|---|
 | `docs/merge-rate/` | The implementation plan for ADR 0011: stop per-stage checkpoint pushes, rerun flaky CI once, `ci_fix_t1` on `glm-5.3-flash`, CI parity in two target repos, an `autofix` stage, and an 8-task budget whose remainder the scheduler queues with a new `priority` label once the parent PR merges. `00-overview-and-contracts.md` first. Tasks 05–07 run in other repositories and task 11 needs the host. **Applied 2026-09-24** in this repository; the target-repository halves of tasks 05 and 06 are PRs there. The budget was then amended so that extra-review follow-ups are exempt (ADR 0011 D6 amendment). |

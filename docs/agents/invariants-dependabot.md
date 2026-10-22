@@ -2,7 +2,7 @@
 
 Read before changing `.fabro/workflows/dependabot/`, its prompt, or the `dependabot-<repo>` rows. The package is ADR 0022; its task series is `docs/dependabot/`. The graph, prompt and hooks must also satisfy `invariants-graph.md` and `invariants-merge.md`.
 
-Every rule here passes `fabro validate` and fails at runtime, usually silently. Most are checked offline by `ops/test-task-gates.sh` (the *dependabot* sections) or `ops/check-graph-invariants.py`.
+Every rule here passes `fabro validate` and fails at runtime, usually silently. Most are checked offline by the gate tests (`ops/gate_tests/test_dependabot.py`) or `ops/check-graph-invariants.py`.
 
 | Rule | What happens otherwise |
 |---|---|
@@ -22,7 +22,7 @@ Every rule here passes `fabro validate` and fails at runtime, usually silently. 
 | Dependabot PRs are merged by `gh pr merge --squash --delete-branch=false --match-head-commit`, and the head is re-read first | A PR that moved between the check and the merge is merged unvalidated. `--delete-branch=false` keeps the local run branch, as in the merge phase. |
 | `--admin` is used only when GitHub refuses a merge as "not up to date with the base branch", and only while the base tip equals `validated_base`, the commit `dep_validate` merged the PR into (D26) | Without it, a repository that requires up-to-date branches (jelly-swipe) merges one Dependabot PR per run. Without the tip check, `--admin` merges a combination nothing validated. |
 | `prep` records the run branch (`dep/run_branch`); `dep_next` writes it only as a fallback | A repository with no Dependabot PR never visits `dep_next`, and `sync_base` stops the run before the patch (lawncare-saas, 2026-10-10). |
-| Every inline script is POSIX `sh` as **dash** parses it (the profile images are Debian). `ops/test-task-gates.sh` runs every node under dash when dash is installed | macOS `sh` is bash and accepts `<<<`, which dash rejects at parse time: `pick_group` passed every offline check and would have failed every run. |
+| Every inline script is POSIX `sh` as **dash** parses it (the profile images are Debian). The gate tests run every node under dash when dash is installed | macOS `sh` is bash and accepts `<<<`, which dash rejects at parse time: `pick_group` passed every offline check and would have failed every run. |
 | `pick_group` skips, for the day, a group whose package a Dependabot PR merged in this run updated (`prs.json` `updates`), even when C3 matched none of its alerts | A PR whose title names one major's fix also moves another copy, and the patch agent spends a run finding nothing to do, then marks a fixed group `needs-human` (jelly-swipe #450/#451). |
 | `ops/fabro-automation-schedule.sh` and `ops/fabro-auto-merge-switch.sh` default to `DRY_RUN=1`; pass `DRY_RUN=0` to change a row, and read the row back | The command prints the PUT and changes nothing: on 2026-10-10 the first "off" left all four schedules enabled. |
 | The schedules are created enabled, and `ops/provision-server-state.sh` reports drift on the `auto_merge` token but never rewrites it | A switch flipped off during an incident is restored by a re-provision, which re-arms the merge path without anyone choosing it. |

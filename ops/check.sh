@@ -4,8 +4,8 @@
 # A push to `main` is live on the next automation fire (AGENTS.md, *Pushing to
 # `main` deploys*), so these run on every push: `make hooks` installs the pre-push
 # hook (ops/hooks/pre-push) that runs this. They need no host, no container and no
-# LAN — only jq, awk, git, python3.11 and (when the fabro-io tree changed) cargo —
-# so they are cheap enough to gate every push.
+# LAN — only jq, awk, git, python3.11, uv (for the gate tests' pytest) and (when the
+# fabro-io tree changed) cargo — so they are cheap enough to gate every push.
 #
 # The gates are the commands AGENTS.md *Validating* used to list by hand. Each one
 # is echoed as it starts; with `set -e` the script stops at the first failure, so
@@ -14,10 +14,11 @@
 # Environment:
 #   CHECK_CARGO=always|auto|never   when to run `cargo test` in ops/fabro-io/
 #                                    (default auto: only when that tree changed)
-#   CHECK_SHELL=always|never        whether to run ops/test-task-gates.sh (default
-#                                    always). It is ~820 checks, ~90s serial: too slow
-#                                    for the pre-push hook, which sets never via
-#                                    `make check-fast`. Run `make check` for the lot.
+#   CHECK_SHELL=always|never        whether to run ops/test-gates.sh, the gate tests in
+#                                    ops/gate_tests/ (default always). ~2,400 checks,
+#                                    ~35s in parallel: kept out of the pre-push hook,
+#                                    which sets never via `make check-fast`. Run
+#                                    `make check` for the lot.
 #
 # Exit 0 = every gate passed. Exit 1 = the first gate that failed.
 
@@ -27,12 +28,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # When git runs a hook it exports GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and more,
-# pointing at this repository. test-task-gates.sh builds real scratch repositories;
+# pointing at this repository. The gate tests build real scratch repositories;
 # with those variables inherited, its nested `git init`/`commit`/`push` act on THIS
 # repository and its GitHub remote instead (2026-10-10: main rewritten locally and on
 # origin). Clear every repository-local variable git lists, whether we are entered by
-# a hook or by hand. test-task-gates.sh clears them too and refuses to run if a scratch
-# repository still resolves elsewhere.
+# a hook or by hand. ops/test-gates.sh and its harness clear them too, and the harness
+# refuses to run if a scratch repository still resolves elsewhere.
 # shellcheck disable=SC2046  # one word per variable name, by design
 unset $(git rev-parse --local-env-vars)
 
@@ -44,11 +45,11 @@ say() { builtin printf '\n== %s ==\n' "$*"; }
 #    embedded `jq`/`awk` scripts; their bugs pass validation and fail at runtime.
 case "${CHECK_SHELL:-always}" in
     always)
-        say "ops/test-task-gates.sh"
-        ops/test-task-gates.sh
+        say "ops/test-gates.sh"
+        ops/test-gates.sh
         ;;
     never)
-        say "ops/test-task-gates.sh"
+        say "ops/test-gates.sh"
         echo "  skipped: CHECK_SHELL=never (make check-fast); run make check for the full suite"
         ;;
     *)

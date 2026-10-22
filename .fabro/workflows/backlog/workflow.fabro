@@ -211,7 +211,7 @@ digraph Backlog {
     // 10 deleted `acquire`, and `acquire` was the only node that created that directory.
     // Without it every redirect below fails with `/tmp/fabro/issue.json: No such file or
     // directory` and the run parks on human_rescue for 4h holding its coder lease.
-    // `ops/test-task-gates.sh` stages this node against a path that does not exist, which
+    // `ops/gate_tests/` stages this node against a path that does not exist, which
     // is the only way a test can catch it -- neither `fabro validate` nor
     // ops/check-graph-invariants.py runs a node's shell.
     //
@@ -2025,7 +2025,7 @@ echo 'remainder filed as #'$M"]
     // run without `remainder_kind` (the [P] Accept partial path) whose diff against the
     // base is at most 200 changed lines in at most 10 files, counting neither the paths
     // the hygiene counters exclude (XP below is a copy of `exclude_paths` in the
-    // review-merge `hygiene` node's default.json, kept equal by ops/test-task-gates.sh) nor
+    // review-merge `hygiene` node's default.json, kept equal by ops/gate_tests/) nor
     // a binary file's lines. Anything else, and any failure to compute the diff, writes
     // `watch`, the mode that waits for CI. Over the ceiling it posts one PR comment.
     pr_handoff [label="Hand off to review and merge", shape=parallelogram,

@@ -45,7 +45,7 @@ both-boxes `coders` group was retired with the LiteLLM provider, task 04). The g
 as a fallback for what the scheduler does at dispatch, so a manual run needs no lease.
 It was broken for nine hours on 2026-09-19 — `claim` wrote into `/tmp/fabro` and nothing
 created the directory after `acquire` was deleted — and `5fa974d` fixed it; the same class
-of regression is now caught offline by `ops/test-task-gates.sh`.
+of regression is now caught offline by the gate tests (`ops/gate_tests/`).
 _Avoid_: manually, by hand (the adverb, not the noun)
 
 **Automation**:

@@ -65,20 +65,20 @@ writes it, is the most common way to break one of these.
 ## Validating
 
 `make check` runs every offline gate that must pass before a push to `main`. The
-pre-push hook runs `make check-fast` — the same minus `ops/test-task-gates.sh`, which
-takes ~90s — so a push that fails a fast gate is aborted instead of remembered-to-check.
+pre-push hook runs `make check-fast` — the same minus the gate tests (`ops/test-gates.sh`,
+pytest in `ops/gate_tests/`), which take ~35s — so a push that fails a fast gate is aborted instead of remembered-to-check.
 Run `make check` yourself before a push that changes a command node's shell. `make check-host` runs the gates that need the fabro container over
 the LAN and is opt-in. Install the hook once per checkout, then just push:
 
 ```sh
 make hooks            # git config core.hooksPath ops/hooks; git push now runs make check-fast
-make check            # every offline gate (ops/check.sh), ~90s
-make check-fast       # all but test-task-gates.sh (CHECK_SHELL=never), ~3s
+make check            # every offline gate (ops/check.sh), ~50s (+~25s when cargo runs)
+make check-fast       # all but the gate tests (CHECK_SHELL=never), ~10s
 make check-host       # opt-in: needs ssh to andrew@10.10.0.32 (ops/check-host.sh)
 ```
 
-The offline gates need only jq, awk, git, python3.11 and, when `ops/fabro-io/` or
-`_io/schemas/` changed, cargo. `git push --no-verify` skips the hook. There is no `fabro`
+The offline gates need only jq, awk, git, python3.11, uv (the gate tests' pytest) and,
+when `ops/fabro-io/` or `_io/schemas/` changed, cargo. `git push --no-verify` skips the hook. There is no `fabro`
 binary on this Mac, so graph validation happens in the container via `make check-host`.
 
 Baselines (fabro 0.362.0-nightly.0, last verified by `make check-host` on 2026-10-13):

@@ -441,7 +441,7 @@ fi"]
     // D14), so no agent PR can loosen the rules it declares or the commands it runs. The
     // patterns are written with bracket expressions ([.], [(], [[]) because the
     // escaped quote is the only backslash a .fabro file may hold. The fixtures in
-    // ops/test-task-gates.sh are the contract for what each counter matches
+    // ops/gate_tests/ are the contract for what each counter matches
     // (docs/merge-gate/00-overview-and-contracts.md, C5). The sandbox awk is mawk.
     //
     // #38: a removed assertion is also excused when its own hunk adds an equality

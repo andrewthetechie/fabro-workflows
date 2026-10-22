@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # test-gates.sh — the offline tests for the shell in the graphs' command nodes.
 #
-# The pytest port of ops/test-task-gates.sh (ops/gate_tests/). Each section of named checks is
-# one test, and pytest-xdist runs them in parallel: ~35s on the Mac, against ~3 minutes for
-# the serial shell suite. It needs uv (which provides pytest from ops/gate_tests/uv.lock), jq,
+# The gate tests in ops/gate_tests/, which replaced the serial ops/test-task-gates.sh on
+# 2026-10-22. Each section of named checks is one test, and pytest-xdist runs them in
+# parallel: ~35s on the Mac, against ~3 minutes for the old shell suite. `make check` runs
+# this. It needs uv (which provides pytest from ops/gate_tests/uv.lock), jq,
 # git, awk, sed, grep and python3.11; when dash is installed every `sh` a test runs is dash.
 #
 # Usage:

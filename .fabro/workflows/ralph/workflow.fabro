@@ -114,7 +114,7 @@ digraph Ralph {
     // 10 deleted `acquire`, and `acquire` was the only node that created that directory.
     // Without it every redirect below fails with `/tmp/fabro/issue.json: No such file or
     // directory` and the run parks on human_rescue for 4h holding its coder lease.
-    // `ops/test-task-gates.sh` stages this node against a path that does not exist, which
+    // `ops/gate_tests/` stages this node against a path that does not exist, which
     // is the only way a test can catch it -- neither `fabro validate` nor
     // ops/check-graph-invariants.py runs a node's shell.
     //
@@ -1410,7 +1410,7 @@ jq -nc --arg p \"$PH\" '{context_updates:{final_ok:false,final_route:\"needs_hum
     // D14), so no agent PR can loosen the rules it declares or the commands it runs. The
     // patterns are written with bracket expressions ([.], [(], [[]) because the
     // escaped quote is the only backslash a .fabro file may hold. The fixtures in
-    // ops/test-task-gates.sh are the contract for what each counter matches
+    // ops/gate_tests/ are the contract for what each counter matches
     // (docs/merge-gate/00-overview-and-contracts.md, C5). The sandbox awk is mawk.
     //
     // #38: a removed assertion is also excused when its own hunk adds an equality
@@ -1830,7 +1830,7 @@ echo 'remainder filed as #'$M"]
     // run without `remainder_kind` (the [P] Accept partial path) whose diff against the
     // base is at most 200 changed lines in at most 10 files, counting neither the paths
     // the hygiene counters exclude (XP below is a copy of `exclude_paths` in the
-    // review-merge `hygiene` node's default.json, kept equal by ops/test-task-gates.sh) nor
+    // review-merge `hygiene` node's default.json, kept equal by ops/gate_tests/) nor
     // a binary file's lines. Anything else, and any failure to compute the diff, writes
     // `watch`, the mode that waits for CI. Over the ceiling it posts one PR comment.
     pr_handoff [label="Hand off to review and merge", shape=parallelogram,
@@ -1877,7 +1877,7 @@ echo handoff ready"]
     // nothing wrote them. This node is `review_merge.rm_setup` itself, with no script
     // replacement: its entry contract, its auto-merge switch resolution, its
     // `merge-on-green` removal, its `review_entry_tree` and the two heredocs are all
-    // wanted here. `ops/test-task-gates.sh` fails if the heredocs drift from the
+    // wanted here. `ops/gate_tests/` fail if the heredocs drift from the
     // shared node's.
     merge_prep [label="Prepare the merge stage", shape=parallelogram, timeout="5m",
         output_schema="routing",

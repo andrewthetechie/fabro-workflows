@@ -200,7 +200,7 @@ mv $MQ/prs.new $MQ/prs.json
 echo \"inventory: $(jq length $MQ/prs.json) merge-on-green PRs\""]
 
     // Pure jq over prs.json and env.json: no network call, so the whole rule table of C8 is tested
-    // with fixtures (ops/test-task-gates.sh). The first matching row wins; the merge cap and the
+    // with fixtures (ops/gate_tests/). The first matching row wins; the merge cap and the
     // single queue rebase (P6) are applied after the rows.
     decide [label="Decide each PR's action", shape=parallelogram, output_schema="routing", timeout="1m",
         script="set -e

@@ -5,7 +5,8 @@ carries on, as the shell suite did, so one report lists every failure in the sec
 the test fails at teardown if any check did.
 
 GATE_TESTS_CHECK_LOG=<file> appends one JSON line per check (section, name, expected,
-actual, ok): the record the port from ops/test-task-gates.sh was verified against.
+actual, ok): the record the port from ops/test-task-gates.sh (deleted 2026-10-22) was
+verified against.
 """
 
 from __future__ import annotations

@@ -47,30 +47,38 @@ contains `'''`.
 Neither gate runs the command nodes' shell. `backlog`'s task queue is several hundred
 bytes of `jq` spread across `decompose_gate`, `improve_gate` and `next_task`, and a
 cursor off-by-one there silently skips a task rather than failing — the same class of
-bug, one layer down. `ops/test-task-gates.sh` extracts those `script` attributes from
-the graph verbatim, rebases `/tmp/fabro` onto a scratch directory and runs them against
-fixtures (821 checks on the Mac, 909 in a profile image; offline).
+bug, one layer down. `ops/test-gates.sh` runs the gate tests in `ops/gate_tests/`
+(pytest, in parallel under pytest-xdist): they extract those `script` attributes from the
+graph verbatim, rebase `/tmp/fabro` onto a scratch directory and run them under dash
+against fixtures (about 2,400 checks, ~35s on the Mac; offline). `ops/gate_tests/README.md`
+has the layout and the rules for writing one; the most important is to call the real `jq`
+and `grep` with the filter you would write in shell, because a translated pattern that
+matches nothing makes every check expecting `"0"` pass.
 
-It needs only `jq`, `awk` and `git` — no `python3`, which `fabro-ts` and `fabro-python-node` do not ship — so it belongs in the same pre-push hook and also runs inside every profile image, the one way to test the counters against the sandbox's own mawk and jq (`jq 1.6` in `fabro-python-node`). It covers
-the task-queue gates, `open_pr`, and — since 2026-09-19 — `claim`, `mark_stuck` and the
-shared review-merge graph's `merge`. Since 2026-09-21 it also covers `open_pr_prep`'s
-empty-diff floor, and that section is the one place here that uses the REAL `git`: it
-builds an actual repo and clones it over `file://`, because what is under test is whether
-`git diff --quiet origin/main HEAD` tells the truth about a branch carrying nothing but
-checkpoint commits. A stub would only test the stub. It restores `$ORIG_PATH` first —
-`next_task` prepends an `exit 0` `git` and never takes it off, so every later
-`SAVED_PATH="$PATH"` captures that stub too. Since 2026-09-26 it also covers the merge phase's diff-hygiene
-counters, each with a real-git fixture, and `refute_prep`, `refute_gate`, `merge_gate`
-checks 13, 13b and 14, and the review comment's Refuter and hygiene sections (ADR 0013). It also runs
-the code-index lines of every workflow's entry node (`backlog` `prep`, `pr-review` `claim`,
-`arch-review` `prep`, `issue-triage` `acquire`), each with and without `fabro-code` on
-`PATH`. Since 2026-10-01 it also covers `excerpts`, which copies the code the task dossier
-cites into `task-code.md` for the coder: ranges, merging, the byte cap, and single lines
-with and without `fabro-code`. Since 2026-10-02 it also covers `rework_router`'s
-exemption lookup, `drop_followup` (real git), and the `needs_human_review` route from
-`decompose_gate` to `mark_stuck` with the decomposer's reason, and the rescue gate's
-`rescue_brief` summary and `partial_remainder`'s move of the unfinished tasks. Inside a profile image, where `codegraph` exists, it also runs the `fabro-code`
-wrapper against a real-git fixture; on the Mac that section prints `SKIP`.
+They replaced `ops/test-task-gates.sh`, a serial bash suite that had grown to 3-5 minutes,
+on 2026-10-22. Every check kept its name, and the port was verified against that suite's
+own record of all 2,420 checks and against a mutated copy of the graphs. One thing was
+lost: the bash suite needed only `jq`, `awk` and `git`, so it could also run inside a
+profile image, against the sandbox's own mawk and jq (`jq 1.6` in `fabro-python-node`).
+The gate tests need python3.11 and uv, and run on the Mac only, against its jq and awk.
+
+They cover the task-queue gates, `open_pr`, `claim`, `mark_stuck` and the shared
+review-merge graph's `merge`; `open_pr_prep`'s empty-diff floor, which uses the REAL
+`git`: it builds an actual repo and clones it over `file://`, because what is under test
+is whether `git diff --quiet origin/main HEAD` tells the truth about a branch carrying
+nothing but checkpoint commits. A stub would only test the stub. They also cover the
+merge phase's diff-hygiene counters, each with a real-git fixture, and `refute_prep`,
+`refute_gate`, `merge_gate` checks 13, 13b and 14, and the review comment's Refuter and
+hygiene sections (ADR 0013); the code-index lines of every workflow's entry node
+(`backlog` `prep`, `pr-review` `claim`, `arch-review` `prep`, `issue-triage` `acquire`),
+each with and without `fabro-code` on `PATH`; `excerpts` (ranges, merging, the byte cap,
+and single lines with and without `fabro-code`); `rework_router`'s exemption lookup,
+`drop_followup` (real git), the `needs_human_review` route from `decompose_gate` to
+`mark_stuck`, the rescue gate's `rescue_brief` summary and `partial_remainder`'s move of
+the unfinished tasks; and the `triage`, `arch-review`, `dependabot`, `merge-queue`,
+`scout` and `ralph` packages. `test_fabro_code` runs the `fabro-code` wrapper against a
+real-git fixture only where `codegraph` exists, so on the Mac it is skipped, and the
+`fabro-io` tests are skipped unless `fabro-io` is on `PATH`.
 It says nothing about whether an agent fills a contract correctly.
 
 **`claim` is in there because leaving it out cost the cutover.** Draft 10 deleted

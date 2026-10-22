@@ -16,8 +16,8 @@ CHECK_HOST := ./ops/check-host.sh
 	deploy-compose deploy-scheduler deploy-images provision verify-host compose-up
 
 help:
-	@echo "make check            offline gates that must pass before any push (test-task-gates, manifest, profiles, unittest, toml, graph invariants, cargo)"
-	@echo "make check-fast       make check without test-task-gates.sh (~3s; what the pre-push hook runs)"
+	@echo "make check            offline gates that must pass before any push (gate tests, manifest, profiles, unittest, toml, graph invariants, cargo)"
+	@echo "make check-fast       make check without the gate tests, ops/test-gates.sh (~10s; what the pre-push hook runs)"
 	@echo "make check-host       host gates that need the LAN + container: routing schemas, fabro validate x4 vs baselines (opt-in)"
 	@echo "make hooks            install the pre-push hook (git config core.hooksPath ops/hooks)"
 	@echo "make deploy            every step below except compose-up, then verify-host"

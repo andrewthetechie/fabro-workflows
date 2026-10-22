@@ -6,8 +6,9 @@ node's `script`. These tests do: each node's script is extracted from its graph 
 `/tmp/fabro` is rebased onto a scratch directory, and the script runs under `sh` (dash, when it
 is installed, because the profile images are Debian) against fixtures and stubbed tools.
 
-This is the pytest port of `ops/test-task-gates.sh`. Every check kept its name, expected value
-and observed value: the port was verified against the shell suite's own record of all 2,420
+This is the pytest port of `ops/test-task-gates.sh`, which it replaced on 2026-10-22 (read the
+old suite with `git show d67f31c:ops/test-task-gates.sh`). Every check kept its name, expected
+value and observed value: the port was verified against the shell suite's own record of all 2,420
 checks, and against a mutated copy of the graphs, where both suites failed the same 17 checks.
 
 ## Running
