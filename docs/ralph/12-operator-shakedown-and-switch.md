@@ -36,11 +36,13 @@ log on the Mac (dated section).
 7. **First day.** Read `./ops/fabro-scorecard.sh --by-workflow --from <switch>`: both arms
    have runs; `ralph` runs end the way the shakedown did. The kill switch is
    `SCHEDULER_RALPH_SHARE=0` and a scheduler deploy: in-flight `ralph` runs finish.
-8. **Weekly**, until ≥ 50 runs per arm: the by-workflow scorecard; OpenAI and OpenRouter
-   spend from their dashboards against the $100 total (the scorecard does not price them);
-   Kimi failovers per workflow (00, *Risks*); the `ralph learnings` issues.
-9. **Result.** Write `result-<date>.txt` here: both arms' cards, the strata, the primary
-   metric and both guardrails, per O3. Choose O24's outcome and record it in ADR 0029 (status
+8. **Weekly**, until ≥ 50 runs per arm: a review by `13-reviewing-the-arms.md`
+   (`./ops/fabro-trial-review.sh --traces`), written to `review-<date>.md`. It covers the
+   by-workflow scorecard, a per-run read of every `ralph` run, Kimi failovers per workflow
+   (00, *Risks*), hosted spend estimated from tokens, and the `ralph learnings` issues.
+9. **Result.** A last review by task 13, then `result-<date>.txt` here: both arms' cards, the
+   strata, the primary metric and both guardrails, per O3, with OpenAI and OpenRouter spend
+   read from their dashboards against the $100 total (the scorecard does not price them). Choose O24's outcome and record it in ADR 0029 (status
    accepted or rejected, with the date and the numbers), then plan the follow-up series.
 
 ## Log
@@ -86,3 +88,8 @@ a scout flaky-test issue; succeeded in 57.7m, PR #2982, ending `report_blocked`)
   `merge_prep` 2s/5m. No re-timing needed yet.
 - Discord: the `open_pr` and `report_blocked` hooks ran (00:20:38Z, 00:20:49Z).
 - Kimi's weekly quota failed `plan`, `standards` and `spec` over to glm-5.3, as expected.
+
+**2026-10-23, first review** (`review-2026-10-23.md`, the first by task 13): 5 `ralph` runs and
+26 `backlog` runs. 3 `ralph` runs went to `report_queued` before CI ran, because R10's
+`watch_checks` replacement had dropped the deadline `if`s. That is fixed in 8e524e9, which has a
+gate test. O3 is too early to read and is shown with and without those runs.
