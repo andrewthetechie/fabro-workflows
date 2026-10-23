@@ -1,7 +1,8 @@
 # Ralph: overview and canonical contracts
 
-**Status:** designed 2026-10-21 (grilling session of that date, ADR 0029 proposed). Not
-built. The trial cannot start until the preconditions below hold.
+**Status:** designed 2026-10-21 (grilling session of that date, ADR 0029 proposed). Built
+and pushed 2026-10-22. **Trial live since 2026-10-22T21:28:06Z** (task 12's *Log*). It is
+reviewed by task 13, and the first review is `review-2026-10-23.md`.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and
 contracts below. If a task and this file disagree, this file is correct: stop and report
@@ -593,6 +594,7 @@ fails a sealed stage that no `fabro-io guard` hook matches.
 | 10 | Scorecard, Retro and summary | `ops/scheduler/`, `ops/fabro-scorecard.sh` |
 | 11 | Docs | `AGENTS.md`, `docs/README.md`, `docs/agents/invariants-ralph.md`, `ops/README.md`, `docs/USER-GUIDE.md` |
 | 12 | Operator: push, shakedown, switch, measure, end | the host |
+| 13 | Operator, repeated: reviewing the arms (weekly, and for the result) | `ops/fabro-trial-review.{sh,py}`, `review-<date>.md` |
 
 Every task that changes a `.fabro` file adds its gate fixtures to `ops/test-task-gates.sh`
 under a `ralph — <node>` heading, and its edge-exclusivity checks in the style of the fast
