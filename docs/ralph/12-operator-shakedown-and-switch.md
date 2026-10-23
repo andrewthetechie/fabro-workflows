@@ -63,3 +63,26 @@ log on the Mac (dated section).
   notices) apply to them. They count in `run_history`, unlike manual fires, so read the
   first `ralph` runs before trusting the arm's numbers. The first queued candidate was
   lawncare-saas#2970.
+
+**2026-10-23, first trial run** (step 5's checklist on run `01M5JZ085993`, lawncare-saas#2970,
+a scout flaky-test issue; succeeded in 57.7m, PR #2982, ending `report_blocked`).
+
+- Receipts: every gate accepted its agent's output; `io-stage` and `git-guard` ran.
+- Loop: `pick` → `excerpts` → `iterate_t1` → `task_block_gate` → `autofix` → `check` →
+  `record` → `pick` routed as designed. One Task, green on rung 1, so a red `check` (a miss and
+  `## Last attempt`) was not exercised.
+- Refute: verdict `fail` on one `unverifiable` criterion, routed `hold` (not exhausted) to the
+  reviews. No finding became a Task, so that is still unexercised. The criterion is scout's
+  "The PR description names the cause … and cites the failures above": both arms build the PR
+  body from the issue's first paragraph, so no run can meet it, and the Refuter was right that
+  it was not met. Not #52's class (that is process criteria). The text comes from
+  `ops/fabro-io/src/scout/text.rs`.
+- Reviews: `standards` one `info` finding, `spec` approve; `review_gate` passed, `open_pr`
+  opened #2982, `merge_gate` blocked it on diff hygiene (`skips_added=1`): the plan's own
+  acceptance asked for a Docker-gated `skipif` test, which hygiene blocks in either arm.
+- `learn_post`: skipped with a reason; `learn` proposed no Learning (`learnings: []`).
+- Times against timeouts: `plan` 11.2m/20m, `iterate_t1` 22.6m/60m, `final_check` 8.3m/20m,
+  `refute` 1.6m/15m, `standards` 5.8m/25m, `spec` 3.7m/15m, `learn` 3.5m/10m, `pick` <1s/5m,
+  `merge_prep` 2s/5m. No re-timing needed yet.
+- Discord: the `open_pr` and `report_blocked` hooks ran (00:20:38Z, 00:20:49Z).
+- Kimi's weekly quota failed `plan`, `standards` and `spec` over to glm-5.3, as expected.
