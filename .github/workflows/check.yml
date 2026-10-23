@@ -27,6 +27,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      # ops/test-gates.sh runs the pytest suite through `uv run` (ops/gate_tests),
+      # so the gate backstop needs uv on the runner too.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
