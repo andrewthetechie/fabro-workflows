@@ -1,0 +1,715 @@
+# ops/fabro-change-compare.py, run 2026-10-23 ~20:00Z against the live scheduler DB
+# ssh andrew@10.10.0.32 'docker exec -i fabro-scheduler python - --since 2026-10-15 --change prompts=2026-10-18T06:59:40Z --change coders-a=2026-10-18T04:53:23Z@coders-a --change refuter-d1fd673=2026-10-16T04:44:01Z --change flakeradar=2026-10-17T04:25:19Z --change orfallback=2026-10-17T15:36:14Z --change plan=2026-10-21T18:00:00Z --exclude 01M5710QTY --exclude 01M5AQF992 --exclude 01M5AQZZVN --runs' < ops/fabro-change-compare.py
+#
+# NEW this run: the plan change (ADR 0030, ff3f2af, plan replaces improve) went live
+# from the first backlog fire after the 2026-10-21 ~18:00Z push. Workspace 10-21: #2179
+# (16:10) ran 82550fc (pre-plan); #2183 (18:59) ran 1cda40b (post-plan) -- so the plan
+# boundary is correctly placed. Nominal moment 2026-10-21T18:00:00Z.
+# No new overlay edit (settings.toml mtime still 2026-10-18 04:53:23Z) and no backlog/_shared
+# commit after 9b2b7cb except the plan series. Excludes carried forward: 01M5710QTY,
+# 01M5AQF992, 01M5AQZZVN (three disk-fill deaths). No new infra death needs an exclude:
+# the latest infra=1 run is 2026-10-20T14:56.
+# coders-a (all repos) tps prints n/a (over 300,000 arrangements). 20 of 21 already above
+# the old max at the last checkpoint; this run adds more, median 32.7 tok/s vs 9.1.
+# NEW CONFOUND — the ralph trial (SCHEDULER_RALPH_SHARE=50, 2026-10-22T21:28Z) changed the
+# queue mix reaching backlog. It does not change backlog's graph, so it is not a --change
+# line, but the reduced backlog volume narrows every "after" cell after 10-22.
+#
+# The ad hoc lane split, the GitHub PR join, and the hand-read give-ups are appended after
+# the tool output.
+
+
+
+== prompts: split at 2026-10-18T06:59:40+00:00, per repo x pool
+
+  jelly-swipe / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after             1             1             0             1             0           1/1           0/1             2            66            12          14.1          14.1
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+
+  lawncare-saas / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             1             1             0             1             0           1/1           0/1             1           363           314          10.1          10.1
+            after             7             7             3             6             0           2/6           7/7             0            98          51.5          34.7          37.6
+    rank-test p (after better by luck): tps 0.1429, rework 0.1250, minutes 0.1250
+    CONFOUNDED with coders-a, refuter-d1fd673, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  lawncare-saas / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             7             7             2             5             1           2/5           5/7             0           147         220.0          10.4          11.6
+            after            14            14             5            10             1          5/12         13/14           0.0         117.0           213          10.0          10.8
+    rank-test p (after better by luck): tps 0.8769, rework 0.2474, minutes 0.1657
+    CONFOUNDED with refuter-d1fd673, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  lawncare-saas / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            45            45            14            45             0         35/44         39/45             0            47         105.5          43.4          62.6
+            after             2             1             1             1             0           1/1           1/1             0            53            11           3.2           3.2
+    rank-test p (after better by luck): tps 1.0000, rework 0.8696, minutes 0.6522
+    CONFOUNDED with refuter-d1fd673, flakeradar, orfallback: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            23            23             4            21             1         11/21         20/23             0           138         172.5           8.9          12.1
+            after            18            17             3            12             4          8/13         14/17             0           169            43          31.1          48.3
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with coders-a, refuter-d1fd673, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             0             4             0           1/4           4/4           0.0          59.0         115.0           6.0           9.7
+            after             9             8             0             4             0           3/6           7/8           0.0         152.5           204           9.3           9.4
+    rank-test p (after better by luck): tps 0.2540, rework 1.0000, minutes 0.8586
+    CONFOUNDED with refuter-d1fd673, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-c
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             1             4             0           1/4           1/4           1.5         124.5          41.0          25.1          28.6
+            after             1             1             1             1             0           1/1           1/1             0            55            20          12.9          12.9
+    rank-test p (after better by luck): tps 1.0000, rework 0.4000, minutes 0.4000
+    CONFOUNDED with refuter-d1fd673, flakeradar, orfallback: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             3             3             1           3/3           3/4           0.0         162.5          31.5          22.8          42.2
+            after             5             5             3             3             2           3/3           5/5             0           113          16.5          25.8          35.0
+    rank-test p (after better by luck): tps 0.4429, rework 0.4444, minutes 0.5476
+    CONFOUNDED with refuter-d1fd673, flakeradar, orfallback: this stratum cannot separate them
+
+  writers-app / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             2             2             0             1             1           0/1           0/2           3.0          88.5           494          33.1          34.9
+            after            16            15             3            13             1          6/13         14/15             0            87         111.0          33.5          39.7
+    rank-test p (after better by luck): tps 0.4118, rework 0.0147, minutes 0.5294
+    CONFOUNDED with plan: this stratum cannot separate them
+
+  writers-app / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            17            16             0             6            10           1/6          4/16           5.0         180.0         574.0          20.9          27.6
+            after            27            26             5            24             1          5/24         23/26           0.0          97.0         240.0           9.3          12.2
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with refuter-d1fd673, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  writers-app / coders-c
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             2             2             1             2             0           1/2           2/2           0.0          89.5         220.0          30.5          32.8
+            after             1             1             0             1             0           0/1           0/1             2            92           152          28.4          28.4
+    rank-test p (after better by luck): tps 0.6667, rework 1.0000, minutes 0.6667
+
+  writers-app / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after            10             9             0             7             1           1/7           6/9             0            63            24          33.7          40.2
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+
+== coders-a: split at 2026-10-18T04:53:23+00:00 on coders-a
+
+  coders-a (all repos)
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            24            24             4            22             1         12/22         20/24           0.0         142.0           184           9.1          12.1
+            after            43            41             9            32             6         16/33         35/41             0           121          71.5          32.7          48.3
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  coders-a / lawncare-saas
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             1             1             0             1             0           1/1           0/1             1           363           314          10.1          10.1
+            after             7             7             3             6             0           2/6           7/7             0            98          51.5          34.7          37.6
+    rank-test p (after better by luck): tps 0.1429, rework 0.1250, minutes 0.1250
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  coders-a / womens-fantasy-sports
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            23            23             4            21             1         11/21         20/23             0           138         172.5           8.9          12.1
+            after            18            17             3            12             4          8/13         14/17             0           169            43          31.1          48.3
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  coders-a / writers-app
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after            18            17             3            14             2          6/14         14/17             0            87           130          33.5          39.7
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, plan: this stratum cannot separate them
+
+== refuter-d1fd673: split at 2026-10-16T04:44:01+00:00, per repo x pool
+
+  jelly-swipe / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after             1             1             0             1             0           1/1           0/1             2            66            12          14.1          14.1
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+
+  lawncare-saas / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             1             1             0             1             0           1/1           0/1             1           363           314          10.1          10.1
+            after             7             7             3             6             0           2/6           7/7             0            98          51.5          34.7          37.6
+    rank-test p (after better by luck): tps 0.1429, rework 0.1250, minutes 0.1250
+    CONFOUNDED with prompts, coders-a, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  lawncare-saas / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             1             3             0           1/3           4/4           0.0         202.0           266          11.4          11.6
+            after            17            17             6            12             2          6/14         14/17             0           121         212.5          10.2          10.8
+    rank-test p (after better by luck): tps 0.9250, rework 1.0000, minutes 0.3893
+    CONFOUNDED with prompts, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  lawncare-saas / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             1             1             0             1             0           0/1           0/1             3            92            15          41.3          41.3
+            after            46            45            15            45             0         36/44         40/45             0            47         105.5          43.4          62.6
+    rank-test p (after better by luck): tps 0.4783, rework 0.0435, minutes 0.0435
+    CONFOUNDED with prompts, flakeradar, orfallback: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             9             9             3             7             1           1/7           8/9             0            57         175.5           8.1          11.4
+            after            32            31             4            26             4         18/27         26/31             0           167           127          15.4          48.3
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, coders-a, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             0             4             0           1/4           4/4           0.0          59.0         115.0           6.0           9.7
+            after             9             8             0             4             0           3/6           7/8           0.0         152.5           204           9.3           9.4
+    rank-test p (after better by luck): tps 0.2540, rework 1.0000, minutes 0.8586
+    CONFOUNDED with prompts, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-c
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             1             4             0           1/4           1/4           1.5         124.5          41.0          25.1          28.6
+            after             1             1             1             1             0           1/1           1/1             0            55            20          12.9          12.9
+    rank-test p (after better by luck): tps 1.0000, rework 0.4000, minutes 0.4000
+    CONFOUNDED with prompts, flakeradar, orfallback: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             3             3             1           3/3           3/4           0.0         162.5          31.5          22.8          42.2
+            after             5             5             3             3             2           3/3           5/5             0           113          16.5          25.8          35.0
+    rank-test p (after better by luck): tps 0.4429, rework 0.4444, minutes 0.5476
+    CONFOUNDED with prompts, flakeradar, orfallback: this stratum cannot separate them
+
+  writers-app / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after            18            17             3            14             2          6/14         14/17             0            87           130          33.5          39.7
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, plan: this stratum cannot separate them
+
+  writers-app / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             2             2             0             1             1           1/1           2/2           0.0          84.0         361.0           8.9           9.8
+            after            42            40             5            29            10          5/29         25/40           0.0         142.5         393.0          10.7          27.6
+    rank-test p (after better by luck): tps 0.1719, rework 1.0000, minutes 0.8699
+    CONFOUNDED with prompts, flakeradar, orfallback, plan: this stratum cannot separate them
+
+  writers-app / coders-c
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after             3             3             1             3             0           1/3           2/3             0            92           152          28.4          32.8
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts: this stratum cannot separate them
+
+  writers-app / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after            10             9             0             7             1           1/7           6/9             0            63            24          33.7          40.2
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+
+== flakeradar: split at 2026-10-17T04:25:19+00:00, per repo x pool
+
+  jelly-swipe / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after             1             1             0             1             0           1/1           0/1             2            66            12          14.1          14.1
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+
+  lawncare-saas / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             1             1             0             1             0           1/1           0/1             1           363           314          10.1          10.1
+            after             7             7             3             6             0           2/6           7/7             0            98          51.5          34.7          37.6
+    rank-test p (after better by luck): tps 0.1429, rework 0.1250, minutes 0.1250
+    CONFOUNDED with prompts, coders-a, refuter-d1fd673, orfallback, plan: this stratum cannot separate them
+
+  lawncare-saas / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             7             7             2             5             1           2/5           5/7             0           147         220.0          10.4          11.6
+            after            14            14             5            10             1          5/12         13/14           0.0         117.0           213          10.0          10.8
+    rank-test p (after better by luck): tps 0.8769, rework 0.2474, minutes 0.1657
+    CONFOUNDED with prompts, refuter-d1fd673, orfallback, plan: this stratum cannot separate them
+
+  lawncare-saas / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            15            15             4            15             0         11/15         13/15             0            50           181          44.2          62.6
+            after            32            31            11            31             0         25/30         27/31             0            47          77.5          41.4          57.2
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, refuter-d1fd673, orfallback: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            20            20             4            18             1          8/18         17/20           0.0         111.0           154           8.3          12.1
+            after            21            20             3            15             4         11/16         17/20           0.0         171.0          74.5          30.7          48.3
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, coders-a, refuter-d1fd673, orfallback, plan: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             0             4             0           1/4           4/4           0.0          59.0         115.0           6.0           9.7
+            after             9             8             0             4             0           3/6           7/8           0.0         152.5           204           9.3           9.4
+    rank-test p (after better by luck): tps 0.2540, rework 1.0000, minutes 0.8586
+    CONFOUNDED with prompts, refuter-d1fd673, orfallback, plan: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-c
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             1             4             0           1/4           1/4           1.5         124.5          41.0          25.1          28.6
+            after             1             1             1             1             0           1/1           1/1             0            55            20          12.9          12.9
+    rank-test p (after better by luck): tps 1.0000, rework 0.4000, minutes 0.4000
+    CONFOUNDED with prompts, refuter-d1fd673, orfallback: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             3             3             1           3/3           3/4           0.0         162.5          31.5          22.8          42.2
+            after             5             5             3             3             2           3/3           5/5             0           113          16.5          25.8          35.0
+    rank-test p (after better by luck): tps 0.4429, rework 0.4444, minutes 0.5476
+    CONFOUNDED with prompts, refuter-d1fd673, orfallback: this stratum cannot separate them
+
+  writers-app / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after            18            17             3            14             2          6/14         14/17             0            87           130          33.5          39.7
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, plan: this stratum cannot separate them
+
+  writers-app / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             7             7             0             4             3           1/4           2/7             4           176           572          20.5          27.6
+            after            37            35             5            26             8          5/26         25/35             0           135           337          10.4          26.0
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, refuter-d1fd673, orfallback, plan: this stratum cannot separate them
+
+  writers-app / coders-c
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after             3             3             1             3             0           1/3           2/3             0            92           152          28.4          32.8
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts: this stratum cannot separate them
+
+  writers-app / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after            10             9             0             7             1           1/7           6/9             0            63            24          33.7          40.2
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+
+== orfallback: split at 2026-10-17T15:36:14+00:00, per repo x pool
+
+  jelly-swipe / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after             1             1             0             1             0           1/1           0/1             2            66            12          14.1          14.1
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+
+  lawncare-saas / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             1             1             0             1             0           1/1           0/1             1           363           314          10.1          10.1
+            after             7             7             3             6             0           2/6           7/7             0            98          51.5          34.7          37.6
+    rank-test p (after better by luck): tps 0.1429, rework 0.1250, minutes 0.1250
+    CONFOUNDED with prompts, coders-a, refuter-d1fd673, flakeradar, plan: this stratum cannot separate them
+
+  lawncare-saas / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             7             7             2             5             1           2/5           5/7             0           147         220.0          10.4          11.6
+            after            14            14             5            10             1          5/12         13/14           0.0         117.0           213          10.0          10.8
+    rank-test p (after better by luck): tps 0.8769, rework 0.2474, minutes 0.1657
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar, plan: this stratum cannot separate them
+
+  lawncare-saas / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            28            28             9            28             0         21/28         23/28           0.0          47.5           146          43.8          62.6
+            after            19            18             6            18             0         15/17         17/18           0.0          45.0          60.5          40.9          57.2
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            23            23             4            21             1         11/21         20/23             0           138         172.5           8.9          12.1
+            after            18            17             3            12             4          8/13         14/17             0           169            43          31.1          48.3
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, coders-a, refuter-d1fd673, flakeradar, plan: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             0             4             0           1/4           4/4           0.0          59.0         115.0           6.0           9.7
+            after             9             8             0             4             0           3/6           7/8           0.0         152.5           204           9.3           9.4
+    rank-test p (after better by luck): tps 0.2540, rework 1.0000, minutes 0.8586
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar, plan: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-c
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             1             4             0           1/4           1/4           1.5         124.5          41.0          25.1          28.6
+            after             1             1             1             1             0           1/1           1/1             0            55            20          12.9          12.9
+    rank-test p (after better by luck): tps 1.0000, rework 0.4000, minutes 0.4000
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             4             4             3             3             1           3/3           3/4           0.0         162.5          31.5          22.8          42.2
+            after             5             5             3             3             2           3/3           5/5             0           113          16.5          25.8          35.0
+    rank-test p (after better by luck): tps 0.4429, rework 0.4444, minutes 0.5476
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar: this stratum cannot separate them
+
+  writers-app / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after            18            17             3            14             2          6/14         14/17             0            87           130          33.5          39.7
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, plan: this stratum cannot separate them
+
+  writers-app / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            10            10             0             4             6           1/4          2/10           5.0         180.0         552.0          21.2          27.6
+            after            34            32             5            26             5          5/26         25/32           0.0         101.5         288.5          10.1          25.6
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar, plan: this stratum cannot separate them
+
+  writers-app / coders-c
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after             3             3             1             3             0           1/3           2/3             0            92           152          28.4          32.8
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts: this stratum cannot separate them
+
+  writers-app / coders-d
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             0             0             0             0             0           0/0           0/0          None          None          None          None          None
+            after            10             9             0             7             1           1/7           6/9             0            63            24          33.7          40.2
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+
+== plan: split at 2026-10-21T18:00:00+00:00, per repo x pool
+
+  lawncare-saas / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             3             3             1             3             0           2/3           2/3             0           145            38          20.7          33.6
+            after             5             5             2             4             0           1/4           5/5             0            20          61.5          36.5          37.6
+    rank-test p (after better by luck): tps 0.0571, rework 0.3750, minutes 0.0714
+    CONFOUNDED with prompts, coders-a, refuter-d1fd673, flakeradar, orfallback: this stratum cannot separate them
+
+  lawncare-saas / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            13            13             2             9             2           2/9         10/13             0           147           213          10.4          11.6
+            after             8             8             5             6             0           5/8           8/8           0.0          91.5         199.5           9.1          10.8
+    rank-test p (after better by luck): tps 0.9829, rework 0.2150, minutes 0.0212
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar, orfallback: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            33            32             6            28             3         14/28         27/32           0.0         158.0           154           9.6          36.0
+            after             8             8             1             5             2           5/6           7/8           0.0         164.5          74.5          31.3          48.3
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, coders-a, refuter-d1fd673, flakeradar, orfallback: this stratum cannot separate them
+
+  womens-fantasy-sports / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before             7             6             0             6             0           1/6           6/6           0.0          82.5           156           7.0           9.7
+            after             6             6             0             2             0           3/4           5/6           0.0         127.5         391.5           9.1           9.3
+    rank-test p (after better by luck): tps 0.4167, rework 1.0000, minutes 0.6504
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar, orfallback: this stratum cannot separate them
+
+  writers-app / coders-a
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            15            14             2            12             2          4/11         11/14           0.0          85.5         158.5          33.5          39.7
+            after             3             3             1             2             0           2/3           3/3             0           161            92          32.2          34.7
+    rank-test p (after better by luck): tps 0.7353, rework 0.5353, minutes 0.9015
+    CONFOUNDED with prompts: this stratum cannot separate them
+
+  writers-app / coders-b
+             side          runs          fair        merged    reached_pr       gave_up refute_pass_first     no_rework median_rework median_minutes median_first_edit_s    median_tps       max_tps
+           before            35            33             3            21            11          5/21         19/33             0           135           509          11.9          27.6
+            after             9             9             2             9             0           1/9           8/9             0           152           182           9.1          10.6
+    rank-test p (after better by luck): tps n/a, rework n/a, minutes n/a
+    CONFOUNDED with prompts, refuter-d1fd673, flakeradar, orfallback: this stratum cannot separate them
+
+== runs
+  2026-10-15T00:10 coders-c  womens-fantasy-sports  #2026  succeeded/review_merge.done        infra=0 merged=0 rework=2 refute=pass tps=27.7 min=164 01M4YEA2KV6GFF9SEE7087Z0QS
+  2026-10-15T00:30 coders-a  womens-fantasy-sports  #2025  succeeded/return_to_triage         infra=0 merged=None rework=1 refute=None tps=11.4 min=163 01M4YFG5YSRCQTWRG6KMC4QAR9
+  2026-10-15T02:28 coders-d  womens-fantasy-sports  #2024  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=18.0 min=61 01M4YP83A8YQBFCVS6AH8GSPVG
+  2026-10-15T02:53 coders-c  womens-fantasy-sports  #1903  succeeded/review_merge.done        infra=0 merged=0 rework=2 refute=fail tps=28.6 min=253 01M4YQNZGEYABG0HHNARV3K8BW
+  2026-10-15T02:54 coders-b  lawncare-saas          #2797  succeeded/close_noop               infra=0 merged=None rework=0 refute=None tps=None min=2 01M4YQQ06FR6YR8H0240J80XGZ
+  2026-10-15T02:56 coders-b  lawncare-saas          #2798  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=fail tps=9.5 min=147 01M4YQV71SHK6WZWFP45H1K75R
+  2026-10-15T03:14 coders-a  lawncare-saas          #2824  succeeded/review_merge.done        infra=0 merged=0 rework=1 refute=pass tps=10.1 min=363 01M4YRV6XNQ0P1F5QZ3PBEKZ8E
+  2026-10-15T04:46 coders-d  womens-fantasy-sports  #2032  succeeded/mark_stuck               infra=0 merged=None rework=0 refute=None tps=12.3 min=254 01M4YY3XVD32XS22YRH6A2PJR9
+  2026-10-15T05:24 coders-b  womens-fantasy-sports  #1468  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=5.0 min=39 01M4Z09FD7731FFTM6DVVPWKPB
+  2026-10-15T06:03 coders-b  womens-fantasy-sports  #1507  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=9.7 min=86 01M4Z2HXB31J39NYE6KH5KX2PH
+  2026-10-15T07:07 coders-c  womens-fantasy-sports  #1469  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=20.1 min=55 01M4Z66EJKTW42HTRNP0X4MZYJ
+  2026-10-15T07:29 coders-b  lawncare-saas          #2702  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=11.6 min=257 01M4Z7FES8S63RDBXCW90GTRX0
+  2026-10-15T08:02 coders-c  lawncare-saas          #2685  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=21.7 min=262 01M4Z9BNWEZF2FQ3SNKSRE6CKM
+  2026-10-15T09:00 coders-d  womens-fantasy-sports  #2025  succeeded/review_merge.done        infra=0 merged=1 rework=2 refute=pass tps=27.6 min=94 01M4ZCNHSCQ85NZFRHFFGSW0DG
+  2026-10-15T09:17 coders-a  womens-fantasy-sports  #1600  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=5.9 min=48 01M4ZDKQJXDA8YRXNST4VN7W8X
+  2026-10-15T14:53 coders-a  womens-fantasy-sports  #1508  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=10.0 min=57 01M500WC55EW4K1AHSWHFXS2BH
+  2026-10-15T17:06 coders-a  womens-fantasy-sports  #1509  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=7.5 min=67 01M508EZHCDCDT7Q8J4XBYA56G
+  2026-10-15T17:07 coders-b  womens-fantasy-sports  #1601  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=3.6 min=28 01M508GXG0JDKJ5AND49D7H9TJ
+  2026-10-15T17:35 coders-b  womens-fantasy-sports  #2031  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=7.0 min=79 01M50A4RTEDMHVCRPD6V20ZTKQ
+  2026-10-15T17:43 coders-c  womens-fantasy-sports  #2035  succeeded/review_merge.done        infra=0 merged=1 rework=1 refute=fail tps=22.5 min=85 01M50AJ50SKTB7GC3SM03B2V3F
+  2026-10-15T17:50 coders-d  womens-fantasy-sports  #2107  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=42.2 min=231 01M50AZGXZB7Q5D1QHP7C8DTNC
+  2026-10-15T18:13 coders-a  womens-fantasy-sports  #1510  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=9.1 min=46 01M50C9QW1R2KQBF9K9JRAEYGG
+  2026-10-15T19:38 coders-c  lawncare-saas          #2826  succeeded/close_noop               infra=0 merged=None rework=0 refute=None tps=None min=3 01M50H56Y9SBJW26NGFE2HFV4G
+  2026-10-15T21:06 coders-a  womens-fantasy-sports  #1390  succeeded/close_noop               infra=0 merged=None rework=0 refute=None tps=None min=7 01M50P73AXFAQFAZ0JRD0HE0PY
+  2026-10-15T21:33 coders-c  lawncare-saas          #1364  succeeded/return_to_triage         infra=0 merged=None rework=3 refute=None tps=23.7 min=387 01M50QRG64TSESD0ACT1212XZX
+  2026-10-15T21:42 coders-a  womens-fantasy-sports  #2112  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=fail tps=8.3 min=294 01M50R92GYF0DGEV3QFZW8JBRP
+  2026-10-15T21:45 coders-b  lawncare-saas          #2589  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=11.4 min=289 01M50RD9BXA2SN8N6ZFQJ2EHMS
+  2026-10-15T21:45 coders-d  lawncare-saas          #2773  succeeded/review_merge.done        infra=0 merged=0 rework=3 refute=fail tps=41.3 min=92 01M50RDCF28F8M6KWTN1PVDJP3
+  2026-10-16T02:34 coders-b  writers-app            #986   succeeded/return_to_triage         infra=0 merged=None rework=0 refute=None tps=8.1 min=35 01M518YR47V4EGHY3P7MN4MWAK
+  2026-10-16T02:37 coders-a  womens-fantasy-sports  #2113  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=7.8 min=38 01M5193WCA5KDYJRZBMEJDZZJ8
+  2026-10-16T03:09 coders-b  writers-app            #1043  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=9.8 min=133 01M51B03W4Y0J5BTJ3443HC0RP
+  2026-10-16T03:15 coders-a  womens-fantasy-sports  #2114  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=fail tps=7.0 min=179 01M51B9NTQTV7K6M4RFSVSMQEP
+  2026-10-16T05:23 coders-b  lawncare-saas          #2612  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=10.4 min=140 01M51JMQP0SP7HYEFPNK7NSEC0
+  2026-10-16T06:14 coders-a  womens-fantasy-sports  #2115  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=7.4 min=78 01M51NH603TNVQWPTX8S2PEZR1
+  2026-10-16T07:31 coders-a  womens-fantasy-sports  #2116  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=6.4 min=50 01M51SZNTJBH02QJ3N56Z8HHW3
+  2026-10-16T07:43 coders-b  lawncare-saas          #2729  succeeded/review_merge.done        infra=0 merged=1 rework=1 refute=pass tps=9.1 min=144 01M51TMH58RFXSQHZF3FJF7EE8
+  2026-10-16T08:22 coders-a  womens-fantasy-sports  #2117  succeeded/review_merge.done        infra=0 merged=1 rework=2 refute=pass tps=11.0 min=208 01M51WWGBR6M1AM01RC7GRDVSG
+  2026-10-16T10:07 coders-b  lawncare-saas          #2776  succeeded/mark_stuck               infra=0 merged=None rework=1 refute=None tps=10.5 min=382 01M522WFDCY5JBHJ156Z94TAW9
+  2026-10-16T11:50 coders-a  womens-fantasy-sports  #2119  succeeded/review_merge.done        infra=0 merged=0 rework=2 refute=pass tps=9.2 min=175 01M528S2VQF6VRFW0DZNTCK56K
+  2026-10-16T14:45 coders-a  womens-fantasy-sports  #2120  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=9.6 min=138 01M52JSQX41H2BBC3E2PBV03BP
+  2026-10-16T16:29 coders-b  writers-app            #1047  succeeded/demote_lane              infra=0 merged=None rework=5 refute=None tps=22.6 min=193 01M52RRBABQX0W4YJDNN9AFM8T
+  2026-10-16T17:04 coders-a  womens-fantasy-sports  #2121  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=6.0 min=62 01M52TQN6W8AHK0RT09EP3BX9K
+  2026-10-16T17:26 coders-d  lawncare-saas          #2854  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=30.6 min=41 01M52W144AQJP0W0WR9SVHZJVE
+  2026-10-16T18:06 coders-a  womens-fantasy-sports  #2122  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=6.6 min=241 01M52Y8V6KW7P3RGBDRXC22HSW
+  2026-10-16T18:08 coders-d  lawncare-saas          #2855  succeeded/review_merge.done        infra=0 merged=0 rework=2 refute=fail tps=40.6 min=88 01M52YD2SKF126152BW3TSZKNK
+  2026-10-16T19:36 coders-d  lawncare-saas          #2856  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=36.1 min=38 01M533EH67KRD32Z65B568YG3K
+  2026-10-16T19:42 coders-b  writers-app            #1048  succeeded/review_merge.done        infra=0 merged=0 rework=5 refute=fail tps=21.6 min=212 01M533T2W0VJZ3FE70J75WBJ2N
+  2026-10-16T20:14 coders-d  lawncare-saas          #2857  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=44.2 min=64 01M535MZAS9T05TXQRE7YJBQRH
+  2026-10-16T21:19 coders-d  lawncare-saas          #2858  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=59.0 min=42 01M539AXVD9T1W6YFB87NKMYRR
+  2026-10-16T22:01 coders-d  lawncare-saas          #2859  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=55.3 min=52 01M53BRQ1RVF9NG5XZA3WDQ8E6
+  2026-10-16T22:07 coders-a  womens-fantasy-sports  #2123  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=4.7 min=84 01M53C3G25TTKT3H69ADZX6RHF
+  2026-10-16T22:53 coders-d  lawncare-saas          #2860  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=21.5 min=54 01M53EQPDMJ2A3T4EJJ5QKM7DC
+  2026-10-16T23:14 coders-b  writers-app            #1049  succeeded/review_merge.done        infra=0 merged=0 rework=4 refute=fail tps=19.6 min=185 01M53FY45G79NNA7BRH1T2E9EY
+  2026-10-16T23:31 coders-a  womens-fantasy-sports  #2118  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=8.7 min=146 01M53GXNQTRPZRB2F1KXY9W1F3
+  2026-10-16T23:47 coders-d  lawncare-saas          #2861  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=17.5 min=50 01M53HTB17XQ7JDKS5Q0RSVAVW
+  2026-10-17T00:37 coders-d  lawncare-saas          #2862  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=62.6 min=43 01M53MPFAA0C40RS82VBFD1DNJ
+  2026-10-17T01:20 coders-d  lawncare-saas          #2863  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=46.7 min=37 01M53Q516HX45CAFFM12XE7C4S
+  2026-10-17T01:57 coders-d  lawncare-saas          #2864  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=44.6 min=29 01M53S8K13DJMSP7MTGR7CRE60
+  2026-10-17T01:58 coders-a  womens-fantasy-sports  #2128  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=12.1 min=138 01M53S9KJZKBFJSFSQVMGRYNHH
+  2026-10-17T02:20 coders-b  writers-app            #1050  succeeded/demote_lane              infra=0 merged=None rework=5 refute=None tps=27.6 min=123 01M53THVCF6YW873MVPN36JPQ1
+  2026-10-17T02:27 coders-d  lawncare-saas          #2865  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=45.3 min=39 01M53TY9WCQK7WX3CKAHRMHTZH
+  2026-10-17T03:06 coders-d  lawncare-saas          #2866  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=56.2 min=56 01M53X5PV3C4TDXH9F06JXV56Q
+  2026-10-17T04:02 coders-d  lawncare-saas          #2867  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=fail tps=18.3 min=88 01M540DA75084CNJ4FRNNEF3J8
+  2026-10-17T04:16 coders-a  womens-fantasy-sports  #2129  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=9.7 min=167 01M54169SK1WN7ZZA70K4NE21A
+  2026-10-17T04:23 coders-b  writers-app            #1051  succeeded/review_merge.done        infra=0 merged=0 rework=3 refute=fail tps=20.5 min=176 01M541KNXBQM2W490VY3JGQHYD
+  2026-10-17T05:30 coders-d  lawncare-saas          #2868  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=21.2 min=30 01M545EBQWWZ0V7A7TPZR1B30H
+  2026-10-17T06:00 coders-d  lawncare-saas          #2869  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=50.8 min=30 01M5474YA8NGRVXGG702KGPABK
+  2026-10-17T06:30 coders-d  lawncare-saas          #2870  succeeded/review_merge.done        infra=0 merged=1 rework=2 refute=pass tps=43.4 min=73 01M548V840S2XWPB4B52GGWXFF
+  2026-10-17T07:03 coders-a  womens-fantasy-sports  #2130  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=9.6 min=188 01M54ASA5XVASEY05CBQCEJ63G
+  2026-10-17T07:20 coders-b  writers-app            #1052  succeeded/demote_lane              infra=0 merged=None rework=5 refute=None tps=26.0 min=143 01M54BQB2V36H47HGGNBBW8VF2
+  2026-10-17T07:42 coders-d  lawncare-saas          #2871  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=55.0 min=42 01M54D0G7FNWWYS00JQ97CC694
+  2026-10-17T08:25 coders-d  lawncare-saas          #2872  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=33.5 min=47 01M54FERPYWY81KCXZ3W5RZAZQ
+  2026-10-17T09:13 coders-d  lawncare-saas          #2873  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=51.1 min=31 01M54J5PRVCEWVKYM1RYQMAF51
+  2026-10-17T09:43 coders-b  writers-app            #1053  succeeded/demote_lane              infra=0 merged=None rework=5 refute=None tps=20.9 min=184 01M54KY96CYJGQR1Z2TN79FHBP
+  2026-10-17T09:44 coders-d  lawncare-saas          #2874  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=27.9 min=57 01M54KZK9FYXAAMY3M63FXE2H3
+  2026-10-17T10:12 coders-a  womens-fantasy-sports  #2143  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=10.0 min=172 01M54NJ2KTSF0W4RXPHX336P6W
+  2026-10-17T10:42 coders-d  lawncare-saas          #2875  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=44.1 min=47 01M54Q949T4FGG3B0DHP45H9R5
+  2026-10-17T11:29 coders-d  lawncare-saas          #2876  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=22.0 min=36 01M54SZ54YP3ARX6DM6P011Z2Q
+  2026-10-17T12:05 coders-d  lawncare-saas          #2877  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=25.7 min=48 01M54W0WCF06G7Z52NR5FANYEW
+  2026-10-17T12:47 coders-b  writers-app            #1054  succeeded/demote_lane              infra=0 merged=None rework=5 refute=None tps=24.1 min=188 01M54YENMW7PS3D88EAA8Y0759
+  2026-10-17T12:53 coders-d  lawncare-saas          #2878  succeeded/review_merge.done        infra=0 merged=1 rework=1 refute=pass tps=51.9 min=60 01M54YRVB8XCHXH6DN6V0PEGGY
+  2026-10-17T13:04 coders-a  womens-fantasy-sports  #2144  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=10.3 min=246 01M54ZD938Y0B4XHEKKYATX2MP
+  2026-10-17T13:53 coders-d  lawncare-saas          #2879  succeeded/review_merge.done        infra=0 merged=1 rework=3 refute=pass tps=51.4 min=90 01M5527F56KWPV2FXWG21F5K1Q
+  2026-10-17T15:23 coders-d  lawncare-saas          #2880  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=38.7 min=48 01M557C35WNQWKXKHN9PHXCMRB
+  2026-10-17T15:55 coders-b  writers-app            #1055  succeeded/demote_lane              infra=0 merged=None rework=5 refute=None tps=22.9 min=228 01M5596YY8A9HSGZAKDY94WBFX
+  2026-10-17T16:11 coders-d  lawncare-saas          #2881  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=5.0 min=80 01M55A4GGV6DGP6E3MYYDH5SQH
+  2026-10-17T17:32 coders-d  lawncare-saas          #2882  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=32.3 min=72 01M55ERGDCD4TA93TT92PAKMZ8
+  2026-10-17T18:44 coders-d  lawncare-saas          #2883  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=35.6 min=47 01M55JWFWRQPNFX7FDGVC350BC
+  2026-10-17T19:32 coders-d  lawncare-saas          #2884  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=3.6 min=97 01M55NKRFD2WG5JCE12S4T4KHH
+  2026-10-17T19:43 coders-b  writers-app            #1056  succeeded/review_merge.done        infra=0 merged=0 rework=4 refute=fail tps=23.5 min=198 01M55P8YWSRNGFKZ96F2AP1G64
+  2026-10-17T21:09 coders-d  lawncare-saas          #2885  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=24.3 min=42 01M55V68WY0N0SB3DGVWK78AB7
+  2026-10-17T21:52 coders-d  lawncare-saas          #2886  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=41.4 min=28 01M55XKWYN3P0FP79ZRQG6EBW0
+  2026-10-17T22:20 coders-d  lawncare-saas          #2887  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=57.2 min=31 01M55Z7JX8WEG9460JS4ZJHR67
+  2026-10-17T22:52 coders-d  lawncare-saas          #2888  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=46.4 min=43 01M56117PJSHBTY98AF6DBKAWG
+  2026-10-17T23:02 coders-b  writers-app            #1057  succeeded/return_to_triage         infra=0 merged=None rework=0 refute=None tps=12.9 min=27 01M561M8DT6TCRPS20MRP38HHX
+  2026-10-17T23:29 coders-b  writers-app            #1058  succeeded/demote_lane              infra=0 merged=None rework=5 refute=None tps=25.6 min=142 01M5635YYHGJTCBQHR5468JDEA
+  2026-10-17T23:35 coders-d  lawncare-saas          #2889  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=48.1 min=28 01M563GJY8WC98Q8X31RB0DD4Q
+  2026-10-18T00:03 coders-d  lawncare-saas          #2890  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=43.8 min=43 01M5654WF17ARR310XC2YAAZCP
+  2026-10-18T00:47 coders-d  lawncare-saas          #2891  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=35.2 min=71 01M567MMXMEM7FXP3TEP3VB8B2
+  2026-10-18T01:51 coders-b  writers-app            #1059  succeeded/demote_lane              infra=0 merged=None rework=5 refute=None tps=20.6 min=236 01M56BA9R4M1G7PJ9XMCPBMS2J
+  2026-10-18T01:59 coders-d  lawncare-saas          #2892  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=45.3 min=86 01M56BQNP5ZE4PW0A57MGHTG6Y
+  2026-10-18T03:25 coders-d  lawncare-saas          #2893  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=47.0 min=27 01M56GPB6N7NYZNG22CMYSQFC6
+  2026-10-18T03:52 coders-d  lawncare-saas          #2894  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=40.4 min=32 01M56J86D366QQ6CTHHS6TGSBF
+  2026-10-18T04:25 coders-d  lawncare-saas          #2895  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=56.5 min=42 01M56M3TBCF6HA2FNS4V0GF96Q
+  2026-10-18T04:56 coders-a  writers-app            #1060  succeeded/demote_lane              infra=0 merged=None rework=5 refute=None tps=31.3 min=94 01M56NVY4WGCYNR5FENSWA0EA8
+  2026-10-18T05:07 coders-d  lawncare-saas          #2896  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=None tps=19.2 min=51 01M56PGY4GC9KNCB5NNP0X45R7
+  2026-10-18T05:10 coders-c  writers-app            #1061  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=28.2 min=105 01M56PQ4PYGN7RSR5376YKC50H
+  2026-10-18T05:48 coders-b  writers-app            #1062  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=10.7 min=62 01M56RVADFYRN5B0BCJ6BDPRP5
+  2026-10-18T05:59 coders-d  lawncare-saas          #2897  succeeded/review_merge.done        infra=0 merged=0 rework=1 refute=fail tps=55.3 min=89 01M56SFQCFJ8SJQMTTD7AD8H42
+  2026-10-18T06:30 coders-a  writers-app            #1063  succeeded/review_merge.done        infra=0 merged=0 rework=1 refute=fail tps=34.9 min=83 01M56V92TZWNQZHKVETRMPT8KX
+  2026-10-18T06:50 coders-b  writers-app            #1064  failed/human_rescue             infra=1 merged=None rework=0 refute=None tps=11.9 min=695 01M56WDPYNMYBE191BRY971B1K
+  2026-10-18T06:56 coders-c  writers-app            #1065  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=32.8 min=74 01M56WRG92A3W0M4806GHD40R4
+  2026-10-18T07:28 coders-d  lawncare-saas          #2919  lost/fabro 404                infra=1 merged=None rework=0 refute=None tps=None min=524 01M56YK941K40XDHZ52T40BSF2
+  2026-10-18T07:54 coders-a  womens-fantasy-sports  #2104  failed/review_merge.watch_check infra=1 merged=1 rework=0 refute=pass tps=18.8 min=631 01M57028F6TE3678NWB5R070KF
+  2026-10-18T15:14 coders-c  writers-app            #1066  succeeded/review_merge.done        infra=0 merged=0 rework=2 refute=fail tps=28.4 min=92 01M57S7P8D07HFAQ42TJSQEEF8
+  2026-10-18T16:12 coders-d  lawncare-saas          #2919  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=3.2 min=53 01M57WJNZ8WBCP2Z4P46H2A6XK
+  2026-10-18T18:37 coders-d  writers-app            #1064  succeeded/review_merge.done        infra=0 merged=0 rework=1 refute=fail tps=32.3 min=128 01M584VVM462VNX9ANJSN4BC9S
+  2026-10-18T18:37 coders-c  womens-fantasy-sports  #2124  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=12.9 min=55 01M584VYXCAFMMVEJ3EXNNSHF0
+  2026-10-18T18:37 coders-a  lawncare-saas          #2920  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=20.7 min=145 01M584W1KKAMXN8M2QJWH4XGVJ
+  2026-10-18T18:37 coders-b  writers-app            #1047  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=6.8 min=86 01M584W4D0CZ40FJS6FQSGCM5K
+  2026-10-18T20:03 coders-b  womens-fantasy-sports  #2151  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=9.4 min=118 01M589S91RK6QA8B73B9FGDAG7
+  2026-10-18T20:45 coders-d  writers-app            #1050  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=38.5 min=61 01M58C5ZZC0GMCT743DDA2EWK7
+  2026-10-18T21:02 coders-a  lawncare-saas          #2921  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=33.6 min=131 01M58D610ECS833RPS9AC5CX0S
+  2026-10-18T21:46 coders-d  writers-app            #1052  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=25.8 min=63 01M58FNMKGQQJ7C902EXZ147XA
+  2026-10-18T22:02 coders-b  writers-app            #1053  succeeded/review_merge.done        infra=0 merged=0 rework=1 refute=fail tps=9.8 min=231 01M58GJDSBFQVK0G8GHG9DPBEK
+  2026-10-18T22:49 coders-d  womens-fantasy-sports  #2156  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=33.1 min=100 01M58K8YE2Q97Y9QZB8SM4Q7FJ
+  2026-10-18T23:13 coders-a  writers-app            #1091  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=None tps=35.0 min=708 01M58MP1TJF58RSX85J9TTAS9Q
+  2026-10-19T00:29 coders-d  writers-app            #1090  succeeded/review_merge.done        infra=0 merged=0 rework=1 refute=pass tps=22.2 min=166 01M58S072305PJHW5XFW4NHS2J
+  2026-10-19T01:53 coders-b  writers-app            #1081  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=12.2 min=193 01M58XSKX76S57PJJ8YBZ8J0VT
+  2026-10-19T03:15 coders-d  womens-fantasy-sports  #2160  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=16.1 min=141 01M592FY4PXSJ4JFT5582JGT1W
+  2026-10-19T05:06 coders-b  lawncare-saas          #2955  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=10.5 min=147 01M598VZENH6D02T1T4Q3QD6M0
+  2026-10-19T05:36 coders-d  womens-fantasy-sports  #2161  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=18.5 min=113 01M59AJQ9BKHK6Z1NF5XSG1K96
+  2026-10-19T07:29 coders-d  jelly-swipe            #466   succeeded/review_merge.done        infra=0 merged=0 rework=2 refute=pass tps=14.1 min=66 01M59H2DHZVPM1TCA6TR9RYFPM
+  2026-10-19T07:33 coders-b  lawncare-saas          #2956  succeeded/review_merge.done        infra=0 merged=0 rework=1 refute=fail tps=10.0 min=328 01M59H9CRH30KQTNR9Y1NRSVNC
+  2026-10-19T08:36 coders-d  womens-fantasy-sports  #2162  succeeded/return_to_triage         infra=0 merged=None rework=0 refute=None tps=35.0 min=51 01M59MVNDBA1S5M2GBRF946FRR
+  2026-10-19T09:27 coders-d  womens-fantasy-sports  #2163  succeeded/mark_stuck               infra=0 merged=None rework=0 refute=None tps=None min=271 01M59QSAH8S0XRPC28ZJX60ASR
+  2026-10-19T11:02 coders-a  writers-app            #1080  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=39.7 min=48 01M59X7SD7WSNV4KXZQP54BRZ4
+  2026-10-19T11:50 coders-a  writers-app            #1079  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=26.5 min=30 01M59ZZBESJXTB4W170CM6TGQN
+  2026-10-19T12:21 coders-a  writers-app            #1078  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=32.4 min=39 01M5A1QF56NECTYS4GEZBWYY3Z
+  2026-10-19T13:00 coders-a  writers-app            #1077  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=36.8 min=89 01M5A3ZMBXZQ7GK0EAPHB8KTHZ
+  2026-10-19T13:02 coders-b  writers-app            #1076  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=9.0 min=86 01M5A43CY6NT46SBSKFYGBXDW2
+  2026-10-19T13:58 coders-d  writers-app            #1075  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=40.2 min=55 01M5A7A7X5T798FHWMCPQ5JRTK
+  2026-10-19T14:28 coders-b  writers-app            #1074  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=10.4 min=102 01M5A91EFBEMX358VK0VCW81C8
+  2026-10-19T14:29 coders-a  writers-app            #1073  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=38.2 min=54 01M5A92YB1CFCVHNWV0NJQJSQX
+  2026-10-19T14:54 coders-d  writers-app            #1072  succeeded/review_merge.done        infra=0 merged=0 rework=3 refute=fail tps=35.1 min=230 01M5AAFYADGBDH3VCGG7FAQHGD
+  2026-10-19T15:24 coders-a  writers-app            #1071  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=38.1 min=121 01M5AC70PCFNQQK6PQ13ZSEJGN
+  2026-10-19T16:10 coders-b  writers-app            #1070  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=12.2 min=58 01M5AEW4VRKJSQKJARC5SRC4EC
+  2026-10-19T17:09 coders-b  writers-app            #1069  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=11.9 min=91 01M5AJ7S78FQ921ZSWH7PNZV25
+  2026-10-19T17:25 coders-a  writers-app            #1068  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=36.3 min=84 01M5AK5BA34CZE93YFZW9BX71X
+  2026-10-19T18:44 coders-d  writers-app            #1060  succeeded/close_noop               infra=0 merged=None rework=0 refute=None tps=None min=7 01M5AQP8T7XA1Z1FW7RS7MST22
+  2026-10-19T18:52 coders-d  writers-app            #1058  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=27.3 min=51 01M5AR4PFTM9D1PMAQZP8G27JB
+  2026-10-19T19:44 coders-d  writers-app            #1055  succeeded/mark_stuck               infra=0 merged=None rework=0 refute=None tps=37.8 min=94 01M5AV34KA8ST5Z4CF25QH4G7G
+  2026-10-19T21:18 coders-d  writers-app            #1054  failed/plan                     infra=1 merged=None rework=0 refute=None tps=None min=435 01M5B0G5ZVJ2X5X5KZZACGKFRK
+  2026-10-19T22:27 coders-a  writers-app            #1109  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=10.9 min=87 01M5B4DQJFY8M9BWVV1B8KCWNA
+  2026-10-19T22:27 coders-b  writers-app            #1105  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=6.8 min=47 01M5B4DZM3NJRQQ44C9JDJHRWP
+  2026-10-19T23:15 coders-b  womens-fantasy-sports  #2164  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=9.4 min=187 01M5B74Y1HF2ZB49M9ANTQ8X94
+  2026-10-19T23:54 coders-a  womens-fantasy-sports  #2166  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=36.0 min=128 01M5B9D22BRKN0NPGYNWXZBKGQ
+  2026-10-20T02:02 coders-a  writers-app            #1044  failed/review_merge.standards   infra=1 merged=0 rework=0 refute=None tps=33.2 min=147 01M5BGR0TPMG1EECDDXBGQ9WA7
+  2026-10-20T02:22 coders-b  lawncare-saas          #2959  succeeded/close_noop               infra=0 merged=None rework=0 refute=None tps=None min=5 01M5BHWJT52ZS1SFBH9JA7NC6V
+  2026-10-20T02:28 coders-b  writers-app            #1108  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=fail tps=4.5 min=93 01M5BJ69H7P8CKSVPM13XTY1M1
+  2026-10-20T04:01 coders-b  womens-fantasy-sports  #2182  failed/standards                infra=1 merged=None rework=0 refute=None tps=4.2 min=29 01M5BQGJ9XD4354DQD18BKNMK2
+  2026-10-20T04:37 coders-b  writers-app            #1054  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=7.1 min=56 01M5BSJFE3DE9WJREXA8HG5AHA
+  2026-10-20T04:37 coders-a  womens-fantasy-sports  #2182  succeeded/mark_stuck               infra=0 merged=None rework=0 refute=None tps=34.7 min=267 01M5BSJJF42KY7J2MX4MD3FCPP
+  2026-10-20T05:33 coders-b  writers-app            #1107  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=fail tps=5.9 min=101 01M5BWT99EPM91T4V0P55GE616
+  2026-10-20T07:15 coders-b  writers-app            #1106  succeeded/mark_stuck               infra=0 merged=None rework=0 refute=None tps=10.2 min=261 01M5C2MJ6J30XHS9M45ARQ3W38
+  2026-10-20T09:04 coders-a  writers-app            #1044  succeeded/return_to_triage         infra=0 merged=None rework=1 refute=None tps=33.5 min=129 01M5C8VHCZQWC8Y5A27Z7FCVFG
+  2026-10-20T11:13 coders-a  writers-app            #1134  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=31.7 min=47 01M5CG8MWXC047T5V5XX2R4ZWA
+  2026-10-20T11:36 coders-b  writers-app            #1133  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=5.7 min=63 01M5CHK5CE0Q7P6NPQ58MVZX0N
+  2026-10-20T12:01 coders-a  writers-app            #1132  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=16.6 min=108 01M5CJZGVNH8YRQ5A1AHP5JBY5
+  2026-10-20T12:40 coders-b  writers-app            #1055  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=10.7 min=135 01M5CN7GWPRSFH3ZQYEVYRCCDS
+  2026-10-20T14:29 coders-a  womens-fantasy-sports  #2165  succeeded/review_merge.done        infra=0 merged=0 rework=2 refute=fail tps=30.9 min=261 01M5CVG0XGGMRF4ZT5DJJZCAAV
+  2026-10-20T14:56 coders-b  writers-app            #1089  failed/improve                  infra=1 merged=None rework=0 refute=None tps=None min=136 01M5CX023VKP67M9Y7R10E5YNG
+  2026-10-20T17:12 coders-b  writers-app            #1089  succeeded/review_merge.done        infra=0 merged=1 rework=4 refute=fail tps=11.2 min=552 01M5D4SJFRE670VP7EG38V52NT
+  2026-10-20T18:51 coders-a  womens-fantasy-sports  #2167  succeeded/mark_stuck               infra=0 merged=None rework=0 refute=None tps=None min=9 01M5DAEV9XG0HNRBYRTPNW9NW1
+  2026-10-20T19:00 coders-a  womens-fantasy-sports  #2168  succeeded/review_merge.done        infra=0 merged=0 rework=3 refute=fail tps=30.5 min=257 01M5DB0BN8HY9G3RH235M6Z5SZ
+  2026-10-20T23:17 coders-a  womens-fantasy-sports  #2131  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=32.3 min=160 01M5DSPNTAGFZBR653RCE1CBKW
+  2026-10-21T01:58 coders-a  womens-fantasy-sports  #2154  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=23.9 min=156 01M5E2W9E0FR0P0EW480YZX3CP
+  2026-10-21T02:24 coders-b  writers-app            #1092  succeeded/close_noop               infra=0 merged=None rework=0 refute=None tps=None min=6 01M5E4CRBDV12DNWA177P8ASJV
+  2026-10-21T02:30 coders-b  lawncare-saas          #2776  succeeded/mark_stuck               infra=0 merged=None rework=0 refute=None tps=10.7 min=293 01M5E4QVFSDB8S1BKRJRM5FP56
+  2026-10-21T04:34 coders-a  womens-fantasy-sports  #2162  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=4.3 min=696 01M5EBSYV18WH5042Z12B4T05N
+  2026-10-21T07:24 coders-b  lawncare-saas          #2791  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=10.4 min=84 01M5ENH7KEMCNT17HY7R8W1PRA
+  2026-10-21T08:48 coders-b  lawncare-saas          #2794  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=10.3 min=435 01M5ETB15XXPA0J237AM7M2067
+  2026-10-21T16:03 coders-b  writers-app            #246   succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=10.8 min=279 01M5FK876K8V16579TWJWSYA89
+  2026-10-21T16:10 coders-a  womens-fantasy-sports  #2179  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=32.7 min=169 01M5FKMNYDA62T408R47N3AX70
+  2026-10-21T18:59 coders-a  womens-fantasy-sports  #2183  succeeded/mark_stuck               infra=0 merged=None rework=0 refute=None tps=48.3 min=306 01M5FXAJDCA8808VB9TV41A5JS
+  2026-10-21T20:43 coders-b  writers-app            #895   succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=10.0 min=56 01M5G387FQT2V3DMP4YAK1DD2M
+  2026-10-21T21:39 coders-b  writers-app            #986   succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=8.8 min=180 01M5G6FGMKSVRRPYXRSX131AP8
+  2026-10-22T00:06 coders-a  womens-fantasy-sports  #2170  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=30.7 min=107 01M5GEW2VCSYYQ5PKGV1MKHJS9
+  2026-10-22T00:39 coders-b  writers-app            #1045  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=10.6 min=258 01M5GGRYEVDEJADXCRKQ1JH1MB
+  2026-10-22T01:53 coders-a  womens-fantasy-sports  #2169  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=38.9 min=312 01M5GN08HZDE6GVZ4N6YD0WHWQ
+  2026-10-22T04:58 coders-b  writers-app            #1057  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=9.3 min=202 01M5GZJ8ZHPGR8AXMWFK8KTWN5
+  2026-10-22T07:05 coders-a  womens-fantasy-sports  #2189  succeeded/mark_stuck               infra=0 merged=None rework=0 refute=None tps=36.2 min=374 01M5H6VE2RYP248JWH96HMX58G
+  2026-10-22T08:20 coders-b  writers-app            #1151  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=5.4 min=75 01M5HB4ENGFK5VY2PP12GHZCEQ
+  2026-10-22T09:35 coders-b  writers-app            #1152  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=7.6 min=152 01M5HFE27KPZPHSCVQM6GG8HCS
+  2026-10-22T12:07 coders-b  writers-app            #1153  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=fail tps=5.9 min=69 01M5HR4CQQPWJC1EVD55ETMKS0
+  2026-10-22T13:16 coders-b  writers-app            #1154  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=9.1 min=79 01M5HW3B88CWFVGVTHBS8QG7JG
+  2026-10-22T13:19 coders-a  womens-fantasy-sports  #2190  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=24.1 min=112 01M5HW8T9NG49JW81BVTPZ28TV
+  2026-10-22T14:36 coders-b  writers-app            #1155  succeeded/review_merge.done        infra=0 merged=0 rework=1 refute=fail tps=9.9 min=324 01M5J0MW2SQ44V397P7WCKTH30
+  2026-10-22T15:11 coders-a  womens-fantasy-sports  #2171  succeeded/review_merge.done        infra=0 merged=0 rework=1 refute=pass tps=31.3 min=159 01M5J2PEMMVA1K4AMBC9Y0BNRX
+  2026-10-22T17:51 coders-a  lawncare-saas          #2849  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=fail tps=35.7 min=207 01M5JBSR93QVFHBZ0R25QWE8C7
+  2026-10-22T20:00 coders-b  lawncare-saas          #2961  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=7.8 min=66 01M5JK7172V1FNF1QHCDETJV5B
+  2026-10-22T21:06 coders-b  lawncare-saas          #2962  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=9.8 min=121 01M5JPZCXRZHQYA4QYAG4ZMMVN
+  2026-10-22T21:18 coders-a  lawncare-saas          #2963  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=37.6 min=98 01M5JQNM42MAJVWJ1HXN4A8W53
+  2026-10-22T22:56 coders-a  lawncare-saas          #2967  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=37.3 min=20 01M5JX9RWN3XBAFSKZ0P88M3RN
+  2026-10-22T23:08 coders-b  lawncare-saas          #2968  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=8.0 min=18 01M5JXY5QGYH18FZJC5EYTC0KZ
+  2026-10-22T23:17 coders-a  lawncare-saas          #2969  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=fail tps=26.4 min=16 01M5JYEREWVMVNGZM5BX2FR652
+  2026-10-22T23:26 coders-b  lawncare-saas          #2970  succeeded/report_blocked           infra=0 merged=0 rework=0 refute=fail tps=None min=58 01M5JZ085993NY9DWRZT4T9H1W
+  2026-10-22T23:33 coders-a  lawncare-saas          #2971  succeeded/close_noop               infra=0 merged=None rework=0 refute=None tps=None min=7 01M5JZCCYQP161SV0FQ9PWHY65
+  2026-10-22T23:44 coders-a  womens-fantasy-sports  #2199  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=28.8 min=170 01M5K00N07FH5Y3EJ618CVCVVE
+  2026-10-23T00:24 coders-b  womens-fantasy-sports  #2201  succeeded/review_merge.done        infra=0 merged=0 rework=1 refute=pass tps=8.9 min=248 01M5K2AEW5BS9J6ZG3A1RZSXR3
+  2026-10-23T02:34 coders-a  womens-fantasy-sports  #2202  succeeded/report_queued            infra=0 merged=0 rework=0 refute=pass tps=None min=97 01M5K9RZRAMN7A84XHMHXP6P12
+  2026-10-23T04:12 coders-a  writers-app            #1167  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=29.7 min=58 01M5KFB1H7EW2ST60ED9MHSF18
+  2026-10-23T04:33 coders-b  womens-fantasy-sports  #2172  succeeded/report_queued            infra=0 merged=0 rework=0 refute=pass tps=None min=54 01M5KGHEJZ85T4R2D516TNZAHY
+  2026-10-23T05:09 coders-a  writers-app            #1168  succeeded/report_queued            infra=0 merged=0 rework=0 refute=fail tps=None min=161 01M5KJMPQ62YNF47ZTCSV7FHZ8
+  2026-10-23T05:27 coders-b  womens-fantasy-sports  #2203  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=9.3 min=201 01M5KKN0K88ACV9BABM15S0X92
+  2026-10-23T07:51 coders-a  writers-app            #1169  succeeded/review_merge.done        infra=0 merged=0 rework=0 refute=pass tps=34.7 min=207 01M5KVWHX8RV2ZCQRN42BRA473
+  2026-10-23T08:48 coders-b  womens-fantasy-sports  #2204  succeeded/report_blocked           infra=0 merged=0 rework=0 refute=fail tps=None min=299 01M5KZ5BNAS46WW02Q6SN7X9YB
+  2026-10-23T13:47 coders-b  womens-fantasy-sports  #2205  succeeded/close_noop               infra=0 merged=None rework=0 refute=None tps=None min=6 01M5MG8GQFAG122SFAYTZN1KVW
+  2026-10-23T13:53 coders-b  lawncare-saas          #2983  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=10.8 min=117 01M5MGM2FZ1R7C158P86TFTM88
+  2026-10-23T15:50 coders-b  lawncare-saas          #2985  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=pass tps=9.5 min=149 01M5MQAAHDAG7RDAHVY76ZS8NY
+  2026-10-23T18:19 coders-b  womens-fantasy-sports  #2208  succeeded/close_noop               infra=0 merged=None rework=0 refute=None tps=None min=9 01M5MZVFNPN9Q396EQ6CQTDYD2
+  2026-10-23T18:29 coders-b  lawncare-saas          #2987  succeeded/review_merge.done        infra=0 merged=1 rework=0 refute=fail tps=8.6 min=117 01M5N0CZTSV9SG0RD1JASYZEZF
+  2026-10-23T20:26 coders-b  lawncare-saas          #2988  succeeded/report_merged            infra=0 merged=1 rework=0 refute=pass tps=None min=45 01M5N72FQ2F4ACQW4SQZTTCJBB
+
+== ad hoc reads (after the tool output) ==
+
+--- coders-a / womens-fantasy-sports: the README quality target is MET ---
+
+17 fair after-runs since the prompt change 2026-10-18T06:59Z (18 dispatched, one -- #2104 --
+infra death). Target was 10-15. The after-side is nearly split by the plan change: 9 fair
+runs pre-plan (#2166 #2182 #2165 #2167 #2168 #2131 #2154 #2162 #2179) and 8 post-plan
+(#2183 #2170 #2169 #2189 #2190 #2171 #2199 #2202).
+
+refute first-pass 8/13, no rework 14/17, tool merged 3/23. The tool's merged undercounts:
+GitHub shows 13 of the 14 reached-PR issues closed (merged) -- #2166, #2165, #2168, #2131,
+#2154, #2162, #2179, #2170, #2169, #2190, #2171, #2199, #2202. Against the baseline
+(refute 11/21, no rework 20/23, merged 4/23) that is no regression -- refute pass is
+nominally better, merges far higher, no-rework comparable. New model + new prompts + plan,
+not the model alone (see below).
+
+--- the four coders-a wfs give-ups, read by hand ---
+
+- #2182 (10-20): correct stop. Three CI failures all before a test ran; the cause is the
+  self-hosted runner's Docker daemon not ready (dind), not the suite or the model.
+- #2167 (10-20): correct stop. The run verified at HEAD that #2164/#2166 landed but the
+  undeclared prerequisite #2165 had not -- the repo-facts premise was false. (It later
+  landed, and #2167 got done by a later run.)
+- #2183 (10-21, first post-plan run): needs_human_review -> human_rescue. A backup/
+  restore-script task (buildable half of #47) that a spec review routed to a human. Not a
+  model failure; the followup was flagged for human review.
+- #2189 (10-22): human_rescue. A squads mirror-detach refactor raised to a human. Correct
+  escalation class.
+All four are correct stops, matching the 10-20/10-21 finding that give-ups are mostly
+process/human-escalation, not model error.
+
+--- coders-a speed ---
+
+43 after-runs median 32.7 tok/s (max 48.3) against 24 before at median 9.1 (max 12.1).
+Settled at the last checkpoint; the gain holds and grows. This is the clean read for the
+model swap on one pool.
+
+--- what the coders-a numbers still cannot separate ---
+
+As the README forewarns, coders-a quality is confounded by construction: every after-run is
+"new model + new prompts," and now 8 of 17 wfs after-runs are also "+ plan." There is no
+pool whose prompts did not change. Report it as "new model + new prompts + plan" against
+"old model + old prompts." The unchanged-pool (coders-b/-d) reads in the prompts and plan
+splits are the only way to isolate the prompt/plan effect, and they are small in this window.
+
+--- ralph confound (not a change line) ---
+
+The ralph trial switched on 2026-10-22T21:28Z (SCHEDULER_RALPH_SHARE=50), so after that the
+scheduler diverts half the issues to ralph and backlog volume drops. It does not change
+backlog's graph, so it is purposefully absent from the --change list, but it narrows every
+"after" cell after 10-22 and will keep doing so until the trial ends or the share changes.
+
+--- other strata, brief ---
+
+lawncare-saas/coders-d (the README fast-lane prompt target) still has only 2 after-runs:
+coders-d has been drained since 10-18 18:50Z and the work moved to coders-a/-b on the
+standard lane. That target remains unfillable while coders-d is drained. The fast-lane
+prompt question has no fresh signal here either; the action is on coders-a/-b standard-lane
+runs, which are the "new model + new prompts + plan" mix above.

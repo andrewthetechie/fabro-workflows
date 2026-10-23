@@ -1,12 +1,15 @@
 # Change compare: did a change to the factory help?
 
 **Status:** baseline taken 2026-10-18 (`result-2026-10-18.txt`), rechecked 2026-10-19
-(`result-2026-10-19.txt`) and 2026-10-20 (`result-2026-10-20.txt`, the 30-run checkpoint of
-fabro-workflows#46). coders-a's speed gain is settled. On writers-app, coders-a's outcomes
-match the other pools in the same window, but its own womens-fantasy-sports target still has
-4 of 10–15 runs. The prompts have no outcome verdict: the gains that look like prompt effects
-started before `9b2b7cb`. Rerun when the targets in *What would settle it* are met, and write the
-result as `result-<date>.txt` next to this file.
+(`result-2026-10-19.txt`), 2026-10-20 (`result-2026-10-20.txt`, the 30-run checkpoint of
+fabro-workflows#46) and 2026-10-23 (`result-2026-10-23.txt`). coders-a's speed gain is
+settled (43 after-runs, median 32.7 tok/s vs 9.1). The coders-a/ womens-fantasy-sports
+quality target is now **met**: 17 fair after-runs, and 13 of 14 reached-PR issues merged on
+GitHub — no regression, and nominally better refute pass, against the old-model baseline.
+It is still confounded (with the prompt rewrite and, for 8 of 17 runs, the plan change). The
+prompts and the lawncare-saas/coders-d fast-lane target still have no verdict. Rerun when the
+targets in *What would settle it* are met, and write the result as `result-<date>.txt` next
+to this file.
 
 This is a handoff for the agent that does the rerun. It records the question, the exact
 change moments, the tool, the rules the 2026-10-18 analysis followed, and what it found.
