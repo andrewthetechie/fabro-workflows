@@ -400,13 +400,14 @@ LOG TAIL
 
 ## Acceptance criteria
 
-- [ ] The PR description names the cause of the intermittent failure and cites the log lines above.
+- [ ] A comment in the changed test, code or CI step names the cause of the intermittent failure.
 - [ ] The test or CI step that failed is changed so that cause can no longer fail it.
 - [ ] `./.fabro/ci.sh` passes.
 
 ## Non-goals
 
 - Do not skip, delete, quarantine or mark the failing test as flaky, and do not add a retry around it or around the job.
+- Do not add a skip marker or skip condition to any test, new or existing: diff hygiene blocks the merge on it.
 - Do not change the CI workflow's rerun or retry settings.
 - Do not edit `.fabro/scout.toml`, `.fabro/ci.sh` or `.fabro/test.toml`.
 

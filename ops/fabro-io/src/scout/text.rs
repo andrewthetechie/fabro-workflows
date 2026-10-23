@@ -212,11 +212,12 @@ fn render_flaky(
         }
     }
     out.push_str("\n## Acceptance criteria\n\n");
-    out.push_str("- [ ] The PR description names the cause of the intermittent failure and cites the log lines above.\n");
+    out.push_str("- [ ] A comment in the changed test, code or CI step names the cause of the intermittent failure.\n");
     out.push_str("- [ ] The test or CI step that failed is changed so that cause can no longer fail it.\n");
     out.push_str("- [ ] `./.fabro/ci.sh` passes.\n");
     out.push_str("\n## Non-goals\n\n");
     out.push_str("- Do not skip, delete, quarantine or mark the failing test as flaky, and do not add a retry around it or around the job.\n");
+    out.push_str("- Do not add a skip marker or skip condition to any test, new or existing: diff hygiene blocks the merge on it.\n");
     out.push_str("- Do not change the CI workflow's rerun or retry settings.\n");
     out.push_str("- Do not edit `.fabro/scout.toml`, `.fabro/ci.sh` or `.fabro/test.toml`.\n");
     out.push_str("\nFiled by the scout. Close as not planned to stop it filing this job again.\n");
@@ -322,11 +323,12 @@ pub fn test_body(test: &FlakyTest, regression: Option<&Issue>) -> String {
         None => out.push_str("Not known.\n"),
     }
     out.push_str("\n## Acceptance criteria\n\n");
-    out.push_str("- [ ] The PR description names the cause of the intermittent failure and cites the failures above.\n");
+    out.push_str("- [ ] A comment or docstring in the changed code names the cause of the intermittent failure.\n");
     out.push_str("- [ ] The test, or the code it tests, is changed so that cause can no longer fail it.\n");
     out.push_str("- [ ] `./.fabro/ci.sh` passes.\n");
     out.push_str("\n## Non-goals\n\n");
     out.push_str("- Do not skip, delete, quarantine or mark the failing test as flaky, and do not add a retry around it or around the job.\n");
+    out.push_str("- Do not add a skip marker or skip condition to any test, new or existing: diff hygiene blocks the merge on it.\n");
     out.push_str("- Do not quarantine the test in FlakeRadar.\n");
     out.push_str("- Do not change the CI workflow's rerun or retry settings.\n");
     out.push_str("- Do not edit `.fabro/scout.toml`, `.fabro/ci.sh` or `.fabro/test.toml`.\n");

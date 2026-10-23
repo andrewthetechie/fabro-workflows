@@ -213,8 +213,9 @@ it differs from the suite, `file:line` when known, the failure category, the sco
 count, and the dashboard link (`url`); `## Recent failures (newest first)`, one `###` heading
 per failure (date, branch, run) with its message in a code span and, for the newest only, its
 traceback in a ````text```` fence with C7's backtick and mention neutralising; `## Last
-failing commit` (8 characters and the branch); the acceptance criteria and non-goals of C7,
-plus "Do not quarantine the test in FlakeRadar." Names in code spans keep their `@`: GitHub
+failing commit` (8 characters and the branch); the acceptance criteria of C7 for a test ("A
+comment or docstring in the changed code names the cause …", "The test, or the code it tests,
+is changed …") and its non-goals, plus "Do not quarantine the test in FlakeRadar." Names in code spans keep their `@`: GitHub
 mentions no one from a code span. Labels as C7.
 
 ### C10: `fabro-io flakeradar classify --checks FILE --failures-dir DIR [--ignore-jobs JSON] [--section FILE]` (task 04)

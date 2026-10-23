@@ -417,6 +417,10 @@ fn bodies_start_with_the_marker_and_hold_the_details() {
     let flaky_body = out.actions.iter().find(|a| a.source == "flaky").unwrap().body.clone().unwrap();
     assert!(flaky_body.starts_with("<!-- fabro:scout fp=flaky:.github/workflows/ci.yml:test -->\n"));
     assert!(flaky_body.contains("No log was available."));
+    // Every criterion is checkable in the diff: no run writes a PR description (lawncare-saas#2970).
+    assert!(!flaky_body.contains("PR description"), "{flaky_body}");
+    assert!(flaky_body.contains("- [ ] A comment in the changed test, code or CI step names the cause"), "{flaky_body}");
+    assert!(flaky_body.contains("- Do not add a skip marker or skip condition to any test"), "{flaky_body}");
 }
 
 #[test]
@@ -833,6 +837,9 @@ fn a_flaky_test_issue_names_the_test_and_its_failures() {
     assert!(text::test_body(&at, None).contains("`test_upgrade@migration`"), "a code span keeps its @");
     assert!(body.contains("`26212199`"), "{body}");
     assert!(body.contains("Do not quarantine the test in FlakeRadar."), "{body}");
+    assert!(!body.contains("PR description"), "{body}");
+    assert!(body.contains("- [ ] A comment or docstring in the changed code names the cause"), "{body}");
+    assert!(body.contains("- Do not add a skip marker or skip condition to any test"), "{body}");
     assert_eq!(
         out.actions[0].labels.clone().unwrap(),
         ["agent", "scout", "ai-generated", "flaky-test"]
