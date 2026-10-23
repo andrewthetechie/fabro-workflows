@@ -657,9 +657,9 @@ R10_COPIES: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
     )),
     ('watch_checks', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'watch_checks', (
         ('    if [ "$NOW" -ge "$DL" ]; then blocked \'The 60-minute merge budget is exhausted; the merge phase was abandoned before CI settled.\'; fi',
-         'printf \'%s\' \'The 60-minute merge budget ran out with CI still pending, so the pull request was approved and handed to merge-queue.\' > /tmp/fabro/merge_block_reason\n    echo \'{"context_updates":{"checks_ok":false,"checks_blocked":false,"checks_deadline":true,"gh_fix_attempts":\'$A\'}}\'\n    exit 0'),
+         '    if [ "$NOW" -ge "$DL" ]; then\n      printf \'%s\' \'The 60-minute merge budget ran out with CI still pending, so the pull request was approved and handed to merge-queue.\' > /tmp/fabro/merge_block_reason\n      echo \'{"context_updates":{"checks_ok":false,"checks_blocked":false,"checks_deadline":true,"gh_fix_attempts":\'$A\'}}\'\n      exit 0\n    fi'),
         ("    if [ $((NOW - T0)) -ge 2820 ]; then blocked 'CI had not settled after 47 minutes of waiting for checks; the merge phase stopped before its watch timeout. A human can merge this PR once its checks are green.'; fi",
-         'printf \'%s\' \'CI had not settled after 47 minutes, so the pull request was approved and handed to merge-queue rather than blocking it.\' > /tmp/fabro/merge_block_reason\n    echo \'{"context_updates":{"checks_ok":false,"checks_blocked":false,"checks_deadline":true,"gh_fix_attempts":\'$A\'}}\'\n    exit 0'),
+         '    if [ $((NOW - T0)) -ge 2820 ]; then\n      printf \'%s\' \'CI had not settled after 47 minutes, so the pull request was approved and handed to merge-queue rather than blocking it.\' > /tmp/fabro/merge_block_reason\n      echo \'{"context_updates":{"checks_ok":false,"checks_blocked":false,"checks_deadline":true,"gh_fix_attempts":\'$A\'}}\'\n      exit 0\n    fi'),
     )),
     ('merge', '.fabro/workflows/_shared/review-merge/review-merge.fabro', 'merge', (
     )),

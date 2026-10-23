@@ -2370,12 +2370,16 @@ while : ; do
   GRACE=$(( $(date +%s) + 300 ))
   while : ; do
     NOW=$(date +%s)
-printf '%s' 'The 60-minute merge budget ran out with CI still pending, so the pull request was approved and handed to merge-queue.' > /tmp/fabro/merge_block_reason
-    echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"checks_deadline\":true,\"gh_fix_attempts\":'$A'}}'
-    exit 0
-printf '%s' 'CI had not settled after 47 minutes, so the pull request was approved and handed to merge-queue rather than blocking it.' > /tmp/fabro/merge_block_reason
-    echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"checks_deadline\":true,\"gh_fix_attempts\":'$A'}}'
-    exit 0
+    if [ \"$NOW\" -ge \"$DL\" ]; then
+      printf '%s' 'The 60-minute merge budget ran out with CI still pending, so the pull request was approved and handed to merge-queue.' > /tmp/fabro/merge_block_reason
+      echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"checks_deadline\":true,\"gh_fix_attempts\":'$A'}}'
+      exit 0
+    fi
+    if [ $((NOW - T0)) -ge 2820 ]; then
+      printf '%s' 'CI had not settled after 47 minutes, so the pull request was approved and handed to merge-queue rather than blocking it.' > /tmp/fabro/merge_block_reason
+      echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"checks_deadline\":true,\"gh_fix_attempts\":'$A'}}'
+      exit 0
+    fi
     gh pr checks \"$PR\" --json name,state,bucket,link > /tmp/fabro/checks.json 2>/dev/null || echo '[]' > /tmp/fabro/checks.json
     TOTAL=$(jq length /tmp/fabro/checks.json 2>/dev/null || echo 0)
     PEND=$(jq '[.[] | select(.bucket == \"pending\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)

@@ -3,9 +3,11 @@ own graph and rebased onto its own scratch directory; the edge checks read the p
 rather than the text, because a wrong route is invisible to `fabro validate`."""
 
 
+import time
+
 from harness import (ORIG_PATH, RAPH, WF, cat, count, edges, extract, git,
                      grep, head1, jq, jq_n, lastjson, mkreadok, present, rebase, rm, run, sh,
-                     stage, stub, syntax_ok, write)
+                     rm_glob, stage, stub, syntax_ok, which, write)
 
 ENTRY_GH = """#!/bin/sh
 case "$1 $2" in
@@ -990,6 +992,64 @@ def test_ralph_merge_prep(ck, tmp_path):
     go("1", "0")
     ck("merge_prep: host switch off: auto_merge 0", "0", cat(T / "auto_merge"))
     ck("merge_prep: host switch off: says so", "1", count("switched off host-wide", file=T / "auto_merge_off_reason"))
+
+
+def test_ralph_watch_checks(ck, tmp_path):
+    # Both deadline stops queue the PR instead of blocking it (O12), but only once the
+    # deadline has passed. The first copy (faf2cda) dropped their `if`s, so every ralph PR
+    # that passed merge_gate went to report_queued on the first poll, before CI ran
+    # (docs/ralph/review-2026-10-23.md).
+    from test_merge_phase import PASSING, SLEEP_STUB, WC_CURL, WC_FABRO_IO, WC_GH
+    T = tmp_path / "wchecks"
+    for d in ("bin", "review", "feedback"):
+        (T / d).mkdir(parents=True, exist_ok=True)
+    gate = stage_r(ck, "watch_checks", T)
+    real_date = which("date")
+    stub(T / "bin", "sleep", SLEEP_STUB)
+    stub(T / "bin", "date", f"""#!/bin/sh
+if [ "$1" = "+%s" ] && [ -f "$GH_STATE/clock" ]; then
+    now=$(cat "$GH_STATE/clock"); echo "$now"
+    echo $((now + $(cat "$GH_STATE/clock_step"))) > "$GH_STATE/clock"
+    exit 0
+fi
+exec {real_date} "$@"
+""")
+    stub(T / "bin", "gh", WC_GH)
+    stub(T / "bin", "curl", WC_CURL)
+    stub(T / "bin", "fabro-io", WC_FABRO_IO)
+    pending = '[{"name":"test","state":"PENDING","bucket":"pending","link":"https://github.com/o/r/actions/runs/111/job/9"}]'
+
+    def go(checks, deadline, clock_step=None):
+        rm_glob(T, "gh.log", "polls", "checks_*.json", "clock", "clock_step", "merge_block_reason")
+        write(T / "gh.log", "")
+        write(T / "pr_number", "7\n")
+        write(T / "base_ref", "main\n")
+        write(T / "merge_deadline", f"{deadline}\n")
+        write(T / "checks_1.json", checks)
+        if clock_step:
+            write(T / "clock", f"{int(time.time())}\n")
+            write(T / "clock_step", f"{clock_step}\n")
+        return sh(gate, path=f"{T / 'bin'}:{ORIG_PATH}", env={"GH_LOG": T / "gh.log", "GH_STATE": T},
+                  unset=("FLAKERADAR_URL", "WC_ATTEMPT", "WC_IGNORE"))
+
+    r = go(PASSING, int(time.time()) + 3600)
+    ck("watch_checks (ralph): green inside the deadline exits 0", "0", r.rc)
+    ck("watch_checks (ralph): green inside the deadline is checks_ok", "true", ctx(lastjson(r.out), "checks_ok"))
+    ck("watch_checks (ralph): green inside the deadline does not queue", "false",
+       jq(".context_updates.checks_deadline // false", lastjson(r.out)))
+    ck("watch_checks (ralph): green inside the deadline polled the checks", "1", count("^pr checks", file=T / "gh.log"))
+
+    r = go(pending, int(time.time()) - 1)
+    ck("watch_checks (ralph): a spent deadline queues", "true", ctx(lastjson(r.out), "checks_deadline"))
+    ck("watch_checks (ralph): a spent deadline says the budget ran out", "1",
+       count("merge budget ran out", file=T / "merge_block_reason"))
+
+    # The 47-minute stop: the stubbed clock moves 50 minutes per `date +%s`, so the first
+    # poll sees the checks pending and a later one is past T0 + 2820.
+    r = go(pending, int(time.time()) + 100000, clock_step=3000)
+    ck("watch_checks (ralph): 47 minutes pending queues", "true", ctx(lastjson(r.out), "checks_deadline"))
+    ck("watch_checks (ralph): 47 minutes pending says so", "1",
+       count("had not settled after 47 minutes", file=T / "merge_block_reason"))
 
 
 def test_ralph_stop_reason(ck, tmp_path):
