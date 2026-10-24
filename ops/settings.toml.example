@@ -111,12 +111,12 @@ capabilities = { text = true, tools = true, reasoning = true }
 
 [llm.providers.box-b]
 display_name = "Local coder B (10.10.0.56)"
-base_url = "http://<IP>:8000/v1"
+base_url = "http://<IP>:5300/v1"
 auth = { type = "none" }
 
 [llm.providers.box-b.models."coders-b"]
 display_name = "Local coders B (strix 10.10.0.56)"
-api_model = "deepseek-v4-flash-0731-iq3-xxs"
+api_model = "qwen3.8-flash-next"
 limits = { context_tokens = 262144, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }
 
