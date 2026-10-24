@@ -138,7 +138,7 @@ FABRO_PORT="${FABRO_PORT:-32276}"
 CONTAINER="${FABRO_CONTAINER:-fabro-fabro-1}"
 SCHEDULER_URL="${SCHEDULER_URL:-http://127.0.0.1:32280}"
 WEDGE_MINUTES="${WEDGE_MINUTES:-20}"
-REPOS="${FABRO_MONITOR_REPOS:-andrewthetechie/jelly-swipe andrewthetechie/womens-fantasy-sports andrewthetechie/lawncare-saas andrewthetechie/writers-app}"
+REPOS="${FABRO_MONITOR_REPOS:-andrewthetechie/jelly-swipe andrewthetechie/womens-fantasy-sports andrewthetechie/lawncare-saas andrewthetechie/writers-app andrewthetechie/flakeradar}"
 STATE_FILE="${FABRO_MONITOR_STATE:-$HOME/.local/state/fabro-monitor.state}"
 API="http://$FABRO_HOST:$FABRO_PORT/api/v1"
 

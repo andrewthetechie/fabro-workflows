@@ -36,7 +36,7 @@ locations instead.
 | `settings.toml.example` | Server settings overlay (`/storage/.home/settings.toml` in the container): env catalog, model map, sandbox providers. Nothing deploys it — the host keeps its own copy, so a change to one is a change to both. `make verify-host` runs `check-agent-profiles.py` against the **live** file, which is the only thing that reads it. |
 | `scheduler/` | The **coder scheduler**: a FastAPI service that owns admission to the two coder instances, so four uncoordinated automations stop fighting over two single-slot boxes. Reads `repos.toml`, inventories `agent`-labelled issues from GitHub with ETag caching, ranks them, serves the queue on `/`, and leases a coder instance to the highest-ranked issue whose repo has no run in flight and starts that run by itself. It also promotes `agent-held` child issues into the queue when their predecessor lands, and closes `agent-split` parents once every child has (ADR 0015). The coder-instances table also shows each leased run's decomposed-task count and current stage — a 30s background probe reads the sandbox's `/tmp/fabro/tasks.json` and the stage from `/runs/{id}/stages`, both through the fabro API (no docker socket; that read moved off the socket in the fabro-upgrade H6 change). `POST /api/dispatch-once` remains as the manual override. The **Metrics** tab (`/metrics`, JSON at `/api/scorecard`) is the factory scorecard: a background collector summarizes each released run from fabro's stages and streamed events, and reads each factory PR from GitHub (`docs/scorecard/README.md`). Deploy and verify under *The coder scheduler* below. |
 | `profile-images/` | The four sandbox profile-image Dockerfiles, `build-images.sh` (clone, warm from real lockfiles, build, verify), `fabro-pg-ensure.sh` (in-sandbox PostgreSQL, because fabro cannot start a service beside a sandbox) and `warm-build-backend.sh`. `build-images.sh` also builds the `fabro-io` Rust MCP binary (ADR 0016) from `ops/fabro-io/` and copies it into every image as `/usr/local/bin/fabro-io`; the binary ships only in the images, so a host copy is never needed. Start at its `README.md`. |
-| `provision-server-state.sh` | Recreates the twenty-eight **automations** (seven per repo: `backlog`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue`, `scout`; the `merge-queue` and `scout` schedules are created disabled) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
+| `provision-server-state.sh` | Recreates the thirty-five **automations** (seven per repo: `backlog`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue`, `scout`; the `merge-queue` and `scout` schedules are created disabled) — server state that lives in fabro's store, not in `settings.toml`. Without this a restored host has settings but nothing to run. It does **not** create environments; see step 6. |
 | `provision-litellm-models.sh` | Creates the `high-reasoning` model group and its `kimi-k3` fallback in LiteLLM. Scoped to that one group; the other model rows predate this workflow and are reported, never corrected. The `coders` pool's concurrency tuning is recorded under *Server-side state*, not managed here. |
 | `provision-coder-groups.sh` | Creates the per-box `coders-a` and `coders-b` model groups that the coder scheduler pins a run to, and adds both names to the fabro key's model allowlist. Leaves the load-balanced `coders` rows alone. Idempotent, `DRY_RUN=1` by default. |
 | `fabro-fire-backlog.sh` | The manual escape hatch for the coder scheduler: fire exactly one issue through the `backlog` workflow by hand (three-POST sequence, `args.inputs = {issue_number, coder_pool: "coders-a"}`, environment looked up from the repo's `backlog-<repo>` automation row). Since draft 10 a `backlog` run works only the issued `issue_number`, so this is the only way to move an issue when the scheduler is down. It pins a single box because the both-boxes `coders` group was retired with the LiteLLM provider (task 04). `DRY_RUN=1` by default; see `docs/scheduler/10-collapse-acquire-claim.md`. |
@@ -148,7 +148,7 @@ Checked on 2026-09-18, because the list below had drifted from the host:
    each environment names a profile image tag. Verify with
    `GET /api/v1/environments`.
 7. **Automations** — `FABRO_API_URL=http://<HOST>:32276/api/v1 \
-   FABRO_DEV_TOKEN=<dev token> ./provision-server-state.sh`. This creates the twenty-eight
+   FABRO_DEV_TOKEN=<dev token> ./provision-server-state.sh`. This creates the thirty-five
    automations, seven per repository. `FABRO_API_URL` includes the `/api/v1` prefix;
    the script appends `/automations` to it.
 8. **Vault secrets** — `fabro secret set GITHUB_TOKEN <...>` and
@@ -187,7 +187,7 @@ settings.toml only *selects* one; it does not define any.
 |---|---|---|---|---|
 | `default` | `buildpack-deps:noble` | 2 | 4GB | — |
 | `python` | `fabro-python:local` | 2 | 4GB | jelly-swipe |
-| `python-node` | `fabro-python-node:local` | 2 | 4GB | lawncare-saas |
+| `python-node` | `fabro-python-node:local` | 2 | 4GB | lawncare-saas, flakeradar |
 | `ts` | `fabro-ts:local` | 2 | 4GB | womens-fantasy-sports |
 | `rust-node` | `fabro-rust-node:local` | 4 | 8GB | writers-app |
 

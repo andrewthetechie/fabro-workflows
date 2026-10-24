@@ -25,7 +25,7 @@ CACHE_DIR="${CACHE_DIR:-$HOME/.cache/fabro-branch-sweep}"
 
 # Space-separated. An EMPTY value falls back to this default list (`:-`), so to
 # limit a run to one repo pass a real value: FABRO_SWEEP_REPOS="owner/repo".
-REPOS="${FABRO_SWEEP_REPOS:-andrewthetechie/jelly-swipe andrewthetechie/womens-fantasy-sports andrewthetechie/lawncare-saas andrewthetechie/writers-app}"
+REPOS="${FABRO_SWEEP_REPOS:-andrewthetechie/jelly-swipe andrewthetechie/womens-fantasy-sports andrewthetechie/lawncare-saas andrewthetechie/writers-app andrewthetechie/flakeradar}"
 
 now=$(date +%s)
 run_cutoff=$(( now - RUN_GRACE_HOURS * 3600 ))

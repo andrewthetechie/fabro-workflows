@@ -48,3 +48,9 @@ name           = "andrewthetechie/jelly-swipe"
 priority       = 99
 environment_id = "python"
 enabled        = true
+
+[[repo]]
+name           = "andrewthetechie/flakeradar"
+priority       = 40
+environment_id = "python-node"
+enabled        = true
