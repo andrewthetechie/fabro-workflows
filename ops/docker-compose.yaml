@@ -49,6 +49,15 @@ services:
       # ~/fabro/.env and `docker compose up -d --no-deps scheduler` on the host.
       # Either recreates only the scheduler; in-flight `ralph` runs finish.
       SCHEDULER_RALPH_SHARE: "${SCHEDULER_RALPH_SHARE:-50}"
+      # z.ai's peak hours (ops/scheduler/src/fabro_scheduler/peak.py): weekdays
+      # 14:00-18:00 Singapore time, which has no DST, so 06:00-10:00 UTC. Usage
+      # off-peak costs 50% of the peak credit rate (docs.z.ai/devpack/overview, read
+      # 2026-10-28). The scheduler starts no run from LEAD minutes before a window
+      # until it closes; the page's override button lifts that. If z.ai moves the
+      # window, change it here ('<days> <HH:MM>-<HH:MM> <+HH:MM>', several joined by
+      # ';', 'off' to disable) and recreate the scheduler only, as for the share.
+      SCHEDULER_PEAK_HOURS: "${SCHEDULER_PEAK_HOURS:-mon-fri 14:00-18:00 +08:00}"
+      SCHEDULER_PEAK_LEAD_MINUTES: "${SCHEDULER_PEAK_LEAD_MINUTES:-15}"
     # Deliberately **not** `env_file: .env`. That file carries fabro's
     # SESSION_SECRET — a cookie-signing key this service has no use for — and the
     # scheduler's credentials are its own two: GITHUB_TOKEN today, FABRO_API_TOKEN

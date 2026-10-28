@@ -970,3 +970,54 @@ def test_share_0_keeps_every_even_issue_on_backlog(store, leases, fabro):
         "workflows/backlog/workflow.fabro"
     )
     assert leases.active()[0].workflow == "backlog"
+
+
+# --- the peak-hours block (peak.py) -------------------------------------------------
+
+# Wednesday 2026-10-28, 07:00 UTC: inside z.ai's window (06:00-10:00 UTC).
+IN_PEAK = datetime(2026, 10, 28, 7, 0, tzinfo=UTC)
+ZAI_PEAK = {"SCHEDULER_PEAK_HOURS": "mon-fri 14:00-18:00 +08:00"}
+
+
+@respx.mock
+def test_peak_hours_dispatch_nothing_and_touch_nothing(store, leases, fabro):
+    """Inside the block a tick makes no request at all: no label, no run, no lease."""
+    config = load_config(TRACKED_REPOS, env=ZAI_PEAK)
+    loop = DispatchLoop(config, store, leases, fabro, "ghp_test", clock=lambda: IN_PEAK)
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    seed(store, JELLY, 9)
+
+    assert loop.tick() == []
+    assert recorder.calls == []
+    assert leases.active() == []
+
+
+@respx.mock
+def test_the_override_dispatches_through_peak_hours(store, leases, fabro):
+    config = load_config(TRACKED_REPOS, env=ZAI_PEAK)
+    loop = DispatchLoop(config, store, leases, fabro, "ghp_test", clock=lambda: IN_PEAK)
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    seed(store, JELLY, 9)
+    store.set_peak_override(True)
+
+    attempts = loop.tick()
+
+    assert attempts[0].run_id == "R1"
+    assert leases.active()[0].issue_number == 9
+
+
+@respx.mock
+def test_outside_peak_hours_dispatch_as_usual(store, leases, fabro):
+    config = load_config(TRACKED_REPOS, env=ZAI_PEAK)
+    after = IN_PEAK.replace(hour=10, minute=0)  # the window's close: resume at once
+    loop = DispatchLoop(config, store, leases, fabro, "ghp_test", clock=lambda: after)
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    seed(store, JELLY, 9)
+
+    assert loop.tick()[0].run_id == "R1"

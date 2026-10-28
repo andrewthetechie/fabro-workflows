@@ -392,6 +392,28 @@ def build_app(
                 ),
             )
 
+    def peak_state(now: datetime) -> dict[str, object]:
+        """The peak-hours block (`peak.py`) at `now`, with the operator's override.
+
+        `blocking` is the one the dispatch loop acts on: inside a block and not
+        overridden. The monitor reads it to tell a paused scheduler from a wedged one.
+        """
+        peak = config.peak_hours
+        status = peak.status(now)
+        override = store.peak_override()
+        return {
+            "configured": peak.configured,
+            "spec": peak.spec,
+            "lead_minutes": int(peak.lead.total_seconds() // 60),
+            "in_block": status.in_block,
+            "override": override,
+            "blocking": status.in_block and not override,
+            "until": status.until.astimezone(UTC).isoformat() if status.until else None,
+            "next_block": (
+                status.next_block.astimezone(UTC).isoformat() if status.next_block else None
+            ),
+        }
+
     @app.get("/health")
     def health() -> dict[str, object]:
         return {
@@ -417,7 +439,31 @@ def build_app(
             "starvation_ceiling_seconds": int(
                 config.starvation_ceiling.total_seconds()
             ),
+            "peak_hours": peak_state(datetime.now(UTC)),
         }
+
+    @app.get("/api/peak")
+    def api_peak() -> dict[str, object]:
+        """Whether dispatch is paused for the provider's peak hours, and until when."""
+        return peak_state(datetime.now(UTC))
+
+    @app.post("/api/peak/override")
+    def peak_override_on() -> dict[str, object]:
+        """Let dispatch run through peak hours until the operator restores the block.
+
+        A global switch, not a one-window pass: it stays on across windows and
+        restarts until `/api/peak/restore`, and the page shows it while it is on.
+        """
+        store.set_peak_override(True)
+        log.info("peak: override on; dispatch ignores the peak-hours block")
+        return peak_state(datetime.now(UTC))
+
+    @app.post("/api/peak/restore")
+    def peak_override_off() -> dict[str, object]:
+        """Put the peak-hours block back. Takes effect on the next dispatch tick."""
+        store.set_peak_override(False)
+        log.info("peak: override off; dispatch pauses during peak hours again")
+        return peak_state(datetime.now(UTC))
 
     @app.get("/api/queue")
     def api_queue() -> list[dict[str, object]]:
@@ -533,7 +579,8 @@ def build_app(
 
         The operator's override, which draft 07 built to prove the client and draft
         08 keeps. It takes `repo`, `issue_number` and `coder_pool` explicitly and
-        does exactly one dispatch; the loop does the rest.
+        does exactly one dispatch; the loop does the rest. It ignores the peak-hours
+        block (`peak.py`): a run started by hand is the operator choosing to spend.
 
         **It takes the lease, and refuses a box that is already leased.** Without
         that, the one write path the loop does not own would be the one way to put
@@ -914,6 +961,7 @@ def build_app(
         blocked_idle = bool(idle_pools) and bool(items) and all(
             item.issue.repo in busy_repos for item in items
         )
+        peak = peak_state(now)
 
         # Time-left estimate per leased run (feature: ETA). Most-specific wins: the
         # sandbox subtask rate when decomposition has made progress, else the repo's
@@ -966,8 +1014,11 @@ def build_app(
                 # Under decision-6 saturation this self-resolves, so the banner names
                 # the idle worker and tells the operator it is transient (or stale
                 # inventory if it lingers) rather than urging a manual dispatch.
-                "blocked_idle": blocked_idle,
+                "blocked_idle": blocked_idle and not peak["blocking"],
                 "idle_pools": idle_pools,
+                # The provider's peak-hours block and the override button.
+                "peak": peak,
+                "peak_status": config.peak_hours.status(now),
                 # The fabro web UI root for the run link, derived from the API base
                 # by stripping `/api/v1`. Rendered only into the server-side HTML
                 # page the operator views, never into a JSON payload.

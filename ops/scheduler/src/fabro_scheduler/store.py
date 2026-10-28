@@ -138,6 +138,15 @@ CREATE TABLE IF NOT EXISTS pool_state (
   drained    INTEGER NOT NULL DEFAULT 0
 );
 
+-- Operator switches that apply to the whole scheduler, one row per switch, written
+-- only by a click. `peak_override` = 1 lets the dispatch loop run through the
+-- provider's peak hours (`peak.py`); no row reads as 0. In SQLite for the same
+-- reason as `pool_state`: a restart must not silently flip what the operator chose.
+CREATE TABLE IF NOT EXISTS scheduler_flags (
+  name  TEXT PRIMARY KEY,
+  value INTEGER NOT NULL
+);
+
 -- How many times each issue has been requeued after a failure. The requeue rule
 -- is what keeps work moving across a fabro restart, and it is also the one rule
 -- that can loop: it puts the issue straight back at the front of the queue, so a
@@ -516,6 +525,14 @@ class Store:
             ).fetchall()
         return {row["coder_pool"] for row in rows}
 
+    def peak_override(self) -> bool:
+        """Whether the operator has told dispatch to ignore the peak-hours block."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM scheduler_flags WHERE name = 'peak_override'"
+            ).fetchone()
+        return row is not None and bool(row["value"])
+
     def get_issue(self, repo: str, number: int) -> Issue | None:
         with self._lock:
             row = self._conn.execute(
@@ -790,6 +807,15 @@ class Store:
                 "INSERT INTO pool_state (coder_pool, drained) VALUES (?, ?) "
                 "ON CONFLICT(coder_pool) DO UPDATE SET drained = excluded.drained",
                 (coder_pool, 1 if drained else 0),
+            )
+
+    def set_peak_override(self, override: bool) -> None:
+        """Turn the peak-hours override on or off. Read fresh on every dispatch tick."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO scheduler_flags (name, value) VALUES ('peak_override', ?) "
+                "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+                (1 if override else 0,),
             )
 
     def upsert_issue(self, issue: Issue) -> None:

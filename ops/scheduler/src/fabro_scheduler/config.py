@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
+from .peak import PeakConfigError, PeakHours, parse_peak_hours
+
 # "owner/repo". Permissive about the characters GitHub allows, strict about the
 # shape: exactly one slash, neither side empty. A name that fails this cannot be
 # passed to the GitHub API as an owner/repo pair.
@@ -63,6 +65,11 @@ DEFAULT_GITHUB_POLL_SECONDS = 60
 # its own series, not a third value here.
 DEFAULT_RALPH_SHARE = 0
 RALPH_SHARES = (0, 50)
+
+# The provider's peak hours (`peak.py`): no new dispatch from `lead` minutes before a
+# window opens until it closes. Off when unset, so a test or a fresh host never blocks
+# by surprise; compose sets z.ai's window. The lead is 15 minutes by default.
+DEFAULT_PEAK_LEAD_MINUTES = 15
 
 # The run probe's beat: how often the background thread refreshes the cached
 # per-lease task count and current stage that the page renders. Stages last tens
@@ -131,6 +138,8 @@ class SchedulerConfig:
     automation_author: str = DEFAULT_AUTOMATION_AUTHOR
     # 0 or 50; see `DEFAULT_RALPH_SHARE`. Read by `choose_workflow`.
     ralph_share: int = DEFAULT_RALPH_SHARE
+    # When dispatch pauses for the provider's peak hours; see `peak.py`. Off by default.
+    peak_hours: PeakHours = field(default_factory=PeakHours)
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -206,6 +215,7 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
             environ, "SCHEDULER_AUTOMATION_AUTHOR", DEFAULT_AUTOMATION_AUTHOR
         ),
         ralph_share=_env_ralph_share(environ),
+        peak_hours=_env_peak_hours(environ),
     )
 
 
@@ -347,6 +357,28 @@ def _env_ralph_share(environ: Mapping[str, str]) -> int:
             f"{key}: {value} is not one of {', '.join(str(v) for v in RALPH_SHARES)}"
         )
     return value
+
+
+def _env_peak_hours(environ: Mapping[str, str]) -> PeakHours:
+    """`SCHEDULER_PEAK_HOURS` and `SCHEDULER_PEAK_LEAD_MINUTES`; see `peak.py`.
+
+    A value that does not parse is a `ConfigError`, not "off": a typo would otherwise
+    quietly put dispatch back into the window it was set to avoid.
+    """
+    key = "SCHEDULER_PEAK_LEAD_MINUTES"
+    raw = environ.get(key, "").strip()
+    lead = DEFAULT_PEAK_LEAD_MINUTES
+    if raw:
+        try:
+            lead = int(raw)
+        except ValueError as exc:
+            raise ConfigError(f"{key}: {raw!r} is not an integer") from exc
+        if lead < 0:
+            raise ConfigError(f"{key}: {lead} is negative")
+    try:
+        return parse_peak_hours(environ.get("SCHEDULER_PEAK_HOURS", ""), lead)
+    except PeakConfigError as exc:
+        raise ConfigError(f"SCHEDULER_PEAK_HOURS: {exc}") from exc
 
 
 def _env_positive_int(environ: Mapping[str, str], key: str, default: int) -> int:

@@ -231,8 +231,13 @@ class DispatchLoop:
         github_token: str,
         *,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._config = config
+        self._clock = clock
+        # The last peak-hours decision, so the log says when dispatch paused and
+        # resumed once each rather than on every 5-second tick.
+        self._peak_paused: bool | None = None
         self._store = store
         self._leases = leases
         self._fabro = fabro
@@ -262,8 +267,13 @@ class DispatchLoop:
         a tick at a time would leave the second box idle for five seconds for no
         reason. It terminates: every iteration either takes a pool (there are two)
         or rules a repo out for the rest of this tick (there are four).
+
+        Inside the provider's peak hours (`peak.py`) it dispatches nothing, unless the
+        operator has set the override. Runs already on a box are not touched.
         """
-        now = datetime.now(UTC)
+        now = self._clock()
+        if self._peak_pause(now):
+            return []
         ranked = build_queue(
             self._config.schedulable_repos(),
             self._store,
@@ -292,6 +302,33 @@ class DispatchLoop:
             attempts.append(attempt)
             if not attempt.dispatched:
                 backed_off.add(item.issue.repo)
+
+    def _peak_pause(self, now: datetime) -> bool:
+        """Whether this tick dispatches nothing because of the peak-hours block.
+
+        The override is read fresh each tick, like the drain flags, so the page's
+        button takes effect on the next tick with no restart.
+        """
+        peak = self._config.peak_hours
+        status = peak.status(now)
+        override = status.in_block and self._store.peak_override()
+        paused = status.in_block and not override
+        if paused != self._peak_paused:
+            if paused:
+                log.info(
+                    "dispatch: paused for peak hours (%s, lead %s) until %s; "
+                    "runs already on a box continue",
+                    peak.spec,
+                    peak.lead,
+                    status.until.isoformat() if status.until else "?",
+                )
+            elif self._peak_paused is not None:
+                log.info(
+                    "dispatch: resumed%s",
+                    " (peak-hours override is on)" if override else "",
+                )
+            self._peak_paused = paused
+        return paused
 
     # --- one dispatch -----------------------------------------------------------
 

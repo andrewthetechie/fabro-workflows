@@ -369,6 +369,17 @@ phttp="$(curl -sS -o "$tmp/pools.json" -w '%{http_code}' -m 5 \
 if [ "$phttp" = 200 ] && jq -e 'type == "array"' "$tmp/pools.json" >/dev/null 2>&1; then
   pools_ok=1
 fi
+# The scheduler pauses dispatch for z.ai's peak hours (peak.py, 2026-10-28): every
+# weekday it starts no run for 4h15m, so idle pools with queued work are expected and
+# no new run is not a dead scheduler. peak_paused=1 only when /api/peak says so; an
+# older scheduler without the route reads as not paused, as before.
+peak_paused=0
+peak_until=""
+if [ "$(curl -sS -o "$tmp/peak.json" -w '%{http_code}' -m 5 "$SCHEDULER_URL/api/peak" 2>/dev/null)" = 200 ] \
+  && [ "$(jq -r '.blocking // false' "$tmp/peak.json" 2>/dev/null)" = true ]; then
+  peak_paused=1
+  peak_until="$(jq -r '.until // "?"' "$tmp/peak.json" 2>/dev/null)"
+fi
 
 if [ "$api_ok" = 1 ]; then
   # ---- C3 and C4 read different run sets (ADR 0024 D8, rule 6) ------------
@@ -450,6 +461,9 @@ if [ "$api_ok" = 1 ]; then
           | if length > 0 and ($open | all(.lease.run_id as $r | $r != null and ($live | any(.[]; . == $r))))
             then "\($open | length) undrained pool(s) leased, \(length - ($open | length)) drained"
             else "" end' "$tmp/pools.json" 2>/dev/null)"
+      fi
+      if [ -z "$saturated" ] && [ "$peak_paused" = 1 ]; then
+        saturated="dispatch paused for peak hours until $peak_until"
       fi
 
       if [ "$enabled_schedules" -gt 0 ] && [ "$newest" -gt 0 ] \
@@ -624,7 +638,12 @@ else
     n_idle="$(jq '[.[] | select((.lease == null) and (.drained == false))] | length' \
       "$tmp/pools.json" 2>/dev/null)"
     n_drained=$(( ${n_pools:-0} - ${n_open:-0} ))
-    if printf '%s' "$qlen$n_pools$n_open$n_idle" | grep -Eq '^[0-9]+$' \
+    if [ "$peak_paused" = 1 ]; then
+      # Paused on purpose: not a wedge, and C8_since is dropped so the window
+      # restarts from the first sample after the pause ends.
+      printf 'ok    C8 scheduler-wedged: dispatch paused for peak hours until %s (%s queued)\n' \
+        "$peak_until" "$qlen"
+    elif printf '%s' "$qlen$n_pools$n_open$n_idle" | grep -Eq '^[0-9]+$' \
       && [ "$qlen" -gt 0 ] && [ "$n_open" -gt 0 ] && [ "$n_idle" = "$n_open" ]; then
       c8_since="$(stamp_of C8_since)"
       printf '%s' "$c8_since" | grep -Eq '^[0-9]+$' || c8_since="$now"

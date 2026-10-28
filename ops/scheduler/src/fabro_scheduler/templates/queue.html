@@ -67,6 +67,35 @@
   {% endfor %}
 </div>
 
+{% if peak.configured %}
+{# The provider's peak hours (peak.py): no new dispatch from the lead before a window
+   until it closes. The override is one global switch that stays on until restored. #}
+<div class="mb-6 rounded-md border px-4 py-3 text-sm {% if peak.blocking %}border-amber-700/60 bg-amber-950 text-amber-100{% elif peak.override %}border-red-900/70 bg-red-950 text-red-200{% else %}border-slate-800 bg-slate-900 text-slate-300{% endif %}">
+  <p>
+    {% if peak.blocking %}
+      <strong class="text-amber-200">Peak hours &mdash; dispatch paused</strong> until
+      {{ peak.until[11:16] }} UTC ({{ (peak_status.until - now)|duration }} from now).
+      Runs already on a box keep running.
+    {% elif peak.in_block and peak.override %}
+      <strong>Peak hours, override on &mdash; dispatching</strong> at peak credit rates until
+      {{ peak.until[11:16] }} UTC ({{ (peak_status.until - now)|duration }} from now).
+    {% elif peak.override %}
+      <strong>Peak-hours override is on</strong> &mdash; the next window
+      {%- if peak.next_block %} ({{ peak.next_block[:10] }} {{ peak.next_block[11:16] }} UTC){% endif %} will not pause dispatch.
+    {% else %}
+      <strong class="font-medium text-slate-200">Peak hours</strong> &mdash; dispatch pauses next at
+      {%- if peak.next_block %} {{ peak.next_block[:10] }} {{ peak.next_block[11:16] }} UTC ({{ (peak_status.next_block - now)|duration }} from now){% else %} no time in the coming week{% endif %}.
+    {% endif %}
+    <span class="text-slate-500">Window: <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">{{ peak.spec }}</code>, paused from {{ peak.lead_minutes }} min before it opens.</span>
+  </p>
+  <form class="control mt-2" method="post"
+        action="/api/peak/{{ 'restore' if peak.override else 'override' }}"
+        {% if not peak.override %}data-confirm="Dispatch through peak hours? Hosted stages cost double credits until you restore the block."{% endif %}>
+    <button type="submit" class="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-slate-600 hover:bg-slate-700">{{ 'Restore peak-hours block' if peak.override else 'Override: dispatch during peak hours' }}</button>
+  </form>
+</div>
+{% endif %}
+
 {% if blocked_idle %}
 <div class="mb-6 rounded-md border border-amber-700/60 bg-amber-950 px-4 py-3 text-sm text-amber-100">
   <p><strong class="text-amber-200">Idle worker, queue momentarily blocked</strong> &mdash;
