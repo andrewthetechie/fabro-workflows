@@ -18,6 +18,7 @@ import pytest
 
 from fabro_scheduler.workflow_version import (
     BACKLOG_ENTRYPOINT,
+    read_box_stages,
     MAX_FILE_BYTES,
     RALPH_ENTRYPOINT,
     VersionCache,
@@ -200,3 +201,61 @@ def _git(cwd: Path, *args: str) -> str:
         ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
     )
     return completed.stdout.strip()
+
+
+# --- the box stages the lane reads (more-local-inference C1, C7 step 6) --------------
+
+
+def write_manifest(root: Path, workflow: str, manifest: dict | str) -> None:
+    import json
+
+    (root / f"workflows/{workflow}").mkdir(parents=True, exist_ok=True)
+    body = manifest if isinstance(manifest, str) else json.dumps(manifest)
+    (root / f"workflows/{workflow}/workflow.toml").write_text(
+        "[run.environment.env]\n" + "FABRO_IO_MANIFEST = " + "'''" + body + "'''" + "\n"
+    )
+
+
+def test_read_box_stages_keeps_true_and_plan_arm_and_drops_false(tmp_path):
+    write_manifest(tmp_path, "backlog", {
+        "version": 1,
+        "min_binary": "0.9.0",
+        "stages": {
+            "coder": {"box": True},
+            "plan": {"box": "plan-arm"},
+            "review": {"box": False},
+            "decompose": {},
+        },
+    })
+    assert read_box_stages(tmp_path, "backlog") == {"coder": "true", "plan": "plan-arm"}
+
+
+def test_read_box_stages_reads_the_real_generated_block(tmp_path):
+    """The block is JSON inside a TOML literal string, exactly as the generator writes
+    it — and a mis-parse would leave the lane failing closed and starting nothing."""
+    import json
+
+    from fabro_scheduler.workflow_version import read_box_stages as read
+
+    source = Path(__file__).resolve().parents[3] / ".fabro/workflows/_io/manifest.json"
+    if not source.exists():  # pragma: no cover - the repo always has it
+        pytest.skip("no source manifest")
+    generated = json.loads(source.read_text())
+    stages = {sid: spec.get("box", False) for sid, spec in
+              generated["workflows"]["ralph"]["stages"].items()}
+    write_manifest(tmp_path, "ralph", {"version": 1, "min_binary": "0.9.0", "stages": {
+        sid: {"box": box} for sid, box in stages.items()
+    }})
+    got = read(tmp_path, "ralph")
+    assert got == {sid: ("true" if box is True else "plan-arm")
+                   for sid, box in stages.items() if box is not False}
+    assert "iterate_t1" in got and got["plan"] == "plan-arm"
+
+
+def test_read_box_stages_returns_empty_for_a_tree_or_block_it_cannot_read(tmp_path):
+    assert read_box_stages(tmp_path, "backlog") == {}, "no package at all"
+    (tmp_path / "workflows/backlog").mkdir(parents=True)
+    (tmp_path / "workflows/backlog/workflow.toml").write_text('name = "backlog"\n')
+    assert read_box_stages(tmp_path, "backlog") == {}, "no manifest block"
+    write_manifest(tmp_path, "ralph", "not json")
+    assert read_box_stages(tmp_path, "ralph") == {}, "an unparsable block is not a crash"

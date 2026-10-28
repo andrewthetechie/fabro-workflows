@@ -57,6 +57,7 @@ from datetime import UTC, datetime
 
 import httpx
 
+from .background import BackgroundLane, BoxHealth
 from .config import SchedulerConfig
 from .fabro import FabroClient, FabroError, RunNotStarted
 from .github import (
@@ -232,9 +233,18 @@ class DispatchLoop:
         *,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        lane: BackgroundLane | None = None,
+        health: BoxHealth | None = None,
     ) -> None:
         self._config = config
         self._clock = clock
+        # The background lane (C7). Built here unless injected, so `tick` always has one;
+        # with `SCHEDULER_BOX_HEALTH` empty it does nothing and makes no call at all.
+        self._lane = (
+            lane
+            if lane is not None
+            else BackgroundLane(config, store, leases, fabro, health=health, clock=clock)
+        )
         # The last peak-hours decision, so the log says when dispatch paused and
         # resumed once each rather than on every 5-second tick.
         self._peak_paused: bool | None = None
@@ -273,6 +283,9 @@ class DispatchLoop:
         """
         now = self._clock()
         if self._peak_pause(now):
+            # Background runs ignore the peak-hours pause (D7): they spend no hosted
+            # credits, and a gap is a gap whatever the hour.
+            self._lane.tick(now)
             return []
         ranked = build_queue(
             self._config.schedulable_repos(),
@@ -295,13 +308,29 @@ class DispatchLoop:
                 self._leases.last_pool_for_repo,
             )
             if chosen is None:
-                return attempts
+                break
 
             item, pool = chosen
+            # Fabro admits runs first come, first served under `max_concurrent_runs`, so
+            # a background run holding the last slot would make the coder loop wait. The
+            # coder loop has precedence (D8): cancel the youngest background run first.
+            if self._config.box_health:
+                evicted = self._lane.make_room(now)
+                if evicted is not None:
+                    log.info(
+                        "dispatch: cancelled background run %s on %s to free a slot",
+                        evicted.run_id,
+                        evicted.box,
+                    )
             attempt = self._dispatch(item, pool)
             attempts.append(attempt)
             if not attempt.dispatched:
                 backed_off.add(item.issue.repo)
+
+        # The lane runs after the primary dispatch, so a coder loop is never delayed by
+        # it in the same tick: evict first (D17 layer 2), then fill what is left (D7).
+        self._lane.tick(now)
+        return attempts
 
     def _peak_pause(self, now: datetime) -> bool:
         """Whether this tick dispatches nothing because of the peak-hours block.
@@ -415,6 +444,10 @@ class DispatchLoop:
             repo=repo,
             issue_number=number,
             run_id=result.run_id,
+            # The loop's box stages, read from the version's generated manifest when it
+            # was registered (C1, C7 step 6). Persisted on the lease so the lane can
+            # judge this run after a scheduler restart.
+            box_stages=self._fabro.box_stages(result.commit_sha, workflow),
             dispatched_at=datetime.now(UTC),
             # The item's wait travels with the lease, because the poll deletes its
             # cache row within a minute of this label write and draft 09's requeue

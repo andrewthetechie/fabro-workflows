@@ -25,6 +25,11 @@ from dataclasses import dataclass
 # fabro checkout). A provider not in this set is hosted.
 LOCAL_PROVIDERS = frozenset({"box-a", "box-b", "spark"})
 
+# The background lane's `coders-a-bg` / `coders-b-bg` rows resolve to `box-a` and
+# `box-b`, so they classify as local here without a rule of their own
+# (more-local-inference C8). In any case no background run reaches this module: it is
+# called at lease release, and a background job takes no lease.
+
 
 @dataclass(frozen=True)
 class UsageSplit:

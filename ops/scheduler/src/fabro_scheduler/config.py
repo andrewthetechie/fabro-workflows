@@ -71,6 +71,58 @@ RALPH_SHARES = (0, 50)
 # by surprise; compose sets z.ai's window. The lead is 15 minutes by default.
 DEFAULT_PEAK_LEAD_MINUTES = 15
 
+# --- the background lane (more-local-inference C7, D4, D7, D8, D12) -----------------
+#
+# One switch turns the lane off with no other deploy. It is `off` by default **in code
+# and in `ops/docker-compose.yaml`**: the operator turns it on in `~/fabro/.env`.
+DEFAULT_BACKGROUND = False
+
+# How long strix-infer must report a box idle before a background run may start on it.
+DEFAULT_BG_GAP_SECONDS = 30
+
+# Run slots fabro must have free before a background run starts: `max_concurrent_runs`
+# minus every run in an active status, `pending` included (D8).
+DEFAULT_BG_SLOT_RESERVE = 3
+
+# `pool=url` pairs, the same format `fabro-io box-claim` reads (C3). Empty means no box
+# is in the lane and the lane does nothing at all.
+DEFAULT_BOX_HEALTH = ""
+
+# fabro's own `server.scheduler.max_concurrent_runs`. Keep the two equal: the scheduler
+# reads it only to count free slots, and a value above fabro's would hand background
+# runs slots that do not exist.
+DEFAULT_MAX_CONCURRENT_RUNS = 8
+
+# The job kinds the lane knows, in D10's value order: the lowest number is picked first.
+# Task 05 adds only `box-noop`, which exists to measure cancels; tasks 06, 07, 08 and 10
+# add `pr-doctor` (1), `issue-precheck` (2), `context-pack` (3), `orientation` and
+# `flaky-investigation` (4) as they build their producers.
+BACKGROUND_JOB_PRIORITY = {
+    "box-noop": 5,
+}
+
+# Gap prediction (C7 step 9): the coder loop's median remaining gap after a node, in
+# minutes, keyed by `(workflow, node id)`. **These are the overview's starting numbers,
+# not measurements**; task 12 replaces them with measured ones before Phase 1 deploys.
+BACKGROUND_GAP_MINUTES: dict[tuple[str, str], int] = {
+    ("backlog", "review_merge.watch_checks"): 30,
+    ("ralph", "watch_checks"): 30,
+}
+
+# Every other stage of a coder loop — a hosted stage or a command node — which is minutes
+# of waiting rather than the tens of minutes a CI watch can take.
+BACKGROUND_GAP_MINUTES_DEFAULT = 8
+
+# The loops the table covers today. `pr-review` leases a box too (task 06), but no gap
+# after its stages has been measured yet, so it predicts 0 and only a job of five minutes
+# or less starts there. Any workflow outside this tuple reads as 0, which is the safe
+# direction: an unmeasured gap is not a gap to commit a long job to.
+BACKGROUND_GAP_WORKFLOWS = ("backlog", "ralph")
+
+# The workflows whose box stages a background run must never overlap (D1). A coder loop
+# with no current box stage leaves its whole remaining gap to the lane.
+CODER_LOOP_WORKFLOWS = ("backlog", "ralph", "pr-review")
+
 # The run probe's beat: how often the background thread refreshes the cached
 # per-lease task count and current stage that the page renders. Stages last tens
 # of seconds to minutes each, so 30s keeps the display visibly current while
@@ -101,6 +153,38 @@ class ConfigError(ValueError):
     The message always names the offending key, so the operator has the line to
     look at without reading a traceback.
     """
+
+
+def predicted_gap_minutes(workflow: str, node: str) -> int:
+    """The coder loop's predicted remaining gap after `(workflow, node)`, in minutes.
+
+    An unknown key predicts 0, so only a job of 5 minutes or less can start on it: with
+    no measurement, starting a long job is a guess that costs the coder loop its box.
+    """
+    known = BACKGROUND_GAP_MINUTES.get((workflow, node))
+    if known is not None:
+        return known
+    if workflow in BACKGROUND_GAP_WORKFLOWS:
+        return BACKGROUND_GAP_MINUTES_DEFAULT
+    return 0
+
+
+def parse_box_health(raw: str) -> dict[str, str]:
+    """`SCHEDULER_BOX_HEALTH` into `{pool: health url}` (C3's format).
+
+    Comma-separated `pool=url` pairs. Whitespace around a pair, around either side of
+    the `=`, and around a trailing comma are tolerated; a pair without an `=` or with an
+    empty side is skipped rather than guessed at.
+    """
+    pairs: dict[str, str] = {}
+    for entry in raw.split(","):
+        pool, sep, url = entry.partition("=")
+        if not sep:
+            continue
+        pool, url = pool.strip(), url.strip()
+        if pool and url:
+            pairs[pool] = url
+    return pairs
 
 
 @dataclass(frozen=True)
@@ -140,6 +224,18 @@ class SchedulerConfig:
     ralph_share: int = DEFAULT_RALPH_SHARE
     # When dispatch pauses for the provider's peak hours; see `peak.py`. Off by default.
     peak_hours: PeakHours = field(default_factory=PeakHours)
+    # The background lane (C7, D12). `off` means no new background run starts; running
+    # ones finish.
+    background: bool = DEFAULT_BACKGROUND
+    bg_gap_seconds: int = DEFAULT_BG_GAP_SECONDS
+    bg_slot_reserve: int = DEFAULT_BG_SLOT_RESERVE
+    # `{pool: /health url}`, from `SCHEDULER_BOX_HEALTH`. Empty = no box in the lane.
+    box_health: dict[str, str] = field(default_factory=dict)
+    max_concurrent_runs: int = DEFAULT_MAX_CONCURRENT_RUNS
+    # Which job kinds' producers may enqueue. Defaults to every kind the lane knows.
+    bg_kinds: tuple[str, ...] = field(
+        default_factory=lambda: tuple(BACKGROUND_JOB_PRIORITY)
+    )
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -216,6 +312,20 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
         ),
         ralph_share=_env_ralph_share(environ),
         peak_hours=_env_peak_hours(environ),
+        background=_env_background(environ),
+        bg_gap_seconds=_env_int_at_least(
+            environ, "SCHEDULER_BG_GAP_S", DEFAULT_BG_GAP_SECONDS, 0
+        ),
+        bg_slot_reserve=_env_int_at_least(
+            environ, "SCHEDULER_BG_SLOT_RESERVE", DEFAULT_BG_SLOT_RESERVE, 0
+        ),
+        box_health=parse_box_health(
+            _env_str(environ, "SCHEDULER_BOX_HEALTH", DEFAULT_BOX_HEALTH)
+        ),
+        max_concurrent_runs=_env_int_at_least(
+            environ, "SCHEDULER_MAX_CONCURRENT_RUNS", DEFAULT_MAX_CONCURRENT_RUNS, 1
+        ),
+        bg_kinds=_env_bg_kinds(environ),
     )
 
 
@@ -356,6 +466,58 @@ def _env_ralph_share(environ: Mapping[str, str]) -> int:
         raise ConfigError(
             f"{key}: {value} is not one of {', '.join(str(v) for v in RALPH_SHARES)}"
         )
+    return value
+
+
+def _env_background(environ: Mapping[str, str]) -> bool:
+    """`SCHEDULER_BACKGROUND`: `on` or `off` (C7, D12).
+
+    Anything else is a `ConfigError`, not `off`: a typo would otherwise read as "the
+    operator turned the lane off", which is the one answer they would believe.
+    """
+    key = "SCHEDULER_BACKGROUND"
+    raw = environ.get(key, "").strip().lower()
+    if not raw:
+        return DEFAULT_BACKGROUND
+    if raw == "on":
+        return True
+    if raw == "off":
+        return False
+    raise ConfigError(f"{key}: {raw!r} is not 'on' or 'off'")
+
+
+def _env_bg_kinds(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """`SCHEDULER_BG_KINDS`: the job kinds whose producers run (C7).
+
+    Default is every known kind. An unknown kind is a `ConfigError`: a name that matches
+    no producer would silently turn nothing on.
+    """
+    key = "SCHEDULER_BG_KINDS"
+    raw = environ.get(key, "").strip()
+    if not raw:
+        return tuple(BACKGROUND_JOB_PRIORITY)
+    kinds = tuple(part.strip() for part in raw.split(",") if part.strip())
+    unknown = [kind for kind in kinds if kind not in BACKGROUND_JOB_PRIORITY]
+    if unknown:
+        raise ConfigError(
+            f"{key}: {unknown[0]!r} is not a job kind; expected one of "
+            f"{', '.join(BACKGROUND_JOB_PRIORITY)}"
+        )
+    return kinds
+
+
+def _env_int_at_least(
+    environ: Mapping[str, str], key: str, default: int, minimum: int
+) -> int:
+    raw = environ.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{key}: {raw!r} is not an integer") from exc
+    if value < minimum:
+        raise ConfigError(f"{key}: {value} is below the minimum of {minimum}")
     return value
 
 

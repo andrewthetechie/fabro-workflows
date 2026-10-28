@@ -64,6 +64,12 @@ from datetime import datetime
 # a LiteLLM-style group named `coders-<x>`, so the model name says it without a
 # provider list that goes stale each time a pool is added (coders-c is `spark`,
 # coders-d is `freellm`).
+# `coders-` also matches the background lane's `coders-a-bg` / `coders-b-bg` model names
+# (more-local-inference C5), and a background stage would then count as coder box time.
+# It cannot happen here: a summary is only ever built for a run that held a lease
+# (`store.runs_to_summarize` reads `run_history`, which only `archive_and_release_lease`
+# writes), and a background job has no lease. The exclusion is the lease table, not this
+# prefix, so it must not be loosened without re-checking C8.
 CODER_MODEL_PREFIX = "coders-"
 
 # How many edges of the run's end to keep. Enough to show how a run with no PR

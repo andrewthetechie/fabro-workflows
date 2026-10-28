@@ -40,6 +40,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -60,7 +61,13 @@ WORKFLOWS_REF = "main"
 # why the cache below is keyed by the pair and not by the commit.
 BACKLOG_ENTRYPOINT = "workflows/backlog/workflow.fabro"
 RALPH_ENTRYPOINT = "workflows/ralph/workflow.fabro"
-ENTRYPOINTS = {"backlog": BACKLOG_ENTRYPOINT, "ralph": RALPH_ENTRYPOINT}
+# The first box-only package (more-local-inference task 04). Tasks 06-10 add theirs.
+BOX_NOOP_ENTRYPOINT = "workflows/box-noop/workflow.fabro"
+ENTRYPOINTS = {
+    "backlog": BACKLOG_ENTRYPOINT,
+    "ralph": RALPH_ENTRYPOINT,
+    "box-noop": BOX_NOOP_ENTRYPOINT,
+}
 
 # The server's limits, from the `WorkflowVersion` schema: at most 512 files, 512
 # KiB per file, and 2 MiB of compact canonical JSON. Checked here rather than
@@ -104,6 +111,43 @@ class FabroTree:
 
     directory: Path
     sha: str
+
+
+def read_box_stages(fabro_dir: Path, workflow: str) -> dict[str, str]:
+    """`{node id: "true" | "plan-arm"}` from `workflow`'s generated Stage manifest (C1).
+
+    Read out of the `FABRO_IO_MANIFEST` block `ops/fabro-io-manifest.py` generates into
+    the package's `workflow.toml`, so this is the same text `fabro-io box-claim` and
+    `box-guard` read at run time — never a second interpretation of the source manifest.
+
+    Only the stages that can run on the box are returned: `false` is omitted, so an
+    absent key means "not a box stage". A tree without the block, or with one that does
+    not parse, returns `{}` and is the caller's to log: a dispatch must never fail over
+    a derived fact.
+    """
+    path = fabro_dir / "workflows" / workflow / "workflow.toml"
+    try:
+        data = tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    env = ((data.get("run") or {}).get("environment") or {}).get("env") or {}
+    raw = env.get("FABRO_IO_MANIFEST")
+    if not isinstance(raw, str):
+        return {}
+    try:
+        manifest = json.loads(raw)
+    except ValueError:
+        return {}
+    stages: dict[str, str] = {}
+    for stage_id, stage in (manifest.get("stages") or {}).items():
+        if not isinstance(stage, dict):
+            continue
+        box = stage.get("box", False)
+        if box is True:
+            stages[stage_id] = "true"
+        elif box == "plan-arm":
+            stages[stage_id] = "plan-arm"
+    return stages
 
 
 def build_version_payload(fabro_dir: Path, entrypoint: str) -> dict:

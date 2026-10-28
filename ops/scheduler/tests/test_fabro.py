@@ -293,6 +293,10 @@ def test_dispatch_stamps_the_clones_sha_as_the_workflow_sha_label(fake_checkout)
     assert labels["workflow_sha"] == fake_checkout.sha
     assert labels["source"] == "scheduler"
     assert labels["issue"] == "7"
+    # The lane's own labels (more-local-inference C6): `box-claim` cancels the runs a box
+    # holds by these, and the scheduler's eviction matches on them.
+    assert labels["lane"] == "coder"
+    assert labels["box"] == "coders-a"
 
 
 @respx.mock

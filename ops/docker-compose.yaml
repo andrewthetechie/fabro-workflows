@@ -58,6 +58,28 @@ services:
       # ';', 'off' to disable) and recreate the scheduler only, as for the share.
       SCHEDULER_PEAK_HOURS: "${SCHEDULER_PEAK_HOURS:-mon-fri 14:00-18:00 +08:00}"
       SCHEDULER_PEAK_LEAD_MINUTES: "${SCHEDULER_PEAK_LEAD_MINUTES:-15}"
+      # The background lane (more-local-inference C7, D12). One switch, `on` or `off`,
+      # and **off by default here as well as in config.py**: the operator turns it on
+      # in ~/fabro/.env. Off means no new background run starts; running ones finish.
+      # The scheduler reads its environment from these lines and ~/fabro/scheduler.env
+      # only — it never reads .env as an env file — so a variable missing here is a
+      # variable the container never sees.
+      SCHEDULER_BACKGROUND: "${SCHEDULER_BACKGROUND:-off}"
+      # How long strix-infer must report a box idle before a background run may start.
+      SCHEDULER_BG_GAP_S: "${SCHEDULER_BG_GAP_S:-30}"
+      # Run slots fabro must have free, counting `pending`, before a background run
+      # starts (D8). Fabro's own cap is `server.scheduler.max_concurrent_runs`.
+      SCHEDULER_BG_SLOT_RESERVE: "${SCHEDULER_BG_SLOT_RESERVE:-3}"
+      # The boxes' strix-infer `/health` endpoints, in the same `pool=url` format
+      # `fabro-io box-claim` reads. Empty means no box is in the lane.
+      SCHEDULER_BOX_HEALTH: "${SCHEDULER_BOX_HEALTH:-coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.56:5300/health}"
+      # Keep equal to fabro's `server.scheduler.max_concurrent_runs`: the scheduler reads
+      # it only to count free slots, and a larger value would hand out slots that do not
+      # exist.
+      SCHEDULER_MAX_CONCURRENT_RUNS: "${SCHEDULER_MAX_CONCURRENT_RUNS:-8}"
+      # Which job kinds' producers run, comma-separated. Default: every kind this
+      # scheduler knows (today `box-noop`; tasks 06-10 add theirs).
+      SCHEDULER_BG_KINDS: "${SCHEDULER_BG_KINDS:-box-noop}"
     # Deliberately **not** `env_file: .env`. That file carries fabro's
     # SESSION_SECRET — a cookie-signing key this service has no use for — and the
     # scheduler's credentials are its own two: GITHUB_TOKEN today, FABRO_API_TOKEN

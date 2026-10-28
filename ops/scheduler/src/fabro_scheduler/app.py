@@ -61,6 +61,7 @@ from starlette.staticfiles import StaticFiles
 
 from . import __version__, charts, github, retro, scorecard
 from .collector import ScorecardCollector
+from .background import BackgroundLane
 from .config import ConfigError, SchedulerConfig, load_config
 from .dispatch import DispatchLoop
 from .fabro import FabroClient, FabroError, RunNotStarted
@@ -127,6 +128,12 @@ class ReorderRequest(BaseModel):
     items: list[QueueRef]
 
 
+class BoxNoopRequest(BaseModel):
+    """`POST /api/background/box-noop`: which repo to spend a gap on."""
+
+    repo: str
+
+
 @dataclass(frozen=True)
 class PoolState:
     """One coder instance's current state, for `GET /api/pools` and the page.
@@ -150,6 +157,7 @@ def build_app(
     fabro_token: str = "",
     fabro_client: FabroClient | None = None,
     run_probe: RunProbe | None = None,
+    background_lane: BackgroundLane | None = None,
     start_poller: bool = False,
     start_dispatch_loop: bool = False,
     start_collector: bool = False,
@@ -175,6 +183,15 @@ def build_app(
     # manual override reads it, which is the only way the override can avoid
     # putting a second run on a box the loop already took.
     leases = LeaseStore(store)
+
+    # The background lane (more-local-inference C7). One instance for the page and the
+    # dispatch loop, so the strip renders exactly the state the last tick decided on.
+    # With `SCHEDULER_BOX_HEALTH` empty it does nothing and makes no call.
+    lane = (
+        background_lane
+        if background_lane is not None
+        else BackgroundLane(config, store, leases, client)
+    )
 
     # The run probe: a background refresher of per-lease task count and current
     # stage. Created whenever it is not injected, so the page always has a
@@ -222,7 +239,9 @@ def build_app(
                 "will be dispatched automatically."
             )
         else:
-            dispatcher = DispatchLoop(config, store, leases, client, github_token)
+            dispatcher = DispatchLoop(
+                config, store, leases, client, github_token, lane=lane
+            )
             # Draft 09. The same credentials that arm dispatch arm recovery: it
             # reads fabro and writes the same GitHub labels.
             releaser = ReleasePoller(config, store, leases, client, github_token)
@@ -440,6 +459,10 @@ def build_app(
                 config.starvation_ceiling.total_seconds()
             ),
             "peak_hours": peak_state(datetime.now(UTC)),
+            "background": {
+                "switch": "on" if config.background else "off",
+                "jobs": store.background_counts(),
+            },
         }
 
     @app.get("/api/peak")
@@ -500,6 +523,41 @@ def build_app(
         a problem.
         """
         return [_pool_payload(state) for state in pool_states()]
+
+    @app.get("/api/background")
+    def api_background() -> dict[str, object]:
+        """The background lane: the switch, each box's state, and the jobs (C7 step 14).
+
+        The same document the queue page's *Background* strip renders, so an operator
+        diagnosing "why is this box not filling?" can curl it.
+        """
+        return lane.state(datetime.now(UTC))
+
+    @app.post("/api/background/box-noop")
+    def api_background_box_noop(body: BoxNoopRequest) -> dict[str, object]:
+        """Queue one `box-noop` job for `body.repo` (C7 step 15).
+
+        The only producer this task ships: it exists so task 12 can measure how fast a
+        coder loop's claim takes its box back. No automatic producer enqueues it.
+        """
+        repo = body.repo.strip()
+        row = config.repo_named(repo)
+        if row is None or not row.enabled:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{repo} is not a schedulable [[repo]] in repos.toml",
+            )
+        job_id = lane.enqueue_box_noop(row.name)
+        if job_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"a box-noop job for {row.name} is already queued or running, "
+                    "or box-noop is not an enabled kind"
+                ),
+            )
+        log.info("background: enqueued box-noop job %s for %s", job_id, row.name)
+        return {"job_id": job_id, "repo": row.name, "kind": "box-noop"}
 
     @app.get("/api/history")
     def api_history(
@@ -1016,6 +1074,10 @@ def build_app(
                 # inventory if it lingers) rather than urging a manual dispatch.
                 "blocked_idle": blocked_idle and not peak["blocking"],
                 "idle_pools": idle_pools,
+                # The background lane: the switch, per-box state and today's
+                # evictions. Read from the lane's cached state, so the page makes no
+                # network call of its own.
+                "background": lane.state(now),
                 # The provider's peak-hours block and the override button.
                 "peak": peak,
                 "peak_status": config.peak_hours.status(now),
@@ -1485,6 +1547,7 @@ def create_app(
     fabro_token: str | None = None,
     fabro_client: FabroClient | None = None,
     run_probe: RunProbe | None = None,
+    background_lane: BackgroundLane | None = None,
     start_poller: bool = False,
     start_dispatch_loop: bool = False,
 ) -> FastAPI:

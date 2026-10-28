@@ -49,6 +49,7 @@ from .workflow_version import (
     VersionCache,
     build_version_payload,
     clone_fabro_tree,
+    read_box_stages,
 )
 
 log = logging.getLogger(__name__)
@@ -322,6 +323,22 @@ def cancel_run(
     _request(
         "POST", api, f"/runs/{run_id}/cancel", token, client=client, timeout=timeout
     )
+
+
+def status_reason(run: Mapping[str, object]) -> str | None:
+    """`.lifecycle.status.reason` from a run projection, or `None` if it has none.
+
+    The background lane tells a cancel from a fabro restart by this alone: both are
+    `kind: failed`, and only `reason` says which (`cancelled` vs `terminated`).
+    """
+    lifecycle = run.get("lifecycle")
+    if not isinstance(lifecycle, Mapping):
+        return None
+    status = lifecycle.get("status")
+    if not isinstance(status, Mapping):
+        return None
+    reason = status.get("reason")
+    return reason if isinstance(reason, str) else None
 
 
 def status_kind(run: Mapping[str, object]) -> str | None:
@@ -628,6 +645,35 @@ def build_run_intent(
     }
 
 
+def build_job_intent(
+    *,
+    workflow_version_id: str,
+    repo: str,
+    environment_id: str,
+    inputs: Mapping[str, object],
+    labels: Mapping[str, str],
+    coder_pool: str,
+    branch: str = DEFAULT_BRANCH,
+) -> dict:
+    """The `RunIntent` body for one background job (more-local-inference C7).
+
+    The job's own inputs plus `coder_pool`, which a box-only package's stylesheet
+    resolves every stage through, and the labels the lane reads back: `lane`,
+    `box`, `job` and `source`. Nothing here is an issue run: a background job never
+    touches the `agent` / `agent-in-progress` labels and never takes a lease.
+    """
+    sent_labels = {"source": "scheduler"}
+    sent_labels.update({str(key): str(value) for key, value in labels.items()})
+    sent_inputs = dict(inputs)
+    sent_inputs["coder_pool"] = coder_pool
+    return {
+        "workflow_version_id": workflow_version_id,
+        "target": {"kind": "git", "repo": repo, "branch": branch},
+        "args": {"inputs": sent_inputs, "labels": sent_labels},
+        "environment_id": environment_id,
+    }
+
+
 @dataclass(frozen=True)
 class DispatchResult:
     """What one successful dispatch produced."""
@@ -670,6 +716,9 @@ class FabroClient:
         # binary or a network. Production passes `clone_fabro_tree`.
         self._clone = clone
         self._versions = VersionCache()
+        # `(commit sha, workflow)` -> `{node id: "true" | "plan-arm"}`, filled by
+        # `ensure_version` from the tree it registered (C1, C7 step 6).
+        self._box_stages: dict[tuple[str, str], dict[str, str]] = {}
 
     @property
     def configured(self) -> bool:
@@ -691,6 +740,9 @@ class FabroClient:
         """
         entrypoint = ENTRYPOINTS[workflow]
         with self._clone(self._workflows_repo, self._workflows_ref) as tree:
+            # Read the box stages here, where the tree is in hand, so a dispatch never
+            # pays for a second clone to learn where the run's box stages are (C7 step 6).
+            self._box_stages[(tree.sha, workflow)] = read_box_stages(tree.directory, workflow)
             cached = self._versions.get(tree.sha, entrypoint)
             if cached is not None:
                 log.info(
@@ -749,7 +801,14 @@ class FabroClient:
             # `workflow` is the run's arm for the scorecard, the lease and the
             # Retro (O21). It is a label because a run's labels are the only thing
             # `run_history` can be told about a run after it is gone.
-            labels={"workflow_sha": sha, "workflow": workflow},
+            labels={
+                "workflow_sha": sha,
+                "workflow": workflow,
+                # The lane reads these back (more-local-inference C6): `box-claim` cancels
+                # the runs a box holds, and the scheduler's own eviction matches on them.
+                "lane": "coder",
+                "box": coder_pool,
+            },
         )
         run_id = create_run(self._api, self._token, intent, timeout=self._call_timeout)
         try:
@@ -785,6 +844,85 @@ class FabroClient:
             version_reused=reused,
             status=status,
         )
+
+    def box_stages(self, sha: str, workflow: str) -> dict[str, str]:
+        """The box stages of `workflow` at `sha`, from its generated manifest (C1).
+
+        Filled by `ensure_version`, which already has the tree. A miss returns `{}` — a
+        lease written by an older scheduler, or one whose version was registered before
+        this code existed — and the lane reads that as "no box stage known" rather than
+        blocking on a guess.
+        """
+        return dict(self._box_stages.get((sha, workflow), {}))
+
+    def dispatch_job(
+        self,
+        *,
+        repo: str,
+        environment_id: str,
+        inputs: Mapping[str, object],
+        labels: Mapping[str, str],
+        coder_pool: str,
+        workflow: str = "box-noop",
+    ) -> DispatchResult:
+        """Create and start one background run. The job path's version of `dispatch`.
+
+        Same three calls and the same failure split: `FabroError` before the run exists,
+        `RunNotStarted` after. No lease is taken and no label is written: a background
+        job is not a queue item (C7).
+        """
+        if workflow not in ENTRYPOINTS:
+            raise ValueError(f"unknown workflow {workflow!r}")
+        version_id, sha, reused = self.ensure_version(workflow)
+        intent = build_job_intent(
+            workflow_version_id=version_id,
+            repo=repo,
+            environment_id=environment_id,
+            inputs=inputs,
+            labels=labels,
+            coder_pool=coder_pool,
+            branch=self._branch,
+        )
+        run_id = create_run(self._api, self._token, intent, timeout=self._call_timeout)
+        try:
+            status = start_run(
+                self._api, self._token, run_id, timeout=self._call_timeout
+            )
+        except FabroError as exc:
+            raise RunNotStarted(
+                f"run {run_id} was created but could not be started: {exc}",
+                run_id=run_id,
+                status_code=exc.status_code,
+                detail=exc.detail,
+            ) from exc
+        log.info(
+            "fabro: dispatched background run %s (%s) repo=%s pool=%s version=%s sha=%s "
+            "reused=%s status=%s",
+            run_id,
+            workflow,
+            repo,
+            coder_pool,
+            version_id[:12],
+            sha[:12],
+            reused,
+            status,
+        )
+        return DispatchResult(
+            run_id=run_id,
+            workflow_version_id=version_id,
+            commit_sha=sha,
+            version_reused=reused,
+            status=status,
+        )
+
+    def active_runs(self) -> list[dict]:
+        """Every run fabro considers live, for the lane's free-slot count (C7 condition 5).
+
+        `pending` counts: fabro admits runs first come, first served, so a run that has
+        been created and not yet started is already holding the slot a background run
+        would take (D8).
+        """
+        return list_active_runs(self._api, self._token, timeout=self._call_timeout)
 
     def get_run(self, run_id: str) -> dict:
         """The run projection, for draft 09's reconciliation.
@@ -845,7 +983,7 @@ class FabroClient:
         un-labels everything. The caller fails closed on the raise.
         """
         claims = set()
-        for run in list_active_runs(self._api, self._token, timeout=self._call_timeout):
+        for run in self.active_runs():
             claim = issue_claim(run)
             if claim is not None:
                 claims.add(claim)

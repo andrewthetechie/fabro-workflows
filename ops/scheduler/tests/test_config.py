@@ -439,3 +439,84 @@ def test_a_ralph_share_the_trial_never_validated_names_the_key(tmp_path, raw):
     """
     with pytest.raises(ConfigError, match="SCHEDULER_RALPH_SHARE"):
         load_config(write(tmp_path, repo()), env={"SCHEDULER_RALPH_SHARE": raw})
+
+
+# --- the background lane (more-local-inference C7, D12) -----------------------------
+
+
+def test_the_background_lane_is_off_by_default_and_reads_on_and_off(tmp_path):
+    """Off in code as well as in ops/docker-compose.yaml (D12): a host that has never
+    heard of the lane must behave exactly as it did before it."""
+    cfg = load_config(write(tmp_path, repo()), env={})
+    assert cfg.background is False
+    assert cfg.bg_gap_seconds == 30
+    assert cfg.bg_slot_reserve == 3
+    assert cfg.box_health == {}
+    assert cfg.max_concurrent_runs == 8
+    assert cfg.bg_kinds == ("box-noop",)
+
+    on = load_config(write(tmp_path, repo()), env={"SCHEDULER_BACKGROUND": " ON "})
+    assert on.background is True
+    off = load_config(write(tmp_path, repo()), env={"SCHEDULER_BACKGROUND": "off"})
+    assert off.background is False
+
+
+@pytest.mark.parametrize("raw", ["yes", "true", "1", "enabled"])
+def test_an_unparsable_background_switch_names_the_key(tmp_path, raw):
+    """A typo must not read as "the operator turned the lane off", which is the one
+    answer they would believe."""
+    with pytest.raises(ConfigError, match="SCHEDULER_BACKGROUND"):
+        load_config(write(tmp_path, repo()), env={"SCHEDULER_BACKGROUND": raw})
+
+
+def test_box_health_is_parsed_in_the_format_the_claim_hook_reads(tmp_path):
+    cfg = load_config(
+        write(tmp_path, repo()),
+        env={
+            "SCHEDULER_BOX_HEALTH": (
+                " coders-a=http://10.10.0.29:5300/health , "
+                "coders-b = http://10.10.0.56:5300/health , "
+            )
+        },
+    )
+    assert cfg.box_health == {
+        "coders-a": "http://10.10.0.29:5300/health",
+        "coders-b": "http://10.10.0.56:5300/health",
+    }
+
+
+def test_the_lane_knobs_read_and_reject_their_bounds(tmp_path):
+    cfg = load_config(
+        write(tmp_path, repo()),
+        env={
+            "SCHEDULER_BG_GAP_S": "0",
+            "SCHEDULER_BG_SLOT_RESERVE": "0",
+            "SCHEDULER_MAX_CONCURRENT_RUNS": "4",
+            "SCHEDULER_BG_KINDS": "box-noop",
+        },
+    )
+    assert (cfg.bg_gap_seconds, cfg.bg_slot_reserve, cfg.max_concurrent_runs) == (0, 0, 4)
+    for key, value in (
+        ("SCHEDULER_BG_GAP_S", "-1"),
+        ("SCHEDULER_BG_SLOT_RESERVE", "-2"),
+        ("SCHEDULER_MAX_CONCURRENT_RUNS", "0"),
+        ("SCHEDULER_BG_KINDS", "pr-doctor"),
+    ):
+        with pytest.raises(ConfigError, match=key):
+            load_config(write(tmp_path, repo()), env={key: value})
+
+
+def test_the_gap_table_predicts_a_gap_and_zero_for_an_unknown_key(tmp_path):
+    """C7 step 9: the table is measured, and an unknown key predicts 0 so only a job of
+    five minutes or less starts on a guess."""
+    from fabro_scheduler.config import predicted_gap_minutes
+
+    assert predicted_gap_minutes("backlog", "review_merge.watch_checks") == 30
+    assert predicted_gap_minutes("ralph", "watch_checks") == 30
+    assert predicted_gap_minutes("backlog", "review") == 8
+    assert predicted_gap_minutes("ralph", "refute") == 8
+    # `pr-review` leases a box but has no measured gaps yet, so it predicts 0 and only a
+    # job of five minutes or less starts there. A node id the table has never heard of
+    # inside `backlog` or `ralph` falls back to the eight-minute default.
+    assert predicted_gap_minutes("pr-review", "review") == 0
+    assert predicted_gap_minutes("backlog", "not-a-node") == 8

@@ -37,7 +37,7 @@ import json
 import logging
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -168,6 +168,39 @@ CREATE TABLE IF NOT EXISTS requeue_counts (
   last_at      TEXT    NOT NULL,  -- ISO-8601 UTC
   PRIMARY KEY (repo, issue_number)
 );
+
+-- The background lane (more-local-inference C7). One row per box-only job, which is a
+-- queue entry of its own: it takes no lease, so it is not in `leases` and not in
+-- `run_history`, and the lane's whole state is here. `target` is what the job is about
+-- inside its repo (a PR number, an issue number, or an empty string for a job with no
+-- target, like `box-noop`); `(kind, repo, target)` is unique while a job is `queued` or
+-- `running`, which is what makes a producer idempotent.
+--
+-- `typical_box_minutes` is the run's whole expected wall time, from dispatch to finish,
+-- including sandbox start, clone and dependency install, so it is compared with the
+-- coder loop's predicted remaining gap. `cancels` counts the cancels a job has taken;
+-- at 3 it needs a gap twice that long before it is picked again (D9), so a job that
+-- keeps losing its box cannot starve the others.
+CREATE TABLE IF NOT EXISTS background_jobs (
+  job_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind                TEXT    NOT NULL,
+  repo                TEXT    NOT NULL,
+  target              TEXT    NOT NULL DEFAULT '',
+  inputs_json         TEXT    NOT NULL DEFAULT '{}',
+  priority            INTEGER NOT NULL,
+  typical_box_minutes INTEGER NOT NULL,
+  created_at          TEXT    NOT NULL,  -- ISO-8601 UTC
+  state               TEXT    NOT NULL,  -- queued | running | done | failed | skipped
+  run_id              TEXT,
+  box                 TEXT,
+  cancels             INTEGER NOT NULL DEFAULT 0,
+  last_started_at     TEXT,
+  last_finished_at    TEXT,
+  outcome             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS background_jobs_pick
+  ON background_jobs (state, priority, created_at);
 
 -- One row per released coder lease: what the run turned out to be. Written inside
 -- the same transaction that deletes the lease, so a crash cannot lose the row and
@@ -331,7 +364,14 @@ ADDED_COLUMNS = {
     "run_history": RUN_HISTORY_COLUMNS,
     # The lease carries the arm from dispatch to release, so `run_history` can copy
     # it there without asking fabro about a run it no longer has.
-    "leases": {"workflow": "workflow TEXT NOT NULL DEFAULT 'backlog'"},
+    "leases": {
+        "workflow": "workflow TEXT NOT NULL DEFAULT 'backlog'",
+        # The loop's box stages, read from the generated Stage manifest when its version
+        # was registered (more-local-inference C7 step 6). Persisted, not cached, so the
+        # lane can judge a lease that outlived a scheduler restart; NULL on a lease from
+        # an older row, which the lane reads as "no box stages known".
+        "box_stages": "box_stages TEXT",
+    },
     "run_stage_stats": {
         "input_tokens": "input_tokens INTEGER",
         "output_tokens": "output_tokens INTEGER",
@@ -579,7 +619,7 @@ class Store:
         with self._lock:
             return self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since, workflow FROM leases ORDER BY coder_pool"
+                "queued_since, workflow, box_stages FROM leases ORDER BY coder_pool"
             ).fetchall()
 
     def history_rows(
@@ -917,7 +957,7 @@ class Store:
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since, workflow FROM leases WHERE run_id = ?",
+                "queued_since, workflow, box_stages FROM leases WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if row is None:
@@ -947,7 +987,7 @@ class Store:
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since, workflow FROM leases WHERE run_id = ?",
+                "queued_since, workflow, box_stages FROM leases WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if row is None:
@@ -1067,6 +1107,7 @@ class Store:
         dispatched_at: datetime,
         queued_since: datetime | None = None,
         workflow: str = "backlog",
+        box_stages: Mapping[str, str] | None = None,
     ) -> bool:
         """Take one coder instance, or report that someone else holds it.
 
@@ -1086,8 +1127,8 @@ class Store:
             cursor = self._conn.execute(
                 "INSERT INTO leases "
                 "(coder_pool, repo, issue_number, run_id, dispatched_at, queued_since, "
-                " workflow) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                " workflow, box_stages) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(coder_pool) DO NOTHING",
                 (
                     coder_pool,
@@ -1097,6 +1138,9 @@ class Store:
                     stamp,
                     None if queued_since is None else queued_since.isoformat(),
                     workflow,
+                    None
+                    if not box_stages
+                    else json.dumps(dict(box_stages), sort_keys=True),
                 ),
             )
             if cursor.rowcount == 0:
@@ -1110,6 +1154,128 @@ class Store:
                 (repo, coder_pool, stamp),
             )
             return True
+
+    # --- the background lane (C7) -----------------------------------------------
+
+    def enqueue_background_job(
+        self,
+        *,
+        kind: str,
+        repo: str,
+        target: str,
+        inputs: Mapping[str, object],
+        priority: int,
+        typical_box_minutes: int,
+        now: datetime,
+    ) -> int | None:
+        """Insert one job, unless an identical one is already `queued` or `running`.
+
+        Idempotent on `(kind, repo, target)` in those two states, which is what lets a
+        producer run on every tick: a job whose marker is still fresh is simply not
+        enqueued again. Returns the new `job_id`, or `None` when one was already there.
+        A `done` or `failed` row does not block a new job: the producers decide whether a
+        rerun is warranted, and the marker comment is their record of it (C6).
+        """
+        with self._lock, self._conn:
+            existing = self._conn.execute(
+                "SELECT job_id FROM background_jobs "
+                "WHERE kind = ? AND repo = ? AND target = ? AND state IN ('queued','running')",
+                (kind, repo, target),
+            ).fetchone()
+            if existing is not None:
+                return None
+            cursor = self._conn.execute(
+                "INSERT INTO background_jobs "
+                "(kind, repo, target, inputs_json, priority, typical_box_minutes, "
+                " created_at, state) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')",
+                (
+                    kind,
+                    repo,
+                    target,
+                    json.dumps(dict(inputs), sort_keys=True),
+                    priority,
+                    typical_box_minutes,
+                    now.isoformat(),
+                ),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def background_jobs(self, *, limit: int = 200) -> list[sqlite3.Row]:
+        """Every job, newest first: what the page and `/api/background` list."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM background_jobs ORDER BY job_id DESC LIMIT ?", (limit,)
+            ).fetchall()
+
+    def queued_background_jobs(self) -> list[sqlite3.Row]:
+        """Every `queued` job in the order the lane may pick from: priority, then age."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM background_jobs WHERE state = 'queued' "
+                "ORDER BY priority, created_at, job_id"
+            ).fetchall()
+
+    def running_background_jobs(self) -> list[sqlite3.Row]:
+        """Every `running` job, oldest start first."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM background_jobs WHERE state = 'running' "
+                "ORDER BY last_started_at, job_id"
+            ).fetchall()
+
+    def background_job(self, job_id: int) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM background_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+
+    def start_background_job(
+        self, job_id: int, *, run_id: str, box: str, now: datetime
+    ) -> bool:
+        """Mark one job `running` on `box` with `run_id`. False if it was not queued."""
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE background_jobs SET state = 'running', run_id = ?, box = ?, "
+                "last_started_at = ? WHERE job_id = ? AND state = 'queued'",
+                (run_id, box, now.isoformat(), job_id),
+            )
+            return cursor.rowcount == 1
+
+    def finish_background_job(
+        self, job_id: int, *, state: str, outcome: str | None, now: datetime
+    ) -> None:
+        """Record a terminal state: `done`, `failed` or `skipped`."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE background_jobs SET state = ?, outcome = ?, run_id = NULL, "
+                "box = NULL, last_finished_at = ? WHERE job_id = ?",
+                (state, outcome, now.isoformat(), job_id),
+            )
+
+    def requeue_background_job(
+        self, job_id: int, *, now: datetime, count_cancel: bool = True
+    ) -> None:
+        """Put a job back on the queue, counting the cancel unless it was not one.
+
+        A `cancelled` run counts (D9: at 3 the job needs twice its length in gap). A run
+        fabro `terminated` in a restart does not: that is not the job's fault, and
+        counting it would sideline every job the lane ran at that moment.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE background_jobs SET state = 'queued', run_id = NULL, box = NULL, "
+                "cancels = cancels + ?, last_finished_at = ? WHERE job_id = ?",
+                (1 if count_cancel else 0, now.isoformat(), job_id),
+            )
+
+    def background_counts(self) -> dict[str, int]:
+        """How many jobs are in each state, for the page and the monitor."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT state, COUNT(*) AS n FROM background_jobs GROUP BY state"
+            ).fetchall()
+        return {row["state"]: int(row["n"]) for row in rows}
 
     def close(self) -> None:
         with self._lock:

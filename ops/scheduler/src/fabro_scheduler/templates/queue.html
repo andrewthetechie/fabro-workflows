@@ -194,6 +194,71 @@
 <p class="mt-3 text-sm text-slate-500">No coder instance is leased.</p>
 {% endif %}
 
+{# The background lane (more-local-inference C7 step 14): the switch, what each box is
+   doing, or the first reason nothing may start there, and today's evictions. Every
+   value is the lane's own decision from the last tick, so this cannot disagree with
+   what the scheduler is about to do. #}
+<h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Background</h2>
+<div class="mb-4 rounded-lg border border-slate-800 bg-slate-900 px-4 py-3 shadow-sm">
+  <p class="text-sm leading-6 text-slate-300">
+    {% if background.switch == 'on' %}
+      <strong class="text-emerald-400">on</strong> &mdash; a box-only run fills a gap when
+      strix-infer has been idle {{ background.gap_seconds }}s, the box's coder loop is outside a box
+      stage, and at least {{ background.slot_reserve }} run slots are free.
+    {% else %}
+      <strong class="text-slate-400">off</strong> &mdash; no new background run starts. Running ones finish.
+      Set <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">SCHEDULER_BACKGROUND=on</code>
+      in <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">~/fabro/.env</code> and
+      <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">docker compose up -d --no-deps scheduler</code>.
+    {% endif %}
+    <span class="text-slate-500">Kinds: {{ background.kinds|join(', ') or 'none' }};
+      queued {{ background.counts.get('queued', 0) }},
+      running {{ background.counts.get('running', 0) }},
+      done {{ background.counts.get('done', 0) }},
+      failed {{ background.counts.get('failed', 0) }};
+      evictions today {{ background.evictions_today }}.</span>
+  </p>
+  <table class="mt-3 w-full text-sm">
+    <thead class="text-slate-400">
+      <tr>
+        <th class="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide">Box</th>
+        <th class="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide">Background run</th>
+        <th class="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide">Box health</th>
+        <th class="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide">Why nothing is running here</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800">
+      {% for box in background.boxes %}
+      <tr>
+        <td class="whitespace-nowrap px-2 py-2 align-top font-medium text-slate-200">{{ box.box }}</td>
+        <td class="whitespace-nowrap px-2 py-2 align-top">
+          {% if box.running %}
+            <span class="text-amber-300">{{ box.running.kind }}</span>
+            <span class="text-slate-500">{{ box.running.repo }}</span>
+            <a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ box.running.run_id }}">{{ box.running.run_id|truncate(12, True, '') }}</a>
+          {% else %}
+            <span class="text-slate-500">idle</span>
+          {% endif %}
+        </td>
+        <td class="whitespace-nowrap px-2 py-2 align-top text-slate-400">
+          {% if box.health %}
+            {% if box.health.busy %}busy{% elif box.health.queued %}queued {{ box.health.queued }}{% else %}idle {{ box.health.idle_seconds|round(0, 'floor')|int }}s{% endif %}
+          {% else %}
+            <span class="text-slate-500">&mdash;</span>
+          {% endif %}
+        </td>
+        <td class="px-2 py-2 align-top text-slate-400">
+          {{ box.blocked_by or 'running' }}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not background.boxes %}
+      <tr><td colspan="4" class="px-2 py-2 text-slate-500">No box is in the lane: <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">SCHEDULER_BOX_HEALTH</code> is empty.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
 <h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Queue</h2>
 {% if items %}
 <div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">

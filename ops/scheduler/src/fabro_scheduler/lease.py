@@ -41,9 +41,10 @@ host as soon as draft 08 is deployed.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from .store import RunOutcome, Store
@@ -67,6 +68,11 @@ class Lease:
     # copy it into `run_history` without asking fabro, which no longer knows the run
     # once it is gone, and so the queue page can say which arm holds each box.
     workflow: str = "backlog"
+    # The loop's box stages, from the Stage manifest of the version this run was
+    # registered against (more-local-inference C1, C7 step 6): `{node id: "true" |
+    # "plan-arm"}`. Empty when the manifest could not be read, which the lane reads as
+    # "no box stage known" rather than as "nothing is on the box".
+    box_stages: Mapping[str, str] = field(default_factory=dict)
 
 
 class LeaseConflict(RuntimeError):
@@ -156,6 +162,7 @@ class LeaseStore:
             dispatched_at=lease.dispatched_at,
             queued_since=lease.queued_since,
             workflow=lease.workflow,
+            box_stages=lease.box_stages,
         )
         if stored:
             return
@@ -201,4 +208,18 @@ def _lease_from_row(row) -> Lease:
             else datetime.fromisoformat(row["queued_since"])
         ),
         workflow=row["workflow"],
+        box_stages=_box_stages(row["box_stages"]),
     )
+
+
+def _box_stages(raw: object) -> Mapping[str, str]:
+    """The lease's `box_stages` column as a mapping. A missing or broken value is `{}`."""
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(k): str(v) for k, v in parsed.items()}
