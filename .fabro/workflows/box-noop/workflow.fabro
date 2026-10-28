@@ -1,0 +1,42 @@
+// box-noop (more-local-inference task 04): the smallest background package, and the
+// template every later job copies.
+//
+// It exists to be cancelled. It takes no input, writes nothing to GitHub, and asks for one
+// long deterministic piece of text, so Phase 1 can measure how fast a coder loop's claim
+// takes the box back and how often the guard fires before any real job is built.
+//
+// Every model comes from the run's `coder_pool` input, which the scheduler sets to
+// `coders-a-bg` or `coders-b-bg` (C5). The `*` rule is the same expression as `.bg`, so an
+// agent node that lost its class would still run on the box and never reach a hosted model
+// (R16). Neither `-bg` name has a `[run.model.fallbacks]` row, so a box error fails the
+// stage instead of spending z.ai credits (R14).
+digraph BoxNoop {
+    graph [goal="Spend a predictable few minutes of an idle coder box with no hosted model and no GitHub write",
+        stall_timeout="45m",
+        default_fidelity="truncate",
+        model_stylesheet="
+            *    { model: {{ inputs.coder_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+            .bg  { model: {{ inputs.coder_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+        "]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // The box, for `fabro-io box-guard` (C2, C10). The pool arrives with the `-bg` suffix
+    // the scheduler added, and the guard looks up the *loop's* box, which never carries it.
+    // `${POOL%-bg}` is POSIX parameter expansion, so no `sed` is needed; the redirect keeps
+    // the line off stdout, and `|| true` means a failed write cannot fail the node.
+    claim [label="Write the box file", shape=parallelogram,
+        script="set -e
+mkdir -p /tmp/fabro
+POOL='{{ inputs.coder_pool }}'
+echo \"${POOL%-bg}\" > /tmp/fabro/box || true"]
+
+    // Thirty minutes: long enough to be worth cancelling, and the reason `typical_box_minutes`
+    // is 10 for this job kind in the scheduler (a whole run, not this stage's ceiling).
+    work [label="Describe the repository", class="bg", timeout="30m",
+        prompt="@prompts/work.md"]
+
+    start -> claim -> work -> exit
+}

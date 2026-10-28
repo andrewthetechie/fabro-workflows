@@ -6,14 +6,15 @@ Usage:
   check-graph-invariants.py --dump FILE.fabro   print the reader's statements in fabro parse's shape
   check-graph-invariants.py --normalize         normalize a `fabro parse` JSON read from stdin
 
-A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R15;
+A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R16;
 every `_shared/*/*.fabro` phase gets the file rules (the reader, R6, R8, R9 and R12). Each violation prints as
 `<package> <rule> <node or hook> <why>`, then `VIOLATIONS: N`. Exit status is min(N, 125).
 
-R13-R15 are the background-lane rules (more-local-inference C1, C2, C4, C5): every agent
+R13-R16 are the background-lane rules (more-local-inference C1, C2, C4, C5, C10): every agent
 stage's `box` value in the Stage manifest agrees with the stylesheet that decides where it runs,
-no `-bg` model is a fallback key or target, and the three coder loops carry the `box-claim` hook
-and write the run's box file while no other package does.
+no `-bg` model is a fallback key or target, the three coder loops carry the `box-claim` hook and
+write the run's box file while no other package does, and a box-only package names no model but
+the run's `-bg` pool and guards itself with `box-guard`.
 
 Standard library only (Python 3.11+, tomllib). It reads the graphs itself, so it runs offline
 in `make check`. `make check-host` proves the reader agrees with `fabro parse` on the six files
@@ -877,6 +878,74 @@ def r15_claim_hooks(package: str, root: Graph | None, hooks: list[dict]) -> list
     return out
 
 
+# The box-only packages (more-local-inference D4, C5, C10): every agent stage runs on the
+# run's box, `box-guard` runs before each of them, and nothing else does. Later tasks add
+# their packages here.
+BACKGROUND_PACKAGES = ["box-noop"]
+
+# The only model a background package may name: the run's `coder_pool`, whose scheduler set
+# names end in `-bg` (C5).
+BG_MODEL = re.compile(r"inputs\.coder_pool\s*\|\s*default\('coders-[a-z0-9-]+-bg'\)")
+
+# C10's hook, field by field. 20 s deadline inside a 30 s hook timeout.
+GUARD_HOOK_SCRIPT = "fabro-io box-guard; [ $? -eq 2 ] && exit 2; exit 0"
+
+
+def r16_background_packages(package: str, root: Graph | None, nodes: dict[str, dict[str, str]],
+                            hooks: list[dict]) -> list[tuple]:
+    """R16: a background package runs only on the box, guards itself, and writes its box
+    (invariants-graph.md, Background packages; more-local-inference D4, C5, C10).
+
+    Every model it names -- the `*` rule, every class rule and therefore every agent node --
+    must be the run's `-bg` coder pool, so no hosted stage can exist in one and no fallback
+    can reach z.ai. It carries the `box-guard` hook exactly as C10 gives it, carries no
+    `box-claim` hook (a claim there would cancel the background runs on its own box, its own
+    included), and its `claim` writes /tmp/fabro/box for the guard to read.
+    """
+    if package not in BACKGROUND_PACKAGES:
+        return []
+    out: list[tuple] = []
+    if root is not None:
+        variants = [(holds, style_rules(text)) for holds, text in
+                    stylesheet_variants(root.graph_attrs.get("model_stylesheet", ""))]
+        for _, rules in variants:
+            for selector, model in rules.items():
+                if not BG_MODEL.search(model):
+                    out.append(("R16", "*" if selector == "*" else f".{selector}",
+                                f"resolves to {model!r}; every model in a background package is "
+                                "the run's -bg coder pool, so no hosted stage can exist"))
+        for nid, attrs in nodes.items():
+            if not is_agent_stage(attrs):
+                continue
+            for _, model in resolve_models(attrs, variants):
+                if not BG_MODEL.search(model):
+                    out.append(("R16", nid, f"resolves to {model!r}; every agent stage of a "
+                                            "background package runs on the box"))
+                    break
+    exact = any(
+        h.get("id") == "box-guard"
+        and h.get("event") == "stage_start"
+        and h.get("matcher") == "^agent$"
+        and h.get("blocking") is True
+        and h.get("sandbox") is True
+        and h.get("timeout") == "30s"
+        and h.get("script") == GUARD_HOOK_SCRIPT
+        for h in hooks
+    )
+    if not exact:
+        out.append(("R16", "box-guard",
+                    "is missing or is not exactly the C10 hook: id box-guard, stage_start on "
+                    f"^agent$, blocking, sandbox, timeout 30s, script {GUARD_HOOK_SCRIPT!r}"))
+    if any("fabro-io box-claim" in (h.get("script") or "") for h in hooks):
+        out.append(("R16", "box-claim",
+                    "a background package must not run `fabro-io box-claim`: it would cancel the "
+                    "background runs on its own box, its own run included"))
+    if root is None or "/tmp/fabro/box" not in (root.nodes.get("claim") or {}).get("script", ""):
+        out.append(("R16", "claim",
+                    "does not write /tmp/fabro/box, so box-guard cannot tell which box it is on"))
+    return out
+
+
 def is_bg_model(name: str) -> bool:
     """A background model name: `coders-a-bg`, with or without a `provider:` prefix."""
     return name.rsplit(":", 1)[-1].strip().endswith("-bg")
@@ -1168,6 +1237,7 @@ def package_violations(pkg_dir: Path, workflows: Path) -> tuple[list[tuple], int
     out += [(package, *v) for v in r13_box_stages(package, root, nodes, import_ids, manifest)]
     out += [(package, *v) for v in r14_background_fallbacks(package, t)]
     out += [(package, *v) for v in r15_claim_hooks(package, root if root is not None else None, hooks)]
+    out += [(package, *v) for v in r16_background_packages(package, root, nodes, hooks)]
     out += [(package, *v) for v in r8_routing(root.nodes)]
     out += [(package, *v) for v in r9_needs_human_reason(root)]
     out += [(package, *v) for v in r12_fallback_edge(root)]

@@ -86,6 +86,49 @@ class Box(unittest.TestCase):
     def test_the_real_source_manifest_is_clean(self):
         self.assertEqual(fim.box_problems(fim.load_source()), [])
 
+    def test_only_a_background_package_carries_coder_box_stages(self):
+        src = fim.load_source()
+        schemas = fim.load_schemas()
+        self.assertNotIn("coder_box_stages", fim.generated_for("backlog", src, schemas))
+        self.assertNotIn("coder_box_stages", fim.generated_for("ralph", src, schemas))
+
+    def test_coder_box_stages_lists_every_box_stage_of_every_coder_loop(self):
+        # C1: box-guard reads this to judge another run's current stage, so the ids must be
+        # the ones `GET /runs/{id}/stages` reports -- a phase stage under its import id --
+        # and every `true` or `"plan-arm"` stage of the loop must be in it.
+        generated = fim.generated_for("box-noop", fim.load_source(), fim.load_schemas())
+        stages = generated["coder_box_stages"]
+        self.assertEqual(stages, {
+            "backlog": {
+                "coder": True,
+                "extra_decompose": True,
+                "plan": "plan-arm",
+                "resolve_merge": True,
+                "review_merge.refute_fix": True,
+                "review_merge.resolve_base": True,
+                "rework_t1": True,
+            },
+            "pr-review": {
+                "rebase_agent_t1": True,
+                "review_merge.refute_fix": True,
+                "review_merge.resolve_base": True,
+            },
+            "ralph": {
+                "iterate_t1": True,
+                "learn": True,
+                "plan": "plan-arm",
+                "resolve_base": True,
+            },
+        })
+
+    def test_coder_box_stages_omits_a_hosted_stage(self):
+        generated = fim.generated_for("box-noop", fim.load_source(), fim.load_schemas())
+        for loop, stages in generated["coder_box_stages"].items():
+            with self.subTest(loop=loop):
+                self.assertNotIn(False, stages.values())
+                for sid in ("review", "decompose", "rework_t2", "spec", "standards", "refute"):
+                    self.assertNotIn(sid, stages)
+
     def test_a_missing_box_is_an_error(self):
         problems = fim.box_problems(self.src(own={"coder": {"live": True, "prompt": "p"}}))
         self.assertTrue(any("no `box`" in p for p in problems), problems)

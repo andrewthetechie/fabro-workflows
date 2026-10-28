@@ -109,6 +109,18 @@ api_model = "qwen3.8-flash-next"
 limits = { context_tokens = 262144, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }
 
+# Background-lane rows (more-local-inference C5, ADR 0031). A box-only package resolves
+# every agent stage to `{{ inputs.coder_pool }}`, and the scheduler sets that input to
+# `coders-a-bg` or `coders-b-bg`, so background work names its own model while the weights
+# underneath are the same ones. NEITHER of these names has a `[run.model.fallbacks]` row, and
+# R14 forbids one: a box error must fail the background stage instead of falling through to
+# z.ai and spending the credits the lane exists to save.
+[llm.providers.box-a.models."coders-a-bg"]
+display_name = "Background coders A (strix 10.10.0.29)"
+api_model = "qwen3.8-flash-next"
+limits = { context_tokens = 262144, max_output_tokens = 38400 }
+capabilities = { text = true, tools = true, reasoning = true }
+
 [llm.providers.box-b]
 display_name = "Local coder B (10.10.0.56)"
 base_url = "http://<IP>:5300/v1"
@@ -116,6 +128,18 @@ auth = { type = "none" }
 
 [llm.providers.box-b.models."coders-b"]
 display_name = "Local coders B (strix 10.10.0.56)"
+api_model = "qwen3.8-flash-next"
+limits = { context_tokens = 262144, max_output_tokens = 38400 }
+capabilities = { text = true, tools = true, reasoning = true }
+
+# Background-lane rows (more-local-inference C5, ADR 0031). A box-only package resolves
+# every agent stage to `{{ inputs.coder_pool }}`, and the scheduler sets that input to
+# `coders-a-bg` or `coders-b-bg`, so background work names its own model while the weights
+# underneath are the same ones. NEITHER of these names has a `[run.model.fallbacks]` row, and
+# R14 forbids one: a box error must fail the background stage instead of falling through to
+# z.ai and spending the credits the lane exists to save.
+[llm.providers.box-b.models."coders-b-bg"]
+display_name = "Background coders B (strix 10.10.0.56)"
 api_model = "qwen3.8-flash-next"
 limits = { context_tokens = 262144, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }

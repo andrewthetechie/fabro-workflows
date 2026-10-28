@@ -1782,6 +1782,16 @@
           "box": true
         }
       }
+    },
+    "box-noop": {
+      "stages": {
+        "work": {
+          "live": true,
+          "prompt": ".fabro/workflows/box-noop/prompts/work.md",
+          "inputs": [],
+          "box": true
+        }
+      }
     }
   }
 }

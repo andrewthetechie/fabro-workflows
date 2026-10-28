@@ -316,6 +316,88 @@ class BoxStages(unittest.TestCase):
                 self.assertEqual([v for v in found if v[1] in ("R13", "R14")], [])
 
 
+class BackgroundPackages(unittest.TestCase):
+    """R16: a box-only package names only the run's `-bg` model, guards itself, and writes
+    its box (more-local-inference D4, C5, C10)."""
+
+    BG_STYLESHEET = ("* { model: {{ inputs.coder_pool | default('coders-a-bg') }}; }\n"
+                     ".work { model: {{ inputs.coder_pool | default('coders-a-bg') }}; }")
+    GUARD = ('\n[[run.hooks]]\nid = "box-guard"\nevent = "stage_start"\nmatcher = "^agent$"\n'
+             'blocking = true\nsandbox = true\ntimeout = "30s"\n'
+             'script = "fabro-io box-guard; [ $? -eq 2 ] && exit 2; exit 0"\n')
+
+    def root(self, tmp: str, *, stylesheet: str | None = None, guard: str | None = None,
+             claim_hook: bool = False, no_box_write: bool = False,
+             drop_class: bool = False) -> Path:
+        root = BoxStages.root(BoxStages(), tmp, stylesheet=stylesheet or self.BG_STYLESHEET,
+                              drop_class=drop_class)
+        toml = root / ".fabro/workflows/ok/workflow.toml"
+        toml.write_text(toml.read_text() + (self.GUARD if guard is None else guard))
+        if claim_hook:
+            toml.write_text(toml.read_text() +
+                            '\n[[run.hooks]]\nid = "box-claim"\nevent = "stage_start"\n'
+                            'matcher = "^agent$"\nblocking = true\nsandbox = true\n'
+                            'timeout = "60s"\nscript = "fabro-io box-claim; exit 0"\n')
+        graph = root / ".fabro/workflows/ok/workflow.fabro"
+        box_write = "true" if no_box_write else "echo x > /tmp/fabro/box || true"
+        graph.write_text(graph.read_text().replace(
+            "    check [", f'    claim [shape=parallelogram, script="{box_write}"]\n    check ['))
+        return root
+
+    def run_r16(self, root: Path) -> list[tuple[str, str]]:
+        saved = cgi.BACKGROUND_PACKAGES
+        cgi.BACKGROUND_PACKAGES = ["ok"]
+        try:
+            return [(rule, node) for _, rule, node, _ in cgi.run(root) if rule == "R16"]
+        finally:
+            cgi.BACKGROUND_PACKAGES = saved
+
+    def test_a_box_only_package_that_obeys_every_clause_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.run_r16(self.root(tmp)), [])
+
+    def test_a_hosted_class_rule_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stylesheet = self.BG_STYLESHEET.replace(
+                ".work { model: {{ inputs.coder_pool | default('coders-a-bg') }}; }",
+                ".work { model: glm-5.3; }")
+            found = self.run_r16(self.root(tmp, stylesheet=stylesheet))
+            self.assertEqual(found, [("R16", ".work"), ("R16", "phase.work")], found)
+
+    def test_a_hosted_star_rule_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # A node with no class inherits `*`, so a hosted default is a hosted stage.
+            stylesheet = self.BG_STYLESHEET.replace(
+                "* { model: {{ inputs.coder_pool | default('coders-a-bg') }}; }",
+                "* { model: coders-a; }")
+            found = self.run_r16(self.root(tmp, stylesheet=stylesheet, drop_class=True))
+            self.assertEqual(found, [("R16", "*"), ("R16", "phase.work")], found)
+
+    def test_a_missing_guard_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.run_r16(self.root(tmp, guard="")), [("R16", "box-guard")])
+
+    def test_a_guard_that_is_not_the_c10_hook_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong = self.GUARD.replace('timeout = "30s"', 'timeout = "60s"')
+            self.assertEqual(self.run_r16(self.root(tmp, guard=wrong)), [("R16", "box-guard")])
+
+    def test_a_claim_hook_in_a_background_package_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self.run_r16(self.root(tmp, claim_hook=True))
+            self.assertEqual(found, [("R16", "box-claim")], found)
+
+    def test_a_claim_node_without_the_box_file_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self.run_r16(self.root(tmp, no_box_write=True))
+            self.assertEqual(found, [("R16", "claim")], found)
+
+    def test_the_real_box_noop_package_obeys_every_clause(self):
+        pkg = REAL / ".fabro/workflows/box-noop"
+        found = cgi.package_violations(pkg, REAL / ".fabro/workflows")[0]
+        self.assertEqual([v for v in found if v[1] == "R16"], [])
+
+
 class Counts(unittest.TestCase):
     def test_spliced_counts_match_the_agents_baselines(self):
         self.assertEqual(cgi.spliced_counts(REAL), {
@@ -337,6 +419,9 @@ class Counts(unittest.TestCase):
             # Scout (ADR 0027, task 04): no agent stage. Confirmed by `make check-host`
             # on 2026-10-16 (task 07 of docs/scout/).
             "scout": (9, 11),
+            # box-noop (more-local-inference task 04): start -> claim -> work -> exit. The
+            # offline count; `fabro validate` for it is the operator's task 12.
+            "box-noop": (4, 3),
             # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
             # this pair grows with each one; it is the offline parser's count, not a
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.
