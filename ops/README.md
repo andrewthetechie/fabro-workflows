@@ -839,6 +839,58 @@ lines of inline JavaScript: each button is a real `POST` form, so it works with 
 disabled (the response is raw JSON), and with scripting on the page reloads on success and
 shows the error inline otherwise.
 
+#### The background lane: turning it off, and reading why a box is idle
+
+The lane is **off** until an operator turns it on. To stop it, either way takes effect on
+the next tick with no rebuild, and **running background runs finish** — nothing is
+cancelled by turning the switch off:
+
+```sh
+# The one switch. Off is the default in code and in the compose file.
+printf 'SCHEDULER_BACKGROUND=off\n' >> ~/fabro/.env     # or edit the line in place
+cd ~/fabro && docker compose up -d --no-deps scheduler   # recreate only the scheduler
+curl -fsS "$B/api/background" | jq -r .switch            # "off" when the container has it
+```
+
+`docker compose up` without `--no-deps` would rebuild and restart fabro too, which fails
+every in-flight run; `--no-deps scheduler` is the only safe one. The variable must be in
+`~/fabro/.env` or `~/fabro/scheduler.env`: the service reads its environment from the
+compose `environment:` lines and `scheduler.env`, never from `.env` as an env file, so a
+variable exported in the shell of whoever ran compose is not what the container sees.
+
+The queue page's **Background** strip and `GET /api/background` are the same document. Per
+box it shows the running job (kind, repo, run id) or the first reason nothing may start
+there, which is one of:
+
+| `blocked_by` | What to do about it |
+|---|---|
+| `switch off` | `SCHEDULER_BACKGROUND=on`, as above. |
+| `drained` | The box is drained on purpose (`POST /api/pools/<box>/undrain` when it is not). |
+| `loop in a box stage` | Working as intended: the coder loop is on its box. |
+| `loop between stages` | Also intended, for a moment: the lane starts nothing until a stage is running, because the gap after it has not started yet. A box stuck here for minutes is a stale read — check `fabro events <run> -p`. |
+| `loop stages unknown` | The lease has no `box_stages`, so the lane fails closed. Usually a lease adopted from an older scheduler; the next dispatch replaces it. |
+| `box health unknown` | `/health` did not answer. `curl http://10.10.0.29:5300/health` from the host; a box that is down reads as busy, never as idle. |
+| `box busy` / `box not idle long enough` | The box is still working, or has not been quiet for `SCHEDULER_BG_GAP_S`. |
+| `slots` | fabro has fewer than `SCHEDULER_BG_SLOT_RESERVE` free run slots. Normal when the factory is busy. |
+| `no job queued` | The lane has nothing to run. `POST /api/background/box-noop` to measure it. |
+| `no job fits` | A job is queued whose expected whole-run time is longer than the predicted gap. That is the gap table in `config.py`, not a fault. |
+| `ready` | Everything holds; the next tick starts a job. |
+
+Two log lines are worth knowing, both on the scheduler container
+(`docker logs --since 1h fabro-scheduler | grep background:`):
+
+* `background: cancelled <run>: the coder loop is in a box stage` — an **eviction**
+  (D17 layer 2). The job goes back on the queue and its `cancels` count rises; at 3 it
+  needs a gap twice its own length before it is picked again. A run of evictions on one
+  box means the gap table over-predicts for that stage.
+* `box-guard: <wf>/<node> box=<box> clear=false action=self-cancel` — the package's own
+  guard (D17 layer 3) cancelled its run before an agent stage. The same line with
+  `action=block` is the one case that needs a look: the guard could not cancel itself, so
+  it blocked the stage and the job is recorded `failed`.
+* `box-claim: <wf>/<node> box=<box> cancelled=<n> waited=<s>s idle=<true|false>` — a
+  coder loop taking its box back. `waited` near 45 s means the box did not go idle inside
+  the claim's budget; the stage started anyway, which is the contract.
+
 #### Breaking a stuck lease
 
 The normal paths out of a lease are draft 09's release poll and the page's **Cancel run**

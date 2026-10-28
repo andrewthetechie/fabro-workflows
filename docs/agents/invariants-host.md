@@ -18,6 +18,8 @@ Every rule here passes `fabro validate` and fails at runtime, usually silently. 
 
 | Every `-bg` model name exists in the overlay on **its box's own provider** (`coders-a-bg` on `box-a`, `coders-b-bg` on `box-b`), and no workflow has a `[run.model.fallbacks]` row for one | A background run names its own model so the lane's usage stays separable, and the name has to resolve to the box it is already on. A `-bg` name on the wrong provider, or a missing row, fails the stage at its first node (`Worker exited before emitting a terminal run event`) and the scheduler requeues it as an ordinary failure. A fallback row on a `-bg` name, or a fallback target that *is* one, sends a failed background stage to a hosted model: it spends the credits the lane exists to save, silently, because a fallback is not an error. Checker rule R14 forbids both directions offline (`ops/check-graph-invariants.py`); task 12 adds the rows to the live overlay. |
 
+| The server variable `FABRO_BOX_HEALTH` exists before any `workflow.toml` reads `{{ vars.FABRO_BOX_HEALTH }}` | `backlog`, `ralph` and `pr-review` read it in `[run.environment.env]`, and from task 04 every background package does too. An unset `{{ vars.X }}` fails the RunIntent at compile time, so **no run of that workflow is created at all** — not a degraded run, no run. `ops/provision-server-state.sh` creates it (create-if-absent, `pool=url` pairs), and task 12 runs the provisioning before the push that first names it. Empty is legal and means "no box in the lane"; absent is fatal. |
+
 ## Server settings
 
 | Rule | What happens otherwise |

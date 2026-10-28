@@ -23,7 +23,7 @@ actually lives.
 
 | Path | What it is |
 |---|---|
-| `.fabro/workflows/<name>/` | **The only tree the automations read.** Eight runnable packages — `backlog`, `ralph`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue` and `scout` (`merge-queue` and `scout` have no agent stage) — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in (it has a queue mode that only `backlog`'s fast lane uses), and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `ralph` imports neither: it copies the shared merge nodes, and `ops/check-graph-invariants.py` R10 fails when a copy drifts. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
+| `.fabro/workflows/<name>/` | **The only tree the automations read.** Nine packages — the eight the automations fire (`backlog`, `ralph`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue` and `scout`; `merge-queue` and `scout` have no agent stage) and `box-noop`, the box-only package the **Scheduler**'s background lane runs in a coder loop's gap (more-local-inference, ADR 0031) — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in (it has a queue mode that only `backlog`'s fast lane uses), and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `ralph` imports neither: it copies the shared merge nodes, and `ops/check-graph-invariants.py` R10 fails when a copy drifts. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
 | `.fabro/workflows/_io/` | The **Stage manifest** and output schemas (ADR 0016): the only source of every `FABRO_IO_MANIFEST` block, generated into each `workflow.toml`. Never hand-edit the generated blocks; `check` fails on drift. |
 | `ops/` | Host replication: compose, the coder scheduler, profile images, provisioning, sweepers, and the offline checkers. No automation reads this tree. `ops/README.md` has its contents table and the runbooks. |
 | `docs/` | `docs/adr/` holds the decisions; every other folder is a task series or a set of design records. `docs/README.md` indexes them with their status. |
@@ -85,7 +85,7 @@ Baselines (fabro 0.362.0-nightly.0, last verified by `make check-host` on 2026-1
 `Backlog` was `82 nodes, 210 edges` (with one warning, `issue_number` unbound in `claim`);
 `PrReview (39 nodes, 87 edges)` with one warning, `pr_number` unbound in `validate_input`;
 `IssueTriage (16 nodes, 36 edges)`, `ArchReview (24 nodes, 54 edges)`,
-`Dependabot (51 nodes, 115 edges)`, `MergeQueue (8 nodes, 10 edges)` and `Scout (9 nodes, 11 edges)` clean (Scout verified by `make check-host` on 2026-10-16). Both
+`Dependabot (51 nodes, 115 edges)`, `MergeQueue (8 nodes, 10 edges)` and `Scout (9 nodes, 11 edges)` clean (Scout verified by `make check-host` on 2026-10-16). `BoxNoop` (4 nodes, 3 edges) is the offline parser's count for the background lane's box-only package; **expected, unverified**: task 12's `make check-host` runs `fabro validate` on it. Both
 warnings are deliberate: never bind those inputs in `[run.inputs]`. The fast-path series
 added `report_queued` to the three importing graphs (+1 node, +3 edges each), and
 `route_lane` and `demote_lane` to `backlog`. The gate-relief series (#29) added `refute_fix` and `refute_fix_gate` to the three importing graphs (+2 nodes, +5 edges each). The final-merge fix (2026-10-12) added `final_merge` to `backlog` (+1 node, +4 edges). The base-conflict fix (#37, 2026-10-13) added `resolve_base` and `resolve_base_gate` to the three importing graphs (+2 nodes, +6 edges each). The final-validation fix (#35, 2026-10-13) added `drop_unreviewed` and `final_fix_prep` to `backlog` (+2 nodes, +9 edges). The unmet-criteria series (#17, 2026-10-13) added `return_to_triage` and `task_block_gate` to `backlog` (+2 nodes, +6 edges). The plan trial (#25, 2026-10-13) added `plan` to `backlog` (+1 node, +5 edges); closing it (2026-10-21, ADR 0030) deleted `improve` and the three arm-split edge pairs, so **`Backlog` is expected to be 81 nodes and 205 edges**. `make check-host` confirmed it on 2026-10-22.
@@ -98,6 +98,14 @@ binding it in `[run.inputs]` would route every hand-fired run to one box.
 deliberate, and why `fabro preflight` is not an offline check.
 
 ## Deploying
+
+**`fabro-io`'s manifest structs ship before any manifest that uses them** (D18). The
+binary's manifest types are `deny_unknown_fields`: a `workflow.toml` carrying a field the
+deployed `fabro-io` does not know fails to load, and with it `submit`, `serve`, `guard` and
+`git-guard` in every run. So a change to `ops/fabro-io/src/manifest.rs` is pushed **and its
+profile images deployed** (`make deploy-images`) before the commit that raises
+`min_binary` or adds the field to `_io/manifest.json`. A change to either alone is an
+outage, not a half-feature.
 
 **Workflow changes need no deploy.** Every automation resolves `.fabro/workflows/**`
 from `main` at fire time. **`ops/` and `backlog/scripts/` changes do:** run `make deploy`
@@ -129,6 +137,15 @@ hand only with `~/bin/fabro-fire-pr-review.sh <owner/repo> <pr>`,
 its `api:manual` trigger (task 10 records the command). A `merge-queue-<repo>` run fires from its
 schedule (every 20 minutes, created disabled) or its `api:manual` trigger; it takes no input. A `scout-<repo>` run fires from its daily schedule (created disabled) or its `api:manual` trigger, and it takes no input. `docs/agents/server.md` says why the
 automation endpoint cannot carry the input, and covers the scheduler.
+
+The scheduler's **background lane** fills a coder box's gaps with `box-noop` runs. One
+switch turns it off: `SCHEDULER_BACKGROUND=off` (the default) in `~/fabro/.env`, applied with
+`docker compose up -d --no-deps scheduler`; running background runs finish. Its six
+variables reach the container only through `ops/docker-compose.yaml`'s `environment:` lines
+and `~/fabro/scheduler.env`, never `.env` as an env file. `GET :32280/api/background` is the
+lane's state and the queue page's *Background* strip is the same document;
+`POST /api/background/box-noop` with `{"repo"}` queues the one producer, for measuring how
+fast a claim takes its box back. `ops/README.md` has the runbook.
 
 The operational history is `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md` on the Mac,
 mode 600, deliberately outside this public tree. Append a dated section rather than

@@ -64,6 +64,22 @@ Every rule here passes `fabro validate` and fails at runtime, usually silently. 
 | An `output` in the manifest makes `submit` available; it does not oblige the stage to submit. `task_blocked` (coder and rework tiers, #17) is the one contract a stage writes only to block, and its gate reads "no file" as "carry on" | A gate that treated a missing `task_blocked.json` as an error would stop every task that implemented normally. `fabro-io submit` refuses only a stage with no `output` (`ops/fabro-io/src/serve.rs`), so no binary change came with it. |
 | The MCP server's absence is silent in fabro | Fabro logs just one event when an agent tool times out; nothing surfaces that `inputs` did not answer. The receipt check is the only thing that notices, which is why every migrated gate carries it. |
 
+## Box stages and the claim (more-local-inference C1-C4)
+
+The manifest below is the *Stage* manifest (`_io/manifest.json` and the generated
+`FABRO_IO_MANIFEST` blocks), not the graph. A **box stage** is a stage that runs on the run's
+coder box; every other stage runs on a hosted model. `fabro-io box-claim` and `box-guard`
+read these values at run time, and the scheduler reads them to decide when a box is free.
+
+| Rule | What happens otherwise |
+|---|---|
+| Every stage in the Stage manifest states `box`: `false`, `true`, or `"plan-arm"` (R13's other half, enforced by `ops/fabro-io-manifest.py check`) | A stage nobody decided is a stage nobody can reason about. The generator refuses a missing or malformed value, and a stage of an imported phase carries a map with exactly one bool per importing workflow, because an imported phase renders with the importer's stylesheet. |
+| The `box` values and the stylesheets agree in both directions; every agent node has a `box`; a `"plan-arm"` stage's `{% if %}` condition is exactly `(inputs.issue_number \| default(0) \| int) // 2 % 2 == 1`; and no agent node resolves to a literal `coders-*` model, through its class or through the `*` rule (R13) | The stylesheets decide where a stage actually runs, so a stage marked `false` that a class sends to `coders-a` runs on box-a with no claim and no lease — the run silently steals a box. `ops/fabro-io/src/boxclaim.rs` hard-codes the arm arithmetic, so a stylesheet that spells the condition differently disagrees with the hook that is supposed to protect it. |
+| Only `backlog`, `ralph` and `pr-review` carry the `box-claim` hook, and each carries it exactly as C4 gives it: `stage_start` on `^agent$`, blocking, sandboxed, `timeout = "60s"`, `script = "fabro-io box-claim; exit 0"` (R15) | In a background package the claim would cancel the background runs on its own box, its own run included, so the lane would cancel itself and never finish a job. The exact shape matters too: unanchored, or unblocked, it either never fires or does not wait for the box. The trailing `exit 0` is the hook rule below. |
+| `claim` in each of the three writes `/tmp/fabro/box` (R15), and no other node may depend on it existing | `box-claim` runs as a `stage_start` hook, before any command node, so a file is the only way it can learn which box this run holds. An empty or missing file means "no box known" and the claim does nothing. |
+| `fabro-io`'s manifest structs ship **before** any manifest that uses them (D18) | Its types are `deny_unknown_fields`, so a `workflow.toml` carrying `box` fails to load in an older binary — and with it `submit`, `serve`, `guard` and `git-guard` in **every** run. Push the binary and `make deploy-images` first, then the commit that raises `min_binary` or adds the field. |
+| `FABRO_BOX_HEALTH` exists on the host before a `{{ vars.FABRO_BOX_HEALTH }}` reaches `main` | An unset server variable fails the RunIntent at compile time, so **no** `backlog`, `ralph` or `pr-review` run is created at all. `ops/provision-server-state.sh` creates it, create-if-absent, and task 12 runs the provisioning before the push. |
+
 ## Background packages
 
 A **background package** is a box-only package the scheduler may run in a coder loop's gap

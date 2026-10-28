@@ -87,6 +87,37 @@ state and is released by nothing else — not by a human gate, not by a hosted-m
 stage. See ADR 0006.
 _Avoid_: lock, pin, reservation
 
+**Coder loop**:
+A `backlog` or `ralph` run, or a `pr-review` run the **Scheduler** leases, that holds a
+**Coder lease** and therefore has absolute precedence on its box. It keeps that precedence
+one **Stage** at a time: the box changes hands only between stages, because each stage
+starts a fresh session and a handover therefore costs nothing in the KV cache (ADR 0031 D1).
+_Avoid_: coder run (when the precedence is what is meant), worker
+
+**Background run**:
+A run of a box-only package (`.fabro/workflows/box-noop/` today; `pr-doctor`,
+`issue-precheck`, `context-pack`, `orientation` and `flaky-investigation` later) that the
+**Scheduler** starts in a **Coder loop**'s gap. At most one per box, every stage on the box's
+own `coders-?-bg` model, no hosted credits, and always cancellable: it writes to GitHub only
+in its last node, and that node writes its marker first (ADR 0031, more-local-inference D9).
+_Avoid_: job (a job is the Scheduler's queue entry — a `background_jobs` row — not the run),
+background task
+
+**Claim**:
+The `box-claim` hook, `fabro-io box-claim`, which a **Coder loop** runs before each box
+**Stage**: it cancels the **Background run** on its box through fabro's run API, then waits
+for strix-infer to report the box idle. It exits 0 on every path of its own, so it can delay
+a stage by seconds but never stop one (ADR 0031 D2, more-local-inference C3).
+_Avoid_: lock, reservation, preempt (it cancels one kind of run, not any run)
+
+**Guard**:
+The `box-guard` hook, `fabro-io box-guard`, which a **Background run** runs before each of
+its own agent stages. It cancels its own run when the box's **Coder loop** is in a box stage
+or the box is busy, and blocks only when it cannot cancel itself. It is the third layer that
+closes the window the **Claim** cannot see: a loop stage that begins after the claim ran
+(more-local-inference C10, D17).
+_Avoid_: check, heartbeat
+
 **Run history**:
 One row per released **Coder lease**, in the scheduler's own `run_history` table: which
 box ran it, which issue, how it ended, and whether its PR had merged at that instant.
