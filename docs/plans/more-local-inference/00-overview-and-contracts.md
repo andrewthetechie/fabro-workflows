@@ -1,6 +1,8 @@
 # More local inference: overview and canonical contracts
 
-**Status:** planned 2026-10-28, nothing built. ADR 0031 (proposed). Phase 0's sampler runs on
+**Status:** planned 2026-10-28. Phase 1 built, reviewed and deployed 2026-10-28 with the lane
+`off`; task 12 Phase 1 steps 1 and 6-8 are next, and its exit check has not run. ADR 0031
+(proposed). Phase 0's sampler runs on
 the fabro host until about 2026-10-30 03:50 UTC (`~/coder-util/box-{a,b}.tsv`, read-only).
 Revised 2026-10-28 after a review against the repository (see *Facts*).
 
@@ -101,9 +103,10 @@ called by background work, and nothing new sits in the coder loop's path.
 - **Boxes.** `coders-a` is `http://10.10.0.29:5300`, `coders-b` is `http://10.10.0.56:5300`, both
   strix-infer serving `qwen3.8-flash-next`. `GET /health` returns JSON with `busy` (bool),
   `queued` (int), `idle_seconds` (float) and `live_tokens`. `GET /metrics` is Prometheus text;
-  `strix_requests_total{outcome="cancelled"}` counts cancelled requests. `ops/settings.toml.example`
-  is stale for box-b's limits row; the live overlay's `coders-a`/`coders-b` rows carry no
-  `limits` line. `coders-c` and `coders-d` are not strix-infer boxes and are not in the lane:
+  `strix_requests_total{outcome="cancelled"}` counts cancelled requests. The live overlay's
+  `coders-a`/`coders-b` rows carry `limits = { context_tokens = 262144, max_output_tokens =
+  38400 }`, the same as `ops/settings.toml.example` (read on the host 2026-10-28, Phase 1
+  deploy; an earlier line here said they carried none). `coders-c` and `coders-d` are not strix-infer boxes and are not in the lane:
   the lane covers exactly the pools in `FABRO_BOX_HEALTH`.
 - **Gaps.** Since 10-21, 157 runs: 432 lease-hours, 158 box-stage hours, and 274 gap-hours.
   Gaps have a median of 11 min (p75 20, p90 49), and 253 h fall in gaps of 10 min or more.

@@ -11,7 +11,7 @@ The node and edge baselines are in `AGENTS.md`, *Validating* (the one place to u
 nodes of `_shared/review-merge/`, which `fabro validate` splices in; `fabro parse`
 shows the unexpanded placeholder instead, so node counts only match after validate.
 
-The two warnings are deliberate. `issue_number` unbound in `claim` is draft 10's fail-closed input, the same shape as `pr_number`. Binding
+The warnings are deliberate. `issue_number` unbound in `claim` is draft 10's fail-closed input, the same shape as `pr_number`. `coder_pool` unbound in `claim` (`pr-review` and `box-noop`; in `backlog` and `ralph` it folds into the `issue_number` warning, same attribute) is the same again: every fire passes the box it holds, and the claim's box file must not default to one (more-local-inference C2, C4). Binding
 `[run.inputs] pr_number` would silence it and let a run fired with no input review PR
 #1 instead of failing at admission. (`auto_merge` is another unbound `{{ inputs.* }}` in the
 same node, and it is *not* silenced by being supplied at fire time — `pr_number` is
@@ -104,5 +104,6 @@ which model a stylesheet rule resolved to at real run time. Read a timeout there
 congestion, not as a graph fault; `fabro validate` and the routing checker are the gates
 that need no box, and they are the ones to run before every push. Two gotchas when
 preflighting `pr-review`: supply `-I pr_number=1` or it stops on the deliberate unbound
-`pr_number`, and `-I auto_merge=0` as well or it then stops on the second unbound input in
-the same `script` attribute.
+`pr_number`, `-I auto_merge=0` as well or it then stops on the second unbound input in
+the same `script` attribute, and `-I coder_pool=coders-a` for `claim`'s box file (since
+2026-10-28).
