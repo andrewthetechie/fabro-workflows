@@ -1,8 +1,9 @@
 # Coder boxes run background work between the coder loop's box stages
 
 **Status:** proposed (2026-10-28). The decisions below are the operator's, from the planning
-session of 2026-10-27/28. The task series is `docs/plans/more-local-inference/`. This ADR
-becomes accepted when that series' Phase 2 exit check passes (task 12).
+session of 2026-10-27/28, revised the same day after a review against the repository. The task
+series is `docs/plans/more-local-inference/`. This ADR becomes accepted when that series'
+Phase 2 exit check passes (task 12).
 
 The two coder boxes (`coders-a`, `coders-b`, both serving qwen3.8-flash-next through
 strix-infer) are free to run and have no capacity limit, but they sit idle most of the day.
@@ -27,7 +28,7 @@ handover costs nothing in the cache. Holding the box across a whole backlog task
 then hosted review, then rework) was considered and rejected: it buys no cache reuse and
 gives up the gap.
 
-## D2. Background work is whole fabro runs, cancelled by the coder loop
+## D2. Background work is whole fabro runs, and three layers keep it off a busy box
 
 Background work is a **background run**: a run of a box-only package, whose every stage is on
 the box and spends no hosted credits. At most one background run is on a box at a time.
@@ -37,6 +38,12 @@ box-claim`, in its own sandbox. It cancels any background run on its box through
 API, then waits until strix-infer reports the box idle. It does not depend on the scheduler,
 and it exits 0 on any error of its own, so it can delay a box stage by seconds but never stop
 one.
+
+The claim runs once, at stage start, so it cannot see a background run created just after it.
+Two more layers close that gap. The scheduler reads the loop's stage fresh before it starts a
+background run, and on every tick it evicts any background run on a box whose loop is in a box
+stage. Each background package also runs a `fabro-io box-guard` hook before its own agent
+stages, which cancels its own run when the box's loop is in a box stage or the box is busy.
 
 Rejected:
 - **A proxy in front of each box** (priority queue, gap-filling, pre-emption). It puts new
@@ -58,16 +65,27 @@ It labels every run it starts with its box and lane. Fabro 0.370 to 0.396 adds n
 priority or per-pool concurrency, so the scheduler stays the admission controller.
 
 Background runs ignore the peak-hours pause, because they spend no hosted credits. They never
-run on a drained box. One switch, `SCHEDULER_BACKGROUND`, turns the lane off.
+run on a drained box. One switch, `SCHEDULER_BACKGROUND`, off by default, turns the lane off.
 
 ## D4. The PR doctor gets one attempt per pull request
 
 The first background job is the **PR doctor**. It fixes a blocked factory pull request on the
-box, using that PR's own merge-phase report. The scheduler then fires exactly one hosted
-review (`pr-review`). If that review does not end merged or queued, the PR gets
-`ai-review-needs-human`, and a human must act. A pull request is doctored at most once, ever.
+box, using that PR's own merge-phase report. It records the attempt in a marker comment before
+it writes anything else, and it removes `ai-review-needs-human` before it pushes, because the
+merge queue hands off any PR that carries that label. The scheduler then fires exactly one
+hosted review (`pr-review`) as a leased coder loop. If that review does not end merged or
+queued, the PR gets `ai-review-needs-human` back, and a human must act. A pull request is
+doctored at most once, ever.
 
-## D5. Out of scope
+## D5. Background output reaches hosted stages through a Stage I/O input
+
+A background job publishes its result as a marker comment, edited in place. The hosted stages
+do not read issue comments: the `issue.json` the coder loop fetches has none. The coder loop's
+`claim` node therefore copies the newest marker of each kind into one optional Stage I/O
+input, `background.md`, which `decompose` and `plan` read. Repository orientation is kept in
+one pinned issue per repository, not in a pull request, so it needs no hosted review.
+
+## D6. Out of scope
 
 - **A credit governor** that admits extra hosted runs while z.ai credits are below pace.
 - **A fabro upgrade.** Everything here runs on 0.362. A later upgrade must skip 0.370 to 0.386,

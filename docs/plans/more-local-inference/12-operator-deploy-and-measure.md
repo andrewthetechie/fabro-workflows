@@ -2,7 +2,9 @@
 
 **Operator only.** Read `00-overview-and-contracts.md` and ADR 0031. Every step that pushes,
 deploys or edits the host is here. Append each step's outcome to
-`~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`, as a dated section.
+`~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`, as a dated section. When a phase's exit check
+passes, record it in the overview's **Phase gates passed** line and commit that; the next
+phase's agent reads it there.
 
 ## Phase 0: the gap measurement (running since 2026-10-28 03:50 UTC)
 
@@ -12,88 +14,131 @@ deploys or edits the host is here. Append each step's outcome to
    - the busy share;
    - the distribution of idle stretches (consecutive `busy=0, queued=0` samples, 10 s apart);
    - the hours in idle stretches of 10 min or more.
-2. From fabro's per-visit stages (`GET /runs/{id}/stages`, the method in the overview's
-   *Facts*), compute the median remaining gap after each hosted or command node of
-   `backlog` and `ralph`. Put the table into task 05's gap-prediction config before Phase 1
-   deploys.
+2. **The gap table.** For every released `backlog` and `ralph` run since 2026-10-21, read its
+   stage visits with `GET /runs/{id}/stages` (start and end of each node visit, the same call
+   the probe makes). Order the visits by start. For each visit of a node that is not a box
+   stage (C1), the remaining gap is the start of the next box-stage visit minus the end of this
+   visit, or the run's end if no box stage follows. Take the median per `(workflow, node)`. Put
+   the table into task 05's gap-prediction config before Phase 1 deploys.
 3. **Exit:** fillable gap-hours per box per day, recorded in the log. If they are under 4 h a
    day per box, stop and rethink before building further.
 
-## Phase 1: claim plumbing and the lane, with `box-noop` (tasks 01-05, 11)
+## Phase 1: claim plumbing and the lane, with `box-noop` (tasks 02, 01, 03, 04, 05, 11)
 
-1. **Server variable.**
-   `fabro variable set FABRO_BOX_HEALTH 'coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.56:5300/health'`.
-   Set it before the graphs reach `main` if task 03 found an unset variable fails a run.
-2. **Overlay rows.**
+1. **Verify the three unverified facts** (overview *Facts*) with a throwaway probe package,
+   before anything is pushed, and record each answer in the log and in
+   `docs/agents/invariants-graph.md`:
+   - what fabro does to a stage when a blocking sandbox `stage_start` hook outlives its
+     `timeout` (a hook that sleeps 20 s under a 5 s timeout);
+   - whether a sandbox `stage_start` hook sees `FABRO_RUN_ID`, and whether the
+     `FABRO_HOOK_CONTEXT` file has `run_id`;
+   - whether `FABRO_API_TOKEN` from a sandbox may `POST /runs/{id}/cancel` another run.
+
+   If the first is "the stage fails", keep C3's 45 s deadline and 60 s timeout. If the token
+   cannot cancel, stop: the claim cannot work.
+2. **Server variable.** Run `make provision` (task 03 added `FABRO_BOX_HEALTH` to
+   `provision-server-state.sh`), or set it by hand to
+   `coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.56:5300/health`. Confirm it
+   with `GET /variables`. **It must exist before step 5**, or no `backlog`, `ralph` or
+   `pr-review` run is created.
+3. **Overlay rows.**
    - Add `coders-a-bg` and `coders-b-bg` to the live settings overlay, copied from the
      example (task 04).
    - Then run `docker logs --since 1m fabro-fabro-1 | grep -cE "Rejected reloaded|Failed to reload"`.
      It must print `0` (invariants-host).
    - Then `fabro model test -m coders-a-bg` and `-m coders-b-bg`.
-3. **Scripts first:** `make deploy-scripts` for `fire-pr-review.sh`'s `coder_pool` (task 03).
-4. **Push** tasks 01-05 and 11, then `make deploy-images` (the new `fabro-io` with
-   `box-claim`), then `make deploy-scheduler`.
-   - Then `make check-host`: `box-noop` validates, and the node and edge baselines are
-     unchanged.
+4. **The binary first (D18).** Push task 02's commit alone
+   (`git push origin <task-02-sha>:main`), then `make deploy-images`, and wait for the build to
+   finish. Check that a new sandbox reports `fabro-io 0.9.0` (`fabro-io help` from a probe, or
+   the image's build log).
+5. **The rest.** Push tasks 01, 03, 04, 05 and 11. Task 03's change to `fire-pr-review.sh` is
+   live with this push; no `deploy-scripts` is needed for it. Then:
+   - `make deploy-compose` (the scheduler's new `environment:` lines; this copies the file and
+     restarts nothing), then `make deploy-scheduler`.
+   - `make check-host`: `box-noop` validates, and the `backlog`, `ralph` and `pr-review` node
+     and edge baselines are unchanged.
    - The lane is still `off`.
-5. **Claim with nothing to cancel:** watch one live `backlog` run. Each box stage's
+6. **Claim with nothing to cancel:** watch one live `backlog` run. Each box stage's
    `box-claim` stderr line shows `cancelled=0 waited=0s idle=true`, and the stage times match
-   the week before.
-6. **Cancel latency:**
-   - Set `SCHEDULER_BACKGROUND=on`, then
-     `cd ~/fabro && docker compose up -d --no-deps scheduler`.
+   the week before. Hand-fire one `pr-review` and confirm it is created (its `coder_pool`
+   input).
+7. **Cancel latency and the guard:**
+   - Set `SCHEDULER_BACKGROUND=on` in `~/fabro/.env`, then
+     `cd ~/fabro && docker compose up -d --no-deps scheduler`, and check the *Background* strip
+     shows `on`.
    - Enqueue `box-noop` for one repository (`POST /api/background/box-noop`).
    - When the coder loop on that box reaches its next box stage, read the claim line's
      `waited=`, strix-infer's `strix_requests_total{outcome="cancelled"}`, and the background
      job's state (`queued`, `cancels=1`).
    - Repeat 10 times across both boxes.
-7. **Exit:**
+   - Read every `box-guard` line and the strip's eviction count over the same period.
+8. **Exit:**
    - Cancel latency p95 is under 30 s.
-   - No coder-loop box stage ever ran while a background run was mid-request on its box (the
-     claim line's `idle=true` every time).
+   - No coder-loop box stage ever ran while a background run was mid-request on its box: the
+     claim line's `idle=true` every time, **and** no guard line with `clear=false` that was
+     followed by a background request on the box, and every eviction happened before the
+     evicted run's first agent stage.
    - Coder-loop stage times are unchanged.
-   - Then set the lane back to `off` until Phase 2.
+   - Then set the lane back to `off` until Phase 2, and record Phase 1 in the Status line.
 
 ## Phase 2: the PR doctor (task 06)
 
-1. Push task 06, `make deploy-scheduler`, and set the lane `on`.
+1. Push task 06 and its docs commit, `make deploy-scheduler`, and set the lane `on`.
 2. Watch the first five doctor runs end to end:
-   - doctor push → `merge-on-green` removed → one `pr-review` → merged, or handed off with
-     `ai-review-needs-human`;
-   - no PR ever gets a second doctor run.
+   - marker posted → `ai-review-needs-human` and `merge-on-green` removed → push → one leased
+     `pr-review` → merged or queued, or handed off with `ai-review-needs-human` back on;
+   - no PR ever gets a second doctor run;
+   - the `pr-review` lease released without touching any issue label.
 3. **Exit after 7 days:**
    - blocked PRs turned into merges per week;
    - doctor runs that pushed nothing;
-   - hand-offs;
+   - hand-offs, with and without a review;
    - hosted credits spent on the follow-up reviews against the credits the merged PRs had
      already spent;
    - claim wait p95 under 30 s.
 
-   Then set ADR 0031 to *accepted* (task 11 step 6).
+   Then set ADR 0031 to *accepted* (task 11 step 6), and record Phase 2 in the Status line.
 
 ## Phase 3: precheck and context packs (tasks 07-08)
 
-1. Push, `make deploy-images` if `fabro-io` changed, `make deploy-scheduler`.
-2. **Exit after 14 days:**
+1. If task 07 bumped `min_binary`, push the `fabro-io` commit and `make deploy-images` first,
+   as in Phase 1. Then push the rest and `make deploy-scheduler`.
+2. Check that a new `backlog` run's `decompose` received `background.md` when the issue has a
+   marker, and that runs without one are unchanged.
+3. **Exit after 14 days:**
    - the box busy share, against Phase 0's;
    - runs that ended `close_noop`, `return_to_triage` or `mark_stuck`, per 100 runs;
+   - issues held by precheck, and how many a human released (a false hold);
    - z.ai credits per `decompose` and `plan` visit, with a pack against without (task 08's
-     record), priced at the overview's z.ai credit rates (*Facts*), with off-peak at half.
+     `had_pack`), stratified by the box-plan trial's arm, priced at the overview's z.ai credit
+     rates (*Facts*), with off-peak at half.
 
    A pack that does not lower credits per visit is turned off (producer disabled) and recorded.
+   A precheck whose false-hold rate is over a third is turned off the same way.
 
 ## Phase 4: pre-review and long-horizon jobs (tasks 09-10)
 
-1. Push, deploy, and `make check-host` (new `Backlog` baseline).
-2. **Exit after 14 days:**
+1. **Before task 09 starts:** record in the Status line either the ralph trial's verdict or
+   that you accept the confound (D21).
+2. Push, deploy, and `make check-host` (new `Backlog` baseline).
+3. **Exit after 14 days:**
    - hosted `review` and `rework` visits per task, before and after;
-   - the orientation file's effect on credits per `decompose` visit;
+   - pre-review reverts per task;
+   - the orientation issue's effect on credits per `decompose` visit;
    - flaky issues closed with the investigation's cause.
+
+## Housekeeping
+
+- File the latent `issue.json` comments bug as its own issue: the `decompose` and `plan`
+  prompts tell the agent to read `.comments`, and `claim` never fetches them (*Facts*, D16).
 
 ## Kill switches
 
 - **The lane:** `SCHEDULER_BACKGROUND=off` in `~/fabro/.env`, then
-  `docker compose up -d --no-deps scheduler`. Running background runs finish; cancel them from
-  fabro if needed.
+  `cd ~/fabro && docker compose up -d --no-deps scheduler`. This works only because task 05
+  maps the variable in `ops/docker-compose.yaml`. Running background runs finish; cancel them
+  from fabro if needed.
 - **The claim:** remove the `box-claim` hook from a workflow's `workflow.toml` and push. A
-  workflow change needs no deploy.
+  workflow change needs no deploy. Turn the lane off first, or background runs will share the
+  box with that workflow's box stages until the guard or eviction catches them.
+- **A job kind:** disable its producer (a config flag per kind, added with the producer).

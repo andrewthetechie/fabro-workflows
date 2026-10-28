@@ -1,16 +1,18 @@
 # Task 08: context packs
 
-Read `00-overview-and-contracts.md` first (D9, D10, D11; C6, C7). **Invoke `/fabro-workflow`.**
-Read `backlog`'s `decompose.md.j2` and `plan.md.j2`, and `ralph`'s `plan.md.j2`.
+Read `00-overview-and-contracts.md` first (D9, D10, D11, D19, D21; C6, C7, C9). **Invoke
+`/fabro-workflow`.** Read `backlog`'s `decompose.md.j2` and `plan.md.j2`, `ralph`'s
+`plan.md.j2`, and `docs/plan-box-trial/`.
 
-**Start after task 07, in the same phase.**
+**Start after task 07, in the same phase.** Task 07 built `background.md`, which carries the
+pack.
 
 ## Goal
 
 Hosted `decompose` and `plan` spend most of their credits exploring. Cached input was 60% of
 z.ai credits in the week the quota ran out, and backlog `plan` alone was 22%. A box-built pack
 of the files, symbols, tests and commands an issue touches should let them explore less. The
-pack lands as an issue comment, which those stages already read.
+pack is posted as an issue comment, and the `claim` node puts it into `background.md`.
 
 ## Steps
 
@@ -23,26 +25,34 @@ pack lands as an issue comment, which those stages already read.
      - the tests that cover them;
      - the commands to run them;
      - a draft `## Task map` when the issue is big enough to split.
-   - `gate`: fails a pack over **8,000 characters** (about 2k tokens). Every hosted read of the
-     issue pays for the comment, so a long pack costs credits instead of saving them.
-   - `post`: the C6 marker comment.
-2. **Scheduler producer:**
-   - Enqueue a pack for each of the top N (default 10) queued issues whose precheck verdict
-     is `ready` and whose pack marker is missing or stale (same staleness rule as 07).
-   - `typical_box_minutes` 20.
-3. **Prompts.** One sentence each in `decompose.md.j2`, backlog `plan.md.j2` and ralph
-   `plan.md.j2`:
+   - `gate`: fails a pack over **8,000 characters** (about 2k tokens). Every `decompose` and
+     `plan` visit reads the pack through `background.md`, so a long pack costs credits instead
+     of saving them.
+   - `post`: the C6 marker comment, edited in place when one exists.
+2. **Stage manifest:** the package, with `"box": true` on `gather`; `BACKGROUND_PACKAGES`,
+   `WF_ORDER`, `ENTRYPOINTS`.
+3. **Scheduler producer:**
+   - Enqueue a pack (priority 3, `typical_box_minutes` 30, which includes the index) for each
+     of the top N (default 10) queued issues whose precheck verdict is `ready` and whose pack
+     marker is missing or stale (C6 *Staleness*).
+4. **Prompts.** `decompose.md.j2` already lists `background.md` (task 07). Add one sentence to
+   backlog `plan.md.j2` and ralph `plan.md.j2`, in their input lists:
 
-   `A comment starting <!-- fabro:context-pack is a local model's map of the code this issue touches; start from it, verify each claim against the checkout, and do not re-explore what it already shows.`
+   `background.md may hold a code map a local model built for this issue; start from it, verify each claim against the checkout, and do not re-explore what it already shows.`
 
-4. **Measurement hook:** `ops/scheduler` records, per `decompose` and `plan` visit, whether the
-   issue had a pack when the run started. Task 12 compares credits per visit with a pack and
-   without one.
-5. **Tests:** the size gate, the producer's ordering after precheck, and staleness.
+5. **Measurement record (D21).** At each issue dispatch, the scheduler records on the
+   `run_history` row whether the issue had a fresh pack marker (`had_pack` 0 or 1), and the
+   pack marker's `run=`. Task 12 joins it with the per-node tokens the scheduler already stores
+   (`run_stage_stats`: `input_tokens`, `output_tokens`, `cache_read_tokens`) to compare credits per `decompose` and `plan` visit with a pack and
+   without, stratified by the box-plan trial's arm.
+6. **Tests:** the size gate, the producer's ordering after precheck, staleness, and the
+   `had_pack` record.
 
 ## Done when
 
 - `make check` and `uv run pytest` pass.
 - Commit: `feat(context-pack): box-built code maps for decompose and plan (more-local-inference 08)`.
 
-**Stop here.** Report to the operator, who runs task 12, Phase 3.
+Then add task 11's Phase 3 rows (the two packages in `AGENTS.md` *Layout*, `background.md` and
+the precheck holds in `docs/agents/invariants-backlog.md`, the held list in `ops/README.md`), in
+their own commit, and **stop**. Report to the operator, who runs task 12, Phase 3.
