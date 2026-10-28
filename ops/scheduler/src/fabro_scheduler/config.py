@@ -102,21 +102,77 @@ BACKGROUND_JOB_PRIORITY = {
 }
 
 # Gap prediction (C7 step 9): the coder loop's median remaining gap after a node, in
-# minutes, keyed by `(workflow, node id)`. **These are the overview's starting numbers,
-# not measurements**; task 12 replaces them with measured ones before Phase 1 deploys.
+# minutes, keyed by `(workflow, node id)`. **Measured** (task 12 Phase 0 step 2,
+# 2026-10-28): every visit of a non-box node in the 170 released `backlog` and `ralph`
+# runs since 2026-10-21, gap = the next box-stage visit's start minus this visit's end (or
+# the run's end), median per node, floored to whole minutes. Nodes with fewer than 5 visits
+# or a median under a minute are left out and predict 0. Measured from a visit's *end*, a
+# long node such as `watch_checks` reads short (the run usually ends after it): the safe
+# direction, since the lane cannot see how much of the node is left. Re-measure when the
+# graphs change.
 BACKGROUND_GAP_MINUTES: dict[tuple[str, str], int] = {
-    ("backlog", "review_merge.watch_checks"): 30,
-    ("ralph", "watch_checks"): 30,
+    ("backlog", "autofix"): 13,  # n=305
+    ("backlog", "claim"): 15,  # n=101
+    ("backlog", "decompose"): 5,  # n=98
+    ("backlog", "decompose_gate"): 5,  # n=98
+    ("backlog", "extra_gate"): 20,  # n=106
+    ("backlog", "extra_prep"): 16,  # n=132
+    ("backlog", "file_remainder"): 26,  # n=83
+    ("backlog", "final_merge"): 32,  # n=83
+    ("backlog", "integrate"): 9,  # n=281
+    ("backlog", "next_task"): 7,  # n=424
+    ("backlog", "open_pr"): 27,  # n=83
+    ("backlog", "open_pr_prep"): 27,  # n=83
+    ("backlog", "partial_remainder"): 38,  # n=10
+    ("backlog", "pr_handoff"): 26,  # n=83
+    ("backlog", "prep"): 14,  # n=101
+    ("backlog", "prep_review"): 13,  # n=305
+    ("backlog", "rescue_brief"): 240,  # n=21
+    ("backlog", "review"): 9,  # n=303
+    ("backlog", "review_gate"): 9,  # n=303
+    ("backlog", "review_merge.ci_fix_gate"): 2,  # n=6
+    ("backlog", "review_merge.ci_fix_t1"): 2,  # n=5
+    ("backlog", "review_merge.fix_gate"): 5,  # n=82
+    ("backlog", "review_merge.hygiene"): 1,  # n=117
+    ("backlog", "review_merge.prep_review"): 26,  # n=83
+    ("backlog", "review_merge.refute_fix_gate"): 7,  # n=40
+    ("backlog", "review_merge.refute_prep"): 1,  # n=117
+    ("backlog", "review_merge.review_fix"): 4,  # n=83
+    ("backlog", "review_merge.rm_setup"): 26,  # n=83
+    ("backlog", "review_merge.spec"): 14,  # n=80
+    ("backlog", "review_merge.spec_gate"): 14,  # n=80
+    ("backlog", "review_merge.standards"): 19,  # n=83
+    ("backlog", "review_merge.standards_gate"): 20,  # n=80
+    ("backlog", "review_merge.validate"): 1,  # n=119
+    ("backlog", "rework_t2"): 28,  # n=7
+    ("backlog", "route_lane"): 14,  # n=101
+    ("backlog", "spec"): 6,  # n=113
+    ("backlog", "spec_gate"): 6,  # n=112
+    ("backlog", "standards"): 9,  # n=119
+    ("backlog", "standards_gate"): 9,  # n=113
+    ("backlog", "task_block_gate"): 14,  # n=307
+    ("backlog", "validate"): 12,  # n=305
+    ("ralph", "autofix"): 1,  # n=268
+    ("ralph", "claim"): 11,  # n=69
+    ("ralph", "final_check"): 11,  # n=96
+    ("ralph", "final_merge"): 16,  # n=96
+    ("ralph", "hygiene"): 11,  # n=93
+    ("ralph", "iterate_t2"): 11,  # n=8
+    ("ralph", "prep"): 9,  # n=69
+    ("ralph", "refute"): 10,  # n=92
+    ("ralph", "refute_gate"): 10,  # n=92
+    ("ralph", "refute_prep"): 11,  # n=92
+    ("ralph", "review_prep"): 11,  # n=66
+    ("ralph", "standards"): 4,  # n=66
+    ("ralph", "task_block_gate"): 1,  # n=274
 }
 
-# Every other stage of a coder loop — a hosted stage or a command node — which is minutes
-# of waiting rather than the tens of minutes a CI watch can take.
-BACKGROUND_GAP_MINUTES_DEFAULT = 8
+# Any other node of a coder loop, and any other workflow, predicts 0 (C7: "an unknown key
+# predicts 0"): an unmeasured gap is not a gap to commit a job to.
+BACKGROUND_GAP_MINUTES_DEFAULT = 0
 
 # The loops the table covers today. `pr-review` leases a box too (task 06), but no gap
-# after its stages has been measured yet, so it predicts 0 and only a job of five minutes
-# or less starts there. Any workflow outside this tuple reads as 0, which is the safe
-# direction: an unmeasured gap is not a gap to commit a long job to.
+# after its stages has been measured yet, so it predicts 0.
 BACKGROUND_GAP_WORKFLOWS = ("backlog", "ralph")
 
 # The workflows whose box stages a background run must never overlap (D1). A coder loop

@@ -507,16 +507,24 @@ def test_the_lane_knobs_read_and_reject_their_bounds(tmp_path):
 
 
 def test_the_gap_table_predicts_a_gap_and_zero_for_an_unknown_key(tmp_path):
-    """C7 step 9: the table is measured, and an unknown key predicts 0 so only a job of
-    five minutes or less starts on a guess."""
-    from fabro_scheduler.config import predicted_gap_minutes
+    """C7 step 9: the table is measured (task 12 Phase 0 step 2), and an unknown key
+    predicts 0, so no job is committed to a gap nobody has measured."""
+    from fabro_scheduler.config import BACKGROUND_GAP_MINUTES, predicted_gap_minutes
 
-    assert predicted_gap_minutes("backlog", "review_merge.watch_checks") == 30
-    assert predicted_gap_minutes("ralph", "watch_checks") == 30
-    assert predicted_gap_minutes("backlog", "review") == 8
-    assert predicted_gap_minutes("ralph", "refute") == 8
-    # `pr-review` leases a box but has no measured gaps yet, so it predicts 0 and only a
-    # job of five minutes or less starts there. A node id the table has never heard of
-    # inside `backlog` or `ralph` falls back to the eight-minute default.
+    # Measured rows: the hosted review after a task leaves about nine minutes, and the
+    # merge phase's reviewers about twenty, before the next box stage.
+    assert predicted_gap_minutes("backlog", "review") == 9
+    assert predicted_gap_minutes("backlog", "review_merge.standards") == 19
+    assert predicted_gap_minutes("ralph", "refute") == 10
+    # Measured from a visit's end, a CI watch is short (the run usually ends after it), so
+    # it is not in the table and predicts 0, the safe direction.
+    assert ("backlog", "review_merge.watch_checks") not in BACKGROUND_GAP_MINUTES
+    assert predicted_gap_minutes("backlog", "review_merge.watch_checks") == 0
+    # `pr-review` and any node the table has never seen predict 0.
     assert predicted_gap_minutes("pr-review", "review") == 0
-    assert predicted_gap_minutes("backlog", "not-a-node") == 8
+    assert predicted_gap_minutes("backlog", "not-a-node") == 0
+    # No row is a box stage (C1): a gap is what follows a hosted or command node.
+    box = {"coder", "rework_t1", "resolve_merge", "extra_decompose", "plan",
+           "review_merge.refute_fix", "review_merge.resolve_base",
+           "iterate_t1", "learn", "resolve_base"}
+    assert not [key for key in BACKGROUND_GAP_MINUTES if key[1] in box]

@@ -397,13 +397,13 @@ def test_the_run_slot_reserve_counts_every_active_run_pending_included(store, le
 def test_no_job_that_fits_means_no_start(store, leases):
     held_lease(leases)
     fabro = FakeFabro(stages={"coderun": [{"node_id": "review", "status": "running"}]})
-    # A hosted stage of backlog predicts 8 minutes; a 10-minute job does not fit.
+    # `review` predicts 9 measured minutes; a 10-minute job does not fit.
     enqueue(store, typical=10)
     lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
     assert lane_.fill(NOW) == []
-    # The same job fits a CI watch's 30 minutes.
+    # The same job fits the 26 minutes after the merge phase's `prep_review`.
     fabro.stages["coderun"] = [
-        {"node_id": "review_merge.watch_checks", "status": "running"}
+        {"node_id": "review_merge.prep_review", "status": "running"}
     ]
     assert [start.box for start in lane_.fill(NOW)] == ["coders-a"]
 
@@ -453,11 +453,12 @@ def test_a_job_cancelled_three_times_needs_twice_the_gap(store, leases):
         store.requeue_background_job(job_id, now=NOW)
     held_lease(leases)
     fabro = FakeFabro(stages={"coderun": [{"node_id": "review", "status": "running"}]})
-    # A hosted stage predicts 8 minutes; 2 × 10 does not fit.
+    # `review` predicts 9 minutes; 2 × 10 does not fit.
     lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
     assert lane_.fill(NOW) == []
+    # 26 minutes after `review_merge.prep_review` fits 2 × 10.
     fabro.stages["coderun"] = [
-        {"node_id": "review_merge.watch_checks", "status": "running"}
+        {"node_id": "review_merge.prep_review", "status": "running"}
     ]
     assert [start.box for start in lane_.fill(NOW)] == ["coders-a"]
 
