@@ -106,8 +106,8 @@ class Fixtures(unittest.TestCase):
             io = root / ".fabro/workflows/_io"
             io.mkdir()
             (io / "manifest.json").write_text(json.dumps({
-                "workflows": {"ok": {"stages": {"check": {"sealed": ["/tmp/fabro/x"]}}}},
-                "phases": {"phase": {"work": {"sealed": ["/tmp/fabro/y"]}}}}))
+                "workflows": {"ok": {"stages": {"check": {"sealed": ["/tmp/fabro/x"], "box": False}}}},
+                "phases": {"phase": {"work": {"sealed": ["/tmp/fabro/y"], "box": False}}}}))
             found = sorted((rule, node) for _, rule, node, _ in cgi.run(root))
             self.assertEqual(found, [("R11", "check"), ("R11", "phase.work")], found)
             toml.write_text(toml.read_text().replace(
@@ -116,6 +116,134 @@ class Fixtures(unittest.TestCase):
                 "[run.agent.mcps.io]"))
             found = [(rule, node) for _, rule, node, _ in cgi.run(root)]
             self.assertEqual(found, [("R11", "phase.work")], found)
+
+
+class BoxStages(unittest.TestCase):
+    """R13 and R14: the Stage manifest's `box` values against the stylesheets
+    (more-local-inference C1, C5)."""
+
+    # A stylesheet where the phase's only agent stage runs on the box everywhere.
+    BOX_EVERYWHERE = "* { model: glm-5.3; }\n.work { model: {{ inputs.coder_pool | default('coders-a') }}; }"
+    # The same, but only on the box-plan trial's arm.
+    PLAN_ARM = ("* { model: glm-5.3; }\n"
+                "{% if (inputs.issue_number | default(0) | int) // 2 % 2 == 1 %}\n"
+                ".work { model: {{ inputs.coder_pool | default('coders-a') }}; }\n"
+                "{% else %}\n.work { model: glm-5.3; }\n{% endif %}")
+
+    def root(self, tmp: str, *, stylesheet: str | None = None, box: object = True,
+             drop_class: bool = False, extra: dict | None = None) -> Path:
+        root = Path(tmp) / "ok"
+        shutil.copytree(FIXTURES / "ok", root)
+        graph = root / ".fabro/workflows/ok/workflow.fabro"
+        if stylesheet is not None:
+            text = graph.read_text()
+            head = 'model_stylesheet="'
+            start = text.index(head) + len(head)
+            graph.write_text(text[:start] + stylesheet + text[text.index('"', start):])
+        # The fixture's phase node is a plain label; make it an agent stage so the manifest
+        # has one to describe. `check` is a command node, so `phase.work` is the only agent.
+        phase = root / ".fabro/workflows/_shared/phase/phase.fabro"
+        node = 'work [label="Work", prompt="Do the work"'
+        phase.write_text(phase.read_text().replace(
+            'work [label="Work", class="work"]',
+            node + ("" if drop_class else ', class="work"') + "]"))
+        stages = {} if extra is None else extra
+        io = root / ".fabro/workflows/_io"
+        io.mkdir()
+        work = {"box": box} if box is not None else {}
+        (io / "manifest.json").write_text(json.dumps({
+            "workflows": {"ok": {"stages": stages}},
+            "phases": {"phase": {"work": work}},
+        }))
+        return root
+
+    def r13(self, root: Path) -> list[tuple[str, str]]:
+        return [(rule, node) for _, rule, node, _ in cgi.run(root) if rule.startswith("R1")]
+
+    def r14(self, root: Path) -> list[tuple[str, str]]:
+        return [(rule, node) for _, rule, node, _ in cgi.run(root) if rule == "R14"]
+
+    def test_a_box_stage_the_stylesheet_agrees_with_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.root(tmp, stylesheet=self.BOX_EVERYWHERE)
+            self.assertEqual(cgi.run(root), [])
+
+    def test_a_missing_box_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.root(tmp, stylesheet=self.BOX_EVERYWHERE, box=None)
+            found = self.r13(root)
+            self.assertEqual(found, [("R13", "phase.work")], found)
+            self.assertIn("no `box`", dict((n, w) for _, _, n, w in cgi.run(root))["phase.work"])
+
+    def test_a_box_for_a_node_that_does_not_exist_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.root(tmp, stylesheet=self.BOX_EVERYWHERE, extra={"ghost": {"box": False}})
+            found = self.r13(root)
+            self.assertEqual(found, [("R13", "ghost")], found)
+
+    def test_an_arm_stage_under_another_condition_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # The stage is on the box on one arm, as `box_mode` requires, but the trial's
+            # arithmetic is what `box-claim` hard-codes, so a different condition is a bug.
+            wrong = ("* { model: glm-5.3; }\n"
+                     "{% if (inputs.issue_number | default(0) | int) // 2 % 2 == 0 %}\n"
+                     ".work { model: {{ inputs.coder_pool | default('coders-a') }}; }\n"
+                     "{% else %}\n.work { model: glm-5.3; }\n{% endif %}")
+            root = self.root(tmp, stylesheet=wrong, box="plan-arm")
+            found = self.r13(root)
+            self.assertEqual(found, [("R13", "phase.work")], found)
+            self.assertIn("not the arm rule", cgi.run(root)[0][3])
+
+    def test_the_arm_stage_under_the_trial_condition_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.root(tmp, stylesheet=self.PLAN_ARM, box="plan-arm")
+            self.assertEqual(cgi.run(root), [])
+
+    def test_a_phase_map_that_disagrees_with_the_importer_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.root(tmp, stylesheet=self.BOX_EVERYWHERE, box={"ok": False})
+            found = self.r13(root)
+            self.assertEqual(found, [("R13", "phase.work")], found)
+            self.assertIn("resolves to box=true", cgi.run(root)[0][3])
+
+    def test_an_agent_node_with_no_class_under_a_coders_star_rule_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # `ok`'s `*` is `coders-a`: a node with no class runs on box-a whatever the lease.
+            root = self.root(tmp, drop_class=True)
+            rules = [rule for _, rule, _, _ in cgi.run(root)]
+            self.assertIn("R13", rules)
+            self.assertTrue(any("literal box model coders-a" in why for _, _, _, why in cgi.run(root)))
+
+    def test_a_bg_fallback_key_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.root(tmp, stylesheet=self.BOX_EVERYWHERE)
+            toml = root / ".fabro/workflows/ok/workflow.toml"
+            toml.write_text(toml.read_text() + '\n[run.model.fallbacks]\n"coders-a-bg" = ["glm-5.3"]\n')
+            found = self.r14(root)
+            self.assertEqual(found, [("R14", "coders-a-bg")], found)
+
+    def test_a_bg_fallback_target_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.root(tmp, stylesheet=self.BOX_EVERYWHERE)
+            toml = root / ".fabro/workflows/ok/workflow.toml"
+            toml.write_text(toml.read_text() + '\n[run.model.fallbacks]\ncoders-a = ["box-a:coders-a-bg"]\n')
+            found = self.r14(root)
+            self.assertEqual(found, [("R14", "coders-a")], found)
+
+    def test_the_arm_rule_parser_tolerates_the_percent_in_its_arithmetic(self):
+        variants = cgi.stylesheet_variants(self.PLAN_ARM)
+        self.assertEqual(len(variants), 2)
+        self.assertEqual({tuple(sorted(h.items())) for h, _ in variants},
+                         {(("(inputs.issue_number | default(0) | int) // 2 % 2 == 1", True),),
+                          (("(inputs.issue_number | default(0) | int) // 2 % 2 == 1", False),)})
+
+    def test_the_real_manifest_and_stylesheets_agree(self):
+        manifest = json.loads((REAL / ".fabro/workflows/_io/manifest.json").read_text())
+        for package in manifest["workflows"]:
+            with self.subTest(package=package):
+                pkg = REAL / ".fabro/workflows" / package
+                found = cgi.package_violations(pkg, REAL / ".fabro/workflows")[0]
+                self.assertEqual([v for v in found if v[1] in ("R13", "R14")], [])
 
 
 class Counts(unittest.TestCase):

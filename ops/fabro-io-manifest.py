@@ -50,6 +50,9 @@ GUIDE_END = "# END fabro agent guide"
 
 TMP_RE = re.compile(r"/tmp/fabro/[^\s`'\")\]>,}\]]+")
 
+# A sentinel for "the key is not there", distinct from `false` and from `None`.
+MISSING = object()
+
 # --------------------------------------------------------------------------- #
 # .fabro node parsing                                                          #
 # --------------------------------------------------------------------------- #
@@ -93,14 +96,59 @@ def is_agent_node(attrs: dict[str, str]) -> bool:
 def load_source() -> dict:
     return json.loads(SOURCE.read_text())
 
+def importers_of(src: dict) -> dict[str, list[str]]:
+    """{phase: [workflow, ...]} for every workflow whose graph imports the phase."""
+    out: dict[str, list[str]] = {}
+    for wf in src["workflows"]:
+        for _, phase in find_imports(wf).items():
+            out.setdefault(phase, []).append(wf)
+    return out
+
+def box_problems(src: dict) -> list[str]:
+    """C1: every stage states `box`, and a phase stage's map covers its importers exactly.
+
+    `box` is written on every stage, not only the box stages, so a reviewer can see that
+    every stage was decided. `false`, `true` and `"plan-arm"` are the whole value set. A
+    phase stage's value is a map with exactly one bool per importing workflow.
+    """
+    importers = importers_of(src)
+    out: list[str] = []
+
+    def one(where: str, spec: dict, phase: str | None) -> None:
+        box = spec.get("box", MISSING)
+        if box is MISSING:
+            out.append(f"{where}: no `box` (C1: every stage states it, so every stage was decided)")
+        elif isinstance(box, bool) or box == "plan-arm":
+            return
+        elif isinstance(box, dict):
+            if phase is None:
+                out.append(f"{where}: `box` is a per-importer map, which only a phase stage may use")
+                return
+            want = set(importers.get(phase, []))
+            if set(box) != want:
+                out.append(f"{where}: `box` names importers {sorted(box)}, but {phase} is imported by {sorted(want)}")
+            for wf, value in box.items():
+                if not isinstance(value, bool):
+                    out.append(f"{where}: `box`[{wf!r}] is {value!r}; a map holds only true or false")
+        else:
+            out.append(f'{where}: `box` is {box!r}; it must be false, true or "plan-arm"')
+
+    for wf, wf_spec in src["workflows"].items():
+        for sid, spec in wf_spec.get("stages", {}).items():
+            one(f"{wf} {sid}", spec, None)
+    for phase, stages in src["phases"].items():
+        for sid, spec in stages.items():
+            one(f"{phase} {sid}", spec, phase)
+    return out
+
 def load_schemas() -> dict[str, dict]:
     out: dict[str, dict] = {}
     for f in sorted(SCHEMAS.glob("*.schema.json")):
         out[f.name.removesuffix(".schema.json")] = json.loads(f.read_text())
     return out
 
-def materialize(spec: dict, schemas: dict[str, dict]) -> dict:
-    """Flat generated stage: inputs/output/sealed/git only (server adds _io)."""
+def materialize(spec: dict, schemas: dict[str, dict], box: object) -> dict:
+    """Flat generated stage: inputs/output/sealed/git/box (server adds _io)."""
     stage: dict[str, object] = {}
     stage["inputs"] = [
         {k: v for k, v in {
@@ -120,18 +168,30 @@ def materialize(spec: dict, schemas: dict[str, dict]) -> dict:
         stage["sealed"] = spec["sealed"]
     if spec.get("git"):
         stage["git"] = spec["git"]
+    stage["box"] = box
     return stage
+
+def box_for(spec: dict, workflow: str) -> object:
+    """The stage's `box` value flattened to one importing workflow (C1).
+
+    A phase stage carries a per-importer map, because an imported phase renders with the
+    importing workflow's stylesheet, so its box-ness depends on the importer.
+    """
+    box = spec.get("box", MISSING)
+    if isinstance(box, dict):
+        return box.get(workflow, False)
+    return box
 
 def generated_for(workflow: str, src: dict, schemas: dict[str, dict]) -> dict:
     stages: dict[str, dict] = {}
     wf = src["workflows"][workflow]
     for sid, spec in wf.get("stages", {}).items():
         if spec.get("live"):
-            stages[sid] = materialize(spec, schemas)
+            stages[sid] = materialize(spec, schemas, box_for(spec, workflow))
     for node, phase in find_imports(workflow).items():
         for sid, spec in src["phases"].get(phase, {}).items():
             if spec.get("live"):
-                stages[f"{node}.{sid}"] = materialize(spec, schemas)
+                stages[f"{node}.{sid}"] = materialize(spec, schemas, box_for(spec, workflow))
     return {"version": src["version"], "min_binary": src["min_binary"], "stages": stages}
 
 def compact_json(obj: dict) -> str:
@@ -252,6 +312,8 @@ def check() -> int:
     schemas = load_schemas()
     fails: list[str] = []
 
+    fails.extend(box_problems(src))
+
     # rule 5: no ''' in any generated manifest
     for wf in WF_ORDER:
         body = compact_json(generated_for(wf, src, schemas))
@@ -315,12 +377,15 @@ def check() -> int:
     # rule 6: ralph's four Iteration stages are ONE stage under four node ids -- the same
     # prompt, inputs and output, reached by four rungs of the ladder -- and the manifest
     # has no way to alias one spec to several ids. So they are listed four times, and this
-    # check is what keeps them from drifting apart (docs/ralph task 01).
+    # check is what keeps them from drifting apart (docs/ralph task 01). `box` is excluded:
+    # the rungs are different stylesheet classes, so only the first one runs on the box
+    # (more-local-inference C1), and that is the one field the four may differ in.
     iters = [src["workflows"].get("ralph", {}).get("stages", {}).get(f"iterate_t{i}")
              for i in (1, 2, 3, 4)]
     if any(s is None for s in iters):
         fails.append("rule6: ralph is missing one of iterate_t1..iterate_t4")
-    elif len({json.dumps(s, sort_keys=True) for s in iters}) != 1:
+    elif len({json.dumps({k: v for k, v in s.items() if k != "box"}, sort_keys=True)
+              for s in iters}) != 1:
         fails.append("rule6: ralph's iterate_t1..iterate_t4 specs differ; they are one stage under four node ids")
 
     # drift
@@ -355,26 +420,26 @@ def matches(name: str, pattern: str) -> bool:
 # generate                                                                     #
 # --------------------------------------------------------------------------- #
 
-def generate() -> None:
+def generate() -> int:
     src = load_source()
+    problems = guide_problems(guide_text()) + box_problems(src)
+    if problems:
+        print("\n".join(problems), file=sys.stderr)
+        return 1
     schemas = load_schemas()
     for wf in WF_ORDER:
         p = WORKFLOWS / wf / "workflow.toml"
         gen = generated_for(wf, src, schemas)
         p.write_text(inject_guide(inject_manifest(p.read_text(), wf, gen), guide_text()))
         print(f"{wf}: {len(gen['stages'])} live stage(s)")
+    return 0
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["generate", "check"])
     args = ap.parse_args()
     if args.cmd == "generate":
-        problems = guide_problems(guide_text())
-        if problems:
-            print("\n".join(problems), file=sys.stderr)
-            return 1
-        generate()
-        return 0
+        return generate()
     return check()
 
 

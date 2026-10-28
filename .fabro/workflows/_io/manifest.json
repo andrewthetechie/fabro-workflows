@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "min_binary": "0.5.1",
+  "min_binary": "0.9.0",
   "phases": {
     "review-merge": {
       "standards": {
@@ -49,7 +49,8 @@
           "schema": "standards"
         },
         "sealed": [],
-        "also": []
+        "also": [],
+        "box": false
       },
       "spec": {
         "live": true,
@@ -97,7 +98,8 @@
           "schema": "spec"
         },
         "sealed": [],
-        "also": []
+        "also": [],
+        "box": false
       },
       "review_fix": {
         "live": true,
@@ -171,7 +173,8 @@
         "output": {
           "path": "/tmp/fabro/review/fix_result.json",
           "schema": "fix_result"
-        }
+        },
+        "box": false
       },
       "refute": {
         "live": true,
@@ -227,7 +230,8 @@
           "/tmp/fabro/review/refute_fix.json",
           "/tmp/fabro/review/refute_findings.json"
         ],
-        "also": []
+        "also": [],
+        "box": false
       },
       "refute_fix": {
         "live": true,
@@ -275,7 +279,12 @@
           "/tmp/fabro/review/refute_reason.txt",
           "/tmp/fabro/review/hygiene.json"
         ],
-        "also": []
+        "also": [],
+        "box": {
+          "backlog": true,
+          "pr-review": true,
+          "dependabot": false
+        }
       },
       "resolve_base": {
         "live": true,
@@ -315,7 +324,12 @@
           }
         ],
         "sealed": [],
-        "also": []
+        "also": [],
+        "box": {
+          "backlog": true,
+          "pr-review": true,
+          "dependabot": false
+        }
       },
       "ci_fix_t1": {
         "live": true,
@@ -363,7 +377,8 @@
         "output": {
           "path": "/tmp/fabro/review/ci_fix_result.json",
           "schema": "ci_fix_result"
-        }
+        },
+        "box": false
       },
       "ci_fix_t2": {
         "live": true,
@@ -411,7 +426,8 @@
         "output": {
           "path": "/tmp/fabro/review/ci_fix_result.json",
           "schema": "ci_fix_result"
-        }
+        },
+        "box": false
       }
     },
     "triage": {
@@ -438,7 +454,8 @@
         "output": {
           "path": "/tmp/fabro/improve.json",
           "schema": "improve"
-        }
+        },
+        "box": false
       },
       "triage": {
         "live": true,
@@ -465,7 +482,8 @@
         "output": {
           "path": "/tmp/fabro/triage.json",
           "schema": "triage"
-        }
+        },
+        "box": false
       },
       "plan": {
         "live": true,
@@ -502,7 +520,8 @@
         "output": {
           "path": "/tmp/fabro/plan.json",
           "schema": "plan"
-        }
+        },
+        "box": false
       }
     }
   },
@@ -535,7 +554,8 @@
           "output": {
             "path": "/tmp/fabro/decomposition.json",
             "schema": "decomposition"
-          }
+          },
+          "box": false
         },
         "resolve_merge": {
           "live": true,
@@ -562,7 +582,8 @@
             }
           ],
           "sealed": [],
-          "also": []
+          "also": [],
+          "box": true
         },
         "plan": {
           "live": true,
@@ -595,7 +616,8 @@
           "output": {
             "path": "/tmp/fabro/improve_result.json",
             "schema": "improve_result"
-          }
+          },
+          "box": "plan-arm"
         },
         "coder": {
           "live": true,
@@ -633,7 +655,8 @@
             "schema": "task_blocked"
           },
           "sealed": [],
-          "also": []
+          "also": [],
+          "box": true
         },
         "review": {
           "live": true,
@@ -689,7 +712,8 @@
             "schema": "verdict"
           },
           "sealed": [],
-          "also": []
+          "also": [],
+          "box": false
         },
         "rework_t1": {
           "live": true,
@@ -742,7 +766,8 @@
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
-          ]
+          ],
+          "box": true
         },
         "rework_t2": {
           "live": true,
@@ -795,7 +820,8 @@
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
-          ]
+          ],
+          "box": false
         },
         "rework_t3": {
           "live": true,
@@ -848,7 +874,8 @@
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
-          ]
+          ],
+          "box": false
         },
         "rework_t4": {
           "live": true,
@@ -901,7 +928,8 @@
           "sealed": [],
           "also": [
             "/tmp/fabro/feedback/"
-          ]
+          ],
+          "box": false
         },
         "standards": {
           "live": true,
@@ -943,7 +971,8 @@
             "schema": "extra_verdict"
           },
           "sealed": [],
-          "also": []
+          "also": [],
+          "box": false
         },
         "spec": {
           "live": true,
@@ -985,7 +1014,8 @@
             "schema": "extra_verdict"
           },
           "sealed": [],
-          "also": []
+          "also": [],
+          "box": false
         },
         "quality": {
           "live": true,
@@ -1027,7 +1057,8 @@
             "schema": "extra_verdict"
           },
           "sealed": [],
-          "also": []
+          "also": [],
+          "box": false
         },
         "extra_decompose": {
           "live": true,
@@ -1081,7 +1112,8 @@
           "output": {
             "path": "/tmp/fabro/extra/followups.json",
             "schema": "followups"
-          }
+          },
+          "box": true
         }
       }
     },
@@ -1125,7 +1157,8 @@
           "output": {
             "path": "/tmp/fabro/rebase_result.json",
             "schema": "rebase_result"
-          }
+          },
+          "box": true
         },
         "rebase_agent_t2": {
           "live": true,
@@ -1162,7 +1195,8 @@
           "output": {
             "path": "/tmp/fabro/rebase_result.json",
             "schema": "rebase_result"
-          }
+          },
+          "box": false
         }
       }
     },
@@ -1200,7 +1234,8 @@
           "output": {
             "path": "/tmp/fabro/arch/candidates.json",
             "schema": "candidates"
-          }
+          },
+          "box": false
         }
       }
     },
@@ -1252,7 +1287,8 @@
           "output": {
             "path": "/tmp/fabro/dep/patch.json",
             "schema": "dep_patch"
-          }
+          },
+          "box": false
         }
       }
     },
@@ -1288,7 +1324,8 @@
           "output": {
             "path": "/tmp/fabro/task_list.json",
             "schema": "task_list"
-          }
+          },
+          "box": "plan-arm"
         },
         "iterate_t1": {
           "live": true,
@@ -1333,7 +1370,8 @@
           "output": {
             "path": "/tmp/fabro/iteration.json",
             "schema": "iteration"
-          }
+          },
+          "box": true
         },
         "iterate_t2": {
           "live": true,
@@ -1378,7 +1416,8 @@
           "output": {
             "path": "/tmp/fabro/iteration.json",
             "schema": "iteration"
-          }
+          },
+          "box": false
         },
         "iterate_t3": {
           "live": true,
@@ -1423,7 +1462,8 @@
           "output": {
             "path": "/tmp/fabro/iteration.json",
             "schema": "iteration"
-          }
+          },
+          "box": false
         },
         "iterate_t4": {
           "live": true,
@@ -1468,7 +1508,8 @@
           "output": {
             "path": "/tmp/fabro/iteration.json",
             "schema": "iteration"
-          }
+          },
+          "box": false
         },
         "refute": {
           "live": true,
@@ -1533,7 +1574,8 @@
           "output": {
             "path": "/tmp/fabro/review/refute.json",
             "schema": "refute"
-          }
+          },
+          "box": false
         },
         "standards": {
           "live": true,
@@ -1590,7 +1632,8 @@
           "output": {
             "path": "/tmp/fabro/review/standards.json",
             "schema": "standards"
-          }
+          },
+          "box": false
         },
         "spec": {
           "live": true,
@@ -1647,7 +1690,8 @@
           "output": {
             "path": "/tmp/fabro/review/spec.json",
             "schema": "ralph_spec"
-          }
+          },
+          "box": false
         },
         "resolve_merge": {
           "live": true,
@@ -1674,7 +1718,8 @@
             }
           ],
           "sealed": [],
-          "also": []
+          "also": [],
+          "box": false
         },
         "resolve_base": {
           "live": true,
@@ -1714,7 +1759,8 @@
             }
           ],
           "sealed": [],
-          "also": []
+          "also": [],
+          "box": true
         },
         "learn": {
           "live": true,
@@ -1732,7 +1778,8 @@
           "output": {
             "path": "/tmp/fabro/learnings.json",
             "schema": "learnings"
-          }
+          },
+          "box": true
         }
       }
     }

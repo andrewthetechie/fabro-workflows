@@ -6,9 +6,13 @@ Usage:
   check-graph-invariants.py --dump FILE.fabro   print the reader's statements in fabro parse's shape
   check-graph-invariants.py --normalize         normalize a `fabro parse` JSON read from stdin
 
-A package is a directory with a workflow.toml. Every package's root graph gets R1-R9, R11 and R12;
+A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R14;
 every `_shared/*/*.fabro` phase gets the file rules (the reader, R6, R8, R9 and R12). Each violation prints as
 `<package> <rule> <node or hook> <why>`, then `VIOLATIONS: N`. Exit status is min(N, 125).
+
+R13 and R14 are the background-lane rules (more-local-inference C1, C5): every agent stage's
+`box` value in the Stage manifest agrees with the stylesheet that decides where it runs, and no
+`-bg` model is a fallback key or target.
 
 Standard library only (Python 3.11+, tomllib). It reads the graphs itself, so it runs offline
 in `make check`. `make check-host` proves the reader agrees with `fabro parse` on the six files
@@ -594,6 +598,263 @@ def r12_fallback_edge(graph: Graph) -> list[tuple]:
             for nid, every in sorted(conditional.items()) if every]
 
 
+# ---------------------------------------------------------------------------
+# R13/R14: which stages run on a coder box, and no -bg fallback (more-local-inference)
+# ---------------------------------------------------------------------------
+
+# The box-plan trial's arm (docs/plan-box-trial/), written as the stylesheet renders it.
+# `ops/fabro-io/src/boxclaim.rs` hard-codes the same arithmetic, so `"plan-arm"` stage's
+# condition must be exactly this string.
+ARM_RULE = "(inputs.issue_number | default(0) | int) // 2 % 2 == 1"
+
+# `%` appears inside the arm rule's arithmetic (`// 2 % 2`), so the condition may hold one;
+# the tempered run stops at the `%}` that closes the directive.
+STYLE_DIRECTIVE = re.compile(r"\{%\s*(if\b(?:(?!%\}).)*|else|endif)\s*%\}")
+STYLE_RULE = re.compile(r"([^\s{}]+)\s*\{([^}]*)\}")
+STYLE_MODEL = re.compile(r"\bmodel\s*:\s*([^;]+)")
+BOX_LITERAL = re.compile(r"coders-[a-z0-9]+")
+
+
+def style_nodes(text: str) -> list[tuple]:
+    """The stylesheet as ('text', s) and ('if', condition, then_nodes, else_nodes) nodes."""
+    root: list[tuple] = []
+    stack: list[tuple[str, list, list, bool]] = []
+    pos = 0
+
+    def target() -> list[tuple]:
+        if not stack:
+            return root
+        _, then_nodes, else_nodes, in_else = stack[-1]
+        return else_nodes if in_else else then_nodes
+
+    for m in STYLE_DIRECTIVE.finditer(text):
+        piece = text[pos:m.start()]
+        if piece.strip():
+            target().append(("text", piece))
+        pos = m.end()
+        kind = m.group(1)
+        if kind.startswith("if"):
+            stack.append((" ".join(kind[2:].split()), [], [], False))
+        elif kind == "else":
+            if not stack:
+                raise ReaderError("{% else %} outside an {% if %} in model_stylesheet")
+            condition, then_nodes, else_nodes, _ = stack.pop()
+            stack.append((condition, then_nodes, else_nodes, True))
+        else:
+            if not stack:
+                raise ReaderError("{% endif %} outside an {% if %} in model_stylesheet")
+            condition, then_nodes, else_nodes, _ = stack.pop()
+            target().append(("if", condition, then_nodes, else_nodes))
+    piece = text[pos:]
+    if piece.strip():
+        target().append(("text", piece))
+    if stack:
+        raise ReaderError("unterminated {% if %} in model_stylesheet")
+    return root
+
+
+def stylesheet_variants(stylesheet: str) -> list[tuple[dict[str, bool], str]]:
+    """(the `{% if %}` expressions that hold, the text they render) for every branch.
+
+    A stylesheet renders per branch: `backlog`'s `.plan` rule resolves to the coder pool
+    when the box-plan trial's arm holds and to glm-5.3 when it does not. Both renderings
+    have to be known to tell a `"plan-arm"` stage from an unconditional one.
+    """
+    def walk(nodes: list[tuple], holds: dict[str, bool]) -> list[tuple[dict[str, bool], str]]:
+        results: list[tuple[dict[str, bool], str]] = [(holds, "")]
+        for node in nodes:
+            if node[0] == "text":
+                results = [(h, t + node[1]) for h, t in results]
+                continue
+            _, condition, then_nodes, else_nodes = node
+            expanded: list[tuple[dict[str, bool], str]] = []
+            for h, t in results:
+                expanded += [(bh, t + bt) for bh, bt in walk(then_nodes, {**h, condition: True})]
+                expanded += [(bh, t + bt) for bh, bt in walk(else_nodes, {**h, condition: False})]
+            results = expanded
+        return results
+
+    return walk(style_nodes(stylesheet), {})
+
+
+def style_rules(text: str) -> dict[str, str]:
+    """{selector without its dot, or '*': model} for one rendering of a stylesheet."""
+    out: dict[str, str] = {}
+    for m in STYLE_RULE.finditer(text):
+        model = STYLE_MODEL.search(m.group(2))
+        if model is None:
+            continue
+        selector = m.group(1)
+        out["*" if selector == "*" else selector.lstrip(".")] = model.group(1).strip()
+    return out
+
+
+def resolve_models(attrs: dict[str, str],
+                   variants: list[tuple[dict[str, bool], dict[str, str]]]) -> list[tuple[dict[str, bool], str]]:
+    """[(branch that holds, the model the node gets there)] for every branch.
+
+    The last class listed with a rule wins, and a node with no class, or a class with no
+    rule, inherits the stylesheet's `*` rule -- which is how fabro resolves it.
+    """
+    classes = [c.strip().lstrip(".") for c in (attrs.get("class") or "").split(",") if c.strip()]
+    out: list[tuple[dict[str, bool], str]] = []
+    for holds, rules in variants:
+        model = None
+        for name in classes:
+            if name in rules:
+                model = rules[name]
+        if model is None:
+            model = rules.get("*", "")
+        out.append((holds, model))
+    return out
+
+
+def is_coder_pool(model: str) -> bool:
+    """Does this model value come from the run's `coder_pool` input?"""
+    return "inputs.coder_pool" in model
+
+
+def box_mode(resolved: list[tuple[dict[str, bool], str]]) -> tuple[str | None, str | None]:
+    """The stage's box value from its per-branch models, or (None, why) when unsupported.
+
+    `true`: the box in every branch. `false`: in none. `plan-arm`: in exactly the branch
+    where `ARM_RULE` holds, which pins the arithmetic `box-claim` hard-codes.
+    """
+    on = [holds for holds, model in resolved if is_coder_pool(model)]
+    if not on:
+        return "false", None
+    if len(on) == len(resolved):
+        return "true", None
+    conditions = {condition for holds in on for condition in holds}
+    if len(conditions) != 1:
+        return None, "resolves to the coder pool under more than one condition"
+    condition = next(iter(conditions))
+    if {holds[condition] for holds in on} != {True} or \
+            {holds.get(condition, False) for holds, model in resolved if not is_coder_pool(model)} != {False}:
+        return None, f"resolves to the coder pool on both sides of {condition!r}"
+    if condition != ARM_RULE:
+        return None, f"is on the box under {condition!r}, which is not the arm rule {ARM_RULE!r}"
+    return "plan-arm", None
+
+
+def manifest_boxes(package: str, manifest: dict | None,
+                   import_ids: dict[str, str]) -> dict[str, object]:
+    """{stage id: its `box` value flattened for this package}, from the source manifest.
+
+    A phase stage carries a per-importer map: an imported phase renders with the importing
+    workflow's stylesheet, so its box-ness depends on the importer.
+    """
+    if manifest is None:
+        return {}
+    out: dict[str, object] = {}
+
+    def flatten(spec: dict) -> object:
+        box = spec.get("box", MISSING_BOX)
+        if isinstance(box, dict):
+            return box.get(package, MISSING_BOX)
+        return box
+
+    own = ((manifest.get("workflows") or {}).get(package) or {}).get("stages", {})
+    for sid, spec in own.items():
+        out[sid] = flatten(spec)
+    for import_id, phase in import_ids.items():
+        for sid, spec in ((manifest.get("phases") or {}).get(phase) or {}).items():
+            out[f"{import_id}.{sid}"] = flatten(spec)
+    return out
+
+
+# The `box` key is absent, rather than `false`, when nobody decided the stage.
+MISSING_BOX = object()
+
+
+def r13_box_stages(package: str, root: Graph, nodes: dict[str, dict[str, str]],
+                   import_ids: dict[str, str], manifest: dict | None) -> list[tuple]:
+    """R13: the Stage manifest's `box` values and the stylesheets agree (invariants-graph.md,
+    the box-stage row; more-local-inference C1).
+
+    The stylesheets decide where a stage runs; the manifest says it. This checks the two
+    ways they can disagree -- a stage marked `true` that a class sends to a hosted model, and
+    one marked `false` that a class sends to the box -- and that every agent node has a
+    `box` at all. It also rejects a node that resolves to a literal `coders-*` model, because
+    such a node runs on box-a whatever the run's lease and no claim can cover it.
+
+    Without a Stage manifest there is nothing to keep in step, so the rule is silent: the
+    fixtures of R1-R12 carry none.
+    """
+    if manifest is None:
+        return []
+    variants = [(holds, style_rules(text)) for holds, text in
+                stylesheet_variants(root.graph_attrs.get("model_stylesheet", ""))]
+    expected = manifest_boxes(package, manifest, import_ids)
+    out: list[tuple] = []
+    for nid, attrs in nodes.items():
+        if not is_agent_stage(attrs):
+            continue
+        resolved = resolve_models(attrs, variants)
+        literal = sorted({m for _, m in resolved if BOX_LITERAL.fullmatch(m)})
+        if literal:
+            out.append(("R13", nid, f"resolves to the literal box model {literal[0]}; "
+                                     "it runs on that box whatever the lease, and no claim can cover it"))
+        mode, why = box_mode(resolved)
+        if mode is None:
+            out.append(("R13", nid, why))
+        want = expected.get(nid, MISSING_BOX)
+        if want is MISSING_BOX:
+            out.append(("R13", nid, "agent node has no `box` in the Stage manifest"))
+        elif mode is not None and mode != box_name(want):
+            out.append(("R13", nid, f"resolves to box={mode} but the Stage manifest says {want!r}"))
+    # A manifest entry for a node the graph does not have is a stale `box`. An entry that
+    # names a node which is not an agent is the manifest generator's rule 1, not this one.
+    for nid in expected:
+        if nid not in nodes:
+            out.append(("R13", nid, "has a `box` in the Stage manifest but the graph has no node with that id"))
+    return out
+
+
+def box_name(value: object) -> str:
+    """The manifest's `box` value in the vocabulary [`box_mode`] returns.
+
+    The source manifest writes `false`, `true` or `"plan-arm"`; JSON gives the first two
+    back as booleans, so they need naming before they can be compared with a mode.
+    """
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return str(value)
+
+
+def is_agent_stage(attrs: dict[str, str]) -> bool:
+    """An agent node, by the same test ops/fabro-io-manifest.py generates a stage from."""
+    return "prompt" in attrs and attrs.get("shape", "") in ("", "box")
+
+
+def is_bg_model(name: str) -> bool:
+    """A background model name: `coders-a-bg`, with or without a `provider:` prefix."""
+    return name.rsplit(":", 1)[-1].strip().endswith("-bg")
+
+
+def r14_background_fallbacks(package: str, toml: dict) -> list[tuple]:
+    """R14: no `[run.model.fallbacks]` key ends in `-bg`, and no `-bg` name is a fallback
+    target (invariants-graph.md, the background-package rows; more-local-inference C5).
+
+    A `-bg` name is a box's own model row. A fallback on it, or to it, is the one thing that
+    lets a background stage reach a hosted model and spend credits the lane exists to save.
+    """
+    fallbacks = (((toml.get("run") or {}).get("model") or {}).get("fallbacks") or {})
+    if not isinstance(fallbacks, dict):
+        return []
+    out: list[tuple] = []
+    for key, targets in fallbacks.items():
+        if is_bg_model(str(key)):
+            out.append(("R14", key, "is a -bg model with a row of its own; a background stage "
+                                    "must fail, never reach another model"))
+        for target in targets if isinstance(targets, list) else [targets]:
+            if is_bg_model(str(target)):
+                out.append(("R14", key, f"falls back to the -bg model {target!r}"))
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # R10: ralph's copies of backlog's entry nodes and the shared merge stage
 # --------------------------------------------------------------------------- #
@@ -856,6 +1117,8 @@ def package_violations(pkg_dir: Path, workflows: Path) -> tuple[list[tuple], int
     manifest_path = workflows / "_io" / "manifest.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
     out += [(package, *v) for v in r11_io_hooks(package, t, import_ids, manifest, hooks)]
+    out += [(package, *v) for v in r13_box_stages(package, root, nodes, import_ids, manifest)]
+    out += [(package, *v) for v in r14_background_fallbacks(package, t)]
     out += [(package, *v) for v in r8_routing(root.nodes)]
     out += [(package, *v) for v in r9_needs_human_reason(root)]
     out += [(package, *v) for v in r12_fallback_edge(root)]
