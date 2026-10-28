@@ -133,12 +133,14 @@ called by background work, and nothing new sits in the coder loop's path.
   (`ops/fabro-io/src/manifest.rs` `load()`). A blocking hook must exit 0 on its own failure;
   fabro treats any other exit as a block, and an unrunnable sandbox hook reports -1
   (invariants-graph *Agents and hooks*). The `stage_start` matcher `^agent$` matches every
-  agent stage (`io-stage` uses it). **Unverified:** what fabro does when a blocking hook outlives
-  its `timeout` (most likely a non-zero result, so a block); task 12 verifies it before Phase 1.
+  agent stage (`io-stage` uses it). **Verified 2026-10-28 (task 12):** a blocking hook that outlives
+  its `timeout` reports -1 and fails the stage and the run. And fabro records nothing a
+  sandbox hook prints unless it blocks, so C3's and C10's stderr lines are read from the
+  events instead (`ops/fabro-box-claims.py`).
 - **Run identity inside a hook.** `FABRO_RUN_ID` is set for host hooks (`discord-notify.sh`
   reads it). `FABRO_HOOK_CONTEXT` names a JSON file with the hook's context (`common.rs`).
-  **Unverified** for a sandbox `stage_start` hook: which of the two carries the run id. Task 02
-  reads `FABRO_RUN_ID` first, then the context file's `run_id`; task 12 verifies which exists.
+  **Verified 2026-10-28 (task 12):** a sandbox `stage_start` hook gets both: `FABRO_RUN_ID`, and a
+  context file with `run_id`. `FABRO_WORKFLOW` is the graph name (`Backlog`), not the package.
 - **`fabro-io` today** is version 0.8.1; the manifest's `min_binary` is 0.5.1. Its manifest
   structs (`Manifest`, `Stage`, `Input`, `Output`) are all `#[serde(deny_unknown_fields)]`.
   It has **no HTTP client** among its dependencies (axum, rmcp, tokio, serde_json and others;
@@ -148,8 +150,8 @@ called by background work, and nothing new sits in the coder loop's path.
   (`:32276`) and the scheduler (`:32280`). Verified by probe run `01M60BHGTRG2YP0XHJG740X2DP`.
   `backlog` and `ralph` already pass `FABRO_API_TOKEN` and `FABRO_API_URL` into their sandbox
   (`workflow.toml`, after the agent guide block). Values there are `{{ secrets.X }}` or server
-  variables `{{ vars.X }}`. **Unverified:** that `FABRO_API_TOKEN` may cancel another run (only
-  reachability was probed); task 12 verifies it.
+  variables `{{ vars.X }}`. **Verified 2026-10-28 (task 12):** `FABRO_API_TOKEN` from a sandbox
+  cancels another run (202, and the run ended `failed`/`cancelled`).
 - **An unset server variable fails the run.** An unset `{{ vars.X }}` fails the RunIntent at
   compile time, so no run is created at all (`invariants-merge.md`, the `FABRO_AUTO_MERGE` row).
   `ops/provision-server-state.sh` `provision_variable` creates variables, create-if-absent.

@@ -73,17 +73,19 @@ phase's agent reads it there.
      `cd ~/fabro && docker compose up -d --no-deps scheduler`, and check the *Background* strip
      shows `on`.
    - Enqueue `box-noop` for one repository (`POST /api/background/box-noop`).
-   - When the coder loop on that box reaches its next box stage, read the claim line's
-     `waited=`, strix-infer's `strix_requests_total{outcome="cancelled"}`, and the background
-     job's state (`queued`, `cancels=1`).
+   - When the coder loop on that box reaches its next box stage, read the claim's wait,
+     strix-infer's `strix_requests_total{outcome="cancelled"}`, and the background job's state
+     (`queued`, `cancels=1`). fabro 0.362 does not record the `box-claim:`/`box-guard:` lines
+     (step 1's finding), so read the claim and the guard from the run events with
+     `ops/fabro-box-claims.py --since <the lane's switch-on time>` (`ops/README.md`).
    - Repeat 10 times across both boxes.
-   - Read every `box-guard` line and the strip's eviction count over the same period.
+   - Read the report's background runs cancelled before their first request (the guard, or an
+     eviction before the box) and the strip's eviction count over the same period.
 8. **Exit:**
    - Cancel latency p95 is under 30 s.
-   - No coder-loop box stage ever ran while a background run was mid-request on its box: the
-     claim line's `idle=true` every time, **and** no guard line with `clear=false` that was
-     followed by a background request on the box, and every eviction happened before the
-     evicted run's first agent stage.
+   - No coder-loop box stage ever ran while a background run was mid-request on its box:
+     `fabro-box-claims.py` reports no `idle=false` wait and no overlap (it exits 0), and every
+     eviction happened before the evicted run's first agent stage.
    - Coder-loop stage times are unchanged.
    - Then set the lane back to `off` until Phase 2, and record Phase 1 in the Status line.
 

@@ -28,6 +28,7 @@ locations instead.
 | `test-gates.sh` | Runs the gate tests in `gate_tests/` (pytest, in parallel, ~35s): every package's command nodes and the shared phases' nodes, extracted verbatim from the graphs and run under dash against fixtures and stubs, plus the host scripts the automations lean on. The only gate that executes a node's shell — about 2,400 checks, offline, no host, container or network. In `make check`, not in the pre-push hook. Needs uv. It replaced `test-task-gates.sh` on 2026-10-22; `gate_tests/README.md` says how to write one. |
 | `check-agent-profiles.py` | The Agent-profile checker (ADR 0017): reads a settings overlay and resolves the effective pebble Agent profile of every enabled provider and model row exactly as fabro does (model `metadata.agent.profile`, then the provider's, then the provider's first codec, with a `bedrock` adapter implying anthropic), and exits 1 on any row that is not `openai`. Stdlib `tomllib` only (Python 3.11+), and it prints provider ids, model ids, codecs and profiles — never `auth`, a key, or a URL — so it is safe to run against the live overlay. Takes a file or `-` for stdin. Offline on `settings.toml.example`, and in `make verify-host` against the container's copy. Tests: `tests/test_check_agent_profiles.py`. |
 | `check-graph-invariants.py` | The mechanical graph invariants (ADR 0019): R1-R12 over every package and shared phase, offline, in `make check`. Reads the `.fabro` files with its own stdlib reader and splices the imports. Covers the breaker floor, stall and timeouts, stylesheet classes, hook matchers, script and backslash rules, report hooks, the routing schema, the needs-human reason sink, `ralph`'s copies, the Stage I/O hooks and the fallback edge. `make check-host` proves the reader agrees with `fabro parse` on the six graphs. `--dump` and `--normalize` are the parity step's helpers. Tests: `tests/test_check_graph_invariants.py`. |
+| `fabro-box-claims.py` | Mac tool (not deployed). What the background lane's claim, guard and evictions did since `--since`, read from fabro's run events because fabro 0.362 records nothing a non-blocking sandbox hook prints (more-local-inference task 12). Per coder-loop box-stage visit: the claim's wait (`edge.selected` to `stage.started`), the background runs it cancelled, and any **overlap** (a box stage that began while a background run on the box was mid-request); per background run: its outcome and whether it was cancelled before its first request. Each run is judged by its own compiled Stage manifest. Exit 1 on an `idle=false` wait or an overlap. Needs `FABRO_API_TOKEN` (its docstring shows the one-liner). Tests: `tests/test_fabro_box_claims.py`. |
 | `fabro-io-manifest.py` | The Stage-manifest generator/checker (ADR 0016): reads `.fabro/workflows/_io/manifest.json` and the output schemas, and writes the generated manifest into each workflow's `workflow.toml` `[run.environment.env]` between C2's markers. `check` regenerates in memory and fails on drift or a contract break. Python 3.11+; runs on the Mac and the host, never in a sandbox. |
 | `fabro-io/` | The `fabro-io` Rust MCP binary (ADR 0016): the `stage`/`inputs`/`submit`/`guard`/`serve` tools and CLI, plus the six `code_*` MCP tools that run `fabro-code` in the checkout for every agent stage (`src/code.rs`). Built into every profile image by `ops/profile-images/build-images.sh`. |
 | `deploy-host.sh` (and the repo-root `Makefile`) | `make deploy`: the host deploy after a push that touches `ops/` or `backlog/scripts/` (see `docs/agents/deploying.md`). The Makefile only names the script's steps. |
@@ -876,20 +877,36 @@ there, which is one of:
 | `no job fits` | A job is queued whose expected whole-run time is longer than the predicted gap. That is the gap table in `config.py`, not a fault. |
 | `ready` | Everything holds; the next tick starts a job. |
 
-Two log lines are worth knowing, both on the scheduler container
+One scheduler log line is worth knowing
 (`docker logs --since 1h fabro-scheduler | grep background:`):
 
 * `background: cancelled <run>: the coder loop is in a box stage` — an **eviction**
   (D17 layer 2). The job goes back on the queue and its `cancels` count rises; at 3 it
   needs a gap twice its own length before it is picked again. A run of evictions on one
   box means the gap table over-predicts for that stage.
-* `box-guard: <wf>/<node> box=<box> clear=false action=self-cancel` — the package's own
-  guard (D17 layer 3) cancelled its run before an agent stage. The same line with
-  `action=block` is the one case that needs a look: the guard could not cancel itself, so
-  it blocked the stage and the job is recorded `failed`.
-* `box-claim: <wf>/<node> box=<box> cancelled=<n> waited=<s>s idle=<true|false>` — a
-  coder loop taking its box back. `waited` near 45 s means the box did not go idle inside
-  the claim's budget; the stage started anyway, which is the contract.
+
+The claim and the guard each print one summary line (`box-claim: … waited=<s>s
+idle=<true|false>`, `box-guard: … clear=<…> action=<…>`, C3 and C10), but **fabro 0.362
+records nothing a sandbox hook prints unless the hook blocks**: not in `fabro events`,
+`fabro logs`, `fabro dump` or the server log (verified 2026-10-28, more-local-inference
+task 12). Read the same facts from the run events instead, with `fabro-box-claims.py`:
+
+```sh
+FABRO_API_TOKEN=$(ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/server.dev-token') \
+    ops/fabro-box-claims.py --since 2026-10-28T22:20:00Z     # --json for the raw rows
+```
+
+* A claim's wait is the gap between the `edge.selected` into a coder loop's box stage and
+  that stage's `stage.started`, because `stage_start` hooks run between the two. About 2 s
+  is an idle box (two idle reads, 2 s apart); 44 s or more is the 45 s deadline, the line's
+  `idle=false`. The report lists every box-stage visit, which background run each claim
+  cancelled, and exits 1 on an `idle=false` or an overlap.
+* An **overlap** — a box stage that began while a background run on that box had sent a
+  request and not yet ended — is the one outcome the three layers exist to prevent.
+* A background run cancelled before its first `agent.llm.started` was stopped by its
+  guard (or by an eviction before it reached the box). A guard that could not cancel
+  itself blocks its stage instead, and that *is* visible: `fabro events <run> -p` shows
+  `✗ Failed hook exited with code 2`, and the job is recorded `failed`.
 
 #### Breaking a stuck lease
 
