@@ -139,6 +139,17 @@ digraph Backlog {
             // against z.ai's 3 concurrent sessions (ADR 0003), which is the cost the close of
             // the trial accepted.
             //
+            // THE BOX-PLAN TRIAL (2026-10-28, docs/plan-box-trial/). Half the runs plan on
+            // the run's own box instead: both boxes now serve qwen3.8-flash-next (QFN) at
+            // 33-45 output tok/s against the 10 of the model that lost #25, and glm-5.3
+            // `plan` was 22% of the z.ai credits of the week the quota ran out. The arm is
+            // `(issue_number // 2) % 2`: 1 is the box, 0 is glm-5.3. Not parity, because
+            // the scheduler already sends even issues to ralph; this splits backlog's odd
+            // numbers (and ralph's even ones, which carry the same rule) in half. An
+            // unbound issue_number (a hand fire without it) reads 0 and plans hosted. The
+            // arm is visible after the fact as the `plan` stage's model in fabro's usage.
+            // `fabro preflight -I issue_number=N` shows which arm N gets.
+            //
             // `.extra-decomp` (extra_decompose) and `.merge-resolve` (resolve_merge, and the
             // imported resolve_base) run on the run's own box (2026-10-27). The box is leased
             // for the whole run and idles through every hosted stage, so work moved onto it
@@ -158,7 +169,11 @@ digraph Backlog {
             // `.merge-standards` now take glm-5.3-flash: a standards review reads a
             // documented rubric rather than exercising judgement, which is the cheapest
             // kind of check to move down a tier, and flash carries a 262144 window
-            // against full 5.3's 202752. Every model named here must also exist in the
+            // against full 5.3's 202752. `.review-task` and `.review-quality` followed on
+            // 2026-10-28, for z.ai credits: flash costs a third of glm-5.3 per token, the
+            // two were 18% of the credits of the week the quota ran out, and the merge
+            // phase (`.merge-spec`, `.merge-fix` on glm-5.3, `.refute` on luna) still
+            // judges every PR before an unattended squash. Every model named here must also exist in the
             // server settings overlay or the run dies at its first node; `fabro validate`
             // does not check the catalog.
             //
@@ -173,16 +188,20 @@ digraph Backlog {
         model_stylesheet="
             *                 { model: coders-a; }
             .decomp           { model: glm-5.3; }
+{% if (inputs.issue_number | default(0) | int) // 2 % 2 == 1 %}
+            .plan             { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+{% else %}
             .plan             { model: glm-5.3; }
+{% endif %}
             .coder            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .coder-t2         { model: glm-5.3-flash; }
             .coder-t3         { model: kimi-for-coding; }
             .coder-t4         { model: glm-5.3; }
             .rebase           { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .rebase-t2        { model: glm-5.3; }
-            .review-task      { model: glm-5.3; }
+            .review-task      { model: glm-5.3-flash; }
             .review-standards { model: glm-5.3-flash; }
-            .review-quality   { model: glm-5.3; }
+            .review-quality   { model: glm-5.3-flash; }
             .review-frontier  { model: kimi-k3; }
             .extra-decomp     { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .merge-standards  { model: glm-5.3-flash; }
@@ -624,7 +643,14 @@ fi"]
     // visit in 182 above 12 minutes. One record in that window is not planner time and is
     // excluded: the 429-minute `plan` visit in run 01M5B0G5ZVJ2X5X5KZZACGKFRK is the
     // 10-19 disk fill (`~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`), not a stall.
-    plan [label="Plan task", class="plan", timeout="20m", max_retries=1, prompt="@prompts/plan.md.j2"]
+    //
+    // 30m since the box-plan trial (2026-10-28): the box arm runs this node on QFN, and a
+    // timeout serves both arms. Re-measured per visit on glm-5.3, 2026-10-21..28 (264
+    // visits): p50 5.5m, p95 11.6m, heaviest 57k output tokens at ~51 tok/s. QFN on the
+    // boxes emits 33-45 output tok per wall-second, so p95 projects to ~16m and the
+    // heaviest visit to ~26m. The hosted arm's stall now costs 30m instead of 20m; that
+    // is the price of one node serving both. Unmeasured on QFN: re-time from the trial.
+    plan [label="Plan task", class="plan", timeout="30m", max_retries=1, prompt="@prompts/plan.md.j2"]
 
     // The `split` disposition, and why the size check lives HERE rather than in
     // `decompose`.
@@ -1148,7 +1174,11 @@ echo 'task validation: mode='$MODE' reason='$REASON' ok='$OK' selected='$SEL' un
 tail -c 4000 /tmp/fabro/validate_output.log | tr -d '{}'
 jq -nc --argjson ok $OK --arg mode \"$MODE\" --arg reason \"$REASON\" --argjson sel $SEL --argjson unt $UNT --argjson unch $UNCH --argjson prep $PREP '{context_updates:{task_validation_ok:$ok,task_validation_mode:$mode,task_validation_reason:$reason,task_validation_selected:$sel,task_validation_untested:$unt,task_validation_unchecked:$unch,task_validation_prepare_s:$prep}}' || exit 1"]
 
-    review [label="Review task", class="review-task", timeout="15m", max_retries=1, prompt="@prompts/reviewer.md.j2"]
+    // review runs on glm-5.3-flash since 2026-10-28 (`.review-task`), so its 15m, sized on
+    // glm-5.3, is re-derived: per visit 2026-10-21..28 (284 visits) p95 4.8m, max 9.7m,
+    // heaviest 23k output tokens at ~48 tok/s. flash emits 30.9 output tok per
+    // wall-second, so p95 projects to ~7.5m and the slowest visit to ~15m. Hence 20m.
+    review [label="Review task", class="review-task", timeout="20m", max_retries=1, prompt="@prompts/reviewer.md.j2"]
 
     review_gate [label="Validate verdict", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/review/verdict.json
@@ -1321,7 +1351,12 @@ echo 0 > /tmp/fabro/spec_attempts
 D=$(jq -r .decision $F 2>/dev/null || echo invalid)
 echo '{\"context_updates\":{\"spec_status\":\"'$D'\"}}'"]
 
-    quality [label="Code quality review", class="review-quality", timeout="15m", max_retries=1, prompt="@prompts/quality.md.j2"]
+    // quality runs on glm-5.3-flash since 2026-10-28 (`.review-quality`), so its 15m, sized
+    // on glm-5.3, is re-derived: per visit 2026-10-21..28 (103 visits) p95 10.2m, one
+    // visit at the 15m timeout, heaviest 40k output tokens at ~44 tok/s. flash emits 30.9
+    // output tok per wall-second, so p95 projects to ~14.5m and the heaviest visit to
+    // ~21.5m. Hence 25m.
+    quality [label="Code quality review", class="review-quality", timeout="25m", max_retries=1, prompt="@prompts/quality.md.j2"]
     quality_gate [label="Validate quality output", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/quality.json
 A=$(cat /tmp/fabro/quality_attempts 2>/dev/null || echo 0)

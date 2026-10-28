@@ -7,9 +7,13 @@ graph = "workflow.fabro"
 # to the next one. Two rows differ from backlog's on purpose, and the graph comment
 # above `model_stylesheet` carries the reasoning:
 #
-#   kimi-k3 = ["zai:glm-5.3", "orfallback:qwen3.8-27b"]
+#   kimi-k3 = ["zai:glm-5.3-flash", "zai:glm-5.3", "orfallback:qwen3.8-27b"]
 #     Reversed (O5): ralph's three hosted stages -- plan, standards, spec -- must reach
-#     z.ai BEFORE OpenRouter, because OpenRouter is only ever a fallback here.
+#     z.ai BEFORE OpenRouter, because OpenRouter is only ever a fallback here, and
+#     OpenRouter is on a fixed $100 budget. Flash first since 2026-10-28: Kimi's weekly
+#     quota runs out mid-week, so this row carries those stages for days at a time,
+#     and z.ai bills flash at a third of glm-5.3's credits per token. glm-5.3 stays as
+#     the rung for a flash-only fault.
 #
 #   "glm-5.3" = ["orfallback:qwen3.8-27b"]
 #     No `kimi:kimi-k3` rung. `.coder-t4` is the top rung of the Iteration ladder and
@@ -41,8 +45,8 @@ kimi-for-coding = ["zai:glm-5.3"]
 # The top Iteration rung. See the header: no Kimi rung.
 "glm-5.3" = ["orfallback:qwen3.8-27b"]
 # The three hosted frontier stages: plan, standards, spec. Non-GLM first is backlog's
-# order and O5 reverses it here.
-kimi-k3 = ["zai:glm-5.3", "orfallback:qwen3.8-27b"]
+# order and O5 reverses it here; flash before full glm-5.3 for credits (see the header).
+kimi-k3 = ["zai:glm-5.3-flash", "zai:glm-5.3", "orfallback:qwen3.8-27b"]
 
 # Checkpoints still COMMIT after every stage, but fabro no longer PUSHES them
 # (ADR 0011 D1). Every checkpoint is an allow-empty commit, and once the PR exists
