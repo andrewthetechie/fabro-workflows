@@ -1,14 +1,15 @@
 //! Subcommand dispatch and exit-code mapping (C3–C5).
 //!
-//! `stage` 0/2 · `input` 0/3 · `submit` 0/3/4 · `guard` 0/2 · `git-guard` 0/2 · `version` 0 · usage 64.
+//! `stage` 0/2 · `input` 0/3 · `submit` 0/3/4 · `guard` 0/2 · `git-guard` 0/2 ·
+//! `box-claim` 0 · `box-guard` 0/2 · `version` 0 · usage 64.
 
 use std::process::ExitCode;
 
-use crate::{flakeradar, gitguard, guard, inputs, runtests, scout, serve, stage, submit, taskcheck, taskplan, testenv};
+use crate::{boxclaim, flakeradar, gitguard, guard, inputs, runtests, scout, serve, stage, submit, taskcheck, taskplan, testenv};
 
 const USAGE: &str = concat!(
     "usage: fabro-io <command> [args]\n",
-    "commands: stage | serve [--port N] | guard | git-guard | inputs [<name> [--part N]] | submit --file <path> | test-env [--check] [--root DIR] | run-tests TARGET [args...] [--fresh] | task-plan [--base SHA] [--root DIR] | task-check [--gate] [--base SHA] [--out FILE] [--root DIR] | scout <command> | flakeradar classify --checks F --failures-dir D [--ignore-jobs JSON] [--section F] | version\n"
+    "commands: stage | serve [--port N] | guard | git-guard | box-claim | box-guard | inputs [<name> [--part N]] | submit --file <path> | test-env [--check] [--root DIR] | run-tests TARGET [args...] [--fresh] | task-plan [--base SHA] [--root DIR] | task-check [--gate] [--base SHA] [--out FILE] [--root DIR] | scout <command> | flakeradar classify --checks F --failures-dir D [--ignore-jobs JSON] [--section F] | version\n"
 );
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -22,6 +23,8 @@ pub fn run(args: &[String]) -> ExitCode {
         "serve" => serve::run(rest),
         "guard" => guard::run(),
         "git-guard" => gitguard::run(),
+        "box-claim" => boxclaim::run_claim(),
+        "box-guard" => boxclaim::run_guard(),
         "inputs" => inputs::run_cli(rest),
         "submit" => submit_cli(rest),
         "test-env" => testenv::run_cli(rest),

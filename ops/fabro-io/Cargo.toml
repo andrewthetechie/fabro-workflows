@@ -1,6 +1,6 @@
 [package]
 name = "fabro-io"
-version = "0.8.1"
+version = "0.9.0"
 edition = "2024"
 description = "Stage I/O MCP server (ADR 0016): reads a stage's inputs and writes its output contract with an Input receipt"
 license = "MIT"
@@ -19,6 +19,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.151" }
 sha2 = "0.10"
 tokio = { version = "1.53.1", features = ["full"] }
+# The one HTTP client (more-local-inference D23). `box-claim` and `box-guard` call
+# fabro's run API and strix-infer's `/health`, both plain `http://` on the LAN, so no
+# TLS is compiled in and the static release build stays small.
+ureq = { version = "3.4", default-features = false, features = ["json"] }
 # `preserve_order` keeps `.fabro/test.toml`'s target and check order, which Task validation
 # depends on (ADR 0025 C3: the first matching target owns a test).
 toml = { version = "0.8", features = ["preserve_order"] }

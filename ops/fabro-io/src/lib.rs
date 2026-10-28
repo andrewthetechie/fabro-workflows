@@ -3,6 +3,7 @@
 //! reads a stage's inputs and writes its output contract with an Input receipt. All
 //! stage facts live in the manifest (C2), never in the binary.
 
+pub mod boxclaim;
 pub mod cli;
 pub mod code;
 pub mod common;

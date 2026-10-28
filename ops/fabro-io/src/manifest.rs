@@ -20,6 +20,50 @@ pub struct Manifest {
     pub min_binary: String,
     #[serde(default)]
     pub stages: HashMap<String, Stage>,
+    /// For each coder loop (`backlog`, `ralph`, `pr-review`), the stages that run on
+    /// the run's box (C1). Only a background package's manifest carries it, and
+    /// `box-guard` reads it to judge *another* run's current stage (C10).
+    #[serde(default)]
+    pub coder_box_stages: HashMap<String, HashMap<String, BoxMode>>,
+}
+
+/// Whether a stage runs on the run's coder box (C1).
+///
+/// Written as `false`, `true` or `"plan-arm"` in the source manifest; absent reads
+/// as [`BoxMode::Never`]. Any other value is a load error, like an unknown field.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "BoxModeRepr")]
+pub enum BoxMode {
+    /// Never on the box. The default when a manifest omits the field.
+    #[default]
+    Never,
+    /// Always on the run's box.
+    Always,
+    /// On the box only when the box-plan trial's arm is true for the run's issue.
+    PlanArm,
+}
+
+/// The three JSON shapes [`BoxMode`] accepts, before validation.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BoxModeRepr {
+    Bool(bool),
+    Name(String),
+}
+
+impl TryFrom<BoxModeRepr> for BoxMode {
+    type Error = String;
+
+    fn try_from(repr: BoxModeRepr) -> Result<Self, Self::Error> {
+        match repr {
+            BoxModeRepr::Bool(false) => Ok(Self::Never),
+            BoxModeRepr::Bool(true) => Ok(Self::Always),
+            BoxModeRepr::Name(name) if name == "plan-arm" => Ok(Self::PlanArm),
+            BoxModeRepr::Name(name) => Err(format!(
+                "`box` must be false, true or \"plan-arm\", not {name:?}"
+            )),
+        }
+    }
 }
 
 /// One stage: its ordered inputs, optional output contract and sealed paths.
@@ -36,6 +80,9 @@ pub struct Stage {
     /// else, or nothing, means the stage may only read with git.
     #[serde(default)]
     pub git: Option<String>,
+    /// Whether the stage runs on the run's coder box (C1). Absent reads as never.
+    #[serde(rename = "box", default)]
+    pub box_mode: BoxMode,
 }
 
 /// One ordered input. `absent` is the sentence shown when an optional input is absent.
@@ -111,6 +158,18 @@ impl Manifest {
     /// The output schema for a stage, if it writes a contract.
     pub fn output_schema(&self, node: &str) -> Option<&serde_json::Value> {
         self.stage(node).and_then(|s| s.output.as_ref()).map(|o| &o.schema)
+    }
+
+    /// Whether a coder loop's stage runs on the box (C10 step 2).
+    ///
+    /// Only a background package's manifest carries `coder_box_stages`; anywhere else
+    /// this is [`BoxMode::Never`], which reads as "not a box stage".
+    pub fn coder_stage_mode(&self, workflow: &str, node: &str) -> BoxMode {
+        self.coder_box_stages
+            .get(workflow)
+            .and_then(|stages| stages.get(node))
+            .copied()
+            .unwrap_or_default()
     }
 }
 
