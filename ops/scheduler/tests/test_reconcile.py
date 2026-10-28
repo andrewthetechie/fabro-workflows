@@ -37,6 +37,8 @@ from fabro_scheduler.store import Store
 
 TRACKED_REPOS = Path(__file__).resolve().parents[1] / "repos.toml"
 FF = "andrewthetechie/jelly-swipe"
+# Every other repo in repos.toml: polled by the receipt scan, never carrying work here.
+IDLE_SLUGS = ("lawncare-saas", "womens-fantasy-sports", "writers-app", "flakeradar")
 
 FABRO_API = "http://10.10.0.32:32276/api/v1"
 GITHUB_API = "https://api.github.com"
@@ -402,9 +404,9 @@ def test_a_transient_fabro_error_keeps_the_lease(config, store, leases, fabro):
 def _mock_in_progress(
     in_progress: list[dict] | None = None,
     *,
-    idle_slugs: tuple[str, ...] = ("lawncare-saas", "womens-fantasy-sports", "writers-app"),
+    idle_slugs: tuple[str, ...] = IDLE_SLUGS,
 ) -> None:
-    """Answer the four repos' `/issues` polls; only jelly-swipe carries work."""
+    """Answer every repo's `/issues` poll; only jelly-swipe carries work."""
     respx.get(f"{GITHUB_API}/repos/{FF}/issues").mock(
         return_value=httpx.Response(
             200,
@@ -492,7 +494,7 @@ def test_recover_is_idempotent(config, store, leases, fabro):
         return httpx.Response(200, json=[])
 
     respx.get(f"{GITHUB_API}/repos/{FF}/issues").mock(side_effect=issues)
-    for slug in ("lawncare-saas", "womens-fantasy-sports", "writers-app"):
+    for slug in IDLE_SLUGS:
         respx.get(f"{GITHUB_API}/repos/andrewthetechie/{slug}/issues").mock(
             return_value=httpx.Response(200, json=[])
         )
@@ -750,7 +752,7 @@ def test_a_candidate_lapses_when_its_repo_cannot_be_read(
         )
 
     respx.get(f"{GITHUB_API}/repos/{FF}/issues").mock(side_effect=issues)
-    for slug in ("lawncare-saas", "womens-fantasy-sports", "writers-app"):
+    for slug in IDLE_SLUGS:
         respx.get(f"{GITHUB_API}/repos/andrewthetechie/{slug}/issues").mock(
             return_value=httpx.Response(200, json=[])
         )

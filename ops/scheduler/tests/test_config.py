@@ -378,6 +378,7 @@ def test_the_tracked_repos_toml_parses(tmp_path):
         "andrewthetechie/womens-fantasy-sports",  # priority 10
         "andrewthetechie/writers-app",  # priority 20
         "andrewthetechie/lawncare-saas",  # priority 30
+        "andrewthetechie/flakeradar",  # priority 40
         "andrewthetechie/jelly-swipe",  # priority 99
     ]
     assert {(r.name, r.environment_id) for r in cfg.repos} == {
@@ -385,6 +386,7 @@ def test_the_tracked_repos_toml_parses(tmp_path):
         ("andrewthetechie/lawncare-saas", "python-node"),
         ("andrewthetechie/womens-fantasy-sports", "ts"),
         ("andrewthetechie/writers-app", "rust-node"),
+        ("andrewthetechie/flakeradar", "python-node"),
     }
     assert all(r.enabled for r in cfg.repos)
 

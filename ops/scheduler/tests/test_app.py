@@ -68,7 +68,7 @@ def issue(repo: str, number: int, *, waited: timedelta = timedelta(0), labels=("
 # --- /health -----------------------------------------------------------------------
 
 
-def test_health_is_ok_and_lists_the_four_repos_in_scheduling_order(client):
+def test_health_is_ok_and_lists_the_five_repos_in_scheduling_order(client):
     response = client.get("/health")
     assert response.status_code == 200
 
@@ -78,6 +78,7 @@ def test_health_is_ok_and_lists_the_four_repos_in_scheduling_order(client):
         "andrewthetechie/womens-fantasy-sports",
         "andrewthetechie/writers-app",
         "andrewthetechie/lawncare-saas",
+        "andrewthetechie/flakeradar",
         "andrewthetechie/jelly-swipe",
     ]
 
