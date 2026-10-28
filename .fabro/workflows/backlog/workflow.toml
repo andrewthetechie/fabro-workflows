@@ -339,10 +339,12 @@ script = "/storage/scripts/discord-notify.sh needs-human"
 
 # Model escalation: alert when a task or a merge-resolution leaves the local
 # coder box for a hosted model. The stages are the coder ladder's hosted tiers
-# (rework_t2 -> glm-5.3-flash, rework_t3 -> kimi-for-coding, rework_t4 -> glm-5.3),
-# the merge resolver (resolve_merge, also glm-5.3), and the imported CI-fix
-# escalation (review_merge.ci_fix_t2, glm-5.3). The alert is informational: the
-# ladder itself is the system working, so nothing blocks.
+# (rework_t2 -> glm-5.3-flash, rework_t3 -> kimi-for-coding, rework_t4 -> glm-5.3)
+# and the imported CI-fix escalation (review_merge.ci_fix_t2, glm-5.3). The alert is
+# informational: the ladder itself is the system working, so nothing blocks.
+# resolve_merge left the matcher on 2026-10-27, when it moved onto the run's own box
+# (`.merge-resolve`); it no longer leaves the box. discord-notify.sh keeps its
+# `resolve_merge` case, unmatched, because removing it is a deploy.
 #
 # stage_start, not checkpoint_saved: the escalation begins when the stage starts,
 # which is the moment the local box is left.
@@ -359,11 +361,11 @@ script = "/storage/scripts/discord-notify.sh needs-human"
 # script runs in the server container, where the webhook lives. Absolute container
 # path because hook `script` is a shell command, not an `@` file import. The
 # node -> model map lives in discord-notify.sh's `fallback` kind, because one
-# matcher covers six nodes with three different models.
+# matcher covers four nodes with three different models.
 [[run.hooks]]
 id = "discord-fallback"
 event = "stage_start"
-matcher = "(^|[.])(rework_t[2-4]|resolve_merge|ci_fix_t2)$"
+matcher = "(^|[.])(rework_t[2-4]|ci_fix_t2)$"
 blocking = false
 sandbox = false
 script = "/storage/scripts/discord-notify.sh fallback"

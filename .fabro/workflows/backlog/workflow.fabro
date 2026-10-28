@@ -139,6 +139,18 @@ digraph Backlog {
             // against z.ai's 3 concurrent sessions (ADR 0003), which is the cost the close of
             // the trial accepted.
             //
+            // `.extra-decomp` (extra_decompose) and `.merge-resolve` (resolve_merge, and the
+            // imported resolve_base) run on the run's own box (2026-10-27). The box is leased
+            // for the whole run and idles through every hosted stage, so work moved onto it
+            // costs lease minutes, not a slot -- and it keeps tokens off z.ai's weekly quota,
+            // which ran out on 2026-10-27. Both fit the box: resolve_merge is an edit to the
+            // run's own code, and extra_decompose is read-only and scoped to the findings it
+            // is handed. extra_decompose used to share `.review-frontier` with `spec`; it
+            // has its own class so the reviewer stays hosted. NOT moved, and why: `ci_fix_t1`
+            // ran here before ADR 0011 D3 and died at its 20m timeout on 3 of 12 visits;
+            // `plan` lost to the box in the #25 trial (ADR 0030); every reviewer's value is a
+            // model unlike the coder's.
+            //
             // The review classes are split one-per-node rather than sharing a `.review`
             // rule. They used to share it, which meant the three per-task reviewers and
             // the three merge-phase reviewers -- the gate in front of an unattended
@@ -172,6 +184,7 @@ digraph Backlog {
             .review-standards { model: glm-5.3-flash; }
             .review-quality   { model: glm-5.3; }
             .review-frontier  { model: kimi-k3; }
+            .extra-decomp     { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .merge-standards  { model: glm-5.3-flash; }
             .merge-spec       { model: glm-5.3; }
             .merge-fix        { model: glm-5.3; }
@@ -499,7 +512,14 @@ fi"]
     // conflict-marked files, which git treats as resolved, and commit markers onto
     // the run branch. So the agent performs the merge itself, in one stage, and
     // resolve_merge_gate verifies the result from git rather than trusting a claim.
-    resolve_merge [label="Resolve the mainline merge", class="coder-t4", timeout="30m", max_retries=1, prompt="@prompts/resolve_merge.md.j2"]
+    //
+    // It runs on the run's box (`.merge-resolve`, 2026-10-27), like the imported
+    // resolve_base. The 30m is re-derived for the box, not carried over: on glm-5.3 it
+    // took p50 8.7m and at most 9.1m over 5 visits (ralph's copy, 15.5m once), at most
+    // 30k output tokens. The box emits 30.2 output tok per wall-second against glm-5.3's
+    // 45.4 (all stages, 2026-10-22..27), so the worst visit projects to ~14m and ralph's
+    // to ~23m. Unmeasured on the box: re-time it from its first ten box visits.
+    resolve_merge [label="Resolve the mainline merge", class="merge-resolve", timeout="30m", max_retries=1, prompt="@prompts/resolve_merge.md.j2"]
 
     // The conflict-marker scan covers what this merge can have touched — the files
     // changed since the pre-merge SHA, dirty tracked files, and untracked files the
@@ -568,7 +588,8 @@ fi"]
     // stays, so a genuinely slow stage still gets its second attempt.
     //
     // NOT retimed: `coder` (90m, max observed 2110s), `decompose` (30m, max 1009s),
-    // `rework_t1..t4` (45m, never yet executed) and `resolve_merge` (30m, n=1). Those
+    // `rework_t1..t4` (45m, never yet executed) and `resolve_merge` (30m, re-derived above
+    // for the box). Those
     // have real tails or no evidence, and the same arithmetic does not hold for them.
     // See docs/perf/00-overview-and-measurements.md.
     //
@@ -1317,7 +1338,15 @@ echo 0 > /tmp/fabro/quality_attempts
 D=$(jq -r .decision $F 2>/dev/null || echo invalid)
 echo '{\"context_updates\":{\"quality_status\":\"'$D'\"}}'"]
 
-    extra_decompose [label="Follow-up decomposer", class="review-frontier", timeout="15m", max_retries=1, prompt="@prompts/extra_decompose.md.j2"]
+    // extra_decompose runs on the run's box (`.extra-decomp`, 2026-10-27). A failure takes
+    // its unconditional edge to rescue_brief, so its timeout needs real headroom. The 30m
+    // is re-derived for the box: on kimi-k3 (45 visits, 2026-10-15..27) it took p50 0.7m
+    // and p90 9.8m, and its heaviest visit wrote 53k output tokens. The box emits 30.2
+    // output tok per wall-second against kimi-k3's 32.8, so p90 projects to ~11m and that
+    // heaviest visit to ~29m. The old 15m was already short on hosted: four qwen3.8-27b
+    // fallback visits ended at exactly 15.0m. Unmeasured on the box: re-time it from its
+    // first ten box visits.
+    extra_decompose [label="Follow-up decomposer", class="extra-decomp", timeout="30m", max_retries=1, prompt="@prompts/extra_decompose.md.j2"]
     extra_gate [label="Merge follow-up tasks", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/followups.json
 A=$(cat /tmp/fabro/extra_decompose_attempts 2>/dev/null || echo 0)
