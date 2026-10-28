@@ -1,8 +1,9 @@
 """backlog's issue lifecycle: open_pr, claim, mark_stuck, return_to_triage and
 task_block_gate."""
 
+import pytest
 
-from harness import (GRAPH, ORIG_PATH, cat, count, edges, extract, grep, head1, jq, jq_n,
+from harness import (GRAPH, ORIG_PATH, RAPH, cat, count, edges, extract, grep, head1, jq, jq_n,
                      lastjson, lines, mkreadok, present, rebase, rm, sh, stage, stub, syntax_ok,
                      wc_c, write)
 
@@ -235,6 +236,51 @@ def test_claim(ck, tmp_path):
     ck("bounded at three attempts", "3", cat(T / "view_attempts"))
     ck("surfaces gh's own error", "1", count("could not connect", r.out))
     ck("issue_number survives failure", "356", cat(FAB / "issue_number"))
+
+
+# ---------------------------------------------------------------------------
+# claim writes the run's box (more-local-inference C2, C4)
+#
+# `fabro-io box-claim` runs as a stage_start hook, before any command node, so the box can
+# only come from a file. `claim` is the coder loop's first node and the one that writes it,
+# with a bare `{{ inputs.coder_pool }}` substitution. `claim` routes on stdout, so the write
+# must not print; and an unset pool renders empty, which C2 reads as "no box is known".
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("graph,label", [(GRAPH, "backlog"), (RAPH, "ralph")])
+def test_claim_writes_the_box_file(ck, tmp_path, graph, label):
+    T = tmp_path / f"box-{label}"
+    (T / "bin").mkdir(parents=True)
+    FAB = T / "fabro"
+    stub(T / "bin", "sleep", SLEEP_STUB)
+    stub(T / "bin", "gh", CLAIM_GH)
+    path = f"{T / 'bin'}:{ORIG_PATH}"
+    env = {"GH_LOG": T / "gh.log", "GH_STATE": T}
+    write(T / "gh.log", "")
+    write(T / "issue_payload.json",
+          '{"state":"OPEN","number":356,"title":"t","body":"b","labels":[{"name":"agent-in-progress"}]}')
+    script = T / "claim.sh"
+
+    script.write_text(
+        rebase(extract(graph, "claim"), FAB)
+        .replace("{{ inputs.issue_number }}", "356")
+        .replace("{{ inputs.coder_pool }}", "coders-b"))
+    ok, err = syntax_ok(script)
+    if not ok:
+        ck.fail(f"{label}: claim is not valid POSIX sh", err)
+    r = sh(script, path=path, env=env, stderr="keep")
+    ck(f"{label}: claim with a pool exits 0", "0", r.rc)
+    ck(f"{label}: /tmp/fabro/box holds the pool", "coders-b", cat(FAB / "box"))
+    ck(f"{label}: the box write prints nothing on stdout", "", r.out)
+
+    # An unset input renders to the empty string, and C2 reads an empty box file as no box.
+    rm(FAB / "box")
+    write(T / "gh.log", "")
+    script.write_text(rebase(extract(graph, "claim"), FAB)
+                      .replace("{{ inputs.issue_number }}", "356")
+                      .replace("{{ inputs.coder_pool }}", ""))
+    r = sh(script, path=path, env=env, stderr="keep")
+    ck(f"{label}: claim without a pool exits 0", "0", r.rc)
+    ck(f"{label}: an unset pool writes an empty box file", "", cat(FAB / "box"))
 
 
 # ---------------------------------------------------------------------------

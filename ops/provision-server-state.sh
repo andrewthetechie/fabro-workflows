@@ -324,6 +324,12 @@ provision_variable FABRO_API_URL "http://10.10.0.32:32276/api/v1" || FAILED=$((F
 # FlakeRadar's base URL (ADR 0028 F1), read by `scout` and the review-merge phase. Every
 # scout run compiles `{{ vars.FLAKERADAR_URL }}`, so it is created before the automations.
 provision_variable FLAKERADAR_URL "https://flakes.herrington.services" || FAILED=$((FAILED+1))
+# The boxes' strix-infer `/health` endpoints, as `pool=url` pairs (more-local-inference C3).
+# Read by `backlog`, `ralph` and `pr-review`, whose `box-claim` hook finds its box's URL here
+# (and, from task 04, by every background package's `box-guard`). Every coder-loop run
+# compiles `{{ vars.FABRO_BOX_HEALTH }}`, so a missing variable creates no run at all: it is
+# provisioned before the images and the manifests that read it are pushed.
+provision_variable FABRO_BOX_HEALTH "coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.56:5300/health" || FAILED=$((FAILED+1))
 
 echo "Provisioning pr-review automations..."
 # The trailing `true` is the per-repo auto-merge switch, named explicitly: it is the

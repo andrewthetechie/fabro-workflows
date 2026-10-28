@@ -101,10 +101,15 @@ digraph Ralph {
     // These comments live here rather than inside `script=` on purpose: fabro writes a
     // command node's whole script into `outcome.notes`, so every byte inside the attribute
     // is paid again in the next agent's prompt at any `summary:*` fidelity.
+    // The box this run holds, for `fabro-io box-claim` (more-local-inference C2).
+    // Written here because `claim` runs before any agent stage; `|| true` because a
+    // failed write must not fail the node, and the redirect keeps it off stdout, which
+    // this node's routing reads.
     claim [label="Claim issue and fetch it", shape=parallelogram,
         script="set -e
 mkdir -p /tmp/fabro
 ISSUE='{{ inputs.issue_number }}'
+echo \"{{ inputs.coder_pool }}\" > /tmp/fabro/box || true
 case \"$ISSUE\" in '' | *[!0-9]*) echo 'issue_number must be a positive integer' >&2; exit 1;; esac
 if [ \"$ISSUE\" -lt 1 ]; then echo 'issue_number must be a positive integer' >&2; exit 1; fi
 echo $ISSUE > /tmp/fabro/issue_number

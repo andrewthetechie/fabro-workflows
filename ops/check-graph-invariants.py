@@ -6,13 +6,14 @@ Usage:
   check-graph-invariants.py --dump FILE.fabro   print the reader's statements in fabro parse's shape
   check-graph-invariants.py --normalize         normalize a `fabro parse` JSON read from stdin
 
-A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R14;
+A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R15;
 every `_shared/*/*.fabro` phase gets the file rules (the reader, R6, R8, R9 and R12). Each violation prints as
 `<package> <rule> <node or hook> <why>`, then `VIOLATIONS: N`. Exit status is min(N, 125).
 
-R13 and R14 are the background-lane rules (more-local-inference C1, C5): every agent stage's
-`box` value in the Stage manifest agrees with the stylesheet that decides where it runs, and no
-`-bg` model is a fallback key or target.
+R13-R15 are the background-lane rules (more-local-inference C1, C2, C4, C5): every agent
+stage's `box` value in the Stage manifest agrees with the stylesheet that decides where it runs,
+no `-bg` model is a fallback key or target, and the three coder loops carry the `box-claim` hook
+and write the run's box file while no other package does.
 
 Standard library only (Python 3.11+, tomllib). It reads the graphs itself, so it runs offline
 in `make check`. `make check-host` proves the reader agrees with `fabro parse` on the six files
@@ -829,6 +830,53 @@ def is_agent_stage(attrs: dict[str, str]) -> bool:
     return "prompt" in attrs and attrs.get("shape", "") in ("", "box")
 
 
+# The coder loops: the packages whose box stages a `box-claim` hook must precede
+# (more-local-inference D1, C4).
+CODER_LOOP_PACKAGES = ["backlog", "ralph", "pr-review"]
+
+# C4's hook, field by field. `timeout` is 60 s against a 45 s command deadline, inside the
+# root graphs' `stall_timeout` of 60m.
+CLAIM_HOOK_SCRIPT = "fabro-io box-claim; exit 0"
+
+
+def r15_claim_hooks(package: str, root: Graph | None, hooks: list[dict]) -> list[tuple]:
+    """R15: each coder loop carries the `box-claim` hook exactly as C4 gives it and writes
+    /tmp/fabro/box in `claim`; no other package runs `fabro-io box-claim`
+    (invariants-graph.md, the background-package rows; more-local-inference C2, C4).
+
+    A background package with the claim would cancel the background runs on its own box,
+    its own run included, so the half that forbids it matters as much as the half that
+    requires it in the three coder loops.
+    """
+    out: list[tuple] = []
+    claim_hooks = [h for h in hooks if "fabro-io box-claim" in (h.get("script") or "")]
+    if package not in CODER_LOOP_PACKAGES:
+        if claim_hooks:
+            out.append(("R15", claim_hooks[0].get("id") or "hook",
+                        "runs `fabro-io box-claim`, but this is not a coder loop: it would "
+                        "cancel the background runs on its own box, its own included"))
+        return out
+    exact = any(
+        h.get("id") == "box-claim"
+        and h.get("event") == "stage_start"
+        and h.get("matcher") == "^agent$"
+        and h.get("blocking") is True
+        and h.get("sandbox") is True
+        and h.get("timeout") == "60s"
+        and h.get("script") == CLAIM_HOOK_SCRIPT
+        for h in hooks
+    )
+    if not exact:
+        out.append(("R15", "box-claim",
+                    "is missing or is not exactly the C4 hook: id box-claim, stage_start on "
+                    f"^agent$, blocking, sandbox, timeout 60s, script {CLAIM_HOOK_SCRIPT!r}"))
+    if len(claim_hooks) > 1:
+        out.append(("R15", "box-claim", f"has {len(claim_hooks)} hooks that run `fabro-io box-claim`; a coder loop has one"))
+    if root is not None and "/tmp/fabro/box" not in (root.nodes.get("claim") or {}).get("script", ""):
+        out.append(("R15", "claim", "does not write /tmp/fabro/box, so the claim cannot know which box to free"))
+    return out
+
+
 def is_bg_model(name: str) -> bool:
     """A background model name: `coders-a-bg`, with or without a `provider:` prefix."""
     return name.rsplit(":", 1)[-1].strip().endswith("-bg")
@@ -1119,6 +1167,7 @@ def package_violations(pkg_dir: Path, workflows: Path) -> tuple[list[tuple], int
     out += [(package, *v) for v in r11_io_hooks(package, t, import_ids, manifest, hooks)]
     out += [(package, *v) for v in r13_box_stages(package, root, nodes, import_ids, manifest)]
     out += [(package, *v) for v in r14_background_fallbacks(package, t)]
+    out += [(package, *v) for v in r15_claim_hooks(package, root if root is not None else None, hooks)]
     out += [(package, *v) for v in r8_routing(root.nodes)]
     out += [(package, *v) for v in r9_needs_human_reason(root)]
     out += [(package, *v) for v in r12_fallback_edge(root)]

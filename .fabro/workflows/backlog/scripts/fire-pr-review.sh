@@ -339,6 +339,12 @@ fi
 # args.inputs values that reach a POSIX `case` guard are JSON numbers, not strings:
 # pr-review's validate_input runs `case "$PR" in *[!0-9]*)` and `case "$AM" in 1)`.
 # A number is the shape that cannot carry shell syntax. args.labels values are strings.
+#
+# `coder_pool` is a string, and every fire must send one: pr-review's `claim` writes it to
+# /tmp/fabro/box with `{{ inputs.coder_pool }}`, which is a bare value substitution, and
+# `box-claim` reads that file to know which box the run holds (more-local-inference C2, C4).
+# A hand-fired pr-review has no lease, so `coders-a` is the box it takes; the scheduler's own
+# fires (task 06) send the pool they leased.
 jq -n \
   --arg vvid "$version_id" \
   --argjson target "$target" \
@@ -348,12 +354,13 @@ jq -n \
   --arg env_id "$env_id" \
   --arg issue "$ISSUE_NUMBER" \
   --arg parent "$VALID_PARENT" \
-  --arg sha "$SHA" '
+  --arg sha "$SHA" \
+  --arg pool "coders-a" '
   {
     workflow_version_id: $vvid,
     target: $target,
     args: {
-      inputs: { pr_number: $pr, auto_merge: $am },
+      inputs: { pr_number: $pr, auto_merge: $am, coder_pool: $pool },
       labels: ({ source: "backlog", pr: $prs, workflow_sha: $sha }
                + (if $issue == "" then {} else { issue: $issue } end))
     },

@@ -237,6 +237,76 @@ class BoxStages(unittest.TestCase):
                          {(("(inputs.issue_number | default(0) | int) // 2 % 2 == 1", True),),
                           (("(inputs.issue_number | default(0) | int) // 2 % 2 == 1", False),)})
 
+    def _claim_root(self, tmp: str, *, drop_hook: bool = False, other_package: bool = False,
+                    no_box_write: bool = False) -> Path:
+        root = self.root(tmp, stylesheet=self.BOX_EVERYWHERE)
+        package = "other" if other_package else "ok"
+        if other_package:
+            (root / f".fabro/workflows/{package}").mkdir()
+            for name in ("workflow.fabro", "workflow.toml"):
+                shutil.copy(root / f".fabro/workflows/ok/{name}",
+                            root / f".fabro/workflows/{package}/{name}")
+        toml = root / f".fabro/workflows/{package}/workflow.toml"
+        hook = ('\n[[run.hooks]]\nid = "box-claim"\nevent = "stage_start"\nmatcher = "^agent$"\n'
+                'blocking = true\nsandbox = true\ntimeout = "60s"\n'
+                'script = "fabro-io box-claim; exit 0"\n')
+        text = toml.read_text()
+        if not drop_hook:
+            text += hook
+        toml.write_text(text)
+        graph = root / f".fabro/workflows/{package}/workflow.fabro"
+        box_write = "true" if no_box_write else "echo x > /tmp/fabro/box || true"
+        graph.write_text(graph.read_text().replace(
+            "    check [", f'    claim [shape=parallelogram, script="{box_write}"]\n    check ['))
+        return root
+
+    def test_the_claim_hook_in_a_coder_loop_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # The `ok` fixture is not a coder loop, so give it one that is.
+            root = self._claim_root(tmp, other_package=False)
+            cgi.CODER_LOOP_PACKAGES = ["ok"]
+            try:
+                self.assertEqual([v for v in cgi.run(root) if v[1] == "R15"], [])
+            finally:
+                cgi.CODER_LOOP_PACKAGES = ["backlog", "ralph", "pr-review"]
+
+    def test_a_coder_loop_without_the_claim_hook_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._claim_root(tmp, drop_hook=True)
+            cgi.CODER_LOOP_PACKAGES = ["ok"]
+            try:
+                found = [(rule, node) for _, rule, node, _ in cgi.run(root) if rule == "R15"]
+            finally:
+                cgi.CODER_LOOP_PACKAGES = ["backlog", "ralph", "pr-review"]
+            self.assertIn(("R15", "box-claim"), found)
+
+    def test_a_claim_node_that_writes_no_box_file_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._claim_root(tmp, no_box_write=True)
+            cgi.CODER_LOOP_PACKAGES = ["ok"]
+            try:
+                found = [(rule, node) for _, rule, node, _ in cgi.run(root) if rule == "R15"]
+            finally:
+                cgi.CODER_LOOP_PACKAGES = ["backlog", "ralph", "pr-review"]
+            self.assertEqual(found, [("R15", "claim")], found)
+
+    def test_a_package_that_is_not_a_coder_loop_may_not_run_the_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # The real coder-loop list: `ok` is not on it, and it carries the hook.
+            root = self._claim_root(tmp)
+            found = [(rule, node) for _, rule, node, _ in cgi.run(root) if rule == "R15"]
+            self.assertEqual(found, [("R15", "box-claim")], found)
+            self.assertIn("not a coder loop", cgi.run(root)[0][3])
+
+    def test_the_real_coder_loops_carry_the_claim(self):
+        real = json.loads((REAL / ".fabro/workflows/_io/manifest.json").read_text())
+        for package in ("backlog", "ralph", "pr-review"):
+            with self.subTest(package=package):
+                self.assertIn(package, real["workflows"])
+                pkg = REAL / ".fabro/workflows" / package
+                found = cgi.package_violations(pkg, REAL / ".fabro/workflows")[0]
+                self.assertEqual([v for v in found if v[1] == "R15"], [])
+
     def test_the_real_manifest_and_stylesheets_agree(self):
         manifest = json.loads((REAL / ".fabro/workflows/_io/manifest.json").read_text())
         for package in manifest["workflows"]:

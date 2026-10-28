@@ -51,6 +51,37 @@ def test_git_guard_hook_wrapper(ck, tmp_path, w):
 
 
 # ---------------------------------------------------------------------------
+# box-claim hook wrapper (more-local-inference C3, C4).
+#
+# fabro treats ANY non-zero hook exit as a block, and an unrunnable sandbox hook reports
+# -1, so a fabro-io missing from an older image (exit 127) would stop the first stage of
+# every coder-loop run. The wrapper ends `; exit 0`, which is what this test pins: every
+# code the command can return, and no binary at all, must let the stage start.
+# ---------------------------------------------------------------------------
+def box_claim_hook(toml: Path) -> str:
+    """The box-claim hook's script, as tomllib reads it."""
+    try:
+        d = tomllib.loads(toml.read_text())
+        return next(h["script"] for h in d["run"]["hooks"] if h["id"] == "box-claim")
+    except Exception:
+        return ""
+
+
+@pytest.mark.parametrize("w", ["backlog", "ralph", "pr-review"])
+def test_box_claim_hook_wrapper(ck, tmp_path, w):
+    hook = box_claim_hook(WF / w / "workflow.toml")
+    ck(f"{w}: box-claim hook script found", "1", count("^fabro-io box-claim; exit 0$", hook))
+    T = tmp_path / f"bc-{w}"
+    (T / "bin").mkdir(parents=True)
+    path = f"{T / 'bin'}:{ORIG_PATH}"
+    for code in (0, 1, 2, 3, 64, 127):
+        stub(T / "bin", "fabro-io", f"#!/bin/sh\nexit {code}\n")
+        ck(f"{w}: box-claim exit {code} starts the stage", "0", sh_c(hook, path=path).rc)
+    (T / "bin/fabro-io").unlink()
+    ck(f"{w}: no fabro-io on PATH starts the stage", "0", sh_c(hook, path=path).rc)
+
+
+# ---------------------------------------------------------------------------
 # fabro-code — the index wrapper (docs/code-context C1/C2/C3/C4).
 #
 # This needs a REAL codegraph binary, which is present inside every profile image (and

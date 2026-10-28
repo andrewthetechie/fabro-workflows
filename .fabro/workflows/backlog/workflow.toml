@@ -161,6 +161,11 @@ FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
 # Read by pr_handoff for the per-repo auto-merge switch, and by the imported
 # review-merge phase for the host-wide one.
 FABRO_API_URL    = "{{ vars.FABRO_API_URL }}"
+# The boxes' strix-infer `/health` endpoints, as `pool=url` pairs (more-local-inference C3):
+# `coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.56:5300/health`. `box-claim`
+# reads it to find the URL for this run's box. A `{{ vars.X }}` that is not provisioned fails
+# the RunIntent at compile time, so the server variable must exist before this ships.
+FABRO_BOX_HEALTH = "{{ vars.FABRO_BOX_HEALTH }}"
 FABRO_AUTO_MERGE = "{{ vars.FABRO_AUTO_MERGE }}"
 # FlakeRadar's base URL (ADR 0028 F1): watch_checks asks it whether a red check fails only on
 # known flaky tests. Empty means today's path.
@@ -187,6 +192,26 @@ blocking = true
 sandbox = true
 timeout = "10s"
 script = "fabro-io stage"
+
+# box-claim (more-local-inference C3, C4): before every agent stage, give the box back to
+# this run. It cancels the background run the scheduler put on the box, then waits for
+# strix-infer to report the box idle, on two consecutive reads. blocking = true, because a
+# box stage that starts while another run is mid-request interleaves two sessions on one
+# box and thrashes its KV cache (ADR 0031 D1). sandbox = true: it needs the manifest, the
+# run's box file and the fabro-io binary, all inside the sandbox. The command gives up
+# after 45 s and every HTTP call times out at 5 s, so the 60 s hook timeout below is the
+# backstop; a blocking hook's wait counts toward the run's stall_timeout, which is 60m in
+# all three coder loops. It exits 0 on every path of its own, and the trailing `exit 0`
+# covers the one case the command cannot: a fabro-io missing from an older image (exit
+# 127), because fabro treats ANY non-zero hook exit as a block.
+[[run.hooks]]
+id = "box-claim"
+event = "stage_start"
+matcher = "^agent$"
+blocking = true
+sandbox = true
+timeout = "60s"
+script = "fabro-io box-claim; exit 0"
 
 # git-guard (docs/coder-tweaks 05, C2): blocks mutating git (`stash`, `checkout --`, `commit`,
 # `fetch`, ...) from an agent's `shell` outside the stages the manifest marks `"git": "write"`
