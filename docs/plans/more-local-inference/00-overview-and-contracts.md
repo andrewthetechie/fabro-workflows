@@ -1,8 +1,9 @@
 # More local inference: overview and canonical contracts
 
-**Status:** planned 2026-10-28. Phase 1 built, reviewed and deployed 2026-10-28 with the lane
-`off`; task 12 Phase 1 steps 1 and 6-8 are next, and its exit check has not run. ADR 0031
-(proposed). Phase 0's sampler runs on
+**Status:** planned 2026-10-28. Phase 1 built, reviewed and deployed 2026-10-28; task 12
+Phase 1 steps 1-7 done the same day and the lane is **on** (gap table measured, Phase 0 step
+2). The exit check (step 8) waits on real post-deploy coder runs; read it with
+`ops/fabro-box-claims.py`. ADR 0031 (proposed). Phase 0's sampler runs on
 the fabro host until about 2026-10-30 03:50 UTC (`~/coder-util/box-{a,b}.tsv`, read-only).
 Revised 2026-10-28 after a review against the repository (see *Facts*).
 
