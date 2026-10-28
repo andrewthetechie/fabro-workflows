@@ -280,7 +280,11 @@ class BackgroundLane:
         # This runs whatever the switch says — `off` means no new background run starts,
         # not that the ones already running are forgotten (D12).
         ends = self.sync(now)
-        self._refresh_health()
+        # `/health` is read only when something may act on it: the switch is on, or a
+        # background run is still finishing. Off with nothing running is the scheduler as
+        # it was before the lane existed: no box call at all (task 05, *Done when*).
+        if self._config.background or self._store.running_background_jobs():
+            self._refresh_health()
         evictions = self.evict(now)
         starts = self.fill(now) if self._config.background else ()
         if ends or evictions or starts:
@@ -567,15 +571,17 @@ class BackgroundLane:
         now = now or self._clock()
         if self._fabro is None:
             return None
+        # No background run, nothing to cancel: decide that from the store before asking
+        # fabro, so a coder dispatch with the lane idle makes no extra call.
+        running = [job for job in self._store.running_background_jobs() if job["run_id"]]
+        if not running:
+            return None
         try:
             active = len(self._fabro.active_runs())
         except FabroError as exc:
             log.info("background: cannot count active runs (%s); not making room", exc)
             return None
         if active < self._config.max_concurrent_runs:
-            return None
-        running = [job for job in self._store.running_background_jobs() if job["run_id"]]
-        if not running:
             return None
         # The youngest: it has done the least work, so it loses the least.
         youngest = max(running, key=lambda job: (job["last_started_at"] or "", job["job_id"]))

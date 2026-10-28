@@ -328,11 +328,13 @@ class BackgroundPackages(unittest.TestCase):
 
     def root(self, tmp: str, *, stylesheet: str | None = None, guard: str | None = None,
              claim_hook: bool = False, no_box_write: bool = False,
-             drop_class: bool = False) -> Path:
+             drop_class: bool = False, run_branch: str | None = "enabled = false") -> Path:
         root = BoxStages.root(BoxStages(), tmp, stylesheet=stylesheet or self.BG_STYLESHEET,
                               drop_class=drop_class)
         toml = root / ".fabro/workflows/ok/workflow.toml"
         toml.write_text(toml.read_text() + (self.GUARD if guard is None else guard))
+        if run_branch is not None:
+            toml.write_text(toml.read_text() + f"\n[run.run_branch]\n{run_branch}\n")
         if claim_hook:
             toml.write_text(toml.read_text() +
                             '\n[[run.hooks]]\nid = "box-claim"\nevent = "stage_start"\n'
@@ -376,6 +378,23 @@ class BackgroundPackages(unittest.TestCase):
     def test_a_missing_guard_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(self.run_r16(self.root(tmp, guard="")), [("R16", "box-guard")])
+
+    def test_a_package_left_on_the_default_run_branch_is_reported(self):
+        # No `[run.run_branch]` at all: fabro's default (or the target repository's) decides,
+        # and that default pushes a checkpoint after every stage (D9).
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.run_r16(self.root(tmp, run_branch=None)),
+                             [("R16", "run_branch")])
+
+    def test_a_run_branch_that_pushes_is_reported_and_one_that_does_not_passes(self):
+        # `push = false` keeps the checkpoints in the sandbox, which writes nothing to GitHub;
+        # a job that must push (the PR doctor) does it explicitly in its last node.
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self.run_r16(self.root(tmp, run_branch="enabled = true\npush = true"))
+            self.assertEqual(found, [("R16", "run_branch")])
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self.run_r16(self.root(tmp, run_branch="enabled = true\npush = false"))
+            self.assertEqual(found, [])
 
     def test_a_guard_that_is_not_the_c10_hook_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:

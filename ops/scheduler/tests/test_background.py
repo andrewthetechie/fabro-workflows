@@ -310,6 +310,69 @@ def test_the_switch_off_starts_nothing(store, leases):
     assert lane_.state(NOW)["switch"] == "off"
 
 
+class CountingFabro(FakeFabro):
+    """A `FakeFabro` that records every call the lane makes, not just its effects."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.calls: list[str] = []
+
+    def get_stages(self, run_id: str) -> list[dict]:
+        self.calls.append("get_stages")
+        return super().get_stages(run_id)
+
+    def active_runs(self) -> list[dict]:
+        self.calls.append("active_runs")
+        return super().active_runs()
+
+    def get_run(self, run_id: str) -> dict:
+        self.calls.append("get_run")
+        return super().get_run(run_id)
+
+
+class CountingHealth(FakeHealth):
+    def __init__(self, readings: dict[str, Health] | None = None) -> None:
+        super().__init__(readings)
+        self.calls: list[str] = []
+
+    def read(self, box: str) -> Health | None:
+        self.calls.append(box)
+        return super().read(box)
+
+
+def test_the_switch_off_with_nothing_running_makes_no_call_at_all(store, leases):
+    """Task 05, *Done when*: with the lane off the scheduler behaves as before. The
+    compose default puts both boxes in `SCHEDULER_BOX_HEALTH`, so a whole tick and the
+    room check before a coder dispatch must make no box or fabro call of their own."""
+    held_lease(leases)
+    enqueue(store)
+    fabro = CountingFabro(active=[{"id": f"r{i}"} for i in range(8)])
+    health = CountingHealth({"coders-a": IDLE, "coders-b": IDLE})
+    lane_ = check(store, leases, fabro, health, config(SCHEDULER_BACKGROUND="off"))
+    assert lane_.tick(NOW).starts == ()
+    assert lane_.make_room(NOW) is None
+    assert fabro.calls == []
+    assert health.calls == []
+    assert fabro.cancelled == []
+
+
+def test_the_switch_off_still_evicts_a_run_that_was_started_before_it(store, leases):
+    """Off means no new background run starts; one already running is still watched,
+    and still evicted when its coder loop reaches a box stage (D12, D17)."""
+    held_lease(leases)
+    job_id = enqueue(store)
+    running(store, job_id, run_id="bg-old", box="coders-a")
+    fabro = CountingFabro(
+        stages={"coderun": [{"node_id": "coder", "status": "running"}]},
+        runs={"bg-old": {"lifecycle": {"status": {"kind": "running"}}}},
+    )
+    health = CountingHealth({"coders-a": BUSY})
+    lane_ = check(store, leases, fabro, health, config(SCHEDULER_BACKGROUND="off"))
+    tick = lane_.tick(NOW)
+    assert [eviction.run_id for eviction in tick.evictions] == ["bg-old"]
+    assert tick.starts == ()
+
+
 def test_the_run_slot_reserve_counts_every_active_run_pending_included(store, leases):
     """C7 condition 5: `max_concurrent_runs` minus every active run, `pending` included,
     must still be at least `bg_slot_reserve` (3 by default)."""

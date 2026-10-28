@@ -3,6 +3,14 @@ _version = 1
 [workflow]
 graph = "workflow.fabro"
 
+# Nothing in this package commits, and nothing in a background package may write to GitHub
+# before its last node (more-local-inference D9, R16). No run branch and no checkpoint
+# commits (0.362: enabled = false also skips checkpoint commits). Left to the default, or to
+# the target repository's .fabro/project.toml, a run branch pushes a checkpoint after every
+# stage, and a branch push can start CI on the self-hosted runners.
+[run.run_branch]
+enabled = false
+
 # box-noop (more-local-inference task 04): a background-only package. Every agent stage's
 # model is `{{ inputs.coder_pool }}`, which the scheduler sets to `coders-a-bg` or
 # `coders-b-bg`, so a box-noop run spends no hosted credits (D4, C5). It is the template the

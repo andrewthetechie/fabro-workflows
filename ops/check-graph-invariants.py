@@ -14,7 +14,7 @@ R13-R16 are the background-lane rules (more-local-inference C1, C2, C4, C5, C10)
 stage's `box` value in the Stage manifest agrees with the stylesheet that decides where it runs,
 no `-bg` model is a fallback key or target, the three coder loops carry the `box-claim` hook and
 write the run's box file while no other package does, and a box-only package names no model but
-the run's `-bg` pool and guards itself with `box-guard`.
+the run's `-bg` pool, guards itself with `box-guard`, and has no run branch.
 
 Standard library only (Python 3.11+, tomllib). It reads the graphs itself, so it runs offline
 in `make check`. `make check-host` proves the reader agrees with `fabro parse` on the six files
@@ -892,19 +892,30 @@ GUARD_HOOK_SCRIPT = "fabro-io box-guard; [ $? -eq 2 ] && exit 2; exit 0"
 
 
 def r16_background_packages(package: str, root: Graph | None, nodes: dict[str, dict[str, str]],
-                            hooks: list[dict]) -> list[tuple]:
+                            hooks: list[dict], toml: dict | None = None) -> list[tuple]:
     """R16: a background package runs only on the box, guards itself, and writes its box
-    (invariants-graph.md, Background packages; more-local-inference D4, C5, C10).
+    (invariants-graph.md, Background packages; more-local-inference D4, D9, C5, C10).
 
     Every model it names -- the `*` rule, every class rule and therefore every agent node --
     must be the run's `-bg` coder pool, so no hosted stage can exist in one and no fallback
     can reach z.ai. It carries the `box-guard` hook exactly as C10 gives it, carries no
     `box-claim` hook (a claim there would cancel the background runs on its own box, its own
-    included), and its `claim` writes /tmp/fabro/box for the guard to read.
+    included), and its `claim` writes /tmp/fabro/box for the guard to read. Its run branch
+    never pushes on its own: `[run.run_branch]` says `enabled = false` or `push = false`.
+    Left to fabro's default (or the target repository's `.fabro/project.toml`), a run branch
+    pushes a checkpoint commit after every stage, which is a GitHub write in a run that may
+    be cancelled anywhere (D9). A job that must push does it in its last node, as `backlog`
+    does after `open_pr`.
     """
     if package not in BACKGROUND_PACKAGES:
         return []
     out: list[tuple] = []
+    run_branch = ((toml or {}).get("run", {}) or {}).get("run_branch") or {}
+    if run_branch.get("enabled") is not False and run_branch.get("push") is not False:
+        out.append(("R16", "run_branch",
+                    "a background package must set [run.run_branch] enabled = false or "
+                    "push = false: the default pushes a checkpoint after every stage, a GitHub "
+                    "write before the last node (D9)"))
     if root is not None:
         variants = [(holds, style_rules(text)) for holds, text in
                     stylesheet_variants(root.graph_attrs.get("model_stylesheet", ""))]
@@ -1237,7 +1248,7 @@ def package_violations(pkg_dir: Path, workflows: Path) -> tuple[list[tuple], int
     out += [(package, *v) for v in r13_box_stages(package, root, nodes, import_ids, manifest)]
     out += [(package, *v) for v in r14_background_fallbacks(package, t)]
     out += [(package, *v) for v in r15_claim_hooks(package, root if root is not None else None, hooks)]
-    out += [(package, *v) for v in r16_background_packages(package, root, nodes, hooks)]
+    out += [(package, *v) for v in r16_background_packages(package, root, nodes, hooks, t)]
     out += [(package, *v) for v in r8_routing(root.nodes)]
     out += [(package, *v) for v in r9_needs_human_reason(root)]
     out += [(package, *v) for v in r12_fallback_edge(root)]
