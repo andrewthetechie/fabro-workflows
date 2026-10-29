@@ -77,16 +77,19 @@ services:
       # it only to count free slots, and a larger value would hand out slots that do not
       # exist.
       SCHEDULER_MAX_CONCURRENT_RUNS: "${SCHEDULER_MAX_CONCURRENT_RUNS:-8}"
-      # Which job kinds' PRODUCERS run, comma-separated. Default: every kind this scheduler
-      # knows (today `box-noop` and `pr-doctor`; tasks 07-10 add theirs). It gates producers
-      # only, never the lane's pick, so a job queued by hand through
-      # `POST /api/background/pr-doctor` still runs with `pr-doctor` absent here: that is the
-      # one-PR canary.
-      SCHEDULER_BG_KINDS: "${SCHEDULER_BG_KINDS:-box-noop,pr-doctor}"
+      # Which job kinds' PRODUCERS run, comma-separated. It gates producers only, never the
+      # lane's pick, so a job queued by hand through `POST /api/background/pr-doctor` still
+      # runs with `pr-doctor` absent here: that is the one-PR canary. The default stays
+      # `box-noop` (which has no automatic producer) until Phase 2 of more-local-inference
+      # passes, so turning the lane on never also turns a producer on; the operator opens the
+      # doctor with `SCHEDULER_BG_KINDS=box-noop,pr-doctor` in `~/fabro/.env`. An empty value
+      # reads as unset here (`:-`), and config.py's own default is every kind.
+      SCHEDULER_BG_KINDS: "${SCHEDULER_BG_KINDS:-box-noop}"
       # The PR doctor's daily cap on follow-up `pr-review` runs, counted per UTC day across
       # every repository (operator decision 3). A review spends hosted credits; over the cap,
-      # a pushed PR waits in the pending-review state and goes first the next day. 0 turns the
-      # reviews off without turning the doctor off (the fix and the push still happen).
+      # a pushed PR waits in the pending-review state and goes first the next day. 0 HOLDS
+      # every pushed PR in that state (labels already removed, no hand-off) until the cap is
+      # raised again; it is a pause, not a hand-off.
       SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY: "${SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY:-6}"
     # Deliberately **not** `env_file: .env`. That file carries fabro's
     # SESSION_SECRET — a cookie-signing key this service has no use for — and the

@@ -934,12 +934,21 @@ curl -fsS -X POST "$B/api/background/pr-doctor" \
 curl -fsS "$B/api/background" | jq '.jobs[] | select(.kind == "pr-doctor")'
 ```
 
-The attempt is recorded on the PR itself, as one comment whose first line is the marker
-(C6). It is the only thing that decides "already tried", so it is also how to undo one by
-hand — deleting the comment makes the PR eligible again:
+The attempt is recorded twice: on the PR, as one comment whose first line is the marker
+(C6), and in the scheduler's store, as the PR's one `pr-doctor` row in `background_jobs`.
+Either one makes the PR ineligible, so granting a second attempt by hand takes both: delete
+the marker comment, then the row, then queue it with the `POST` above.
 
 ```
 <!-- fabro:pr-doctor head=<sha before> pushed=<pending|none|sha after> review=<fire|skip> run=<id> -->
+```
+
+```sh
+# Delete the PR's doctor row (never a running one: cancel the run first).
+ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T scheduler python -c "
+import sqlite3; c = sqlite3.connect(\"/data/scheduler.db\")
+c.execute(\"DELETE FROM background_jobs WHERE kind = ? AND repo = ? AND target = ? AND state != ?\",
+          (\"pr-doctor\", \"andrewthetechie/jelly-swipe\", \"7\", \"running\")); c.commit()"'
 ```
 
 `pushed=pending` means the run died inside its last node: if the PR's head is no longer
@@ -955,10 +964,14 @@ for whoever takes the PR.
 # 1. No new doctor runs. Jobs already queued wait, and a run already started finishes
 #    (or is cancelled) through its own rules.
 SCHEDULER_BG_KINDS=box-noop    # in ~/fabro/.env, then: docker compose up -d --no-deps scheduler
-# 2. No follow-up reviews. The fix and the push still happen; every PR is handed off
-#    with no review instead of waiting.
+# 2. No follow-up reviews. The fix and the push still happen, and every pushed PR is
+#    HELD in review_pending -- its labels already removed, no hand-off, no comment --
+#    until the cap is raised; then the held reviews go first, oldest first.
 SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY=0
 ```
+
+Switch 2 is a pause, not a hand-off: the *Background* strip lists the held PRs under
+"waiting". To give them to a human instead, label them `ai-review-needs-human` by hand.
 
 `SCHEDULER_BACKGROUND=off` stops both, along with the rest of the lane's new work. Because
 the kinds list gates **producers**, a job queued by hand through
@@ -1147,8 +1160,8 @@ how this project already passes per-host values:
 | `SCHEDULER_BG_SLOT_RESERVE` | `3` | Run slots fabro must have free — `SCHEDULER_MAX_CONCURRENT_RUNS` minus every active run, `pending` included — before a background run starts (D8). Keeps fabro's first-come run cap from being spent on background work. |
 | `SCHEDULER_BOX_HEALTH` | the two boxes' `/health` (compose) | The boxes in the lane, as `pool=url` pairs in the same format `fabro-io box-claim` reads. **Empty means no box is in the lane and the lane does nothing at all** — no `/health` read, no fabro call, no row. |
 | `SCHEDULER_MAX_CONCURRENT_RUNS` | `8` | fabro's own `server.scheduler.max_concurrent_runs`, copied here because the scheduler can read the cap only from itself. Keep the two equal: a larger value would hand background runs slots that do not exist. |
-| `SCHEDULER_BG_KINDS` | every known kind (compose: `box-noop,pr-doctor`) | Which job kinds' **producers** run, comma-separated. An unknown kind is a `ConfigError`. Turning one kind off leaves the rest of the lane alone, and a job queued by hand (`POST /api/background/pr-doctor`) still runs, because this gates producers and not the lane's pick (C7). |
-| `SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY` | `6` | The most follow-up `pr-review` runs the PR doctor may dispatch in one UTC day, across every repository (operator decision 3). A review spends hosted credits; over the cap a pushed PR waits in `review_pending` and goes first the next day, still ahead of the issue queue. A review that failed to dispatch does not count. `0` turns the reviews off without turning the doctor off: the fix and the push still happen, and the PR is handed off with no review. |
+| `SCHEDULER_BG_KINDS` | every known kind (compose: `box-noop` until Phase 2 passes) | Which job kinds' **producers** run, comma-separated. An unknown kind is a `ConfigError`. Turning one kind off leaves the rest of the lane alone, and a job queued by hand (`POST /api/background/pr-doctor`) still runs, because this gates producers and not the lane's pick (C7). |
+| `SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY` | `6` | The most follow-up `pr-review` runs the PR doctor may dispatch in one UTC day, across every repository (operator decision 3). A review spends hosted credits; over the cap a pushed PR waits in `review_pending` and goes first the next day, still ahead of the issue queue. A review that failed to dispatch does not count. `0` pauses the reviews without turning the doctor off: the fix and the push still happen, and every pushed PR is **held** in `review_pending` (labels removed, no hand-off) until the cap is raised. |
 | `FABRO_API_TOKEN` | — | The dispatch credential, from `~/fabro/scheduler.env`. It is fabro's **dev token**, read from `/storage/server.dev-token` in the container — fabro supports exactly one, so this cannot be rotated independently of the CLI and `discord-notify.sh`. Needed by `POST /api/dispatch-once` and by the dispatch loop: without it the endpoint answers `503`, the loop does not start, and everything else, `/health` included, works unchanged. Never logged, never rendered, never stored in SQLite. |
 | `GITHUB_TOKEN` | — | The inventory's credential **and, from draft 08, the label writer's**, from `~/fabro/scheduler.env` on the host. **Not** in `~/fabro/.env`: the scheduler gets its own env file so it never receives fabro's `SESSION_SECRET`, and this repository is public, so neither belongs in `repos.toml`. It needs `issues: read` **and `issues: write`** on the four repos — the read is the inventory, the write is `agent-in-progress` and removing `agent`. A classic token's `repo` scope covers both; a fine-grained PAT must be given both. Without it the inventory is not refreshed *and* the dispatch loop does not start. Never logged, never rendered and never stored in SQLite. |
 
