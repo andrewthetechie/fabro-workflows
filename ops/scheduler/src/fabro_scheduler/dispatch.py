@@ -81,13 +81,16 @@ DEFAULT_INTERVAL_SECONDS = 5.0
 
 # How many failed attempts at dispatching one follow-up review before the PR is handed off
 # without one. The job stays `review_pending` between attempts, so it is retried on the next
-# tick that is not backing off -- and an automation row that is missing or misconfigured is
-# the usual cause, which no amount of retrying fixes.
-REVIEW_DISPATCH_ATTEMPTS = 3
+# tick that is not backing off. With the doubling backoff below, six attempts span about 31
+# minutes: long enough to outlast a fabro restart or a GitHub blip (three attempts a minute
+# apart turned a 2-3 minute restart into a pushed fix with no review), short enough that a
+# missing automation row, which no retry fixes, hands the PR off the same hour.
+REVIEW_DISPATCH_ATTEMPTS = 6
 
-# The quiet period after a failed review dispatch. Without it a missing `pr-review-<repo>`
-# automation row would be re-read every 5 seconds forever; the job itself is untouched, so a
-# fixed row is picked up within a minute.
+# The quiet period after the first failed review dispatch, doubled after each further one
+# (60 s, 2, 4, 8, 16 min). Without it a missing `pr-review-<repo>` automation row would be
+# re-read every 5 seconds; the job itself is untouched, so a fixed row is picked up on the
+# next retry.
 REVIEW_RETRY_SECONDS = 60.0
 
 # Long enough for a label write over a LAN, short enough that a wedged GitHub does
@@ -478,8 +481,10 @@ class DispatchLoop:
     def _review_failed(self, job, why: str, now: datetime) -> None:
         """Count one failed review dispatch and hand off once it has failed enough times."""
         job_id = int(job["job_id"])
-        self._review_retry_at[job_id] = time.monotonic() + REVIEW_RETRY_SECONDS
         failures = self._store.record_review_failure(job_id, now=now)
+        self._review_retry_at[job_id] = time.monotonic() + REVIEW_RETRY_SECONDS * 2 ** max(
+            failures - 1, 0
+        )
         log.warning(
             "dispatch: pr-doctor job %s for %s#%s: the follow-up review could not be "
             "dispatched (%d of %d): %s",

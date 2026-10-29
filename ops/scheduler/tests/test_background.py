@@ -728,11 +728,12 @@ def test_the_compose_file_carries_the_seven_variables_with_their_defaults():
         ("SCHEDULER_BG_GAP_S", "30"),
         ("SCHEDULER_BG_SLOT_RESERVE", "3"),
         ("SCHEDULER_MAX_CONCURRENT_RUNS", "8"),
-        # task 06 adds the doctor's producer to the kinds the container enables, and the
-        # follow-up reviews' daily cap (operator decision 3). A variable missing from these
+        # The kinds stay `box-noop` until Phase 2 passes (the Phase 2 review's F4: turning
+        # the lane on must not also turn the doctor's producer on), and the follow-up
+        # reviews' daily cap (operator decision 3). A variable missing from these
         # lines is a variable the container never sees: the scheduler reads its environment
         # from them and scheduler.env only, never .env as an env file.
-        ("SCHEDULER_BG_KINDS", "box-noop,pr-doctor"),
+        ("SCHEDULER_BG_KINDS", "box-noop"),
         ("SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY", "6"),
     ):
         pattern = rf'^\s+{name}: "\$\{{{name}:-{re.escape(default)}\}}"$'
@@ -769,7 +770,7 @@ def test_the_page_and_the_api_render_the_lane(tmp_path):
         assert {box["box"] for box in body["boxes"]} == {"coders-a", "coders-b"}
         assert body["kinds"] == ["pr-doctor", "box-noop"]
         # The doctor's review accounting (operator decision 3) is on the same document.
-        assert body["reviews"] == {"today": 0, "per_day": 6, "waiting": []}
+        assert body["reviews"] == {"today": 0, "per_day": 6, "waiting": [], "failed": []}
 
         created = client.post("/api/background/box-noop", json={"repo": JELLY})
         assert created.status_code == 200
@@ -883,6 +884,11 @@ def test_a_failed_doctor_run_with_no_marker_is_a_failure_for_a_human(store, leas
     doctor_lane(config(), store, leases, fabro, reader).sync(NOW)
     row = store.background_job(job_id)
     assert (row["state"], row["outcome"]) == ("failed", "failed/deterministic")
+    # Nothing on the PR says the attempt happened, so the strip has to.
+    failed = doctor_lane(config(), store, leases, fabro, reader).review_state(NOW)["failed"]
+    assert [(entry["job_id"], entry["pr"], entry["outcome"]) for entry in failed] == [
+        (job_id, "7", "failed/deterministic")
+    ]
 
 
 def test_pushed_sha_queues_the_one_follow_up_review(store, leases):

@@ -1355,6 +1355,20 @@ class Store:
                 "AND outcome = 'review_pending' ORDER BY created_at, job_id"
             ).fetchall()
 
+    def failed_doctor_jobs(self, *, limit: int = 20) -> list[sqlite3.Row]:
+        """Doctor jobs whose run failed with no marker, newest first.
+
+        Nothing reached GitHub, so nothing on the PR says the attempt happened, and the job
+        row still blocks a second one (`background_job_exists`). The *Background* strip lists
+        these so a human can read the run and decide whether to grant another attempt.
+        """
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM background_jobs WHERE kind = 'pr-doctor' AND state = 'failed' "
+                "ORDER BY last_finished_at DESC, job_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
     def doctor_job_for_review(self, run_id: str) -> sqlite3.Row | None:
         """The doctor job whose follow-up review is `run_id`, if there is one."""
         with self._lock:

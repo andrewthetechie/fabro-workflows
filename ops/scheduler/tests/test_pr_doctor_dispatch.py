@@ -339,7 +339,7 @@ def test_the_per_repo_auto_merge_switch_rides_into_the_inputs(
     assert recorder.made("POST", "/api/v1/runs")[0][2]["args"]["inputs"]["auto_merge"] == 0
 
 
-def test_a_missing_automation_row_hands_the_pr_off_after_three_tries(
+def test_a_missing_automation_row_hands_the_pr_off_after_six_tries(
     config, store, leases, fabro, recorder
 , respx_mock):
     """A row that is absent, duplicated or has no environment is not a retryable condition,
@@ -352,12 +352,42 @@ def test_a_missing_automation_row_hands_the_pr_off_after_three_tries(
     )
     job_id = pending_review(store)
     dispatch = loop(config, store, leases, fabro)
-    for _ in range(3):
+    for attempt in range(6):
+        assert store.background_job(job_id)["outcome"] == "review_pending", attempt
         dispatch._review_retry_at.clear()
         dispatch.tick()
     assert store.background_job(job_id)["outcome"] == "handed_off_no_review"
-    assert store.background_job(job_id)["review_failures"] == 3
+    assert store.background_job(job_id)["review_failures"] == 6
     assert recorder.made("POST", "/api/v1/runs") == []
+
+
+def test_the_review_retries_back_off_over_about_half_an_hour(
+    config, store, leases, fabro, recorder, respx_mock, monkeypatch
+):
+    """F8 of the Phase 2 review: three tries a minute apart turned a 2-3 minute fabro
+    restart into a pushed fix handed off with no review."""
+    import fabro_scheduler.dispatch as dispatch_module
+
+    clock = [1000.0]
+    monkeypatch.setattr(dispatch_module.time, "monotonic", lambda: clock[0])
+    install_fabro(recorder)
+    install_automations(recorder, rows=[])
+    install_labels(recorder)
+    respx.post(url__regex=COMMENTS).mock(
+        side_effect=lambda request: (recorder.record(request), httpx.Response(200, json={}))[1]
+    )
+    job_id = pending_review(store)
+    dispatch = loop(config, store, leases, fabro)
+    waits = []
+    for _ in range(5):
+        dispatch.tick()
+        waits.append(dispatch._review_retry_at[job_id] - clock[0])
+        clock[0] = dispatch._review_retry_at[job_id]
+    assert waits == [60.0, 120.0, 240.0, 480.0, 960.0]
+    assert store.background_job(job_id)["outcome"] == "review_pending"
+    dispatch.tick()
+    assert store.background_job(job_id)["outcome"] == "handed_off_no_review"
+    assert sum(waits) / 60 == pytest.approx(31.0)
 
 
 def test_the_daily_cap_holds_a_pushed_pr_until_the_next_day(

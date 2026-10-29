@@ -869,6 +869,7 @@ class BackgroundLane:
         now = now or self._clock()
         midnight = datetime(now.year, now.month, now.day, tzinfo=UTC)
         waiting = self._store.pending_review_jobs()
+        failed = self._store.failed_doctor_jobs()
         return {
             "today": self._store.reviews_dispatched_since(midnight),
             "per_day": self._config.pr_doctor_reviews_per_day,
@@ -880,6 +881,18 @@ class BackgroundLane:
                     "created_at": row["created_at"],
                 }
                 for row in waiting
+            ],
+            # Doctor runs that failed before `publish` (a `gh` error in `claim`, say): the PR
+            # carries no marker, so this is the only place the used attempt shows.
+            "failed": [
+                {
+                    "job_id": int(row["job_id"]),
+                    "repo": row["repo"],
+                    "pr": row["target"],
+                    "outcome": row["outcome"],
+                    "finished_at": row["last_finished_at"],
+                }
+                for row in failed
             ],
         }
 

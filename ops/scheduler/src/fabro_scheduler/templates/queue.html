@@ -221,6 +221,10 @@
     <span class="block text-slate-500">Doctor reviews: {{ background.reviews.today }} of
       {{ background.reviews.per_day }} dispatched today (UTC){% if background.reviews.waiting %};
       waiting: {% for want in background.reviews.waiting %}{{ want.repo }}#{{ want.pr }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.</span>
+    {% if background.reviews.failed %}
+    <span class="block text-amber-400">Doctor attempts that failed with nothing on the PR:
+      {% for gone in background.reviews.failed %}{{ gone.repo }}#{{ gone.pr }} ({{ gone.outcome }}){% if not loop.last %}, {% endif %}{% endfor %}.</span>
+    {% endif %}
     {% endif %}
   </p>
   <table class="mt-3 w-full text-sm">
