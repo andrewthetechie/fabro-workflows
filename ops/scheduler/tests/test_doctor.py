@@ -13,6 +13,7 @@ The live texts in `LIVE_REASONS` are copied from `pr_facts` on 2026-10-29, with 
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from fabro_scheduler.doctor import (
     HANDOFF_NO_REVIEW_COMMENT,
     HYGIENE,
     KIND,
+    NONE_REASON_PREFIXES,
     REFUTER,
     REVIEW,
     PrView,
@@ -161,6 +163,58 @@ def test_the_reason_table_covers_every_block_writer_in_the_merge_phase():
         ("The refuter could not confirm the work is done: ", REFUTER),
     ):
         assert prefix in graph, prefix
+
+
+# The block writers in both merge-phase graphs: `fail '...'`, `block '...'`, `blocked '...'`
+# (single-quoted, or double-quoted with a `$(...)` tail cut off), and a literal echoed into
+# either reason file. A text built from a variable is not a literal and is not listed.
+_WRITERS = (
+    re.compile(r"\b(?:fail|block|blocked) '([A-Z][^']+)"),
+    re.compile(r'\b(?:fail|block|blocked) \\"([A-Z][^"\\$]+)'),
+    re.compile(r"echo '([A-Z][^']+)' > [^\n]*(?:merge_block_reason|needs_human_reason)"),
+)
+
+
+def _block_texts() -> set[str]:
+    root = Path(__file__).resolve().parents[3] / ".fabro/workflows"
+    texts: set[str] = set()
+    for graph in ("_shared/review-merge/review-merge.fabro", "ralph/workflow.fabro"):
+        source = (root / graph).read_text()
+        for pattern in _WRITERS:
+            texts.update(match.group(1).strip() for match in pattern.finditer(source))
+    return texts
+
+
+def test_every_block_text_in_both_graphs_is_mapped_or_listed_as_none():
+    """F6 of the Phase 2 review: two CI texts fell through to `none` because nothing listed
+    them. Every literal block text is either in the reason table or in
+    `NONE_REASON_PREFIXES`, so a new one fails here until someone decides which."""
+    texts = _block_texts()
+    assert len(texts) > 30, texts  # the extractor still finds the writers
+    unlisted = sorted(
+        text
+        for text in texts
+        if classify(text) is None
+        and not any(text.startswith(prefix) for prefix in NONE_REASON_PREFIXES)
+    )
+    assert unlisted == []
+
+
+def test_no_none_prefix_is_dead_or_also_mapped():
+    texts = _block_texts()
+    for prefix in NONE_REASON_PREFIXES:
+        assert any(text.startswith(prefix) for text in texts), prefix
+        assert classify(prefix) is None, prefix
+
+
+def test_the_two_ci_texts_the_first_table_missed_are_ci():
+    texts = _block_texts()
+    assert "CI is red after 2 post-PR Iterations" in texts
+    assert "The CI-fix agent could not make the failing check pass." in texts
+    assert classify("CI is red after 2 post-PR Iterations") == CI
+    assert classify(
+        "The CI-fix agent could not make the failing check pass. pytest still fails"
+    ) == CI
 
 
 def test_a_retryable_reason_is_excluded_before_the_table():

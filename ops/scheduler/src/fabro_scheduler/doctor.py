@@ -101,12 +101,72 @@ REASON_PREFIXES: tuple[tuple[str, str], ...] = (
     ("CI is still red after the maximum number of fix attempts.", CI),
     # watch_checks: red after both CI-fix tiers.
     ("CI is still failing after two fix attempts (", CI),
+    # watch_checks' CI-fix agent gave up on the failing check (`review-merge.fabro`, the
+    # `ci_fix_gate` refusal). Same work as the line above.
+    ("The CI-fix agent could not make the failing check pass.", CI),
+    # ralph's own CI block, after its two post-PR Iterations (`ralph/workflow.fabro`).
+    ("CI is red after 2 post-PR Iterations", CI),
     # hygiene_reason.txt: the tamper/erosion block, samples included. A `config_changed`
     # block is the same prefix and is excluded separately below.
     ("Diff hygiene blocks the merge: ", HYGIENE),
     # fix_gate, line 943: the fixer returned needs_human or wrote no valid result. It is here
     # because the live reports under it list concrete leftovers (operator decision 1).
     ("The review did not end in a mergeable state.", REVIEW),
+)
+
+
+# Every other block text the two merge-phase graphs write, and why the doctor leaves it alone.
+# `classify` never reads this: it is the other half of the inventory, so a gate test can
+# require every text in `_shared/review-merge` and `ralph` to be in one table or the other,
+# and a new block text cannot fall through to `none` without someone deciding it should.
+NONE_REASON_PREFIXES: tuple[str, ...] = (
+    # A human decision or a GitHub-side state, not a code fix.
+    "A commit on this PR was not authored by the automation",
+    "Reviewers have requested changes on this PR.",
+    "There are unresolved review conversations on this PR.",
+    "The PR carries the do-not-merge label",
+    "The PR does not carry the agent-authored label",
+    "The PR is not open or is still a draft",
+    "The PR title is not a Conventional Commit",
+    "The PR description has no valid fabro commit-body block",
+    "The risk rating is missing or above 3",
+    "The PR diff exceeds 2000000 bytes",
+    # Base drift and merge mechanics: the follow-up review's own `resolve_base` and merge
+    # handle these, and a doctor push would only move the head under them.
+    "A conflict appeared after the review",
+    "The branch is still behind the base after a re-merge attempt",
+    "The re-merge push was rejected because the branch moved",
+    "The squash merge was rejected and this run could not complete it",
+    "GitHub refused the squash merge three times",
+    "GitHub rejected the squash merge three times",
+    "Branch protection on the base refused the merge",
+    "The merge agent left conflict markers",
+    # The CI-fix stage refused its own result: the PR's code is not what failed.
+    "The CI fix left conflict markers or an in-progress merge",
+    "The CI fix touched files outside the reviewed change set",
+    "The CI fix was not pushed: after it, the diff-hygiene counters block",
+    "The CI-fix push was rejected because the branch moved",
+    "The CI-fix report is missing or invalid",
+    # CI that has not settled, reported nothing, or fails only on known flaky tests: there is
+    # nothing in the PR to fix, and FlakeRadar owns the flakes.
+    "CI had not settled after 47 minutes",
+    "No CI checks were reported on the PR head within five minutes",
+    "The 60-minute merge budget is exhausted",
+    "CI fails only on known flaky tests (",
+    "CI still fails only on known flaky tests (",
+    "CI is still red after a second rerun of known flaky tests (",
+    # A run that stopped part-way: a re-review, not a fix.
+    "CI failed and a fix retry was in progress when the run stopped.",
+    "CI passed, but the run stopped after validate and before the review was delivered.",
+    "The validate stage did not finish",
+    "The review was delivered and the merge decision did not complete",
+    "The code changed after the diff-hygiene counters ran",
+    # The fast lane's queue mode, which only backlog uses: the PR was approved.
+    "Could not add the merge-on-green label, so the PR was not queued.",
+    "Could not post the approval comment, so the PR was not queued.",
+    "Could not read the PR head from GitHub, so the PR was not queued.",
+    "Could not render the review comment, so the PR was not queued.",
+    "The PR head on GitHub is not the tree this review approved, so the PR was not queued.",
 )
 
 
