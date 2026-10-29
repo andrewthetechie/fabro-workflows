@@ -48,8 +48,10 @@ log = logging.getLogger(__name__)
 JOB_WORKFLOWS = {"box-noop": "box-noop"}
 
 # How long a `box-noop` run is expected to hold its box, whole run, dispatch to finish
-# (C7's `typical_box_minutes`). It only asks for text, so ten minutes is generous.
-BOX_NOOP_TYPICAL_MINUTES = 10
+# (C7's `typical_box_minutes`). Measured 2026-10-29 over 135 uncancelled runs: median 3.5 min,
+# max 10.1. At 10 the lane filled only gaps a coder rarely ends early, so claims almost never
+# cancelled one and task 12's exit sample stalled; 5 fills the shorter gaps too.
+BOX_NOOP_TYPICAL_MINUTES = 5
 
 # A job that has lost its box three times needs a gap twice its own length before the
 # lane picks it again (D9).

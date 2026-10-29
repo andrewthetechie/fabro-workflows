@@ -1,7 +1,8 @@
 # box-noop's one stage.
 #
-# This file is a placeholder for real work. It asks for a bounded piece of text, about ten
-# minutes of box time (the scheduler's `typical_box_minutes` for `box-noop`), so a run that
+# This file is a placeholder for real work. It asks for a bounded piece of text, about five
+# minutes of box time (the scheduler's `typical_box_minutes` for `box-noop`; measured median
+# 3.5 min, 2026-10-29), so a run that
 # nobody cancels ends `succeeded` well inside `work`'s 30m timeout, and a cancel in a coder
 # loop's gap is a measurement rather than the only way the run can end.
 # It must be safe to kill at any point, because a coder loop's claim cancels it whenever

@@ -706,7 +706,7 @@ def test_box_noop_is_the_one_producer(store, leases):
     assert job_id is not None
     assert lane_.enqueue_box_noop(JELLY, NOW) is None, "idempotent while queued"
     row = store.background_job(job_id)
-    assert (row["kind"], row["priority"], row["typical_box_minutes"]) == ("box-noop", 5, 10)
+    assert (row["kind"], row["priority"], row["typical_box_minutes"]) == ("box-noop", 5, 5)
 
 
 def test_box_noop_is_not_enqueued_when_its_kind_is_off(store, leases):
