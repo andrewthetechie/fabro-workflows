@@ -800,9 +800,12 @@ class Store:
         fall back to its next-best estimate (see `queue_page`).
         """
         with self._lock:
+            # Issue runs only: the doctor's follow-up reviews are much shorter, and the
+            # estimate is for an issue waiting in the queue.
             rows = self._conn.execute(
                 "SELECT finished_at, dispatched_at FROM run_history "
-                "WHERE repo = ? AND finished_at IS NOT NULL AND dispatched_at IS NOT NULL",
+                "WHERE repo = ? AND finished_at IS NOT NULL AND dispatched_at IS NOT NULL "
+                "AND target_kind = 'issue'",
                 (repo,),
             ).fetchall()
         total = timedelta(0)
@@ -1736,13 +1739,21 @@ class Store:
         """Everything the scorecard reads for runs dispatched in `[start, end)`.
 
         Six SELECTs under one lock, so the window is one consistent snapshot.
+
+        Issue runs only (`target_kind = 'issue'`). The PR doctor's follow-up `pr-review`
+        leases are archived here too, and counting them would give a doctored PR a second
+        "PR opened" and credit its merge to the issue workflows, inflating the merge rate
+        Phase 2 of more-local-inference is judged on. `doctor_review_rows` reads them.
         """
         bounds = (start.isoformat(), end.isoformat())
-        in_window = "SELECT run_id FROM run_history WHERE dispatched_at >= ? AND dispatched_at < ?"
+        in_window = (
+            "SELECT run_id FROM run_history WHERE dispatched_at >= ? AND dispatched_at < ? "
+            "AND target_kind = 'issue'"
+        )
         with self._lock:
             history = self._conn.execute(
                 "SELECT * FROM run_history WHERE dispatched_at >= ? AND dispatched_at < ? "
-                "ORDER BY dispatched_at",
+                "AND target_kind = 'issue' ORDER BY dispatched_at",
                 bounds,
             ).fetchall()
             summaries = self._conn.execute(
@@ -1757,13 +1768,30 @@ class Store:
             prs = self._conn.execute(
                 "SELECT f.* FROM pr_facts f WHERE EXISTS (SELECT 1 FROM run_history h"
                 "  WHERE h.repo = f.repo AND h.pr_number = f.pr_number"
-                "  AND h.dispatched_at >= ? AND h.dispatched_at < ?)",
+                "  AND h.dispatched_at >= ? AND h.dispatched_at < ?"
+                "  AND h.target_kind = 'issue')",
                 bounds,
             ).fetchall()
             models = self._conn.execute(
                 f"SELECT * FROM run_model_usage WHERE run_id IN ({in_window})", bounds
             ).fetchall()
         return ScorecardRows(history, summaries, stages, failovers, prs, models)
+
+    def doctor_review_rows(self, start: datetime, end: datetime) -> list[sqlite3.Row]:
+        """The PR doctor's follow-up reviews dispatched in `[start, end)`, oldest first.
+
+        The `pr` half of `run_history` that `scorecard_rows` leaves out, joined to the PR's
+        facts so a reader sees what each review ended as.
+        """
+        with self._lock:
+            return self._conn.execute(
+                "SELECT h.*, f.state AS pr_state, f.merged_at AS pr_merged_at "
+                "FROM run_history h LEFT JOIN pr_facts f "
+                "  ON f.repo = h.repo AND f.pr_number = h.issue_number "
+                "WHERE h.target_kind = 'pr' AND h.dispatched_at >= ? AND h.dispatched_at < ? "
+                "ORDER BY h.dispatched_at",
+                (start.isoformat(), end.isoformat()),
+            ).fetchall()
 
     def first_dispatch(self) -> datetime | None:
         """When the oldest `run_history` row was dispatched, or None if there is none."""

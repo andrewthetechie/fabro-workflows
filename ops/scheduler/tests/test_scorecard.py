@@ -522,6 +522,35 @@ def test_a_window_splits_into_one_card_per_workflow_and_a_strata_table(store):
     assert cell.box_hours_per_merge == pytest.approx(4.0)
 
 
+def test_the_doctors_follow_up_reviews_are_not_scorecard_runs(store):
+    """F7 of the Phase 2 review: a doctored PR's review is archived in `run_history`, and
+    counting it would give the PR a second "PR opened" and its merge to the issue arms."""
+    run(store, "B1", pr=7, merged=False)
+    store.acquire_lease(
+        coder_pool="coders-b", repo=REPO, issue_number=7, run_id="REV1",
+        dispatched_at=T0 + timedelta(hours=5), workflow="pr-review", target_kind="pr",
+    )
+    store.archive_and_release_lease(
+        "REV1",
+        RunOutcome(kind="succeeded", reason="completed",
+                   finished_at=T0 + timedelta(hours=6), pr_lookup="found", pr_number=7,
+                   merged=True),
+    )
+    store.save_pr_facts(REPO, 7, facts(state="merged", merged_at="2026-10-05T06:00:00Z"))
+
+    rows = store.scorecard_rows(*WINDOW)
+    assert [row["run_id"] for row in rows.history] == ["B1"]
+    card = scorecard.by_workflow(rows, *WINDOW)
+    assert set(card.cards) == {"backlog", "ralph"}
+    assert card.cards["backlog"].runs == 1
+    assert card.cards["backlog"].merged_workflow == 0
+
+    reviews = store.doctor_review_rows(*WINDOW)
+    assert [(row["run_id"], row["issue_number"], row["pr_state"]) for row in reviews] == [
+        ("REV1", 7, "merged")
+    ]
+
+
 def test_a_window_with_no_ralph_run_keeps_the_column_at_zero(store):
     run(store, "B1", pr=1, merged=True)
     card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)

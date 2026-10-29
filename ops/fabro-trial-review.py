@@ -49,8 +49,15 @@ def main() -> None:
     c = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
     c.row_factory = sqlite3.Row
     bounds = (start.isoformat(), end.isoformat())
+    # Issue runs only, as the scorecard reads them (`Store.scorecard_rows`): the PR doctor's
+    # follow-up reviews are `target_kind = 'pr'` rows and get their own section at the end.
     history = c.execute(
-        "SELECT * FROM run_history WHERE dispatched_at >= ? AND dispatched_at < ? ORDER BY dispatched_at",
+        "SELECT * FROM run_history WHERE dispatched_at >= ? AND dispatched_at < ? "
+        "AND target_kind = 'issue' ORDER BY dispatched_at",
+        bounds).fetchall()
+    reviews = c.execute(
+        "SELECT * FROM run_history WHERE dispatched_at >= ? AND dispatched_at < ? "
+        "AND target_kind = 'pr' ORDER BY dispatched_at",
         bounds).fetchall()
     if a.ids:
         for h in history:
@@ -243,8 +250,34 @@ def main() -> None:
     for w in sorted(arm):
         print(f"- {w}: ${spend[w]:.2f} over {arm[w]['runs']} runs, ${spend[w] / max(arm[w]['runs'], 1):.3f} a run.")
     print(f"- Both arms: ${total:.2f} in {days:.1f} days, about ${total / days * 30:.0f} a month at this rate "
-          f"(the guardrail is ${BUDGET_USD:.0f}). Runs outside run_history (pr-review, dependabot, "
-          "arch-review, hand fires) are not in it: check the dashboards for the final result.")
+          f"(the guardrail is ${BUDGET_USD:.0f}). Runs outside run_history (automation pr-review, "
+          "dependabot, arch-review, hand fires) and the doctor's reviews (below) are not in it: "
+          "check the dashboards for the final result.")
+    print()
+
+    # --- The PR doctor's follow-up reviews -------------------------------------------------
+    # more-local-inference Phase 2: the scheduler leases these as `pr` rows. They are not an
+    # arm, so they stay out of every table above.
+    print("## The PR doctor's follow-up reviews\n")
+    if not reviews:
+        print("- none in this window")
+        return
+    print("| run | repo | PR | pool | dispatched | lease h | ending | PR now |")
+    print("|---|---|---|---|---|---|---|---|")
+    review_ids = [h["run_id"] for h in reviews]
+    rmarks = ",".join("?" * len(review_ids))
+    rsummaries = {r["run_id"]: r for r in c.execute(
+        f"SELECT * FROM run_summary WHERE run_id IN ({rmarks})", review_ids)}
+    for h in reviews:
+        fact = facts.get((h["repo"], h["issue_number"]))
+        print(f"| {h['run_id'][-8:]} | {h['repo'].split('/')[1]} | {h['issue_number']} | {h['coder_pool']} | "
+              f"{h['dispatched_at'][5:16]} | {_hours(h['dispatched_at'], h['finished_at']):.1f} | "
+              f"{_ending(h, rsummaries.get(h['run_id']))} | {fact['state'] if fact else 'not read'} |")
+    rspend = sum(_price(r)[0] for r in c.execute(
+        f"SELECT * FROM run_model_usage WHERE run_id IN ({rmarks})", review_ids))
+    merged = sum(1 for h in reviews
+                 if (f := facts.get((h["repo"], h["issue_number"]))) and f["state"] == "merged")
+    print(f"\n- {len(reviews)} reviews, {merged} of their PRs merged by now, ${rspend:.2f} hosted spend.")
 
 
 def _price(r) -> tuple[float, str]:
