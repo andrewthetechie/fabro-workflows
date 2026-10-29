@@ -1,13 +1,17 @@
 # More local inference: overview and canonical contracts
 
 **Status:** planned 2026-10-28. Phase 1 built, reviewed and deployed 2026-10-28; task 12
-Phase 1 steps 1-7 done the same day and the lane is **on** (gap table measured, Phase 0 step
-2). The exit check (step 8) waits on real post-deploy coder runs; read it with
-`ops/fabro-box-claims.py`. ADR 0031 (proposed). Phase 0's sampler runs on
-the fabro host until about 2026-10-30 03:50 UTC (`~/coder-util/box-{a,b}.tsv`, read-only).
-Revised 2026-10-28 after a review against the repository (see *Facts*).
+Phase 1 passed 2026-10-29 (the operator approved it on this evidence). Since the lane went on at
+2026-10-28 22:50Z, `ops/fabro-box-claims.py` measured 50 real box-stage claims, all 2.3–4.5 s.
+Ten claims cancelled a background run: 5 controlled on coders-b (4.2–6.2 s) and 5 real
+(p95 4.5 s). There were no `idle=false` waits, no overlaps, no guard self-cancels and no
+evictions. Box-stage times and first-request latency are unchanged. 141 `box-noop` runs left
+nothing on GitHub. The lane is **off** again until Phase 2 deploys. ADR 0031 (proposed).
+Phase 0's sampler runs on the fabro host until about 2026-10-30 03:50 UTC
+(`~/coder-util/box-{a,b}.tsv`, read-only). Revised 2026-10-28 after a review against the
+repository (see *Facts*).
 
-**Phase gates passed:** none. *(The operator edits this line, and only this line, when a task 12
+**Phase gates passed:** Phase 1 passed 2026-10-29. *(The operator edits this line, and only this line, when a task 12
 exit check passes: `Phase 1 passed 2026-11-02`. A task that says "start only after Phase N"
 reads this line. If Phase N is not recorded here, stop and report; do not infer it from git.)*
 
