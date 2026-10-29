@@ -405,6 +405,24 @@ def test_zero_reviews_per_day_turns_the_reviews_off_without_the_doctor(
     assert store.pending_review_jobs() != []
 
 
+def test_the_review_is_dispatched_with_the_switch_off(
+    config, store, leases, fabro, recorder, respx_mock
+):
+    """Step 7 of task 06 is not gated either: the lane may be turned off after a doctor run
+    ends, and the review that run earned must still fire (the brief's second "do not repeat"
+    rule)."""
+    import dataclasses
+
+    off = dataclasses.replace(config, background=False)
+    install_fabro(recorder)
+    install_automations(recorder)
+    pending_review(store)
+    assert off.background is False
+    loop(off, store, leases, fabro).tick()
+    assert len(recorder.made("POST", "/api/v1/runs")) == 1
+    assert store.pending_review_jobs() == []
+
+
 # --- release and hand-off -----------------------------------------------------------
 
 

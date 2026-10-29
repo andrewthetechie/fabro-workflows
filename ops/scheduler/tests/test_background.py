@@ -1021,6 +1021,26 @@ def test_the_switch_off_with_nothing_running_makes_no_call_at_all(store, leases)
     assert reader.calls == []
 
 
+def test_the_hand_off_runs_with_the_switch_off(store, leases, respx_mock):
+    """Step 8 is the third of the steps that finish an attempt already started. A switch
+    flipped off after a push must not leave the PR with its labels removed and no comment."""
+    off = load_config(
+        TRACKED_REPOS,
+        env={"SCHEDULER_BACKGROUND": "off", "SCHEDULER_BOX_HEALTH": BOXES},
+    )
+    respx_mock.post(
+        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/comments"
+    ).respond(200, json={})
+    respx_mock.post(
+        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/labels"
+    ).respond(200, json=[])
+    reader = FakePrReader(doctor_facts(marker=format_marker(
+        head="a" * 40, pushed="none", review="skip", run="doctorrun")))
+    job_id = doctor_job(store)
+    doctor_lane(off, store, leases, DoctorFabro(), reader).tick(NOW)
+    assert store.background_job(job_id)["outcome"] == "handed_off_no_review"
+
+
 def test_a_running_doctor_job_still_finishes_with_no_box_in_the_lane(store, leases):
     """Emptying `SCHEDULER_BOX_HEALTH` means "start nothing new", not "forget what started":
     a doctor run already in flight must still be read and handed off (task 06 step 5)."""
