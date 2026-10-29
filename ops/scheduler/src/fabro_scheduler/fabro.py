@@ -674,6 +674,126 @@ def build_job_intent(
     }
 
 
+# The automation every `pr-review` run reads its per-repo settings from
+# (`fire-pr-review.sh` step 1). The row is config-only: it is read here and never fired, which
+# is why its `description` is where the per-repo auto-merge switch lives (there is no `labels`
+# field on an automation, and no `PATCH /automations/{id}`).
+PR_REVIEW_WORKFLOW = "pr-review"
+
+# `auto_merge=<token>` inside that `description`. A description that never mentions the token
+# means nobody has touched the switch, and absence is ON (operator decision 10). A token that
+# is present and is not exactly `true` is OFF: unparseable fails closed.
+AUTO_MERGE_SWITCH = re.compile(r"auto_merge=([A-Za-z0-9_-]*)")
+
+
+@dataclass(frozen=True)
+class PrReviewConfig:
+    """What a `pr-review` run needs from its `pr-review-<repo>` automation row."""
+
+    automation_id: str
+    environment_id: str
+    auto_merge: int  # 1 or 0
+    target: Mapping[str, object]
+
+
+def auto_merge_from_description(description: str | None) -> int:
+    """The per-repo auto-merge switch, read out of the automation's description.
+
+    The shell's rule, ported exactly (`fire-pr-review.sh`, between the argument checks and the
+    PR pre-flight): absent -> 1; `auto_merge=true` -> 1; anything else that mentions the token
+    -> 0, including an empty value.
+    """
+    if not description or "auto_merge" not in description:
+        return 1
+    tokens = AUTO_MERGE_SWITCH.findall(description)
+    return 1 if tokens and tokens[-1] == "true" else 0
+
+
+def pr_review_config(
+    automations: Sequence[Mapping[str, object]], repo: str
+) -> PrReviewConfig | None:
+    """The one `pr-review` automation targeting `repo`, or `None`.
+
+    `None` covers all three refusals the shell makes: no row, more than one row, and a row
+    with no `environment_id` (falling back to `default` would select buildpack-deps:noble,
+    which cannot build two of the four repositories). The caller logs and hands the PR off; a
+    guessed environment is a run that fails an hour later.
+    """
+    matches = [
+        row
+        for row in automations
+        if row.get("workflow") == PR_REVIEW_WORKFLOW
+        and isinstance(row.get("target"), Mapping)
+        and (row.get("target") or {}).get("repo") == repo
+    ]
+    if len(matches) != 1:
+        log.warning(
+            "fabro: %d pr-review automations target %s; exactly one is required", len(matches), repo
+        )
+        return None
+    row = matches[0]
+    environment_id = row.get("environment_id")
+    target = row.get("target")
+    if not isinstance(environment_id, str) or not environment_id.strip():
+        log.warning("fabro: the pr-review automation for %s has no environment_id", repo)
+        return None
+    if not isinstance(target, Mapping):
+        return None
+    description = row.get("description") if isinstance(row.get("description"), str) else ""
+    return PrReviewConfig(
+        automation_id=str(row.get("id") or ""),
+        environment_id=environment_id,
+        auto_merge=auto_merge_from_description(description),
+        target=dict(target),
+    )
+
+
+def build_pr_review_intent(
+    *,
+    workflow_version_id: str,
+    repo: str,
+    pr_number: int,
+    auto_merge: int,
+    coder_pool: str,
+    environment_id: str,
+    branch: str = DEFAULT_BRANCH,
+    workflow_sha: str = "",
+) -> dict:
+    """The `RunIntent` body for one leased `pr-review` run (more-local-inference D14).
+
+    The same three inputs `fire-pr-review.sh` sends, because pr-review's graph requires them:
+    `pr_number` (a JSON number, so the graph's `case` guard cannot be fed shell syntax),
+    `auto_merge` (an int; the graph resolves the host switch against it), and `coder_pool`
+    (every fire must send one -- `claim` writes it to `/tmp/fabro/box`, which `box-claim`
+    reads). The labels are the lane's: `lane=coder` and `box=<pool>` so `box-claim` and the
+    scheduler's eviction can find it, and `pr=<n>` so a hand-written query can too.
+    """
+    if not isinstance(pr_number, int) or isinstance(pr_number, bool) or pr_number <= 0:
+        raise ValueError(f"pr_number must be a positive integer, got {pr_number!r}")
+    labels = {
+        "source": "scheduler",
+        "lane": "coder",
+        "box": coder_pool,
+        "pr": str(pr_number),
+        "workflow": PR_REVIEW_WORKFLOW,
+    }
+    if workflow_sha:
+        labels["workflow_sha"] = workflow_sha
+    return {
+        "workflow_version_id": workflow_version_id,
+        "target": {"kind": "git", "repo": repo, "branch": branch},
+        "args": {
+            "inputs": {
+                "pr_number": pr_number,
+                "auto_merge": int(auto_merge),
+                "coder_pool": coder_pool,
+            },
+            "labels": labels,
+        },
+        "environment_id": environment_id,
+    }
+
+
 @dataclass(frozen=True)
 class DispatchResult:
     """What one successful dispatch produced."""
@@ -906,6 +1026,86 @@ class FabroClient:
             sha[:12],
             reused,
             status,
+        )
+        return DispatchResult(
+            run_id=run_id,
+            workflow_version_id=version_id,
+            commit_sha=sha,
+            version_reused=reused,
+            status=status,
+        )
+
+    def automations(self) -> list[dict]:
+        """`GET /automations`: every automation row on the server.
+
+        One page and no paging params, exactly as `fire-pr-review.sh` reads it: the deployment
+        has a handful of rows, and the one caller wants the `pr-review` row for one repository.
+        """
+        body = _request(
+            "GET", self._api, "/automations", self._token, timeout=self._call_timeout
+        )
+        data = body.get("data")
+        if not isinstance(data, list):
+            raise FabroError(
+                f"GET /automations returned no `data` array: {_summarise(body)}"
+            )
+        return [row for row in data if isinstance(row, dict)]
+
+    def pr_review_config(self, repo: str) -> PrReviewConfig | None:
+        """The `pr-review-<repo>` automation's settings, or `None` (see `pr_review_config`)."""
+        return pr_review_config(self.automations(), repo)
+
+    def dispatch_pr_review(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+        environment_id: str,
+        auto_merge: int,
+        coder_pool: str,
+    ) -> DispatchResult:
+        """Create and start one `pr-review` run against an existing PR (D14).
+
+        The doctor's follow-up review, and the only other caller of `ensure_version`. Same
+        three calls and the same failure split as `dispatch`: `FabroError` before the run
+        exists, `RunNotStarted` after it. It takes no lease of its own -- `dispatch.py` does
+        that, because a review IS a coder loop and its lease is what keeps the box exclusive.
+        """
+        version_id, sha, reused = self.ensure_version(PR_REVIEW_WORKFLOW)
+        intent = build_pr_review_intent(
+            workflow_version_id=version_id,
+            repo=repo,
+            pr_number=pr_number,
+            auto_merge=auto_merge,
+            coder_pool=coder_pool,
+            environment_id=environment_id,
+            branch=self._branch,
+            workflow_sha=sha,
+        )
+        run_id = create_run(self._api, self._token, intent, timeout=self._call_timeout)
+        try:
+            status = start_run(self._api, self._token, run_id, timeout=self._call_timeout)
+        except FabroError as exc:
+            raise RunNotStarted(
+                f"run {run_id} was created but could not be started, so it sits in "
+                f"`submitted` and will never execute: {exc}",
+                run_id=run_id,
+                status_code=exc.status_code,
+                detail=exc.detail,
+            ) from exc
+        log.info(
+            "fabro: dispatched pr-review %s#%s -> run %s pool=%s env=%s version=%s sha=%s "
+            "reused=%s status=%s auto_merge=%s",
+            repo,
+            pr_number,
+            run_id,
+            coder_pool,
+            environment_id,
+            version_id[:12],
+            sha[:12],
+            reused,
+            status,
+            auto_merge,
         )
         return DispatchResult(
             run_id=run_id,

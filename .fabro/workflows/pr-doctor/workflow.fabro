@@ -1,0 +1,379 @@
+// pr-doctor (more-local-inference task 06): one box attempt to fix what a blocked pull
+// request's merge-phase report says is wrong, then one hosted review.
+//
+// It is a **background package** (D4, R16): every agent stage resolves to the run's
+// `-bg` model row, `box-guard` protects the box, and nothing here takes a box-claim. The
+// scheduler starts it in a coder loop's gap, may cancel it at any moment before `publish`,
+// and records the attempt in GitHub with the marker comment `publish` posts (C6, D9).
+//
+// **One attempt, ever** (D13). The marker comment is the record: `publish` posts or edits
+// it before any other GitHub write, and both the scheduler's producer and this graph's
+// `claim` refuse a PR that already carries one. So a cancel before `publish` leaves the PR
+// eligible and the job goes back on the queue, while a cancel inside `publish` leaves a
+// marker that ends the doctor's interest in this PR.
+//
+// **Nothing writes to GitHub before `publish`.** `claim, prep, fix, fix_gate, validate` read
+// only. That is what makes the run safe to cancel at any point (D9), and it is why every
+// failure after `claim` routes to `publish` -- a marker with `pushed=none` and a hand-off is
+// more useful to a human than a silently aborted run.
+//
+// **Every command node's fallback edge lands on `publish` or `stop`.** `stop` is for the PR
+// that must not be touched at all (merged, closed, already marked, do-not-merge) and writes
+// nothing. `publish` is the honest sink for "the attempt produced nothing to push": it
+// records the attempt and hands the PR to a human.
+digraph PrDoctor {
+    graph [
+        goal="Fix what a blocked factory pull request's merge-phase report says is wrong, validate it, and push once; record the one attempt in a marker comment",
+        // Above every node timeout in this graph, `validate`'s 20m and `fix`'s 45m
+        // included: R2 compares the command nodes, and the watchdog below must never fire
+        // before the node's own timeout does.
+        stall_timeout="90m",
+        // validate -> fix -> fix_gate -> validate is a cycle through command nodes, so the
+        // failure-signature breaker applies (R1). The loop is bounded by the attempt
+        // counter, and 20 is the floor the rest of the repository uses.
+        loop_restart_signature_limit=20,
+        // Bound the preamble: every prompt names its inputs by path (invariants-graph,
+        // the `default_fidelity` row).
+        default_fidelity="truncate",
+        // Every model in a background package is the run's `-bg` pool (R16): the `*` rule
+        // and `.fix` are the same expression, so an agent node that lost its class would
+        // still run on the box and never reach a hosted model. There is no
+        // `[run.model.fallbacks]` row for either `-bg` name, so a box error fails the stage
+        // instead of spending z.ai credits (R14).
+        model_stylesheet="
+            *    { model: {{ inputs.coder_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+            .fix { model: {{ inputs.coder_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // ---- Read the PR, decide whether to touch it, and find the report ----
+    //
+    // `pr_number` arrives from the scheduler (`build_pr_review_intent`'s sibling,
+    // `build_pr_doctor_intent`). It is interpolated exactly once, in single quotes, so a
+    // non-numeric value reaches the `case` guard as data rather than as shell syntax.
+    //
+    // `/tmp/fabro/box` is this package's half of C2/R16: the pool arrives with the `-bg`
+    // suffix the scheduler added, and `box-guard` looks up the *loop's* box, which never
+    // carries it. `${POOL%-bg}` is POSIX parameter expansion, so no `sed` is needed.
+    //
+    // The stop conditions are the four that must never write anything: not open, from a
+    // fork (delivery pushes to origin, which would create a branch in the base repository
+    // instead of updating the PR), `do-not-merge`, and an existing doctor marker.
+    claim [label="Fetch the PR and its report", shape=parallelogram, output_schema="routing", timeout="10m",
+        script="set -e
+mkdir -p /tmp/fabro/doctor
+POOL='{{ inputs.coder_pool }}'
+echo \"${POOL%-bg}\" > /tmp/fabro/box || true
+PR='{{ inputs.pr_number }}'
+case \"$PR\" in '' | *[!0-9]*) echo 'pr_number must be a positive integer' >&2; exit 1;; esac
+if [ \"$PR\" -lt 1 ]; then echo 'pr_number must be a positive integer' >&2; exit 1; fi
+echo \"$PR\" > /tmp/fabro/pr_number
+rm -f /tmp/fabro/doctor/report.md /tmp/fabro/doctor/reason.txt /tmp/fabro/doctor/fix.json /tmp/fabro/doctor/commands.json /tmp/fabro/doctor/pushable /tmp/fabro/doctor/reviewable /tmp/fabro/doctor/head_before /tmp/fabro/doctor/fix_base /tmp/fabro/doctor/ci_failure.md /tmp/fabro/doctor/run_id
+echo 0 > /tmp/fabro/doctor/attempts
+echo no > /tmp/fabro/doctor/pushable
+echo skip > /tmp/fabro/doctor/reviewable
+echo '[]' > /tmp/fabro/doctor/commands.json
+if ! gh pr view \"$PR\" --json number,title,body,url,state,isCrossRepository,headRefName,baseRefName,headRefOid,labels,closingIssuesReferences > /tmp/fabro/pr.json; then
+  echo 'Could not read PR '$PR' from GitHub.' >&2
+  exit 1
+fi
+R=$(jq -r '(.url // \"\") | split(\"/\") | .[3] + \"/\" + .[4]' /tmp/fabro/pr.json)
+if ! gh api \"repos/$R/issues/$PR/comments?per_page=100\" --paginate > /tmp/fabro/doctor/comments.raw; then
+  echo 'Could not read the comments on PR '$PR'.' >&2
+  exit 1
+fi
+jq -s 'add // []' /tmp/fabro/doctor/comments.raw > /tmp/fabro/doctor/comments.json
+GO=true
+WHY=eligible
+S=$(jq -r .state /tmp/fabro/pr.json)
+case \"$S\" in OPEN) ;; *) GO=false; WHY='the PR is '$S', not OPEN' ;; esac
+if [ \"$(jq -r .isCrossRepository /tmp/fabro/pr.json)\" = true ]; then
+  GO=false
+  WHY='the PR is from a fork, so a push would create a branch in the base repository'
+fi
+if jq -e '[.labels[].name] | index(\"do-not-merge\") != null' /tmp/fabro/pr.json >/dev/null; then
+  GO=false
+  WHY='the PR carries do-not-merge'
+fi
+if jq -e '[(.[] | select((.body // \"\") | test(\"^<!-- fabro:pr-doctor\"; \"m\")))] | length > 0' /tmp/fabro/doctor/comments.json >/dev/null; then
+  GO=false
+  WHY='the PR already has a doctor marker, so this is not a first attempt'
+fi
+jq -r '[ (.[] | .body // \"\") | select(test(\"^## (Merged automatically|AI PR review)\"; \"m\")) ] | last // \"\"' /tmp/fabro/doctor/comments.json > /tmp/fabro/doctor/report.md
+if [ \"$GO\" != true ]; then
+  echo 'pr-doctor: not acting on PR '$PR': '$WHY >&2
+  echo '{\"context_updates\":{\"doctor_go\":false}}'
+  exit 0
+fi
+echo '{\"context_updates\":{\"doctor_go\":true}}'"]
+
+    stop [label="Leave the PR alone", shape=parallelogram, output_schema="routing", timeout="1m",
+        script="echo 'pr-doctor: the run stops without writing anything to GitHub.' >&2
+echo '{\"context_updates\":{\"doctor_stop\":true}}'"]
+
+    // ---- Check out the PR head, rebase when behind, and stage the report ----
+    //
+    // `gh pr checkout` puts the checkout on the PR's own head branch, which is what
+    // `publish` pushes; pr-review's `claim` does the same, and needs the origin fetch
+    // refspec widened first because the sandbox clone is single-branch.
+    //
+    // The rebase is decision 4: only when the PR is behind its base, only a clean one, and
+    // a conflict ends in `git rebase --abort` so the run works on the un-rebased head (the
+    // follow-up review's `resolve_base` handles base drift). `head_before` is the head the
+    // marker records and the push leases against: the PR head *before* this run touched it.
+    // `fix_base` is where the doctor's own commits start, captured after the rebase so the
+    // squash in `publish` covers exactly this run's work.
+    //
+    // No dependency install here: `validate` runs `./.fabro/setup.sh` immediately after
+    // this and again after the second fix turn, and a setup run inside `prep` would double
+    // the install time inside a 40-minute job.
+    prep [label="Check out the head and read the report", shape=parallelogram, output_schema="routing", timeout="20m",
+        script="set -e
+PR=$(cat /tmp/fabro/pr_number)
+B=$(jq -r .baseRefName /tmp/fabro/pr.json)
+H=$(jq -r .headRefName /tmp/fabro/pr.json)
+echo \"$B\" > /tmp/fabro/base_ref
+echo \"$H\" > /tmp/fabro/head_ref
+jq -r .url /tmp/fabro/pr.json > /tmp/fabro/pr_url
+git config remote.origin.fetch \"+refs/heads/*:refs/remotes/origin/*\"
+if [ \"$(git rev-parse --is-shallow-repository)\" = true ]; then
+  if ! git fetch --unshallow origin; then
+    echo 'Could not deepen the shallow clone; a rebase and the three-dot diff both need the true merge base.' >&2
+    exit 1
+  fi
+fi
+if ! git fetch origin \"$B\"; then
+  echo 'Could not fetch origin/'$B'.' >&2
+  exit 1
+fi
+if ! gh pr checkout \"$PR\"; then
+  echo 'Could not check out PR '$PR'.' >&2
+  exit 1
+fi
+git rev-parse HEAD > /tmp/fabro/doctor/head_before
+if ! git merge-base --is-ancestor \"origin/$B\" HEAD; then
+  if git rebase \"origin/$B\" > /tmp/fabro/doctor/rebase.log 2>&1; then
+    echo 'prep: rebased onto origin/'$B
+  else
+    git rebase --abort >/dev/null 2>&1 || true
+    echo 'prep: the rebase conflicted, so this run works on the un-rebased head; the follow-up review resolves base drift.' >&2
+  fi
+fi
+git rev-parse HEAD > /tmp/fabro/doctor/fix_base
+if [ ! -s /tmp/fabro/doctor/report.md ]; then
+  echo 'The merge-phase report was not found on this PR. Work from the GitHub checks below and the PR description.' > /tmp/fabro/doctor/report.md
+fi
+grep -m1 -F '**Reason:**' /tmp/fabro/doctor/report.md > /tmp/fabro/doctor/reason.txt 2>/dev/null || echo 'No **Reason:** line in the report.' > /tmp/fabro/doctor/reason.txt
+if gh pr checks \"$PR\" --json name,state,bucket > /tmp/fabro/doctor/checks.json 2>/dev/null; then
+  {
+    echo
+    echo '## GitHub checks that are not green'
+    jq -r '.[] | select((.bucket // \"\") != \"pass\" and (.bucket // \"\") != \"skipping\") | \"- \" + (.name // \"?\") + \" (\" + (.state // \"?\") + \")\"' /tmp/fabro/doctor/checks.json
+  } >> /tmp/fabro/doctor/report.md
+fi
+echo '{\"context_updates\":{\"prep_ok\":true}}'"]
+
+    // The box's one agent stage, and the only place in this graph a model runs. It reads
+    // `report.md` (the merge-phase report plus the failing check names) and `reason.txt`
+    // (the category), runs any command the report names, fixes what it can, and submits
+    // the contract `fix_gate` checks. Bounded at 45m and told exactly where it is done:
+    // an unbounded prompt is what made every uncancelled box-noop run reach its timeout in
+    // Phase 1.
+    fix [label="Fix what the report lists", class="fix", timeout="45m", prompt="@prompts/fix.md.j2"]
+
+    // Checks the fix turn's Input receipt and records what `publish` may do. A missing
+    // receipt (a failed, timed-out or unsubmitted turn) means nothing is pushed: the
+    // fixer's partial edits were never validated, and `validate` never ran over them.
+    // `reviewable` is the fixer's judgement of whether one more hosted review could pass
+    // (decision 2): when it says no, the marker carries `review=skip` and the scheduler
+    // hands the PR off with no review at all.
+    fix_gate [label="Check the fix turn", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="F=/tmp/fabro/doctor/fix.json
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
+  echo 'fix.json has no valid Input receipt, so the fix turn did not finish; nothing will be pushed' >&2
+  echo no > /tmp/fabro/doctor/pushable
+  echo skip > /tmp/fabro/doctor/reviewable
+  echo '{\"context_updates\":{\"fix_ok\":false}}'
+  exit 0
+fi
+jq -c '.commands // []' $F > /tmp/fabro/doctor/commands.json
+if [ \"$(jq -r '.reviewable // false' $F)\" = true ]; then
+  echo fire > /tmp/fabro/doctor/reviewable
+else
+  echo skip > /tmp/fabro/doctor/reviewable
+fi
+echo yes > /tmp/fabro/doctor/pushable
+echo '{\"context_updates\":{\"fix_ok\":true}}'"]
+
+    // The repository's own gate, exactly as backlog's `validate` runs it: `setup.sh` then
+    // `ci.sh`. Red takes one more `fix` visit with the failure; red twice sets
+    // `pushable=no`, so `publish` records the attempt with nothing to push.
+    //
+    // Nothing here prints the log: fabro scans stdout and stderr for objects and takes the
+    // LAST one, so a `{` in the output would compete with the routing object
+    // (invariants-merge, *Reporting*). The log lives in a file, and its tail goes into the
+    // second fix turn's input.
+    validate [label="Run the repository's CI", shape=parallelogram, output_schema="routing", timeout="20m",
+        script="rm -f /tmp/fabro/doctor/fix.json
+A=$(cat /tmp/fabro/doctor/attempts 2>/dev/null || echo 0)
+./.fabro/setup.sh > /tmp/fabro/doctor/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/doctor/validate_output.log 2>&1
+RC=$?
+if [ $RC -eq 0 ]; then
+  echo 'validate: ./.fabro/setup.sh && ./.fabro/ci.sh passed'
+  echo '{\"context_updates\":{\"ci_ok\":true,\"retry_ok\":false,\"attempts\":'$A'}}'
+  exit 0
+fi
+A=$((A+1))
+echo $A > /tmp/fabro/doctor/attempts
+{
+  echo '## ./.fabro/setup.sh && ./.fabro/ci.sh failed (exit '$RC')'
+  echo
+  tail -c 6000 /tmp/fabro/doctor/validate_output.log
+} > /tmp/fabro/doctor/ci_failure.md
+if [ $A -ge 2 ]; then
+  echo no > /tmp/fabro/doctor/pushable
+  R=false
+  echo 'validate: still red after the second fix attempt; the attempt is recorded with nothing pushed' >&2
+else
+  R=true
+  echo 'validate: red; one more fix turn follows'
+fi
+echo '{\"context_updates\":{\"ci_ok\":false,\"retry_ok\":'$R',\"attempts\":'$A'}}'"]
+
+    // ---- The one node that writes to GitHub (D9, C6, D13) ----
+    //
+    // Order is load-bearing and is checked by a gate test:
+    //   1. post or edit the marker, `pushed=pending` (or `pushed=none`);
+    //   2. with something to push: remove `ai-review-needs-human` and `merge-on-green`;
+    //   3. squash this run's checkpoint commits into one commit authored
+    //      `fabro-pr-doctor <noreply@fabro.sh>` and push it with
+    //      `--force-with-lease=<head ref>:<head before this run>`;
+    //   4. edit the marker to `pushed=<new head>`.
+    //
+    // A failure after step 1 leaves `pushed=pending`, which the scheduler resolves on the
+    // run's end (task 06 step 5): a head that is no longer the marker's `head=` counts as
+    // pushed, and anything else hands the PR off.
+    //
+    // The squash is what makes every doctor commit carry `noreply@fabro.sh` as its author
+    // (decision 5): the follow-up review's gate 6 rejects a PR whose commits lack that
+    // author, and a rebase keeps each rewritten commit's authors, so this identity survives
+    // both the push and the review's own rebase. `fix_base` was captured after the rebase,
+    // so the squash covers exactly this run's work and nothing the base brought in.
+    //
+    // `pushed=none` also means "nothing was changed": the tree is compared with `fix_base`'s,
+    // so an empty checkpoint commit after a fixer that changed nothing does not become an
+    // empty push.
+    publish [label="Record the attempt and push", shape=parallelogram, output_schema="routing", timeout="15m",
+        script="exec 3>&1 >>/tmp/fabro/doctor/publish.log 2>&1
+PR=$(cat /tmp/fabro/pr_number)
+H=$(cat /tmp/fabro/head_ref)
+HEADB=$(cat /tmp/fabro/doctor/head_before 2>/dev/null || echo '')
+FB=$(cat /tmp/fabro/doctor/fix_base 2>/dev/null || echo '')
+REVIEW=$(cat /tmp/fabro/doctor/reviewable 2>/dev/null || echo skip)
+PUSH=$(cat /tmp/fabro/doctor/pushable 2>/dev/null || echo no)
+if [ \"$PUSH\" = yes ] && [ -n \"$FB\" ] && [ \"$(git rev-parse \"${FB}^{tree}\" 2>/dev/null)\" = \"$(git rev-parse 'HEAD^{tree}' 2>/dev/null)\" ]; then
+  PUSH=no
+fi
+if [ \"$PUSH\" = yes ]; then PUSHED=pending; else PUSHED=none; REVIEW=skip; fi
+RUN=$(cat /tmp/fabro/doctor/run_id 2>/dev/null || true)
+[ -n \"$RUN\" ] || RUN=unknown
+R=$(jq -r '(.url // \"\") | split(\"/\") | .[3] + \"/\" + .[4]' /tmp/fabro/pr.json)
+BODY=/tmp/fabro/doctor/comment.md
+HEADFILE=/tmp/fabro/doctor/comment.head
+TAILFILE=/tmp/fabro/doctor/comment.tail
+echo \"<!-- fabro:pr-doctor head=$HEADB pushed=$PUSHED review=$REVIEW run=$RUN -->\" > $HEADFILE
+{
+  echo
+  if [ \"$PUSHED\" = none ]; then
+    echo 'The PR doctor spent its one attempt on this pull request and pushed nothing. A human needs to take it from here.'
+  else
+    echo 'The PR doctor fixed what the merge-phase report listed and pushed the fix. One automated review follows.'
+  fi
+  echo
+  echo '**What blocked the merge:**'
+  echo
+  sed -n '1,20p' /tmp/fabro/doctor/reason.txt 2>/dev/null || echo 'The report carried no reason line.'
+  echo
+  echo '**What the doctor changed:**'
+  echo
+  jq -r '.summary' /tmp/fabro/doctor/fix.json 2>/dev/null || echo 'The fix turn submitted no report.'
+  if [ -s /tmp/fabro/doctor/commands.json ]; then
+    echo
+    echo '**Commands the report named, and what they did:**'
+    echo
+    jq -r '.[] | \"- `\" + .command + \"`: \" + (if .ok then \"passed\" else \"FAILED\" end)' /tmp/fabro/doctor/commands.json
+    echo
+    jq -r '.[] | select((.output // \"\") != \"\") | .output' /tmp/fabro/doctor/commands.json | sed 's/^/    /' | head -40
+  fi
+  if [ \"$REVIEW\" = skip ]; then
+    echo
+    echo '**No follow-up review is worth running on it:**'
+    echo
+    jq -r '(.blockers // [])[] | \"- \" + .kind + \": \" + .text' /tmp/fabro/doctor/fix.json 2>/dev/null
+  fi
+  echo
+  echo 'The marker on the first line records this run, and the doctor does not touch this pull request again.'
+} > $TAILFILE
+cat $HEADFILE $TAILFILE > $BODY
+if [ ! -s $BODY ]; then echo 'could not build the marker comment' >&2; exit 1; fi
+ID=$(jq -r '[(.[] | select((.body // \"\") | test(\"^<!-- fabro:pr-doctor\"; \"m\"))) | .id] | last // \"\"' /tmp/fabro/doctor/comments.json 2>/dev/null || true)
+if [ -n \"$ID\" ]; then
+  if ! jq -n --rawfile b $BODY '{body: $b}' | gh api -X PATCH \"repos/$R/issues/comments/$ID\" --input - >/dev/null; then
+    echo 'could not edit the existing marker comment; nothing is pushed' >&2
+    exit 1
+  fi
+else
+  if ! gh pr comment \"$PR\" --body-file $BODY >/dev/null; then
+    echo 'could not post the marker comment; nothing is pushed' >&2
+    exit 1
+  fi
+  ID=$(gh api \"repos/$R/issues/$PR/comments?per_page=100\" --paginate 2>/dev/null | jq -s 'add // []' | jq -r '[(.[] | select((.body // \"\") | test(\"^<!-- fabro:pr-doctor\"; \"m\"))) | .id] | last // \"\"')
+fi
+if [ \"$PUSHED\" = none ]; then
+  echo 'publish: nothing to push; the marker records pushed=none'
+  echo '{\"context_updates\":{\"published\":\"none\"}}' >&3
+  exit 0
+fi
+gh pr edit \"$PR\" --remove-label ai-review-needs-human >/dev/null 2>&1 || echo 'WARNING: could not remove ai-review-needs-human' >&2
+gh pr edit \"$PR\" --remove-label merge-on-green >/dev/null 2>&1 || echo 'WARNING: could not remove merge-on-green' >&2
+git reset -q --soft \"$FB\"
+if ! git -c user.email=noreply@fabro.sh -c user.name=fabro-pr-doctor commit -q -m 'fix: apply the PR doctor fixes for the merge-phase report' -m \"Fixes the findings in the pull request's last merge-phase report. The report and the doctor's account of what it changed are in the marker comment above.\"; then
+  git reset -q --hard \"$FB\" 2>/dev/null || true
+  echo 'could not write the doctor commit; the marker stays pushed=pending' >&2
+  echo '{\"context_updates\":{\"published\":\"pending\"}}' >&3
+  exit 0
+fi
+NEW=$(git rev-parse HEAD)
+if git push --force-with-lease=\"refs/heads/$H:$HEADB\" origin \"HEAD:$H\" >/dev/null 2>&1; then
+  echo \"<!-- fabro:pr-doctor head=$HEADB pushed=$NEW review=$REVIEW run=$RUN -->\" > $HEADFILE
+  cat $HEADFILE $TAILFILE > $BODY
+  if [ -n \"$ID\" ]; then
+    jq -n --rawfile b $BODY '{body: $b}' | gh api -X PATCH \"repos/$R/issues/comments/$ID\" --input - >/dev/null || echo 'WARNING: could not edit the marker to pushed='$NEW >&2
+  fi
+  echo 'publish: pushed '$NEW' to '$H
+  echo '{\"context_updates\":{\"published\":\"pushed\"}}' >&3
+else
+  echo 'publish: the push was rejected; the marker stays pushed=pending for the scheduler to resolve' >&2
+  echo '{\"context_updates\":{\"published\":\"pending\"}}' >&3
+fi
+exit 0"]
+
+    start -> claim
+    claim -> prep [condition="outcome=succeeded && context.doctor_go=true"]
+    claim -> stop
+    prep -> fix [condition="outcome=succeeded && context.prep_ok=true"]
+    prep -> publish
+    fix -> fix_gate
+    fix_gate -> validate [condition="outcome=succeeded && context.fix_ok=true"]
+    fix_gate -> publish
+    validate -> fix [condition="outcome=succeeded && context.ci_ok=false && context.retry_ok=true"]
+    validate -> publish
+    publish -> exit
+    stop -> exit
+}

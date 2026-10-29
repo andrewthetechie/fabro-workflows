@@ -25,6 +25,9 @@ def test_run_history_table_has_every_column(store):
         "local_cost_usd_micros", "hosted_cost_usd_micros",
         # ADR 0029 O21: the run's arm, copied from its lease on release.
         "workflow",
+        # more-local-inference 06: 'issue' or 'pr'. A row written before the doctor's review
+        # is an issue run by construction.
+        "target_kind",
     ]
     not_null = {r["name"] for r in rows if r["notnull"]}
     # `requeue_attempt` is `NOT NULL DEFAULT 0` in the canonical schema block, so
@@ -36,6 +39,7 @@ def test_run_history_table_has_every_column(store):
         # `NOT NULL DEFAULT 'backlog'`: a row written before the trial is a
         # `backlog` run by construction (ADR 0029 O21).
         "workflow",
+        "target_kind",
     }
     assert [r["name"] for r in rows if r["pk"]] == ["run_id"]
 
@@ -456,3 +460,135 @@ def test_the_migration_adds_the_workflow_column_to_leases_and_history(tmp_path):
         } == {"R0": "backlog", "R2": "ralph"}
     finally:
         reopened.close()
+
+
+# --- the schema upgrade (more-local-inference 06) -----------------------------------
+#
+# `target_kind` and the doctor's columns arrive on a database that already holds rows: the
+# real one lives on the `scheduler-data` volume and has been collecting leases since draft 08.
+# `CREATE TABLE IF NOT EXISTS` never alters an existing table, so `Store._apply_migrations`
+# does it, and this test opens a database in the shape that shipped BEFORE task 06.
+
+OLD_SCHEMA = """
+CREATE TABLE leases (
+  coder_pool    TEXT PRIMARY KEY,
+  repo          TEXT NOT NULL,
+  issue_number  INTEGER NOT NULL,
+  run_id        TEXT NOT NULL UNIQUE,
+  dispatched_at TEXT NOT NULL,
+  queued_since  TEXT,
+  workflow      TEXT NOT NULL DEFAULT 'backlog'
+);
+CREATE TABLE run_history (
+  run_id          TEXT PRIMARY KEY,
+  coder_pool      TEXT NOT NULL,
+  repo            TEXT NOT NULL,
+  issue_number    INTEGER NOT NULL,
+  dispatched_at   TEXT NOT NULL,
+  finished_at     TEXT NOT NULL,
+  kind            TEXT NOT NULL,
+  reason          TEXT,
+  category        TEXT,
+  requeue_attempt INTEGER NOT NULL DEFAULT 0,
+  pr_lookup       TEXT NOT NULL,
+  pr_number       INTEGER,
+  pr_url          TEXT,
+  merged          INTEGER,
+  local_tokens    INTEGER,
+  hosted_tokens   INTEGER,
+  local_cost_usd_micros  INTEGER,
+  hosted_cost_usd_micros INTEGER,
+  workflow      TEXT NOT NULL DEFAULT 'backlog'
+);
+CREATE TABLE pr_facts (
+  repo             TEXT    NOT NULL,
+  pr_number        INTEGER NOT NULL,
+  fetched_at       TEXT    NOT NULL,
+  state            TEXT    NOT NULL,
+  created_at       TEXT,
+  merged_at        TEXT,
+  closed_at        TEXT,
+  labels           TEXT    NOT NULL,
+  additions        INTEGER NOT NULL,
+  deletions        INTEGER NOT NULL,
+  commits          INTEGER NOT NULL,
+  operator_commits INTEGER NOT NULL,
+  report           TEXT,
+  reason           TEXT,
+  queue_approved   INTEGER NOT NULL,
+  queue_handoff    INTEGER NOT NULL,
+  PRIMARY KEY (repo, pr_number)
+);
+CREATE TABLE background_jobs (
+  job_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind                TEXT    NOT NULL,
+  repo                TEXT    NOT NULL,
+  target              TEXT    NOT NULL DEFAULT '',
+  inputs_json         TEXT    NOT NULL DEFAULT '{}',
+  priority            INTEGER NOT NULL,
+  typical_box_minutes INTEGER NOT NULL,
+  created_at          TEXT    NOT NULL,
+  state               TEXT    NOT NULL,
+  run_id              TEXT,
+  box                 TEXT,
+  cancels             INTEGER NOT NULL DEFAULT 0,
+  last_started_at     TEXT,
+  last_finished_at    TEXT,
+  outcome             TEXT
+);
+"""
+
+
+def test_an_old_database_upgrades_and_its_rows_read_as_issue_rows(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(OLD_SCHEMA)
+    conn.execute(
+        "INSERT INTO leases (coder_pool, repo, issue_number, run_id, dispatched_at,"
+        " queued_since, workflow) VALUES ('coders-a', 'o/r', 7, 'RUN1',"
+        " '2026-10-29T00:00:00+00:00', NULL, 'backlog')"
+    )
+    conn.execute(
+        "INSERT INTO run_history (run_id, coder_pool, repo, issue_number, dispatched_at,"
+        " finished_at, kind, pr_lookup) VALUES ('RUN0', 'coders-a', 'o/r', 6,"
+        " '2026-10-28T00:00:00+00:00', '2026-10-28T01:00:00+00:00', 'succeeded', 'none')"
+    )
+    conn.execute(
+        "INSERT INTO pr_facts (repo, pr_number, fetched_at, state, labels, additions,"
+        " deletions, commits, operator_commits, queue_approved, queue_handoff)"
+        " VALUES ('o/r', 7, '2026-10-29T00:00:00+00:00', 'open', '[]', 1, 1, 1, 0, 0, 0)"
+    )
+    conn.execute(
+        "INSERT INTO background_jobs (kind, repo, target, inputs_json, priority,"
+        " typical_box_minutes, created_at, state) VALUES ('box-noop', 'o/r', '', '{}',"
+        " 5, 5, '2026-10-29T00:00:00+00:00', 'done')"
+    )
+    conn.commit()
+    conn.close()
+
+    upgraded = Store(path)
+    try:
+        columns = {
+            row["name"] for row in upgraded._conn.execute("PRAGMA table_info(leases)")
+        }
+        assert "target_kind" in columns
+        lease = upgraded.lease_rows()[0]
+        assert lease["target_kind"] == "issue", "an older lease is an issue lease"
+        history = upgraded.history_rows()[0]
+        assert history["target_kind"] == "issue"
+        facts = upgraded.pr_facts_row("o/r", 7)
+        assert facts["head_sha"] is None
+        assert facts["report_items"] is None
+        assert facts["doctor_marker"] is None
+        job = upgraded.background_jobs()[0]
+        assert (job["review_run_id"], job["review_dispatched_at"]) == (None, None)
+        assert job["review_failures"] == 0
+        # And the upgraded database still answers the queries the new code makes.
+        assert upgraded.pending_review_jobs() == []
+        assert upgraded.reviews_dispatched_since(
+            datetime(2026, 10, 1, tzinfo=UTC)
+        ) == 0
+    finally:
+        upgraded.close()

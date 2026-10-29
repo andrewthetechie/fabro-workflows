@@ -343,6 +343,8 @@ def test_api_pools_reports_every_pool_with_its_drain_flag_and_lease(client, stor
         "issue_number": 2,
         "run_id": "01MRUN",
         "dispatched_at": body[1]["lease"]["dispatched_at"],
+        # more-local-inference 06: the page links a `pr` lease to /pull/, never /issues/.
+        "target_kind": "issue",
     }
     assert "T" in body[1]["lease"]["dispatched_at"]  # ISO-8601, not a raw datetime
 

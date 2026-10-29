@@ -510,3 +510,107 @@ def test_read_sandbox_file_raises_on_any_other_status():
     )
     with pytest.raises(FabroError):
         read_sandbox_file(API, TOKEN, "R1", "/tmp/fabro/tasks.json")
+
+
+# --- the doctor's follow-up review intent (more-local-inference 06) ------------------
+
+
+def test_the_per_repo_auto_merge_switch_is_read_the_way_the_shell_reads_it():
+    """Absence is ON (operator decision 10); a token that is present and is not exactly
+    `true` is OFF, including an empty value."""
+    from fabro_scheduler.fabro import auto_merge_from_description
+
+    assert auto_merge_from_description(None) == 1
+    assert auto_merge_from_description("") == 1
+    assert auto_merge_from_description("review automation") == 1
+    assert auto_merge_from_description("auto_merge=true") == 1
+    assert auto_merge_from_description("auto_merge=false") == 0
+    assert auto_merge_from_description("auto_merge=") == 0
+    assert auto_merge_from_description("auto_merge=TRUE") == 0
+    # The LAST token wins, so a human editing the description cannot resurrect an earlier
+    # value.
+    assert auto_merge_from_description("auto_merge=false auto_merge=true") == 1
+
+
+def test_the_pr_review_config_is_the_one_row_for_the_repo():
+    from fabro_scheduler.fabro import pr_review_config
+
+    row = {
+        "id": "auto-1",
+        "workflow": "pr-review",
+        "environment_id": "python",
+        "description": "auto_merge=false",
+        "target": {"kind": "git", "repo": "o/r", "branch": "main"},
+    }
+    found = pr_review_config([row], "o/r")
+    assert found is not None
+    assert (found.automation_id, found.environment_id, found.auto_merge) == (
+        "auto-1",
+        "python",
+        0,
+    )
+    assert (found.target or {}).get("repo") == "o/r"
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [
+            {"id": "a", "workflow": "pr-review", "environment_id": "python",
+             "target": {"repo": "o/r"}},
+            {"id": "b", "workflow": "pr-review", "environment_id": "python",
+             "target": {"repo": "o/r"}},
+        ],
+        [
+            {"id": "a", "workflow": "pr-review", "target": {"repo": "o/r"}},
+        ],
+        [
+            {"id": "a", "workflow": "backlog", "environment_id": "python",
+             "target": {"repo": "o/r"}},
+        ],
+    ],
+)
+def test_an_unusable_pr_review_automation_row_is_refused(rows):
+    from fabro_scheduler.fabro import pr_review_config
+
+    assert pr_review_config(rows, "o/r") is None
+
+
+def test_the_pr_review_intent_carries_the_three_inputs_and_the_lane_labels():
+    from fabro_scheduler.fabro import build_pr_review_intent
+
+    intent = build_pr_review_intent(
+        workflow_version_id="v",
+        repo="o/r",
+        pr_number=7,
+        auto_merge=1,
+        coder_pool="coders-a",
+        environment_id="python",
+        workflow_sha="a" * 40,
+    )
+    assert intent["args"]["inputs"] == {
+        "pr_number": 7,
+        "auto_merge": 1,
+        "coder_pool": "coders-a",
+    }
+    # A number, not a string: pr-review's `validate_input` runs `case "$PR" in *[!0-9]*)`.
+    assert isinstance(intent["args"]["inputs"]["pr_number"], int)
+    assert intent["args"]["labels"] == {
+        "source": "scheduler",
+        "lane": "coder",
+        "box": "coders-a",
+        "pr": "7",
+        "workflow": "pr-review",
+        "workflow_sha": "a" * 40,
+    }
+    assert intent["environment_id"] == "python"
+    with pytest.raises(ValueError):
+        build_pr_review_intent(
+            workflow_version_id="v",
+            repo="o/r",
+            pr_number=0,
+            auto_merge=1,
+            coder_pool="coders-a",
+            environment_id="python",
+        )

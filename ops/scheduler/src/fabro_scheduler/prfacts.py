@@ -40,6 +40,11 @@ from .github import (
 # line. A comment that does not start with one is a human's, or another tool's.
 REPORT_HEADINGS = ("## Merged automatically", "## AI PR review")
 
+# The PR doctor's marker (more-local-inference C6). Its *presence* is what ends the doctor's
+# interest in a PR (D13): one attempt, ever. `prfacts` only carries the raw first line; the
+# reason table and the eligibility rules live in `doctor.py`.
+DOCTOR_MARKER = "<!-- fabro:pr-doctor"
+
 APPROVED_MARKER = re.compile(r"^<!-- fabro:merge-queue approved head=")
 HANDOFF_MARKER = re.compile(r"^<!-- fabro:merge-queue handoff head=")
 REASON_LINE = re.compile(r"^\*\*Reason:\*\*\s*(.*)$", re.MULTILINE)
@@ -64,6 +69,22 @@ class PrFacts:
     reason: str | None  # the last report's **Reason:** text, when it has one
     queue_approved: bool
     queue_handoff: bool
+    # --- the PR doctor (more-local-inference 06) -------------------------------------
+    # The head SHA GitHub reports, and the head commit's *committer* date. Decision 6: a
+    # report is stale when the head was committed after the report was posted, judged by
+    # time only. The report's own `Reviewed HEAD:` SHA cannot be used -- it is a
+    # sandbox-local commit fabro rewrites on push, and GitHub does not have it.
+    head_sha: str | None = None
+    head_committed_at: str | None = None
+    # The last merge-phase report comment's `created_at`.
+    report_at: str | None = None
+    # Whether that report lists at least one concrete leftover (a finding, a `not_met` /
+    # `unverifiable` criterion, a Refuter defect, a Task that did not pass). Operator
+    # decision 1 makes `The review did not end in a mergeable state.` eligible only when it
+    # does; with none there is nothing for the doctor to fix. None when no report was read.
+    report_items: bool | None = None
+    # The newest `<!-- fabro:pr-doctor ... -->` comment's first line, verbatim, or None.
+    doctor_marker: str | None = None
 
 
 def fetch_pr_facts(
@@ -123,6 +144,9 @@ def parse_pr_facts(
 
     report: str | None = None
     reason: str | None = None
+    report_at: str | None = None
+    report_items: bool | None = None
+    doctor_marker: str | None = None
     approved = False
     handoff = False
     for item in comments:  # oldest first, so the last report wins
@@ -134,12 +158,19 @@ def parse_pr_facts(
             approved, handoff = True, False
         elif HANDOFF_MARKER.match(first):
             handoff = True
+        if first.startswith(DOCTOR_MARKER):
+            # The newest marker wins; a PR should only ever have one, but the last one is
+            # the record that matters if a hand-edited duplicate exists (C6).
+            doctor_marker = first
         kind = report_kind(body)
         if kind is not None:
             report = kind
+            report_at = _str_or_none(item.get("created_at"))
+            report_items = report_has_items(body)
             found = REASON_LINE.search(body)
             reason = found.group(1).strip() if found else None
 
+    head_sha = _head_sha(pull)
     return PrFacts(
         state=state,
         created_at=_str_or_none(pull.get("created_at")),
@@ -154,7 +185,81 @@ def parse_pr_facts(
         reason=reason,
         queue_approved=approved,
         queue_handoff=handoff,
+        head_sha=head_sha,
+        head_committed_at=_head_committed_at(commits, head_sha),
+        report_at=report_at,
+        report_items=report_items,
+        doctor_marker=doctor_marker,
     )
+
+
+# The report sections that carry a concrete leftover: `render.jq` writes one `- ` line per
+# entry under each. A section that found nothing says so (`_None recorded._`) and has none.
+#
+# `Refuter` is the exception: it lists EVERY criterion with its status, `met` included, so a
+# `- ` line there is not by itself something to fix. `Unmet criteria` lists only the ones that
+# are not met, so any line there is.
+ITEM_SECTIONS = frozenset({"Findings", "Not fixed and why", "Unmet criteria"})
+# The statuses `### Refuter` marks a line with when it IS a leftover.
+REFUTER_LEFTEOVER = ("- **defect**", "- **not_met**", "- **unverifiable**")
+
+
+def report_has_items(body: str) -> bool:
+    """Whether a report comment lists at least one concrete leftover.
+
+    Operator decision 1: `The review did not end in a mergeable state.` is eligible only when
+    the report names something to fix. A finding, a `not_met` / `unverifiable` criterion, a
+    Refuter `defect`, or a Task ralph recorded as "not passed when the loop ran out" (which
+    it writes into `fix_result.not_fixed`, so it renders under `### Not fixed and why`) all
+    count. The three "nothing here" sentences do not.
+    """
+    section = None
+    for line in body.splitlines():
+        if line.startswith("### "):
+            section = line[4:].strip()
+            continue
+        if section in ITEM_SECTIONS and line.startswith("- "):
+            return True
+        if section == "Refuter" and line.startswith(REFUTER_LEFTEOVER):
+            return True
+    return False
+
+
+def _head_sha(pull: Mapping[str, Any]) -> str | None:
+    """`pull.head.sha`, the commit the PR points at now."""
+    head = pull.get("head")
+    if not isinstance(head, Mapping):
+        return None
+    return _str_or_none(head.get("sha"))
+
+
+def _head_committed_at(
+    commits: Sequence[Mapping[str, Any]], head_sha: str | None
+) -> str | None:
+    """The head commit's **committer** date, from the PR's commit list.
+
+    The committer date rather than the author date because a rebase rewrites the former and
+    keeps the latter: the question decision 6 asks is "was this head created after the
+    report was posted?", and a rebase is a new head. The list is oldest first, so a PR whose
+    head is not the last entry (a force-push race between the two calls) falls back to the
+    entry whose SHA matches, and then to the last one.
+    """
+    chosen: Mapping[str, Any] | None = None
+    if head_sha is not None:
+        chosen = next(
+            (c for c in commits if _str_or_none(c.get("sha")) == head_sha), None
+        )
+    if chosen is None and commits:
+        chosen = commits[-1]
+    if chosen is None:
+        return None
+    inner = chosen.get("commit")
+    if not isinstance(inner, Mapping):
+        return None
+    committer = inner.get("committer")
+    if not isinstance(committer, Mapping):
+        return None
+    return _str_or_none(committer.get("date"))
 
 
 def report_kind(body: str) -> str | None:

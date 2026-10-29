@@ -152,7 +152,7 @@
         {% set prog = run_progress[pool.lease.run_id] %}
         <td class="px-4 py-3 align-top">
           <span class="block whitespace-nowrap"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}">{{ pool.lease.repo }}</a></span>
-          <span class="block whitespace-nowrap text-xs text-slate-500"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}/issues/{{ pool.lease.issue_number }}">#{{ pool.lease.issue_number }}</a> <span class="text-slate-600">{{ pool.lease.workflow }}</span></span>
+          <span class="block whitespace-nowrap text-xs text-slate-500"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}/{% if pool.lease.target_kind == 'pr' %}pull{% else %}issues{% endif %}/{{ pool.lease.issue_number }}">#{{ pool.lease.issue_number }}</a> <span class="text-slate-600">{{ pool.lease.workflow }}</span></span>
         </td>
         <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums">{%- if prog and prog.tasks_total is not none -%}{{ prog.tasks_completed or 0 }}/{{ prog.tasks_total }}{%- else -%}<span class="text-slate-500">&mdash;</span>{%- endif -%}</td>
         <td class="px-4 py-3 align-top">
@@ -178,7 +178,7 @@
         <form class="control inline" method="post"
               action="/api/pools/{{ pool.coder_pool }}/cancel"
               {% if pool.lease %}
-              data-confirm="Cancel run {{ pool.lease.run_id }} on {{ pool.coder_pool }}? The run is killed and {{ pool.lease.repo }}#{{ pool.lease.issue_number }} goes back to the agent queue."
+              data-confirm="Cancel run {{ pool.lease.run_id }} on {{ pool.coder_pool }}? The run is killed and {{ pool.lease.repo }}#{{ pool.lease.issue_number }} {% if pool.lease.target_kind == 'pr' %}loses its follow-up review: the PR doctor hands it to a human.{% else %}goes back to the agent queue.{% endif %}"
               {% endif %}>
           <button type="submit" {% if not pool.lease %}disabled{% endif %} class="ml-1 rounded border border-red-900/70 bg-slate-800 px-2.5 py-1 text-xs font-medium text-red-400 hover:bg-red-950 {% if not pool.lease %}cursor-not-allowed opacity-50{% endif %}">
             Cancel run
@@ -217,6 +217,11 @@
       done {{ background.counts.get('done', 0) }},
       failed {{ background.counts.get('failed', 0) }};
       evictions today {{ background.evictions_today }}.</span>
+    {% if background.reviews %}
+    <span class="block text-slate-500">Doctor reviews: {{ background.reviews.today }} of
+      {{ background.reviews.per_day }} dispatched today (UTC){% if background.reviews.waiting %};
+      waiting: {% for want in background.reviews.waiting %}{{ want.repo }}#{{ want.pr }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.</span>
+    {% endif %}
   </p>
   <table class="mt-3 w-full text-sm">
     <thead class="text-slate-400">

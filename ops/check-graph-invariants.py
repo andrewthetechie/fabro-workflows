@@ -881,7 +881,7 @@ def r15_claim_hooks(package: str, root: Graph | None, hooks: list[dict]) -> list
 # The box-only packages (more-local-inference D4, C5, C10): every agent stage runs on the
 # run's box, `box-guard` runs before each of them, and nothing else does. Later tasks add
 # their packages here.
-BACKGROUND_PACKAGES = ["box-noop"]
+BACKGROUND_PACKAGES = ["box-noop", "pr-doctor"]
 
 # The only model a background package may name: the run's `coder_pool`, whose scheduler set
 # names end in `-bg` (C5).

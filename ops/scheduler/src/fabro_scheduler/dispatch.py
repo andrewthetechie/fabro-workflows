@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable, Sequence, Set
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -59,6 +60,7 @@ import httpx
 
 from .background import BackgroundLane, BoxHealth
 from .config import SchedulerConfig
+from .doctor import HANDOFF_NO_REVIEW_COMMENT, hand_off
 from .fabro import FabroClient, FabroError, RunNotStarted
 from .github import (
     IN_PROGRESS_LABEL,
@@ -76,6 +78,17 @@ from .workflow_version import WorkflowVersionError
 log = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_SECONDS = 5.0
+
+# How many failed attempts at dispatching one follow-up review before the PR is handed off
+# without one. The job stays `review_pending` between attempts, so it is retried on the next
+# tick that is not backing off -- and an automation row that is missing or misconfigured is
+# the usual cause, which no amount of retrying fixes.
+REVIEW_DISPATCH_ATTEMPTS = 3
+
+# The quiet period after a failed review dispatch. Without it a missing `pr-review-<repo>`
+# automation row would be re-read every 5 seconds forever; the job itself is untouched, so a
+# fixed row is picked up within a minute.
+REVIEW_RETRY_SECONDS = 60.0
 
 # Long enough for a label write over a LAN, short enough that a wedged GitHub does
 # not hold the dispatch loop past its own interval.
@@ -253,6 +266,10 @@ class DispatchLoop:
         self._fabro = fabro
         self._github_token = github_token
         self._pools = tuple(config.coder_pools)
+        # When each doctor job's last review dispatch failed, monotonic. Process-local: a
+        # restart retrying immediately is harmless (one extra call), and a persisted map would
+        # be a third table for a 60-second quiet period.
+        self._review_retry_at: dict[int, float] = {}
         self._interval = interval_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -287,6 +304,11 @@ class DispatchLoop:
             # credits, and a gap is a gap whatever the hour.
             self._lane.tick(now)
             return []
+        # A doctor's follow-up review goes before any issue: it spends hosted credits the
+        # factory has already paid for the review, and it turns them into a merge (D14). It
+        # takes a primary lease, so it is dispatched onto a free box exactly like an issue run.
+        self._dispatch_reviews(now)
+
         ranked = build_queue(
             self._config.schedulable_repos(),
             self._store,
@@ -303,7 +325,14 @@ class DispatchLoop:
             ]
             chosen = choose_next(
                 candidates,
-                self._leases.active(),
+                # Issue leases only. A `pr` lease's `issue_number` is a PR number, and treating
+                # it as a running issue would let PR #123 hide issue #123 from this tick's
+                # diversity pass (more-local-inference 06).
+                [
+                    held
+                    for held in self._leases.active()
+                    if held.target_kind == "issue"
+                ],
                 free,
                 self._leases.last_pool_for_repo,
             )
@@ -331,6 +360,154 @@ class DispatchLoop:
         # it in the same tick: evict first (D17 layer 2), then fill what is left (D7).
         self._lane.tick(now)
         return attempts
+
+    # --- the doctor's follow-up reviews (D14, task 06 steps 6 and 7) --------------
+
+    def _dispatch_reviews(self, now: datetime) -> None:
+        """Lease one `pr-review` per free box, ahead of the issue queue.
+
+        Bounded by the free boxes, so a queue of waiting reviews fills the boxes in one tick
+        and no further. A dispatch that fails stops this tick: the next one tries again after
+        `REVIEW_RETRY_SECONDS`, and after `REVIEW_DISPATCH_ATTEMPTS` failures the PR is handed
+        off without a review instead of sitting in a queue that cannot move.
+        """
+        if self._config.pr_doctor_reviews_per_day <= 0:
+            return
+        while True:
+            free = self._leases.free_pools(self._pools, self._drained_pools())
+            if not free:
+                return
+            row = self._next_review(now)
+            if row is None:
+                return
+            if not self._dispatch_review(row, free[0], now):
+                return
+
+    def _next_review(self, now: datetime):
+        """The oldest waiting review the daily cap and the backoff allow, or `None`."""
+        midnight = datetime(now.year, now.month, now.day, tzinfo=UTC)
+        dispatched = self._store.reviews_dispatched_since(midnight)
+        if dispatched >= self._config.pr_doctor_reviews_per_day:
+            return None
+        monotonic = time.monotonic()
+        for row in self._store.pending_review_jobs():
+            job_id = int(row["job_id"])
+            retry_at = self._review_retry_at.get(job_id)
+            if retry_at is not None and monotonic < retry_at:
+                continue
+            return row
+        return None
+
+    def _dispatch_review(self, job, coder_pool: str, now: datetime) -> bool:
+        """Create, start and lease one follow-up review. `False` when this tick must stop."""
+        job_id = int(job["job_id"])
+        repo = str(job["repo"])
+        try:
+            pr_number = int(str(job["target"] or 0))
+        except (TypeError, ValueError):
+            pr_number = 0
+        if self._fabro is None or pr_number <= 0:
+            self._review_failed(job, "no fabro client, or the job has no PR number", now)
+            return False
+        row = self._config.repo_named(repo)
+        if row is None or not row.enabled:
+            self._review_failed(job, f"{repo} is no longer a schedulable [[repo]]", now)
+            return False
+        try:
+            settings = self._fabro.pr_review_config(repo)
+        except FabroError as exc:
+            self._review_failed(job, f"could not read the automations: {exc}", now)
+            return False
+        if settings is None:
+            self._review_failed(job, f"no usable pr-review automation targets {repo}", now)
+            return False
+        # The review is a coder loop and takes a primary lease, so it gets a run slot the
+        # same way an issue dispatch does (D8).
+        if self._config.box_health:
+            self._lane.make_room(now)
+        try:
+            result = self._fabro.dispatch_pr_review(
+                repo=repo,
+                pr_number=pr_number,
+                environment_id=settings.environment_id,
+                auto_merge=settings.auto_merge,
+                coder_pool=coder_pool,
+            )
+        except RunNotStarted as exc:
+            self._review_failed(job, f"run {exc.run_id} was created but not started", now)
+            return False
+        except (FabroError, WorkflowVersionError) as exc:
+            self._review_failed(job, f"fabro refused the run: {exc}", now)
+            return False
+        lease = Lease(
+            coder_pool=coder_pool,
+            repo=repo,
+            issue_number=pr_number,
+            run_id=result.run_id,
+            box_stages=self._fabro.box_stages(result.commit_sha, "pr-review"),
+            dispatched_at=now,
+            workflow="pr-review",
+            target_kind="pr",
+        )
+        try:
+            self._leases.acquire(lease)
+        except LeaseConflict as exc:
+            log.error(
+                "dispatch: %s#%s: the follow-up review run %s was started but its lease was "
+                "refused, so nothing is tracking it: %s",
+                repo,
+                pr_number,
+                result.run_id,
+                exc,
+            )
+            self._review_failed(job, f"the lease was refused: {exc}", now)
+            return False
+        self._store.start_background_review(job_id, run_id=result.run_id, now=now)
+        self._review_retry_at.pop(job_id, None)
+        log.info(
+            "dispatch: %s#%s -> follow-up review run %s on %s (env=%s, auto_merge=%s)",
+            repo,
+            pr_number,
+            result.run_id,
+            coder_pool,
+            settings.environment_id,
+            settings.auto_merge,
+        )
+        return True
+
+    def _review_failed(self, job, why: str, now: datetime) -> None:
+        """Count one failed review dispatch and hand off once it has failed enough times."""
+        job_id = int(job["job_id"])
+        self._review_retry_at[job_id] = time.monotonic() + REVIEW_RETRY_SECONDS
+        failures = self._store.record_review_failure(job_id, now=now)
+        log.warning(
+            "dispatch: pr-doctor job %s for %s#%s: the follow-up review could not be "
+            "dispatched (%d of %d): %s",
+            job_id,
+            job["repo"],
+            job["target"],
+            failures,
+            REVIEW_DISPATCH_ATTEMPTS,
+            why,
+        )
+        if failures < REVIEW_DISPATCH_ATTEMPTS:
+            return
+        log.error(
+            "dispatch: pr-doctor job %s for %s#%s gave up on its follow-up review; handing "
+            "the PR off. %s",
+            job_id,
+            job["repo"],
+            job["target"],
+            HANDOFF_NO_REVIEW_COMMENT,
+        )
+        hand_off(
+            self._store,
+            job,
+            token=self._github_token,
+            outcome="handed_off_no_review",
+            reviewed=False,
+            now=now,
+        )
 
     def _peak_pause(self, now: datetime) -> bool:
         """Whether this tick dispatches nothing because of the peak-hours block.

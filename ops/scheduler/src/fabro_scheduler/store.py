@@ -99,7 +99,12 @@ CREATE TABLE IF NOT EXISTS leases (
   run_id        TEXT NOT NULL UNIQUE,
   dispatched_at TEXT NOT NULL,  -- ISO-8601 UTC
   queued_since  TEXT,           -- ISO-8601 UTC; `issue_cache.first_seen`
-  workflow      TEXT NOT NULL DEFAULT 'backlog'  -- ADR 0029 O21: the arm
+  workflow      TEXT NOT NULL DEFAULT 'backlog',  -- ADR 0029 O21: the arm
+  -- 'issue' or 'pr' (more-local-inference 06, D14). A `pr-review` run the doctor earns holds
+  -- a box like any coder loop, but it is not a queue item: its release writes no issue label,
+  -- requeues nothing, and records no PR lookup. `issue_number` holds the PR number for a 'pr'
+  -- row, which is why every issue-shaped reader filters on this column.
+  target_kind   TEXT NOT NULL DEFAULT 'issue'
 );
 
 -- The box that last ran each repo, kept after its lease is gone. Rewritten on
@@ -196,7 +201,16 @@ CREATE TABLE IF NOT EXISTS background_jobs (
   cancels             INTEGER NOT NULL DEFAULT 0,
   last_started_at     TEXT,
   last_finished_at    TEXT,
-  outcome             TEXT
+  outcome             TEXT,
+  -- The doctor's follow-up review (more-local-inference D13, D14). The background run and
+  -- the review it earns are one job: `outcome = 'review_pending'` means the doctor pushed and
+  -- a `pr-review` is waiting for a slot (the daily cap, or a free box), `'review_fired'` means
+  -- it was dispatched and `review_run_id` names it, and `'merged'` / `'handed_off'` /
+  -- `'handed_off_no_review'` are the hand-off's outcomes. A job in any of those has already
+  -- had its one attempt, so the producer never enqueues a second (task 06 step 5).
+  review_run_id       TEXT,
+  review_dispatched_at TEXT,    -- ISO-8601 UTC; set only on a dispatch that succeeded
+  review_failures     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS background_jobs_pick
@@ -241,7 +255,8 @@ CREATE TABLE IF NOT EXISTS run_history (
   hosted_tokens   INTEGER,
   local_cost_usd_micros  INTEGER,
   hosted_cost_usd_micros INTEGER,
-  workflow      TEXT NOT NULL DEFAULT 'backlog'  -- ADR 0029 O21: `backlog` | `ralph`
+  workflow      TEXT NOT NULL DEFAULT 'backlog',  -- ADR 0029 O21: `backlog` | `ralph` | `pr-review`
+  target_kind   TEXT NOT NULL DEFAULT 'issue'     -- 'issue' | 'pr' (more-local-inference 06)
 );
 
 -- Issue #22, the scorecard. Five tables the collector fills after a run is released
@@ -338,6 +353,16 @@ CREATE TABLE IF NOT EXISTS pr_facts (
   reason           TEXT,              -- its **Reason:** line, when it has one
   queue_approved   INTEGER NOT NULL,  -- 0 | 1: the merge phase queued it (ADR 0024)
   queue_handoff    INTEGER NOT NULL,  -- 0 | 1: the merge queue then handed it off
+  -- The PR doctor's inputs (more-local-inference 06). `head_sha` and `head_committed_at` are
+  -- the PR head as GitHub reports it, and decision 6 judges a report stale by comparing that
+  -- committer date with `report_at`, the report comment's `created_at`. `doctor_marker` is the
+  -- newest `<!-- fabro:pr-doctor ... -->` first line: its presence alone means the PR has had
+  -- its one attempt (D13).
+  head_sha         TEXT,
+  head_committed_at TEXT,
+  report_at        TEXT,
+  report_items     INTEGER,        -- 0 | 1: the report lists a concrete leftover (decision 1)
+  doctor_marker    TEXT,
   PRIMARY KEY (repo, pr_number)
 );
 """
@@ -351,6 +376,9 @@ RUN_HISTORY_COLUMNS = {
     # ADR 0029 O21. A row written before the trial is a `backlog` run by
     # construction, which is what the DEFAULT says.
     "workflow": "workflow TEXT NOT NULL DEFAULT 'backlog'",
+    # more-local-inference 06. A row written before the doctor's review is an issue run by
+    # construction, which is what the DEFAULT says.
+    "target_kind": "target_kind TEXT NOT NULL DEFAULT 'issue'",
     "local_tokens": "local_tokens INTEGER",
     "hosted_tokens": "hosted_tokens INTEGER",
     "local_cost_usd_micros": "local_cost_usd_micros INTEGER",
@@ -371,11 +399,26 @@ ADDED_COLUMNS = {
         # lane can judge a lease that outlived a scheduler restart; NULL on a lease from
         # an older row, which the lane reads as "no box stages known".
         "box_stages": "box_stages TEXT",
+        # more-local-inference 06: 'issue' or 'pr'. An older lease is an issue lease.
+        "target_kind": "target_kind TEXT NOT NULL DEFAULT 'issue'",
     },
     "run_stage_stats": {
         "input_tokens": "input_tokens INTEGER",
         "output_tokens": "output_tokens INTEGER",
         "cache_read_tokens": "cache_read_tokens INTEGER",
+    },
+    "pr_facts": {
+        "head_sha": "head_sha TEXT",
+        "head_committed_at": "head_committed_at TEXT",
+        "report_at": "report_at TEXT",
+        "report_items": "report_items INTEGER",
+        "doctor_marker": "doctor_marker TEXT",
+    },
+    "background_jobs": {
+        "review_run_id": "review_run_id TEXT",
+        "review_dispatched_at": "review_dispatched_at TEXT",
+        # NOT NULL with a DEFAULT is the one form ALTER TABLE accepts on a populated table.
+        "review_failures": "review_failures INTEGER NOT NULL DEFAULT 0",
     },
     "run_summary": {
         "first_edit_ms": "first_edit_ms TEXT",
@@ -619,7 +662,7 @@ class Store:
         with self._lock:
             return self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since, workflow, box_stages FROM leases ORDER BY coder_pool"
+                "queued_since, workflow, box_stages, target_kind FROM leases ORDER BY coder_pool"
             ).fetchall()
 
     def history_rows(
@@ -957,7 +1000,7 @@ class Store:
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since, workflow, box_stages FROM leases WHERE run_id = ?",
+                "queued_since, workflow, box_stages, target_kind FROM leases WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if row is None:
@@ -987,7 +1030,7 @@ class Store:
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since, workflow, box_stages FROM leases WHERE run_id = ?",
+                "queued_since, workflow, box_stages, target_kind FROM leases WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if row is None:
@@ -997,8 +1040,8 @@ class Store:
                 "  run_id, coder_pool, repo, issue_number, dispatched_at, finished_at,"
                 "  kind, reason, category, requeue_attempt, pr_lookup, pr_number,"
                 "  pr_url, merged, local_tokens, hosted_tokens,"
-                "  local_cost_usd_micros, hosted_cost_usd_micros, workflow"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "  local_cost_usd_micros, hosted_cost_usd_micros, workflow, target_kind"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO NOTHING",
                 (
                     row["run_id"],
@@ -1024,6 +1067,7 @@ class Store:
                     outcome.local_cost_usd_micros,
                     outcome.hosted_cost_usd_micros,
                     row["workflow"],
+                    row["target_kind"],
                 ),
             )
             self._conn.execute("DELETE FROM leases WHERE run_id = ?", (run_id,))
@@ -1108,6 +1152,7 @@ class Store:
         queued_since: datetime | None = None,
         workflow: str = "backlog",
         box_stages: Mapping[str, str] | None = None,
+        target_kind: str = "issue",
     ) -> bool:
         """Take one coder instance, or report that someone else holds it.
 
@@ -1127,8 +1172,8 @@ class Store:
             cursor = self._conn.execute(
                 "INSERT INTO leases "
                 "(coder_pool, repo, issue_number, run_id, dispatched_at, queued_since, "
-                " workflow, box_stages) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                " workflow, box_stages, target_kind) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(coder_pool) DO NOTHING",
                 (
                     coder_pool,
@@ -1141,6 +1186,7 @@ class Store:
                     None
                     if not box_stages
                     else json.dumps(dict(box_stages), sort_keys=True),
+                    target_kind,
                 ),
             )
             if cursor.rowcount == 0:
@@ -1276,6 +1322,114 @@ class Store:
                 "SELECT state, COUNT(*) AS n FROM background_jobs GROUP BY state"
             ).fetchall()
         return {row["state"]: int(row["n"]) for row in rows}
+
+    def background_job_exists(self, kind: str, repo: str, target: str) -> bool:
+        """Whether any job of this kind ever existed for `(repo, target)`, in any state.
+
+        The PR doctor's one-attempt rule (D13, task 06 step 5) at the queue level: once a
+        `pr-doctor` job has run for a PR, a marker comment or not, no second one is created.
+        A cancelled attempt comes back as the SAME row (`requeue_background_job`), so this
+        stays true and the retry still happens through the row that already exists.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM background_jobs WHERE kind = ? AND repo = ? AND target = ? LIMIT 1",
+                (kind, repo, target),
+            ).fetchone()
+        return row is not None
+
+    def pending_review_jobs(self) -> list[sqlite3.Row]:
+        """Doctor jobs whose follow-up review is waiting for a slot, oldest first.
+
+        The order is the whole point (operator decision 3): a review that was pushed but held
+        by the daily cap goes before everything the next day, and before the issue queue
+        (D14). `state = 'done'` because the background run is over and only the review is
+        outstanding -- a `queued` row would be picked by the lane as a second doctor run.
+        """
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM background_jobs WHERE kind = 'pr-doctor' "
+                "AND outcome = 'review_pending' ORDER BY created_at, job_id"
+            ).fetchall()
+
+    def doctor_job_for_review(self, run_id: str) -> sqlite3.Row | None:
+        """The doctor job whose follow-up review is `run_id`, if there is one."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM background_jobs WHERE kind = 'pr-doctor' AND review_run_id = ?",
+                (run_id,),
+            ).fetchone()
+
+    def reviews_dispatched_since(self, since: datetime) -> int:
+        """How many follow-up reviews were dispatched at or after `since` (decision 3).
+
+        Counts dispatches, not outcomes: a review that failed to start never sets
+        `review_dispatched_at`, so it does not use a slot.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM background_jobs "
+                "WHERE review_dispatched_at IS NOT NULL AND review_dispatched_at >= ?",
+                (since.isoformat(),),
+            ).fetchone()
+        return 0 if row is None else int(row["n"])
+
+    def set_background_outcome(
+        self, job_id: int, *, outcome: str, now: datetime
+    ) -> None:
+        """Move a finished job to another outcome, keeping `state = 'done'`.
+
+        The doctor's job outlives its background run: `review_pending` -> `review_fired` ->
+        `merged` / `handed_off` are all states of the same job, and no second run is created
+        for any of them.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE background_jobs SET state = 'done', outcome = ?, "
+                "last_finished_at = ? WHERE job_id = ?",
+                (outcome, now.isoformat(), job_id),
+            )
+
+    def start_background_review(
+        self, job_id: int, *, run_id: str, now: datetime
+    ) -> bool:
+        """Record that the follow-up review was dispatched. False if it was not pending."""
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE background_jobs SET outcome = 'review_fired', review_run_id = ?, "
+                "review_dispatched_at = ? WHERE job_id = ? AND outcome = 'review_pending'",
+                (run_id, now.isoformat(), job_id),
+            )
+            return cursor.rowcount == 1
+
+    def record_review_failure(self, job_id: int, *, now: datetime) -> int:
+        """Count a review dispatch that failed, returning the new total.
+
+        The job stays `review_pending`, so the next tick tries again. The count is what stops
+        that from being forever: at `REVIEW_DISPATCH_ATTEMPTS` the caller hands the PR off
+        without a review rather than leaving it in a queue that cannot move.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE background_jobs SET review_failures = review_failures + 1 "
+                "WHERE job_id = ?",
+                (job_id,),
+            )
+            row = self._conn.execute(
+                "SELECT review_failures FROM background_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        return 0 if row is None else int(row["review_failures"])
+
+    def pr_facts_row(self, repo: str, number: int) -> sqlite3.Row | None:
+        """One cached PR fact row, or `None` before the collector has read the PR.
+
+        The canary endpoint reads the row rather than GitHub: it must use the same facts the
+        producer just used, or the operator's 4xx and the producer's silence could disagree.
+        """
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM pr_facts WHERE repo = ? AND pr_number = ?", (repo, number)
+            ).fetchone()
 
     def close(self) -> None:
         with self._lock:
@@ -1536,8 +1690,9 @@ class Store:
             self._conn.execute(
                 "INSERT INTO pr_facts (repo, pr_number, fetched_at, state, created_at,"
                 " merged_at, closed_at, labels, additions, deletions, commits,"
-                " operator_commits, report, reason, queue_approved, queue_handoff)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " operator_commits, report, reason, queue_approved, queue_handoff,"
+                " head_sha, head_committed_at, report_at, report_items, doctor_marker)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(repo, pr_number) DO UPDATE SET"
                 "  fetched_at = excluded.fetched_at, state = excluded.state,"
                 "  created_at = excluded.created_at, merged_at = excluded.merged_at,"
@@ -1546,7 +1701,12 @@ class Store:
                 "  commits = excluded.commits, operator_commits = excluded.operator_commits,"
                 "  report = excluded.report, reason = excluded.reason,"
                 "  queue_approved = excluded.queue_approved,"
-                "  queue_handoff = excluded.queue_handoff",
+                "  queue_handoff = excluded.queue_handoff,"
+                "  head_sha = excluded.head_sha,"
+                "  head_committed_at = excluded.head_committed_at,"
+                "  report_at = excluded.report_at,"
+                "  report_items = excluded.report_items,"
+                "  doctor_marker = excluded.doctor_marker",
                 (
                     repo,
                     number,
@@ -1564,6 +1724,11 @@ class Store:
                     facts.reason,
                     int(facts.queue_approved),
                     int(facts.queue_handoff),
+                    facts.head_sha,
+                    facts.head_committed_at,
+                    facts.report_at,
+                    None if facts.report_items is None else int(facts.report_items),
+                    facts.doctor_marker,
                 ),
             )
 

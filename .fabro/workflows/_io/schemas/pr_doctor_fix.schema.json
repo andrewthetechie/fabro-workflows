@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pr_doctor_fix",
+  "title": "pr_doctor_fix — the PR doctor's fix report (more-local-inference 06)",
+  "description": "The doctor's one fix turn. fix_gate checks the Input receipt, then publish posts this verbatim in the marker comment so the human who takes the PR sees what was tried. `reviewable` is the doctor's own judgement of whether one more hosted review could pass: false when a remaining blocker is one only .fabro/ci.sh could prove, or one no code change can satisfy (a PR description, a label, a risk rating). _io is stamped by the server and is not part of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "commands", "reviewable", "blockers"],
+  "if": { "properties": { "reviewable": { "const": false } }, "required": ["reviewable"] },
+  "then": { "properties": { "blockers": { "minItems": 1 } } },
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Two or three sentences: what the report said was wrong, and what you changed. Published verbatim."
+    },
+    "commands": {
+      "type": "array",
+      "description": "Every command the report named that you ran yourself, with its result. Empty when the report named none. `output` is the last lines of what it printed.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "ok"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "ok": { "type": "boolean" },
+          "output": { "type": "string" }
+        }
+      }
+    },
+    "reviewable": {
+      "type": "boolean",
+      "description": "false when a follow-up review cannot pass whatever this run does: a blocker is provable only by .fabro/ci.sh, or no code change can satisfy it. Then the run is handed off without a hosted review."
+    },
+    "blockers": {
+      "type": "array",
+      "description": "What stops a follow-up review from passing, one entry each. Must be non-empty when reviewable is false; may be empty when it is true.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "text"],
+        "properties": {
+          "kind": {
+            "enum": ["command_only", "not_code"],
+            "description": "command_only: only .fabro/ci.sh can prove it, and this run may not edit .fabro/*. not_code: no code change can satisfy it (a PR description, a label, a risk rating, a review conversation)."
+          },
+          "text": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

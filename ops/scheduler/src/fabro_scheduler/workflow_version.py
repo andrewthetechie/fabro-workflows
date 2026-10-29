@@ -63,10 +63,16 @@ BACKLOG_ENTRYPOINT = "workflows/backlog/workflow.fabro"
 RALPH_ENTRYPOINT = "workflows/ralph/workflow.fabro"
 # The first box-only package (more-local-inference task 04). Tasks 06-10 add theirs.
 BOX_NOOP_ENTRYPOINT = "workflows/box-noop/workflow.fabro"
+# Task 06's background package. `pr-review` is here too: the scheduler leases one as the
+# doctor's follow-up (D14), and that dispatch needs the version like any other.
+PR_DOCTOR_ENTRYPOINT = "workflows/pr-doctor/workflow.fabro"
+PR_REVIEW_ENTRYPOINT = "workflows/pr-review/workflow.fabro"
 ENTRYPOINTS = {
     "backlog": BACKLOG_ENTRYPOINT,
     "ralph": RALPH_ENTRYPOINT,
     "box-noop": BOX_NOOP_ENTRYPOINT,
+    "pr-doctor": PR_DOCTOR_ENTRYPOINT,
+    "pr-review": PR_REVIEW_ENTRYPOINT,
 }
 
 # The server's limits, from the `WorkflowVersion` schema: at most 512 files, 512

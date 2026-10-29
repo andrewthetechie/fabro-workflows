@@ -1452,3 +1452,112 @@ def test_the_workflows_endpoint_splits_the_window_by_arm(client):
     assert text.status_code == 200
     assert text.headers["content-type"].startswith("text/markdown")
     assert "## ralph" in text.text
+
+
+# --- the one-PR canary (more-local-inference 06) ------------------------------------
+
+
+def seed_pr_facts(store: Store, *, pr: int = 7, reason: str | None = None,
+                  marker: str | None = None, label: str | None = None) -> None:
+    from fabro_scheduler.prfacts import PrFacts
+
+    store.save_pr_facts(
+        "andrewthetechie/jelly-swipe",
+        pr,
+        PrFacts(
+            state="open",
+            created_at="2026-10-01T00:00:00Z",
+            merged_at=None,
+            closed_at=None,
+            labels=(label,) if label else (),
+            additions=1,
+            deletions=1,
+            commits=2,
+            operator_commits=0,
+            report="blocked",
+            reason=reason
+            or "There are unfixed findings; a human must merge this PR.",
+            queue_approved=False,
+            queue_handoff=False,
+            head_sha="b" * 40,
+            head_committed_at="2026-11-02T11:00:00Z",
+            report_at="2026-11-02T11:30:00Z",
+            report_items=True,
+            doctor_marker=marker,
+        ),
+    )
+
+
+def test_the_canary_queues_one_eligible_pr_and_is_idempotent(client, store):
+    seed_pr_facts(store)
+    created = client.post(
+        "/api/background/pr-doctor",
+        json={"repo": "andrewthetechie/jelly-swipe", "pr": 7},
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body == {
+        "job_id": body["job_id"],
+        "repo": "andrewthetechie/jelly-swipe",
+        "pr": 7,
+        "kind": "pr-doctor",
+        "category": "findings",
+    }
+    row = store.background_job(body["job_id"])
+    assert (row["kind"], row["target"], row["priority"], row["typical_box_minutes"]) == (
+        "pr-doctor",
+        "7",
+        1,
+        40,
+    )
+    again = client.post(
+        "/api/background/pr-doctor",
+        json={"repo": "andrewthetechie/jelly-swipe", "pr": 7},
+    )
+    assert again.status_code == 409
+
+
+def test_the_canary_refuses_an_ineligible_pr_with_the_reason(client, store):
+    seed_pr_facts(store, marker="<!-- fabro:pr-doctor head=a pushed=none review=skip run=R -->")
+    refused = client.post(
+        "/api/background/pr-doctor",
+        json={"repo": "andrewthetechie/jelly-swipe", "pr": 7},
+    )
+    assert refused.status_code == 409
+    assert "already has a doctor marker" in refused.json()["detail"]
+
+
+def test_the_canary_refuses_a_repo_and_a_pr_it_does_not_know(client, store):
+    unknown_repo = client.post(
+        "/api/background/pr-doctor", json={"repo": "nope/nope", "pr": 7}
+    )
+    assert unknown_repo.status_code == 404
+    unknown_pr = client.post(
+        "/api/background/pr-doctor",
+        json={"repo": "andrewthetechie/jelly-swipe", "pr": 9},
+    )
+    assert unknown_pr.status_code == 404
+    assert "no PR facts" in unknown_pr.json()["detail"]
+
+
+def test_the_canary_does_not_need_the_automatic_producer(client, store, tmp_path):
+    """The point of the endpoint: start one PR with the producer off
+    (`SCHEDULER_BG_KINDS=box-noop`). C7 makes the kinds list gate producers, not the lane's
+    pick, so a hand-queued job still runs."""
+    off = load_config(
+        TRACKED_REPOS,
+        env={"SCHEDULER_BACKGROUND": "off", "SCHEDULER_BG_KINDS": "box-noop"},
+    )
+    hand = TestClient(build_app(off, store, github_token="ghp_test"))
+    seed_pr_facts(store)
+    queued = hand.post(
+        "/api/background/pr-doctor",
+        json={"repo": "andrewthetechie/jelly-swipe", "pr": 7},
+    )
+    assert queued.status_code == 200
+    # And the producer, which is what the switch and the kinds list really gate, stays quiet.
+    from fabro_scheduler.doctor import PrDoctorProducer
+
+    producer = PrDoctorProducer(off, store)
+    assert producer.enabled is False
+    assert producer.consider("andrewthetechie/jelly-swipe", 8, object()) is None

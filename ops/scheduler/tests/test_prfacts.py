@@ -167,3 +167,77 @@ def test_fetch_raises_on_a_non_200():
 def test_fetch_without_a_token_raises():
     with pytest.raises(GitHubError):
         fetch_pr_facts(REPO, 7, " ", BOT)
+
+
+# --- the PR doctor's inputs (more-local-inference 06) -------------------------------
+
+
+def test_the_doctor_facts_read_the_marker_the_head_and_the_report_time():
+    pull = {
+        "state": "open",
+        "head": {"sha": "b" * 40},
+        "labels": [{"name": "ai-review-needs-human"}],
+        "additions": 1,
+        "deletions": 1,
+    }
+    commits = [
+        {
+            "sha": "a" * 40,
+            "commit": {"committer": {"date": "2026-10-29T09:00:00Z"}},
+        },
+        {
+            "sha": "b" * 40,
+            "commit": {"committer": {"date": "2026-10-29T09:59:50Z"}},
+        },
+    ]
+    report = (
+        "## AI PR review\n\n### Findings\n\n- **[error] STD-001** - `a.ts:3` - x\n\n"
+        "### Not auto-merged\n\n**Reason:** There are unfixed findings; a human must merge "
+        "this PR.\n"
+    )
+    comments = [
+        {"created_at": "2026-10-29T09:00:00Z", "body": "an old report\n## AI PR review"},
+        {
+            "created_at": "2026-10-29T10:00:00Z",
+            "body": "<!-- fabro:pr-doctor head=abc pushed=none review=skip run=R -->\n" + report,
+        },
+    ]
+    facts = parse_pr_facts(pull, commits, comments, BOT)
+    assert facts.head_sha == "b" * 40
+    # The head commit's COMMITTER date, not its author date: a rebase rewrites the former.
+    assert facts.head_committed_at == "2026-10-29T09:59:50Z"
+    assert facts.report_at == "2026-10-29T10:00:00Z"
+    assert facts.report == "blocked"
+    assert facts.report_items is True
+    assert facts.doctor_marker == (
+        "<!-- fabro:pr-doctor head=abc pushed=none review=skip run=R -->"
+    )
+
+
+def test_a_report_that_lists_nothing_concrete_records_no_items():
+    pull = {"state": "open", "head": {"sha": "b" * 40}, "labels": []}
+    body = (
+        "## AI PR review\n\n### Unmet criteria\n\n_None: the Refuter found every criterion "
+        "met._\n\n### Findings\n\n_None recorded._\n\n"
+    )
+    facts = parse_pr_facts(pull, [], [{"created_at": "2026-10-29T10:00:00Z", "body": body}], BOT)
+    assert facts.report_items is False
+
+
+def test_the_head_commit_falls_back_to_the_last_entry_when_the_sha_is_not_listed():
+    """A force-push between the two reads leaves the list without the head SHA; the last
+    entry is still the newest commit the API returned."""
+    pull = {"state": "open", "head": {"sha": "c" * 40}, "labels": []}
+    commits = [{"sha": "z" * 40, "commit": {"committer": {"date": "2026-10-29T09:00:00Z"}}}]
+    facts = parse_pr_facts(pull, commits, [], BOT)
+    assert facts.head_sha == "c" * 40
+    assert facts.head_committed_at == "2026-10-29T09:00:00Z"
+
+
+def test_no_head_or_commit_gives_no_doctor_timestamps():
+    facts = parse_pr_facts({"state": "open", "labels": []}, [], [], BOT)
+    assert (facts.head_sha, facts.head_committed_at, facts.doctor_marker) == (
+        None,
+        None,
+        None,
+    )

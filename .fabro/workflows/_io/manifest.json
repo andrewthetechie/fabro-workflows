@@ -1792,6 +1792,46 @@
           "box": true
         }
       }
+    },
+    "pr-doctor": {
+      "stages": {
+        "fix": {
+          "live": true,
+          "prompt": ".fabro/workflows/pr-doctor/prompts/fix.md.j2",
+          "inputs": [
+            {
+              "name": "report.md",
+              "path": "/tmp/fabro/doctor/report.md",
+              "required": true,
+              "about": "the pull request's last merge-phase report: the **Reason:** line, the unfixed findings, the Refuter verdict, the diff-hygiene samples, and the names of the GitHub checks that are not green"
+            },
+            {
+              "name": "reason.txt",
+              "path": "/tmp/fabro/doctor/reason.txt",
+              "required": true,
+              "about": "the report's **Reason:** line alone, which names the category of block"
+            },
+            {
+              "name": "pr.json",
+              "path": "/tmp/fabro/pr.json",
+              "required": true,
+              "about": "PR number, title, body, refs and labels"
+            },
+            {
+              "name": "fix.md",
+              "path": "/tmp/fabro/doctor/ci_failure.md",
+              "required": false,
+              "absent": "this is the first fix attempt; ./.fabro/setup.sh and ./.fabro/ci.sh have not run yet",
+              "about": "present only on the second attempt: the tail of the CI failure that followed the first"
+            }
+          ],
+          "output": {
+            "path": "/tmp/fabro/doctor/fix.json",
+            "schema": "pr_doctor_fix"
+          },
+          "box": true
+        }
+      }
     }
   }
 }

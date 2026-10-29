@@ -79,6 +79,7 @@ class ScorecardCollector:
         prs_per_tick: int = DEFAULT_PRS_PER_TICK,
         models_per_tick: int = DEFAULT_MODELS_PER_TICK,
         pr_reader: Callable[[str, int], PrFacts] | None = None,
+        on_pr_facts: Callable[[str, int, PrFacts, datetime], object] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
@@ -92,6 +93,11 @@ class ScorecardCollector:
             lambda repo, number: fetch_pr_facts(repo, number, github_token, automation_author)
         )
         self._github = bool(github_token.strip()) or pr_reader is not None
+        # The producer that runs on each fresh `pr_facts` row (more-local-inference 06). A
+        # callable, not the producer itself, so the collector keeps knowing nothing about the
+        # background lane; it makes no call of its own and enqueues nothing when the lane is
+        # off.
+        self._on_pr_facts = on_pr_facts
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -187,6 +193,13 @@ class ScorecardCollector:
                     continue
                 self._store.save_pr_facts(repo, number, facts, at=now)
                 prs += 1
+                if self._on_pr_facts is not None:
+                    try:
+                        self._on_pr_facts(repo, number, facts, now)
+                    except Exception:  # noqa: BLE001 - the collector must keep collecting
+                        log.exception(
+                            "scorecard: the pr_facts producer failed for %s#%s", repo, number
+                        )
 
         report = CollectReport(
             summarized, missing, failed, prs, pr_failures, models, model_failures

@@ -73,6 +73,11 @@ class Lease:
     # "plan-arm"}`. Empty when the manifest could not be read, which the lane reads as
     # "no box stage known" rather than as "nothing is on the box".
     box_stages: Mapping[str, str] = field(default_factory=dict)
+    # 'issue' or 'pr' (more-local-inference 06, D14). A `pr-review` run the doctor earns holds a
+    # box like any coder loop, but it is not a queue item: its release writes no issue label,
+    # requeues nothing, and records no PR lookup from its run branch. `issue_number` holds the
+    # **PR** number for a 'pr' row.
+    target_kind: str = "issue"
 
 
 class LeaseConflict(RuntimeError):
@@ -163,6 +168,7 @@ class LeaseStore:
             queued_since=lease.queued_since,
             workflow=lease.workflow,
             box_stages=lease.box_stages,
+            target_kind=lease.target_kind,
         )
         if stored:
             return
@@ -209,7 +215,13 @@ def _lease_from_row(row) -> Lease:
         ),
         workflow=row["workflow"],
         box_stages=_box_stages(row["box_stages"]),
+        target_kind=_target_kind(row["target_kind"]),
     )
+
+
+def _target_kind(raw: object) -> str:
+    """The lease's `target_kind` column. A missing or unknown value is an issue lease."""
+    return "pr" if raw == "pr" else "issue"
 
 
 def _box_stages(raw: object) -> Mapping[str, str]:
