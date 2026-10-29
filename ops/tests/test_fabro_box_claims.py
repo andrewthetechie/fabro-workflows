@@ -42,6 +42,14 @@ class Claims(unittest.TestCase):
         claims = fbc.coder_claims(run)
         self.assertEqual([(c.node, round(c.wait_s, 2)) for c in claims], [("coder", 4.15)])
 
+    def test_a_stage_retry_is_not_a_second_claim_on_the_same_edge(self):
+        run = coder("c1", [
+            ev(1, "00:00.000000", "edge.selected"), ev(2, "00:02.400000", "stage.started", "coder"),
+            ev(3, "59:59.000000", "stage.retrying"), ev(4, "59:59.900000", "stage.started", "coder"),
+        ])
+        claims = fbc.coder_claims(run)
+        self.assertEqual([round(c.wait_s, 2) for c in claims], [2.4])
+
     def test_plan_arm_counts_only_on_the_odd_arm(self):
         events = [ev(1, "00:00.000000", "edge.selected"), ev(2, "00:02.000000", "stage.started", "plan")]
         self.assertEqual(fbc.coder_claims(coder("even", events, issue="4")), [])  # 4//2=2, even

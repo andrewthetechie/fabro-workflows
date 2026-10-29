@@ -9,7 +9,8 @@ same facts from the run event log, which fabro does keep:
 
 - A `stage_start` hook runs between the `edge.selected` into a stage and that stage's
   `stage.started`, so for a coder loop's box stage that gap is the claim's whole wait. A gap
-  of 44 s or more is the claim's 45 s deadline, i.e. `idle=false`.
+  of 44 s or more is the claim's 45 s deadline, i.e. `idle=false`. A stage retry starts with
+  no edge before it, so only the first `stage.started` after each edge is a claim.
 - A background run (`labels.lane == "background"`) ends `failed`/`cancelled`. The cancel's
   time is its `run.cancel.requested`. A cancel inside a claim's window on the same box was
   that claim's; a cancel before the run's first `agent.llm.started` is the guard or an
@@ -115,6 +116,10 @@ def coder_claims(run: dict) -> list[Claim]:
             started = ts(event["ts"])
             out.append(Claim(run["id"], labels.get("box", ""), event["node_id"], last_edge,
                              started, (started - last_edge).total_seconds()))
+            # An edge is one claim. A stage retry (`stage.retrying`, then `stage.started`
+            # attempt 2) has no edge of its own, so pairing it with this one would count the
+            # failed attempt's whole run time as a wait (seen 2026-10-29: 3609 s).
+            last_edge = None
     return out
 
 
