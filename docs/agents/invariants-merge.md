@@ -43,6 +43,20 @@ Every rule here passes `fabro validate` and fails at runtime, usually silently. 
 | Commit-body markers are `:start` / `:end`, never `<!-- /fabro:commit-body -->` | A closing marker with a slash forces `\/` into the extraction pattern, and `\"` is the only backslash a `.fabro` file may contain. |
 | The subject is the live PR title; the body comes from the marker block | `release-please` turns an agent's `feat:`/`fix:` subject into a release on `jelly-swipe`/`lawncare-saas`, and the derivation never emits `!` or `BREAKING CHANGE:`. |
 
+## The PR doctor (more-local-inference 06)
+
+The doctor is not the merge phase, but it writes to the same pull requests and the merge
+phase judges what it finds. Every rule below passes `fabro validate` and fails at runtime,
+and three of them fail *silently*.
+
+| Rule | What happens otherwise |
+|---|---|
+| Nothing in `.fabro/workflows/pr-doctor/` writes to GitHub before `publish`, and `publish` writes the marker comment **first** — before the label removals and before the push (C6, D9) | A job may be cancelled at any moment, so a write on the way through leaves half a comment, a label, or a push behind. The marker is also the record of the PR's one attempt (D13): a run that pushed without it would be enqueued again and push twice. |
+| `publish` squashes the run's own commits into one commit authored `fabro-pr-doctor <noreply@fabro.sh>` and pushes it with `--force-with-lease=<head ref>:<head before this run>` | The merge phase's `merge_gate` check 6 blocks any PR with a commit whose authors do not include `noreply@fabro.sh`, and a *rebase* keeps each rewritten commit's author, so the identity has to be on the commit itself. A bare `--force` would overwrite a push that landed while the doctor worked; the lease refuses instead, and a refused push leaves `pushed=pending` for the scheduler to resolve. |
+| `publish` never pushes the base branch, and `head=` in the marker is the PR head **before** the doctor touched it | `head=` is the lease's expectation. Recording the run's own new head there would make every retry push unconditionally, and pushing the base branch is a write to `main` in a repository where that deploys. |
+| The doctor's `fix` turn may not edit `.fabro/hygiene.json`, `.fabro/test.toml`, `.fabro/ci.sh` or `.fabro/scout.toml`, and may never make a hygiene counter pass by deleting more | A PR that could edit the rules that judge it would loosen them — the same reason `config_changed` is a human merge (ADR 0018 D7, ADR 0027 D14). A "fix" that lowers `asserts_removed` by deleting the test is worse than the block it removes. |
+| A marker makes a PR ineligible forever, and `background_jobs` holds at most one `pr-doctor` row per PR, ever | D13 is one attempt per pull request, whatever happened to the run. Deleting the marker comment by hand is the documented way to grant another. |
+
 ## Auto-merge kill switches
 
 | Rule | What happens otherwise |

@@ -118,6 +118,14 @@ closes the window the **Claim** cannot see: a loop stage that begins after the c
 (more-local-inference C10, D17).
 _Avoid_: check, heartbeat
 
+**PR doctor**:
+The background job that spends one attempt on a **Blocked** factory pull request whose
+merge-phase report names something fixable: `.fabro/workflows/pr-doctor/` fixes it on the
+box, `publish` posts a marker comment and pushes, and the scheduler leases exactly one
+`pr-review` after it. If that does not merge the PR, a human takes it. One attempt per pull
+request, ever, recorded by the marker (ADR 0031 D4, more-local-inference D13).
+_Avoid_: shepherd (that is the scheduler's requeue rule), auto-fixer, PR bot
+
 **Run history**:
 One row per released **Coder lease**, in the scheduler's own `run_history` table: which
 box ran it, which issue, how it ended, and whether its PR had merged at that instant.

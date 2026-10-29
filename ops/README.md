@@ -725,6 +725,7 @@ whole factory in one place and a host rebuild brings it back with everything els
 | `scheduler/src/fabro_scheduler/dispatch.py` | The **5-second dispatch loop**. `choose_next` is pure — it takes the already-ranked queue and skips any repo with a run in flight rather than idling the box — and `DispatchLoop.tick` performs the side effects for every free box it can fill. Order: labels, create, start, lease; a failure before the run exists rolls the labels back, and a failed repo is backed off for the rest of that tick. It owns the two `agent-in-progress` writes and the `issue_number`/`coder_pool` inputs, excludes a drained box via `pool_state`, and clears an operator override once the lease is recorded. Every dispatch also sends `lane=coder` and `box=<pool>`: the claim hook and the lane's eviction match on them. `tick` runs the background lane last — evict, then fill — so no coder dispatch ever waits on it. |
 | `scheduler/src/fabro_scheduler/peak.py` | z.ai's peak hours: parses `SCHEDULER_PEAK_HOURS` and answers whether an instant is inside a dispatch block (the window minus the lead) and when it ends. Pure; `DispatchLoop.tick` and `/api/peak` call it. |
 | `scheduler/src/fabro_scheduler/background.py` | The **background lane** (more-local-inference C7, ADR 0031): `BackgroundLane` evicts, fills and finishes box-only jobs, and `BoxHealth` reads strix-infer's `/health`. Every decision is pure over state the caller hands in, so a test drives a tick by hand. `evict` cancels a background run whose box's coder loop has reached a box stage; `fill` starts one job per box only when all six conditions hold (switch on, box undrained and free of a background run, the loop outside a box stage read **fresh** from fabro, `/health` idle for `SCHEDULER_BG_GAP_S`, `SCHEDULER_BG_SLOT_RESERVE` run slots free, and a job that fits the predicted gap); `sync` finishes, requeues or fails a running job from its fabro status; `make_room` cancels the youngest background run when a coder-loop dispatch needs the last slot. `box_views`/`state` are what the page's **Background** strip and `/api/background` render. The gap table is `config.BACKGROUND_GAP_MINUTES`, **measured** on 2026-10-28 (task 12 Phase 0 step 2) from every non-box visit of the 170 `backlog`/`ralph` runs released since 10-21: the median minutes from a visit's end to the next box-stage start (or the run's end), per node; any node not in it, and any other workflow, predicts 0. Re-measure when the graphs change: the method is in the table's comment. |
+| `scheduler/src/fabro_scheduler/doctor.py` | The **PR doctor** (more-local-inference 06): the `**Reason:**` table (five categories and the texts that map to none), the `<!-- fabro:pr-doctor ... -->` marker's parser and formatter, the eligibility rules (open, a blocked report, no marker, no job yet, no `do-not-merge`, a reason it has a fix for, a report that lists something concrete, and a head committed **before** the report), and `PrDoctorProducer`, which queues one job per eligible PR on each `pr_facts` refresh and makes no GitHub or fabro call of its own. `hand_off` restores `ai-review-needs-human` and posts one comment. The graph it starts is `.fabro/workflows/pr-doctor/`; the review it earns is a `pr-review` leased by `dispatch.py`. |
 | `scheduler/src/fabro_scheduler/templates/queue.html` | The page: the **coder instances** (state, lease, ETA, and the Drain/Undrain and Cancel-run controls), the queue with per-row up/down/to-top controls and drag-and-drop reordering, and a per-repo freshness strip. Inline CSS and a few lines of inline JS, no external assets, refreshes itself on the same 60s beat. Each control is a real `<form method="post">`, so the buttons work with scripting off (the response is raw JSON); with scripting on the submit is intercepted, the page reloads on success and shows the error otherwise. |
 | `scheduler/src/fabro_scheduler/app.py` | `/`, `/api/queue`, `/api/repos`, `/api/pools`, `/api/background`, `POST /api/background/box-noop`, `/health`, `POST /api/dispatch-once`, the reorder routes `POST /api/queue/{repo}/{issue}/top|up|down` and `POST /api/queue/reorder` (the old `/bump` is kept), and `POST /api/pools/{pool}/drain`, `/undrain` and `/cancel`. Supports the ETA column (`estimate_remaining`) and the history token columns. `main` starts the inventory poller, the dispatch loop **and** the 15s release poll; every one is off in any other construction, so a test drives a tick by hand. Besides serving, `main` dispatches two offline subcommands: `resummarize` and `retro` (the weekly retro, `docs/factory-retro/`). `dispatch-once` takes `repo`, `issue_number` and `coder_pool`, refuses a pool already leased with a `409`, records the lease on the way out, and answers `503` with no `FABRO_API_TOKEN`. Every mutating route is `POST` and every one logs what it changed, because there is no auth to attribute it to. |
 | `scheduler/src/fabro_scheduler/reconcile.py` | Draft 09's release/requeue/recovery, plus draft 11's one change to it: a cancel requeues. `should_requeue` keys on the failure **reason** for the two failures whose category cannot decide — `terminated` (a fabro restart, category `deterministic`) and `cancelled` (the operator's cancel, category `canceled`, one L). Both are in the run projection, so neither costs the extra events call. The `transient_infra` category path had never fired once: `last_failure_category` filtered on `event["type"] == "run.failed"` and the deployed server sends `event`, `stage.failed` and `failure.category` — three mismatches, fixed 2026-09-19, live-verified returning `deterministic`/`transient_infra` on real runs. Repairing it armed a loop, so `MAX_REQUEUES = 3` now bounds it: a requeue restores the issue at the FRONT of the queue (original `first_seen`), and fabro classifies a flaky unit test as `transient_infra`, so a recurring failure would otherwise hold a coder box forever. Past the budget the issue is released without a requeue and waits for a human. Two cadences share one thread: the fabro pass every **15s** (one cheap `GET /runs/{id}` per held lease) and the GitHub receipt scan every **10 minutes** (four uncached requests, 24/hour against 5,000). The receipt scan used to run only at startup, on the premise that only a restart could orphan a receipt; 2026-09-19 disproved that, so it repeats — and because `_dispatch` writes the receipt seconds before the run exists, a receipt must look orphaned in **two consecutive scans** before anything is written. |
@@ -799,13 +800,20 @@ curl -fsS -X POST "$B/api/pools/coders-a/undrain"            # {"drained":false}
 # Cancel is separate from drain and ends the run now.
 curl -fsS -X POST "$B/api/pools/coders-a/cancel"             # {"cancelled_run_id":"01M..."}
 
-# The background lane: the switch, each box's state, and the jobs.
+# The background lane: the switch, each box's state, the jobs, and the PR doctor's
+# follow-up reviews (`reviews.today` of `reviews.per_day`, and the PRs waiting for a slot).
 curl -fsS "$B/api/background"
-# Queue one box-noop job, the only producer this series ships. It exists so the lane can
-# be measured: how fast a coder loop's claim takes its box back, and how often the guard
-# fires. No automatic producer enqueues it.
+# Queue one box-noop job. It exists so the lane can be measured: how fast a coder loop's
+# claim takes its box back, and how often the guard fires.
 curl -fsS -X POST "$B/api/background/box-noop" \
   -H 'Content-Type: application/json' -d '{"repo": "andrewthetechie/jelly-swipe"}'
+# The one-PR canary: queue a pr-doctor run for exactly one PR, through the producer's own
+# eligibility rules. 404 for a repo or PR the scheduler has never read, 409 with the reason
+# when the doctor may not touch it (already marked, `do-not-merge`, a reason it has no fix
+# for) or when a job is already queued. It works with the automatic producer off, because
+# `SCHEDULER_BG_KINDS` gates producers and not the lane's pick.
+curl -fsS -X POST "$B/api/background/pr-doctor" \
+  -H 'Content-Type: application/json' -d '{"repo": "andrewthetechie/jelly-swipe", "pr": 7}'
 
 # Every pool, its drain flag and its lease (draft 12's C8 condition reads this):
 curl -fsS "$B/api/pools" | jq -c '.[] | {coder_pool, drained, run: .lease.run_id}'
@@ -907,6 +915,61 @@ FABRO_API_TOKEN=$(ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/
   guard (or by an eviction before it reached the box). A guard that could not cancel
   itself blocks its stage instead, and that *is* visible: `fabro events <run> -p` shows
   `✗ Failed hook exited with code 2`, and the job is recorded `failed`.
+
+#### The PR doctor: what it does, and how to stop it
+
+One blocked factory pull request gets **one** attempt: a `pr-doctor` background run fixes
+what the merge phase's last report says is wrong, validates it, and pushes; then the
+scheduler leases exactly one `pr-review` on it. If that does not merge the PR, the PR gets
+`ai-review-needs-human` back and one comment, and the doctor never touches it again
+(more-local-inference D13, D14).
+
+```sh
+# What the lane thinks: the switch, the jobs, and the doctor's reviews.
+curl -fsS "$B/api/background" | jq '{switch, counts, reviews}'
+# One PR by hand, with the automatic producer off.
+curl -fsS -X POST "$B/api/background/pr-doctor" \
+  -H 'Content-Type: application/json' -d '{"repo": "andrewthetechie/jelly-swipe", "pr": 7}'
+# The scheduler's own record of one attempt.
+curl -fsS "$B/api/background" | jq '.jobs[] | select(.kind == "pr-doctor")'
+```
+
+The attempt is recorded on the PR itself, as one comment whose first line is the marker
+(C6). It is the only thing that decides "already tried", so it is also how to undo one by
+hand — deleting the comment makes the PR eligible again:
+
+```
+<!-- fabro:pr-doctor head=<sha before> pushed=<pending|none|sha after> review=<fire|skip> run=<id> -->
+```
+
+`pushed=pending` means the run died inside its last node: if the PR's head is no longer
+`head=`, the push landed and the review runs; otherwise the PR is handed off. `review=skip`
+means the doctor itself decided a fresh review could not pass — usually a criterion only
+`.fabro/ci.sh` can prove, which the doctor may not edit — so no hosted credits are spent on
+it. The comment's body lists every command the doctor ran, with its last lines of output,
+for whoever takes the PR.
+
+**Stopping it.** Two switches, and neither touches anything else:
+
+```sh
+# 1. No new doctor runs. Jobs already queued wait, and a run already started finishes
+#    (or is cancelled) through its own rules.
+SCHEDULER_BG_KINDS=box-noop    # in ~/fabro/.env, then: docker compose up -d --no-deps scheduler
+# 2. No follow-up reviews. The fix and the push still happen; every PR is handed off
+#    with no review instead of waiting.
+SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY=0
+```
+
+`SCHEDULER_BACKGROUND=off` stops both, along with the rest of the lane's new work. Because
+the kinds list gates **producers**, a job queued by hand through
+`POST /api/background/pr-doctor` still runs with `SCHEDULER_BG_KINDS=box-noop`: that is what
+makes the one-PR canary possible.
+
+**The follow-up review is a coder-loop lease.** It holds a box like a `backlog` run, it is
+dispatched **ahead** of the issue queue, and it obeys the peak-hours pause. It is not a
+queue item, so its release writes no issue label and restores no `agent` label — the only
+writes are the hand-off's. `/api/pools` reports its lease with `"target_kind": "pr"`, and the
+page links it to the PR rather than to an issue of the same number.
 
 #### Breaking a stuck lease
 
@@ -1084,7 +1147,8 @@ how this project already passes per-host values:
 | `SCHEDULER_BG_SLOT_RESERVE` | `3` | Run slots fabro must have free — `SCHEDULER_MAX_CONCURRENT_RUNS` minus every active run, `pending` included — before a background run starts (D8). Keeps fabro's first-come run cap from being spent on background work. |
 | `SCHEDULER_BOX_HEALTH` | the two boxes' `/health` (compose) | The boxes in the lane, as `pool=url` pairs in the same format `fabro-io box-claim` reads. **Empty means no box is in the lane and the lane does nothing at all** — no `/health` read, no fabro call, no row. |
 | `SCHEDULER_MAX_CONCURRENT_RUNS` | `8` | fabro's own `server.scheduler.max_concurrent_runs`, copied here because the scheduler can read the cap only from itself. Keep the two equal: a larger value would hand background runs slots that do not exist. |
-| `SCHEDULER_BG_KINDS` | every known kind (compose: `box-noop`) | Which job kinds' producers run, comma-separated. An unknown kind is a `ConfigError`. Turning one kind off leaves the rest of the lane alone. |
+| `SCHEDULER_BG_KINDS` | every known kind (compose: `box-noop,pr-doctor`) | Which job kinds' **producers** run, comma-separated. An unknown kind is a `ConfigError`. Turning one kind off leaves the rest of the lane alone, and a job queued by hand (`POST /api/background/pr-doctor`) still runs, because this gates producers and not the lane's pick (C7). |
+| `SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY` | `6` | The most follow-up `pr-review` runs the PR doctor may dispatch in one UTC day, across every repository (operator decision 3). A review spends hosted credits; over the cap a pushed PR waits in `review_pending` and goes first the next day, still ahead of the issue queue. A review that failed to dispatch does not count. `0` turns the reviews off without turning the doctor off: the fix and the push still happen, and the PR is handed off with no review. |
 | `FABRO_API_TOKEN` | — | The dispatch credential, from `~/fabro/scheduler.env`. It is fabro's **dev token**, read from `/storage/server.dev-token` in the container — fabro supports exactly one, so this cannot be rotated independently of the CLI and `discord-notify.sh`. Needed by `POST /api/dispatch-once` and by the dispatch loop: without it the endpoint answers `503`, the loop does not start, and everything else, `/health` included, works unchanged. Never logged, never rendered, never stored in SQLite. |
 | `GITHUB_TOKEN` | — | The inventory's credential **and, from draft 08, the label writer's**, from `~/fabro/scheduler.env` on the host. **Not** in `~/fabro/.env`: the scheduler gets its own env file so it never receives fabro's `SESSION_SECRET`, and this repository is public, so neither belongs in `repos.toml`. It needs `issues: read` **and `issues: write`** on the four repos — the read is the inventory, the write is `agent-in-progress` and removing `agent`. A classic token's `repo` scope covers both; a fine-grained PAT must be given both. Without it the inventory is not refreshed *and* the dispatch loop does not start. Never logged, never rendered and never stored in SQLite. |
 
