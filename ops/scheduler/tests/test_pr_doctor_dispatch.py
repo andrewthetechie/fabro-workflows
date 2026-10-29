@@ -28,8 +28,9 @@ import respx
 
 from fabro_scheduler.config import load_config
 from fabro_scheduler.dispatch import DispatchLoop
+from fabro_scheduler.doctor import HANDOFF_REVIEW_NOT_STARTED_COMMENT
 from fabro_scheduler.fabro import FabroClient
-from fabro_scheduler.lease import Lease, LeaseStore
+from fabro_scheduler.lease import Lease, LeaseConflict, LeaseStore
 from fabro_scheduler.reconcile import reconcile_leases
 from fabro_scheduler.store import Store
 
@@ -359,6 +360,9 @@ def test_a_missing_automation_row_hands_the_pr_off_after_six_tries(
     assert store.background_job(job_id)["outcome"] == "handed_off_no_review"
     assert store.background_job(job_id)["review_failures"] == 6
     assert recorder.made("POST", "/api/v1/runs") == []
+    # The fix was pushed and nobody asked a reviewer: "no review would pass" would be false.
+    comments = [call[2] for call in recorder.writes() if COMMENTS.search(GITHUB_API + call[1])]
+    assert comments == [{"body": HANDOFF_REVIEW_NOT_STARTED_COMMENT}]
 
 
 def test_the_review_retries_back_off_over_about_half_an_hour(
@@ -538,3 +542,68 @@ def test_the_receipt_scan_ignores_a_pr_lease(config, store, leases, fabro, recor
         if lease.target_kind == "issue"
     }
     assert live == set()
+
+
+# --- the orphan sweep and a refused lease (the Phase 2 review's F9) -----------------
+
+
+def test_a_review_that_ended_with_no_lease_is_handed_off_by_the_release_poll(
+    config, store, leases, fabro, recorder, respx_mock
+):
+    """A crash between the review's release and its hand-off left the job at `review_fired`
+    with no lease, and nothing ever moved it."""
+    install_run(recorder, kind="succeeded")
+    install_pr(recorder, report="blocked")
+    install_labels(recorder)
+    respx.post(url__regex=COMMENTS).mock(
+        side_effect=lambda request: (recorder.record(request), httpx.Response(200, json={}))[1]
+    )
+    job_id = pending_review(store)
+    store.start_background_review(job_id, run_id="REV1", now=NOW)
+
+    reconcile_leases(config, store, leases, fabro, "ghp_test")
+
+    assert store.background_job(job_id)["outcome"] == "handed_off"
+    assert store.orphaned_review_jobs() == []
+
+
+def test_an_orphaned_review_still_running_is_left_alone(
+    config, store, leases, fabro, recorder, respx_mock
+):
+    install_run(recorder, kind="running")
+    job_id = pending_review(store)
+    store.start_background_review(job_id, run_id="REV1", now=NOW)
+    reconcile_leases(config, store, leases, fabro, "ghp_test")
+    assert store.background_job(job_id)["outcome"] == "review_fired"
+    assert recorder.writes() == []
+
+
+def test_a_review_with_a_lease_is_not_an_orphan(config, store, leases, fabro, recorder, respx_mock):
+    job_id = pending_review(store)
+    store.start_background_review(job_id, run_id="REV1", now=NOW)
+    take_review_lease(leases)
+    assert store.orphaned_review_jobs() == []
+
+
+def test_a_refused_lease_records_the_review_so_no_second_one_goes_out(
+    config, store, leases, fabro, recorder, respx_mock, monkeypatch
+):
+    """After `LeaseConflict` the job stayed `review_pending`, and the next tick dispatched a
+    second review while the first ran untracked."""
+    install_fabro(recorder, run_ids=("REV1", "REV2"))
+    install_automations(recorder)
+    job_id = pending_review(store)
+
+    def refuse(lease):
+        raise LeaseConflict("coders-a is held")
+
+    monkeypatch.setattr(leases, "acquire", refuse)
+    dispatch = loop(config, store, leases, fabro)
+    dispatch.tick()
+    dispatch._review_retry_at.clear()
+    dispatch.tick()
+
+    row = store.background_job(job_id)
+    assert (row["outcome"], row["review_run_id"]) == ("review_fired", "REV1")
+    assert len(recorder.made("POST", "/api/v1/runs")) == 1
+    assert [int(job["job_id"]) for job in store.orphaned_review_jobs()] == [job_id]

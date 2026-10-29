@@ -51,14 +51,28 @@ HANDOFF_COMMENT = (
     "a human needs to take it from here."
 )
 
-# The hand-off when no review ran: `pushed=none`, or a `review=skip` marker (operator
-# decision 2), or a review whose dispatch failed three times. The sentence above names a review
-# that never ran, and a report that states a stopping point the run passed is what
-# invariants-merge's *Reporting* rows exist to prevent -- a block reason nobody can verify is
-# worse than one that is merely different from the task's quoted string.
+# The hand-off when the doctor itself judged no review could pass (a `review=skip` marker,
+# operator decision 2). The sentence above names a review that never ran, and a report that
+# states a stopping point the run passed is what invariants-merge's *Reporting* rows exist to
+# prevent -- a block reason nobody can verify is worse than one that is merely different from
+# the task's quoted string.
 HANDOFF_NO_REVIEW_COMMENT = (
     "The PR doctor's one attempt did not get this merged, and no follow-up review would "
     "pass; a human needs to take it from here."
+)
+
+# The run died inside `publish` and the PR head never moved: the marker says
+# `pushed=pending`, so this is the only comment that says the push did not land.
+HANDOFF_NOT_PUSHED_COMMENT = (
+    "The PR doctor's push did not land, so this pull request is unchanged and no follow-up "
+    "review ran; a human needs to take it from here."
+)
+
+# The fix was pushed, but the follow-up review could not be dispatched after every retry. "No
+# review would pass" would be false: nobody asked.
+HANDOFF_REVIEW_NOT_STARTED_COMMENT = (
+    "The PR doctor pushed a fix, but its follow-up review could not be started; a human "
+    "needs to take it from here."
 )
 
 # The label every hand-off restores (D13): the merge queue hands off any PR carrying it, so a
@@ -84,9 +98,9 @@ CATEGORIES = (FINDINGS, REFUTER, CI, HYGIENE, REVIEW)
 # `fail '...'` in `_shared/review-merge/review-merge.fabro` (or its `ralph` copy), or of the
 # text `refute_gate` writes to `refute_reason.txt`.
 REASON_PREFIXES: tuple[tuple[str, str], ...] = (
-    # fix_gate, line 951: the review's own fixer left findings unfixed.
+    # merge_gate check 9: the review's own fixer left findings unfixed.
     ("There are unfixed findings; a human must merge this PR.", FINDINGS),
-    # fix_gate, the error-severity variant: an error finding the fix record does not account
+    # merge_gate, the error-severity variant: an error finding the fix record does not account
     # for. Same work as the line above.
     (
         "The review reported an error-severity finding of its own that its record does not "
@@ -109,7 +123,7 @@ REASON_PREFIXES: tuple[tuple[str, str], ...] = (
     # hygiene_reason.txt: the tamper/erosion block, samples included. A `config_changed`
     # block is the same prefix and is excluded separately below.
     ("Diff hygiene blocks the merge: ", HYGIENE),
-    # fix_gate, line 943: the fixer returned needs_human or wrote no valid result. It is here
+    # merge_gate check 7: the fixer returned needs_human or wrote no valid result. It is here
     # because the live reports under it list concrete leftovers (operator decision 1).
     ("The review did not end in a mergeable state.", REVIEW),
 )
@@ -503,18 +517,20 @@ def hand_off(
     reviewed: bool,
     now: datetime | None = None,
     client: httpx.Client | None = None,
+    body: str | None = None,
+    post_comment: bool = True,
 ) -> bool:
     """Restore `ai-review-needs-human` and post one comment (task 06 step 8). Never raises.
 
     The label goes first. It is the signal the merge queue reads (`merge-queue`'s guard hands
-    off anything that carries it), so a GitHub failure between the two writes leaves the PR
-    visibly held for a human rather than half-announced. The job's outcome is recorded last,
-    with the outcome the caller decided -- `handed_off`, or `handed_off_no_review` when no
-    review ran.
+    off anything that carries it), so a GitHub failure after it leaves the PR visibly held
+    for a human rather than half-announced. The job's outcome is recorded **next**, before the
+    comment: every caller retries a job whose outcome did not move (the next tick finishes a
+    `running` job again), and a label is idempotent where a comment is not, so a crash can
+    lose the comment but never post it twice.
 
-    There is no retry path: the job is not enqueued again once it has had its attempt (D13),
-    so a duplicate comment is not possible, and a failure here is logged for an operator
-    rather than left in a queue that cannot move.
+    `body` overrides the comment the `reviewed` flag picks; `post_comment=False` posts none,
+    for a `pushed=none` marker that already says a human must take the PR.
     """
     now = now or datetime.now(UTC)
     repo = str(_field(job, "repo") or "")
@@ -522,7 +538,8 @@ def hand_off(
         number = int(str(_field(job, "target") or 0))
     except (TypeError, ValueError):
         number = 0
-    body = HANDOFF_COMMENT if reviewed else HANDOFF_NO_REVIEW_COMMENT
+    if body is None:
+        body = HANDOFF_COMMENT if reviewed else HANDOFF_NO_REVIEW_COMMENT
     ok = True
     if repo and number > 0:
         try:
@@ -530,12 +547,6 @@ def hand_off(
         except GitHubError as exc:
             ok = False
             log.error("pr-doctor: %s#%s: could not restore %s: %s", repo, number, NEEDS_HUMAN_LABEL, exc)
-        try:
-            comment(repo, number, body, token, client=client)
-        except GitHubError as exc:
-            ok = False
-            log.error("pr-doctor: %s#%s: could not post the hand-off comment: %s", repo, number, exc)
-        log.info("pr-doctor: %s#%s handed off (%s)", repo, number, outcome)
     else:
         ok = False
         log.error(
@@ -545,6 +556,14 @@ def hand_off(
     store.set_background_outcome(
         int(str(_field(job, "job_id") or 0)), outcome=outcome, now=now
     )
+    if repo and number > 0:
+        if post_comment:
+            try:
+                comment(repo, number, body, token, client=client)
+            except GitHubError as exc:
+                ok = False
+                log.error("pr-doctor: %s#%s: could not post the hand-off comment: %s", repo, number, exc)
+        log.info("pr-doctor: %s#%s handed off (%s)", repo, number, outcome)
     return ok
 
 

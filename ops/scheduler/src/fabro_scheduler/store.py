@@ -1355,6 +1355,22 @@ class Store:
                 "AND outcome = 'review_pending' ORDER BY created_at, job_id"
             ).fetchall()
 
+    def orphaned_review_jobs(self) -> list[sqlite3.Row]:
+        """Doctor jobs at `review_fired` whose review run holds no lease.
+
+        Two ways to get here, both one HTTP call wide: the scheduler stopped between the
+        review's release and its hand-off, or the review started but its lease was refused
+        (`LeaseConflict`). Nothing else ever moves such a job on, so the release poll reads
+        each one's run and hands it off once the run is over.
+        """
+        with self._lock:
+            return self._conn.execute(
+                "SELECT j.* FROM background_jobs j WHERE j.kind = 'pr-doctor' "
+                "AND j.outcome = 'review_fired' AND j.review_run_id IS NOT NULL "
+                "AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.run_id = j.review_run_id) "
+                "ORDER BY j.job_id"
+            ).fetchall()
+
     def failed_doctor_jobs(self, *, limit: int = 20) -> list[sqlite3.Row]:
         """Doctor jobs whose run failed with no marker, newest first.
 

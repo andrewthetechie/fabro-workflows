@@ -559,6 +559,57 @@ def reconcile_leases(
                 "reconcile: %s#%s run %s terminal (%s); released, not requeued",
                 lease.repo, lease.issue_number, lease.run_id, _classify(run),
             )
+    actions.extend(_sweep_orphaned_reviews(config, store, fabro_client, github_token))
+    return actions
+
+
+def _sweep_orphaned_reviews(
+    config: SchedulerConfig,
+    store: Store,
+    fabro_client: FabroClient,
+    github_token: str,
+) -> list[ReleaseAction]:
+    """Hand off every `review_fired` doctor job whose review has no lease and has ended.
+
+    The Phase 2 review's F9: a crash between a review's release and its hand-off, or a
+    review whose lease was refused after it started, left the job at `review_fired` with
+    nothing to move it, and the PR without its labels and without a comment. One `GET` per
+    such job, and there is normally none.
+    """
+    actions: list[ReleaseAction] = []
+    for job in store.orphaned_review_jobs():
+        run_id = str(job["review_run_id"])
+        try:
+            number = int(str(job["target"] or 0))
+        except (TypeError, ValueError):
+            number = 0
+        lease = Lease(
+            coder_pool="",
+            repo=str(job["repo"]),
+            issue_number=number,
+            run_id=run_id,
+            dispatched_at=datetime.now(UTC),
+            workflow="pr-review",
+            target_kind="pr",
+        )
+        try:
+            run = fabro_client.get_run(run_id)
+        except FabroError as exc:
+            if exc.status_code != 404:
+                log.info(
+                    "reconcile: orphaned review %s for %s#%s unreadable (%s); next poll",
+                    run_id, lease.repo, number, exc,
+                )
+                continue
+            run = None
+        if run is not None and not is_terminal(run):
+            continue
+        log.warning(
+            "reconcile: %s#%s review run %s ended with no lease (a crash or a refused "
+            "lease); handing it off now",
+            lease.repo, number, run_id,
+        )
+        actions.append(_hand_off_review(config, store, lease, github_token, run=run))
     return actions
 
 

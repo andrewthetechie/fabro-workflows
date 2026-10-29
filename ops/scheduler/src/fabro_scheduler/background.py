@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 import httpx
 
 from .config import BACKGROUND_JOB_PRIORITY, SchedulerConfig, predicted_gap_minutes
-from .doctor import KIND as DOCTOR_KIND, hand_off, parse_marker
+from .doctor import HANDOFF_NOT_PUSHED_COMMENT, KIND as DOCTOR_KIND, hand_off, parse_marker
 from .fabro import FabroClient, FabroError, RunNotStarted, status_kind, status_reason
 from .github import GitHubError
 from .lease import Lease, LeaseStore
@@ -637,7 +637,15 @@ class BackgroundLane:
                 repo,
                 number,
             )
-            return self._hand_off_job(job, reviewed=False, outcome="handed_off_no_review", now=now)
+            # A `pushed=none` marker already tells the human to take the PR, and "no review
+            # would pass" would be wrong for an attempt that changed nothing: label only.
+            return self._hand_off_job(
+                job,
+                reviewed=False,
+                outcome="handed_off_no_review",
+                now=now,
+                post_comment=not marker.pushed_nothing,
+            )
         if marker.pushed and marker.pushed != "pending":
             return self._queue_review(job, now)
         head = facts.head_sha if facts is not None else None
@@ -659,7 +667,13 @@ class BackgroundLane:
             repo,
             number,
         )
-        return self._hand_off_job(job, reviewed=False, outcome="handed_off_no_review", now=now)
+        return self._hand_off_job(
+            job,
+            reviewed=False,
+            outcome="handed_off_no_review",
+            now=now,
+            body=HANDOFF_NOT_PUSHED_COMMENT,
+        )
 
     def _queue_review(self, job, now: datetime) -> JobEnd:
         """Put the doctor's follow-up review in the queue (task 06 step 7)."""
@@ -673,7 +687,16 @@ class BackgroundLane:
         )
         return JobEnd(job_id, str(job["kind"]), "done", "review_pending")
 
-    def _hand_off_job(self, job, *, reviewed: bool, outcome: str, now: datetime) -> JobEnd:
+    def _hand_off_job(
+        self,
+        job,
+        *,
+        reviewed: bool,
+        outcome: str,
+        now: datetime,
+        body: str | None = None,
+        post_comment: bool = True,
+    ) -> JobEnd:
         """Restore the needs-human label and say so on the PR (task 06 step 8)."""
         hand_off(
             self._store,
@@ -682,6 +705,8 @@ class BackgroundLane:
             outcome=outcome,
             reviewed=reviewed,
             now=now,
+            body=body,
+            post_comment=post_comment,
         )
         return JobEnd(int(job["job_id"]), str(job["kind"]), "done", outcome)
 

@@ -10,6 +10,8 @@ is recorded as a failure instead of a requeue.
 from __future__ import annotations
 
 import json
+
+import httpx
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -793,7 +795,7 @@ def test_the_page_and_the_api_render_the_lane(tmp_path):
 # removed and neither a review nor a hand-off.
 
 
-from fabro_scheduler.doctor import format_marker  # noqa: E402
+from fabro_scheduler.doctor import HANDOFF_NOT_PUSHED_COMMENT, format_marker  # noqa: E402
 from fabro_scheduler.github import GitHubError  # noqa: E402
 from fabro_scheduler.prfacts import PrFacts  # noqa: E402
 
@@ -904,7 +906,9 @@ def test_pushed_sha_queues_the_one_follow_up_review(store, leases):
     assert store.running_background_jobs() == [], "the box is free again"
 
 
-def test_pushed_none_hands_off_without_a_review(store, leases, respx_mock):
+def test_pushed_none_hands_off_with_the_label_alone(store, leases, respx_mock):
+    """The marker already says "A human needs to take it from here", and "no follow-up review
+    would pass" is wrong for an attempt that changed nothing (the Phase 2 review's F10)."""
     posted = respx_mock.post(
         "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/comments"
     ).respond(200, json={})
@@ -917,9 +921,7 @@ def test_pushed_none_hands_off_without_a_review(store, leases, respx_mock):
     doctor_lane(config(), store, leases, DoctorFabro(), reader).sync(NOW)
     row = store.background_job(job_id)
     assert (row["state"], row["outcome"]) == ("done", "handed_off_no_review")
-    assert labels.called and posted.called
-    body = json.loads(posted.calls[0].request.content)["body"]
-    assert "no follow-up review" in body
+    assert labels.called and not posted.called
     assert json.loads(labels.calls[0].request.content)["labels"] == [
         "ai-review-needs-human"
     ]
@@ -954,7 +956,7 @@ def test_pushed_pending_with_a_moved_head_counts_as_pushed(store, leases):
 
 
 def test_pushed_pending_with_an_unmoved_head_hands_off(store, leases, respx_mock):
-    respx_mock.post(
+    posted = respx_mock.post(
         "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/comments"
     ).respond(200, json={})
     respx_mock.post(
@@ -967,6 +969,31 @@ def test_pushed_pending_with_an_unmoved_head_hands_off(store, leases, respx_mock
     job_id = doctor_job(store)
     doctor_lane(config(), store, leases, DoctorFabro("failed", "deterministic"), reader).sync(NOW)
     assert store.background_job(job_id)["outcome"] == "handed_off_no_review"
+    # The marker says `pushed=pending`; this comment is the only thing that says it did not land.
+    assert json.loads(posted.calls[0].request.content)["body"] == HANDOFF_NOT_PUSHED_COMMENT
+
+
+def test_the_hand_off_records_the_outcome_before_it_comments(store, leases, respx_mock):
+    """The Phase 2 review's F9: with the comment first, a crash before the outcome was
+    recorded made the next tick finish the job again and post a second comment. A label is
+    idempotent and a comment is not, so the outcome goes between them."""
+    seen = []
+    job_id = doctor_job(store)
+
+    def on_comment(request):
+        seen.append(store.background_job(job_id)["outcome"])
+        return httpx.Response(200, json={})
+
+    respx_mock.post(
+        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/comments"
+    ).mock(side_effect=on_comment)
+    respx_mock.post(
+        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/labels"
+    ).respond(200, json=[])
+    reader = FakePrReader(doctor_facts(marker=format_marker(
+        head="a" * 40, pushed="b" * 40, review="skip", run="doctorrun")))
+    doctor_lane(config(), store, leases, DoctorFabro(), reader).sync(NOW)
+    assert seen == ["handed_off_no_review"]
 
 
 def test_an_unreadable_pr_leaves_the_job_running_for_the_next_tick(store, leases):

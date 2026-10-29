@@ -60,7 +60,7 @@ import httpx
 
 from .background import BackgroundLane, BoxHealth
 from .config import SchedulerConfig
-from .doctor import HANDOFF_NO_REVIEW_COMMENT, hand_off
+from .doctor import HANDOFF_REVIEW_NOT_STARTED_COMMENT, hand_off
 from .fabro import FabroClient, FabroError, RunNotStarted
 from .github import (
     IN_PROGRESS_LABEL,
@@ -455,15 +455,18 @@ class DispatchLoop:
         try:
             self._leases.acquire(lease)
         except LeaseConflict as exc:
+            # The run is started, so it is THE review: record it, or the next tick would
+            # dispatch a second one while this runs untracked. With no lease, the release
+            # poll's orphan sweep hands the PR off once the run ends.
+            self._store.start_background_review(job_id, run_id=result.run_id, now=now)
             log.error(
                 "dispatch: %s#%s: the follow-up review run %s was started but its lease was "
-                "refused, so nothing is tracking it: %s",
+                "refused (%s); it is recorded, and the PR is handed off when it ends",
                 repo,
                 pr_number,
                 result.run_id,
                 exc,
             )
-            self._review_failed(job, f"the lease was refused: {exc}", now)
             return False
         self._store.start_background_review(job_id, run_id=result.run_id, now=now)
         self._review_retry_at.pop(job_id, None)
@@ -503,7 +506,7 @@ class DispatchLoop:
             job_id,
             job["repo"],
             job["target"],
-            HANDOFF_NO_REVIEW_COMMENT,
+            HANDOFF_REVIEW_NOT_STARTED_COMMENT,
         )
         hand_off(
             self._store,
@@ -512,6 +515,7 @@ class DispatchLoop:
             outcome="handed_off_no_review",
             reviewed=False,
             now=now,
+            body=HANDOFF_REVIEW_NOT_STARTED_COMMENT,
         )
 
     def _peak_pause(self, now: datetime) -> bool:
