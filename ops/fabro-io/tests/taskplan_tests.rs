@@ -311,7 +311,10 @@ timeout = 300
 // --- changed_set over a real repository (C1) -----------------------------------------
 
 fn git(root: &Path, args: &[&str]) -> String {
+    // Signing off, for the same reason as `gitsafe_tests.rs`: a global `commit.gpgsign`
+    // turns every fixture commit into a flake.
     let out = Command::new("git")
+        .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
         .arg("-C")
         .arg(root)
         .args(args)

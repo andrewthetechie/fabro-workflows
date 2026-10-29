@@ -11,8 +11,17 @@ use std::process::Command;
 use fabro_io::gitsafe;
 
 fn git(dir: &Path, args: &[&str]) -> String {
+    // `commit.gpgsign=false` is load-bearing: an operator whose global config signs commits
+    // makes every fixture commit fail with "gpg failed to sign the data" when the agent is
+    // locked, which is a flaky gate rather than a real failure. `ops/gate_tests/harness.py`
+    // scrubs the same setting for the Python suite.
     let out = Command::new("git")
-        .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+        .args([
+            "-c", "user.email=t@t",
+            "-c", "user.name=t",
+            "-c", "commit.gpgsign=false",
+            "-c", "tag.gpgsign=false",
+        ])
         .args(args)
         .current_dir(dir)
         .output()

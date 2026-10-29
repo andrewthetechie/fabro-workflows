@@ -41,8 +41,15 @@ timeout = 30
 "#;
 
 fn git(dir: &Path, args: &[&str]) -> String {
+    // Signing off, for the same reason as `gitsafe_tests.rs`: a global `commit.gpgsign`
+    // turns every fixture commit into a flake.
     let out = Command::new("git")
-        .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+        .args([
+            "-c", "user.email=t@t",
+            "-c", "user.name=t",
+            "-c", "commit.gpgsign=false",
+            "-c", "tag.gpgsign=false",
+        ])
         .args(args)
         .current_dir(dir)
         .output()
