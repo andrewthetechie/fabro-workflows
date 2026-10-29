@@ -11,7 +11,11 @@ matters here is a runtime one:
   conflict; a conflict ends in `git rebase --abort` and the un-rebased head (decision 4).
 * `fix_gate` must refuse a fix turn with no Input receipt, and turn the contract's `reviewable`
   into the marker's `review=`.
-* `validate` is the repository's own gate, and a second red leaves `pushable=no`.
+* `validate` is the repository's own gate. `pushable` is `no` from its first line and `yes`
+  only on green, so a red, a second red or a killed `ci.sh` pushes nothing.
+* `fix_gate` keeps an accepted contract where `validate` cannot delete it, and `publish`
+  reads that copy: run in their real order, the marker carries the fixer's summary and
+  blockers.
 * `publish` is the only GitHub writer, and its order is the contract: the marker first, then
   the labels, then the squash-and-push, then the marker edited to `pushed=<new head>`. A failed
   push leaves `pushed=pending` (C6, D9).
@@ -25,8 +29,8 @@ from __future__ import annotations
 
 import json
 
-from harness import (ORIG_PATH, WF, cat, count, extract, git, jq, lastjson, present, rebase, rm,
-                     sh, stub, write)
+from harness import (ORIG_PATH, WF, cat, count, edges, extract, git, jq, lastjson, present,
+                     rebase, rm, sh, stub, write)
 
 GRAPH = WF / "pr-doctor" / "workflow.fabro"
 
@@ -398,11 +402,35 @@ def test_validate_red_asks_for_one_more_fix_turn(ck, tmp_path):
     ck("validate: ci_ok is false", "false", D.routed(r, "ci_ok"))
     ck("validate: retry_ok", "true", D.routed(r, "retry_ok"))
     ck("validate: attempt 1", "1", cat(D.fabro / "doctor/attempts"))
-    ck("validate: still pushable", "yes", cat(D.fabro / "doctor/pushable"))
+    ck("validate: not pushable until a later green", "no", cat(D.fabro / "doctor/pushable"))
     ck("validate: the failure is the second turn's input", "1",
        count("boom", file=D.fabro / "doctor/ci_failure.md"))
     ck("validate: the fix contract is deleted first", "absent",
        present(D.fabro / "doctor/fix.json"))
+
+
+def test_validate_green_makes_it_pushable(ck, tmp_path):
+    D = Doctor(ck, tmp_path, "validate-green-push")
+    ci_repo(D, fail_times=0)
+    write(D.fabro / "doctor/pushable", "no\n")
+    D.run("validate", env={"CI_COUNTER": str(D.counter)})
+    ck("validate: green says pushable", "yes", cat(D.fabro / "doctor/pushable"))
+
+
+def test_a_killed_validate_pushes_nothing(ck, tmp_path):
+    """F2 of the Phase 2 review: a timeout or a killed shell runs no line after the one in
+    progress, and the node's unconditional edge takes it to `publish`. `fix_gate`'s `yes`
+    must not survive that."""
+    D = Doctor(ck, tmp_path, "validate-killed")
+    ci_repo(D, fail_times=0)
+    # ci.sh kills the validate shell itself, as fabro's timeout would.
+    write(D.repo / ".fabro/ci.sh", "#!/bin/sh\nkill -KILL $PPID\nsleep 5\n")
+    (D.repo / ".fabro/ci.sh").chmod(0o755)
+    write(D.fabro / "doctor/pushable", "yes\n")  # what a passing fix_gate left
+    r = D.run("validate", env={"CI_COUNTER": str(D.counter)})
+    ck("validate: the shell was killed", "no-routing",
+       "no-routing" if "context_updates" not in (r.out or "") else "routed")
+    ck("validate: nothing is pushable", "no", cat(D.fabro / "doctor/pushable"))
 
 
 def test_validate_red_twice_stops_pushing(ck, tmp_path):
@@ -456,7 +484,7 @@ def publish_repo(D: Doctor, *, push_fails: bool = False) -> str:
     write(D.fabro / "doctor/reviewable", "fire\n")
     write(D.fabro / "doctor/run_id", "01MDOCTOR")
     write(D.fabro / "doctor/reason.txt", "**Reason:** There are unfixed findings.\n")
-    write(D.fabro / "doctor/fix.json", fix_contract("v1"))
+    write(D.fabro / "doctor/fix.accepted.json", fix_contract("v1"))
     write(
         D.fabro / "doctor/commands.json",
         json.dumps([{"command": "npm test", "ok": True, "output": "1 passing"}]),
@@ -547,7 +575,7 @@ def test_publish_reports_each_command_it_ran(ck, tmp_path):
             [{"command": "npm run test:coverage", "ok": False, "output": "coverage 41%"}]
         ),
     )
-    write(D.fabro / "doctor/fix.json", fix_contract("v1", reviewable=False))
+    write(D.fabro / "doctor/fix.accepted.json", fix_contract("v1", reviewable=False))
     write(D.fabro / "doctor/reviewable", "skip\n")
     D.run("publish", cwd=D.repo)
     body = cat(D.fabro / "doctor/comment.tail")
@@ -555,6 +583,70 @@ def test_publish_reports_each_command_it_ran(ck, tmp_path):
     ck("publish: and its failure", "1", count("FAILED", body))
     ck("publish: and its output", "1", count("coverage 41%", body))
     ck("publish: no follow-up review is announced", "1", count("No follow-up review", body))
+    ck("publish: no review is promised", "0", count("One automated review follows", body))
+
+
+def test_fix_gate_validate_publish_in_their_real_order(ck, tmp_path):
+    """F1 of the Phase 2 review: `validate` deletes `fix.json`, so a `publish` that read it
+    posted "The fix turn submitted no report." and an empty blocker list on every PR. This
+    runs the three nodes in the order the graph does, with nothing written between them."""
+    D = Doctor(ck, tmp_path, "sequence")
+    publish_repo(D)
+    rm(D.fabro / "doctor/fix.accepted.json", D.fabro / "doctor/pushable",
+       D.fabro / "doctor/reviewable", D.fabro / "doctor/commands.json")
+    ci_repo(D, fail_times=0)
+    git("-c", "user.email=t@t", "-c", "user.name=t", "add", ".fabro", cwd=D.repo)
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "ci", cwd=D.repo)
+    write(D.fabro / ".io/stage.json", json.dumps({"visit": "v1"}))
+    write(D.fabro / "doctor/fix.json", fix_contract("v1", reviewable=False))
+    r = D.run("fix_gate")
+    ck("sequence: fix_gate accepts", "true", D.routed(r, "fix_ok"))
+    r = D.run("validate", env={"CI_COUNTER": str(D.counter)})
+    ck("sequence: validate is green", "true", D.routed(r, "ci_ok"))
+    ck("sequence: validate deleted fix.json", "absent", present(D.fabro / "doctor/fix.json"))
+    r = D.run("publish", cwd=D.repo)
+    ck("sequence: publish pushed", "pushed", D.routed(r, "published"))
+    body = cat(D.fabro / "doctor/comment.tail")
+    ck("sequence: the summary is in the comment", "1", count("fixed the guard", body))
+    ck("sequence: no 'submitted no report'", "0", count("submitted no report", body))
+    ck("sequence: the blocker is in the comment", "1",
+       count("not_code: the PR body has no commit-body block", body))
+    ck("sequence: review=skip", "1", count("review=skip", file=D.fabro / "doctor/comment.head"))
+    ck("sequence: no review is promised", "0", count("One automated review follows", body))
+    ck("sequence: it says no review follows", "1", count("No automated review follows", body))
+
+
+def test_a_rejected_second_turn_does_not_reuse_the_first_turns_account(ck, tmp_path):
+    D = Doctor(ck, tmp_path, "gate-reject-after-accept")
+    write(D.fabro / ".io/stage.json", json.dumps({"visit": "v1"}))
+    write(D.fabro / "doctor/fix.json", fix_contract("v1"))
+    D.run("fix_gate")
+    ck("fix_gate: the accepted copy exists", "present",
+       present(D.fabro / "doctor/fix.accepted.json"))
+    write(D.fabro / ".io/stage.json", json.dumps({"visit": "v2"}))
+    rm(D.fabro / "doctor/fix.json")
+    D.run("fix_gate")
+    ck("fix_gate: a rejected turn removes it", "absent",
+       present(D.fabro / "doctor/fix.accepted.json"))
+
+
+def test_publish_scrubs_the_tokens_from_the_comment(ck, tmp_path):
+    """Two of the repositories are public, and `output` is whatever the command printed."""
+    D = Doctor(ck, tmp_path, "publish-scrub")
+    publish_repo(D)
+    secret = "fab_tok.EN+with/odd*chars"
+    gh_secret = "ghs_0123456789abcdef"
+    write(
+        D.fabro / "doctor/commands.json",
+        json.dumps([{"command": "env", "ok": True,
+                     "output": f"FABRO_API_TOKEN={secret}\nGITHUB_TOKEN={gh_secret}"}]),
+    )
+    D.run("publish", cwd=D.repo,
+          env={"FABRO_API_TOKEN": secret, "GITHUB_TOKEN": gh_secret, "GH_TOKEN": gh_secret})
+    body = cat(D.fabro / "doctor/comment.md")
+    ck("publish: the fabro token is gone", "0", count(secret, body, flags="F"))
+    ck("publish: the GitHub token is gone", "0", count(gh_secret, body, flags="F"))
+    ck("publish: each is marked redacted", "2", count(r"\[redacted\]", body))
 
 
 # --- decision 5's gate -------------------------------------------------------------
@@ -573,10 +665,22 @@ def test_the_package_can_only_produce_commits_authored_as_the_doctor(ck):
     ck("publish: commits with the doctor's email", "1",
        count(r"-c user.email=noreply@fabro.sh", publish))
     ck("publish: and the doctor's name", "1", count(r"-c user.name=fabro-pr-doctor", publish))
-    ck("the package has exactly one commit command", "1", count(r"git -c user.email", graph))
+    ck("the package has exactly one commit command", "1",
+       count(r"git -c user.email=[^ ]* -c user.name=[^ ]* commit", graph))
     ck("no bare git commit", "0", count(r"git commit", graph))
     # Never the base branch, and always the lease.
     ck("publish: pushes the head ref", "1", count(r'origin "HEAD:\$H"', publish))
     ck("publish: never pushes the base ref", "0", count(r"HEAD:\$B", publish))
     ck("publish: force-with-lease, never a bare --force", "0",
        str(len([word for word in publish.split() if word == "--force"])))
+
+
+def test_a_failed_claim_ends_the_run_failed(ck):
+    """F8 of the Phase 2 review: through `stop` a failed `claim` ended the run `succeeded`
+    with no marker, and the scheduler recorded a used attempt nothing showed."""
+    E = edges(GRAPH)
+    for e in ("claim->prep outcome=succeeded && context.doctor_go=true",
+              "claim->stop outcome=succeeded && context.doctor_go=false",
+              "claim->exit "):
+        ck(f"edge: {e}", "1", count(e, E, flags="xF"))
+    ck("edge: claim has no other exit", "3", count("^claim->", E))

@@ -17,10 +17,12 @@
 // failure after `claim` routes to `publish` -- a marker with `pushed=none` and a hand-off is
 // more useful to a human than a silently aborted run.
 //
-// **Every command node's fallback edge lands on `publish` or `stop`.** `stop` is for the PR
-// that must not be touched at all (merged, closed, already marked, do-not-merge) and writes
-// nothing. `publish` is the honest sink for "the attempt produced nothing to push": it
-// records the attempt and hands the PR to a human.
+// **Every command node's fallback edge lands on `publish`, except `claim`'s.** `stop` is for
+// the PR that must not be touched at all (merged, closed, already marked, do-not-merge) and
+// writes nothing. `publish` is the honest sink for "the attempt produced nothing to push": it
+// records the attempt and hands the PR to a human. A `claim` that fails (a `gh` error, a bad
+// `pr_number`) goes straight to `exit`, so the run ends failed: through `stop` it would end
+// succeeded with no marker, and the scheduler would record a used attempt nobody can see.
 digraph PrDoctor {
     graph [
         goal="Fix what a blocked factory pull request's merge-phase report says is wrong, validate it, and push once; record the one attempt in a marker comment",
@@ -72,7 +74,7 @@ PR='{{ inputs.pr_number }}'
 case \"$PR\" in '' | *[!0-9]*) echo 'pr_number must be a positive integer' >&2; exit 1;; esac
 if [ \"$PR\" -lt 1 ]; then echo 'pr_number must be a positive integer' >&2; exit 1; fi
 echo \"$PR\" > /tmp/fabro/pr_number
-rm -f /tmp/fabro/doctor/report.md /tmp/fabro/doctor/reason.txt /tmp/fabro/doctor/fix.json /tmp/fabro/doctor/commands.json /tmp/fabro/doctor/pushable /tmp/fabro/doctor/reviewable /tmp/fabro/doctor/head_before /tmp/fabro/doctor/fix_base /tmp/fabro/doctor/ci_failure.md /tmp/fabro/doctor/run_id
+rm -f /tmp/fabro/doctor/report.md /tmp/fabro/doctor/reason.txt /tmp/fabro/doctor/fix.json /tmp/fabro/doctor/fix.accepted.json /tmp/fabro/doctor/commands.json /tmp/fabro/doctor/pushable /tmp/fabro/doctor/reviewable /tmp/fabro/doctor/head_before /tmp/fabro/doctor/fix_base /tmp/fabro/doctor/ci_failure.md /tmp/fabro/doctor/run_id
 echo 0 > /tmp/fabro/doctor/attempts
 echo no > /tmp/fabro/doctor/pushable
 echo skip > /tmp/fabro/doctor/reviewable
@@ -128,6 +130,16 @@ echo '{\"context_updates\":{\"doctor_stop\":true}}'"]
     // `fix_base` is where the doctor's own commits start, captured after the rebase so the
     // squash in `publish` covers exactly this run's work.
     //
+    // The rebase sets its own committer identity, as `publish`'s commit does: a sandbox
+    // with no git identity would otherwise fail every rebase, abort it, and carry on
+    // un-rebased with no visible sign. The authors are kept either way.
+    //
+    // The code index and the agent guide are installed exactly as pr-review's `claim` does
+    // it, after the rebase so the index matches the tree `fix` works on: the guide promises
+    // the `code_*` tools, which answer nothing without an index. Both paths go in
+    // `.git/info/exclude`, so no checkpoint commits them and `publish`'s tree comparison
+    // never sees them.
+    //
     // No dependency install here: `validate` runs `./.fabro/setup.sh` immediately after
     // this and again after the second fix turn, and a setup run inside `prep` would double
     // the install time inside a 40-minute job.
@@ -156,7 +168,7 @@ if ! gh pr checkout \"$PR\"; then
 fi
 git rev-parse HEAD > /tmp/fabro/doctor/head_before
 if ! git merge-base --is-ancestor \"origin/$B\" HEAD; then
-  if git rebase \"origin/$B\" > /tmp/fabro/doctor/rebase.log 2>&1; then
+  if git -c user.email=noreply@fabro.sh -c user.name=fabro-pr-doctor rebase \"origin/$B\" > /tmp/fabro/doctor/rebase.log 2>&1; then
     echo 'prep: rebased onto origin/'$B
   else
     git rebase --abort >/dev/null 2>&1 || true
@@ -164,6 +176,12 @@ if ! git merge-base --is-ancestor \"origin/$B\" HEAD; then
   fi
 fi
 git rev-parse HEAD > /tmp/fabro/doctor/fix_base
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index >/dev/null 2>&1; fabro-code map >/dev/null 2>&1 || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi
+if [ -z \"$FABRO_AGENT_GUIDE\" ]; then echo 'agent guide: FABRO_AGENT_GUIDE is empty, nothing installed' >&2
+elif git ls-files --error-unmatch .codex/instructions.md >/dev/null 2>&1; then echo 'agent guide: the repository tracks .codex/instructions.md, left alone' >&2
+elif mkdir -p .codex && printf '%s' \"$FABRO_AGENT_GUIDE\" > .codex/instructions.md; then grep -qx '.codex/instructions.md' .git/info/exclude 2>/dev/null || echo '.codex/instructions.md' >> .git/info/exclude
+else echo 'agent guide: could not write .codex/instructions.md' >&2; fi
 if [ ! -s /tmp/fabro/doctor/report.md ]; then
   echo 'The merge-phase report was not found on this PR. Work from the GitHub checks below and the PR description.' > /tmp/fabro/doctor/report.md
 fi
@@ -191,17 +209,25 @@ echo '{\"context_updates\":{\"prep_ok\":true}}'"]
     // `reviewable` is the fixer's judgement of whether one more hosted review could pass
     // (decision 2): when it says no, the marker carries `review=skip` and the scheduler
     // hands the PR off with no review at all.
+    //
+    // An accepted contract is copied to `fix.accepted.json`, which is what `publish` reads.
+    // `validate` deletes `fix.json` so a second fix turn cannot be judged on the first
+    // turn's file, and without the copy every marker lost the summary and the blockers.
+    // A rejected turn deletes the copy, so `publish` never shows an earlier turn's account
+    // as this one's.
     fix_gate [label="Check the fix turn", shape=parallelogram, output_schema="routing", timeout="5m",
         script="F=/tmp/fabro/doctor/fix.json
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
 if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   echo 'fix.json has no valid Input receipt, so the fix turn did not finish; nothing will be pushed' >&2
+  rm -f /tmp/fabro/doctor/fix.accepted.json
   echo no > /tmp/fabro/doctor/pushable
   echo skip > /tmp/fabro/doctor/reviewable
   echo '{\"context_updates\":{\"fix_ok\":false}}'
   exit 0
 fi
+cp $F /tmp/fabro/doctor/fix.accepted.json
 jq -c '.commands // []' $F > /tmp/fabro/doctor/commands.json
 if [ \"$(jq -r '.reviewable // false' $F)\" = true ]; then
   echo fire > /tmp/fabro/doctor/reviewable
@@ -211,20 +237,29 @@ fi
 echo yes > /tmp/fabro/doctor/pushable
 echo '{\"context_updates\":{\"fix_ok\":true}}'"]
 
-    // The repository's own gate, exactly as backlog's `validate` runs it: `setup.sh` then
-    // `ci.sh`. Red takes one more `fix` visit with the failure; red twice sets
-    // `pushable=no`, so `publish` records the attempt with nothing to push.
+    // The repository's own gate, as backlog's `MODE=full` branch runs it: `setup.sh` then
+    // `ci.sh`, never `task-check` (a deliberate deviation: the whole suite is the right
+    // check before a hosted review, and it ran in under 9 minutes on every repository).
+    // Red takes one more `fix` visit with the failure; red twice goes to `publish` with
+    // nothing to push.
+    //
+    // `pushable` is written `no` before anything runs and `yes` only on green, as backlog
+    // writes its failure record first: a timeout or a killed shell runs no line after the
+    // one in progress, the node fails, and the unconditional edge takes it to `publish`.
+    // With `fix_gate`'s `yes` still in place that pushed code no CI had passed.
     //
     // Nothing here prints the log: fabro scans stdout and stderr for objects and takes the
     // LAST one, so a `{` in the output would compete with the routing object
     // (invariants-merge, *Reporting*). The log lives in a file, and its tail goes into the
     // second fix turn's input.
     validate [label="Run the repository's CI", shape=parallelogram, output_schema="routing", timeout="20m",
-        script="rm -f /tmp/fabro/doctor/fix.json
+        script="echo no > /tmp/fabro/doctor/pushable
+rm -f /tmp/fabro/doctor/fix.json
 A=$(cat /tmp/fabro/doctor/attempts 2>/dev/null || echo 0)
 ./.fabro/setup.sh > /tmp/fabro/doctor/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/doctor/validate_output.log 2>&1
 RC=$?
 if [ $RC -eq 0 ]; then
+  echo yes > /tmp/fabro/doctor/pushable
   echo 'validate: ./.fabro/setup.sh && ./.fabro/ci.sh passed'
   echo '{\"context_updates\":{\"ci_ok\":true,\"retry_ok\":false,\"attempts\":'$A'}}'
   exit 0
@@ -237,7 +272,6 @@ echo $A > /tmp/fabro/doctor/attempts
   tail -c 6000 /tmp/fabro/doctor/validate_output.log
 } > /tmp/fabro/doctor/ci_failure.md
 if [ $A -ge 2 ]; then
-  echo no > /tmp/fabro/doctor/pushable
   R=false
   echo 'validate: still red after the second fix attempt; the attempt is recorded with nothing pushed' >&2
 else
@@ -269,6 +303,12 @@ echo '{\"context_updates\":{\"ci_ok\":false,\"retry_ok\":'$R',\"attempts\":'$A'}
     // `pushed=none` also means "nothing was changed": the tree is compared with `fix_base`'s,
     // so an empty checkpoint commit after a fixer that changed nothing does not become an
     // empty push.
+    //
+    // The opening sentence follows the review decision, not only the push: a `review=skip`
+    // push has no review coming. The body carries the model's text and command output
+    // verbatim, and two of the repositories are public, so the values of
+    // `FABRO_API_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` are replaced before anything is
+    // posted (a literal match, so no character in a token is read as a pattern).
     publish [label="Record the attempt and push", shape=parallelogram, output_schema="routing", timeout="15m",
         script="exec 3>&1 >>/tmp/fabro/doctor/publish.log 2>&1
 PR=$(cat /tmp/fabro/pr_number)
@@ -292,8 +332,10 @@ echo \"<!-- fabro:pr-doctor head=$HEADB pushed=$PUSHED review=$REVIEW run=$RUN -
   echo
   if [ \"$PUSHED\" = none ]; then
     echo 'The PR doctor spent its one attempt on this pull request and pushed nothing. A human needs to take it from here.'
-  else
+  elif [ \"$REVIEW\" = fire ]; then
     echo 'The PR doctor fixed what the merge-phase report listed and pushed the fix. One automated review follows.'
+  else
+    echo 'The PR doctor fixed what it could of the merge-phase report and pushed the fix. No automated review follows, for the reasons below, so a human needs to take it from here.'
   fi
   echo
   echo '**What blocked the merge:**'
@@ -302,7 +344,7 @@ echo \"<!-- fabro:pr-doctor head=$HEADB pushed=$PUSHED review=$REVIEW run=$RUN -
   echo
   echo '**What the doctor changed:**'
   echo
-  jq -r '.summary' /tmp/fabro/doctor/fix.json 2>/dev/null || echo 'The fix turn submitted no report.'
+  jq -r '.summary' /tmp/fabro/doctor/fix.accepted.json 2>/dev/null || echo 'The fix turn submitted no report.'
   if [ -s /tmp/fabro/doctor/commands.json ]; then
     echo
     echo '**Commands the report named, and what they did:**'
@@ -311,15 +353,21 @@ echo \"<!-- fabro:pr-doctor head=$HEADB pushed=$PUSHED review=$REVIEW run=$RUN -
     echo
     jq -r '.[] | select((.output // \"\") != \"\") | .output' /tmp/fabro/doctor/commands.json | sed 's/^/    /' | head -40
   fi
-  if [ \"$REVIEW\" = skip ]; then
+  BLOCKERS=$(jq -r '(.blockers // [])[] | \"- \" + .kind + \": \" + .text' /tmp/fabro/doctor/fix.accepted.json 2>/dev/null || true)
+  if [ \"$PUSHED\" != none ] && [ \"$REVIEW\" = skip ]; then
     echo
     echo '**No follow-up review is worth running on it:**'
     echo
-    jq -r '(.blockers // [])[] | \"- \" + .kind + \": \" + .text' /tmp/fabro/doctor/fix.json 2>/dev/null
+    if [ -n \"$BLOCKERS\" ]; then echo \"$BLOCKERS\"; else echo 'The fixer gave no reason.'; fi
+  elif [ -n \"$BLOCKERS\" ]; then
+    echo
+    echo '**What the fixer said it could not fix:**'
+    echo
+    echo \"$BLOCKERS\"
   fi
   echo
   echo 'The marker on the first line records this run, and the doctor does not touch this pull request again.'
-} > $TAILFILE
+} | awk -v t1=\"${FABRO_API_TOKEN:-}\" -v t2=\"${GITHUB_TOKEN:-}\" -v t3=\"${GH_TOKEN:-}\" 'function scrub(line, t,  out, i) { if (length(t) < 8) return line; out = \"\"; while ((i = index(line, t)) > 0) { out = out substr(line, 1, i - 1) \"[redacted]\"; line = substr(line, i + length(t)) } return out line } { $0 = scrub($0, t1); $0 = scrub($0, t2); $0 = scrub($0, t3); print }' > $TAILFILE
 cat $HEADFILE $TAILFILE > $BODY
 if [ ! -s $BODY ]; then echo 'could not build the marker comment' >&2; exit 1; fi
 ID=$(jq -r '[(.[] | select((.body // \"\") | test(\"^<!-- fabro:pr-doctor\"; \"m\"))) | .id] | last // \"\"' /tmp/fabro/doctor/comments.json 2>/dev/null || true)
@@ -366,7 +414,8 @@ exit 0"]
 
     start -> claim
     claim -> prep [condition="outcome=succeeded && context.doctor_go=true"]
-    claim -> stop
+    claim -> stop [condition="outcome=succeeded && context.doctor_go=false"]
+    claim -> exit
     prep -> fix [condition="outcome=succeeded && context.prep_ok=true"]
     prep -> publish
     fix -> fix_gate

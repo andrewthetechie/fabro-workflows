@@ -442,9 +442,9 @@ class Counts(unittest.TestCase):
             # offline count; `fabro validate` for it is the operator's task 12.
             "box-noop": (4, 3),
             # pr-doctor (more-local-inference task 06): start, exit, claim, stop, prep, fix,
-            # fix_gate, validate, publish -- 9 nodes, 12 edges. The offline count; the
-            # operator's `make check-host` records the validated numbers in AGENTS.md.
-            "pr-doctor": (9, 12),
+            # fix_gate, validate, publish -- 9 nodes, 13 edges since the Phase 2 review's
+            # `claim -> exit` (12 confirmed by `make check-host` on 2026-10-29).
+            "pr-doctor": (9, 13),
             # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
             # this pair grows with each one; it is the offline parser's count, not a
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.
