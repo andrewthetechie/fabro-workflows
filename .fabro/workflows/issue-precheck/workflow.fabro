@@ -177,7 +177,8 @@ echo '{\"context_updates\":{\"verdict\":\"'$VERDICT'\"}}'"]
     // ---- The one node that writes to GitHub (D9, C6) ----
     //
     // It posts the issue's precheck marker comment, or edits the existing one in place. The
-    // body is capped at 1,500 characters, the size C9 gives a precheck in `background.md`. It
+    // body is capped at 1,500 characters, the size C9 gives a precheck in `background.md`, by
+    // cutting the model's text at a whole line so the shadow-mode footer always survives. It
     // carries the model's text verbatim, and two of the repositories are public, so the values
     // of `FABRO_API_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` are replaced before anything is
     // posted (a literal match, as pr-doctor's `publish` does it).
@@ -216,10 +217,16 @@ echo \"<!-- fabro:precheck verdict=$V body=$HASH main=$MAIN at=$AT run=$RUN -->\
     echo
     echo 'The model said `'$RAW'`, but '\"$RULE\"', so this counts as `ready`.'
   fi
-  echo
-  echo '_Shadow mode: this note does not change the queue. The factory is measuring how often these verdicts are right before it acts on them._'
 } | awk -v t1=\"${FABRO_API_TOKEN:-}\" -v t2=\"${GITHUB_TOKEN:-}\" -v t3=\"${GH_TOKEN:-}\" 'function scrub(line, t,  out, i) { if (length(t) < 8) return line; out = \"\"; while ((i = index(line, t)) > 0) { out = out substr(line, 1, i - 1) \"[redacted]\"; line = substr(line, i + length(t)) } return out line } { $0 = scrub($0, t1); $0 = scrub($0, t2); $0 = scrub($0, t3); print }' > $P/comment.tail
-cat $P/comment.head $P/comment.tail | head -c 1500 > $BODY
+FOOT='_Shadow mode: this note does not change the queue. The factory is measuring how often these verdicts are right before it acts on them._'
+LIMIT=$((1500 - $(wc -c < $P/comment.head) - ${#FOOT} - 20))
+TAIL=$(($(wc -c < $P/comment.tail)))
+if [ \"$TAIL\" -gt \"$LIMIT\" ]; then
+  { head -c \"$LIMIT\" $P/comment.tail | sed '$d'; echo '- (cut to fit)'; } > $P/comment.cut
+else
+  cp $P/comment.tail $P/comment.cut
+fi
+{ cat $P/comment.head $P/comment.cut; echo; echo \"$FOOT\"; } > $BODY
 if [ ! -s $BODY ]; then echo 'could not build the marker comment' >&2; exit 1; fi
 ID=$(gh api \"repos/$R/issues/$N/comments?per_page=100\" --paginate 2>/dev/null | jq -s 'add // []' | jq -r '[(.[] | select((.body // \"\") | startswith(\"<!-- fabro:precheck \"))) | .id] | last // \"\"')
 if [ -n \"$ID\" ]; then

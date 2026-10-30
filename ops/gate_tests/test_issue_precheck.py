@@ -12,8 +12,8 @@ matters here is a runtime one:
   other than `ready` with no evidence is `ready`, and so is a `blocked` whose blocker is not
   another open issue in the repository.
 * `post` is the only GitHub writer. It posts the marker comment, or edits the existing one in
-  place, with the marker on the first line, capped at 1,500 characters, and with no token in
-  it.
+  place, with the marker on the first line, capped at 1,500 characters (cut at a whole line,
+  keeping the shadow-mode footer), and with no token in it.
 """
 
 from __future__ import annotations
@@ -336,6 +336,8 @@ def test_post_caps_the_comment_and_scrubs_tokens(ck, tmp_path):
     ck("post: capped at 1500 bytes", "true", str(len(body.encode()) <= 1500).lower())
     ck("post: the token is redacted", "0", count(secret, body))
     ck("post: the marker survives the cap", "1", count("^<!-- fabro:precheck ", body))
+    ck("post: the cut is at a whole line, and says so", "1", count("^- (cut to fit)$", body))
+    ck("post: the shadow footer survives the cap", "1", count("^_Shadow mode", body))
 
 
 # --- routing -----------------------------------------------------------------------
