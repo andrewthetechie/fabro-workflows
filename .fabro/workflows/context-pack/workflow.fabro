@@ -1,0 +1,243 @@
+// context-pack (more-local-inference task 08): a local model maps the code one queued issue
+// will touch, so the hosted `decompose` and `plan` stages start from a map instead of
+// exploring. Hosted exploration was most of the credits in the week the z.ai quota ran out.
+//
+// It is a **background package** (D4, R16): every agent stage resolves to the run's `-bg`
+// model row, `box-guard` protects the box, and nothing here takes a box-claim. The scheduler
+// starts it in a coder loop's gap, only for an issue whose precheck said `ready`, and may
+// cancel it at any moment before `post` (D9).
+//
+// The pack is posted as the issue's one context-pack marker comment (C6). `backlog`'s and
+// `ralph`'s `claim` copy the newest one into `/tmp/fabro/background.md` (C9), which
+// `decompose` and both `plan` stages read as an optional input. The scheduler records on each
+// run's `run_history` row whether a pack existed at dispatch (`had_pack`, D21), so its effect
+// on credits can be measured.
+//
+// **Nothing writes to GitHub before `post`**, and `post` writes only the marker comment, so a
+// cancel anywhere before it leaves nothing behind and the job is simply queued again.
+//
+// A failed node takes its unconditional edge to `exit`, which ends the run failed, so the lane
+// records it as a failure. `stop` is the one quiet ending: an issue that is no longer open, or
+// whose current text already has a fresh pack, gets nothing.
+digraph ContextPack {
+    graph [
+        goal="Map the files, symbols, tests and commands one queued issue will touch, from the code at main; record the map in one marker comment",
+        // Above every node timeout below (`gather`'s 15m included): R2 compares them, and the
+        // watchdog must never fire before a node's own timeout does.
+        stall_timeout="30m",
+        // Bound the preamble: the prompt names its inputs by path (invariants-graph, the
+        // `default_fidelity` row).
+        default_fidelity="truncate",
+        // Every model in a background package is the run's `-bg` pool (R16): the `*` rule and
+        // `.bg` are the same expression, so an agent node that lost its class would still run
+        // on the box and never reach a hosted model. There is no `[run.model.fallbacks]` row for
+        // either `-bg` name, so a box error fails the stage instead of spending credits (R14).
+        model_stylesheet="
+            *   { model: {{ inputs.coder_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+            .bg { model: {{ inputs.coder_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // ---- Read the issue, decide whether to map it, and stage the input ----
+    //
+    // `issue_number` arrives from the scheduler's producer and is interpolated exactly once,
+    // in single quotes, as in `issue-precheck`. `/tmp/fabro/box` is this package's half of
+    // C2/R16: the pool arrives with the `-bg` suffix, and `box-guard` looks up the loop's box,
+    // which never carries it.
+    //
+    // C6 *Staleness*: the newest pack marker is fresh when its `body=` is this text's hash
+    // **and** either its `main=` is the checkout's HEAD or its `at=` is under 24 hours old. A
+    // fresh pack stops the run without writing. `main` is read here, not in `prep`, because
+    // the sandbox has already cloned it and the decision needs it.
+    //
+    // `issue.md` is what `gather` reads: the issue, its labels, its last ten comments that are
+    // not fabro markers, and the precheck's note when there is one, which often cites files
+    // already.
+    claim [label="Read the issue", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="set -e
+P=/tmp/fabro/pack
+mkdir -p $P
+POOL='{{ inputs.coder_pool }}'
+echo \"${POOL%-bg}\" > /tmp/fabro/box || true
+N='{{ inputs.issue_number }}'
+case \"$N\" in '' | *[!0-9]*) echo 'issue_number must be a positive integer' >&2; exit 1;; esac
+if [ \"$N\" -lt 1 ]; then echo 'issue_number must be a positive integer' >&2; exit 1; fi
+rm -f /tmp/fabro/pack.json $P/pack.md $P/kept.json $P/dropped $P/run_id $P/main_sha $P/body_hash $P/issue.md $P/precheck_note.md
+echo \"$N\" > $P/issue_number
+if ! gh issue view \"$N\" --json number,title,body,state,url,labels > $P/issue.json; then
+  echo 'Could not read issue '$N' from GitHub.' >&2
+  exit 1
+fi
+R=$(jq -r '(.url // \"\") | split(\"/\") | .[3] + \"/\" + .[4]' $P/issue.json)
+echo \"$R\" > $P/repo
+if ! gh api \"repos/$R/issues/$N/comments?per_page=100\" --paginate > $P/comments.raw; then
+  echo 'Could not read the comments on issue '$N'.' >&2
+  exit 1
+fi
+jq -s 'add // []' $P/comments.raw > $P/comments.json
+if command -v sha256sum >/dev/null; then SUM=sha256sum; else SUM='shasum -a 256'; fi
+{ jq -j '.title // \"\"' $P/issue.json; echo; jq -j '.body // \"\"' $P/issue.json; } | $SUM | cut -c1-12 > $P/body_hash
+HASH=$(cat $P/body_hash)
+MAIN=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+echo \"$MAIN\" > $P/main_sha
+GO=true
+WHY=eligible
+S=$(jq -r .state $P/issue.json)
+case \"$S\" in OPEN) ;; *) GO=false; WHY='the issue is '$S', not OPEN' ;; esac
+if jq -e --arg h \"body=$HASH \" --arg m \"main=$MAIN \" '[.[] | (.body // \"\") | select(startswith(\"<!-- fabro:context-pack \"))] | (last // \"\") | contains($h) and (contains($m) or ((capture(\"at=(?<at>[^ ]+)\").at) | (now - fromdateiso8601) < 86400))' $P/comments.json >/dev/null 2>&1; then
+  GO=false
+  WHY='this text of the issue already has a fresh pack (body='$HASH')'
+fi
+if [ \"$GO\" != true ]; then
+  echo 'context-pack: not mapping issue '$N': '$WHY >&2
+  echo '{\"context_updates\":{\"pack_go\":false}}'
+  exit 0
+fi
+jq -r '[.[] | (.body // \"\") | select(startswith(\"<!-- fabro:precheck \"))] | last // empty' $P/comments.json | sed 1d > $P/precheck_note.md
+{
+  echo '# #'$N': '\"$(jq -r '.title // \"\"' $P/issue.json)\"
+  echo
+  echo 'Labels: '\"$(jq -r '[(.labels // [])[].name] | join(\", \")' $P/issue.json)\"
+  echo
+  jq -r '.body // \"\"' $P/issue.json
+  echo
+  echo '## Comments, oldest first (the last ten; fabro marker comments left out)'
+  echo
+  jq -r '[.[] | select((.body // \"\") | startswith(\"<!-- fabro:\") | not)] | .[-10:] | .[] | (\"### \" + (.user.login // \"?\") + \" at \" + (.created_at // \"?\")), \"\", ((.body // \"\") | .[0:2000]), \"\"' $P/comments.json
+  if [ -s $P/precheck_note.md ]; then
+    echo '## The precheck note (a local model read this issue against main)'
+    echo
+    cat $P/precheck_note.md
+  fi
+} > $P/issue.md
+echo '{\"context_updates\":{\"pack_go\":true}}'"]
+
+    stop [label="Leave the issue alone", shape=parallelogram, output_schema="routing", timeout="1m",
+        script="echo 'context-pack: the run stops without writing anything to GitHub.' >&2
+echo '{\"context_updates\":{\"pack_stop\":true}}'"]
+
+    // ---- The code index the map's tools read ----
+    //
+    // Exactly `issue-precheck`'s `prep`, less `main_sha`, which `claim` already wrote: the
+    // guide promises the `code_*` tools, which answer nothing without an index. Both paths go
+    // in `.git/info/exclude`. An index that cannot be built costs `gather` its fast tools,
+    // not the run.
+    prep [label="Index the checkout", shape=parallelogram, output_schema="routing", timeout="15m",
+        script="set -e
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index >/dev/null 2>&1 || echo 'prep: fabro-code index failed; gather runs without the index' >&2; fabro-code map >/dev/null 2>&1 || true; else echo 'prep: fabro-code is not in the image' >&2; fi
+if [ -z \"$FABRO_AGENT_GUIDE\" ]; then echo 'agent guide: FABRO_AGENT_GUIDE is empty, nothing installed' >&2
+elif git ls-files --error-unmatch .codex/instructions.md >/dev/null 2>&1; then echo 'agent guide: the repository tracks .codex/instructions.md, left alone' >&2
+elif mkdir -p .codex && printf '%s' \"$FABRO_AGENT_GUIDE\" > .codex/instructions.md; then grep -qx '.codex/instructions.md' .git/info/exclude 2>/dev/null || echo '.codex/instructions.md' >> .git/info/exclude
+else echo 'agent guide: could not write .codex/instructions.md' >&2; fi
+echo '{\"context_updates\":{\"prep_ok\":true}}'"]
+
+    // The box's one agent stage. Bounded at 15m; the prompt asks for about five minutes and
+    // twenty tool calls, and the scheduler's `typical_box_minutes` for the whole run is 8.
+    gather [label="Map the code", class="bg", timeout="15m", prompt="@prompts/gather.md.j2"]
+
+    // Checks the Input receipt, then holds the map to what a planner can trust and afford:
+    // every file and test whose path is not in the checkout is dropped (a wrong pointer costs
+    // a planner more than a missing one), a map with no file left fails, and so does one over
+    // 8,000 characters once rendered, since every `decompose` and `plan` visit pays for it
+    // (task 08 step 1). A failure posts nothing, and the lane records the job as failed.
+    gate [label="Check the map", shape=parallelogram, output_schema="routing", timeout="2m",
+        script="F=/tmp/fabro/pack.json
+P=/tmp/fabro/pack
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
+  echo 'pack.json has no valid Input receipt, so gather did not finish; nothing is posted' >&2
+  exit 1
+fi
+: > $P/found
+jq -r '[(.files // [])[].path, (.tests // [])[].path] | unique | .[]' $F | while IFS= read -r p; do
+  case \"$p\" in /* | *..*) continue ;; esac
+  if [ -e \"$p\" ]; then echo \"$p\" >> $P/found; fi
+done
+jq -R . $P/found | jq -s . > $P/found.json
+if ! jq --slurpfile ok $P/found.json '$ok[0] as $k | .files = [(.files // [])[] | select(.path as $p | any($k[]; . == $p))] | .tests = [(.tests // [])[] | select(.path as $p | any($k[]; . == $p))]' $F > $P/kept.json; then
+  echo 'could not read pack.json' >&2
+  exit 1
+fi
+DROPPED=$(( $(jq '((.files // []) | length) + ((.tests // []) | length)' $F) - $(jq '(.files | length) + (.tests | length)' $P/kept.json) ))
+echo \"$DROPPED\" > $P/dropped
+if [ \"$(jq '.files | length' $P/kept.json)\" -eq 0 ]; then
+  echo 'no file in the map exists in the checkout; nothing is posted' >&2
+  exit 1
+fi
+jq -r '\"### Files\", (.files[] | \"- `\" + .path + \"`\" + (if (.lines // \"\") != \"\" then \" lines \" + .lines else \"\" end) + \": \" + .why),
+  (if ((.symbols // []) | length) > 0 then \"\", \"### Symbols\", (.symbols[] | \"- `\" + .name + \"` at `\" + .where + \"`\" + (if ((.callers // []) | length) > 0 then \"; called from \" + ((.callers | map(\"`\" + . + \"`\")) | join(\", \")) else \"\" end)) else empty end),
+  (if (.tests | length) > 0 then \"\", \"### Tests\", (.tests[] | \"- `\" + .path + \"`: \" + .covers) else empty end),
+  (if ((.commands // []) | length) > 0 then \"\", \"### Commands\", (.commands[] | \"- `\" + .run + \"`: \" + .why) else empty end),
+  (if ((.task_map // []) | length) > 0 then \"\", \"### Task map (a draft)\", (.task_map | to_entries[] | ((.key + 1) | tostring) + \". \" + .value) else empty end),
+  (if (.notes // \"\") != \"\" then \"\", \"### Notes\", .notes else empty end)' $P/kept.json > $P/pack.md
+SIZE=$(($(wc -c < $P/pack.md)))
+if [ \"$SIZE\" -gt 8000 ]; then
+  echo 'the map is '$SIZE' characters, over the 8,000 a planner can afford; nothing is posted' >&2
+  exit 1
+fi
+echo 'gate: '$SIZE' characters, '$DROPPED' path(s) dropped'
+echo '{\"context_updates\":{\"pack_ok\":true}}'"]
+
+    // ---- The one node that writes to GitHub (D9, C6) ----
+    //
+    // It posts the issue's context-pack marker comment, or edits the existing one in place.
+    // The map is the model's text, and two of the repositories are public, so the values of
+    // `FABRO_API_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` are replaced before anything is posted
+    // (a literal match, as `issue-precheck`'s `post` does it).
+    post [label="Post the map", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="exec 3>&1 >>/tmp/fabro/pack/post.log 2>&1
+P=/tmp/fabro/pack
+N=$(cat $P/issue_number)
+R=$(cat $P/repo)
+HASH=$(cat $P/body_hash)
+MAIN=$(cat $P/main_sha 2>/dev/null || true)
+[ -n \"$MAIN\" ] || MAIN=unknown
+AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+RUN=$(cat $P/run_id 2>/dev/null || true)
+[ -n \"$RUN\" ] || RUN=unknown
+BODY=$P/comment.md
+echo \"<!-- fabro:context-pack body=$HASH main=$MAIN at=$AT run=$RUN -->\" > $P/comment.head
+{
+  echo
+  echo '**Context pack.** A local model mapped the code at `main` that this issue touches. The planners start from it and check each line against the checkout: it is a map, not a plan.'
+  echo
+  cat $P/pack.md
+  echo
+  echo '_Built by a local model while a coder box was idle. It describes `main` at the commit named on the first line of this comment._'
+} | awk -v t1=\"${FABRO_API_TOKEN:-}\" -v t2=\"${GITHUB_TOKEN:-}\" -v t3=\"${GH_TOKEN:-}\" 'function scrub(line, t,  out, i) { if (length(t) < 8) return line; out = \"\"; while ((i = index(line, t)) > 0) { out = out substr(line, 1, i - 1) \"[redacted]\"; line = substr(line, i + length(t)) } return out line } { $0 = scrub($0, t1); $0 = scrub($0, t2); $0 = scrub($0, t3); print }' > $P/comment.tail
+cat $P/comment.head $P/comment.tail > $BODY
+if [ ! -s $BODY ]; then echo 'could not build the marker comment' >&2; exit 1; fi
+ID=$(gh api \"repos/$R/issues/$N/comments?per_page=100\" --paginate 2>/dev/null | jq -s 'add // []' | jq -r '[(.[] | select((.body // \"\") | startswith(\"<!-- fabro:context-pack \"))) | .id] | last // \"\"')
+if [ -n \"$ID\" ]; then
+  if ! jq -n --rawfile b $BODY '{body: $b}' | gh api -X PATCH \"repos/$R/issues/comments/$ID\" --input - >/dev/null; then
+    echo 'could not edit the existing context-pack comment' >&2
+    exit 1
+  fi
+else
+  if ! gh issue comment \"$N\" --body-file $BODY >/dev/null; then
+    echo 'could not post the context-pack comment' >&2
+    exit 1
+  fi
+fi
+echo 'post: context pack on issue '$N
+echo '{\"context_updates\":{\"posted\":true}}' >&3
+exit 0"]
+
+    start -> claim
+    claim -> prep [condition="outcome=succeeded && context.pack_go=true"]
+    claim -> stop [condition="outcome=succeeded && context.pack_go=false"]
+    claim -> exit
+    prep -> gather [condition="outcome=succeeded && context.prep_ok=true"]
+    prep -> exit
+    gather -> gate
+    gate -> post [condition="outcome=succeeded"]
+    gate -> exit
+    post -> exit
+    stop -> exit
+}

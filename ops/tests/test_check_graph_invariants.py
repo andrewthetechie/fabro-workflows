@@ -448,6 +448,9 @@ class Counts(unittest.TestCase):
             # issue-precheck (more-local-inference task 07): start, exit, claim, stop, prep,
             # check, gate, post -- 8 nodes, 11 edges.
             "issue-precheck": (8, 11),
+            # context-pack (more-local-inference task 08): the same shape -- claim, stop, prep,
+            # gather, gate, post.
+            "context-pack": (8, 11),
             # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
             # this pair grows with each one; it is the offline parser's count, not a
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.

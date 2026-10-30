@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "context_pack",
+  "title": "context_pack — a box-built code map of one queued issue (more-local-inference 08)",
+  "description": "What a local model found in the checkout at main for one issue: the files, symbols, tests and commands the work will touch. `gate` drops every file and test whose path is not in the checkout, renders the rest as Markdown, and fails a pack over 8,000 characters. `post` publishes it as the issue's context-pack marker comment, which backlog's and ralph's `claim` copy into background.md for decompose and plan. _io is stamped by the server and is not part of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["files", "symbols", "tests", "commands"],
+  "properties": {
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "description": "The files the work will read or change, most important first.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "why"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Repository-relative path, exactly as in the checkout." },
+          "lines": { "type": "string", "maxLength": 40, "description": "The line range that matters, as `40-95`." },
+          "why": { "type": "string", "minLength": 1, "maxLength": 200, "description": "One line: what is there and why the work needs it." }
+        }
+      }
+    },
+    "symbols": {
+      "type": "array",
+      "maxItems": 10,
+      "description": "The functions, classes, types or config keys the work will change or call.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "where"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "where": { "type": "string", "minLength": 1, "maxLength": 200, "description": "path:line of the definition." },
+          "callers": {
+            "type": "array",
+            "maxItems": 3,
+            "description": "path:line of up to three callers that a change would affect.",
+            "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "The test files that cover the code above, or where a new test belongs.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "covers"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "covers": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "maxItems": 5,
+      "description": "The commands that run those tests and checks, as the repository runs them.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run", "why"],
+        "properties": {
+          "run": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "why": { "type": "string", "minLength": 1, "maxLength": 160 }
+        }
+      }
+    },
+    "task_map": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Only for an issue big enough to split: a draft of the steps, one line each, in order.",
+      "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 600,
+      "description": "Traps a planner would hit: a generated file, a second copy of the logic, a test that needs a service."
+    }
+  }
+}

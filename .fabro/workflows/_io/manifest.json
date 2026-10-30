@@ -1266,6 +1266,27 @@
         }
       }
     },
+    "context-pack": {
+      "stages": {
+        "gather": {
+          "live": true,
+          "prompt": ".fabro/workflows/context-pack/prompts/gather.md.j2",
+          "inputs": [
+            {
+              "name": "issue.md",
+              "path": "/tmp/fabro/pack/issue.md",
+              "required": true,
+              "about": "the issue: its title, labels, body, its last ten comments that are not fabro markers, and the precheck's note when there is one"
+            }
+          ],
+          "output": {
+            "path": "/tmp/fabro/pack.json",
+            "schema": "context_pack"
+          },
+          "box": true
+        }
+      }
+    },
     "issue-triage": {
       "imports": {
         "triage_phase": "triage"
