@@ -33,6 +33,7 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
@@ -41,7 +42,9 @@ from .doctor import HANDOFF_NOT_PUSHED_COMMENT, KIND as DOCTOR_KIND, hand_off, p
 from .fabro import FabroClient, FabroError, RunNotStarted, status_kind, status_reason
 from .github import GitHubError
 from .lease import Lease, LeaseStore
-from .precheck import KIND as PRECHECK_KIND, Marker, outcome_for, read_marker
+from . import pack, precheck
+from .pack import KIND as PACK_KIND, PackMarker
+from .precheck import KIND as PRECHECK_KIND, Marker
 from .prfacts import PrFacts
 from .store import Store
 
@@ -53,6 +56,7 @@ JOB_WORKFLOWS = {
     "box-noop": "box-noop",
     "pr-doctor": "pr-doctor",
     "issue-precheck": "issue-precheck",
+    "context-pack": "context-pack",
 }
 
 
@@ -266,6 +270,7 @@ class BackgroundLane:
         health: BoxHealth | None = None,
         pr_reader: Callable[[str, int], PrFacts] | None = None,
         precheck_reader: Callable[[str, int], Marker | None] | None = None,
+        pack_reader: Callable[[str, int], PackMarker | None] | None = None,
         github_token: str = "",
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -282,7 +287,14 @@ class BackgroundLane:
         # mode). Injected for the same reasons as `pr_reader`; the default reads GitHub with the
         # lane's token, and with no token the verdict is simply not recorded.
         self._read_precheck = precheck_reader or (
-            (lambda repo, number: read_marker(repo, number, github_token))
+            (lambda repo, number: precheck.read_marker(repo, number, github_token))
+            if github_token
+            else None
+        )
+        # The context pack's marker, read back the same way (task 08): its outcome is what
+        # `run_history.had_pack` is computed from.
+        self._read_pack = pack_reader or (
+            (lambda repo, number: pack.read_marker(repo, number, github_token))
             if github_token
             else None
         )
@@ -567,7 +579,11 @@ class BackgroundLane:
                 continue
             end = self._finish_plain(job, kind, reason, now)
             if str(job["kind"]) == PRECHECK_KIND and end.state == "done":
-                end = self._record_verdict(job, end, now)
+                end = self._record_marker(
+                    job, end, now, self._read_precheck, precheck.outcome_for
+                )
+            elif str(job["kind"]) == PACK_KIND and end.state == "done":
+                end = self._record_marker(job, end, now, self._read_pack, pack.outcome_for)
             ended.append(end)
         for end in ended:
             log.info(
@@ -601,19 +617,30 @@ class BackgroundLane:
         )
         return JobEnd(job_id, str(job["kind"]), "failed", outcome)
 
-    def _record_verdict(self, job, end: JobEnd, now: datetime) -> JobEnd:
-        """A succeeded precheck's outcome is its verdict, read from the issue's marker.
+    def _record_marker(
+        self,
+        job,
+        end: JobEnd,
+        now: datetime,
+        reader: Callable[[str, int], Any] | None,
+        outcome_for: Callable[[Any, str], str],
+    ) -> JobEnd:
+        """A succeeded precheck's or pack's outcome, read from the issue's marker.
 
-        A read that fails leaves the plain `succeeded`: the verdict is still on the issue, and
-        the shadow's report can read it there.
+        The precheck's is its verdict (`verdict=<v>`), the pack's its run (`pack run=<id>`). A
+        read that fails leaves the plain `succeeded`: the marker is still on the issue, and the
+        report can read it there.
         """
-        if self._read_precheck is None:
+        if reader is None:
             return end
         try:
-            marker = self._read_precheck(str(job["repo"]), int(job["target"]))
+            marker = reader(str(job["repo"]), int(job["target"]))
         except (GitHubError, ValueError) as exc:
             log.info(
-                "background: precheck job %s: cannot read the verdict (%s)", job["job_id"], exc
+                "background: %s job %s: cannot read the marker (%s)",
+                job["kind"],
+                job["job_id"],
+                exc,
             )
             return end
         outcome = outcome_for(marker, str(job["run_id"] or ""))

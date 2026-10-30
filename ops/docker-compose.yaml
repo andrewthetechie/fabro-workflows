@@ -80,11 +80,13 @@ services:
       # Which job kinds' PRODUCERS run, comma-separated. It gates producers only, never the
       # lane's pick, so a job queued by hand through `POST /api/background/box-noop` still
       # runs with `box-noop` absent here. `issue-precheck` (more-local-inference 07, shadow mode:
-      # it posts a verdict and holds nothing) is the first real producer. `pr-doctor` was
+      # it posts a verdict and holds nothing) is the first real producer; `context-pack` (08)
+      # maps the issues the precheck passed, for `decompose` and `plan`. `pr-doctor` was
       # retired on 2026-10-30, and naming it fails startup. An empty value reads as unset here
       # (`:-`), and config.py's own default is every live kind.
-      SCHEDULER_BG_KINDS: "${SCHEDULER_BG_KINDS:-box-noop,issue-precheck}"
-      # How many of the next issues in dispatch order the precheck producer keeps checked.
+      SCHEDULER_BG_KINDS: "${SCHEDULER_BG_KINDS:-box-noop,issue-precheck,context-pack}"
+      # How many of the next issues in dispatch order the precheck producer keeps checked,
+      # and the context-pack producer keeps mapped.
       SCHEDULER_PRECHECK_TOP_N: "${SCHEDULER_PRECHECK_TOP_N:-10}"
       # The PR doctor's daily cap on follow-up `pr-review` runs, counted per UTC day across
       # every repository (operator decision 3). A review spends hosted credits; over the cap,

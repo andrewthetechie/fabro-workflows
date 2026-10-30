@@ -256,7 +256,10 @@ CREATE TABLE IF NOT EXISTS run_history (
   local_cost_usd_micros  INTEGER,
   hosted_cost_usd_micros INTEGER,
   workflow      TEXT NOT NULL DEFAULT 'backlog',  -- ADR 0029 O21: `backlog` | `ralph` | `pr-review`
-  target_kind   TEXT NOT NULL DEFAULT 'issue'     -- 'issue' | 'pr' (more-local-inference 06)
+  target_kind   TEXT NOT NULL DEFAULT 'issue',    -- 'issue' | 'pr' (more-local-inference 06)
+  had_pack         INTEGER,     -- 0 | 1: a context pack was posted before dispatch (08, D21)
+  pack_run         TEXT,        -- that pack's run id
+  precheck_verdict TEXT         -- the precheck's verdict before dispatch, or NULL
 );
 
 -- Issue #22, the scorecard. Five tables the collector fills after a run is released
@@ -383,6 +386,14 @@ RUN_HISTORY_COLUMNS = {
     "hosted_tokens": "hosted_tokens INTEGER",
     "local_cost_usd_micros": "local_cost_usd_micros INTEGER",
     "hosted_cost_usd_micros": "hosted_cost_usd_micros INTEGER",
+    # more-local-inference 08 (D21): what the background lane had posted on the issue when
+    # the run was dispatched, so a run's credits can be compared with and without a pack,
+    # and a precheck's verdict with how the run ended. Read from `background_jobs` when the
+    # run is archived (`_background_at_dispatch`). NULL on a row written before, and on a PR
+    # run; `had_pack` is 0 or 1 on every issue run since.
+    "had_pack": "had_pack INTEGER",
+    "pack_run": "pack_run TEXT",
+    "precheck_verdict": "precheck_verdict TEXT",
 }
 
 # The same, for the scorecard tables: the plan trial (#25) added per-stage tokens and
@@ -1038,13 +1049,21 @@ class Store:
             ).fetchone()
             if row is None:
                 return None
+            background = (
+                self._background_at_dispatch(
+                    row["repo"], str(row["issue_number"]), row["dispatched_at"]
+                )
+                if row["target_kind"] == "issue"
+                else (None, None, None)
+            )
             self._conn.execute(
                 "INSERT INTO run_history ("
                 "  run_id, coder_pool, repo, issue_number, dispatched_at, finished_at,"
                 "  kind, reason, category, requeue_attempt, pr_lookup, pr_number,"
                 "  pr_url, merged, local_tokens, hosted_tokens,"
-                "  local_cost_usd_micros, hosted_cost_usd_micros, workflow, target_kind"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "  local_cost_usd_micros, hosted_cost_usd_micros, workflow, target_kind,"
+                "  had_pack, pack_run, precheck_verdict"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO NOTHING",
                 (
                     row["run_id"],
@@ -1071,10 +1090,33 @@ class Store:
                     outcome.hosted_cost_usd_micros,
                     row["workflow"],
                     row["target_kind"],
+                    *background,
                 ),
             )
             self._conn.execute("DELETE FROM leases WHERE run_id = ?", (run_id,))
             return row
+
+    def _background_at_dispatch(
+        self, repo: str, target: str, dispatched_at: str
+    ) -> tuple[int, str | None, str | None]:
+        """`(had_pack, pack_run, precheck_verdict)` for an issue run, as of its dispatch.
+
+        The newest `done` job of each kind that finished before the run was dispatched, read
+        from the outcomes the lane records (`pack.outcome_for`, `precheck.outcome_for`). The
+        kinds and prefixes are spelled out here because those modules import this one. Called
+        inside `archive_and_release_lease`'s transaction, with the lock held.
+        """
+        found: dict[str, str | None] = {}
+        for kind, prefix in (("context-pack", "pack run="), ("issue-precheck", "verdict=")):
+            hit = self._conn.execute(
+                "SELECT outcome FROM background_jobs WHERE kind = ? AND repo = ? AND target = ? "
+                "AND state = 'done' AND outcome LIKE ? AND last_finished_at <= ? "
+                "ORDER BY last_finished_at DESC, job_id DESC LIMIT 1",
+                (kind, repo, target, prefix + "%", dispatched_at),
+            ).fetchone()
+            found[kind] = None if hit is None else str(hit["outcome"])[len(prefix):]
+        pack_run = found["context-pack"]
+        return (0 if pack_run is None else 1, pack_run, found["issue-precheck"])
 
     def forget_issue(self, repo: str, number: int) -> bool:
         """Drop one cached queue item. Returns whether a row was there to drop.
@@ -1325,6 +1367,19 @@ class Store:
                 "SELECT state, COUNT(*) AS n FROM background_jobs GROUP BY state"
             ).fetchall()
         return {row["state"]: int(row["n"]) for row in rows}
+
+    def latest_background_outcome(self, kind: str, repo: str, target: str) -> str | None:
+        """The outcome of the newest `done` job of this kind for `(repo, target)`, or None.
+
+        What the context-pack producer reads to find an issue the precheck passed.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT outcome FROM background_jobs WHERE kind = ? AND repo = ? AND target = ? "
+                "AND state = 'done' ORDER BY job_id DESC LIMIT 1",
+                (kind, repo, target),
+            ).fetchone()
+        return None if row is None else row["outcome"]
 
     def background_job_exists(self, kind: str, repo: str, target: str) -> bool:
         """Whether any job of this kind ever existed for `(repo, target)`, in any state.

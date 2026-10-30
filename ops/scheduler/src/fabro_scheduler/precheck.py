@@ -82,16 +82,16 @@ def newest_marker(comments: Sequence[Mapping[str, Any]]) -> Marker | None:
     return found
 
 
-def read_marker(
+def fetch_comments(
     repo: str, number: int, token: str, *, client: httpx.Client | None = None
-) -> Marker | None:
-    """The issue's newest precheck marker. Raises `GitHubError` on any failed read."""
+) -> list[Mapping[str, Any]]:
+    """Every comment on an issue, oldest first. Raises `GitHubError` on any failed read."""
     if not token or not token.strip():
-        raise GitHubError("GITHUB_TOKEN is not set; the precheck verdict cannot be read")
+        raise GitHubError("GITHUB_TOKEN is not set; the issue's markers cannot be read")
     owned = client is None
     http = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
     try:
-        comments = _get_all(
+        return _get_all(
             http, f"{GITHUB_API}/repos/{repo}/issues/{number}/comments?per_page=100", token, repo
         )
     except httpx.HTTPError as exc:
@@ -99,7 +99,13 @@ def read_marker(
     finally:
         if owned:
             http.close()
-    return newest_marker(comments)
+
+
+def read_marker(
+    repo: str, number: int, token: str, *, client: httpx.Client | None = None
+) -> Marker | None:
+    """The issue's newest precheck marker. Raises `GitHubError` on any failed read."""
+    return newest_marker(fetch_comments(repo, number, token, client=client))
 
 
 def outcome_for(marker: Marker | None, run_id: str) -> str:
@@ -147,7 +153,7 @@ class PrecheckProducer:
         if not self.enabled:
             return []
         now = now or datetime.now(UTC)
-        self._skip_departed(running, now)
+        skip_departed(self._store, KIND, running, now)
         created: list[int] = []
         waiting = [item for item in ranked if (item.issue.repo, item.issue.number) not in running]
         for item in waiting[: self._config.precheck_top_n]:
@@ -168,27 +174,33 @@ class PrecheckProducer:
                 log.info("precheck: queued job %s for %s#%s", job_id, repo, number)
         return created
 
-    def _skip_departed(self, running: Set[tuple[str, int]], now: datetime) -> None:
-        """A queued precheck whose issue is no longer waiting will never be useful."""
-        waiting = {
-            (issue.repo, str(issue.number))
-            for issue in self._store.issues()
-            if (issue.repo, issue.number) not in running
-        }
-        for job in self._store.queued_background_jobs():
-            if job["kind"] != KIND:
-                continue
-            if (job["repo"], job["target"]) in waiting:
-                continue
-            self._store.finish_background_job(
-                int(job["job_id"]),
-                state="skipped",
-                outcome="the issue left the queue before its precheck ran",
-                now=now,
-            )
-            log.info(
-                "precheck: job %s skipped, %s#%s left the queue first",
-                job["job_id"],
-                job["repo"],
-                job["target"],
-            )
+
+def skip_departed(store: Store, kind: str, running: Set[tuple[str, int]], now: datetime) -> None:
+    """Skip every queued `kind` job whose issue is no longer waiting: it will never be useful.
+
+    Shared by the precheck and the context pack, whose jobs are both about an issue before
+    its run starts.
+    """
+    waiting = {
+        (issue.repo, str(issue.number))
+        for issue in store.issues()
+        if (issue.repo, issue.number) not in running
+    }
+    for job in store.queued_background_jobs():
+        if job["kind"] != kind:
+            continue
+        if (job["repo"], job["target"]) in waiting:
+            continue
+        store.finish_background_job(
+            int(job["job_id"]),
+            state="skipped",
+            outcome=f"the issue left the queue before its {kind} ran",
+            now=now,
+        )
+        log.info(
+            "%s: job %s skipped, %s#%s left the queue first",
+            kind,
+            job["job_id"],
+            job["repo"],
+            job["target"],
+        )

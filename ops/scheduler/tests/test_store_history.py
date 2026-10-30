@@ -28,6 +28,8 @@ def test_run_history_table_has_every_column(store):
         # more-local-inference 06: 'issue' or 'pr'. A row written before the doctor's review
         # is an issue run by construction.
         "target_kind",
+        # more-local-inference 08 (D21): the lane's notes on the issue at dispatch.
+        "had_pack", "pack_run", "precheck_verdict",
     ]
     not_null = {r["name"] for r in rows if r["notnull"]}
     # `requeue_attempt` is `NOT NULL DEFAULT 0` in the canonical schema block, so

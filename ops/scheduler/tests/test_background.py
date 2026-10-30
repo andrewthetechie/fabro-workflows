@@ -735,7 +735,7 @@ def test_the_compose_file_carries_the_eight_variables_with_their_defaults():
         # (operator decision 3). A variable missing from these lines is a variable the
         # container never sees: the scheduler reads its environment from them and
         # scheduler.env only, never .env as an env file.
-        ("SCHEDULER_BG_KINDS", "box-noop,issue-precheck"),
+        ("SCHEDULER_BG_KINDS", "box-noop,issue-precheck,context-pack"),
         ("SCHEDULER_PRECHECK_TOP_N", "10"),
         ("SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY", "6"),
     ):
@@ -771,7 +771,7 @@ def test_the_page_and_the_api_render_the_lane(tmp_path):
         body = client.get("/api/background").json()
         assert body["switch"] == "on"
         assert {box["box"] for box in body["boxes"]} == {"coders-a", "coders-b"}
-        assert body["kinds"] == ["issue-precheck", "box-noop"]
+        assert body["kinds"] == ["issue-precheck", "context-pack", "box-noop"]
         # The doctor's review accounting (operator decision 3) is on the same document.
         assert body["reviews"] == {"today": 0, "per_day": 6, "waiting": [], "failed": []}
 

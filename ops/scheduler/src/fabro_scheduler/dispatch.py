@@ -71,6 +71,7 @@ from .github import (
     remove_label,
 )
 from .lease import Lease, LeaseConflict, LeaseStore
+from .pack import PackProducer
 from .precheck import PrecheckProducer
 from .queue import QueueItem, build_queue
 from .store import Store
@@ -266,6 +267,9 @@ class DispatchLoop:
         # in dispatch order, from the ranked queue this loop already builds. Off unless the lane
         # is on and `issue-precheck` is an enabled kind.
         self._precheck = PrecheckProducer(config, store)
+        # The context-pack producer (more-local-inference 08): maps the same window of issues
+        # once their precheck said `ready`. Off unless `context-pack` is an enabled kind.
+        self._pack = PackProducer(config, store)
         # The last peak-hours decision, so the log says when dispatch paused and
         # resumed once each rather than on every 5-second tick.
         self._peak_paused: bool | None = None
@@ -311,8 +315,7 @@ class DispatchLoop:
             # Background runs ignore the peak-hours pause (D7): they spend no hosted
             # credits, and a gap is a gap whatever the hour. The pause is when boxes are
             # most often free, so the prechecks are kept queued through it too.
-            if self._precheck.enabled:
-                self._precheck.tick(self._ranked(now), self._running_issues(), now)
+            self._produce(now)
             self._lane.tick(now)
             return []
         # A doctor's follow-up review goes before any issue: it spends hosted credits the
@@ -366,10 +369,17 @@ class DispatchLoop:
         # it in the same tick: evict first (D17 layer 2), then fill what is left (D7). The
         # precheck producer reads the queue as this tick left it, so an issue just dispatched
         # is no longer in it and its queued precheck is skipped.
-        if self._precheck.enabled:
-            self._precheck.tick(self._ranked(now), self._running_issues(), now)
+        self._produce(now)
         self._lane.tick(now)
         return attempts
+
+    def _produce(self, now: datetime) -> None:
+        """Run the issue producers (07, 08) on the ranked queue, when either is on."""
+        if not (self._precheck.enabled or self._pack.enabled):
+            return
+        ranked, running = self._ranked(now), self._running_issues()
+        self._precheck.tick(ranked, running, now)
+        self._pack.tick(ranked, running, now)
 
     def _running_issues(self) -> set[tuple[str, int]]:
         """Every `(repo, issue)` a coder loop holds; a `pr` lease's number is a PR's."""

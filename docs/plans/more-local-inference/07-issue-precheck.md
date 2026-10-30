@@ -12,7 +12,9 @@ Contradiction is issue #17's term, `CONTEXT.md`).
 first in **shadow mode**: steps 1 and 2 (the package, schema and manifest), and step 4's
 producer without holds, labels or the `body=` staleness rule (one precheck per issue). Each
 verdict is recorded as its job's outcome and compared with the issue's run before step 4's
-holds are built. Step 3 (`background.md`) waits for task 08, which needs it more.
+holds are built. Step 3 (`background.md`) was built with task 08, on 2026-10-30. The first
+run (writers-app#1232) held its box 1.6 minutes in all and posted `ready` with four correct
+citations.
 
 ## Goal
 

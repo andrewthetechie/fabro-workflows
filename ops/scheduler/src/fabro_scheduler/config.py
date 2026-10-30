@@ -100,6 +100,7 @@ DEFAULT_MAX_CONCURRENT_RUNS = 8
 BACKGROUND_JOB_PRIORITY = {
     "pr-doctor": 1,
     "issue-precheck": 2,
+    "context-pack": 3,
     "box-noop": 5,
 }
 
@@ -126,8 +127,9 @@ PR_DOCTOR_TYPICAL_MINUTES = 40
 DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY = 6
 
 # How many of the next issues in dispatch order the precheck producer keeps checked
-# (more-local-inference 07). The queue's head is what dispatches next, so a precheck further
-# down would mostly go stale before its issue runs. 0 queues none.
+# (more-local-inference 07), and the context-pack producer keeps mapped once the precheck
+# passed them (08). The queue's head is what dispatches next, so a job further down would
+# mostly go stale before its issue runs. 0 queues none of either.
 DEFAULT_PRECHECK_TOP_N = 10
 
 # Gap prediction (C7 step 9): the coder loop's median remaining gap once a node starts, in

@@ -69,6 +69,8 @@ PR_DOCTOR_ENTRYPOINT = "workflows/pr-doctor/workflow.fabro"
 PR_REVIEW_ENTRYPOINT = "workflows/pr-review/workflow.fabro"
 # Task 07's background package.
 ISSUE_PRECHECK_ENTRYPOINT = "workflows/issue-precheck/workflow.fabro"
+# Task 08's background package.
+CONTEXT_PACK_ENTRYPOINT = "workflows/context-pack/workflow.fabro"
 ENTRYPOINTS = {
     "backlog": BACKLOG_ENTRYPOINT,
     "ralph": RALPH_ENTRYPOINT,
@@ -76,6 +78,7 @@ ENTRYPOINTS = {
     "pr-doctor": PR_DOCTOR_ENTRYPOINT,
     "pr-review": PR_REVIEW_ENTRYPOINT,
     "issue-precheck": ISSUE_PRECHECK_ENTRYPOINT,
+    "context-pack": CONTEXT_PACK_ENTRYPOINT,
 }
 
 # The server's limits, from the `WorkflowVersion` schema: at most 512 files, 512

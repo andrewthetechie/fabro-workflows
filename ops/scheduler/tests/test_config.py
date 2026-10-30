@@ -455,7 +455,7 @@ def test_the_background_lane_is_off_by_default_and_reads_on_and_off(tmp_path):
     assert cfg.max_concurrent_runs == 8
     # Every live kind, in D10's value order. `pr-doctor` (task 06) was retired on 2026-10-30;
     # task 07 added `issue-precheck` at 2.
-    assert cfg.bg_kinds == ("issue-precheck", "box-noop")
+    assert cfg.bg_kinds == ("issue-precheck", "context-pack", "box-noop")
     # The precheck producer keeps the next ten issues in dispatch order checked.
     assert cfg.precheck_top_n == 10
     # The doctor's daily review cap (operator decision 3): 6 per UTC day, on by default.

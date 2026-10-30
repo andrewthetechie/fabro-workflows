@@ -104,7 +104,7 @@ def test_a_precheck_whose_issue_left_the_queue_is_skipped(store):
     producer.tick(ranked(store, cfg), running={(JELLY, 4)}, now=NOW + timedelta(seconds=5))
     assert jobs(store) == [(KIND, JELLY, "3", "skipped"), (KIND, JELLY, "4", "skipped")]
     row = store.background_job(1)
-    assert row["outcome"] == "the issue left the queue before its precheck ran"
+    assert row["outcome"] == "the issue left the queue before its issue-precheck ran"
 
 
 def test_the_producer_is_off_with_the_lane_or_its_kind_off(store):
