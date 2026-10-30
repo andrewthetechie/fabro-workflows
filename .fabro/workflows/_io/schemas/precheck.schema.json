@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "precheck",
+  "title": "precheck — the issue precheck's verdict (more-local-inference 07)",
+  "description": "A local model's check of one queued issue before the factory spends hosted credits on it. `gate` checks the Input receipt and applies two rules of its own: a verdict other than ready with no evidence counts as ready, and a blocked verdict whose blocker is not an open issue in the same repository counts as ready. `post` publishes the result as the issue's precheck marker comment. _io is stamped by the server and is not part of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "evidence"],
+  "if": { "properties": { "verdict": { "const": "blocked" } }, "required": ["verdict"] },
+  "then": { "required": ["blocker"] },
+  "properties": {
+    "verdict": {
+      "enum": ["ready", "already_done", "blocked", "contradiction", "unclear"],
+      "description": "ready: nothing found against running it. already_done: the checkout already does what every acceptance criterion asks. blocked: it needs another open issue in this repository first. contradiction: an acceptance criterion needs something a non-goal of the same issue excludes. unclear: no acceptance criterion can be checked."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "description": "One to three sentences a human can act on. Published verbatim."
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 6,
+      "description": "What the verdict rests on, one entry each. Must name where: a file and line for already_done, the blocking issue for blocked, the criterion and the non-goal for contradiction. May be empty only for ready.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["where", "says"],
+        "properties": {
+          "where": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "path:line in the checkout, #N for an issue, or `issue body` for a quote from this issue."
+          },
+          "says": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "What is there, quoted or in one sentence."
+          }
+        }
+      }
+    },
+    "blocker": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Only for blocked: the open issue in this repository that must be done first."
+    }
+  }
+}

@@ -445,6 +445,9 @@ class Counts(unittest.TestCase):
             # fix_gate, validate, publish -- 9 nodes, 13 edges since the Phase 2 review's
             # `claim -> exit` (12 confirmed by `make check-host` on 2026-10-29).
             "pr-doctor": (9, 13),
+            # issue-precheck (more-local-inference task 07): start, exit, claim, stop, prep,
+            # check, gate, post -- 8 nodes, 11 edges.
+            "issue-precheck": (8, 11),
             # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
             # this pair grows with each one; it is the offline parser's count, not a
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.
