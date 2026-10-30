@@ -40,9 +40,11 @@ log = logging.getLogger(__name__)
 KIND = "issue-precheck"
 
 # The whole run, dispatch to finish (C7's `typical_box_minutes`): sandbox start, clone, the
-# code index, and one check stage the prompt bounds at about ten minutes of reading. A first
-# guess; the shadow measures the real number from the job rows.
-PRECHECK_TYPICAL_MINUTES = 10
+# code index, and one check stage. **Measured** over the first nine runs (2026-10-30, jobs
+# 143-152): 0.9-1.8 minutes start to finish in the lane, median 1.2. It decides only which
+# gaps a job may start in, and a job that overruns its gap costs one cancel of a few seconds,
+# so 3 leaves margin without keeping it out of the many 5-minute gaps (the first guess was 10).
+PRECHECK_TYPICAL_MINUTES = 3
 
 # C6's precheck marker, the comment's first line.
 MARKER = re.compile(

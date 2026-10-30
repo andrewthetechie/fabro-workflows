@@ -137,7 +137,7 @@ else echo 'agent guide: could not write .codex/instructions.md' >&2; fi
 echo '{\"context_updates\":{\"prep_ok\":true}}'"]
 
     // The box's one agent stage. Bounded at 15m; the prompt asks for about five minutes and
-    // twenty tool calls, and the scheduler's `typical_box_minutes` for the whole run is 8.
+    // twenty tool calls, and the scheduler's `typical_box_minutes` for the whole run is 5.
     gather [label="Map the code", class="bg", timeout="15m", prompt="@prompts/gather.md.j2"]
 
     // Checks the Input receipt, then holds the map to what a planner can trust and afford:

@@ -41,9 +41,10 @@ KIND = "context-pack"
 
 # The whole run, dispatch to finish (C7's `typical_box_minutes`): sandbox start, the code
 # index, and one `gather` stage the prompt bounds at about five minutes and twenty tool calls.
-# The first precheck, a stage of the same shape bounded at ten, held its box 1.6 minutes in
-# all (2026-10-30). A first guess; the job rows measure the real number.
-PACK_TYPICAL_MINUTES = 8
+# The first pack (job 153, writers-app#1232, 2026-10-30) took 3.7 minutes, `gather` 3.4 of
+# them. Set as the precheck's is (`PRECHECK_TYPICAL_MINUTES`): margin over the measured run,
+# not a ceiling; the first guess was 8. The job rows keep measuring it.
+PACK_TYPICAL_MINUTES = 5
 
 # The outcome a precheck job must have recorded before its issue gets a pack.
 READY = "verdict=ready"

@@ -927,8 +927,8 @@ no reordering. Each verdict is recorded as its job's outcome (`verdict=<v>`) so 
 compared with how the issue's run ended before any verdict may keep an issue out of the queue
 (task 07's holds, D20). The producer (`precheck.py`) queues one job per issue, ever, for the
 next `SCHEDULER_PRECHECK_TOP_N` issues in dispatch order that no coder loop holds, and skips a
-queued job whose issue left the queue first (`outcome` says so). A job is budgeted at 10 minutes
-(`typical_box_minutes`); the first one held its box for 1.6 (2026-10-30).
+queued job whose issue left the queue first (`outcome` says so). A job is budgeted at 3 minutes
+(`typical_box_minutes`): the first nine took 0.9-1.8 (2026-10-30).
 
 ```sh
 # The prechecks and their verdicts.
@@ -953,7 +953,7 @@ newest precheck and pack comments into `/tmp/fabro/background.md` (C9), an optio
 `decompose` and both `plan` stages; no comment, no file, and a failed read costs the run
 nothing. The producer (`pack.py`) queues one job per issue, ever, priority 3 after the
 precheck, only for an issue whose precheck recorded `verdict=ready`, in the same
-`SCHEDULER_PRECHECK_TOP_N` window. A job is budgeted at 8 minutes.
+`SCHEDULER_PRECHECK_TOP_N` window. A job is budgeted at 5 minutes; the first took 3.7.
 
 **Measurement (D21).** Each issue run's `run_history` row records `had_pack` (0 or 1),
 `pack_run`, and `precheck_verdict`: the newest `done` pack and precheck jobs that finished

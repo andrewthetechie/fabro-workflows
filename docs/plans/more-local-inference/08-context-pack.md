@@ -9,8 +9,8 @@ pack.
 
 **Status (2026-10-30):** built and deployed, cut to fit the gaps (operator direction: the
 precheck's 1.6-minute first run showed how much smaller a box job can be). `gather` is bounded
-at about five minutes and twenty tool calls (timeout 15m), and the job is budgeted at 8
-minutes, not 30. Built here instead of in task 07: step 3's `background.md` in `claim`, and its
+at about five minutes and twenty tool calls (timeout 15m), and the job is budgeted at 5
+minutes, not 30 (the first took 3.7). Built here instead of in task 07: step 3's `background.md` in `claim`, and its
 manifest input. The producer queues one pack per issue, ever (no staleness re-queue), in the
 precheck's `SCHEDULER_PRECHECK_TOP_N` window. Step 5 records `had_pack`, `pack_run` and
 `precheck_verdict` when the run is archived, from the job rows that finished before dispatch.
