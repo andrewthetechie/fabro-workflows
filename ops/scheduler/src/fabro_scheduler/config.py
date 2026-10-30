@@ -124,70 +124,79 @@ PR_DOCTOR_TYPICAL_MINUTES = 40
 # queue. A review that failed to dispatch does not count.
 DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY = 6
 
-# Gap prediction (C7 step 9): the coder loop's median remaining gap after a node, in
-# minutes, keyed by `(workflow, node id)`. **Measured** (task 12 Phase 0 step 2,
-# 2026-10-28): every visit of a non-box node in the 170 released `backlog` and `ralph`
-# runs since 2026-10-21, gap = the next box-stage visit's start minus this visit's end (or
-# the run's end), median per node, floored to whole minutes. Nodes with fewer than 5 visits
-# or a median under a minute are left out and predict 0. Measured from a visit's *end*, a
-# long node such as `watch_checks` reads short (the run usually ends after it): the safe
-# direction, since the lane cannot see how much of the node is left. Re-measure when the
-# graphs change.
+# Gap prediction (C7 step 9): the coder loop's median remaining gap once a node starts, in
+# minutes, keyed by `(workflow, node id)`. **Measured** 2026-10-30 over the 164 released
+# `backlog` and `ralph` issue runs on coders-a/b since 2026-10-21: for every visit of a non-box
+# node, the gap's end (the next box-stage start, or the lease's release) minus the visit's
+# *start*, median per node, floored to whole minutes. That is what the lane sees: it decides
+# while the node is running, usually in its first minute. Nodes with fewer than 5 visits or a
+# median under a minute are left out and predict 0, and so are `plan`, a box stage in one arm
+# of the box-plan trial, and ralph's `resolve_merge`, a box stage in backlog (n=5). The first table (2026-10-28) measured from a visit's *end*.
+#
+# A median, not a low percentile, on purpose: a background run cancelled by the coder loop
+# costs only its own box time, which is free, and the claim's wait (4-6 s, measured in
+# Phase 1). A job that fits a node's median finishes at least half the time it starts there.
+# `.scratch/more-local-inference/gap-analysis.md` has the per-node odds for each job length.
+# Re-measure when the graphs change: the scripts are next to that file.
 BACKGROUND_GAP_MINUTES: dict[tuple[str, str], int] = {
-    ("backlog", "autofix"): 13,  # n=305
-    ("backlog", "claim"): 15,  # n=101
-    ("backlog", "decompose"): 5,  # n=98
-    ("backlog", "decompose_gate"): 5,  # n=98
-    ("backlog", "extra_gate"): 20,  # n=106
-    ("backlog", "extra_prep"): 16,  # n=132
-    ("backlog", "file_remainder"): 26,  # n=83
-    ("backlog", "final_merge"): 32,  # n=83
-    ("backlog", "integrate"): 9,  # n=281
-    ("backlog", "next_task"): 7,  # n=424
-    ("backlog", "open_pr"): 27,  # n=83
-    ("backlog", "open_pr_prep"): 27,  # n=83
-    ("backlog", "partial_remainder"): 38,  # n=10
-    ("backlog", "pr_handoff"): 26,  # n=83
-    ("backlog", "prep"): 14,  # n=101
-    ("backlog", "prep_review"): 13,  # n=305
-    ("backlog", "rescue_brief"): 240,  # n=21
-    ("backlog", "review"): 9,  # n=303
-    ("backlog", "review_gate"): 9,  # n=303
-    ("backlog", "review_merge.ci_fix_gate"): 2,  # n=6
-    ("backlog", "review_merge.ci_fix_t1"): 2,  # n=5
-    ("backlog", "review_merge.fix_gate"): 5,  # n=82
-    ("backlog", "review_merge.hygiene"): 1,  # n=117
-    ("backlog", "review_merge.prep_review"): 26,  # n=83
-    ("backlog", "review_merge.refute_fix_gate"): 7,  # n=40
-    ("backlog", "review_merge.refute_prep"): 1,  # n=117
-    ("backlog", "review_merge.review_fix"): 4,  # n=83
-    ("backlog", "review_merge.rm_setup"): 26,  # n=83
-    ("backlog", "review_merge.spec"): 14,  # n=80
-    ("backlog", "review_merge.spec_gate"): 14,  # n=80
-    ("backlog", "review_merge.standards"): 19,  # n=83
-    ("backlog", "review_merge.standards_gate"): 20,  # n=80
-    ("backlog", "review_merge.validate"): 1,  # n=119
-    ("backlog", "rework_t2"): 28,  # n=7
-    ("backlog", "route_lane"): 14,  # n=101
-    ("backlog", "spec"): 6,  # n=113
-    ("backlog", "spec_gate"): 6,  # n=112
-    ("backlog", "standards"): 9,  # n=119
-    ("backlog", "standards_gate"): 9,  # n=113
-    ("backlog", "task_block_gate"): 14,  # n=307
-    ("backlog", "validate"): 12,  # n=305
-    ("ralph", "autofix"): 1,  # n=268
-    ("ralph", "claim"): 11,  # n=69
-    ("ralph", "final_check"): 11,  # n=96
-    ("ralph", "final_merge"): 16,  # n=96
-    ("ralph", "hygiene"): 11,  # n=93
-    ("ralph", "iterate_t2"): 11,  # n=8
-    ("ralph", "prep"): 9,  # n=69
-    ("ralph", "refute"): 10,  # n=92
+    ("backlog", "autofix"): 14,  # n=259
+    ("backlog", "claim"): 12,  # n=97
+    ("backlog", "decompose"): 11,  # n=94
+    ("backlog", "extra_gate"): 17,  # n=93
+    ("backlog", "extra_prep"): 17,  # n=135
+    ("backlog", "file_remainder"): 24,  # n=84
+    ("backlog", "final_merge"): 32,  # n=73
+    ("backlog", "human_rescue"): 240,  # n=16
+    ("backlog", "integrate"): 9,  # n=285
+    ("backlog", "next_task"): 6,  # n=422
+    ("backlog", "open_pr"): 25,  # n=84
+    ("backlog", "open_pr_prep"): 32,  # n=73
+    ("backlog", "partial_remainder"): 39,  # n=8
+    ("backlog", "pr_handoff"): 24,  # n=84
+    ("backlog", "prep"): 12,  # n=97
+    ("backlog", "prep_review"): 13,  # n=291
+    ("backlog", "quality"): 5,  # n=114
+    ("backlog", "rescue_brief"): 240,  # n=16
+    ("backlog", "review"): 12,  # n=296
+    ("backlog", "review_gate"): 9,  # n=297
+    ("backlog", "review_merge.ci_fix_gate"): 1,  # n=6
+    ("backlog", "review_merge.ci_fix_t1"): 10,  # n=5
+    ("backlog", "review_merge.fix_gate"): 3,  # n=84
+    ("backlog", "review_merge.hygiene"): 1,  # n=119
+    ("backlog", "review_merge.prep_review"): 24,  # n=84
+    ("backlog", "review_merge.refute"): 1,  # n=119
+    ("backlog", "review_merge.refute_fix_gate"): 5,  # n=36
+    ("backlog", "review_merge.refute_prep"): 1,  # n=119
+    ("backlog", "review_merge.review_fix"): 12,  # n=86
+    ("backlog", "review_merge.rm_setup"): 24,  # n=84
+    ("backlog", "review_merge.spec"): 19,  # n=81
+    ("backlog", "review_merge.spec_gate"): 13,  # n=81
+    ("backlog", "review_merge.standards"): 24,  # n=84
+    ("backlog", "review_merge.standards_gate"): 19,  # n=81
+    ("backlog", "review_merge.validate"): 3,  # n=116
+    ("backlog", "review_merge.watch_checks"): 9,  # n=35
+    ("backlog", "route_lane"): 11,  # n=97
+    ("backlog", "spec"): 9,  # n=116
+    ("backlog", "spec_gate"): 5,  # n=115
+    ("backlog", "standards"): 15,  # n=119
+    ("backlog", "standards_gate"): 9,  # n=115
+    ("backlog", "task_block_gate"): 14,  # n=260
+    ("backlog", "validate"): 13,  # n=291
+    ("ralph", "autofix"): 2,  # n=209
+    ("ralph", "check"): 1,  # n=270
+    ("ralph", "claim"): 5,  # n=67
+    ("ralph", "final_check"): 13,  # n=93
+    ("ralph", "final_merge"): 13,  # n=93
+    ("ralph", "hygiene"): 11,  # n=92
+    ("ralph", "prep"): 5,  # n=67
+    ("ralph", "refute"): 11,  # n=92
     ("ralph", "refute_gate"): 10,  # n=92
     ("ralph", "refute_prep"): 11,  # n=92
-    ("ralph", "review_prep"): 11,  # n=66
-    ("ralph", "standards"): 4,  # n=66
-    ("ralph", "task_block_gate"): 1,  # n=274
+    ("ralph", "review_prep"): 11,  # n=65
+    ("ralph", "spec"): 4,  # n=65
+    ("ralph", "standards"): 11,  # n=65
+    ("ralph", "task_block_gate"): 2,  # n=210
+    ("ralph", "watch_checks"): 2,  # n=23
 }
 
 # Any other node of a coder loop, and any other workflow, predicts 0 (C7: "an unknown key

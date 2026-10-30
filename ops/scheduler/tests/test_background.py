@@ -399,11 +399,11 @@ def test_the_run_slot_reserve_counts_every_active_run_pending_included(store, le
 def test_no_job_that_fits_means_no_start(store, leases):
     held_lease(leases)
     fabro = FakeFabro(stages={"coderun": [{"node_id": "review", "status": "running"}]})
-    # `review` predicts 9 measured minutes; a 10-minute job does not fit.
-    enqueue(store, typical=10)
+    # `review` predicts 12 measured minutes; a 13-minute job does not fit.
+    enqueue(store, typical=13)
     lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
     assert lane_.fill(NOW) == []
-    # The same job fits the 26 minutes after the merge phase's `prep_review`.
+    # The same job fits the 24 minutes after the merge phase's `prep_review`.
     fabro.stages["coderun"] = [
         {"node_id": "review_merge.prep_review", "status": "running"}
     ]

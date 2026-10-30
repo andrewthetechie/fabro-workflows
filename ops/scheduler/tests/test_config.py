@@ -519,19 +519,21 @@ def test_the_gap_table_predicts_a_gap_and_zero_for_an_unknown_key(tmp_path):
     predicts 0, so no job is committed to a gap nobody has measured."""
     from fabro_scheduler.config import BACKGROUND_GAP_MINUTES, predicted_gap_minutes
 
-    # Measured rows: the hosted review after a task leaves about nine minutes, and the
-    # merge phase's reviewers about twenty, before the next box stage.
-    assert predicted_gap_minutes("backlog", "review") == 9
-    assert predicted_gap_minutes("backlog", "review_merge.standards") == 19
-    assert predicted_gap_minutes("ralph", "refute") == 10
-    # Measured from a visit's end, a CI watch is short (the run usually ends after it), so
-    # it is not in the table and predicts 0, the safe direction.
-    assert ("backlog", "review_merge.watch_checks") not in BACKGROUND_GAP_MINUTES
-    assert predicted_gap_minutes("backlog", "review_merge.watch_checks") == 0
+    # Measured rows (2026-10-30, from each visit's start): the hosted review after a task
+    # leaves about twelve minutes, the merge phase's reviewers about twenty-four, before the
+    # next box stage.
+    assert predicted_gap_minutes("backlog", "review") == 12
+    assert predicted_gap_minutes("backlog", "review_merge.standards") == 24
+    assert predicted_gap_minutes("ralph", "refute") == 11
+    # Too few visits, or a median under a minute, predicts 0, the safe direction.
+    assert ("ralph", "check") in BACKGROUND_GAP_MINUTES
+    assert ("backlog", "review_merge.ci_fix_gate") in BACKGROUND_GAP_MINUTES
+    assert predicted_gap_minutes("ralph", "excerpts") == 0
     # `pr-review` and any node the table has never seen predict 0.
     assert predicted_gap_minutes("pr-review", "review") == 0
     assert predicted_gap_minutes("backlog", "not-a-node") == 0
-    # No row is a box stage (C1): a gap is what follows a hosted or command node.
+    # No row is a box stage (C1), in either arm: a gap is what follows a hosted or command
+    # node, and `plan` is a box stage in one arm of the box-plan trial.
     box = {"coder", "rework_t1", "resolve_merge", "extra_decompose", "plan",
            "review_merge.refute_fix", "review_merge.resolve_base",
            "iterate_t1", "learn", "resolve_base"}
