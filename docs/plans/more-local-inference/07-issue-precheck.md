@@ -8,6 +8,12 @@ Contradiction is issue #17's term, `CONTEXT.md`).
 
 **Start only when the overview's Status line records Phase 2 as passed.**
 
+**Status (2026-10-30):** the operator retired Phase 2 and directed this task to start. Built
+first in **shadow mode**: steps 1 and 2 (the package, schema and manifest), and step 4's
+producer without holds, labels or the `body=` staleness rule (one precheck per issue). Each
+verdict is recorded as its job's outcome and compared with the issue's run before step 4's
+holds are built. Step 3 (`background.md`) waits for task 08, which needs it more.
+
 ## Goal
 
 Before a queued issue spends hosted credits in `decompose`, a box check says whether it is

@@ -723,19 +723,20 @@ def test_box_noop_is_not_enqueued_when_its_kind_is_off(store, leases):
 # --- the compose file (C7 step 3, D12) ---------------------------------------------
 
 
-def test_the_compose_file_carries_the_seven_variables_with_their_defaults():
+def test_the_compose_file_carries_the_eight_variables_with_their_defaults():
     text = COMPOSE.read_text()
     for name, default in (
         ("SCHEDULER_BACKGROUND", "off"),
         ("SCHEDULER_BG_GAP_S", "30"),
         ("SCHEDULER_BG_SLOT_RESERVE", "3"),
         ("SCHEDULER_MAX_CONCURRENT_RUNS", "8"),
-        # The kinds stay `box-noop` until Phase 2 passes (the Phase 2 review's F4: turning
-        # the lane on must not also turn the doctor's producer on), and the follow-up
-        # reviews' daily cap (operator decision 3). A variable missing from these
-        # lines is a variable the container never sees: the scheduler reads its environment
-        # from them and scheduler.env only, never .env as an env file.
-        ("SCHEDULER_BG_KINDS", "box-noop"),
+        # The kinds: the manual `box-noop` and the precheck producer (task 07, shadow mode;
+        # `pr-doctor` is retired), the precheck's reach, and the follow-up reviews' daily cap
+        # (operator decision 3). A variable missing from these lines is a variable the
+        # container never sees: the scheduler reads its environment from them and
+        # scheduler.env only, never .env as an env file.
+        ("SCHEDULER_BG_KINDS", "box-noop,issue-precheck"),
+        ("SCHEDULER_PRECHECK_TOP_N", "10"),
         ("SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY", "6"),
     ):
         pattern = rf'^\s+{name}: "\$\{{{name}:-{re.escape(default)}\}}"$'
@@ -770,7 +771,7 @@ def test_the_page_and_the_api_render_the_lane(tmp_path):
         body = client.get("/api/background").json()
         assert body["switch"] == "on"
         assert {box["box"] for box in body["boxes"]} == {"coders-a", "coders-b"}
-        assert body["kinds"] == ["box-noop"]
+        assert body["kinds"] == ["issue-precheck", "box-noop"]
         # The doctor's review accounting (operator decision 3) is on the same document.
         assert body["reviews"] == {"today": 0, "per_day": 6, "waiting": [], "failed": []}
 

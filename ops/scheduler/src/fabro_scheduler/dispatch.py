@@ -71,6 +71,7 @@ from .github import (
     remove_label,
 )
 from .lease import Lease, LeaseConflict, LeaseStore
+from .precheck import PrecheckProducer
 from .queue import QueueItem, build_queue
 from .store import Store
 from .workflow_version import WorkflowVersionError
@@ -261,6 +262,10 @@ class DispatchLoop:
             if lane is not None
             else BackgroundLane(config, store, leases, fabro, health=health, clock=clock)
         )
+        # The precheck producer (more-local-inference 07): queues a box check for the next issues
+        # in dispatch order, from the ranked queue this loop already builds. Off unless the lane
+        # is on and `issue-precheck` is an enabled kind.
+        self._precheck = PrecheckProducer(config, store)
         # The last peak-hours decision, so the log says when dispatch paused and
         # resumed once each rather than on every 5-second tick.
         self._peak_paused: bool | None = None
@@ -304,7 +309,10 @@ class DispatchLoop:
         now = self._clock()
         if self._peak_pause(now):
             # Background runs ignore the peak-hours pause (D7): they spend no hosted
-            # credits, and a gap is a gap whatever the hour.
+            # credits, and a gap is a gap whatever the hour. The pause is when boxes are
+            # most often free, so the prechecks are kept queued through it too.
+            if self._precheck.enabled:
+                self._precheck.tick(self._ranked(now), self._running_issues(), now)
             self._lane.tick(now)
             return []
         # A doctor's follow-up review goes before any issue: it spends hosted credits the
@@ -312,12 +320,7 @@ class DispatchLoop:
         # takes a primary lease, so it is dispatched onto a free box exactly like an issue run.
         self._dispatch_reviews(now)
 
-        ranked = build_queue(
-            self._config.schedulable_repos(),
-            self._store,
-            now,
-            self._config.starvation_ceiling,
-        )
+        ranked = self._ranked(now)
 
         attempts: list[DispatchAttempt] = []
         backed_off: set[str] = set()
@@ -360,9 +363,29 @@ class DispatchLoop:
                 backed_off.add(item.issue.repo)
 
         # The lane runs after the primary dispatch, so a coder loop is never delayed by
-        # it in the same tick: evict first (D17 layer 2), then fill what is left (D7).
+        # it in the same tick: evict first (D17 layer 2), then fill what is left (D7). The
+        # precheck producer reads the queue as this tick left it, so an issue just dispatched
+        # is no longer in it and its queued precheck is skipped.
+        if self._precheck.enabled:
+            self._precheck.tick(self._ranked(now), self._running_issues(), now)
         self._lane.tick(now)
         return attempts
+
+    def _running_issues(self) -> set[tuple[str, int]]:
+        """Every `(repo, issue)` a coder loop holds; a `pr` lease's number is a PR's."""
+        return {
+            (held.repo, held.issue_number)
+            for held in self._leases.active()
+            if held.target_kind == "issue"
+        }
+
+    def _ranked(self, now: datetime) -> list[QueueItem]:
+        return build_queue(
+            self._config.schedulable_repos(),
+            self._store,
+            now,
+            self._config.starvation_ceiling,
+        )
 
     # --- the doctor's follow-up reviews (D14, task 06 steps 6 and 7) --------------
 

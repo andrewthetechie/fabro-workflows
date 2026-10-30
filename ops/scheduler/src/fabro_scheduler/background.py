@@ -41,6 +41,7 @@ from .doctor import HANDOFF_NOT_PUSHED_COMMENT, KIND as DOCTOR_KIND, hand_off, p
 from .fabro import FabroClient, FabroError, RunNotStarted, status_kind, status_reason
 from .github import GitHubError
 from .lease import Lease, LeaseStore
+from .precheck import KIND as PRECHECK_KIND, Marker, outcome_for, read_marker
 from .prfacts import PrFacts
 from .store import Store
 
@@ -48,7 +49,11 @@ log = logging.getLogger(__name__)
 
 # The package each job kind runs. Later tasks add their own kinds here and to
 # `config.BACKGROUND_JOB_PRIORITY`.
-JOB_WORKFLOWS = {"box-noop": "box-noop", "pr-doctor": "pr-doctor"}
+JOB_WORKFLOWS = {
+    "box-noop": "box-noop",
+    "pr-doctor": "pr-doctor",
+    "issue-precheck": "issue-precheck",
+}
 
 
 # How long a `box-noop` run is expected to hold its box, whole run, dispatch to finish
@@ -260,6 +265,7 @@ class BackgroundLane:
         *,
         health: BoxHealth | None = None,
         pr_reader: Callable[[str, int], PrFacts] | None = None,
+        precheck_reader: Callable[[str, int], Marker | None] | None = None,
         github_token: str = "",
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -272,6 +278,14 @@ class BackgroundLane:
         # test drives the whole branch without a network, and so the lane holds no token.
         self._read_pr = pr_reader
         self._github_token = github_token
+        # The precheck's verdict is read back from its marker when its run ends (task 07, shadow
+        # mode). Injected for the same reasons as `pr_reader`; the default reads GitHub with the
+        # lane's token, and with no token the verdict is simply not recorded.
+        self._read_precheck = precheck_reader or (
+            (lambda repo, number: read_marker(repo, number, github_token))
+            if github_token
+            else None
+        )
         self._clock = clock
         # The last `/health` reading per box, so the page reads a cache instead of the
         # network. Refreshed by every `tick`, at most one interval old.
@@ -552,6 +566,8 @@ class BackgroundLane:
                     ended.append(doctor_end)
                 continue
             end = self._finish_plain(job, kind, reason, now)
+            if str(job["kind"]) == PRECHECK_KIND and end.state == "done":
+                end = self._record_verdict(job, end, now)
             ended.append(end)
         for end in ended:
             log.info(
@@ -584,6 +600,25 @@ class BackgroundLane:
             job_id, state="failed", outcome=outcome, now=now
         )
         return JobEnd(job_id, str(job["kind"]), "failed", outcome)
+
+    def _record_verdict(self, job, end: JobEnd, now: datetime) -> JobEnd:
+        """A succeeded precheck's outcome is its verdict, read from the issue's marker.
+
+        A read that fails leaves the plain `succeeded`: the verdict is still on the issue, and
+        the shadow's report can read it there.
+        """
+        if self._read_precheck is None:
+            return end
+        try:
+            marker = self._read_precheck(str(job["repo"]), int(job["target"]))
+        except (GitHubError, ValueError) as exc:
+            log.info(
+                "background: precheck job %s: cannot read the verdict (%s)", job["job_id"], exc
+            )
+            return end
+        outcome = outcome_for(marker, str(job["run_id"] or ""))
+        self._store.set_background_outcome(int(job["job_id"]), outcome=outcome, now=now)
+        return JobEnd(end.job_id, end.kind, end.state, outcome)
 
     def _finish_doctor(
         self, job, kind: str, reason: str | None, now: datetime
