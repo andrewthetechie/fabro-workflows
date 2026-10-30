@@ -770,7 +770,7 @@ def test_the_page_and_the_api_render_the_lane(tmp_path):
         body = client.get("/api/background").json()
         assert body["switch"] == "on"
         assert {box["box"] for box in body["boxes"]} == {"coders-a", "coders-b"}
-        assert body["kinds"] == ["pr-doctor", "box-noop"]
+        assert body["kinds"] == ["box-noop"]
         # The doctor's review accounting (operator decision 3) is on the same document.
         assert body["reviews"] == {"today": 0, "per_day": 6, "waiting": [], "failed": []}
 

@@ -43,7 +43,11 @@ Every rule here passes `fabro validate` and fails at runtime, usually silently. 
 | Commit-body markers are `:start` / `:end`, never `<!-- /fabro:commit-body -->` | A closing marker with a slash forces `\/` into the extraction pattern, and `\"` is the only backslash a `.fabro` file may contain. |
 | The subject is the live PR title; the body comes from the marker block | `release-please` turns an agent's `feat:`/`fix:` subject into a release on `jelly-swipe`/`lawncare-saas`, and the derivation never emits `!` or `BREAKING CHANGE:`. |
 
-## The PR doctor (more-local-inference 06)
+## The PR doctor (more-local-inference 06; retired 2026-10-30)
+
+**Retired by the operator on 2026-10-30, before its first run:** a 40-minute job does not fit
+the coder boxes' gaps (`ops/README.md`, *The PR doctor*). Nothing can queue one. The rows below
+stay until the package is removed.
 
 The doctor is not the merge phase, but it writes to the same pull requests and the merge
 phase judges what it finds. Every rule below passes `fabro validate` and fails at runtime,

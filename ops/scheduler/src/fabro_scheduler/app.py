@@ -62,15 +62,8 @@ from starlette.staticfiles import StaticFiles
 from . import __version__, charts, github, retro, scorecard
 from .collector import ScorecardCollector
 from .background import BackgroundLane
-from .doctor import (
-    KIND as DOCTOR_KIND,
-    PrDoctorProducer,
-    eligibility,
-    view_from_row,
-)
+from .doctor import PrDoctorProducer
 from .config import (
-    BACKGROUND_JOB_PRIORITY,
-    PR_DOCTOR_TYPICAL_MINUTES,
     ConfigError,
     SchedulerConfig,
     load_config,
@@ -147,20 +140,6 @@ class BoxNoopRequest(BaseModel):
     repo: str
 
 
-class PrDoctorRequest(BaseModel):
-    """`POST /api/background/pr-doctor`: the one PR to spend a doctor run on.
-
-    `pr` is strict like every other number in this file: pydantic would otherwise coerce
-    `true` to 1 and `"123"` to 123, and `true` becoming "doctor PR #1" is the same
-    silent-mis-dispatch trap `issue_number` has a comment about.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    repo: str
-    pr: int = Field(gt=0, strict=True)
-
-
 @dataclass(frozen=True)
 class PoolState:
     """One coder instance's current state, for `GET /api/pools` and the page.
@@ -233,10 +212,9 @@ def build_app(
         )
     )
 
-    # The doctor's producer (more-local-inference 06). It runs on each fresh `pr_facts` row and
-    # enqueues nothing unless the lane is on and `pr-doctor` is an enabled kind. The canary
-    # endpoint calls the same eligibility rules, so a hand-queued job and an automatic one can
-    # never disagree about what is eligible.
+    # The doctor's producer (more-local-inference 06), retired on 2026-10-30: `pr-doctor` is in
+    # `RETIRED_JOB_KINDS`, so it is never an enabled kind and `consider` returns before it
+    # reads anything. Its canary endpoint is gone.
     doctor = PrDoctorProducer(config, store)
 
     # The run probe: a background refresher of per-lease task count and current
@@ -607,68 +585,6 @@ def build_app(
             )
         log.info("background: enqueued box-noop job %s for %s", job_id, row.name)
         return {"job_id": job_id, "repo": row.name, "kind": "box-noop"}
-
-    @app.post("/api/background/pr-doctor")
-    def api_background_pr_doctor(body: PrDoctorRequest) -> dict[str, object]:
-        """Queue one `pr-doctor` job for exactly one PR -- the one-PR canary.
-
-        The operator's way to start a single PR with the automatic producer off
-        (`SCHEDULER_BG_KINDS=box-noop`): the kinds list gates producers, not the lane's pick,
-        so a hand-queued job still runs (C7). Eligibility is the producer's own function, so a
-        refusal here is the same answer the producer would give, with the reason:
-        `404` for a repo that is not schedulable or a PR the collector has never read, `409`
-        for a PR the doctor may not touch or a job that is already queued or running.
-        """
-        repo = body.repo.strip()
-        row = config.repo_named(repo)
-        if row is None or not row.enabled:
-            raise HTTPException(
-                status_code=404,
-                detail=f"{repo} is not a schedulable [[repo]] in repos.toml",
-            )
-        facts_row = store.pr_facts_row(row.name, body.pr)
-        if facts_row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"{repo}#{body.pr} has no PR facts yet; the collector reads a PR it has "
-                    "seen as a factory run's PR, so wait for one refresh"
-                ),
-            )
-        verdict = eligibility(
-            view_from_row(facts_row),
-            has_job=store.background_job_exists(DOCTOR_KIND, row.name, str(body.pr)),
-        )
-        if not verdict.eligible:
-            raise HTTPException(status_code=409, detail=verdict.why)
-        job_id = store.enqueue_background_job(
-            kind=DOCTOR_KIND,
-            repo=row.name,
-            target=str(body.pr),
-            inputs={"pr_number": body.pr},
-            priority=BACKGROUND_JOB_PRIORITY[DOCTOR_KIND],
-            typical_box_minutes=PR_DOCTOR_TYPICAL_MINUTES,
-            now=datetime.now(UTC),
-        )
-        if job_id is None:
-            raise HTTPException(
-                status_code=409,
-                detail=f"a {DOCTOR_KIND} job for {repo}#{body.pr} is already queued or running",
-            )
-        log.info(
-            "background: enqueued %s job %s for %s#%s (canary)",
-            DOCTOR_KIND,
-            job_id,
-            row.name,
-            body.pr,
-        )
-        return {
-            "job_id": job_id,
-            "repo": row.name,
-            "pr": body.pr,
-            "kind": DOCTOR_KIND,
-            "category": verdict.category,
-        }
 
     @app.get("/api/history")
     def api_history(

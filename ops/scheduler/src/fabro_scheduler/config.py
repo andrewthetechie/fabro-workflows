@@ -102,6 +102,14 @@ BACKGROUND_JOB_PRIORITY = {
     "box-noop": 5,
 }
 
+# Kinds the lane still knows how to finish, but that no producer or endpoint may queue any
+# more. `pr-doctor` was retired on 2026-10-30 (operator decision): its run holds a box for
+# ~40 minutes, and a coder run's gaps reach that length unpredictably (no stage outside a
+# rescue gives even odds of 41 free minutes; `.scratch/more-local-inference/gap-analysis.md`),
+# so a doctor job waited 23 hours for a box and never started. Naming it in
+# `SCHEDULER_BG_KINDS` is a `ConfigError`, and it is not in the default kinds.
+RETIRED_JOB_KINDS = frozenset({"pr-doctor"})
+
 # How long a `pr-doctor` job is expected to hold its box, whole run, dispatch to finish
 # (C7's `typical_box_minutes`): the checkout, a rebase attempt, one 45-minute fix stage, the
 # repository's CI, and the push. The gap table's median is ~11 minutes, so a 40-minute job
@@ -305,7 +313,7 @@ class SchedulerConfig:
     max_concurrent_runs: int = DEFAULT_MAX_CONCURRENT_RUNS
     # Which job kinds' producers may enqueue. Defaults to every kind the lane knows.
     bg_kinds: tuple[str, ...] = field(
-        default_factory=lambda: tuple(BACKGROUND_JOB_PRIORITY)
+        default_factory=lambda: _live_kinds()
     )
     # The doctor's daily follow-up-review cap (operator decision 3), per UTC day.
     pr_doctor_reviews_per_day: int = DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY
@@ -565,17 +573,27 @@ def _env_background(environ: Mapping[str, str]) -> bool:
     raise ConfigError(f"{key}: {raw!r} is not 'on' or 'off'")
 
 
+def _live_kinds() -> tuple[str, ...]:
+    """Every kind the lane knows that is not retired, in D10's value order."""
+    return tuple(kind for kind in BACKGROUND_JOB_PRIORITY if kind not in RETIRED_JOB_KINDS)
+
+
 def _env_bg_kinds(environ: Mapping[str, str]) -> tuple[str, ...]:
     """`SCHEDULER_BG_KINDS`: the job kinds whose producers run (C7).
 
-    Default is every known kind. An unknown kind is a `ConfigError`: a name that matches
-    no producer would silently turn nothing on.
+    Default is every live kind. An unknown kind is a `ConfigError`: a name that matches
+    no producer would silently turn nothing on. So is a retired one (`RETIRED_JOB_KINDS`).
     """
     key = "SCHEDULER_BG_KINDS"
     raw = environ.get(key, "").strip()
     if not raw:
-        return tuple(BACKGROUND_JOB_PRIORITY)
+        return _live_kinds()
     kinds = tuple(part.strip() for part in raw.split(",") if part.strip())
+    retired = [kind for kind in kinds if kind in RETIRED_JOB_KINDS]
+    if retired:
+        raise ConfigError(
+            f"{key}: {retired[0]!r} was retired on 2026-10-30 and can no longer be queued"
+        )
     unknown = [kind for kind in kinds if kind not in BACKGROUND_JOB_PRIORITY]
     if unknown:
         raise ConfigError(

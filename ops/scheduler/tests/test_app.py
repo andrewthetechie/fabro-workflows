@@ -1488,76 +1488,12 @@ def seed_pr_facts(store: Store, *, pr: int = 7, reason: str | None = None,
     )
 
 
-def test_the_canary_queues_one_eligible_pr_and_is_idempotent(client, store):
+def test_the_retired_doctor_has_no_canary_endpoint(client, store):
+    """`pr-doctor` was retired on 2026-10-30: nothing may queue one, by hand or otherwise."""
     seed_pr_facts(store)
-    created = client.post(
+    gone = client.post(
         "/api/background/pr-doctor",
         json={"repo": "andrewthetechie/jelly-swipe", "pr": 7},
     )
-    assert created.status_code == 200
-    body = created.json()
-    assert body == {
-        "job_id": body["job_id"],
-        "repo": "andrewthetechie/jelly-swipe",
-        "pr": 7,
-        "kind": "pr-doctor",
-        "category": "findings",
-    }
-    row = store.background_job(body["job_id"])
-    assert (row["kind"], row["target"], row["priority"], row["typical_box_minutes"]) == (
-        "pr-doctor",
-        "7",
-        1,
-        40,
-    )
-    again = client.post(
-        "/api/background/pr-doctor",
-        json={"repo": "andrewthetechie/jelly-swipe", "pr": 7},
-    )
-    assert again.status_code == 409
-
-
-def test_the_canary_refuses_an_ineligible_pr_with_the_reason(client, store):
-    seed_pr_facts(store, marker="<!-- fabro:pr-doctor head=a pushed=none review=skip run=R -->")
-    refused = client.post(
-        "/api/background/pr-doctor",
-        json={"repo": "andrewthetechie/jelly-swipe", "pr": 7},
-    )
-    assert refused.status_code == 409
-    assert "already has a doctor marker" in refused.json()["detail"]
-
-
-def test_the_canary_refuses_a_repo_and_a_pr_it_does_not_know(client, store):
-    unknown_repo = client.post(
-        "/api/background/pr-doctor", json={"repo": "nope/nope", "pr": 7}
-    )
-    assert unknown_repo.status_code == 404
-    unknown_pr = client.post(
-        "/api/background/pr-doctor",
-        json={"repo": "andrewthetechie/jelly-swipe", "pr": 9},
-    )
-    assert unknown_pr.status_code == 404
-    assert "no PR facts" in unknown_pr.json()["detail"]
-
-
-def test_the_canary_does_not_need_the_automatic_producer(client, store, tmp_path):
-    """The point of the endpoint: start one PR with the producer off
-    (`SCHEDULER_BG_KINDS=box-noop`). C7 makes the kinds list gate producers, not the lane's
-    pick, so a hand-queued job still runs."""
-    off = load_config(
-        TRACKED_REPOS,
-        env={"SCHEDULER_BACKGROUND": "off", "SCHEDULER_BG_KINDS": "box-noop"},
-    )
-    hand = TestClient(build_app(off, store, github_token="ghp_test"))
-    seed_pr_facts(store)
-    queued = hand.post(
-        "/api/background/pr-doctor",
-        json={"repo": "andrewthetechie/jelly-swipe", "pr": 7},
-    )
-    assert queued.status_code == 200
-    # And the producer, which is what the switch and the kinds list really gate, stays quiet.
-    from fabro_scheduler.doctor import PrDoctorProducer
-
-    producer = PrDoctorProducer(off, store)
-    assert producer.enabled is False
-    assert producer.consider("andrewthetechie/jelly-swipe", 8, object()) is None
+    assert gone.status_code in (404, 405)
+    assert store.background_job_exists("pr-doctor", "andrewthetechie/jelly-swipe", "7") is False

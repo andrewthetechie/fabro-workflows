@@ -1,5 +1,10 @@
 # Task 06: the PR doctor, and its one hosted review
 
+**Retired 2026-10-30 by the operator, before its first run.** Built, reviewed and deployed
+2026-10-29, but a ~40-minute job does not fit the coder boxes' gaps, and the canary waited 23
+hours without starting. `pr-doctor` is in the scheduler's `RETIRED_JOB_KINDS`. Do not build on
+this task.
+
 Read `00-overview-and-contracts.md` first (D9, D10, D13, D14; C6, C7). **Invoke
 `/fabro-workflow`.** Read `docs/agents/invariants-merge.md` and
 `docs/agents/invariants-merge-queue.md` in full, then

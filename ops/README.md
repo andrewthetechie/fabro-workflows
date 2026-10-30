@@ -800,20 +800,12 @@ curl -fsS -X POST "$B/api/pools/coders-a/undrain"            # {"drained":false}
 # Cancel is separate from drain and ends the run now.
 curl -fsS -X POST "$B/api/pools/coders-a/cancel"             # {"cancelled_run_id":"01M..."}
 
-# The background lane: the switch, each box's state, the jobs, and the PR doctor's
-# follow-up reviews (`reviews.today` of `reviews.per_day`, and the PRs waiting for a slot).
+# The background lane: the switch, each box's state, and the jobs.
 curl -fsS "$B/api/background"
 # Queue one box-noop job. It exists so the lane can be measured: how fast a coder loop's
 # claim takes its box back, and how often the guard fires.
 curl -fsS -X POST "$B/api/background/box-noop" \
   -H 'Content-Type: application/json' -d '{"repo": "andrewthetechie/jelly-swipe"}'
-# The one-PR canary: queue a pr-doctor run for exactly one PR, through the producer's own
-# eligibility rules. 404 for a repo or PR the scheduler has never read, 409 with the reason
-# when the doctor may not touch it (already marked, `do-not-merge`, a reason it has no fix
-# for) or when a job is already queued. It works with the automatic producer off, because
-# `SCHEDULER_BG_KINDS` gates producers and not the lane's pick.
-curl -fsS -X POST "$B/api/background/pr-doctor" \
-  -H 'Content-Type: application/json' -d '{"repo": "andrewthetechie/jelly-swipe", "pr": 7}'
 
 # Every pool, its drain flag and its lease (draft 12's C8 condition reads this):
 curl -fsS "$B/api/pools" | jq -c '.[] | {coder_pool, drained, run: .lease.run_id}'
@@ -916,7 +908,16 @@ FABRO_API_TOKEN=$(ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/
   itself blocks its stage instead, and that *is* visible: `fabro events <run> -p` shows
   `✗ Failed hook exited with code 2`, and the job is recorded `failed`.
 
-#### The PR doctor: what it does, and how to stop it
+#### The PR doctor (retired 2026-10-30)
+
+**Retired.** The operator retired the doctor on 2026-10-30, before its first run. A doctor run
+holds its box for about 40 minutes, and a coder run's gaps reach that length unpredictably:
+outside a rescue, no stage gives even odds of 41 free minutes, so the canary job waited 23
+hours and never started (`.scratch/more-local-inference/gap-analysis.md`). `pr-doctor` is in
+`config.RETIRED_JOB_KINDS`: naming it in `SCHEDULER_BG_KINDS` fails startup, its producer never
+enqueues, and its canary endpoint is gone. The package, `doctor.py` and the follow-up review
+code are still in the tree until a cleanup removes them; nothing can start them. What follows
+describes the design as built, for that cleanup.
 
 One blocked factory pull request gets **one** attempt: a `pr-doctor` background run fixes
 what the merge phase's last report says is wrong, validates it, and pushes; then the
@@ -1160,7 +1161,7 @@ how this project already passes per-host values:
 | `SCHEDULER_BG_SLOT_RESERVE` | `3` | Run slots fabro must have free — `SCHEDULER_MAX_CONCURRENT_RUNS` minus every active run, `pending` included — before a background run starts (D8). Keeps fabro's first-come run cap from being spent on background work. |
 | `SCHEDULER_BOX_HEALTH` | the two boxes' `/health` (compose) | The boxes in the lane, as `pool=url` pairs in the same format `fabro-io box-claim` reads. **Empty means no box is in the lane and the lane does nothing at all** — no `/health` read, no fabro call, no row. |
 | `SCHEDULER_MAX_CONCURRENT_RUNS` | `8` | fabro's own `server.scheduler.max_concurrent_runs`, copied here because the scheduler can read the cap only from itself. Keep the two equal: a larger value would hand background runs slots that do not exist. |
-| `SCHEDULER_BG_KINDS` | every known kind (compose: `box-noop` until Phase 2 passes) | Which job kinds' **producers** run, comma-separated. An unknown kind is a `ConfigError`. Turning one kind off leaves the rest of the lane alone, and a job queued by hand (`POST /api/background/pr-doctor`) still runs, because this gates producers and not the lane's pick (C7). |
+| `SCHEDULER_BG_KINDS` | every live kind (compose: `box-noop`) | Which job kinds' **producers** run, comma-separated. An unknown kind is a `ConfigError`, and so is a retired one (`pr-doctor`, 2026-10-30). Turning one kind off leaves the rest of the lane alone, and a job queued by hand (`POST /api/background/box-noop`) still runs, because this gates producers and not the lane's pick (C7). |
 | `SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY` | `6` | The most follow-up `pr-review` runs the PR doctor may dispatch in one UTC day, across every repository (operator decision 3). A review spends hosted credits; over the cap a pushed PR waits in `review_pending` and goes first the next day, still ahead of the issue queue. A review that failed to dispatch does not count. `0` pauses the reviews without turning the doctor off: the fix and the push still happen, and every pushed PR is **held** in `review_pending` (labels removed, no hand-off) until the cap is raised. |
 | `FABRO_API_TOKEN` | — | The dispatch credential, from `~/fabro/scheduler.env`. It is fabro's **dev token**, read from `/storage/server.dev-token` in the container — fabro supports exactly one, so this cannot be rotated independently of the CLI and `discord-notify.sh`. Needed by `POST /api/dispatch-once` and by the dispatch loop: without it the endpoint answers `503`, the loop does not start, and everything else, `/health` included, works unchanged. Never logged, never rendered, never stored in SQLite. |
 | `GITHUB_TOKEN` | — | The inventory's credential **and, from draft 08, the label writer's**, from `~/fabro/scheduler.env` on the host. **Not** in `~/fabro/.env`: the scheduler gets its own env file so it never receives fabro's `SESSION_SECRET`, and this repository is public, so neither belongs in `repos.toml`. It needs `issues: read` **and `issues: write`** on the four repos — the read is the inventory, the write is `agent-in-progress` and removing `agent`. A classic token's `repo` scope covers both; a fine-grained PAT must be given both. Without it the inventory is not refreshed *and* the dispatch loop does not start. Never logged, never rendered and never stored in SQLite. |

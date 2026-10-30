@@ -6,12 +6,15 @@ Phase 1 passed 2026-10-29 (the operator approved it on this evidence). Since the
 Ten claims cancelled a background run: 5 controlled on coders-b (4.2–6.2 s) and 5 real
 (p95 4.5 s). There were no `idle=false` waits, no overlaps, no guard self-cancels and no
 evictions. Box-stage times and first-request latency are unchanged. 141 `box-noop` runs left
-nothing on GitHub. The lane is **off** again until Phase 2 deploys. ADR 0031 (proposed).
+nothing on GitHub. ADR 0031 (proposed). Phase 2 (the PR doctor) was deployed 2026-10-29 and
+**retired by the operator on 2026-10-30** before its first run: a 40-minute job did not fit
+the gaps, and the canary waited 23 hours (`06-pr-doctor.md`). The operator then directed
+Phase 3 to start with the precheck, and the context pack cut to fit a gap. The lane is on.
 Phase 0's sampler runs on the fabro host until about 2026-10-30 03:50 UTC
 (`~/coder-util/box-{a,b}.tsv`, read-only). Revised 2026-10-28 after a review against the
 repository (see *Facts*).
 
-**Phase gates passed:** Phase 1 passed 2026-10-29. *(The operator edits this line, and only this line, when a task 12
+**Phase gates passed:** Phase 1 passed 2026-10-29. Phase 2 retired (not passed) 2026-10-30; the operator directed Phase 3 to start. *(The operator edits this line, and only this line, when a task 12
 exit check passes: `Phase 1 passed 2026-11-02`. A task that says "start only after Phase N"
 reads this line. If Phase N is not recorded here, stop and report; do not infer it from git.)*
 

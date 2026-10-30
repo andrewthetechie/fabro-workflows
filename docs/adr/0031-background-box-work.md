@@ -69,6 +69,13 @@ run on a drained box. One switch, `SCHEDULER_BACKGROUND`, off by default, turns 
 
 ## D4. The PR doctor gets one attempt per pull request
 
+**Retired 2026-10-30.** The operator retired the doctor before its first run. It holds its box
+for about 40 minutes, and the measured gaps do not allow that: half of all gap time is in gaps of
+30 minutes or more, but no stage outside a rescue gives even odds of 41 free minutes, so the
+lane cannot tell which gap to start it in. The canary job waited 23 hours without starting. The
+lane keeps only jobs that fit a gap of about 10 to 20 minutes. What follows is the decision as
+it stood.
+
 The first background job is the **PR doctor**. It fixes a blocked factory pull request on the
 box, using that PR's own merge-phase report. It records the attempt in a marker comment before
 it writes anything else, and it removes `ai-review-needs-human` before it pushes, because the

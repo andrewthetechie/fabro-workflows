@@ -453,8 +453,8 @@ def test_the_background_lane_is_off_by_default_and_reads_on_and_off(tmp_path):
     assert cfg.bg_slot_reserve == 3
     assert cfg.box_health == {}
     assert cfg.max_concurrent_runs == 8
-    # Every kind the lane knows, in D10's value order (task 06 added `pr-doctor` at 1).
-    assert cfg.bg_kinds == ("pr-doctor", "box-noop")
+    # Every live kind, in D10's value order. `pr-doctor` (task 06) was retired on 2026-10-30.
+    assert cfg.bg_kinds == ("box-noop",)
     # The doctor's daily review cap (operator decision 3): 6 per UTC day, on by default.
     assert cfg.pr_doctor_reviews_per_day == 6
 
@@ -503,9 +503,10 @@ def test_the_lane_knobs_read_and_reject_their_bounds(tmp_path):
         ("SCHEDULER_BG_GAP_S", "-1"),
         ("SCHEDULER_BG_SLOT_RESERVE", "-2"),
         ("SCHEDULER_MAX_CONCURRENT_RUNS", "0"),
-        # A kind that matches no producer would silently turn nothing on, now that
-        # `pr-doctor` is a real kind.
+        # A kind that matches no producer would silently turn nothing on.
         ("SCHEDULER_BG_KINDS", "pr-docotr"),
+        # A retired kind can no longer be queued (2026-10-30).
+        ("SCHEDULER_BG_KINDS", "box-noop,pr-doctor"),
         # The doctor's cap is `>= 0`: 0 is the reviews' kill switch, a negative is a typo.
         ("SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY", "-1"),
     ):

@@ -556,11 +556,27 @@ def test_a_kind_that_is_not_enabled_enqueues_nothing():
     assert store.jobs == []
 
 
-def test_an_enabled_producer_queues_one_priority_one_job():
+def test_the_retired_producer_queues_nothing_by_default():
+    """`pr-doctor` was retired on 2026-10-30: it is not a default kind and cannot be named."""
     from fabro_scheduler.doctor import PrDoctorProducer
 
     store = CountingStore()
     producer = PrDoctorProducer(doctor_config(), store)
+    assert producer.enabled is False
+    assert producer.consider("o/r", 7, eligible_facts(), datetime(2026, 11, 2, tzinfo=UTC)) is None
+    assert store.jobs == []
+
+
+def test_an_enabled_producer_queues_one_priority_one_job():
+    import dataclasses
+
+    from fabro_scheduler.doctor import PrDoctorProducer
+
+    store = CountingStore()
+    # Enabled by hand: no environment can name the retired kind any more.
+    producer = PrDoctorProducer(
+        dataclasses.replace(doctor_config(), bg_kinds=("pr-doctor",)), store
+    )
     assert producer.consider("o/r", 7, eligible_facts(), datetime(2026, 11, 2, tzinfo=UTC)) == 1
     assert store.jobs == [
         {
