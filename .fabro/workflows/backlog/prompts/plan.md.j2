@@ -32,6 +32,7 @@ The inputs are:
 - `repomap.md`: an optional ranked outline of files and top-level symbols. Read it before searching. Continue if it is absent.
 - `current_task.json`: `{id, title, body, files, covers, priority, source}`. `covers` identifies parent requirements. `source` is `decompose`, `extra-review`, or `split`.
 - `issue.json`: the parent report in `.body` and human discussion in `.comments`.
+- `background.md`: optional. A local model's notes on this issue: the precheck's verdict and a context pack. `background.md` may hold a code map a local model built for this issue; start from it, verify each claim against the checkout, and do not re-explore what it already shows. It maps the parent issue, not this task, and predates this run's earlier tasks.
 - The checkout in the current working directory.
 
 The checkout is the accumulation branch. Earlier tasks in this run may already have implemented some or all of this task. Judge the work against the current checkout, not the issue's original repository state.

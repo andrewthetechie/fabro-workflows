@@ -28,6 +28,7 @@ Inputs:
 
 - `repomap.md`: an optional ranked outline of repository files and symbols. Read it before searching when present.
 - `issue.json`: the full parent issue. Read `.title`, `.number`, `.body`, and every `.comments[].body`.
+- `background.md`: optional. A local model's notes on this issue: the precheck's verdict and a context pack. `background.md` may hold a code map a local model built for this issue; start from it, verify each claim against the checkout, and do not re-explore what it already shows.
 - The repository checkout in the current working directory.
 
 The issue body controls requested behavior and scope. Comments supply supplemental context.

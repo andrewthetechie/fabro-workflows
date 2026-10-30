@@ -273,6 +273,12 @@ digraph Backlog {
     // Written here because `claim` runs before any agent stage; `|| true` because a
     // failed write must not fail the node, and the redirect keeps it off stdout, which
     // this node's routing reads.
+    // `background.md` (more-local-inference C9, D19): the newest marker comment of each
+    // background job kind -- the precheck's verdict, the context pack's code map -- each
+    // under a `## <kind>` heading and capped at its C9 size. `decompose` and `plan` read it
+    // as an optional input, never the comments themselves. No marker: no file. A failed
+    // read costs the run its notes and nothing else, so nothing here can fail the node, and
+    // nothing goes to stdout.
     claim [label="Claim issue and fetch it", shape=parallelogram,
         script="set -e
 mkdir -p /tmp/fabro
@@ -305,7 +311,15 @@ fi
 if ! jq -e '.labels | map(.name) | index(\"agent-in-progress\")' /tmp/fabro/issue.json >/dev/null 2>&1; then
   echo 'issue '$ISSUE' does not carry agent-in-progress after the label swap; refusing to work the wrong issue' >&2
   exit 1
-fi"]
+fi
+rm -f /tmp/fabro/background.md
+if gh api \"repos/{owner}/{repo}/issues/$ISSUE/comments?per_page=100\" --paginate > /tmp/fabro/background.raw 2>/dev/null; then
+  jq -rs 'add // [] | map(.body // \"\") as $b | [[\"precheck\", \"<!-- fabro:precheck \", 1500], [\"context-pack\", \"<!-- fabro:context-pack \", 8000], [\"flaky-investigation\", \"<!-- fabro:flaky-investigation \", 2500]] | map(. as [$k, $p, $cap] | ($b | map(select(startswith($p))) | last) as $c | select($c != null) | (\"## \" + $k), \"\", (if ($c | length) > $cap then $c[0:$cap] + \" [cut to \" + ($cap | tostring) + \" characters]\" else $c end), \"\") | .[]' /tmp/fabro/background.raw > /tmp/fabro/background.md 2>/dev/null || true
+  [ -s /tmp/fabro/background.md ] || rm -f /tmp/fabro/background.md
+else
+  echo 'background.md: could not read the issue comments; the run goes on without it' >&2
+fi
+rm -f /tmp/fabro/background.raw"]
 
     // `max_retries=1` because this node's whole job is one network-bound install and a
     // single transient registry failure otherwise costs the entire run plus its coder

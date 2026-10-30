@@ -1,6 +1,8 @@
 """backlog's issue lifecycle: open_pr, claim, mark_stuck, return_to_triage and
 task_block_gate."""
 
+import json
+
 import pytest
 
 from harness import (GRAPH, ORIG_PATH, RAPH, cat, count, edges, extract, grep, head1, jq, jq_n,
@@ -27,6 +29,10 @@ case "$1 $2" in
       fi
       cat "$GH_STATE/issue_payload.json"; exit 0 ;;
 esac
+if [ "$1" = api ]; then
+  [ -f "$GH_STATE/api_fails" ] && { echo 'HTTP 502' >&2; exit 1; }
+  [ -f "$GH_STATE/comments.json" ] && cat "$GH_STATE/comments.json"
+fi
 exit 0
 """
 SLEEP_STUB = "#!/bin/sh\nexit 0\n"
@@ -281,6 +287,77 @@ def test_claim_writes_the_box_file(ck, tmp_path, graph, label):
     r = sh(script, path=path, env=env, stderr="keep")
     ck(f"{label}: claim without a pool exits 0", "0", r.rc)
     ck(f"{label}: an unset pool writes an empty box file", "", cat(FAB / "box"))
+
+
+# ---------------------------------------------------------------------------
+# claim writes background.md (more-local-inference C9, D19)
+#
+# `decompose` and `plan` read the background lane's notes through this one optional input,
+# never through the comments: the newest marker comment of each kind, in C9's order, each
+# capped. Nothing about it may fail the node or reach stdout, which `claim` routes on.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("graph,label", [(GRAPH, "backlog"), (RAPH, "ralph")])
+def test_claim_writes_background_md(ck, tmp_path, graph, label):
+    T = tmp_path / f"bg-{label}"
+    (T / "bin").mkdir(parents=True)
+    FAB = T / "fabro"
+    stub(T / "bin", "sleep", SLEEP_STUB)
+    stub(T / "bin", "gh", CLAIM_GH)
+    path = f"{T / 'bin'}:{ORIG_PATH}"
+    env = {"GH_LOG": T / "gh.log", "GH_STATE": T}
+    write(T / "issue_payload.json",
+          '{"state":"OPEN","number":356,"title":"t","body":"b","labels":[{"name":"agent-in-progress"}]}')
+    script = T / "claim.sh"
+    script.write_text(rebase(extract(graph, "claim"), FAB)
+                      .replace("{{ inputs.issue_number }}", "356")
+                      .replace("{{ inputs.coder_pool }}", "coders-b"))
+    bg = FAB / "background.md"
+
+    def comments(*bodies):
+        return json.dumps([{"id": i, "body": b} for i, b in enumerate(bodies)])
+
+    def go():
+        rm(bg)
+        write(T / "gh.log", "")
+        return sh(script, path=path, env=env, stderr="keep")
+
+    write(T / "comments.json", comments(
+        "<!-- fabro:precheck verdict=unclear body=a main=b at=c run=OLD -->\nold verdict",
+        "<!-- fabro:context-pack body=a main=b at=c run=P -->\n### Files\n- `src/a.ts`: here",
+        "a human comment",
+        "<!-- fabro:precheck verdict=ready body=a main=b at=c run=NEW -->\nnew verdict",
+    ))
+    r = go()
+    ck(f"{label}: claim exits 0", "0", r.rc)
+    ck(f"{label}: nothing on stdout", "", r.out)
+    md = cat(bg)
+    ck(f"{label}: reads this issue's comments", "1",
+       count("api repos/{owner}/{repo}/issues/356/comments?per_page=100 --paginate",
+             file=T / "gh.log", flags="xF"))
+    ck(f"{label}: the newest precheck", "1", count("run=NEW", md))
+    ck(f"{label}: not an older one", "0", count("run=OLD", md))
+    ck(f"{label}: the pack", "1", count("`src/a.ts`: here", md))
+    ck(f"{label}: no human comment", "0", count("a human comment", md))
+    ck(f"{label}: precheck first, then the pack", "## precheck,## context-pack",
+       ",".join(line for line in md.splitlines() if line.startswith("## ")))
+
+    write(T / "comments.json", comments("x" * 50, "<!-- fabro:context-pack body=a -->" + "y" * 9000))
+    go()
+    md = cat(bg)
+    ck(f"{label}: a long pack is cut, and says so", "1", count(r"\[cut to 8000 characters\]$", md))
+    ck(f"{label}: at its C9 size", "true", str(len(md) < 8100).lower())
+
+    write(T / "comments.json", comments("a human comment"))
+    r = go()
+    ck(f"{label}: no marker, no file", "absent", present(bg))
+    ck(f"{label}: and claim still exits 0", "0", r.rc)
+
+    write(T / "api_fails", "")
+    r = go()
+    ck(f"{label}: a failed read leaves no file", "absent", present(bg))
+    ck(f"{label}: costs the run nothing", "0", r.rc)
+    ck(f"{label}: says so on stderr only", "1", count("background.md: could not read", r.err))
+    ck(f"{label}: and nothing on stdout", "", r.out)
 
 
 # ---------------------------------------------------------------------------

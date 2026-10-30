@@ -547,6 +547,13 @@
               "path": "/tmp/fabro/issue.json",
               "required": true,
               "about": "the full parent issue; .body at body, .title at title, .number at number, human discussion at .comments"
+            },
+            {
+              "name": "background.md",
+              "path": "/tmp/fabro/background.md",
+              "required": false,
+              "about": "notes local models wrote on this issue before the run: the precheck's verdict, and a context pack mapping the files, symbols, tests and commands the work touches; start from it and verify each claim against the checkout",
+              "absent": "there is no background note for this issue; proceed without it"
             }
           ],
           "sealed": [],
@@ -607,6 +614,13 @@
               "path": "/tmp/fabro/issue.json",
               "required": true,
               "about": "the parent issue, for reporter intent and human discussion"
+            },
+            {
+              "name": "background.md",
+              "path": "/tmp/fabro/background.md",
+              "required": false,
+              "about": "notes local models wrote on this issue before the run: the precheck's verdict, and a context pack mapping the files, symbols, tests and commands the work touches; start from it and verify each claim against the checkout",
+              "absent": "there is no background note for this issue; proceed without it"
             }
           ],
           "sealed": [],
@@ -1365,6 +1379,13 @@
               "required": false,
               "about": "ranked outline of the checkout; can be missing, continue without it",
               "absent": "the repository map is missing; proceed without it"
+            },
+            {
+              "name": "background.md",
+              "path": "/tmp/fabro/background.md",
+              "required": false,
+              "about": "notes local models wrote on this issue before the run: the precheck's verdict, and a context pack mapping the files, symbols, tests and commands the work touches; start from it and verify each claim against the checkout",
+              "absent": "there is no background note for this issue; proceed without it"
             }
           ],
           "sealed": [],
