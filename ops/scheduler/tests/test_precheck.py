@@ -150,6 +150,19 @@ def test_the_outcome_is_the_verdict_only_for_the_runs_own_marker():
     assert outcome_for(None, "01RUN") == "succeeded (no marker)"
 
 
+def test_a_marker_an_earlier_attempt_posted_after_queueing_is_the_jobs_verdict():
+    # Job 144, 2026-10-30: the lane cancelled the run inside `post`, after the comment went
+    # up, and the retry stopped on that marker. The verdict is still this job's.
+    marker = parse_marker(MARKER_LINE)  # at=2026-10-30T20:00:00Z
+    assert outcome_for(marker, "02RETRY", "2026-10-30T19:33:08.026397+00:00") == (
+        "verdict=already_done"
+    )
+    assert outcome_for(marker, "02RETRY", "2026-10-30T20:30:00+00:00") == (
+        "succeeded (no new verdict)"
+    ), "a marker older than the job is not its verdict"
+    assert outcome_for(marker, "02RETRY", "garbage") == "succeeded (no new verdict)"
+
+
 # --- the lane records it --------------------------------------------------------------
 
 

@@ -623,7 +623,7 @@ class BackgroundLane:
         end: JobEnd,
         now: datetime,
         reader: Callable[[str, int], Any] | None,
-        outcome_for: Callable[[Any, str], str],
+        outcome_for: Callable[[Any, str, str | None], str],
     ) -> JobEnd:
         """A succeeded precheck's or pack's outcome, read from the issue's marker.
 
@@ -643,7 +643,7 @@ class BackgroundLane:
                 exc,
             )
             return end
-        outcome = outcome_for(marker, str(job["run_id"] or ""))
+        outcome = outcome_for(marker, str(job["run_id"] or ""), job["created_at"])
         self._store.set_background_outcome(int(job["job_id"]), outcome=outcome, now=now)
         return JobEnd(end.job_id, end.kind, end.state, outcome)
 

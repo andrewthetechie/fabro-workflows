@@ -31,7 +31,7 @@ from typing import Any
 import httpx
 
 from .config import BACKGROUND_JOB_PRIORITY, SchedulerConfig
-from .precheck import KIND as PRECHECK_KIND, fetch_comments, skip_departed
+from .precheck import KIND as PRECHECK_KIND, fetch_comments, posted_since, skip_departed
 from .queue import QueueItem
 from .store import Store
 
@@ -94,18 +94,18 @@ def read_marker(
     return newest_marker(fetch_comments(repo, number, token, client=client))
 
 
-def outcome_for(marker: PackMarker | None, run_id: str) -> str:
+def outcome_for(marker: PackMarker | None, run_id: str, queued_at: str | None = None) -> str:
     """The job outcome a finished, succeeded pack run earned.
 
-    `pack run=<run_id>` only when the marker is this run's own: a run that stopped (the issue
-    was closed, or its text already has a fresh pack) posts nothing, and an older marker is
-    not its map.
+    `pack run=<id>`, naming the marker's run, when the marker is this job's: this run's own,
+    or one an earlier attempt posted after the job was queued (`precheck.outcome_for` says
+    why). A run that stopped on an older pack, or posted nothing, earned none.
     """
     if marker is None:
         return "succeeded (no marker)"
-    if marker.run != run_id:
+    if marker.run != run_id and not posted_since(marker.at, queued_at):
         return "succeeded (no new pack)"
-    return f"{POSTED_PREFIX}{run_id}"
+    return f"{POSTED_PREFIX}{marker.run}"
 
 
 class PackProducer:

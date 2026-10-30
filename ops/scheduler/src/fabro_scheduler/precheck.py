@@ -108,18 +108,30 @@ def read_marker(
     return newest_marker(fetch_comments(repo, number, token, client=client))
 
 
-def outcome_for(marker: Marker | None, run_id: str) -> str:
+def outcome_for(marker: Marker | None, run_id: str, queued_at: str | None = None) -> str:
     """The job outcome a finished, succeeded precheck run earned.
 
-    `verdict=<v>` only when the marker is this run's own: a run that stopped (the issue was
-    closed, or this text already had a precheck) posts nothing, and an older marker is not its
+    `verdict=<v>` when the marker is this job's: this run's own, or one posted after the job
+    was queued (`queued_at`) by an earlier attempt. That happens: the lane can cancel a run in
+    `post`, after the comment went up (job 144, 2026-10-30), and the retry then stops on the
+    marker it finds. A run that stopped on an older marker, or posted nothing, earned no
     verdict.
     """
     if marker is None:
         return "succeeded (no marker)"
-    if marker.run != run_id:
+    if marker.run != run_id and not posted_since(marker.at, queued_at):
         return "succeeded (no new verdict)"
     return f"verdict={marker.verdict}"
+
+
+def posted_since(at: str, queued_at: str | None) -> bool:
+    """Whether a marker's `at=` is at or after `queued_at`. Unparseable reads as no."""
+    if not queued_at:
+        return False
+    try:
+        return datetime.fromisoformat(at) >= datetime.fromisoformat(queued_at)
+    except ValueError:
+        return False
 
 
 class PrecheckProducer:

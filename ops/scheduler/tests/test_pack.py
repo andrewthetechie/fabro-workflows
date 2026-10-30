@@ -129,6 +129,9 @@ def test_the_outcome_names_the_run_only_for_its_own_marker():
     assert outcome_for(marker, "01RUN") == "pack run=01RUN"
     assert outcome_for(marker, "02OTHER") == "succeeded (no new pack)"
     assert outcome_for(None, "01RUN") == "succeeded (no marker)"
+    assert outcome_for(marker, "02RETRY", "2026-10-30T19:00:00+00:00") == "pack run=01RUN", (
+        "an earlier attempt's pack, posted after the job was queued, is the job's"
+    )
 
 
 # --- the lane -----------------------------------------------------------------------
