@@ -58,6 +58,21 @@ particular to `ralph`.
 | `final_check` writes `/tmp/fabro/base_ref` = `main` | `hygiene` reads `origin/<base>`. The shared phase gets that file from the PR in `rm_setup`, and `ralph` has not opened one when it first runs. |
 | `stop_reason` is the only node with an edge into `mark_needs_human` that is not a report, and it derives the reason from `failure_signature` and writes both reason files, except that a deterministic failure of a command node keeps the `stuck_reason.md` that node wrote | R9's rule. A sink that writes one file leaves the other renderer reading a previous stage's text. A command node that writes its reason and exits 1 (`open_pr`'s refusals, `review_prep`, `review_gate`) has a signature that says only "exit 1". Every writer of `stuck_reason.md` ends the run or exits into `stop_reason`, so the file it keeps is never stale. |
 
+## The whole-branch pre-review (pre-review-and-calibration, Part B)
+
+The same three nodes as backlog's, byte for byte (R10), on the one edge where the loop is done
+and the PR does not exist yet. `docs/plans/more-local-inference/09-in-run-pre-review.md` has the
+measurement and the reason it is not per Task.
+
+| Rule | What happens otherwise |
+|---|---|
+| `pick -> pre_review_prep [loop=done && phase=pre]`, and `pre_review_check -> final_merge`; `loop=exhausted` keeps its direct edge to `final_merge` | An exhausted run has no reason to spend box time on a branch it is about to hold (O18), and a second conditional edge out of `pick` on the same keys is the cascade picking by weight. |
+| It sits **before `final_check`**, never after | `final_check` runs `./.fabro/setup.sh && ./.fabro/ci.sh` and writes `/tmp/fabro/validated_tree`, which is the Refuter's "validation passed on this exact tree" evidence (`refute_prep`). An edit after it leaves the Refuter with no validation for the tree, and every command criterion becomes `unverifiable`. |
+| `pre_review_prep` publishes `pre_review_arm` (`on` for an odd issue number) and writes `/tmp/fabro/pre_reviewed` on both arms; a second visit routes past the review | The arm is the measurement, and `pick` comes back to this point after Refuter and review rounds. Without the latch a run pre-reviews its own edits. |
+| The edits are kept only when `fabro-io task-check --gate --base` is green over exactly that diff; `mode=full` is kept, because `final_check` runs the full suite right after; anything else reverts with `git restore --source` plus `git clean -fd` | A red edit that is kept fails `final_check` and the run ends at `mark_needs_human` on the pre-review's account. |
+| The pre-review may only help: no failure reaches `stop_reason` or `mark_needs_human`, and the node exits 0 on every path | A pre-review failure would end a run that could otherwise ship. |
+| `pre_review.json` and its log reach no other stage — not `standards`, `spec`, the Refuter or `review_gate` | Their independence is the product (ADR 0013 D6). |
+
 ## The end of a run
 
 | Rule | What happens otherwise |
