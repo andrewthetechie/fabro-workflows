@@ -94,11 +94,11 @@ DEFAULT_BOX_HEALTH = ""
 DEFAULT_MAX_CONCURRENT_RUNS = 8
 
 # The job kinds the lane knows, in D10's value order: the lowest number is picked first.
-# Task 05 added only `box-noop`, which exists to measure cancels; task 06 adds `pr-doctor`
-# at 1, because turning hosted spend already made into a merge is the lane's highest-value
-# work. Tasks 07, 08 and 10 add their own kinds here as they build their producers.
+# Task 05 added only `box-noop`, which exists to measure cancels. Tasks 07, 08 and 10 add their
+# own kinds here as they build their producers. Priority 1 was task 06's `pr-doctor`, retired on
+# 2026-10-30 and removed on 2026-10-31: its run held a box for ~40 minutes, and a coder run's
+# gaps reach that length unpredictably, so its one queued job waited 23 hours and never started.
 BACKGROUND_JOB_PRIORITY = {
-    "pr-doctor": 1,
     "issue-precheck": 2,
     "context-pack": 3,
     # The precheck calibration (pre-review-and-calibration, Part A): after the live precheck and
@@ -108,28 +108,6 @@ BACKGROUND_JOB_PRIORITY = {
     "precheck-calibration": 4,
     "box-noop": 5,
 }
-
-# Kinds the lane still knows how to finish, but that no producer or endpoint may queue any
-# more. `pr-doctor` was retired on 2026-10-30 (operator decision): its run holds a box for
-# ~40 minutes, and a coder run's gaps reach that length unpredictably (no stage outside a
-# rescue gives even odds of 41 free minutes; `.scratch/more-local-inference/gap-analysis.md`),
-# so a doctor job waited 23 hours for a box and never started. Naming it in
-# `SCHEDULER_BG_KINDS` is a `ConfigError`, and it is not in the default kinds.
-RETIRED_JOB_KINDS = frozenset({"pr-doctor"})
-
-# How long a `pr-doctor` job is expected to hold its box, whole run, dispatch to finish
-# (C7's `typical_box_minutes`): the checkout, a rebase attempt, one 45-minute fix stage, the
-# repository's CI, and the push. The gap table's median is ~11 minutes, so a 40-minute job
-# mostly starts on a box with no coder loop — overnight, or during the z.ai peak-hours pause
-# (D7). Task 12 measures the real number; do not lower it to make jobs fit.
-PR_DOCTOR_TYPICAL_MINUTES = 40
-
-# The most follow-up `pr-review` runs the doctor may dispatch in one UTC day, across every
-# repository (operator decision 3). A review spends hosted credits, and the point of the
-# cap is that a bad day cannot spend a week's budget in an hour. A pushed PR over the cap
-# waits in the pending-review state and goes first the next day, still ahead of the issue
-# queue. A review that failed to dispatch does not count.
-DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY = 6
 
 # How many of the next issues in dispatch order, **in each repository**, the precheck producer
 # keeps checked (more-local-inference 07), and the context-pack producer keeps mapped once the
@@ -355,8 +333,6 @@ class SchedulerConfig:
     bg_kinds: tuple[str, ...] = field(
         default_factory=lambda: _live_kinds()
     )
-    # The doctor's daily follow-up-review cap (operator decision 3), per UTC day.
-    pr_doctor_reviews_per_day: int = DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY
     # The precheck and pack producers' reach: the next N issues of each repository.
     precheck_per_repo: int = DEFAULT_PRECHECK_PER_REPO
     # The calibration producer: how many jobs it keeps queued, and how far back it looks.
@@ -452,12 +428,6 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
             environ, "SCHEDULER_MAX_CONCURRENT_RUNS", DEFAULT_MAX_CONCURRENT_RUNS, 1
         ),
         bg_kinds=_env_bg_kinds(environ),
-        pr_doctor_reviews_per_day=_env_int_at_least(
-            environ,
-            "SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY",
-            DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY,
-            0,
-        ),
         precheck_per_repo=_env_int_at_least(
             environ, "SCHEDULER_PRECHECK_PER_REPO", DEFAULT_PRECHECK_PER_REPO, 0
         ),
@@ -628,26 +598,21 @@ def _env_background(environ: Mapping[str, str]) -> bool:
 
 
 def _live_kinds() -> tuple[str, ...]:
-    """Every kind the lane knows that is not retired, in D10's value order."""
-    return tuple(kind for kind in BACKGROUND_JOB_PRIORITY if kind not in RETIRED_JOB_KINDS)
+    """Every kind the lane knows, in D10's value order."""
+    return tuple(BACKGROUND_JOB_PRIORITY)
 
 
 def _env_bg_kinds(environ: Mapping[str, str]) -> tuple[str, ...]:
     """`SCHEDULER_BG_KINDS`: the job kinds whose producers run (C7).
 
     Default is every live kind. An unknown kind is a `ConfigError`: a name that matches
-    no producer would silently turn nothing on. So is a retired one (`RETIRED_JOB_KINDS`).
+    no producer would silently turn nothing on.
     """
     key = "SCHEDULER_BG_KINDS"
     raw = environ.get(key, "").strip()
     if not raw:
         return _live_kinds()
     kinds = tuple(part.strip() for part in raw.split(",") if part.strip())
-    retired = [kind for kind in kinds if kind in RETIRED_JOB_KINDS]
-    if retired:
-        raise ConfigError(
-            f"{key}: {retired[0]!r} was retired on 2026-10-30 and can no longer be queued"
-        )
     unknown = [kind for kind in kinds if kind not in BACKGROUND_JOB_PRIORITY]
     if unknown:
         raise ConfigError(

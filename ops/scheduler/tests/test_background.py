@@ -444,7 +444,7 @@ def test_the_pick_is_priority_then_age_then_fit(store, leases):
     lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
     lane_.fill(NOW)
     running_jobs = [job["job_id"] for job in store.background_jobs() if job["state"] == "running"]
-    assert running_jobs == [first], "priority beats age: pr-doctor (1) before issue-precheck (2)"
+    assert running_jobs == [first], "priority beats age: 1 before 2, though 2 is older"
     assert store.background_job(second)["state"] == "queued"
 
 
@@ -730,14 +730,12 @@ def test_the_compose_file_carries_the_ten_variables_with_their_defaults():
         ("SCHEDULER_BG_GAP_S", "30"),
         ("SCHEDULER_BG_SLOT_RESERVE", "3"),
         ("SCHEDULER_MAX_CONCURRENT_RUNS", "8"),
-        # The kinds: the manual `box-noop` and the precheck producer (task 07, shadow mode;
-        # `pr-doctor` is retired), the precheck's reach in each repository, and the follow-up reviews' daily cap
-        # (operator decision 3). A variable missing from these lines is a variable the
+        # The kinds: the manual `box-noop`, the precheck producer (task 07, shadow mode) and the
+        # pack, and the precheck's reach in each repository. A variable missing from these lines is a variable the
         # container never sees: the scheduler reads its environment from them and
         # scheduler.env only, never .env as an env file.
         ("SCHEDULER_BG_KINDS", "box-noop,issue-precheck,context-pack"),
         ("SCHEDULER_PRECHECK_PER_REPO", "3"),
-        ("SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY", "6"),
         # The precheck calibration's producer (pre-review-and-calibration, Part A): its queue
         # depth and how far back it looks. The kind itself stays out of the default
         # `SCHEDULER_BG_KINDS` above until the operator turns it on.
@@ -782,8 +780,7 @@ def test_the_page_and_the_api_render_the_lane(tmp_path):
             "precheck-calibration",
             "box-noop",
         ]
-        # The doctor's review accounting (operator decision 3) is on the same document.
-        assert body["reviews"] == {"today": 0, "per_day": 6, "waiting": [], "failed": []}
+        assert "reviews" not in body, "the retired doctor's review strip is gone"
 
         created = client.post("/api/background/box-noop", json={"repo": JELLY})
         assert created.status_code == 200
@@ -799,242 +796,12 @@ def test_the_page_and_the_api_render_the_lane(tmp_path):
         store.close()
 
 
-# --- the PR doctor's end of run (task 06 step 5) ------------------------------------
-#
-# Every branch here runs whatever `SCHEDULER_BACKGROUND` says: these are the steps that
-# finish an attempt already started, and skipping one would strand a PR with its labels
-# removed and neither a review nor a hand-off.
-
-
-from fabro_scheduler.doctor import HANDOFF_NOT_PUSHED_COMMENT, format_marker  # noqa: E402
-from fabro_scheduler.github import GitHubError  # noqa: E402
-from fabro_scheduler.prfacts import PrFacts  # noqa: E402
-
-
-def doctor_facts(
-    *, marker: str | None, head: str = "b" * 40, report: str = "blocked"
-) -> PrFacts:
-    return PrFacts(
-        state="open",
-        created_at="2026-10-29T09:00:00Z",
-        merged_at=None,
-        closed_at=None,
-        labels=(),
-        additions=1,
-        deletions=1,
-        commits=2,
-        operator_commits=0,
-        report=report,
-        reason="There are unfixed findings; a human must merge this PR.",
-        queue_approved=False,
-        queue_handoff=False,
-        head_sha=head,
-        head_committed_at="2026-10-29T09:59:50Z",
-        report_at="2026-10-29T10:00:00Z",
-        report_items=True,
-        doctor_marker=marker,
-    )
-
-
-class FakePrReader:
-    def __init__(self, facts: PrFacts | Exception) -> None:
-        self.facts = facts
-        self.calls: list[tuple[str, int]] = []
-
-    def __call__(self, repo: str, number: int) -> PrFacts:
-        self.calls.append((repo, number))
-        if isinstance(self.facts, Exception):
-            raise self.facts
-        return self.facts
-
-
-class DoctorFabro(FakeFabro):
-    """A fabro whose one run has already ended."""
-
-    def __init__(self, kind: str = "succeeded", reason: str | None = None) -> None:
-        super().__init__()
-        status: dict[str, object] = {"kind": kind}
-        if reason is not None:
-            status["reason"] = reason
-        self.runs["doctorrun"] = {"lifecycle": {"status": status}}
-
-
-def doctor_lane(config_, store, leases, fabro, reader, *, github_token: str = "ghp_test"):
-    return BackgroundLane(
-        config_,
-        store,
-        leases,
-        fabro,
-        health=FakeHealth(),
-        pr_reader=reader,
-        github_token=github_token,
-        clock=lambda: NOW,
-    )
-
-
-def doctor_job(store: Store) -> int:
-    job_id = enqueue(
-        store, kind="pr-doctor", priority=1, typical=40, target="7", inputs={"pr_number": 7}
-    )
-    running(store, job_id, run_id="doctorrun")
-    return job_id
-
-
-def test_a_cancelled_doctor_run_with_no_marker_goes_back_on_the_queue(store, leases):
-    fabro = DoctorFabro("failed", "cancelled")
-    reader = FakePrReader(doctor_facts(marker=None))
-    job_id = doctor_job(store)
-    lane_ = doctor_lane(config(), store, leases, fabro, reader)
-    lane_.sync(NOW)
-    row = store.background_job(job_id)
-    assert (row["state"], row["cancels"]) == ("queued", 1)
-
-
-def test_a_failed_doctor_run_with_no_marker_is_a_failure_for_a_human(store, leases):
-    fabro = DoctorFabro("failed", "deterministic")
-    reader = FakePrReader(doctor_facts(marker=None))
-    job_id = doctor_job(store)
-    doctor_lane(config(), store, leases, fabro, reader).sync(NOW)
-    row = store.background_job(job_id)
-    assert (row["state"], row["outcome"]) == ("failed", "failed/deterministic")
-    # Nothing on the PR says the attempt happened, so the strip has to.
-    failed = doctor_lane(config(), store, leases, fabro, reader).review_state(NOW)["failed"]
-    assert [(entry["job_id"], entry["pr"], entry["outcome"]) for entry in failed] == [
-        (job_id, "7", "failed/deterministic")
-    ]
-
-
-def test_pushed_sha_queues_the_one_follow_up_review(store, leases):
-    fabro = DoctorFabro()
-    reader = FakePrReader(doctor_facts(marker=format_marker(
-        head="a" * 40, pushed="b" * 40, review="fire", run="doctorrun")))
-    job_id = doctor_job(store)
-    ends = doctor_lane(config(), store, leases, fabro, reader).sync(NOW)
-    row = store.background_job(job_id)
-    assert (row["state"], row["outcome"]) == ("done", "review_pending")
-    assert [end.outcome for end in ends] == ["review_pending"]
-    assert [int(j["job_id"]) for j in store.pending_review_jobs()] == [job_id]
-    assert store.running_background_jobs() == [], "the box is free again"
-
-
-def test_pushed_none_hands_off_with_the_label_alone(store, leases, respx_mock):
-    """The marker already says "A human needs to take it from here", and "no follow-up review
-    would pass" is wrong for an attempt that changed nothing (the Phase 2 review's F10)."""
-    posted = respx_mock.post(
-        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/comments"
-    ).respond(200, json={})
-    labels = respx_mock.post(
-        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/labels"
-    ).respond(200, json=[])
-    reader = FakePrReader(doctor_facts(marker=format_marker(
-        head="a" * 40, pushed="none", review="skip", run="doctorrun")))
-    job_id = doctor_job(store)
-    doctor_lane(config(), store, leases, DoctorFabro(), reader).sync(NOW)
-    row = store.background_job(job_id)
-    assert (row["state"], row["outcome"]) == ("done", "handed_off_no_review")
-    assert labels.called and not posted.called
-    assert json.loads(labels.calls[0].request.content)["labels"] == [
-        "ai-review-needs-human"
-    ]
-
-
-def test_review_skip_hands_off_even_when_the_push_landed(store, leases, respx_mock):
-    """Decision 2: `pushed=<sha>` with `review=skip` gets no hosted review."""
-    respx_mock.post(
-        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/comments"
-    ).respond(200, json={})
-    respx_mock.post(
-        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/labels"
-    ).respond(200, json=[])
-    reader = FakePrReader(doctor_facts(marker=format_marker(
-        head="a" * 40, pushed="b" * 40, review="skip", run="doctorrun")))
-    job_id = doctor_job(store)
-    doctor_lane(config(), store, leases, DoctorFabro(), reader).sync(NOW)
-    assert store.background_job(job_id)["outcome"] == "handed_off_no_review"
-    assert store.pending_review_jobs() == []
-
-
-def test_pushed_pending_with_a_moved_head_counts_as_pushed(store, leases):
-    """The run died inside `publish`, but the PR's head is no longer the marker's `head=`:
-    the push landed, so the review runs."""
-    reader = FakePrReader(doctor_facts(
-        marker=format_marker(head="a" * 40, pushed="pending", review="fire", run="doctorrun"),
-        head="c" * 40,
-    ))
-    job_id = doctor_job(store)
-    doctor_lane(config(), store, leases, DoctorFabro("failed", "deterministic"), reader).sync(NOW)
-    assert store.background_job(job_id)["outcome"] == "review_pending"
-
-
-def test_pushed_pending_with_an_unmoved_head_hands_off(store, leases, respx_mock):
-    posted = respx_mock.post(
-        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/comments"
-    ).respond(200, json={})
-    respx_mock.post(
-        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/labels"
-    ).respond(200, json=[])
-    reader = FakePrReader(doctor_facts(
-        marker=format_marker(head="b" * 40, pushed="pending", review="fire", run="doctorrun"),
-        head="b" * 40,
-    ))
-    job_id = doctor_job(store)
-    doctor_lane(config(), store, leases, DoctorFabro("failed", "deterministic"), reader).sync(NOW)
-    assert store.background_job(job_id)["outcome"] == "handed_off_no_review"
-    # The marker says `pushed=pending`; this comment is the only thing that says it did not land.
-    assert json.loads(posted.calls[0].request.content)["body"] == HANDOFF_NOT_PUSHED_COMMENT
-
-
-def test_the_hand_off_records_the_outcome_before_it_comments(store, leases, respx_mock):
-    """The Phase 2 review's F9: with the comment first, a crash before the outcome was
-    recorded made the next tick finish the job again and post a second comment. A label is
-    idempotent and a comment is not, so the outcome goes between them."""
-    seen = []
-    job_id = doctor_job(store)
-
-    def on_comment(request):
-        seen.append(store.background_job(job_id)["outcome"])
-        return httpx.Response(200, json={})
-
-    respx_mock.post(
-        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/comments"
-    ).mock(side_effect=on_comment)
-    respx_mock.post(
-        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/labels"
-    ).respond(200, json=[])
-    reader = FakePrReader(doctor_facts(marker=format_marker(
-        head="a" * 40, pushed="b" * 40, review="skip", run="doctorrun")))
-    doctor_lane(config(), store, leases, DoctorFabro(), reader).sync(NOW)
-    assert seen == ["handed_off_no_review"]
-
-
-def test_an_unreadable_pr_leaves_the_job_running_for_the_next_tick(store, leases):
-    reader = FakePrReader(GitHubError("boom"))
-    job_id = doctor_job(store)
-    ends = doctor_lane(config(), store, leases, DoctorFabro(), reader).sync(NOW)
-    assert ends == []
-    assert store.background_job(job_id)["state"] == "running"
-
-
-def test_the_doctors_end_of_run_is_not_gated_by_the_switch(store, leases):
-    """The brief's second "do not repeat" rule: turning the lane off after a push must not
-    strand a PR with its labels removed."""
-    off = load_config(
-        TRACKED_REPOS,
-        env={"SCHEDULER_BACKGROUND": "off", "SCHEDULER_BOX_HEALTH": BOXES},
-    )
-    reader = FakePrReader(doctor_facts(marker=format_marker(
-        head="a" * 40, pushed="b" * 40, review="fire", run="doctorrun")))
-    job_id = doctor_job(store)
-    lane_ = doctor_lane(off, store, leases, DoctorFabro(), reader)
-    assert off.background is False
-    lane_.tick(NOW)
-    assert store.background_job(job_id)["outcome"] == "review_pending"
-    assert reader.calls == [(JELLY, 7)]
+# --- the switch and an empty lane ---------------------------------------------------
 
 
 def test_the_switch_off_with_nothing_running_makes_no_call_at_all(store, leases):
-    """`off` must mean off: no `/health` read, no fabro call, no GitHub call, and the store
-    is not asked to enqueue anything."""
+    """`off` must mean off: no `/health` read, no fabro call, and the store is not asked to
+    enqueue anything."""
     off = load_config(
         TRACKED_REPOS,
         env={"SCHEDULER_BACKGROUND": "off", "SCHEDULER_BOX_HEALTH": BOXES},
@@ -1057,47 +824,23 @@ def test_the_switch_off_with_nothing_running_makes_no_call_at_all(store, leases)
         def read(self, box):  # pragma: no cover - must not be reached
             raise AssertionError("off read /health")
 
-    reader = FakePrReader(AssertionError("off read a PR"))
-    lane_ = BackgroundLane(
-        off, store, leases, NoCalls(), health=NoHealth(), pr_reader=reader, clock=lambda: NOW
-    )
+    lane_ = BackgroundLane(off, store, leases, NoCalls(), health=NoHealth(), clock=lambda: NOW)
     assert lane_.tick(NOW).starts == ()
-    assert reader.calls == []
 
 
-def test_the_hand_off_runs_with_the_switch_off(store, leases, respx_mock):
-    """Step 8 is the third of the steps that finish an attempt already started. A switch
-    flipped off after a push must not leave the PR with its labels removed and no comment."""
-    off = load_config(
-        TRACKED_REPOS,
-        env={"SCHEDULER_BACKGROUND": "off", "SCHEDULER_BOX_HEALTH": BOXES},
-    )
-    respx_mock.post(
-        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/comments"
-    ).respond(200, json={})
-    respx_mock.post(
-        "https://api.github.com/repos/andrewthetechie/jelly-swipe/issues/7/labels"
-    ).respond(200, json=[])
-    reader = FakePrReader(doctor_facts(marker=format_marker(
-        head="a" * 40, pushed="none", review="skip", run="doctorrun")))
-    job_id = doctor_job(store)
-    doctor_lane(off, store, leases, DoctorFabro(), reader).tick(NOW)
-    assert store.background_job(job_id)["outcome"] == "handed_off_no_review"
-
-
-def test_a_running_doctor_job_still_finishes_with_no_box_in_the_lane(store, leases):
+def test_a_running_job_still_finishes_with_no_box_in_the_lane(store, leases):
     """Emptying `SCHEDULER_BOX_HEALTH` means "start nothing new", not "forget what started":
-    a doctor run already in flight must still be read and handed off (task 06 step 5)."""
+    a run already in flight is still read and its job finished (D12)."""
     no_boxes = load_config(
         TRACKED_REPOS, env={"SCHEDULER_BACKGROUND": "off", "SCHEDULER_BOX_HEALTH": ""}
     )
-    reader = FakePrReader(doctor_facts(marker=format_marker(
-        head="a" * 40, pushed="b" * 40, review="fire", run="doctorrun")))
-    job_id = doctor_job(store)
-    lane_ = doctor_lane(no_boxes, store, leases, DoctorFabro(), reader)
+    job_id = enqueue(store)
+    running(store, job_id, run_id="bgrun")
+    fabro = FakeFabro(runs={"bgrun": {"lifecycle": {"status": {"kind": "succeeded"}}}})
+    lane_ = BackgroundLane(no_boxes, store, leases, fabro, clock=lambda: NOW)
     assert no_boxes.box_health == {}
     lane_.tick(NOW)
-    assert store.background_job(job_id)["outcome"] == "review_pending"
+    assert store.background_job(job_id)["state"] == "done"
 
 
 def test_every_job_kind_dispatches_a_workflow_the_client_knows():

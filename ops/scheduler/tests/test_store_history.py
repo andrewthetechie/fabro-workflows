@@ -580,7 +580,9 @@ def test_an_old_database_upgrades_and_its_rows_read_as_issue_rows(tmp_path):
         assert lease["target_kind"] == "issue", "an older lease is an issue lease"
         history = upgraded.history_rows()[0]
         assert history["target_kind"] == "issue"
-        facts = upgraded.pr_facts_row("o/r", 7)
+        facts = upgraded._conn.execute(
+            "SELECT * FROM pr_facts WHERE repo = 'o/r' AND pr_number = 7"
+        ).fetchone()
         assert facts["head_sha"] is None
         assert facts["report_items"] is None
         assert facts["doctor_marker"] is None
@@ -588,9 +590,6 @@ def test_an_old_database_upgrades_and_its_rows_read_as_issue_rows(tmp_path):
         assert (job["review_run_id"], job["review_dispatched_at"]) == (None, None)
         assert job["review_failures"] == 0
         # And the upgraded database still answers the queries the new code makes.
-        assert upgraded.pending_review_jobs() == []
-        assert upgraded.reviews_dispatched_since(
-            datetime(2026, 10, 1, tzinfo=UTC)
-        ) == 0
+        assert upgraded.background_counts() == {"done": 1}
     finally:
         upgraded.close()

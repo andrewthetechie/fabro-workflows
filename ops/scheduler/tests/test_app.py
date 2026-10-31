@@ -1454,43 +1454,11 @@ def test_the_workflows_endpoint_splits_the_window_by_arm(client):
     assert "## ralph" in text.text
 
 
-# --- the one-PR canary (more-local-inference 06) ------------------------------------
+# --- the removed PR doctor (more-local-inference 06) ---------------------------------
 
 
-def seed_pr_facts(store: Store, *, pr: int = 7, reason: str | None = None,
-                  marker: str | None = None, label: str | None = None) -> None:
-    from fabro_scheduler.prfacts import PrFacts
-
-    store.save_pr_facts(
-        "andrewthetechie/jelly-swipe",
-        pr,
-        PrFacts(
-            state="open",
-            created_at="2026-10-01T00:00:00Z",
-            merged_at=None,
-            closed_at=None,
-            labels=(label,) if label else (),
-            additions=1,
-            deletions=1,
-            commits=2,
-            operator_commits=0,
-            report="blocked",
-            reason=reason
-            or "There are unfixed findings; a human must merge this PR.",
-            queue_approved=False,
-            queue_handoff=False,
-            head_sha="b" * 40,
-            head_committed_at="2026-11-02T11:00:00Z",
-            report_at="2026-11-02T11:30:00Z",
-            report_items=True,
-            doctor_marker=marker,
-        ),
-    )
-
-
-def test_the_retired_doctor_has_no_canary_endpoint(client, store):
-    """`pr-doctor` was retired on 2026-10-30: nothing may queue one, by hand or otherwise."""
-    seed_pr_facts(store)
+def test_the_removed_doctor_has_no_endpoint(client, store):
+    """`pr-doctor` was retired on 2026-10-30 and removed on 2026-10-31: nothing may queue one."""
     gone = client.post(
         "/api/background/pr-doctor",
         json={"repo": "andrewthetechie/jelly-swipe", "pr": 7},

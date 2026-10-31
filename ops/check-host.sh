@@ -41,9 +41,6 @@ declare -A BASELINE=(
     # The background lane's box-only package (more-local-inference task 04). The offline
     # parser's count: expected, unverified until task 12, Phase 1 runs this script.
     [box-noop]="4 nodes, 3 edges"
-    # The PR doctor (more-local-inference task 06). 9 nodes, 12 edges confirmed by hand on
-    # 2026-10-29 before this entry existed; the Phase 2 review's fix added `claim -> exit`.
-    [pr-doctor]="9 nodes, 13 edges"
     # The issue precheck (more-local-inference task 07): start, exit, claim, stop, prep,
     # check, gate, post. Confirmed by this script on 2026-10-30.
     [issue-precheck]="8 nodes, 11 edges"
@@ -69,7 +66,7 @@ for f in workflows/backlog/workflow.fabro workflows/pr-review/workflow.fabro \
          workflows/issue-triage/workflow.fabro workflows/arch-review/workflow.fabro \
          workflows/dependabot/workflow.fabro workflows/merge-queue/workflow.fabro \
          workflows/scout/workflow.fabro workflows/ralph/workflow.fabro \
-         workflows/box-noop/workflow.fabro workflows/pr-doctor/workflow.fabro \
+         workflows/box-noop/workflow.fabro \
          workflows/issue-precheck/workflow.fabro workflows/context-pack/workflow.fabro \
          workflows/precheck-calibration/workflow.fabro \
          workflows/_shared/review-merge/review-merge.fabro workflows/_shared/triage/triage.fabro; do
@@ -91,7 +88,7 @@ if [ "$PARITY_BAD" -ne 0 ]; then
 fi
 
 say "fabro validate on all thirteen packages (node/edge vs AGENTS.md baselines)"
-for w in backlog pr-review issue-triage arch-review dependabot merge-queue scout ralph box-noop pr-doctor issue-precheck context-pack precheck-calibration; do
+for w in backlog pr-review issue-triage arch-review dependabot merge-queue scout ralph box-noop issue-precheck context-pack precheck-calibration; do
     OUT=$(ssh "$HOST" "cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/$w/workflow.toml" 2>&1)
     LINE=$(printf '%s\n' "$OUT" | grep -E '^Workflow: ' | head -1)
     echo "  $LINE"

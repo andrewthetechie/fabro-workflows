@@ -62,7 +62,6 @@ from starlette.staticfiles import StaticFiles
 from . import __version__, calibration, charts, github, retro, scorecard
 from .collector import ScorecardCollector
 from .background import BackgroundLane
-from .doctor import PrDoctorProducer
 from .config import (
     ConfigError,
     SchedulerConfig,
@@ -70,7 +69,6 @@ from .config import (
 )
 from .dispatch import DispatchLoop
 from .fabro import FabroClient, FabroError, RunNotStarted
-from .prfacts import PrFacts, fetch_pr_facts
 from .inventory import InventoryPoller
 from .lease import Lease, LeaseConflict, LeaseStore
 from .probe import RunProbe
@@ -201,21 +199,9 @@ def build_app(
             store,
             leases,
             client,
-            pr_reader=(
-                (lambda repo, number: fetch_pr_facts(
-                    repo, number, github_token, config.automation_author
-                ))
-                if token_configured
-                else None
-            ),
             github_token=github_token,
         )
     )
-
-    # The doctor's producer (more-local-inference 06), retired on 2026-10-30: `pr-doctor` is in
-    # `RETIRED_JOB_KINDS`, so it is never an enabled kind and `consider` returns before it
-    # reads anything. Its canary endpoint is gone.
-    doctor = PrDoctorProducer(config, store)
 
     # The run probe: a background refresher of per-lease task count and current
     # stage. Created whenever it is not injected, so the page always has a
@@ -280,9 +266,6 @@ def build_app(
             github_token,
             config.automation_author,
             interval_seconds=config.scorecard_seconds,
-            on_pr_facts=lambda repo, number, facts, at: doctor.consider(
-                repo, number, facts, at
-            ),
         )
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))

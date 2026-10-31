@@ -522,9 +522,9 @@ def test_a_window_splits_into_one_card_per_workflow_and_a_strata_table(store):
     assert cell.box_hours_per_merge == pytest.approx(4.0)
 
 
-def test_the_doctors_follow_up_reviews_are_not_scorecard_runs(store):
-    """F7 of the Phase 2 review: a doctored PR's review is archived in `run_history`, and
-    counting it would give the PR a second "PR opened" and its merge to the issue arms."""
+def test_a_pr_row_is_not_a_scorecard_run(store):
+    """F7 of the Phase 2 review: a `pr` row in `run_history` (the removed PR doctor's
+    follow-up review) would give the PR a second "PR opened" and its merge to the issue arms."""
     run(store, "B1", pr=7, merged=False)
     store.acquire_lease(
         coder_pool="coders-b", repo=REPO, issue_number=7, run_id="REV1",
@@ -544,11 +544,6 @@ def test_the_doctors_follow_up_reviews_are_not_scorecard_runs(store):
     assert set(card.cards) == {"backlog", "ralph"}
     assert card.cards["backlog"].runs == 1
     assert card.cards["backlog"].merged_workflow == 0
-
-    reviews = store.doctor_review_rows(*WINDOW)
-    assert [(row["run_id"], row["issue_number"], row["pr_state"]) for row in reviews] == [
-        ("REV1", 7, "merged")
-    ]
 
 
 def test_a_window_with_no_ralph_run_keeps_the_column_at_zero(store):

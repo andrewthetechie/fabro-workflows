@@ -38,7 +38,6 @@ from typing import Any
 import httpx
 
 from .config import BACKGROUND_JOB_PRIORITY, SchedulerConfig, predicted_gap_minutes
-from .doctor import HANDOFF_NOT_PUSHED_COMMENT, KIND as DOCTOR_KIND, hand_off, parse_marker
 from .fabro import FabroClient, FabroError, RunNotStarted, status_kind, status_reason
 from .github import GitHubError
 from .lease import Lease, LeaseStore
@@ -46,7 +45,6 @@ from . import calibration, pack, precheck
 from .calibration import KIND as CALIBRATION_KIND
 from .pack import KIND as PACK_KIND, PackMarker
 from .precheck import KIND as PRECHECK_KIND, Marker
-from .prfacts import PrFacts
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -55,7 +53,6 @@ log = logging.getLogger(__name__)
 # `config.BACKGROUND_JOB_PRIORITY`.
 JOB_WORKFLOWS = {
     "box-noop": "box-noop",
-    "pr-doctor": "pr-doctor",
     "issue-precheck": "issue-precheck",
     "context-pack": "context-pack",
     # The calibration's own package: the live precheck's nodes against `main` as it stood when
@@ -288,7 +285,6 @@ class BackgroundLane:
         fabro: FabroClient | None,
         *,
         health: BoxHealth | None = None,
-        pr_reader: Callable[[str, int], PrFacts] | None = None,
         precheck_reader: Callable[[str, int], Marker | None] | None = None,
         pack_reader: Callable[[str, int], PackMarker | None] | None = None,
         calibration_reader: Callable[[str], str] | None = None,
@@ -300,13 +296,9 @@ class BackgroundLane:
         self._leases = leases
         self._fabro = fabro
         self._health = health if health is not None else BoxHealth(config.box_health)
-        # The PR reader the doctor's end-of-run decision needs (task 06 step 5). Injected so a
-        # test drives the whole branch without a network, and so the lane holds no token.
-        self._read_pr = pr_reader
-        self._github_token = github_token
         # The precheck's verdict is read back from its marker when its run ends (task 07, shadow
-        # mode). Injected for the same reasons as `pr_reader`; the default reads GitHub with the
-        # lane's token, and with no token the verdict is simply not recorded.
+        # mode). Injected so a test drives the whole branch without a network; the default reads
+        # GitHub with the lane's token, and with no token the verdict is simply not recorded.
         self._read_precheck = precheck_reader or (
             (lambda repo, number: precheck.read_marker(repo, number, github_token))
             if github_token
@@ -343,8 +335,8 @@ class BackgroundLane:
         if not self._config.box_health and not self._store.running_background_jobs():
             # No box in the lane and nothing running: nothing to read, nothing to decide, and
             # no calls. A run that IS running is still finished, because "no box in the lane"
-            # means "start no new work", not "forget the work already started" (D12), and a
-            # PR doctor's end of run is what decides its PR's fate (task 06 step 5).
+            # means "start no new work", not "forget the work already started" (D12): a
+            # finished run's outcome is still recorded.
             return LaneTick()
         # Finish first: a run that ended frees its box and its slot for this same tick.
         # This runs whatever the switch says — `off` means no new background run starts,
@@ -601,11 +593,6 @@ class BackgroundLane:
             if kind not in TERMINAL_KINDS:
                 continue
             reason = status_reason(run)
-            if str(job["kind"]) == DOCTOR_KIND:
-                doctor_end = self._finish_doctor(job, kind, reason, now)
-                if doctor_end is not None:
-                    ended.append(doctor_end)
-                continue
             end = self._finish_plain(job, kind, reason, now)
             if str(job["kind"]) == PRECHECK_KIND and end.state == "done":
                 end = self._record_marker(
@@ -704,131 +691,6 @@ class BackgroundLane:
             return end
         self._store.set_background_outcome(int(job["job_id"]), outcome=outcome, now=now)
         return JobEnd(end.job_id, end.kind, end.state, outcome)
-
-    def _finish_doctor(
-        self, job, kind: str, reason: str | None, now: datetime
-    ) -> JobEnd | None:
-        """Task 06 step 5: read the PR's marker and decide what the attempt earned.
-
-        This runs whatever the switch says. It is the end of an attempt that already started,
-        and leaving it undone would strand a PR with its labels removed and neither a review
-        nor a hand-off (the brief's second "do not repeat" rule).
-
-        - no marker: nothing reached GitHub, so the ordinary rule applies (a cancel requeues,
-          anything else is a failure for a human);
-        - `review=skip`, or `pushed=none`: hand off with no review,
-          `handed_off_no_review` -- the doctor's own contract says a review cannot pass;
-        - `pushed=<sha>`: queue the follow-up review;
-        - `pushed=pending`: the run died inside `publish`. If the PR's head is no longer the
-          marker's `head=`, the push landed and the review runs; otherwise nothing was pushed
-          and the PR is handed off.
-
-        A read that fails leaves the job `running` so the next tick retries. The box is not
-        held: the run is over, and `fill` skips only the box whose job is `running`, which
-        costs at most one tick's use of one box rather than losing the PR.
-        """
-        job_id = int(job["job_id"])
-        repo = str(job["repo"])
-        try:
-            number = int(str(job["target"] or 0))
-        except (TypeError, ValueError):
-            number = 0
-        facts: PrFacts | None = None
-        if number > 0 and self._read_pr is not None:
-            try:
-                facts = self._read_pr(repo, number)
-            except GitHubError as exc:
-                log.info(
-                    "background: pr-doctor job %s: cannot read %s#%s (%s); leaving it running",
-                    job_id,
-                    repo,
-                    number,
-                    exc,
-                )
-                return None
-        marker = parse_marker(facts.doctor_marker) if facts is not None else None
-        if marker is None:
-            return self._finish_plain(job, kind, reason, now)
-        if marker.pushed_nothing or not marker.wants_review:
-            log.info(
-                "background: pr-doctor job %s: %s#%s pushed nothing or cannot pass a review; "
-                "handing off without one",
-                job_id,
-                repo,
-                number,
-            )
-            # A `pushed=none` marker already tells the human to take the PR, and "no review
-            # would pass" would be wrong for an attempt that changed nothing: label only.
-            return self._hand_off_job(
-                job,
-                reviewed=False,
-                outcome="handed_off_no_review",
-                now=now,
-                post_comment=not marker.pushed_nothing,
-            )
-        if marker.pushed and marker.pushed != "pending":
-            return self._queue_review(job, now)
-        head = facts.head_sha if facts is not None else None
-        if head and marker.head and head != marker.head:
-            log.info(
-                "background: pr-doctor job %s: %s#%s died inside publish but its head moved "
-                "(%s -> %s), so the push landed",
-                job_id,
-                repo,
-                number,
-                (marker.head or "")[:12],
-                head[:12],
-            )
-            return self._queue_review(job, now)
-        log.info(
-            "background: pr-doctor job %s: %s#%s died inside publish with its head unmoved; "
-            "handing off without a review",
-            job_id,
-            repo,
-            number,
-        )
-        return self._hand_off_job(
-            job,
-            reviewed=False,
-            outcome="handed_off_no_review",
-            now=now,
-            body=HANDOFF_NOT_PUSHED_COMMENT,
-        )
-
-    def _queue_review(self, job, now: datetime) -> JobEnd:
-        """Put the doctor's follow-up review in the queue (task 06 step 7)."""
-        job_id = int(job["job_id"])
-        self._store.set_background_outcome(job_id, outcome="review_pending", now=now)
-        log.info(
-            "background: pr-doctor job %s queued its follow-up review for %s#%s",
-            job_id,
-            job["repo"],
-            job["target"],
-        )
-        return JobEnd(job_id, str(job["kind"]), "done", "review_pending")
-
-    def _hand_off_job(
-        self,
-        job,
-        *,
-        reviewed: bool,
-        outcome: str,
-        now: datetime,
-        body: str | None = None,
-        post_comment: bool = True,
-    ) -> JobEnd:
-        """Restore the needs-human label and say so on the PR (task 06 step 8)."""
-        hand_off(
-            self._store,
-            job,
-            token=self._github_token,
-            outcome=outcome,
-            reviewed=reviewed,
-            now=now,
-            body=body,
-            post_comment=post_comment,
-        )
-        return JobEnd(int(job["job_id"]), str(job["kind"]), "done", outcome)
 
     # --- making room for a coder loop (D8, step 12) ---------------------------
 
@@ -999,7 +861,6 @@ class BackgroundLane:
                 }
                 for view in self.box_views(now)
             ],
-            "reviews": self.review_state(now),
             "jobs": [job_row(row) for row in self._store.background_jobs(limit=50)],
             # The queue page's job table: what is running, what waits in the order `fill`
             # tries it (priority, then age; a job too long for a box's gap is passed over for
@@ -1009,44 +870,6 @@ class BackgroundLane:
                 "queued": [job_row(row) for row in self._store.queued_background_jobs()],
                 "finished": [job_row(row) for row in self._store.finished_background_jobs()],
             },
-        }
-
-    def review_state(self, now: datetime | None = None) -> dict[str, object]:
-        """The doctor's follow-up reviews: how many went out today, and which are waiting.
-
-        Operator decision 3: the cap is counted per UTC day across every repository, a review
-        that failed to dispatch does not count, and a pushed PR over the cap waits for the
-        next day's slot. The waiting list is what the operator needs to see to answer "why
-        has this PR had no review?" without reading the store.
-        """
-        now = now or self._clock()
-        midnight = datetime(now.year, now.month, now.day, tzinfo=UTC)
-        waiting = self._store.pending_review_jobs()
-        failed = self._store.failed_doctor_jobs()
-        return {
-            "today": self._store.reviews_dispatched_since(midnight),
-            "per_day": self._config.pr_doctor_reviews_per_day,
-            "waiting": [
-                {
-                    "job_id": int(row["job_id"]),
-                    "repo": row["repo"],
-                    "pr": row["target"],
-                    "created_at": row["created_at"],
-                }
-                for row in waiting
-            ],
-            # Doctor runs that failed before `publish` (a `gh` error in `claim`, say): the PR
-            # carries no marker, so this is the only place the used attempt shows.
-            "failed": [
-                {
-                    "job_id": int(row["job_id"]),
-                    "repo": row["repo"],
-                    "pr": row["target"],
-                    "outcome": row["outcome"],
-                    "finished_at": row["last_finished_at"],
-                }
-                for row in failed
-            ],
         }
 
     # --- the one producer in this task (C7 step 15) ---------------------------

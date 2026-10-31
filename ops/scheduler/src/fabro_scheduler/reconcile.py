@@ -68,7 +68,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from .config import SchedulerConfig
-from .doctor import hand_off
 from .fabro import FabroClient, FabroError, status_kind
 from .github import (
     IN_PROGRESS_LABEL,
@@ -80,7 +79,6 @@ from .github import (
     remove_label,
 )
 from .lease import Lease, LeaseStore
-from .prfacts import PrFacts, fetch_pr_facts
 from .store import RunOutcome, Store
 from .usage import split_by_model
 
@@ -412,21 +410,6 @@ def reconcile_leases(
         try:
             run = fabro_client.get_run(lease.run_id)
         except FabroError as exc:
-            if exc.status_code == 404 and lease.target_kind == "pr":
-                # The review's run is gone: record it and hand the PR off. There is no issue
-                # to label and no queue entry to restore.
-                leases.archive_and_release(
-                    lease.run_id,
-                    RunOutcome(
-                        kind=LOST_KIND,
-                        reason=LOST_REASON,
-                        pr_lookup="found",
-                        pr_number=lease.issue_number,
-                    ),
-                )
-                _hand_off_review(config, store, lease, github_token)
-                actions.append(ReleaseAction(lease, "released", "fabro has no such run (404)"))
-                continue
             if exc.status_code == 404:
                 # No run projection exists -- fabro has no such run -- so the row
                 # is built from the lease alone. `finished_at` is left to the
@@ -456,15 +439,6 @@ def reconcile_leases(
                     lease.repo, lease.issue_number, lease.run_id, exc,
                 )
                 actions.append(ReleaseAction(lease, "failed", str(exc)))
-            continue
-
-        if lease.target_kind == "pr":
-            # The doctor's follow-up review (D14): a coder loop with a lease, but not a queue
-            # item. It never writes an issue label, never requeues, and never resolves a PR
-            # from its run branch -- its PR is the lease's own number.
-            actions.append(
-                _reconcile_pr_review(config, store, leases, lease, run, github_token)
-            )
             continue
 
         if not is_terminal(run):
@@ -559,57 +533,6 @@ def reconcile_leases(
                 "reconcile: %s#%s run %s terminal (%s); released, not requeued",
                 lease.repo, lease.issue_number, lease.run_id, _classify(run),
             )
-    actions.extend(_sweep_orphaned_reviews(config, store, fabro_client, github_token))
-    return actions
-
-
-def _sweep_orphaned_reviews(
-    config: SchedulerConfig,
-    store: Store,
-    fabro_client: FabroClient,
-    github_token: str,
-) -> list[ReleaseAction]:
-    """Hand off every `review_fired` doctor job whose review has no lease and has ended.
-
-    The Phase 2 review's F9: a crash between a review's release and its hand-off, or a
-    review whose lease was refused after it started, left the job at `review_fired` with
-    nothing to move it, and the PR without its labels and without a comment. One `GET` per
-    such job, and there is normally none.
-    """
-    actions: list[ReleaseAction] = []
-    for job in store.orphaned_review_jobs():
-        run_id = str(job["review_run_id"])
-        try:
-            number = int(str(job["target"] or 0))
-        except (TypeError, ValueError):
-            number = 0
-        lease = Lease(
-            coder_pool="",
-            repo=str(job["repo"]),
-            issue_number=number,
-            run_id=run_id,
-            dispatched_at=datetime.now(UTC),
-            workflow="pr-review",
-            target_kind="pr",
-        )
-        try:
-            run = fabro_client.get_run(run_id)
-        except FabroError as exc:
-            if exc.status_code != 404:
-                log.info(
-                    "reconcile: orphaned review %s for %s#%s unreadable (%s); next poll",
-                    run_id, lease.repo, number, exc,
-                )
-                continue
-            run = None
-        if run is not None and not is_terminal(run):
-            continue
-        log.warning(
-            "reconcile: %s#%s review run %s ended with no lease (a crash or a refused "
-            "lease); handing it off now",
-            lease.repo, number, run_id,
-        )
-        actions.append(_hand_off_review(config, store, lease, github_token, run=run))
     return actions
 
 
@@ -677,106 +600,6 @@ def _remove_label(repo: str, number: int, label: str, token: str) -> None:
 
 def _add_label(repo: str, number: int, label: str, token: str) -> None:
     add_label(repo, number, label, token)
-
-
-# --- the doctor's follow-up review (more-local-inference 06, D14) -----------------
-
-
-def _reconcile_pr_review(
-    config: SchedulerConfig,
-    store: Store,
-    leases: LeaseStore,
-    lease: Lease,
-    run: Mapping[str, object],
-    github_token: str,
-) -> ReleaseAction:
-    """Release a `pr` lease: free the box, record the run, hand the PR off or mark it merged.
-
-    **No issue writes.** A `pr-review` run the doctor earned holds a box like any other coder
-    loop, but it is not a queue item: releasing it must not remove `agent-in-progress`, restore
-    `agent`, requeue anything, or look up a PR from the run branch (its PR is the lease's own
-    number). The only GitHub write is the hand-off's, and a review that merged or queued the PR
-    gets none at all.
-    """
-    if not is_terminal(run):
-        return ReleaseAction(
-            lease, "adopted", f"run {status_kind(run) or 'unknown'}, not terminal"
-        )
-    leases.archive_and_release(
-        lease.run_id,
-        _outcome_from_run(run, pr_lookup="found", pr_number=lease.issue_number),
-    )
-    log.info(
-        "reconcile: %s#%s follow-up review run %s terminal (%s); lease released",
-        lease.repo,
-        lease.issue_number,
-        lease.run_id,
-        _classify(run),
-    )
-    return _hand_off_review(config, store, lease, github_token, run=run)
-
-
-def _hand_off_review(
-    config: SchedulerConfig,
-    store: Store,
-    lease: Lease,
-    github_token: str,
-    *,
-    run: Mapping[str, object] | None = None,
-) -> ReleaseAction:
-    """Task 06 step 8: read the PR's latest report and record what the review achieved.
-
-    `merged` and `queued` are the review doing its job. Anything else -- including a report it
-    could not read -- restores `ai-review-needs-human` and posts one comment, because a PR the
-    doctor could not merge is a human's. The stored `pr_facts` row is the fallback when GitHub
-    cannot be asked: it is minutes old, and a hand-off on a stale report is far better than a
-    PR nobody was told about.
-    """
-    job = store.doctor_job_for_review(lease.run_id)
-    if job is None:
-        log.error(
-            "reconcile: %s#%s review run %s has no doctor job; nothing to hand off",
-            lease.repo,
-            lease.issue_number,
-            lease.run_id,
-        )
-        return ReleaseAction(lease, "released", "review released, no doctor job")
-    facts: PrFacts | None = None
-    if github_token:
-        try:
-            facts = fetch_pr_facts(
-                lease.repo, lease.issue_number, github_token, config.automation_author
-            )
-        except GitHubError as exc:
-            log.warning(
-                "reconcile: %s#%s could not read the PR after its review (%s); using the "
-                "stored facts",
-                lease.repo,
-                lease.issue_number,
-                exc,
-            )
-    if facts is None:
-        row = store.pr_facts_row(lease.repo, lease.issue_number)
-        report = None if row is None else row["report"]
-    else:
-        report = facts.report
-    if report in ("merged", "queued"):
-        store.set_background_outcome(
-            int(job["job_id"]), outcome="merged", now=datetime.now(UTC)
-        )
-        log.info(
-            "reconcile: %s#%s is %s after its follow-up review", lease.repo, lease.issue_number, report
-        )
-        return ReleaseAction(lease, "released", f"review {report}")
-    hand_off(
-        store,
-        job,
-        token=github_token,
-        outcome="handed_off",
-        reviewed=True,
-        now=datetime.now(UTC),
-    )
-    return ReleaseAction(lease, "released", f"review handed off ({report or 'no report'})")
 
 
 # --- the GitHub pass ------------------------------------------------------------

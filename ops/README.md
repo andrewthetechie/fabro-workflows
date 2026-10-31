@@ -728,7 +728,6 @@ whole factory in one place and a host rebuild brings it back with everything els
 | `scheduler/src/fabro_scheduler/precheck.py` | The **issue precheck**'s scheduler half (more-local-inference 07, shadow mode): `PrecheckProducer` queues one `issue-precheck` job per issue for the next `SCHEDULER_PRECHECK_PER_REPO` issues of each repository in dispatch order (`next_per_repo`) and skips one whose issue left the queue; `read_marker`/`outcome_for` turn a finished run's marker into the job's `verdict=<v>` outcome. It holds and labels nothing. |
 | `scheduler/src/fabro_scheduler/calibration.py` | The **precheck calibration**'s scheduler half (pre-review-and-calibration, Part A): `CalibrationProducer` queues one `precheck-calibration` job per issue for the issue's first finished run since `SCHEDULER_CALIBRATION_SINCE`, newest first, capped at `SCHEDULER_CALIBRATION_QUEUED`; `read_record`/`outcome_for` read a finished run's verdict from its own `record` node (the package posts nothing), and `report` turns `Store.calibration_rows` into the verdict-against-outcome document behind `GET /api/background/calibration`. |
 | `scheduler/src/fabro_scheduler/pack.py` | The **context pack**'s scheduler half (more-local-inference 08): `PackProducer` queues one `context-pack` job per issue the precheck passed (`verdict=ready`), in the same window; `read_marker`/`outcome_for` record a finished run as `pack run=<id>`, which `Store.archive_and_release_lease` reads into `run_history.had_pack`. |
-| `scheduler/src/fabro_scheduler/doctor.py` | The **PR doctor** (more-local-inference 06): the `**Reason:**` table (five categories and the texts that map to none), the `<!-- fabro:pr-doctor ... -->` marker's parser and formatter, the eligibility rules (open, a blocked report, no marker, no job yet, no `do-not-merge`, a reason it has a fix for, a report that lists something concrete, and a head committed **before** the report), and `PrDoctorProducer`, which queues one job per eligible PR on each `pr_facts` refresh and makes no GitHub or fabro call of its own. `hand_off` restores `ai-review-needs-human` and posts one comment. The graph it starts is `.fabro/workflows/pr-doctor/`; the review it earns is a `pr-review` leased by `dispatch.py`. |
 | `scheduler/src/fabro_scheduler/templates/queue.html` | The page: the **coder instances** (state, lease, ETA, and the Drain/Undrain and Cancel-run controls), the queue with per-row up/down/to-top controls and drag-and-drop reordering, and a per-repo freshness strip. Inline CSS and a few lines of inline JS, no external assets, refreshes itself on the same 60s beat. Each control is a real `<form method="post">`, so the buttons work with scripting off (the response is raw JSON); with scripting on the submit is intercepted, the page reloads on success and shows the error otherwise. |
 | `scheduler/src/fabro_scheduler/app.py` | `/`, `/api/queue`, `/api/repos`, `/api/pools`, `/api/background`, `POST /api/background/box-noop`, `/health`, `POST /api/dispatch-once`, the reorder routes `POST /api/queue/{repo}/{issue}/top|up|down` and `POST /api/queue/reorder` (the old `/bump` is kept), and `POST /api/pools/{pool}/drain`, `/undrain` and `/cancel`. Supports the ETA column (`estimate_remaining`) and the history token columns. `main` starts the inventory poller, the dispatch loop **and** the 15s release poll; every one is off in any other construction, so a test drives a tick by hand. Besides serving, `main` dispatches two offline subcommands: `resummarize` and `retro` (the weekly retro, `docs/factory-retro/`). `dispatch-once` takes `repo`, `issue_number` and `coder_pool`, refuses a pool already leased with a `409`, records the lease on the way out, and answers `503` with no `FABRO_API_TOKEN`. Every mutating route is `POST` and every one logs what it changed, because there is no auth to attribute it to. |
 | `scheduler/src/fabro_scheduler/reconcile.py` | Draft 09's release/requeue/recovery, plus draft 11's one change to it: a cancel requeues. `should_requeue` keys on the failure **reason** for the two failures whose category cannot decide — `terminated` (a fabro restart, category `deterministic`) and `cancelled` (the operator's cancel, category `canceled`, one L). Both are in the run projection, so neither costs the extra events call. The `transient_infra` category path had never fired once: `last_failure_category` filtered on `event["type"] == "run.failed"` and the deployed server sends `event`, `stage.failed` and `failure.category` — three mismatches, fixed 2026-09-19, live-verified returning `deterministic`/`transient_infra` on real runs. Repairing it armed a loop, so `MAX_REQUEUES = 3` now bounds it: a requeue restores the issue at the FRONT of the queue (original `first_seen`), and fabro classifies a flaky unit test as `transient_infra`, so a recurring failure would otherwise hold a coder box forever. Past the budget the issue is released without a requeue and waits for a human. Two cadences share one thread: the fabro pass every **15s** (one cheap `GET /runs/{id}` per held lease) and the GitHub receipt scan every **10 minutes** (four uncached requests, 24/hour against 5,000). The receipt scan used to run only at startup, on the premise that only a restart could orphan a receipt; 2026-09-19 disproved that, so it repeats — and because `_dispatch` writes the receipt seconds before the run exists, a receipt must look orphaned in **two consecutive scans** before anything is written. |
@@ -1047,82 +1046,15 @@ SCHEDULER_BG_KINDS=box-noop,issue-precheck,context-pack,precheck-calibration
 cd ~/fabro && docker compose up -d --no-deps scheduler
 ```
 
-#### The PR doctor (retired 2026-10-30)
+#### The PR doctor (removed 2026-10-31)
 
-**Retired.** The operator retired the doctor on 2026-10-30, before its first run. A doctor run
-holds its box for about 40 minutes, and a coder run's gaps reach that length unpredictably:
-outside a rescue, no stage gives even odds of 41 free minutes, so the canary job waited 23
-hours and never started (`.scratch/more-local-inference/gap-analysis.md`). `pr-doctor` is in
-`config.RETIRED_JOB_KINDS`: naming it in `SCHEDULER_BG_KINDS` fails startup, its producer never
-enqueues, and its canary endpoint is gone. The package, `doctor.py` and the follow-up review
-code are still in the tree until a cleanup removes them; nothing can start them. What follows
-describes the design as built, for that cleanup.
-
-One blocked factory pull request gets **one** attempt: a `pr-doctor` background run fixes
-what the merge phase's last report says is wrong, validates it, and pushes; then the
-scheduler leases exactly one `pr-review` on it. If that does not merge the PR, the PR gets
-`ai-review-needs-human` back and one comment, and the doctor never touches it again
-(more-local-inference D13, D14).
-
-```sh
-# What the lane thinks: the switch, the jobs, and the doctor's reviews.
-curl -fsS "$B/api/background" | jq '{switch, counts, reviews}'
-# One PR by hand, with the automatic producer off.
-curl -fsS -X POST "$B/api/background/pr-doctor" \
-  -H 'Content-Type: application/json' -d '{"repo": "andrewthetechie/jelly-swipe", "pr": 7}'
-# The scheduler's own record of one attempt.
-curl -fsS "$B/api/background" | jq '.jobs[] | select(.kind == "pr-doctor")'
-```
-
-The attempt is recorded twice: on the PR, as one comment whose first line is the marker
-(C6), and in the scheduler's store, as the PR's one `pr-doctor` row in `background_jobs`.
-Either one makes the PR ineligible, so granting a second attempt by hand takes both: delete
-the marker comment, then the row, then queue it with the `POST` above.
-
-```
-<!-- fabro:pr-doctor head=<sha before> pushed=<pending|none|sha after> review=<fire|skip> run=<id> -->
-```
-
-```sh
-# Delete the PR's doctor row (never a running one: cancel the run first).
-ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T scheduler python -c "
-import sqlite3; c = sqlite3.connect(\"/data/scheduler.db\")
-c.execute(\"DELETE FROM background_jobs WHERE kind = ? AND repo = ? AND target = ? AND state != ?\",
-          (\"pr-doctor\", \"andrewthetechie/jelly-swipe\", \"7\", \"running\")); c.commit()"'
-```
-
-`pushed=pending` means the run died inside its last node: if the PR's head is no longer
-`head=`, the push landed and the review runs; otherwise the PR is handed off. `review=skip`
-means the doctor itself decided a fresh review could not pass — usually a criterion only
-`.fabro/ci.sh` can prove, which the doctor may not edit — so no hosted credits are spent on
-it. The comment's body lists every command the doctor ran, with its last lines of output,
-for whoever takes the PR.
-
-**Stopping it.** Two switches, and neither touches anything else:
-
-```sh
-# 1. No new doctor runs. Jobs already queued wait, and a run already started finishes
-#    (or is cancelled) through its own rules.
-SCHEDULER_BG_KINDS=box-noop    # in ~/fabro/.env, then: docker compose up -d --no-deps scheduler
-# 2. No follow-up reviews. The fix and the push still happen, and every pushed PR is
-#    HELD in review_pending -- its labels already removed, no hand-off, no comment --
-#    until the cap is raised; then the held reviews go first, oldest first.
-SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY=0
-```
-
-Switch 2 is a pause, not a hand-off: the *Background* strip lists the held PRs under
-"waiting". To give them to a human instead, label them `ai-review-needs-human` by hand.
-
-`SCHEDULER_BACKGROUND=off` stops both, along with the rest of the lane's new work. Because
-the kinds list gates **producers**, a job queued by hand through
-`POST /api/background/pr-doctor` still runs with `SCHEDULER_BG_KINDS=box-noop`: that is what
-makes the one-PR canary possible.
-
-**The follow-up review is a coder-loop lease.** It holds a box like a `backlog` run, it is
-dispatched **ahead** of the issue queue, and it obeys the peak-hours pause. It is not a
-queue item, so its release writes no issue label and restores no `agent` label — the only
-writes are the hand-off's. `/api/pools` reports its lease with `"target_kind": "pr"`, and the
-page links it to the PR rather than to an issue of the same number.
+Task 06's PR doctor was retired on 2026-10-30, before its first run: a run held a box for about
+40 minutes, a coder run's gaps reach that length unpredictably, and its one canary job waited 23
+hours without starting. Its package, `doctor.py`, the follow-up `pr-review` dispatch and its
+`SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY` cap were removed on 2026-10-31. The store keeps the
+columns it added (`background_jobs.review_*`, `pr_facts.doctor_marker`, the `pr` value of
+`target_kind`), unused, so no database needs a migration. `docs/plans/more-local-inference/06-pr-doctor.md`
+is the record of what it was.
 
 #### Breaking a stuck lease
 
@@ -1300,11 +1232,10 @@ how this project already passes per-host values:
 | `SCHEDULER_BG_SLOT_RESERVE` | `3` | Run slots fabro must have free — `SCHEDULER_MAX_CONCURRENT_RUNS` minus every active run, `pending` included — before a background run starts (D8). Keeps fabro's first-come run cap from being spent on background work. |
 | `SCHEDULER_BOX_HEALTH` | the two boxes' `/health` (compose) | The boxes in the lane, as `pool=url` pairs in the same format `fabro-io box-claim` reads. **Empty means no box is in the lane and the lane does nothing at all** — no `/health` read, no fabro call, no row. |
 | `SCHEDULER_MAX_CONCURRENT_RUNS` | `8` | fabro's own `server.scheduler.max_concurrent_runs`, copied here because the scheduler can read the cap only from itself. Keep the two equal: a larger value would hand background runs slots that do not exist. |
-| `SCHEDULER_BG_KINDS` | every live kind (compose: `box-noop,issue-precheck,context-pack`) | Which job kinds' **producers** run, comma-separated. An unknown kind is a `ConfigError`, and so is a retired one (`pr-doctor`, 2026-10-30). `precheck-calibration` (Part A) is a live kind but **deliberately absent from the compose default**: the operator adds it after the deploy that ships the package. Turning one kind off leaves the rest of the lane alone, and a job queued by hand (`POST /api/background/box-noop`) still runs, because this gates producers and not the lane's pick (C7). |
+| `SCHEDULER_BG_KINDS` | every live kind (compose: `box-noop,issue-precheck,context-pack`) | Which job kinds' **producers** run, comma-separated. An unknown kind is a `ConfigError` (the removed `pr-doctor` among them). `precheck-calibration` (Part A) is a live kind but **deliberately absent from the compose default**: the operator adds it after the deploy that ships the package. Turning one kind off leaves the rest of the lane alone, and a job queued by hand (`POST /api/background/box-noop`) still runs, because this gates producers and not the lane's pick (C7). |
 | `SCHEDULER_CALIBRATION_QUEUED` | `4` | How many `precheck-calibration` jobs the producer keeps queued (Part A). The lane runs one background job at a time per box, so this is only how far ahead the next job is ready; `0` turns the producer off without touching the kind switch. |
 | `SCHEDULER_CALIBRATION_SINCE` | `2026-09-25` | The oldest `run_history.dispatched_at` the calibration producer reaches back to, as an ISO date compared as a string prefix (both UTC). 2026-09-25 is where the scheduler's labelled run history starts. |
 | `SCHEDULER_PRECHECK_PER_REPO` | `3` | How many of the next issues of each repository, in dispatch order, the precheck producer keeps checked (more-local-inference 07), and the context-pack producer keeps mapped once their precheck said `ready` (08). Issues a coder loop holds do not count. `0` queues none. |
-| `SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY` | `6` | The most follow-up `pr-review` runs the PR doctor may dispatch in one UTC day, across every repository (operator decision 3). A review spends hosted credits; over the cap a pushed PR waits in `review_pending` and goes first the next day, still ahead of the issue queue. A review that failed to dispatch does not count. `0` pauses the reviews without turning the doctor off: the fix and the push still happen, and every pushed PR is **held** in `review_pending` (labels removed, no hand-off) until the cap is raised. |
 | `FABRO_API_TOKEN` | — | The dispatch credential, from `~/fabro/scheduler.env`. It is fabro's **dev token**, read from `/storage/server.dev-token` in the container — fabro supports exactly one, so this cannot be rotated independently of the CLI and `discord-notify.sh`. Needed by `POST /api/dispatch-once` and by the dispatch loop: without it the endpoint answers `503`, the loop does not start, and everything else, `/health` included, works unchanged. Never logged, never rendered, never stored in SQLite. |
 | `GITHUB_TOKEN` | — | The inventory's credential **and, from draft 08, the label writer's**, from `~/fabro/scheduler.env` on the host. **Not** in `~/fabro/.env`: the scheduler gets its own env file so it never receives fabro's `SESSION_SECRET`, and this repository is public, so neither belongs in `repos.toml`. It needs `issues: read` **and `issues: write`** on the four repos — the read is the inventory, the write is `agent-in-progress` and removing `agent`. A classic token's `repo` scope covers both; a fine-grained PAT must be given both. Without it the inventory is not refreshed *and* the dispatch loop does not start. Never logged, never rendered and never stored in SQLite. |
 

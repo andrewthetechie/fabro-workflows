@@ -2,8 +2,9 @@
 
 **Retired 2026-10-30 by the operator, before its first run.** Built, reviewed and deployed
 2026-10-29, but a ~40-minute job does not fit the coder boxes' gaps, and the canary waited 23
-hours without starting. `pr-doctor` is in the scheduler's `RETIRED_JOB_KINDS`. Do not build on
-this task.
+hours without starting. **Removed 2026-10-31:** the package, `doctor.py`, the follow-up review
+and its cap are gone from the tree (the store keeps their columns, unused). This file is the
+record of what it was. Do not build on this task.
 
 Read `00-overview-and-contracts.md` first (D9, D10, D13, D14; C6, C7). **Invoke
 `/fabro-workflow`.** Read `docs/agents/invariants-merge.md` and

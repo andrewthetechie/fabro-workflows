@@ -52,9 +52,8 @@ def fake_checkout(tmp_path: Path) -> FakeCheckout:
     (root / "workflows/_shared/review-merge/review-merge.fabro").write_text(
         "digraph S {}"
     )
-    # Task 06's two packages. The doctor's follow-up review is a leased `pr-review` run
-    # (D14), so that graph travels in the same version as the doctor's own.
-    for workflow in ("pr-review", "pr-doctor"):
+    # Two more packages, so a version carries more than the graph it enters.
+    for workflow in ("pr-review", "box-noop"):
         (root / f"workflows/{workflow}").mkdir(parents=True)
         (root / f"workflows/{workflow}/workflow.fabro").write_text("digraph P {}")
         (root / f"workflows/{workflow}/workflow.toml").write_text("name = \"\"\n")

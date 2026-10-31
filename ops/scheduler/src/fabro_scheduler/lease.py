@@ -73,10 +73,8 @@ class Lease:
     # "plan-arm"}`. Empty when the manifest could not be read, which the lane reads as
     # "no box stage known" rather than as "nothing is on the box".
     box_stages: Mapping[str, str] = field(default_factory=dict)
-    # 'issue' or 'pr' (more-local-inference 06, D14). A `pr-review` run the doctor earns holds a
-    # box like any coder loop, but it is not a queue item: its release writes no issue label,
-    # requeues nothing, and records no PR lookup from its run branch. `issue_number` holds the
-    # **PR** number for a 'pr' row.
+    # Always 'issue' since the PR doctor's follow-up reviews were removed (2026-10-31); 'pr' was
+    # their target kind. Kept as a column so existing rows and readers need no migration.
     target_kind: str = "issue"
 
 

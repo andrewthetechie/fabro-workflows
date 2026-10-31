@@ -169,10 +169,10 @@ def test_fetch_without_a_token_raises():
         fetch_pr_facts(REPO, 7, " ", BOT)
 
 
-# --- the PR doctor's inputs (more-local-inference 06) -------------------------------
+# --- the head and the report time (added for the retired PR doctor) ---------------------------------------------
 
 
-def test_the_doctor_facts_read_the_marker_the_head_and_the_report_time():
+def test_the_facts_read_the_head_and_the_report_time():
     pull = {
         "state": "open",
         "head": {"sha": "b" * 40},
@@ -209,9 +209,6 @@ def test_the_doctor_facts_read_the_marker_the_head_and_the_report_time():
     assert facts.report_at == "2026-10-29T10:00:00Z"
     assert facts.report == "blocked"
     assert facts.report_items is True
-    assert facts.doctor_marker == (
-        "<!-- fabro:pr-doctor head=abc pushed=none review=skip run=R -->"
-    )
 
 
 def test_a_report_that_lists_nothing_concrete_records_no_items():
@@ -234,10 +231,6 @@ def test_the_head_commit_falls_back_to_the_last_entry_when_the_sha_is_not_listed
     assert facts.head_committed_at == "2026-10-29T09:00:00Z"
 
 
-def test_no_head_or_commit_gives_no_doctor_timestamps():
+def test_no_head_or_commit_gives_no_head_timestamps():
     facts = parse_pr_facts({"state": "open", "labels": []}, [], [], BOT)
-    assert (facts.head_sha, facts.head_committed_at, facts.doctor_marker) == (
-        None,
-        None,
-        None,
-    )
+    assert (facts.head_sha, facts.head_committed_at) == (None, None)

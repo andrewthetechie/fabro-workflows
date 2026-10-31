@@ -186,7 +186,7 @@ echo '{\"context_updates\":{\"verdict\":\"'$VERDICT'\"}}'"]
     // cutting the model's text at a whole line so the shadow-mode footer always survives. It
     // carries the model's text verbatim, and two of the repositories are public, so the values
     // of `FABRO_API_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` are replaced before anything is
-    // posted (a literal match, as pr-doctor's `publish` does it).
+    // posted (a literal match).
     post [label="Post the verdict", shape=parallelogram, output_schema="routing", timeout="5m",
         script="exec 3>&1 >>/tmp/fabro/precheck/post.log 2>&1
 P=/tmp/fabro/precheck

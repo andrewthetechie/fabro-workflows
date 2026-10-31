@@ -100,10 +100,9 @@ CREATE TABLE IF NOT EXISTS leases (
   dispatched_at TEXT NOT NULL,  -- ISO-8601 UTC
   queued_since  TEXT,           -- ISO-8601 UTC; `issue_cache.first_seen`
   workflow      TEXT NOT NULL DEFAULT 'backlog',  -- ADR 0029 O21: the arm
-  -- 'issue' or 'pr' (more-local-inference 06, D14). A `pr-review` run the doctor earns holds
-  -- a box like any coder loop, but it is not a queue item: its release writes no issue label,
-  -- requeues nothing, and records no PR lookup. `issue_number` holds the PR number for a 'pr'
-  -- row, which is why every issue-shaped reader filters on this column.
+  -- 'issue', always, since the PR doctor was removed (2026-10-31); 'pr' was its follow-up
+  -- review's kind, with the PR number in `issue_number`. Issue-shaped readers still filter on
+  -- it, so a hand-written 'pr' row can never be counted as an issue run.
   target_kind   TEXT NOT NULL DEFAULT 'issue'
 );
 
@@ -202,12 +201,8 @@ CREATE TABLE IF NOT EXISTS background_jobs (
   last_started_at     TEXT,
   last_finished_at    TEXT,
   outcome             TEXT,
-  -- The doctor's follow-up review (more-local-inference D13, D14). The background run and
-  -- the review it earns are one job: `outcome = 'review_pending'` means the doctor pushed and
-  -- a `pr-review` is waiting for a slot (the daily cap, or a free box), `'review_fired'` means
-  -- it was dispatched and `review_run_id` names it, and `'merged'` / `'handed_off'` /
-  -- `'handed_off_no_review'` are the hand-off's outcomes. A job in any of those has already
-  -- had its one attempt, so the producer never enqueues a second (task 06 step 5).
+  -- Unused since 2026-10-31: the retired PR doctor's follow-up review (more-local-inference
+  -- D13, D14). Kept so existing databases need no migration; nothing reads or writes them.
   review_run_id       TEXT,
   review_dispatched_at TEXT,    -- ISO-8601 UTC; set only on a dispatch that succeeded
   review_failures     INTEGER NOT NULL DEFAULT 0
@@ -356,11 +351,9 @@ CREATE TABLE IF NOT EXISTS pr_facts (
   reason           TEXT,              -- its **Reason:** line, when it has one
   queue_approved   INTEGER NOT NULL,  -- 0 | 1: the merge phase queued it (ADR 0024)
   queue_handoff    INTEGER NOT NULL,  -- 0 | 1: the merge queue then handed it off
-  -- The PR doctor's inputs (more-local-inference 06). `head_sha` and `head_committed_at` are
-  -- the PR head as GitHub reports it, and decision 6 judges a report stale by comparing that
-  -- committer date with `report_at`, the report comment's `created_at`. `doctor_marker` is the
-  -- newest `<!-- fabro:pr-doctor ... -->` first line: its presence alone means the PR has had
-  -- its one attempt (D13).
+  -- Added for the retired PR doctor (more-local-inference 06). `head_sha` and
+  -- `head_committed_at` are the PR head as GitHub reports it, `report_at` the report comment's
+  -- `created_at`. `doctor_marker` has been unused since 2026-10-31 and is always NULL.
   head_sha         TEXT,
   head_committed_at TEXT,
   report_at        TEXT,
@@ -811,8 +804,7 @@ class Store:
         fall back to its next-best estimate (see `queue_page`).
         """
         with self._lock:
-            # Issue runs only: the doctor's follow-up reviews are much shorter, and the
-            # estimate is for an issue waiting in the queue.
+            # Issue runs only: the estimate is for an issue waiting in the queue.
             rows = self._conn.execute(
                 "SELECT finished_at, dispatched_at FROM run_history "
                 "WHERE repo = ? AND finished_at IS NOT NULL AND dispatched_at IS NOT NULL "
@@ -1456,8 +1448,7 @@ class Store:
     def background_job_exists(self, kind: str, repo: str, target: str) -> bool:
         """Whether any job of this kind ever existed for `(repo, target)`, in any state.
 
-        The PR doctor's one-attempt rule (D13, task 06 step 5) at the queue level: once a
-        `pr-doctor` job has run for a PR, a marker comment or not, no second one is created.
+        The producers' one-job-per-target rule: a finished or failed job still blocks a second.
         A cancelled attempt comes back as the SAME row (`requeue_background_job`), so this
         stays true and the retry still happens through the row that already exists.
         """
@@ -1468,80 +1459,13 @@ class Store:
             ).fetchone()
         return row is not None
 
-    def pending_review_jobs(self) -> list[sqlite3.Row]:
-        """Doctor jobs whose follow-up review is waiting for a slot, oldest first.
-
-        The order is the whole point (operator decision 3): a review that was pushed but held
-        by the daily cap goes before everything the next day, and before the issue queue
-        (D14). `state = 'done'` because the background run is over and only the review is
-        outstanding -- a `queued` row would be picked by the lane as a second doctor run.
-        """
-        with self._lock:
-            return self._conn.execute(
-                "SELECT * FROM background_jobs WHERE kind = 'pr-doctor' "
-                "AND outcome = 'review_pending' ORDER BY created_at, job_id"
-            ).fetchall()
-
-    def orphaned_review_jobs(self) -> list[sqlite3.Row]:
-        """Doctor jobs at `review_fired` whose review run holds no lease.
-
-        Two ways to get here, both one HTTP call wide: the scheduler stopped between the
-        review's release and its hand-off, or the review started but its lease was refused
-        (`LeaseConflict`). Nothing else ever moves such a job on, so the release poll reads
-        each one's run and hands it off once the run is over.
-        """
-        with self._lock:
-            return self._conn.execute(
-                "SELECT j.* FROM background_jobs j WHERE j.kind = 'pr-doctor' "
-                "AND j.outcome = 'review_fired' AND j.review_run_id IS NOT NULL "
-                "AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.run_id = j.review_run_id) "
-                "ORDER BY j.job_id"
-            ).fetchall()
-
-    def failed_doctor_jobs(self, *, limit: int = 20) -> list[sqlite3.Row]:
-        """Doctor jobs whose run failed with no marker, newest first.
-
-        Nothing reached GitHub, so nothing on the PR says the attempt happened, and the job
-        row still blocks a second one (`background_job_exists`). The *Background* strip lists
-        these so a human can read the run and decide whether to grant another attempt.
-        """
-        with self._lock:
-            return self._conn.execute(
-                "SELECT * FROM background_jobs WHERE kind = 'pr-doctor' AND state = 'failed' "
-                "ORDER BY last_finished_at DESC, job_id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-
-    def doctor_job_for_review(self, run_id: str) -> sqlite3.Row | None:
-        """The doctor job whose follow-up review is `run_id`, if there is one."""
-        with self._lock:
-            return self._conn.execute(
-                "SELECT * FROM background_jobs WHERE kind = 'pr-doctor' AND review_run_id = ?",
-                (run_id,),
-            ).fetchone()
-
-    def reviews_dispatched_since(self, since: datetime) -> int:
-        """How many follow-up reviews were dispatched at or after `since` (decision 3).
-
-        Counts dispatches, not outcomes: a review that failed to start never sets
-        `review_dispatched_at`, so it does not use a slot.
-        """
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM background_jobs "
-                "WHERE review_dispatched_at IS NOT NULL AND review_dispatched_at >= ?",
-                (since.isoformat(),),
-            ).fetchone()
-        return 0 if row is None else int(row["n"])
-
     def set_background_outcome(
         self, job_id: int, *, outcome: str, now: datetime
     ) -> None:
-        """Move a finished job to another outcome, keeping `state = 'done'`.
+        """Replace a finished job's outcome, keeping `state = 'done'`.
 
-        The doctor's job outlives its background run: `review_pending` -> `review_fired` ->
-        `merged` / `handed_off` are all states of the same job, and no second run is created
-        for any of them.
+        The lane finishes a run as plain `succeeded`, then records what the run produced (a
+        precheck verdict, a pack, a calibration line) here once it has read it.
         """
         with self._lock, self._conn:
             self._conn.execute(
@@ -1549,47 +1473,6 @@ class Store:
                 "last_finished_at = ? WHERE job_id = ?",
                 (outcome, now.isoformat(), job_id),
             )
-
-    def start_background_review(
-        self, job_id: int, *, run_id: str, now: datetime
-    ) -> bool:
-        """Record that the follow-up review was dispatched. False if it was not pending."""
-        with self._lock, self._conn:
-            cursor = self._conn.execute(
-                "UPDATE background_jobs SET outcome = 'review_fired', review_run_id = ?, "
-                "review_dispatched_at = ? WHERE job_id = ? AND outcome = 'review_pending'",
-                (run_id, now.isoformat(), job_id),
-            )
-            return cursor.rowcount == 1
-
-    def record_review_failure(self, job_id: int, *, now: datetime) -> int:
-        """Count a review dispatch that failed, returning the new total.
-
-        The job stays `review_pending`, so the next tick tries again. The count is what stops
-        that from being forever: at `REVIEW_DISPATCH_ATTEMPTS` the caller hands the PR off
-        without a review rather than leaving it in a queue that cannot move.
-        """
-        with self._lock, self._conn:
-            self._conn.execute(
-                "UPDATE background_jobs SET review_failures = review_failures + 1 "
-                "WHERE job_id = ?",
-                (job_id,),
-            )
-            row = self._conn.execute(
-                "SELECT review_failures FROM background_jobs WHERE job_id = ?", (job_id,)
-            ).fetchone()
-        return 0 if row is None else int(row["review_failures"])
-
-    def pr_facts_row(self, repo: str, number: int) -> sqlite3.Row | None:
-        """One cached PR fact row, or `None` before the collector has read the PR.
-
-        The canary endpoint reads the row rather than GitHub: it must use the same facts the
-        producer just used, or the operator's 4xx and the producer's silence could disagree.
-        """
-        with self._lock:
-            return self._conn.execute(
-                "SELECT * FROM pr_facts WHERE repo = ? AND pr_number = ?", (repo, number)
-            ).fetchone()
 
     def close(self) -> None:
         with self._lock:
@@ -1851,8 +1734,8 @@ class Store:
                 "INSERT INTO pr_facts (repo, pr_number, fetched_at, state, created_at,"
                 " merged_at, closed_at, labels, additions, deletions, commits,"
                 " operator_commits, report, reason, queue_approved, queue_handoff,"
-                " head_sha, head_committed_at, report_at, report_items, doctor_marker)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " head_sha, head_committed_at, report_at, report_items)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(repo, pr_number) DO UPDATE SET"
                 "  fetched_at = excluded.fetched_at, state = excluded.state,"
                 "  created_at = excluded.created_at, merged_at = excluded.merged_at,"
@@ -1865,8 +1748,7 @@ class Store:
                 "  head_sha = excluded.head_sha,"
                 "  head_committed_at = excluded.head_committed_at,"
                 "  report_at = excluded.report_at,"
-                "  report_items = excluded.report_items,"
-                "  doctor_marker = excluded.doctor_marker",
+                "  report_items = excluded.report_items",
                 (
                     repo,
                     number,
@@ -1888,7 +1770,6 @@ class Store:
                     facts.head_committed_at,
                     facts.report_at,
                     None if facts.report_items is None else int(facts.report_items),
-                    facts.doctor_marker,
                 ),
             )
 
@@ -1897,10 +1778,9 @@ class Store:
 
         Six SELECTs under one lock, so the window is one consistent snapshot.
 
-        Issue runs only (`target_kind = 'issue'`). The PR doctor's follow-up `pr-review`
-        leases are archived here too, and counting them would give a doctored PR a second
-        "PR opened" and credit its merge to the issue workflows, inflating the merge rate
-        Phase 2 of more-local-inference is judged on. `doctor_review_rows` reads them.
+        Issue runs only (`target_kind = 'issue'`). A `pr` row (the retired PR doctor's follow-up
+        reviews, none ever written) would give a PR a second "PR opened" and credit its merge
+        to the issue workflows.
         """
         bounds = (start.isoformat(), end.isoformat())
         in_window = (
@@ -1933,22 +1813,6 @@ class Store:
                 f"SELECT * FROM run_model_usage WHERE run_id IN ({in_window})", bounds
             ).fetchall()
         return ScorecardRows(history, summaries, stages, failovers, prs, models)
-
-    def doctor_review_rows(self, start: datetime, end: datetime) -> list[sqlite3.Row]:
-        """The PR doctor's follow-up reviews dispatched in `[start, end)`, oldest first.
-
-        The `pr` half of `run_history` that `scorecard_rows` leaves out, joined to the PR's
-        facts so a reader sees what each review ended as.
-        """
-        with self._lock:
-            return self._conn.execute(
-                "SELECT h.*, f.state AS pr_state, f.merged_at AS pr_merged_at "
-                "FROM run_history h LEFT JOIN pr_facts f "
-                "  ON f.repo = h.repo AND f.pr_number = h.issue_number "
-                "WHERE h.target_kind = 'pr' AND h.dispatched_at >= ? AND h.dispatched_at < ? "
-                "ORDER BY h.dispatched_at",
-                (start.isoformat(), end.isoformat()),
-            ).fetchall()
 
     def first_dispatch(self) -> datetime | None:
         """When the oldest `run_history` row was dispatched, or None if there is none."""

@@ -40,11 +40,6 @@ from .github import (
 # line. A comment that does not start with one is a human's, or another tool's.
 REPORT_HEADINGS = ("## Merged automatically", "## AI PR review")
 
-# The PR doctor's marker (more-local-inference C6). Its *presence* is what ends the doctor's
-# interest in a PR (D13): one attempt, ever. `prfacts` only carries the raw first line; the
-# reason table and the eligibility rules live in `doctor.py`.
-DOCTOR_MARKER = "<!-- fabro:pr-doctor"
-
 APPROVED_MARKER = re.compile(r"^<!-- fabro:merge-queue approved head=")
 HANDOFF_MARKER = re.compile(r"^<!-- fabro:merge-queue handoff head=")
 REASON_LINE = re.compile(r"^\*\*Reason:\*\*\s*(.*)$", re.MULTILINE)
@@ -69,7 +64,7 @@ class PrFacts:
     reason: str | None  # the last report's **Reason:** text, when it has one
     queue_approved: bool
     queue_handoff: bool
-    # --- the PR doctor (more-local-inference 06) -------------------------------------
+    # --- added for the retired PR doctor (more-local-inference 06) --------------------
     # The head SHA GitHub reports, and the head commit's *committer* date. Decision 6: a
     # report is stale when the head was committed after the report was posted, judged by
     # time only. The report's own `Reviewed HEAD:` SHA cannot be used -- it is a
@@ -81,10 +76,8 @@ class PrFacts:
     # Whether that report lists at least one concrete leftover (a finding, a `not_met` /
     # `unverifiable` criterion, a Refuter defect, a Task that did not pass). Operator
     # decision 1 makes `The review did not end in a mergeable state.` eligible only when it
-    # does; with none there is nothing for the doctor to fix. None when no report was read.
+    # does. None when no report was read.
     report_items: bool | None = None
-    # The newest `<!-- fabro:pr-doctor ... -->` comment's first line, verbatim, or None.
-    doctor_marker: str | None = None
 
 
 def fetch_pr_facts(
@@ -146,7 +139,6 @@ def parse_pr_facts(
     reason: str | None = None
     report_at: str | None = None
     report_items: bool | None = None
-    doctor_marker: str | None = None
     approved = False
     handoff = False
     for item in comments:  # oldest first, so the last report wins
@@ -158,10 +150,6 @@ def parse_pr_facts(
             approved, handoff = True, False
         elif HANDOFF_MARKER.match(first):
             handoff = True
-        if first.startswith(DOCTOR_MARKER):
-            # The newest marker wins; a PR should only ever have one, but the last one is
-            # the record that matters if a hand-edited duplicate exists (C6).
-            doctor_marker = first
         kind = report_kind(body)
         if kind is not None:
             report = kind
@@ -189,7 +177,6 @@ def parse_pr_facts(
         head_committed_at=_head_committed_at(commits, head_sha),
         report_at=report_at,
         report_items=report_items,
-        doctor_marker=doctor_marker,
     )
 
 

@@ -444,10 +444,6 @@ class Counts(unittest.TestCase):
             # box-noop (more-local-inference task 04): start -> claim -> work -> exit. The
             # offline count; `fabro validate` for it is the operator's task 12.
             "box-noop": (4, 3),
-            # pr-doctor (more-local-inference task 06): start, exit, claim, stop, prep, fix,
-            # fix_gate, validate, publish -- 9 nodes, 13 edges since the Phase 2 review's
-            # `claim -> exit` (12 confirmed by `make check-host` on 2026-10-29).
-            "pr-doctor": (9, 13),
             # issue-precheck (more-local-inference task 07): start, exit, claim, stop, prep,
             # check, gate, post -- 8 nodes, 11 edges.
             "issue-precheck": (8, 11),

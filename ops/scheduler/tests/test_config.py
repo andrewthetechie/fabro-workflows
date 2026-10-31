@@ -453,8 +453,8 @@ def test_the_background_lane_is_off_by_default_and_reads_on_and_off(tmp_path):
     assert cfg.bg_slot_reserve == 3
     assert cfg.box_health == {}
     assert cfg.max_concurrent_runs == 8
-    # Every live kind, in D10's value order. `pr-doctor` (task 06) was retired on 2026-10-30;
-    # task 07 added `issue-precheck` at 2; the precheck calibration (Part A) is 4, between the
+    # Every kind, in D10's value order. Task 07 added `issue-precheck` at 2 (1 was the removed
+    # `pr-doctor`); the precheck calibration (Part A) is 4, between the
     # pack and the hand-queued `box-noop`.
     assert cfg.bg_kinds == (
         "issue-precheck", "context-pack", "precheck-calibration", "box-noop",
@@ -464,8 +464,6 @@ def test_the_background_lane_is_off_by_default_and_reads_on_and_off(tmp_path):
     # The calibration producer keeps four jobs queued and looks back to 2026-09-25, where the
     # scheduler's labelled run history starts.
     assert (cfg.calibration_queued, cfg.calibration_since) == (4, "2026-09-25")
-    # The doctor's daily review cap (operator decision 3): 6 per UTC day, on by default.
-    assert cfg.pr_doctor_reviews_per_day == 6
 
     on = load_config(write(tmp_path, repo()), env={"SCHEDULER_BACKGROUND": " ON "})
     assert on.background is True
@@ -514,10 +512,8 @@ def test_the_lane_knobs_read_and_reject_their_bounds(tmp_path):
         ("SCHEDULER_MAX_CONCURRENT_RUNS", "0"),
         # A kind that matches no producer would silently turn nothing on.
         ("SCHEDULER_BG_KINDS", "pr-docotr"),
-        # A retired kind can no longer be queued (2026-10-30).
+        # The removed doctor is no kind at all.
         ("SCHEDULER_BG_KINDS", "box-noop,pr-doctor"),
-        # The doctor's cap is `>= 0`: 0 is the reviews' kill switch, a negative is a typo.
-        ("SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY", "-1"),
         ("SCHEDULER_PRECHECK_PER_REPO", "-1"),
     ):
         with pytest.raises(ConfigError, match=key):

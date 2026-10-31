@@ -95,8 +95,8 @@ starts a fresh session and a handover therefore costs nothing in the KV cache (A
 _Avoid_: coder run (when the precedence is what is meant), worker
 
 **Background run**:
-A run of a box-only package (`.fabro/workflows/box-noop/` today; `pr-doctor`,
-`issue-precheck`, `context-pack`, `orientation` and `flaky-investigation` later) that the
+A run of a box-only package (`box-noop`, `issue-precheck`, `context-pack` and
+`precheck-calibration` today; `repo-orientation` and `flaky-investigation` later) that the
 **Scheduler** starts in a **Coder loop**'s gap. At most one per box, every stage on the box's
 own `coders-?-bg` model, no hosted credits, and always cancellable: it writes to GitHub only
 in its last node, and that node writes its marker first (ADR 0031, more-local-inference D9).
@@ -117,14 +117,6 @@ or the box is busy, and blocks only when it cannot cancel itself. It is the thir
 closes the window the **Claim** cannot see: a loop stage that begins after the claim ran
 (more-local-inference C10, D17).
 _Avoid_: check, heartbeat
-
-**PR doctor**:
-The background job that spends one attempt on a **Blocked** factory pull request whose
-merge-phase report names something fixable: `.fabro/workflows/pr-doctor/` fixes it on the
-box, `publish` posts a marker comment and pushes, and the scheduler leases exactly one
-`pr-review` after it. If that does not merge the PR, a human takes it. One attempt per pull
-request, ever, recorded by the marker (ADR 0031 D4, more-local-inference D13).
-_Avoid_: shepherd (that is the scheduler's requeue rule), auto-fixer, PR bot
 
 **Run history**:
 One row per released **Coder lease**, in the scheduler's own `run_history` table: which

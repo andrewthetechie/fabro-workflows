@@ -89,8 +89,8 @@ read these values at run time, and the scheduler reads them to decide when a box
 A **background package** is a box-only package the scheduler may run in a coder loop's gap
 (more-local-inference, ADR 0031). Every agent stage of one runs on the run's coder box, at most
 one such run sits on a box at a time, and any of them may be cancelled at any moment. `box-noop`
-is the first; later tasks add `pr-doctor` (retired 2026-10-30), `issue-precheck`, `context-pack`
-and `precheck-calibration`. The
+is the first; later tasks add `issue-precheck`, `context-pack` and `precheck-calibration`
+(task 06's `pr-doctor` was removed on 2026-10-31). The
 checker's `BACKGROUND_PACKAGES` list names them, and R16 holds every rule below.
 
 | Rule | What happens otherwise |

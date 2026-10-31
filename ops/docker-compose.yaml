@@ -81,8 +81,8 @@ services:
       # lane's pick, so a job queued by hand through `POST /api/background/box-noop` still
       # runs with `box-noop` absent here. `issue-precheck` (more-local-inference 07, shadow mode:
       # it posts a verdict and holds nothing) is the first real producer; `context-pack` (08)
-      # maps the issues the precheck passed, for `decompose` and `plan`. `pr-doctor` was
-      # retired on 2026-10-30, and naming it fails startup. **`precheck-calibration` is
+      # maps the issues the precheck passed, for `decompose` and `plan`. An unknown kind (the
+      # removed `pr-doctor` among them) fails startup. **`precheck-calibration` is
       # deliberately absent**: the operator turns it on here (or in ~/fabro/.env) once the
       # deploy that ships it is in place. An empty value reads as unset here (`:-`), and
       # config.py's own default is every live kind.
@@ -95,12 +95,6 @@ services:
       # How many of the next issues of each repository, in dispatch order, the precheck
       # producer keeps checked and the context-pack producer keeps mapped.
       SCHEDULER_PRECHECK_PER_REPO: "${SCHEDULER_PRECHECK_PER_REPO:-3}"
-      # The PR doctor's daily cap on follow-up `pr-review` runs, counted per UTC day across
-      # every repository (operator decision 3). A review spends hosted credits; over the cap,
-      # a pushed PR waits in the pending-review state and goes first the next day. 0 HOLDS
-      # every pushed PR in that state (labels already removed, no hand-off) until the cap is
-      # raised again; it is a pause, not a hand-off.
-      SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY: "${SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY:-6}"
     # Deliberately **not** `env_file: .env`. That file carries fabro's
     # SESSION_SECRET — a cookie-signing key this service has no use for — and the
     # scheduler's credentials are its own two: GITHUB_TOKEN today, FABRO_API_TOKEN
