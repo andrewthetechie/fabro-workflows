@@ -1,0 +1,244 @@
+// precheck-calibration: the issue precheck, run again on an issue whose coder run has
+// already finished, against `main` as it stood when that run was dispatched. It posts
+// nothing. Its one answer is a line the scheduler records next to how the run actually
+// ended, which is what turns the live precheck's shadow mode into a labelled sample.
+//
+// **Why it exists (task 07's D20).** Holds on a precheck verdict may start only once the
+// verdicts are shown to be right. Live prechecks answer that slowly: about 17 issue runs a
+// day, and the first 13 verdicts were all `ready`. The scheduler's DB already labels the
+// finished runs since 2026-09-25 with how they ended, so re-checking those issues as they
+// stood then gives the same measurement in days, for box time the lane is not using.
+//
+// It is a **background package** (D4, R16) shaped like `issue-precheck`: every agent stage
+// resolves to the run's `-bg` model row, `box-guard` protects the box, and nothing here takes
+// a box-claim, because the lane may cancel this run at any moment.
+//
+// **Nothing here writes to GitHub, by construction.** The package's only GitHub permission is
+// `read` (`workflow.toml`), there is no `post` node, and the gate test
+// `ops/gate_tests/test_precheck_calibration.py` fails if any script in the package grows a
+// writing command. A cancel anywhere leaves nothing behind, so the job is simply queued
+// again.
+//
+// `prep`, `check` and `gate` are byte-identical to `issue-precheck`'s copies, and so is the
+// check prompt: the calibration has to measure the same package, not a lookalike. R10 in
+// `ops/check-graph-invariants.py` fails when either drifts.
+//
+// A failed node takes its unconditional edge to `exit`, which ends the run failed, so the
+// lane records a failure rather than a verdict. There is no `stop`: calibration re-checks
+// issues that already carry a live marker, on purpose.
+digraph PrecheckCalibration {
+    graph [
+        goal="Re-check one finished run's issue against main as it stood when the run was dispatched, and record the verdict in the run's context; post nothing",
+        // Above every node timeout below (`check`'s 20m included): R2 compares them, and the
+        // watchdog must never fire before a node's own timeout does.
+        stall_timeout="30m",
+        // Bound the preamble: the prompt names its inputs by path (invariants-graph, the
+        // `default_fidelity` row).
+        default_fidelity="truncate",
+        // Every model in a background package is the run's `-bg` pool (R16): the `*` rule and
+        // `.bg` are the same expression, so an agent node that lost its class would still run
+        // on the box and never reach a hosted model. There is no `[run.model.fallbacks]` row for
+        // either `-bg` name, so a box error fails the stage instead of spending credits (R14).
+        model_stylesheet="
+            *   { model: {{ inputs.coder_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+            .bg { model: {{ inputs.coder_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // ---- Read the issue as it was at `at`, and main as it stood then ----
+    //
+    // `issue_number` and `at` arrive from the scheduler's producer: the issue, and the
+    // `dispatched_at` of the run this one calibrates. Each is interpolated exactly once, in
+    // single quotes, so a malformed value reaches the `case` guards as data rather than as
+    // shell syntax, and both guards run before any command does. `/tmp/fabro/box` is this
+    // package's half of C2/R16, written as `issue-precheck` writes it: the pool arrives with
+    // the `-bg` suffix the scheduler added, and `box-guard` looks up the loop's box, which
+    // never carries it.
+    //
+    // `main` is worked out here rather than passed: `git rev-list -1 --before="$AT"
+    // origin/main`. The sandbox clone is **shallow and single-branch** (fabro's default depth
+    // is 100), so a run from weeks ago needs older history: `git fetch --shallow-since="$AT"`
+    // deepens the clone back to `at`, exactly as `arch-review`'s `history` node deepens its
+    // own for 90 days. A fetch that fails leaves the clone as it is, and `rev-list` then finds
+    // no commit before `at` if every fetched commit is newer, which fails the run rather than
+    // calibrating against the wrong tree. `prep` rewrites `main_sha` from HEAD, which is that
+    // same commit: `claim` checks it out detached.
+    //
+    // The issue text is the issue **at `at`**, not now. GitHub's GraphQL
+    // `userContentEdits` returns one entry per body edit whose `diff` is the whole body as
+    // that edit left it (read 2026-10-31 against writers-app#1274: three entries, 4,593,
+    // 10,106 and 16,364 characters, each the complete body), so the last entry created at or
+    // before `at` is the body then, and `body_changed=true` records that a later edit exists.
+    // The **title** is the current one: `userContentEdits` carries the body only, and a title
+    // edit is not visible this way. `unknown` means a later edit exists but no entry reaches
+    // back to `at`, so the current text was used. Comments are the ones created before `at`,
+    // fabro markers excluded as the live `claim` excludes them.
+    //
+    // `open_issues.json` is what `gate` tests a `blocked` verdict's blocker against. The
+    // issues open **at `at`** cannot be listed cheaply, so this reads every issue, open and
+    // closed, and keeps those open now plus those closed after `at`: an issue closed since
+    // `at` was open then, and one opened since is kept as well. Over-inclusion is the safe
+    // direction — `gate` only asks whether a cited blocker is an open issue in this
+    // repository.
+    claim [label="Read the issue as it was", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="set -e
+P=/tmp/fabro/precheck
+mkdir -p $P
+POOL='{{ inputs.coder_pool }}'
+echo \"${POOL%-bg}\" > /tmp/fabro/box || true
+N='{{ inputs.issue_number }}'
+case \"$N\" in '' | *[!0-9]*) echo 'issue_number must be a positive integer' >&2; exit 1;; esac
+if [ \"$N\" -lt 1 ]; then echo 'issue_number must be a positive integer' >&2; exit 1; fi
+AT_RAW='{{ inputs.at }}'
+case \"$AT_RAW\" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*) ;;
+  *) echo 'at must be an ISO 8601 timestamp' >&2; exit 1;; esac
+case \"$AT_RAW\" in *[!0-9A-Za-z:+-.]*) echo 'at carries characters an ISO 8601 timestamp cannot' >&2; exit 1;; esac
+case \"$AT_RAW\" in
+  *+00:00) AT=${AT_RAW%+00:00} ;;
+  *Z) AT=${AT_RAW%Z} ;;
+  *) echo 'at must be UTC: a trailing Z or +00:00' >&2; exit 1 ;;
+esac
+AT=$(printf '%s' \"$AT\" | cut -d. -f1); AT=${AT}Z
+rm -f /tmp/fabro/precheck.json $P/verdict $P/raw_verdict $P/rule $P/main_sha $P/body_changed $P/body_hash $P/issue.md $P/open_issues.md $P/open_issues.json $P/open_issues.all.json $P/comments.json $P/comments.all.json $P/comments.raw $P/edits.json
+echo \"$N\" > $P/issue_number
+if ! gh issue view \"$N\" --json number,title,body,state,url,labels > $P/issue.json; then
+  echo 'Could not read issue '$N' from GitHub.' >&2
+  exit 1
+fi
+R=$(jq -r '(.url // \"\") | split(\"/\") | .[3] + \"/\" + .[4]' $P/issue.json)
+echo \"$R\" > $P/repo
+if ! gh api \"repos/$R/issues/$N/comments?per_page=100\" --paginate > $P/comments.raw; then
+  echo 'Could not read the comments on issue '$N'.' >&2
+  exit 1
+fi
+jq -s 'add // []' $P/comments.raw > $P/comments.all.json
+jq --arg at \"$AT\" '[.[] | select((.created_at // \"\") <= $at)]' $P/comments.all.json > $P/comments.json
+if ! gh api graphql -f query='query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { issue(number: $n) { userContentEdits(first: 100) { nodes { createdAt diff } } } } }' -f owner=\"${R%%/*}\" -f name=\"${R##*/}\" -F n=\"$N\" > $P/edits.json; then
+  echo 'Could not read the issue body edits.' >&2
+  exit 1
+fi
+if ! jq -e '.data.repository.issue.userContentEdits.nodes' $P/edits.json >/dev/null; then
+  echo 'The issue body edits came back malformed.' >&2
+  exit 1
+fi
+BODY=$(jq -r '.body // \"\"' $P/issue.json)
+CHANGED=false
+if jq -e --arg at \"$AT\" 'any(.data.repository.issue.userContentEdits.nodes[]; (.createdAt // \"\") > $at)' $P/edits.json >/dev/null; then
+  CHANGED=true
+  PAST=$(jq -r --arg at \"$AT\" '[.data.repository.issue.userContentEdits.nodes[] | select((.createdAt // \"\") <= $at)] | sort_by(.createdAt) | last | (.diff // \"\")' $P/edits.json)
+  if [ -n \"$PAST\" ]; then BODY=$PAST; else CHANGED=unknown; fi
+fi
+printf '%s' \"$CHANGED\" > $P/body_changed
+if [ \"$(git rev-parse --is-shallow-repository 2>/dev/null || echo false)\" = true ]; then
+  git fetch --shallow-since=\"$AT\" origin main >/dev/null 2>&1 || echo 'claim: could not deepen the shallow clone to at; using what is here' >&2
+fi
+SHA=$(git rev-list -1 --before=\"$AT\" origin/main)
+if [ -z \"$SHA\" ]; then
+  echo 'main has no commit before '$AT'; this run cannot be calibrated.' >&2
+  exit 1
+fi
+git checkout -q --detach \"$SHA\"
+echo \"$SHA\" > $P/main_sha
+if ! gh issue list --state all --limit 500 --json number,title,state,closedAt > $P/open_issues.all.json; then
+  echo 'Could not list the issues.' >&2
+  exit 1
+fi
+jq --arg at \"$AT\" --argjson n \"$N\" '[.[] | select(.number != $n) | select(.state == \"OPEN\" or ((.closedAt // \"\") > $at))]' $P/open_issues.all.json > $P/open_issues.json
+{
+  echo '# #'$N': '\"$(jq -r '.title // \"\"' $P/issue.json)\"
+  echo
+  echo 'Labels: '\"$(jq -r '[(.labels // [])[].name] | join(\", \")' $P/issue.json)\"
+  echo
+  printf '%s' \"$BODY\"
+  echo
+  echo '## Comments, oldest first (the last ten created before '$AT'; fabro marker comments left out)'
+  echo
+  jq -r '[.[] | select((.body // \"\") | startswith(\"<!-- fabro:\") | not)] | .[-10:] | .[] | (\"### \" + (.user.login // \"?\") + \" at \" + (.created_at // \"?\")), \"\", ((.body // \"\") | .[0:2000]), \"\"' $P/comments.json
+} > $P/issue.md
+jq -r '.[] | \"#\" + (.number | tostring) + \" \" + (.title // \"\")' $P/open_issues.json > $P/open_issues.md
+echo 'record: issue '$N' at '$AT', main '$SHA', body_changed '$CHANGED
+echo '{\"context_updates\":{\"calibration_go\":true}}'"]
+
+    prep [label="Index the checkout", shape=parallelogram, output_schema="routing", timeout="15m",
+        script="set -e
+git rev-parse HEAD > /tmp/fabro/precheck/main_sha
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index >/dev/null 2>&1 || echo 'prep: fabro-code index failed; the check runs without the index' >&2; fabro-code map >/dev/null 2>&1 || true; else echo 'prep: fabro-code is not in the image' >&2; fi
+if [ -z \"$FABRO_AGENT_GUIDE\" ]; then echo 'agent guide: FABRO_AGENT_GUIDE is empty, nothing installed' >&2
+elif git ls-files --error-unmatch .codex/instructions.md >/dev/null 2>&1; then echo 'agent guide: the repository tracks .codex/instructions.md, left alone' >&2
+elif mkdir -p .codex && printf '%s' \"$FABRO_AGENT_GUIDE\" > .codex/instructions.md; then grep -qx '.codex/instructions.md' .git/info/exclude 2>/dev/null || echo '.codex/instructions.md' >> .git/info/exclude
+else echo 'agent guide: could not write .codex/instructions.md' >&2; fi
+echo '{\"context_updates\":{\"prep_ok\":true}}'"]
+
+    // The box's one agent stage. Bounded at 20m and told when it is done; the scheduler's
+    // `typical_box_minutes` for the whole run is 3.
+    check [label="Check the issue against main", class="bg", timeout="20m", prompt="@prompts/check.md.j2"]
+
+    // Checks the Input receipt and applies task 07's two rules, plus a third for `unverifiable`
+    // (2026-10-31): it must quote the criterion from the issue body. A missing receipt (a failed,
+    // timed-out or unsubmitted turn) fails the node, so the run ends failed and nothing is
+    // posted. The model's own verdict is kept as `raw_verdict`, so the marker can say when a
+    // rule overrode it.
+    gate [label="Check the verdict", shape=parallelogram, output_schema="routing", timeout="2m",
+        script="F=/tmp/fabro/precheck.json
+P=/tmp/fabro/precheck
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
+  echo 'precheck.json has no valid Input receipt, so the check did not finish; nothing is posted' >&2
+  exit 1
+fi
+RAW=$(jq -r '.verdict // empty' $F)
+case \"$RAW\" in ready | already_done | blocked | contradiction | unclear | unverifiable) ;; *) echo 'precheck.json carries no known verdict' >&2; exit 1;; esac
+VERDICT=$RAW
+RULE=''
+if [ \"$VERDICT\" != ready ] && [ \"$(jq '(.evidence // []) | length' $F)\" -eq 0 ]; then
+  VERDICT=ready
+  RULE='it cited no evidence'
+fi
+if [ \"$VERDICT\" = blocked ]; then
+  B=$(jq -r '.blocker // empty' $F)
+  N=$(cat $P/issue_number)
+  case \"$B\" in '' | *[!0-9]*) B=0 ;; esac
+  if [ \"$B\" = \"$N\" ] || ! jq -e --argjson b \"$B\" 'any(.[]; .number == $b)' $P/open_issues.json >/dev/null 2>&1; then
+    VERDICT=ready
+    RULE='its blocker #'$B' is not another open issue in this repository'
+  fi
+fi
+if [ \"$VERDICT\" = unverifiable ] && ! jq -e 'any((.evidence // [])[]; (.where // \"\") == \"issue body\")' $F >/dev/null; then
+  VERDICT=ready
+  RULE='it quoted no criterion from the issue body'
+fi
+echo \"$RAW\" > $P/raw_verdict
+echo \"$VERDICT\" > $P/verdict
+printf '%s' \"$RULE\" > $P/rule
+echo 'gate: verdict '$VERDICT
+echo '{\"context_updates\":{\"verdict\":\"'$VERDICT'\"}}'"]
+
+    record [label="Record the verdict", shape=parallelogram, output_schema="routing", timeout="1m",
+        script="set -e
+P=/tmp/fabro/precheck
+V=$(cat $P/verdict 2>/dev/null || true)
+RAW=$(cat $P/raw_verdict 2>/dev/null || true)
+RULE=$(cat $P/rule 2>/dev/null || true)
+MAIN=$(cat $P/main_sha 2>/dev/null || true)
+CH=$(cat $P/body_changed 2>/dev/null || true)
+[ -n \"$MAIN\" ] || MAIN=unknown
+[ -n \"$CH\" ] || CH=unknown
+echo 'record: verdict='$V' raw='$RAW' main='$MAIN' changed='$CH
+jq -nc --arg v \"$V\" --arg r \"$RAW\" --arg w \"$RULE\" --arg m \"$MAIN\" --arg c \"$CH\" '{context_updates:{verdict:$v, raw_verdict:$r, rule:$w, main_sha:$m, body_changed:$c}}'"]
+
+    start -> claim
+    claim -> prep [condition="outcome=succeeded && context.calibration_go=true"]
+    claim -> exit
+    prep -> check [condition="outcome=succeeded && context.prep_ok=true"]
+    prep -> exit
+    check -> gate
+    gate -> record [condition="outcome=succeeded"]
+    gate -> exit
+    record -> exit
+}

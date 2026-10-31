@@ -451,6 +451,10 @@ class Counts(unittest.TestCase):
             # context-pack (more-local-inference task 08): the same shape -- claim, stop, prep,
             # gather, gate, post.
             "context-pack": (8, 11),
+            # precheck-calibration: start, exit, claim, prep, check, gate, record -- no `stop`
+            # (it re-checks issues that already have a live marker) and no `post` (it writes
+            # nothing). 9 edges: 2 into exit from claim and prep, 2 out of gate, 1 out of record.
+            "precheck-calibration": (7, 9),
             # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
             # this pair grows with each one; it is the offline parser's count, not a
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.
@@ -506,6 +510,55 @@ class Copies(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
                 self._violations(tmp, "echo hey", "echo hi", [("echo hi", "echo hey")]), [])
+
+
+class CalibrationCopies(unittest.TestCase):
+    """R10's second table: `precheck-calibration` runs the live precheck's own nodes."""
+
+    def _root(self, tmp, *, copy_script: str, original_script: str,
+              copy_prompt: str = "same", original_prompt: str = "same") -> Path:
+        root = Path(tmp)
+        (root / ".fabro/workflows/orig/prompts").mkdir(parents=True)
+        (root / ".fabro/workflows/precheck-calibration/prompts").mkdir(parents=True)
+        (root / ".fabro/workflows/orig/workflow.fabro").write_text(
+            f'digraph O {{ a [script="{original_script}"] '
+            'b [prompt="@prompts/check.md.j2"] }\n')
+        (root / ".fabro/workflows/orig/prompts/check.md.j2").write_text(original_prompt)
+        (root / ".fabro/workflows/precheck-calibration/workflow.fabro").write_text(
+            f'digraph C {{ a [script="{copy_script}"] '
+            'b [prompt="@prompts/check.md.j2"] }\n')
+        (root / ".fabro/workflows/precheck-calibration/prompts/check.md.j2").write_text(copy_prompt)
+        return root
+
+    def _violations(self, tmp, **kw):
+        saved = cgi.R10_CALIBRATION_COPIES
+        try:
+            cgi.R10_CALIBRATION_COPIES = {
+                "precheck-calibration": (".fabro/workflows/orig/workflow.fabro", ("a",), "b")
+            }
+            return cgi.r10_calibration_copies(self._root(tmp, **kw))
+        finally:
+            cgi.R10_CALIBRATION_COPIES = saved
+
+    def test_identical_nodes_and_prompt_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._violations(tmp, copy_script="echo hi",
+                                              original_script="echo hi"), [])
+
+    def test_one_character_of_script_drift_fails_and_names_the_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self._violations(tmp, copy_script="echo ho", original_script="echo hi")
+            self.assertEqual([(r, n) for _, r, n, _ in found], [("R10", "a")], found)
+            self.assertIn("drifted", found[0][3])
+
+    def test_one_character_of_prompt_drift_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self._violations(tmp, copy_script="echo hi", original_script="echo hi",
+                                     copy_prompt="same\n", original_prompt="same")
+            self.assertEqual([(r, n) for _, r, n, _ in found], [("R10", "b")], found)
+
+    def test_the_real_calibration_package_matches_the_live_precheck(self):
+        self.assertEqual(cgi.r10_calibration_copies(REAL), [])
 
 
 class RealTree(unittest.TestCase):
