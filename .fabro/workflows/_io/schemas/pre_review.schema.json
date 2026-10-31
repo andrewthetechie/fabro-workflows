@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pre_review",
+  "title": "pre_review — the box pre-review's one pass over the whole branch (more-local-inference 09)",
+  "description": "The box's own review of the whole branch, after the last task and before the hosted whole-branch reviewers (backlog's extra review and merge phase, ralph's standards/spec and Refuter). It is asked for the three things those reviewers judge -- the issue's acceptance criteria, the repository's documented standards, and the issue's scope -- and it FIXES what it can in the code. `pre_review_check` reads this file only for the receipt and the measurement line; a failed or missing receipt reverts the stage's edits. The findings never reach the hosted reviewers: only the code changes do, which is what keeps those reviewers independent. _io is stamped by the server and is not part of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "criteria", "changes"],
+  "properties": {
+    "summary": {
+      "description": "Two or three sentences: what you checked, what you changed, and what you could not fix.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 800
+    },
+    "criteria": {
+      "description": "One entry per acceptance criterion of the issue, judged the way the Refuter judges it.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "status", "where"],
+        "properties": {
+          "criterion": {
+            "description": "The requirement, in one sentence, in the issue's own words where it has them.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "status": {
+            "description": "met: you can cite the file and line that implements it. not_met: missing, partial or contradicted by the code. unverifiable: the code and the diff cannot settle it, and you say what evidence is missing.",
+            "enum": ["met", "not_met", "unverifiable"]
+          },
+          "where": {
+            "description": "path/to/file.ext:LINE for met, or what is missing and where you looked for not_met and unverifiable.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        }
+      }
+    },
+    "changes": {
+      "description": "Every file you edited, and why. Empty when you changed nothing, which is a good answer for a branch that is already done.",
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "why"],
+        "properties": {
+          "file": {
+            "description": "A repository-relative path you changed.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "why": {
+            "description": "The rule or smell it violated, or the criterion it now meets.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        }
+      }
+    }
+  }
+}

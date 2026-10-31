@@ -1325,6 +1325,136 @@ echo demoted"]
     rework_t3 [label="Rework (tier 3: kimi-for-coding)", class="coder-t3", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
     rework_t4 [label="Rework (tier 4: glm-5.3)", class="coder-t4", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
 
+    // ---- The pre-review (whole branch, once per run) ----
+    //
+    // Task 09 as written put the pre-review **per task**, between a green `validate` and the
+    // hosted per-task `review`. The data says that buys almost nothing: the per-task review
+    // sends work back 16 times in 113 runs, while the hosted spend and the merge holds are in
+    // the WHOLE-BRANCH reviewers -- `standards`, `spec` and `quality` below, and the merge
+    // phase's, whose unfixed findings are the second most common hold reason across all PRs
+    // ("There are unfixed findings; a human must merge this PR", 23 PRs). So it runs once, on
+    // the whole branch, after the last task and before `extra_prep`: the extra review,
+    // `extra_decompose`'s follow-up tasks, Final validation in `open_pr_prep` and the merge
+    // phase all see the pre-reviewed branch, and Final validation is still the full net.
+    //
+    // **The A/B arm** is one line in `pre_review_prep` (`N % 2`) and the same bit in ralph:
+    // odd issue numbers pre-review, even ones do not. The box-plan trial's arm is
+    // `issue_number // 2 % 2`, a different bit, so the two arms do not confound each other.
+    // The arm is published as `pre_review_arm` on every visit, so `fabro events` and the run
+    // summary say which one a run was in. **To pre-review every run**, set `ARM=on`
+    // unconditionally in `pre_review_prep` (one line, in both graphs).
+    //
+    // **Once per run.** `next_task` comes back here after extra-review follow-ups and after a
+    // resolved rebase, so `/tmp/fabro/pre_reviewed` is the latch: a second visit routes past
+    // the review. That latch is also why R1's breaker is unaffected -- there is no new cycle,
+    // only a second entry to a path the graph already takes.
+    //
+    // **The pre-review may only help.** Any failure -- no receipt, a failed or timed-out
+    // stage, a red `task-check`, a `task-check` that errored -- reverts the tree to
+    // `/tmp/fabro/pre_review_base` and routes on. It never reaches `rework_router`,
+    // `rescue_brief` or `stop_reason`, so a run whose pre-review went wrong continues exactly
+    // as it would have.
+    //
+    // **Independence.** `standards`, `spec`, `quality`, the merge phase and the Refuter never
+    // read `/tmp/fabro/pre_review.json` or its log: only the code changes reach them, which is
+    // what keeps their judgement independent. Do not add either file to their manifest inputs,
+    // and do not append to `completed.md` (it becomes the PR body).
+    pre_review_prep [label="Prepare the branch pre-review", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="set -e
+F=/tmp/fabro
+P=$F/pre_review
+mkdir -p $P
+N=$(cat $F/issue_number 2>/dev/null || true)
+case \"$N\" in '' | *[!0-9]*) N=$(jq -r '.number // 0' $F/issue.json 2>/dev/null || echo 0) ;; esac
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+ARM=off
+if [ $((N % 2)) -eq 1 ]; then ARM=on; fi
+if [ -e $F/pre_reviewed ]; then
+  echo 'pre_review_prep: this run already had its pre-review; routing on' >&2
+  echo '{\"context_updates\":{\"pre_review_go\":false,\"pre_review_arm\":\"'$ARM'\"}}'
+  exit 0
+fi
+: > $F/pre_reviewed
+GO=false
+if [ \"$ARM\" = on ]; then GO=true; fi
+if [ \"$GO\" = false ]; then
+  echo 'pre_review_prep: arm='$ARM' for issue '$N'; this run does not pre-review'
+  echo '{\"context_updates\":{\"pre_review_go\":false,\"pre_review_arm\":\"'$ARM'\"}}'
+  exit 0
+fi
+rm -f $F/pre_review.json $P/task_check.json $P/validate_output.log
+git fetch origin main >/dev/null 2>&1 || echo 'pre_review_prep: could not refresh origin/main; diffing against the one in the checkout' >&2
+git diff origin/main...HEAD > $P/diff.patch
+git diff --stat origin/main...HEAD > $P/diffstat.txt
+git diff --name-only origin/main...HEAD > $P/changed_files.txt
+: > $P/standards_docs.txt
+for f in AGENTS.md CLAUDE.md CONTRIBUTING.md docs/adr; do
+  if [ -e \"$f\" ]; then echo \"$f\" >> $P/standards_docs.txt; fi
+done
+git rev-parse HEAD > $F/pre_review_base
+echo \"$ARM\" > $P/arm
+echo 'pre_review_prep: arm='$ARM' base='\"$(cat $F/pre_review_base)\"
+echo '{\"context_updates\":{\"pre_review_go\":true,\"pre_review_arm\":\"'$ARM'\"}}'"]
+
+    pre_review [label="Pre-review the whole branch", class="coder", timeout="30m", max_retries=0, prompt="@prompts/pre_review.md.j2"]
+
+    // Keeps or reverts what the pre-review did. The prompt's three axes are the hosted
+    // reviewers' own, so its edits are the branch's best chance of passing them; but an edit
+    // nothing validated is worse than no edit, so a changed tree is kept only when
+    // `fabro-io task-check --gate --base` -- the scoped validation `validate` runs -- is green
+    // over exactly that change. `task-check`'s `full` mode is kept: it means it could not
+    // scope the diff, and Final validation (`open_pr_prep`) is the full net that will.
+    //
+    // A revert is `drop_followup`'s shape: `git restore --source=<base>` for the tracked
+    // files, then `git clean -fd` for the files the stage added (ignored paths -- the code
+    // index and the agent guide -- are left alone), then the same two checks it makes.
+    pre_review_check [label="Keep or revert the pre-review", shape=parallelogram, output_schema="routing", timeout="25m",
+        script="set -e
+F=/tmp/fabro
+P=$F/pre_review
+: > $F/pre_reviewed
+BASE=$(cat $F/pre_review_base 2>/dev/null || true)
+ARM=$(cat $P/arm 2>/dev/null || echo unknown)
+UNMET=0
+if jq -e . $F/pre_review.json >/dev/null 2>&1; then
+  UNMET=$(jq '[.criteria[]? | select(.status != \"met\")] | length' $F/pre_review.json 2>/dev/null || echo 0)
+fi
+FILES=0
+VERDICT=no_base
+if [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}\" 2>/dev/null; then
+  TRACKED=$(git diff --name-only \"$BASE\" -- . | wc -l | tr -d ' ')
+  UNTRACKED=$(git ls-files --others --exclude-standard | wc -l | tr -d ' ')
+  FILES=$((TRACKED + UNTRACKED))
+  VERDICT=unchanged
+  if [ \"$FILES\" -gt 0 ]; then
+    VERDICT=no_receipt
+    V=$(jq -r '.visit // empty' $F/.io/stage.json 2>/dev/null || true)
+    RV=$(jq -r '._io.visit // empty' $F/pre_review.json 2>/dev/null || true)
+    if [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
+      RC=0
+      fabro-io task-check --gate --base \"$BASE\" --out $P/task_check.json > $P/validate_output.log 2>&1 || RC=$?
+      MODE=$(jq -r '.mode // empty' $P/task_check.json 2>/dev/null || true)
+      OK=$(jq -r '.ok // false' $P/task_check.json 2>/dev/null || true)
+      VERDICT=check_error
+      if [ \"$RC\" -eq 0 ] && [ -n \"$MODE\" ]; then
+        if [ \"$MODE\" = full ]; then VERDICT=kept_unscoped; elif [ \"$OK\" = true ]; then VERDICT=kept; else VERDICT=red; fi
+      fi
+    fi
+  fi
+fi
+KEPT=true
+case \"$VERDICT\" in unchanged | kept | kept_unscoped) KEPT=true ;; *) KEPT=false ;; esac
+if [ \"$KEPT\" = false ] && [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}\" 2>/dev/null; then
+  git restore --source=\"$BASE\" --staged --worktree -- .
+  git clean -fdq
+  if [ -n \"$(git diff --name-only \"$BASE\" -- .)\" ] || [ -n \"$(git ls-files --others --exclude-standard)\" ]; then
+    echo 'pre_review_check: the tree did not come back to the pre-review base' >&2
+  fi
+fi
+echo \"arm=$ARM outcome=$VERDICT kept=$KEPT files=$FILES unmet=$UNMET\" >> $F/pre_review.log
+echo 'pre_review_check: '$VERDICT' (arm '$ARM'), '$FILES' file(s), '$UNMET' criteria not met'
+echo '{\"context_updates\":{\"pre_review_kept\":'$KEPT'}}'"]
+
     // ---- Extra review rounds (whole branch) ----
     extra_prep [label="Prepare extra review", shape=parallelogram, output_schema="routing",
         script="ER=$(cat /tmp/fabro/extra_round 2>/dev/null || echo 0)
@@ -2565,7 +2695,14 @@ echo done"]
     // `next_task` writes `rebase_failed` on every branch, so on tasks_done=true only one of
     // these matches; resolve_merge keeps its own edge, and plan stays the standard
     // lane's unconditional fallthrough.
-    next_task -> extra_prep         [condition="context.tasks_done=true && context.lane!=fast"]
+    // The standard lane pre-reviews the whole branch before the extra review; the fast lane
+    // keeps going straight to final_merge. The arm and the once-per-run latch are
+    // `pre_review_prep`'s, so this edge is unconditional on them.
+    next_task -> pre_review_prep    [condition="context.tasks_done=true && context.lane!=fast"]
+    pre_review_prep -> pre_review   [condition="outcome=succeeded && context.pre_review_go=true"]
+    pre_review_prep -> extra_prep
+    pre_review -> pre_review_check
+    pre_review_check -> extra_prep
     next_task -> final_merge        [condition="context.tasks_done=true && context.lane=fast"]
     next_task -> resolve_merge      [condition="context.rebase_failed=true"]
     next_task -> coder              [condition="context.tasks_done=false && context.rebase_failed=false && context.lane=fast"]

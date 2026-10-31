@@ -1128,6 +1128,48 @@
             "schema": "followups"
           },
           "box": true
+        },
+        "pre_review": {
+          "live": true,
+          "prompt": ".fabro/workflows/backlog/prompts/pre_review.md.j2",
+          "inputs": [
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the issue this branch closes: title, body and labels, for its acceptance criteria and its scope"
+            },
+            {
+              "name": "diff.patch",
+              "path": "/tmp/fabro/pre_review/diff.patch",
+              "required": true,
+              "about": "the whole branch's change, `git diff origin/main...HEAD`"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/pre_review/diffstat.txt",
+              "required": true,
+              "about": "the same change, file by file"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/pre_review/changed_files.txt",
+              "required": true,
+              "about": "every path the branch touches"
+            },
+            {
+              "name": "standards_docs.txt",
+              "path": "/tmp/fabro/pre_review/standards_docs.txt",
+              "required": false,
+              "about": "which of AGENTS.md, CLAUDE.md, CONTRIBUTING.md and docs/adr/ this repository has, one per line",
+              "absent": "this repository ships none of the standards documents the prompt names; its rules are wherever it states them, and the code is the fallback"
+            }
+          ],
+          "output": {
+            "path": "/tmp/fabro/pre_review.json",
+            "schema": "pre_review"
+          },
+          "box": true
         }
       }
     },
@@ -1847,6 +1889,48 @@
           "output": {
             "path": "/tmp/fabro/learnings.json",
             "schema": "learnings"
+          },
+          "box": true
+        },
+        "pre_review": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/pre_review.md.j2",
+          "inputs": [
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the issue this branch closes: title, body and labels, for its acceptance criteria and its scope"
+            },
+            {
+              "name": "diff.patch",
+              "path": "/tmp/fabro/pre_review/diff.patch",
+              "required": true,
+              "about": "the whole branch's change, `git diff origin/main...HEAD`"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/pre_review/diffstat.txt",
+              "required": true,
+              "about": "the same change, file by file"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/pre_review/changed_files.txt",
+              "required": true,
+              "about": "every path the branch touches"
+            },
+            {
+              "name": "standards_docs.txt",
+              "path": "/tmp/fabro/pre_review/standards_docs.txt",
+              "required": false,
+              "about": "which of AGENTS.md, CLAUDE.md, CONTRIBUTING.md and docs/adr/ this repository has, one per line",
+              "absent": "this repository ships none of the standards documents the prompt names; its rules are wherever it states them, and the code is the fallback"
+            }
+          ],
+          "output": {
+            "path": "/tmp/fabro/pre_review.json",
+            "schema": "pre_review"
           },
           "box": true
         }

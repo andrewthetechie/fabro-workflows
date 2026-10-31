@@ -1,0 +1,310 @@
+"""The box pre-review (pre-review-and-calibration, Part B): `pre_review_prep` and
+`pre_review_check`, in both `backlog` and `ralph`.
+
+`fabro validate` proves the graphs parse. It never runs a node's script, and the whole contract
+of this stage is in two scripts:
+
+* `pre_review_prep` decides **once per run** whether this run pre-reviews, from the issue
+  number's parity (the A/B arm), and records the base and the branch's diff. A second visit --
+  after a Refuter round, or after extra-review follow-ups -- must route past it.
+* `pre_review_check` keeps the pre-review's edits only when the scoped `task-check` is green
+  over exactly those edits, and otherwise reverts the tree to the base **including the files
+  the stage added**. It never fails the run and never calls a rework node: the pre-review may
+  only help.
+
+The two nodes and the prompt are byte-identical in both graphs (R10), so what differs is tested
+too: the exact edges.
+"""
+
+from __future__ import annotations
+
+import json
+
+from harness import (ORIG_PATH, RAPH, WF, cat, count, edges, extract, git, jq, lastjson, lines,
+                     present, rebase, rm, sh, stub, write)
+
+BACKLOG = WF / "backlog" / "workflow.fabro"
+
+# A `fabro-io` that writes a canned task-check result to --out and exits with a chosen code.
+FABRO_IO_STUB = """#!/bin/sh
+out=
+while [ $# -gt 0 ]; do
+  case "$1" in --out) out=$2; shift 2 ;; *) shift ;; esac
+done
+if [ -n "${PR_CANNED:-}" ] && [ -f "$PR_CANNED" ]; then
+  [ -n "$out" ] && cp "$PR_CANNED" "$out"
+  cat "$PR_CANNED"
+fi
+exit "${PR_IO_RC:-0}"
+"""
+
+SCOPED_OK = '{"version":1,"mode":"scoped","ok":true,"changed":["src.txt"],"targets":[],"results":[]}'
+SCOPED_RED = '{"version":1,"mode":"scoped","ok":false,"changed":["src.txt"],"targets":[],"results":[]}'
+FULL = '{"version":1,"mode":"full","reason":"no_config","ok":null,"changed":[],"targets":[]}'
+
+
+class PreReview:
+    """A scratch checkout whose branch is one commit ahead of `origin/main`."""
+
+    def __init__(self, ck, tmp_path, name: str, graph=BACKLOG, *, number: str = "7"):
+        self.T = tmp_path / name
+        self.repo = self.T / "repo"
+        self.fabro = self.T / "fabro"
+        self.bin = self.T / "bin"
+        for d in (self.fabro / "pre_review", self.fabro / ".io", self.bin, self.repo):
+            d.mkdir(parents=True, exist_ok=True)
+        write(self.repo / "src.txt", "base\n")
+        git("init", "-q", "-b", "main", self.repo)
+        git("-c", "user.email=t@t", "-c", "user.name=t", "add", ".", cwd=self.repo)
+        git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base",
+            cwd=self.repo)
+        self.base_sha = git("rev-parse", "HEAD", cwd=self.repo)
+        git("remote", "add", "origin", self.repo, cwd=self.repo)
+        git("update-ref", "refs/remotes/origin/main", self.base_sha, cwd=self.repo)
+        git("checkout", "-q", "-b", "work", cwd=self.repo)
+        write(self.repo / "src.txt", "branch\n")
+        write(self.repo / "docs/adr/0001-x.md", "an adr\n")
+        git("-c", "user.email=t@t", "-c", "user.name=t", "add", ".", cwd=self.repo)
+        git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "task",
+            cwd=self.repo)
+        self.head = git("rev-parse", "HEAD", cwd=self.repo)
+        # As `backlog`'s and `ralph`'s `prep` leave it: the index is ignored, so the revert's
+        # `git clean -fd` does not take it.
+        write(self.repo / ".git/info/exclude", ".codegraph/\n.codex/instructions.md\n")
+        write(self.fabro / "issue_number", number)
+        write(self.fabro / "issue.json", json.dumps({"number": int(number), "title": "x"}))
+        stub(self.bin, "fabro-io", FABRO_IO_STUB)
+        self.canned = self.T / "canned.json"
+        self.nodes = {}
+        for node in ("pre_review_prep", "pre_review_check"):
+            script = rebase(extract(graph, node), self.fabro)
+            self.nodes[node] = script
+            ok, err = __import__("harness").syntax_ok(write(self.T / f"{node}.sh", script))
+            if not ok:
+                ck.fail(f"{node} is not valid POSIX sh", err)
+
+    def run(self, node: str, **env: str):
+        base = {"PR_CANNED": str(self.canned), "PR_IO_RC": "0"}
+        base.update(env)
+        script = write(self.T / f"{node}.sh", self.nodes[node])
+        return sh(script, cwd=self.repo, path=f"{self.bin}:{ORIG_PATH}", env=base,
+                  stderr="keep")
+
+    # --- the state a node leaves --------------------------------------------------
+
+    def edit(self) -> None:
+        """What a pre-review does: change a file, add one, and leave an ignored file alone."""
+        write(self.repo / "src.txt", "edited\n")
+        write(self.repo / "notes/new.md", "a new file\n")
+        write(self.repo / ".codegraph/keep", "index\n")
+
+    def receipt(self, *, met: int = 1, not_met: int = 1) -> None:
+        write(self.fabro / ".io/stage.json", json.dumps({"visit": "v1"}))
+        criteria = [{"criterion": "it works", "status": "met", "where": "src.txt:1"}] * met
+        criteria += [{"criterion": "it also does x", "status": "not_met", "where": "?"}] * not_met
+        write(self.fabro / "pre_review.json", json.dumps({
+            "_io": {"visit": "v1"},
+            "summary": "checked",
+            "criteria": criteria,
+            "changes": [{"file": "src.txt", "why": "the rule"}],
+        }))
+
+
+def routed(result, key: str) -> str:
+    return jq(f".context_updates.{key}", lastjson(result.out))
+
+
+def log_of(P: PreReview) -> str:
+    return cat(P.fabro / "pre_review.log")
+
+
+# --- pre_review_prep: the arm and the once-per-run latch ---------------------------
+
+
+def test_prep_pre_reviews_an_odd_issue_and_records_the_base(ck, tmp_path):
+    P = PreReview(ck, tmp_path, "prep-on", number="7")
+    r = P.run("pre_review_prep")
+    ck("prep: routes to the pre-review", "true", routed(r, "pre_review_go"))
+    ck("prep: publishes the arm", "on", routed(r, "pre_review_arm"))
+    ck("prep: the base is HEAD", P.head, cat(P.fabro / "pre_review_base"))
+    ck("prep: the arm is on disk", "on", cat(P.fabro / "pre_review/arm"))
+    ck("prep: the branch diff is staged", "1",
+       count("^+branch$", cat(P.fabro / "pre_review/diff.patch")))
+    ck("prep: changed files are staged", "1",
+       count("^src.txt$", cat(P.fabro / "pre_review/changed_files.txt")))
+    ck("prep: the standards docs that exist are listed", "1",
+       count("^docs/adr$", cat(P.fabro / "pre_review/standards_docs.txt")))
+    ck("prep: the missing ones are not", "0",
+       count("^CLAUDE.md$", cat(P.fabro / "pre_review/standards_docs.txt")))
+    ck("prep: the latch is written", "present", present(P.fabro / "pre_reviewed"))
+
+
+def test_prep_does_not_pre_review_an_even_issue(ck, tmp_path):
+    P = PreReview(ck, tmp_path, "prep-off", number="8")
+    r = P.run("pre_review_prep")
+    ck("prep off: routes past the pre-review", "false", routed(r, "pre_review_go"))
+    ck("prep off: publishes the arm", "off", routed(r, "pre_review_arm"))
+    ck("prep off: the latch is still written, so it is decided once",
+       "present", present(P.fabro / "pre_reviewed"))
+    ck("prep off: nothing is prepared, because nothing will read it", "absent",
+       present(P.fabro / "pre_review/diff.patch"))
+    ck("prep off: and no base is recorded", "absent", present(P.fabro / "pre_review_base"))
+
+
+def test_prep_routes_past_the_review_on_a_second_visit(ck, tmp_path):
+    P = PreReview(ck, tmp_path, "prep-twice", number="7")
+    ck("prep: first visit", "true", routed(P.run("pre_review_prep"), "pre_review_go"))
+    r = P.run("pre_review_prep")
+    ck("prep: the second visit does not pre-review again", "false", routed(r, "pre_review_go"))
+    ck("prep: and still says which arm", "on", routed(r, "pre_review_arm"))
+
+
+def test_prep_reads_the_issue_number_from_issue_json_when_the_file_is_gone(ck, tmp_path):
+    P = PreReview(ck, tmp_path, "prep-json", number="7")
+    rm(P.fabro / "issue_number")
+    ck("prep: the arm comes from issue.json", "on",
+       routed(P.run("pre_review_prep"), "pre_review_arm"))
+    Q = PreReview(ck, tmp_path, "prep-none", number="7")
+    rm(Q.fabro / "issue_number", Q.fabro / "issue.json")
+    ck("prep: with no issue number it reads as even, so off", "off",
+       routed(Q.run("pre_review_prep"), "pre_review_arm"))
+
+
+# --- pre_review_check: keep, or revert --------------------------------------------
+
+
+def test_check_keeps_nothing_when_the_pre_review_changed_nothing(ck, tmp_path):
+    P = PreReview(ck, tmp_path, "check-clean")
+    P.run("pre_review_prep")
+    r = P.run("pre_review_check")
+    ck("check clean: reports kept", "true", routed(r, "pre_review_kept"))
+    ck("check clean: the outcome is unchanged", "1", count("outcome=unchanged", log_of(P)))
+
+
+def test_check_reverts_a_stage_with_no_receipt(ck, tmp_path):
+    P = PreReview(ck, tmp_path, "check-noreceipt")
+    P.run("pre_review_prep")
+    P.edit()
+    r = P.run("pre_review_check")
+    ck("check no receipt: reports not kept", "false", routed(r, "pre_review_kept"))
+    ck("check no receipt: the tracked file is back at the base", "branch",
+       cat(P.repo / "src.txt"))
+    ck("check no receipt: the file the stage added is gone", "absent",
+       present(P.repo / "notes/new.md"))
+    ck("check no receipt: the ignored index is left alone", "index",
+       cat(P.repo / ".codegraph/keep"))
+    ck("check no receipt: the outcome", "1", count("outcome=no_receipt", log_of(P)))
+
+
+def test_check_keeps_edits_a_green_scoped_check_passed(ck, tmp_path):
+    P = PreReview(ck, tmp_path, "check-green")
+    P.run("pre_review_prep")
+    P.edit()
+    P.receipt(met=2, not_met=1)
+    write(P.canned, SCOPED_OK)
+    r = P.run("pre_review_check")
+    ck("check green: reports kept", "true", routed(r, "pre_review_kept"))
+    ck("check green: the edit is still there", "edited", cat(P.repo / "src.txt"))
+    ck("check green: the new file is still there", "present", present(P.repo / "notes/new.md"))
+    ck("check green: the measurement line has the arm, outcome, files and unmet count", "1",
+       count("^arm=on outcome=kept kept=true files=2 unmet=1$", log_of(P)))
+
+
+def test_check_reverts_edits_a_red_scoped_check_failed(ck, tmp_path):
+    P = PreReview(ck, tmp_path, "check-red")
+    P.run("pre_review_prep")
+    P.edit()
+    P.receipt()
+    write(P.canned, SCOPED_RED)
+    r = P.run("pre_review_check")
+    ck("check red: reports not kept", "false", routed(r, "pre_review_kept"))
+    ck("check red: the tracked file is back at the base", "branch", cat(P.repo / "src.txt"))
+    ck("check red: the file the stage added is gone", "absent",
+       present(P.repo / "notes/new.md"))
+    ck("check red: the outcome", "1", count("outcome=red", log_of(P)))
+
+
+def test_check_reverts_when_task_check_errors(ck, tmp_path):
+    P = PreReview(ck, tmp_path, "check-err")
+    P.run("pre_review_prep")
+    P.edit()
+    P.receipt()
+    r = P.run("pre_review_check", PR_IO_RC="2")
+    ck("check error: reports not kept", "false", routed(r, "pre_review_kept"))
+    ck("check error: the tracked file is back at the base", "branch", cat(P.repo / "src.txt"))
+    ck("check error: the outcome", "1", count("outcome=check_error", log_of(P)))
+
+
+def test_check_keeps_edits_task_check_could_not_scope(ck, tmp_path):
+    # `full` means task-check could not attribute the diff; Final validation (backlog) and
+    # final_check (ralph) are the full net that will judge these edits.
+    P = PreReview(ck, tmp_path, "check-full")
+    P.run("pre_review_prep")
+    P.edit()
+    P.receipt()
+    write(P.canned, FULL)
+    r = P.run("pre_review_check")
+    ck("check full: reports kept", "true", routed(r, "pre_review_kept"))
+    ck("check full: the outcome says the check was not scoped", "1",
+       count("outcome=kept_unscoped", log_of(P)))
+
+
+def test_check_survives_a_timeout_that_left_no_files(ck, tmp_path):
+    # The stage failed or timed out: prep's base is there, the receipt is not, and the tree may
+    # be anything. It must route on, not fail the run.
+    P = PreReview(ck, tmp_path, "check-timeout")
+    P.run("pre_review_prep")
+    P.edit()
+    r = P.run("pre_review_check")
+    ck("check timeout: the node succeeds", "0", str(r.rc))
+    ck("check timeout: and routes on", "false", routed(r, "pre_review_kept"))
+
+
+# --- the edges, in both graphs ----------------------------------------------------
+
+
+def test_the_arm_and_the_latch_decide_the_backlog_edges(ck):
+    e = edges(BACKLOG)
+    ck("backlog: the standard lane enters the prep, not extra_prep", "1",
+       count("next_task->pre_review_prep context.tasks_done=true && context.lane!=fast",
+             e, flags="xF"))
+    ck("backlog: extra_prep has no direct entry from next_task", "0",
+       count("next_task->extra_prep", e, flags="F"))
+    ck("backlog: the prep enters the review only on its own go", "1",
+       count("pre_review_prep->pre_review outcome=succeeded && context.pre_review_go=true",
+             e, flags="xF"))
+    ck("backlog: the prep has an unconditional fallback", "1",
+       count("pre_review_prep->extra_prep ", e, flags="xF"))
+    ck("backlog: the review always goes to the check", "1",
+       count("pre_review->pre_review_check ", e, flags="xF"))
+    ck("backlog: the check always routes on to the extra review", "1",
+       count("pre_review_check->extra_prep ", e, flags="xF"))
+    ck("backlog: the fast lane is untouched", "1",
+       count("next_task->final_merge context.tasks_done=true && context.lane=fast",
+             e, flags="xF"))
+
+
+def test_the_arm_and_the_latch_decide_ralphs_edges(ck):
+    e = edges(RAPH)
+    ck("ralph: a finished loop enters the prep", "1",
+       count("pick->pre_review_prep context.loop=done && context.phase=pre", e, flags="xF"))
+    ck("ralph: an exhausted loop still goes straight to final_merge", "1",
+       count("pick->final_merge context.loop=exhausted && context.phase=pre", e, flags="xF"))
+    ck("ralph: the prep enters the review only on its own go", "1",
+       count("pre_review_prep->pre_review outcome=succeeded && context.pre_review_go=true",
+             e, flags="xF"))
+    ck("ralph: the prep has an unconditional fallback", "1",
+       count("pre_review_prep->final_merge ", e, flags="xF"))
+    ck("ralph: the review always goes to the check", "1",
+       count("pre_review->pre_review_check ", e, flags="xF"))
+    ck("ralph: the check always routes on to final_merge", "1",
+       count("pre_review_check->final_merge ", e, flags="xF"))
+
+
+def test_ralph_runs_the_same_two_nodes_as_backlog(ck):
+    for node in ("pre_review_prep", "pre_review_check"):
+        ck(f"{node}: identical in both graphs", "1",
+           str(int(extract(RAPH, node) == extract(BACKLOG, node))))
+    ck("the prompt is one file, copied", "1",
+       str(int((WF / "backlog/prompts/pre_review.md.j2").read_text()
+               == (WF / "ralph/prompts/pre_review.md.j2").read_text())))

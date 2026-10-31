@@ -427,7 +427,10 @@ class Counts(unittest.TestCase):
             # +2 nodes and +6 edges in backlog only. Closing the plan trial (#25, ADR 0030) removed
             # `improve` (-1 node and -2 edges) and the three arm-split edge pairs (-3 edges); the
             # trial had added plan at +1 node and +5 edges. `fabro validate` (check-host) confirms them.
-            "backlog": (81, 205),
+            # Part B (pre-review-and-calibration): pre_review_prep, pre_review and
+            # pre_review_check between next_task and extra_prep -- +3 nodes, +4 edges (the
+            # standard lane's edge moves onto the prep, and four more funnel into extra_prep).
+            "backlog": (84, 209),
             "pr-review": (39, 87),
             "issue-triage": (16, 36),
             "arch-review": (24, 54),
@@ -458,7 +461,10 @@ class Counts(unittest.TestCase):
             # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
             # this pair grows with each one; it is the offline parser's count, not a
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.
-            "ralph": (51, 135),
+            # Part B: the same three nodes between `pick` and `final_merge` on the
+            # `loop=done && phase=pre` edge only -- +3 nodes, +4 edges. `loop=exhausted` still
+            # goes straight to `final_merge`.
+            "ralph": (54, 139),
         })
 
 

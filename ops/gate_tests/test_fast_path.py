@@ -209,8 +209,10 @@ def test_backlog_fast_lane(ck, tmp_path):
     for n in ("next_task", "resolve_merge_gate", "improve_gate"):
         ck(f"{n}: exactly one unconditional edge", "1", count("\\[", grep(["-E", f"^ +{n} -> "], file=GRAPH), flags="v", pipe=True))
     edge_awk = lambda pat, prog: awk(prog, grep(["-E", pat], file=GRAPH) + "\n")
+    # The standard lane's done edge lands on the pre-review (Part B), which is on the way to
+    # extra_prep; the fast lane's still goes straight to final_merge.
     ck("next_task's done edges split on lane", "1 1",
-       edge_awk("^ +next_task -> (extra_prep|final_merge) ", "/lane!=fast/{a=1} /lane=fast/{b=1} END{print a+0, b+0}"))
+       edge_awk("^ +next_task -> (pre_review_prep|final_merge) ", "/lane!=fast/{a=1} /lane=fast/{b=1} END{print a+0, b+0}"))
     ck("next_task's coder edge requires the fast lane and an undone task", "1",
        count("tasks_done=false && context.rebase_failed=false && context.lane=fast", grep(["-E", "^ +next_task -> coder "], file=GRAPH), pipe=True))
     ck("resolve_merge_gate's task edges split on lane", "1 1",

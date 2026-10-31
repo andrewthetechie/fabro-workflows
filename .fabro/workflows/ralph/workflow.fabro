@@ -1197,6 +1197,128 @@ else
 fi
 jq -nc --arg r \"$ROUTE\" --argjson le \"$LE\" '{context_updates:{review_route:$r,loop_exhausted:$le}}'"]
 
+    // ---- The pre-review (whole branch, once per run) ----
+    //
+    // Task 09 as written put the pre-review **per task**, between a green `check` and the
+    // hosted reviewers. The data says that buys almost nothing: a per-task review almost never
+    // sends work back, while the hosted spend and the merge holds are in the WHOLE-BRANCH
+    // reviewers -- `standards` and `spec` here, and the Refuter, whose unfixed findings are the
+    // second most common hold reason across all PRs. So it runs once, on the whole branch,
+    // after the loop is done and **before `final_merge`**.
+    //
+    // It sits BEFORE `final_check`, not after it, on purpose: `final_check` runs
+    // `./.fabro/setup.sh && ./.fabro/ci.sh` and writes `/tmp/fabro/validated_tree`, which is the
+    // Refuter's "validation passed on this exact tree" evidence. An edit made after
+    // `final_check` would leave the Refuter with no validation for the tree it is judging, and
+    // every command criterion would become `unverifiable`. Before it, `final_check` validates
+    // the pre-review's edits like any other, and the Refuter's evidence still holds.
+    //
+    // **The A/B arm** is one line in `pre_review_prep` (`N % 2`) and the same bit in backlog:
+    // odd issue numbers pre-review, even ones do not. The box-plan trial's arm is
+    // `issue_number // 2 % 2`, a different bit, so the two arms do not confound each other.
+    // The arm is published as `pre_review_arm` on every visit. **To pre-review every run**, set
+    // `ARM=on` unconditionally in `pre_review_prep` (one line, in both graphs).
+    //
+    // **Once per run.** `pick` comes back here after Refuter and review rounds, so
+    // `/tmp/fabro/pre_reviewed` is the latch: a second visit routes past the review, which is
+    // why R1's breaker is unaffected -- no new cycle, only a second entry to a path the graph
+    // already takes.
+    //
+    // **The pre-review may only help.** Any failure -- no receipt, a failed or timed-out stage,
+    // a red `task-check`, a `task-check` that errored -- reverts the tree to
+    // `/tmp/fabro/pre_review_base` and routes on. It never reaches `stop_reason` or
+    // `mark_needs_human`, so the run continues exactly as it would have.
+    //
+    // **Independence.** `standards`, `spec`, the Refuter and `review_gate` never read
+    // `/tmp/fabro/pre_review.json` or its log: only the code changes reach them. Do not add
+    // either file to their manifest inputs.
+
+    pre_review_prep [label="Prepare the branch pre-review", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="set -e
+F=/tmp/fabro
+P=$F/pre_review
+mkdir -p $P
+N=$(cat $F/issue_number 2>/dev/null || true)
+case \"$N\" in '' | *[!0-9]*) N=$(jq -r '.number // 0' $F/issue.json 2>/dev/null || echo 0) ;; esac
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+ARM=off
+if [ $((N % 2)) -eq 1 ]; then ARM=on; fi
+if [ -e $F/pre_reviewed ]; then
+  echo 'pre_review_prep: this run already had its pre-review; routing on' >&2
+  echo '{\"context_updates\":{\"pre_review_go\":false,\"pre_review_arm\":\"'$ARM'\"}}'
+  exit 0
+fi
+: > $F/pre_reviewed
+GO=false
+if [ \"$ARM\" = on ]; then GO=true; fi
+if [ \"$GO\" = false ]; then
+  echo 'pre_review_prep: arm='$ARM' for issue '$N'; this run does not pre-review'
+  echo '{\"context_updates\":{\"pre_review_go\":false,\"pre_review_arm\":\"'$ARM'\"}}'
+  exit 0
+fi
+rm -f $F/pre_review.json $P/task_check.json $P/validate_output.log
+git fetch origin main >/dev/null 2>&1 || echo 'pre_review_prep: could not refresh origin/main; diffing against the one in the checkout' >&2
+git diff origin/main...HEAD > $P/diff.patch
+git diff --stat origin/main...HEAD > $P/diffstat.txt
+git diff --name-only origin/main...HEAD > $P/changed_files.txt
+: > $P/standards_docs.txt
+for f in AGENTS.md CLAUDE.md CONTRIBUTING.md docs/adr; do
+  if [ -e \"$f\" ]; then echo \"$f\" >> $P/standards_docs.txt; fi
+done
+git rev-parse HEAD > $F/pre_review_base
+echo \"$ARM\" > $P/arm
+echo 'pre_review_prep: arm='$ARM' base='\"$(cat $F/pre_review_base)\"
+echo '{\"context_updates\":{\"pre_review_go\":true,\"pre_review_arm\":\"'$ARM'\"}}'"]
+
+    pre_review [label="Pre-review the whole branch", class="coder", timeout="30m", max_retries=0, prompt="@prompts/pre_review.md.j2"]
+
+    pre_review_check [label="Keep or revert the pre-review", shape=parallelogram, output_schema="routing", timeout="25m",
+        script="set -e
+F=/tmp/fabro
+P=$F/pre_review
+: > $F/pre_reviewed
+BASE=$(cat $F/pre_review_base 2>/dev/null || true)
+ARM=$(cat $P/arm 2>/dev/null || echo unknown)
+UNMET=0
+if jq -e . $F/pre_review.json >/dev/null 2>&1; then
+  UNMET=$(jq '[.criteria[]? | select(.status != \"met\")] | length' $F/pre_review.json 2>/dev/null || echo 0)
+fi
+FILES=0
+VERDICT=no_base
+if [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}\" 2>/dev/null; then
+  TRACKED=$(git diff --name-only \"$BASE\" -- . | wc -l | tr -d ' ')
+  UNTRACKED=$(git ls-files --others --exclude-standard | wc -l | tr -d ' ')
+  FILES=$((TRACKED + UNTRACKED))
+  VERDICT=unchanged
+  if [ \"$FILES\" -gt 0 ]; then
+    VERDICT=no_receipt
+    V=$(jq -r '.visit // empty' $F/.io/stage.json 2>/dev/null || true)
+    RV=$(jq -r '._io.visit // empty' $F/pre_review.json 2>/dev/null || true)
+    if [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
+      RC=0
+      fabro-io task-check --gate --base \"$BASE\" --out $P/task_check.json > $P/validate_output.log 2>&1 || RC=$?
+      MODE=$(jq -r '.mode // empty' $P/task_check.json 2>/dev/null || true)
+      OK=$(jq -r '.ok // false' $P/task_check.json 2>/dev/null || true)
+      VERDICT=check_error
+      if [ \"$RC\" -eq 0 ] && [ -n \"$MODE\" ]; then
+        if [ \"$MODE\" = full ]; then VERDICT=kept_unscoped; elif [ \"$OK\" = true ]; then VERDICT=kept; else VERDICT=red; fi
+      fi
+    fi
+  fi
+fi
+KEPT=true
+case \"$VERDICT\" in unchanged | kept | kept_unscoped) KEPT=true ;; *) KEPT=false ;; esac
+if [ \"$KEPT\" = false ] && [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}\" 2>/dev/null; then
+  git restore --source=\"$BASE\" --staged --worktree -- .
+  git clean -fdq
+  if [ -n \"$(git diff --name-only \"$BASE\" -- .)\" ] || [ -n \"$(git ls-files --others --exclude-standard)\" ]; then
+    echo 'pre_review_check: the tree did not come back to the pre-review base' >&2
+  fi
+fi
+echo \"arm=$ARM outcome=$VERDICT kept=$KEPT files=$FILES unmet=$UNMET\" >> $F/pre_review.log
+echo 'pre_review_check: '$VERDICT' (arm '$ARM'), '$FILES' file(s), '$UNMET' criteria not met'
+echo '{\"context_updates\":{\"pre_review_kept\":'$KEPT'}}'"]
+
     // copy: copy of backlog.final_merge (C8). No replacement; its `final_conflict=true` target is
     // `resolve_merge`, whose gate now also routes `merge_return=pr` back here.
     // ---- Delivery ----
@@ -3267,7 +3389,14 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     spec -> stop_reason
     review_gate -> pick                       [condition="context.review_route=tasks"]
     review_gate -> stop_reason
-    pick -> final_merge                      [condition="context.loop=done && context.phase=pre"]
+    // The loop is done: pre-review the whole branch once, then merge main and open the PR.
+    // `loop=exhausted` keeps its direct edge to `final_merge`: a run that ran out has no
+    // reason to spend box time on a branch it is going to hold (O18).
+    pick -> pre_review_prep                  [condition="context.loop=done && context.phase=pre"]
+    pre_review_prep -> pre_review            [condition="outcome=succeeded && context.pre_review_go=true"]
+    pre_review_prep -> final_merge
+    pre_review -> pre_review_check
+    pre_review_check -> final_merge
     pick -> final_merge                      [condition="context.loop=exhausted && context.phase=pre"]
     final_merge -> final_check               [condition="outcome=succeeded && context.final_conflict=false"]
     final_merge -> resolve_merge             [condition="outcome=succeeded && context.final_conflict=true"]

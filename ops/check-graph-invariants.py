@@ -1112,6 +1112,19 @@ R10_PROMPTS: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
 # `issue-precheck`'s. A fix to one that does not reach the other turns the calibration into a
 # measurement of something else, silently. A row is (package, original .fabro, the command
 # nodes whose scripts must match, the agent node whose prompt file must match).
+# The whole-branch pre-review (Part B) runs in both `backlog` and `ralph` and the two arms are
+# compared, so it has to be the same stage in both: its two command nodes' scripts and its
+# prompt are byte-identical, and only the edges differ (backlog continues to `extra_prep`,
+# ralph to `final_merge`). A fix to one that does not reach the other makes the measurement a
+# measurement of two different things. Rows are (ralph node, backlog .fabro, backlog node).
+R10_SHARED_NODES: list[tuple[str, str, str]] = [
+    ("pre_review_prep", ".fabro/workflows/backlog/workflow.fabro", "pre_review_prep"),
+    ("pre_review_check", ".fabro/workflows/backlog/workflow.fabro", "pre_review_check"),
+]
+R10_SHARED_PROMPTS: list[tuple[str, str, str]] = [
+    ("pre_review", ".fabro/workflows/backlog/workflow.fabro", "pre_review"),
+]
+
 R10_CALIBRATION_COPIES: dict[str, tuple[str, tuple[str, ...], str]] = {
     "precheck-calibration": (
         ".fabro/workflows/issue-precheck/workflow.fabro", ("prep", "gate"), "check",
@@ -1144,6 +1157,37 @@ def _apply(text: str, repls) -> tuple[str | None, str | None]:
             return None, f"replacement occurs {n} times in the original: {old[:60]!r}"
         text = text.replace(old, new)
     return text, None
+
+
+def r10_shared_nodes(root: Path) -> list[tuple]:
+    """R10: backlog's and ralph's pre-review nodes and prompt must not drift apart."""
+    graph = root / RALPH_GRAPH
+    if not graph.exists():
+        return []
+    out = []
+    for target, src, src_id in R10_SHARED_NODES:
+        original = _script_of(root / src, src_id)
+        if original is None:
+            out.append(("ralph", "R10", target, f"original node {src_id} is missing from {src}"))
+            continue
+        copy = _script_of(graph, target)
+        if copy is None:
+            out.append(("ralph", "R10", target, "the copy is missing its script"))
+        elif copy != original:
+            out.append(("ralph", "R10", target,
+                        f"drifted from {src} {src_id}; the two pre-review arms are compared, so "
+                        "they must run the same node"))
+    for target, src, src_id in R10_SHARED_PROMPTS:
+        original_p, copy_p = _prompt_of(root / src, src_id), _prompt_of(graph, target)
+        if original_p is None or copy_p is None:
+            out.append(("ralph", "R10", target, "a prompt file is missing"))
+        elif not original_p.exists() or not copy_p.exists():
+            out.append(("ralph", "R10", target, "a prompt file does not exist"))
+        elif original_p.read_text() != copy_p.read_text():
+            out.append(("ralph", "R10", target,
+                        f"the prompt drifted from {src} {src_id}; both arms must run the same "
+                        "rubric"))
+    return out
 
 
 def r10_calibration_copies(root: Path) -> list[tuple]:
@@ -1310,6 +1354,7 @@ def run(root_dir: Path) -> list[tuple]:
         violations += phase_violations(f"_shared/{phase.parent.name}", phase)
     violations += r10_copies(root_dir)
     violations += r10_calibration_copies(root_dir)
+    violations += r10_shared_nodes(root_dir)
     return violations
 
 

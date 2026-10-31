@@ -28,7 +28,7 @@ say() { builtin printf '\n== %s ==\n' "$*"; }
 # The AGENTS.md *Validating* node/edge baselines, keyed by package name. fabro
 # validate prints `Workflow: Backlog (72 nodes, 175 edges)`; match on the counts.
 declare -A BASELINE=(
-    [backlog]="81 nodes, 205 edges"
+    [backlog]="84 nodes, 209 edges"
     [pr-review]="39 nodes, 87 edges"
     [issue-triage]="16 nodes, 36 edges"
     [arch-review]="24 nodes, 54 edges"
@@ -37,7 +37,7 @@ declare -A BASELINE=(
     [scout]="9 nodes, 11 edges"
     # The offline parser's count (AGENTS.md *Validating*): unverified until the first run of
     # this script, which is task 12 of docs/ralph.
-    [ralph]="51 nodes, 135 edges"
+    [ralph]="54 nodes, 139 edges"
     # The background lane's box-only package (more-local-inference task 04). The offline
     # parser's count: expected, unverified until task 12, Phase 1 runs this script.
     [box-noop]="4 nodes, 3 edges"

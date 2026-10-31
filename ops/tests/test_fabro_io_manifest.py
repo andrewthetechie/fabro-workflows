@@ -103,6 +103,8 @@ class Box(unittest.TestCase):
                 "coder": True,
                 "extra_decompose": True,
                 "plan": "plan-arm",
+                # Part B: the whole-branch pre-review runs on the run's own box.
+                "pre_review": True,
                 "resolve_merge": True,
                 "review_merge.refute_fix": True,
                 "review_merge.resolve_base": True,
@@ -117,6 +119,7 @@ class Box(unittest.TestCase):
                 "iterate_t1": True,
                 "learn": True,
                 "plan": "plan-arm",
+                "pre_review": True,
                 "resolve_base": True,
             },
         })
