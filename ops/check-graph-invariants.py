@@ -891,6 +891,11 @@ BG_MODEL = re.compile(r"inputs\.coder_pool\s*\|\s*default\('coders-[a-z0-9-]+-bg
 # C10's hook, field by field. 20 s deadline inside a 30 s hook timeout.
 GUARD_HOOK_SCRIPT = "fabro-io box-guard; [ $? -eq 2 ] && exit 2; exit 0"
 
+# What `box-guard` reads (C10 step 1-3): without these it logs one line and lets every stage
+# run, so the hook is present and inert. An unset `{{ vars.X }}` fails the RunIntent at compile
+# time instead, which is loud; a *missing key* is the silent one.
+GUARD_ENV = ("FABRO_API_URL", "FABRO_BOX_HEALTH")
+
 
 def r16_background_packages(package: str, root: Graph | None, nodes: dict[str, dict[str, str]],
                             hooks: list[dict], toml: dict | None = None) -> list[tuple]:
@@ -955,6 +960,16 @@ def r16_background_packages(package: str, root: Graph | None, nodes: dict[str, d
     if root is None or "/tmp/fabro/box" not in (root.nodes.get("claim") or {}).get("script", ""):
         out.append(("R16", "claim",
                     "does not write /tmp/fabro/box, so box-guard cannot tell which box it is on"))
+    # 2026-11-03: `flaky-investigation` and `repo-orientation` shipped without the three
+    # variables `box-guard` reads. The hook was there, the checker passed, and the guard did
+    # nothing: it logs and returns 0 when the pool or the box's `/health` URL is unknown. A
+    # missing key is the silent failure; find it here.
+    env = (((toml or {}).get("run") or {}).get("environment") or {}).get("env") or {}
+    for key in GUARD_ENV:
+        if key not in env:
+            out.append(("R16", "box-guard env",
+                        f"{key} is missing from [run.environment.env]; box-guard reads it and "
+                        "does nothing without it"))
     return out
 
 

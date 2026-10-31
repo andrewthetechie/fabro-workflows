@@ -241,6 +241,31 @@ def deliver(F: Orientation, payload: dict, *, receipt: bool = True) -> None:
     write(F.fabro / "orientation.json", json.dumps(payload))
 
 
+def test_the_whole_chain_in_order_writes_the_issue_body(ck, tmp_path):
+    """claim -> prep -> the agent's file -> gate -> post, one `/tmp/fabro`, as the graph runs it."""
+    F = Orientation(ck, tmp_path, "chain")
+    F.issues_json([])
+    ck("chain: claim", "true", routed(F.run("claim"), "orientation_go"))
+    ck("chain: prep", "true", routed(F.run("prep", FABRO_AGENT_GUIDE="# guide"), "prep_ok"))
+    deliver(F, MAP)
+    ck("chain: gate", "true", routed(F.run("gate"), "orientation_ok"))
+    ck("chain: post", "true", routed(F.run("post"), "posted"))
+    body = json.loads(cat(F.T / "patched.md"))["body"] if F.patched.exists() else None
+    if body is None:
+        # The chain created the issue; the body file is what was passed to `gh issue create`.
+        body = cat(F.fabro / "orientation/body.full")
+    # `run=` is the `orientation-run-id` hook's file, which the harness does not run; `post`
+    # reads an absent one as `unknown` (a real run's hook writes it).
+    ck("chain: the marker is the first line", "1",
+       count(r"^<!-- fabro:orientation main=[0-9a-f]{40} at=[0-9T:Z-]+ run=\S+ -->$",
+             body.split("\n", 1)[0], flags="E"))
+    ck("chain: the map is published", "1", count("^- `src`: the frontend$", body, flags="E"))
+    ck("chain: without the imagined directory", "0", count("nope", body))
+    ck("chain: and with the commands", "1", count("^- `npm test`: runs the suite$", body, flags="E"))
+    ck("chain: under the cap", "true", str(len(body) <= 6000).lower())
+    ck("chain: pinned once, on the run that created it", "1", count("^issue pin 77$", F.gh()))
+
+
 def test_gate_refuses_a_map_with_no_receipt(ck, tmp_path):
     F = Orientation(ck, tmp_path, "gate-noreceipt")
     deliver(F, MAP, receipt=False)

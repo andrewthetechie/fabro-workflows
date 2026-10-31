@@ -322,6 +322,8 @@ class BackgroundPackages(unittest.TestCase):
 
     BG_STYLESHEET = ("* { model: {{ inputs.coder_pool | default('coders-a-bg') }}; }\n"
                      ".work { model: {{ inputs.coder_pool | default('coders-a-bg') }}; }")
+    GUARD_ENV = ('\n[run.environment.env]\nFABRO_API_URL = "{{ vars.FABRO_API_URL }}"\n'
+                 'FABRO_BOX_HEALTH = "{{ vars.FABRO_BOX_HEALTH }}"\n')
     GUARD = ('\n[[run.hooks]]\nid = "box-guard"\nevent = "stage_start"\nmatcher = "^agent$"\n'
              'blocking = true\nsandbox = true\ntimeout = "30s"\n'
              'script = "fabro-io box-guard; [ $? -eq 2 ] && exit 2; exit 0"\n')
@@ -332,6 +334,9 @@ class BackgroundPackages(unittest.TestCase):
         root = BoxStages.root(BoxStages(), tmp, stylesheet=stylesheet or self.BG_STYLESHEET,
                               drop_class=drop_class)
         toml = root / ".fabro/workflows/ok/workflow.toml"
+        # The three variables `box-guard` reads (R16, added 2026-11-03): a fixture package that
+        # lacks them is a fixture package with a dead guard, which is what R16 now reports.
+        toml.write_text(toml.read_text() + self.GUARD_ENV)
         toml.write_text(toml.read_text() + (self.GUARD if guard is None else guard))
         if run_branch is not None:
             toml.write_text(toml.read_text() + f"\n[run.run_branch]\n{run_branch}\n")
@@ -646,3 +651,45 @@ class Reader(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackgroundPackageEnv(unittest.TestCase):
+    """R16: a background package carries the three variables `box-guard` reads.
+
+    `flaky-investigation` and `repo-orientation` shipped without them on 2026-11-03: the hook
+    was wired exactly as C10 gives it, the checker passed, and the guard logged one line and let
+    every stage run, because it cannot find the box's `/health` URL or the run API.
+    """
+
+    def _violations(self, tmp, env: str) -> list[tuple]:
+        root = Path(tmp)
+        pkg = root / ".fabro/workflows/box-noop"
+        pkg.mkdir(parents=True)
+        (pkg / "workflow.fabro").write_text(
+            'digraph B { start [shape=Mdiamond]; exit [shape=Msquare]; '
+            'work [class="bg"]; start -> claim -> work -> exit; '
+            'claim [script="echo /tmp/fabro/box"] }\n'
+        )
+        (pkg / "workflow.toml").write_text(
+            '[workflow]\ngraph = "workflow.fabro"\n\n[run.run_branch]\nenabled = false\n'
+            "\n[run.environment.env]\n" + env
+        )
+        saved = cgi.BACKGROUND_PACKAGES
+        try:
+            cgi.BACKGROUND_PACKAGES = ["box-noop"]
+            return cgi.run(root)
+        finally:
+            cgi.BACKGROUND_PACKAGES = saved
+
+    def test_the_three_variables_are_required(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self._violations(tmp, "")
+            names = [row[2] for row in found if row[1] == "R16"]
+            self.assertEqual(names.count("box-guard env"), 2, found)
+            self.assertTrue(any("FABRO_API_URL" in row[3] for row in found if row[1] == "R16"))
+
+    def test_carrying_them_passes(self):
+        """The real tree is the proof: every background package carries all three."""
+        self.assertEqual(
+            [row for row in cgi.run(REAL) if row[1] == "R16" and row[2] == "box-guard env"], []
+        )

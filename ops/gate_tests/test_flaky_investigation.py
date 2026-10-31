@@ -528,6 +528,42 @@ def test_post_scrubs_tokens(ck, tmp_path):
     ck("post: in place", "1", count(r"token \[redacted\]", body))
 
 
+def test_the_whole_chain_in_order_publishes_one_comment(ck, tmp_path):
+    """claim -> prep -> the agent's file -> gate -> post, one `/tmp/fabro`, as the graph runs it.
+
+    A node that deletes a file a later node reads passes every per-node test; this is the same
+    run end to end, and the comment it posts carries both the FlakeRadar fact and the cited
+    line.
+    """
+    F = Flaky(ck, tmp_path, "chain")
+    ck("chain: claim", "true", routed(F.run("claim"), "flaky_go"))
+    ck("chain: prep", "true", routed(F.run("prep", FABRO_AGENT_GUIDE="# guide"), "prep_ok"))
+    deliver(F, {
+        "cause": "timing",
+        "summary": "The migration waits for a lock the previous test still holds.",
+        "evidence": [
+            {"where": "tests/test_migration.py:1", "says": "the test body"},
+            {"where": "flakeradar", "says": "2 failures in the last 100 executions"},
+        ],
+        "fix": [{"where": "tests/test_migration.py:1", "change": "wait for the lock"}],
+        "confidence": "medium",
+        "reproduced": False,
+    })
+    ck("chain: gate", "true", routed(F.run("gate"), "flaky_ok"))
+    ck("chain: post", "true", routed(F.run("post"), "posted"))
+    body = cat(F.posted)
+    ck("chain: one comment, the marker first", "1",
+       count("^<!-- fabro:flaky-investigation test=9354 cause=timing ", body.split("\n", 1)[0],
+             flags="E"))
+    ck("chain: the diagnosis is published", "1", count("waits for a lock", body))
+    ck("chain: with the FlakeRadar fact", "1", count("2 failures in the last 100 executions", body))
+    ck("chain: and the cited line, in the evidence and in the fix", "2",
+       count("`tests/test_migration.py:1`", body))
+    ck("chain: nothing was run", "1", count("not a reproduction", body))
+    ck("chain: under the C9 cap", "true", str(len(body) <= 2500).lower())
+    ck("chain: posted once", "1", count("^issue comment 42 --body-file", F.gh()))
+
+
 # --- the package's shape -----------------------------------------------------------
 
 

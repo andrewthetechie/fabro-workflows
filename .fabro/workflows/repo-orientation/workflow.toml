@@ -89,6 +89,15 @@ rebase to finish), run the git commands it lists.
 '''
 # END fabro agent guide
 
+# Read by the `box-guard` hook (C10): the API to list the box's coder loop, the token to cancel
+# this run, and the `/health` URL of this run's box. Without them the guard logs one line and
+# lets the stage run, so the third layer of D17 is silently absent (R16 checks for them). An
+# unset `{{ vars.X }}` fails the RunIntent at compile time, so the server variables must exist
+# before this package is used; `ops/provision-server-state.sh` creates them.
+FABRO_API_URL   = "{{ vars.FABRO_API_URL }}"
+FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
+FABRO_BOX_HEALTH = "{{ vars.FABRO_BOX_HEALTH }}"
+
 # io-stage (ADR 0016): writes stage.json with a fresh 128-bit visit at the start of every
 # agent stage. blocking = true, sandbox = true. docs/stage-io/.
 [[run.hooks]]
