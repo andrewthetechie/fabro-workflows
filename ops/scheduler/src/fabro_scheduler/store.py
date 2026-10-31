@@ -1315,6 +1315,15 @@ class Store:
                 "ORDER BY last_started_at, job_id"
             ).fetchall()
 
+    def finished_background_jobs(self, *, limit: int = 10) -> list[sqlite3.Row]:
+        """The most recently finished jobs, in any end state, newest finish first."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM background_jobs WHERE state NOT IN ('queued', 'running') "
+                "ORDER BY last_finished_at DESC, job_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
     def runs_to_calibrate(self, *, since: str, limit: int) -> list[sqlite3.Row]:
         """Finished issue runs worth re-checking with the precheck, newest first.
 

@@ -1098,3 +1098,61 @@ def test_a_running_doctor_job_still_finishes_with_no_box_in_the_lane(store, leas
     assert no_boxes.box_health == {}
     lane_.tick(NOW)
     assert store.background_job(job_id)["outcome"] == "review_pending"
+
+
+def test_every_job_kind_dispatches_a_workflow_the_client_knows():
+    """A kind whose workflow is missing from `ENTRYPOINTS` makes `dispatch_job` raise, which
+    fails the lane's whole tick, so no other job starts either (2026-10-31: the calibration
+    shipped that way). The fakes above never call the real `dispatch_job`, so check here."""
+    from pathlib import Path
+
+    from fabro_scheduler.background import JOB_WORKFLOWS
+    from fabro_scheduler.workflow_version import ENTRYPOINTS
+
+    fabro_dir = Path(__file__).resolve().parents[3] / ".fabro"
+    for kind, workflow in JOB_WORKFLOWS.items():
+        assert workflow in ENTRYPOINTS, f"{kind}: {workflow} is not in ENTRYPOINTS"
+        assert (fabro_dir / ENTRYPOINTS[workflow]).is_file(), f"{kind}: no graph"
+
+
+def test_the_page_lists_the_background_jobs_in_the_order_the_lane_tries_them(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from fabro_scheduler.app import build_app
+
+    store = Store(tmp_path / "scheduler.db")
+    try:
+        cfg = config()
+        fake = FakeFabro()
+        lane_ = lane(cfg, store, LeaseStore(store), fake, FakeHealth())
+        calibration = store.enqueue_background_job(
+            kind="precheck-calibration", repo=JELLY, target="01CALIBRATEDRUN",
+            inputs={"issue_number": 41, "at": "2026-10-01T12:00:00+00:00"},
+            priority=4, typical_box_minutes=3, now=NOW,
+        )
+        precheck = store.enqueue_background_job(
+            kind="issue-precheck", repo=JELLY, target="42", inputs={"issue_number": 42},
+            priority=2, typical_box_minutes=3, now=NOW,
+        )
+        ended = store.enqueue_background_job(
+            kind="context-pack", repo=JELLY, target="40", inputs={"issue_number": 40},
+            priority=3, typical_box_minutes=5, now=NOW,
+        )
+        store.finish_background_job(ended, state="failed", outcome="claim failed", now=NOW)
+        client = TestClient(build_app(cfg, store, fabro_client=fake, background_lane=lane_))
+
+        queue = client.get("/api/background").json()["queue"]
+        assert [job["job_id"] for job in queue["queued"]] == [precheck, calibration], (
+            "priority first: the precheck before the older calibration"
+        )
+        assert queue["queued"][1]["issue_number"] == 41, "the calibration's issue is its input"
+        assert [job["job_id"] for job in queue["finished"]] == [ended]
+        assert queue["running"] == []
+
+        html = client.get("/").text
+        assert "Background jobs" in html
+        assert html.index("issues/42") < html.index("issues/41") < html.index("issues/40")
+        assert "/runs/01CALIBRATEDRUN" in html, "the calibrated run is linked"
+        assert "claim failed" in html
+    finally:
+        store.close()

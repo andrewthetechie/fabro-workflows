@@ -238,6 +238,20 @@ class BoxView:
     health: Health | None
 
 
+def _job_issue(row) -> int | None:
+    """The issue a job is about: its target for the precheck and the pack, its `issue_number`
+    input for the calibration (whose target is the calibrated run), and None for `box-noop`."""
+    target = str(row["target"] or "")
+    if target.isdigit():
+        return int(target)
+    try:
+        inputs = json.loads(row["inputs_json"] or "{}")
+    except ValueError:
+        return None
+    number = inputs.get("issue_number") if isinstance(inputs, dict) else None
+    return number if isinstance(number, int) else None
+
+
 def job_row(row) -> dict[str, object]:
     """One `background_jobs` row as the JSON the page and `/api/background` render."""
     return {
@@ -245,6 +259,7 @@ def job_row(row) -> dict[str, object]:
         "kind": row["kind"],
         "repo": row["repo"],
         "target": row["target"],
+        "issue_number": _job_issue(row),
         "priority": int(row["priority"]),
         "typical_box_minutes": int(row["typical_box_minutes"]),
         "state": row["state"],
@@ -982,6 +997,14 @@ class BackgroundLane:
             ],
             "reviews": self.review_state(now),
             "jobs": [job_row(row) for row in self._store.background_jobs(limit=50)],
+            # The queue page's job table: what is running, what waits in the order `fill`
+            # tries it (priority, then age; a job too long for a box's gap is passed over for
+            # the next one that fits), and the last few that ended, with their outcomes.
+            "queue": {
+                "running": [job_row(row) for row in self._store.running_background_jobs()],
+                "queued": [job_row(row) for row in self._store.queued_background_jobs()],
+                "finished": [job_row(row) for row in self._store.finished_background_jobs()],
+            },
         }
 
     def review_state(self, now: datetime | None = None) -> dict[str, object]:
