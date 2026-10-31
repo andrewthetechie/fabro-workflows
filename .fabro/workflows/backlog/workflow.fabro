@@ -1337,12 +1337,17 @@ echo demoted"]
     // `extra_decompose`'s follow-up tasks, Final validation in `open_pr_prep` and the merge
     // phase all see the pre-reviewed branch, and Final validation is still the full net.
     //
-    // **The A/B arm** is one line in `pre_review_prep` (`N % 2`) and the same bit in ralph:
-    // odd issue numbers pre-review, even ones do not. The box-plan trial's arm is
-    // `issue_number // 2 % 2`, a different bit, so the two arms do not confound each other.
-    // The arm is published as `pre_review_arm` on every visit, so `fabro events` and the run
-    // summary say which one a run was in. **To pre-review every run**, set `ARM=on`
-    // unconditionally in `pre_review_prep` (one line, in both graphs).
+    // **The A/B arm** is one line in `pre_review_prep` and the byte-identical one in ralph:
+    // bit 2 of the issue number, `(N / 4) % 2`, so issues 4-7, 12-15, ... pre-review and the
+    // rest do not. It is deliberately NOT `N % 2`: that is the ralph trial's bit
+    // (`dispatch.choose_workflow`: even -> ralph, odd -> backlog), and under the first arm
+    // this node ran on every backlog run and on no ralph run, so the pre-review could not be
+    // measured and it skewed the trial. Bit 1 is the box-plan trial's arm
+    // (`issue_number // 2 % 2`). Three trials, three bits; never reuse one (more-local-
+    // inference, the traps list). The arm is published as `pre_review_arm`, and its outcome as
+    // `pre_review_verdict`, on every visit of the next node, so `fabro events` and the run
+    // summary say which arm a run was in and what the pre-review did. **To pre-review every
+    // run**, set `ARM=on` unconditionally in `pre_review_prep` (one line, in both graphs).
     //
     // **Once per run.** `next_task` comes back here after extra-review follow-ups and after a
     // resolved rebase, so `/tmp/fabro/pre_reviewed` is the latch: a second visit routes past
@@ -1368,7 +1373,7 @@ N=$(cat $F/issue_number 2>/dev/null || true)
 case \"$N\" in '' | *[!0-9]*) N=$(jq -r '.number // 0' $F/issue.json 2>/dev/null || echo 0) ;; esac
 case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
 ARM=off
-if [ $((N % 2)) -eq 1 ]; then ARM=on; fi
+if [ $(( (N / 4) % 2 )) -eq 1 ]; then ARM=on; fi
 if [ -e $F/pre_reviewed ]; then
   echo 'pre_review_prep: this run already had its pre-review; routing on' >&2
   echo '{\"context_updates\":{\"pre_review_go\":false,\"pre_review_arm\":\"'$ARM'\"}}'
@@ -1419,6 +1424,12 @@ echo '{\"context_updates\":{\"pre_review_go\":true,\"pre_review_arm\":\"'$ARM'\"
     // A revert is `drop_followup`'s shape: `git restore --source=<base>` for the tracked
     // files, then `git clean -fd` for the files the stage added (ignored paths -- the code
     // index and the agent guide -- are left alone), then the same two checks it makes.
+    //
+    // It publishes `pre_review_verdict` beside `pre_review_kept` on every visit
+    // (`unchanged`, `kept`, `no_receipt`, `forbidden_path`, `unscoped`, `red`, `check_timeout`,
+    // `check_error`, `no_base`), so the scheduler's `run_summary` can count each ending rather
+    // than infer it from the log line it no longer keeps. `pre_review_prep` publishes the arm
+    // beside it; the pair is the Phase 4 measurement.
     pre_review_check [label="Keep or revert the pre-review", shape=parallelogram, output_schema="routing", timeout="25m",
         script="F=/tmp/fabro
 P=$F/pre_review
@@ -1472,7 +1483,7 @@ if [ \"$KEPT\" = false ] && [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}
 fi
 echo \"arm=$ARM outcome=$VERDICT kept=$KEPT files=$FILES unmet=$UNMET\" >> $F/pre_review.log
 echo 'pre_review_check: '$VERDICT' (arm '$ARM'), '$FILES' file(s), '$UNMET' criteria not met'
-echo '{\"context_updates\":{\"pre_review_kept\":'$KEPT'}}'"]
+echo '{\"context_updates\":{\"pre_review_kept\":'$KEPT',\"pre_review_verdict\":\"'$VERDICT'\"}}'"]
 
     // ---- Extra review rounds (whole branch) ----
     extra_prep [label="Prepare extra review", shape=parallelogram, output_schema="routing",

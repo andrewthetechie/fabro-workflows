@@ -1213,11 +1213,15 @@ jq -nc --arg r \"$ROUTE\" --argjson le \"$LE\" '{context_updates:{review_route:$
     // every command criterion would become `unverifiable`. Before it, `final_check` validates
     // the pre-review's edits like any other, and the Refuter's evidence still holds.
     //
-    // **The A/B arm** is one line in `pre_review_prep` (`N % 2`) and the same bit in backlog:
-    // odd issue numbers pre-review, even ones do not. The box-plan trial's arm is
-    // `issue_number // 2 % 2`, a different bit, so the two arms do not confound each other.
-    // The arm is published as `pre_review_arm` on every visit. **To pre-review every run**, set
-    // `ARM=on` unconditionally in `pre_review_prep` (one line, in both graphs).
+    // **The A/B arm** is one line in `pre_review_prep` and the byte-identical one in backlog:
+    // bit 2 of the issue number, `(N / 4) % 2`, so issues 4-7, 12-15, ... pre-review and the
+    // rest do not. It is deliberately NOT `N % 2`: that is this trial's own bit (the scheduler
+    // sends an even issue to ralph and an odd one to backlog), so under the first arm the
+    // pre-review ran on no ralph run at all and skewed the trial it shares the bit with. Bit 1
+    // is the box-plan trial's arm (`issue_number // 2 % 2`). The arm is published as
+    // `pre_review_arm`, and its outcome as `pre_review_verdict`, on every visit of the next
+    // node. **To pre-review every run**, set `ARM=on` unconditionally in `pre_review_prep`
+    // (one line, in both graphs).
     //
     // **Once per run.** `pick` comes back here after Refuter and review rounds, so
     // `/tmp/fabro/pre_reviewed` is the latch: a second visit routes past the review, which is
@@ -1242,7 +1246,7 @@ N=$(cat $F/issue_number 2>/dev/null || true)
 case \"$N\" in '' | *[!0-9]*) N=$(jq -r '.number // 0' $F/issue.json 2>/dev/null || echo 0) ;; esac
 case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
 ARM=off
-if [ $((N % 2)) -eq 1 ]; then ARM=on; fi
+if [ $(( (N / 4) % 2 )) -eq 1 ]; then ARM=on; fi
 if [ -e $F/pre_reviewed ]; then
   echo 'pre_review_prep: this run already had its pre-review; routing on' >&2
   echo '{\"context_updates\":{\"pre_review_go\":false,\"pre_review_arm\":\"'$ARM'\"}}'
@@ -1325,7 +1329,7 @@ if [ \"$KEPT\" = false ] && [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}
 fi
 echo \"arm=$ARM outcome=$VERDICT kept=$KEPT files=$FILES unmet=$UNMET\" >> $F/pre_review.log
 echo 'pre_review_check: '$VERDICT' (arm '$ARM'), '$FILES' file(s), '$UNMET' criteria not met'
-echo '{\"context_updates\":{\"pre_review_kept\":'$KEPT'}}'"]
+echo '{\"context_updates\":{\"pre_review_kept\":'$KEPT',\"pre_review_verdict\":\"'$VERDICT'\"}}'"]
 
     // copy: copy of backlog.final_merge (C8). No replacement; its `final_conflict=true` target is
     // `resolve_merge`, whose gate now also routes `merge_return=pr` back here.

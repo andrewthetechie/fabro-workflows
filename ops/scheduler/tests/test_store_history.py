@@ -593,3 +593,59 @@ def test_an_old_database_upgrades_and_its_rows_read_as_issue_rows(tmp_path):
         assert upgraded.background_counts() == {"done": 1}
     finally:
         upgraded.close()
+
+
+def test_the_pre_review_columns_round_trip_and_an_old_row_reads_null(tmp_path):
+    """pre-review-and-calibration Part B: `run_summary` carries the pre-review's arm and its
+    verdict. A row written before the columns existed reads NULL, which the Phase 4 report
+    reads as "not measured" — never as `off` or `unchanged`."""
+    import sqlite3
+    from collections import Counter
+
+    from fabro_scheduler.summary import RunSummary
+
+    store = Store(tmp_path / "scheduler.db")
+    try:
+        store.save_run_summary(
+            RunSummary(
+                run_id="RP", stages={}, failovers=Counter(), path=[], terminal_node="open_pr",
+                refute=[], events=1, pre_review_arm="on", pre_review_verdict="kept",
+            )
+        )
+        row = store._conn.execute(
+            "SELECT pre_review_arm, pre_review_verdict FROM run_summary WHERE run_id = ?",
+            ("RP",),
+        ).fetchone()
+        assert (row["pre_review_arm"], row["pre_review_verdict"]) == ("on", "kept")
+    finally:
+        store.close()
+
+    # A database whose `run_summary` predates the two columns: opening it ALTERs them in, and
+    # the row already there reads NULL.
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE run_summary (
+          run_id TEXT PRIMARY KEY, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1,
+          summarized_at TEXT NOT NULL, terminal_node TEXT, path TEXT, refute TEXT,
+          events INTEGER, error TEXT
+        );
+        INSERT INTO run_summary (run_id, status, summarized_at, terminal_node)
+          VALUES ('R0', 'ok', '2026-10-20T00:00:00+00:00', 'open_pr');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = Store(path)
+    try:
+        columns = {r["name"] for r in reopened._conn.execute("PRAGMA table_info(run_summary)")}
+        assert {"pre_review_arm", "pre_review_verdict"} <= columns
+        row = reopened._conn.execute(
+            "SELECT pre_review_arm, pre_review_verdict FROM run_summary WHERE run_id = 'R0'"
+        ).fetchone()
+        assert row["pre_review_arm"] is None
+        assert row["pre_review_verdict"] is None
+    finally:
+        reopened.close()

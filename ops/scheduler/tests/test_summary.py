@@ -399,3 +399,58 @@ def test_a_backlog_summary_ignores_ralphs_ids():
     ]
     summary = summarize("R1", stages, events)
     assert summary.first_edit_ms == []
+
+
+def test_the_pre_reviews_arm_and_verdict_come_from_their_two_nodes():
+    """`pre_review_prep` publishes the A/B arm and `pre_review_check` its verdict
+    (pre-review-and-calibration Part B). Both graphs spell the ids identically, so a ralph
+    run reads them too."""
+    events = [
+        {
+            "event": "stage.completed",
+            "node_id": "pre_review_prep",
+            "properties": {"context_updates": {"pre_review_go": True, "pre_review_arm": "on"}},
+        },
+        {
+            "event": "stage.completed",
+            "node_id": "pre_review_check",
+            "properties": {
+                "context_updates": {"pre_review_kept": True, "pre_review_verdict": "kept"}
+            },
+        },
+    ]
+    for workflow in ("backlog", "ralph"):
+        summary = summarize("R1", [], events, workflow=workflow)
+        assert summary.pre_review_arm == "on"
+        assert summary.pre_review_verdict == "kept"
+
+
+def test_a_run_that_routes_past_the_review_records_its_arm_and_no_verdict():
+    """The arm is published on the visit that routes past the review; the check never runs,
+    so the verdict stays NULL rather than reading as `unchanged`."""
+    events = [
+        {
+            "event": "stage.completed",
+            "node_id": "pre_review_prep",
+            "properties": {"context_updates": {"pre_review_go": False, "pre_review_arm": "off"}},
+        }
+    ]
+    summary = summarize("R1", [], events)
+    assert summary.pre_review_arm == "off"
+    assert summary.pre_review_verdict is None
+
+
+def test_the_last_pre_review_verdict_wins():
+    events = [
+        {
+            "event": "stage.completed",
+            "node_id": "pre_review_check",
+            "properties": {"context_updates": {"pre_review_verdict": "red"}},
+        },
+        {
+            "event": "stage.completed",
+            "node_id": "pre_review_check",
+            "properties": {"context_updates": {"pre_review_verdict": "no_base"}},
+        },
+    ]
+    assert summarize("R1", [], events).pre_review_verdict == "no_base"

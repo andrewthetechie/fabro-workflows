@@ -122,8 +122,47 @@ def log_of(P: PreReview) -> str:
 
 # --- pre_review_prep: the arm and the once-per-run latch ---------------------------
 
+# Bit 2 of the issue number (more-local-inference Part 0). Not `N % 2`: that is the ralph
+# trial's own bit, and under it the pre-review ran on every backlog run and no ralph run.
+ON, OFF = (4, 5, 6, 7, 12, 13, 14, 15), (0, 1, 2, 3, 8, 9, 10, 11)
 
-def test_prep_pre_reviews_an_odd_issue_and_records_the_base(ck, tmp_path):
+
+def test_the_arm_is_bit_two_of_the_issue_number_in_both_graphs(ck, tmp_path):
+    """Issues 4-7 pre-review, 0-3 do not, and the same for the next block of eight."""
+    for graph, name in ((BACKLOG, "backlog"), (RAPH, "ralph")):
+        for number in ON:
+            P = PreReview(ck, tmp_path, f"arm-{name}-{number}", graph=graph,
+                          number=str(number))
+            ck(f"{name}: #{number} is on", "on",
+               routed(P.run("pre_review_prep"), "pre_review_arm"))
+        for number in OFF:
+            P = PreReview(ck, tmp_path, f"arm-{name}-{number}", graph=graph,
+                          number=str(number))
+            ck(f"{name}: #{number} is off", "off",
+               routed(P.run("pre_review_prep"), "pre_review_arm"))
+
+
+def test_the_arm_is_not_the_ralph_trials_bit(ck, tmp_path):
+    """The first arm was `N % 2`, which is exactly the scheduler's ralph/backlog split
+    (`dispatch.choose_workflow`), so the pre-review ran on no ralph run. Bit 2 must put half
+    of each workflow's runs on each arm, and every issue the old bit switched on must not
+    decide it."""
+    for graph in (BACKLOG, RAPH):
+        on, off = [], []
+        for number in range(0, 16):
+            P = PreReview(ck, tmp_path, f"bits-{graph}-{number}", graph=graph,
+                          number=str(number))
+            arm = routed(P.run("pre_review_prep"), "pre_review_arm")
+            (on if arm == "on" else off).append(number)
+        ck("an even split of the first sixteen issues", "8/8", f"{len(on)}/{len(off)}")
+        ck("and the arms are the same set for both graphs", str(list(ON)),
+           str([n for n in range(0, 16) if n in on]))
+        # Any issue the ralph trial would send to ralph (even) is not always off.
+        ck("the ralph arm's bit does not decide it", "true",
+           str(bool(on and any(n % 2 == 0 for n in on))).lower())
+
+
+def test_prep_pre_reviews_on_the_arm_and_records_the_base(ck, tmp_path):
     P = PreReview(ck, tmp_path, "prep-on", number="7")
     r = P.run("pre_review_prep")
     ck("prep: routes to the pre-review", "true", routed(r, "pre_review_go"))
@@ -141,7 +180,7 @@ def test_prep_pre_reviews_an_odd_issue_and_records_the_base(ck, tmp_path):
     ck("prep: the latch is written", "present", present(P.fabro / "pre_reviewed"))
 
 
-def test_prep_does_not_pre_review_an_even_issue(ck, tmp_path):
+def test_prep_does_not_pre_review_off_the_arm(ck, tmp_path):
     P = PreReview(ck, tmp_path, "prep-off", number="8")
     r = P.run("pre_review_prep")
     ck("prep off: routes past the pre-review", "false", routed(r, "pre_review_go"))
@@ -168,7 +207,7 @@ def test_prep_reads_the_issue_number_from_issue_json_when_the_file_is_gone(ck, t
        routed(P.run("pre_review_prep"), "pre_review_arm"))
     Q = PreReview(ck, tmp_path, "prep-none", number="7")
     rm(Q.fabro / "issue_number", Q.fabro / "issue.json")
-    ck("prep: with no issue number it reads as even, so off", "off",
+    ck("prep: with no issue number it is off, like #0", "off",
        routed(Q.run("pre_review_prep"), "pre_review_arm"))
 
 
@@ -181,6 +220,7 @@ def test_check_keeps_nothing_when_the_pre_review_changed_nothing(ck, tmp_path):
     r = P.run("pre_review_check")
     ck("check clean: reports kept", "true", routed(r, "pre_review_kept"))
     ck("check clean: the outcome is unchanged", "1", count("outcome=unchanged", log_of(P)))
+    ck("check clean: and publishes it", "unchanged", routed(r, "pre_review_verdict"))
 
 
 def test_check_reverts_a_stage_with_no_receipt(ck, tmp_path):
@@ -196,6 +236,7 @@ def test_check_reverts_a_stage_with_no_receipt(ck, tmp_path):
     ck("check no receipt: the ignored index is left alone", "index",
        cat(P.repo / ".codegraph/keep"))
     ck("check no receipt: the outcome", "1", count("outcome=no_receipt", log_of(P)))
+    ck("check no receipt: and publishes it", "no_receipt", routed(r, "pre_review_verdict"))
 
 
 def test_check_keeps_edits_a_green_scoped_check_passed(ck, tmp_path):
@@ -210,6 +251,7 @@ def test_check_keeps_edits_a_green_scoped_check_passed(ck, tmp_path):
     ck("check green: the new file is still there", "present", present(P.repo / "notes/new.md"))
     ck("check green: the measurement line has the arm, outcome, files and unmet count", "1",
        count("^arm=on outcome=kept kept=true files=2 unmet=1$", log_of(P)))
+    ck("check green: and publishes its verdict", "kept", routed(r, "pre_review_verdict"))
 
 
 def test_check_reverts_edits_a_red_scoped_check_failed(ck, tmp_path):
@@ -226,6 +268,7 @@ def test_check_reverts_edits_a_red_scoped_check_failed(ck, tmp_path):
     ck("check red: the file the stage added is gone", "absent",
        present(P.repo / "notes/new.md"))
     ck("check red: the outcome", "1", count("outcome=red", log_of(P)))
+    ck("check red: and publishes it", "red", routed(r, "pre_review_verdict"))
 
 
 def test_check_reverts_when_task_check_errors(ck, tmp_path):
@@ -237,6 +280,7 @@ def test_check_reverts_when_task_check_errors(ck, tmp_path):
     ck("check error: reports not kept", "false", routed(r, "pre_review_kept"))
     ck("check error: the tracked file is back at the base", "branch", cat(P.repo / "src.txt"))
     ck("check error: the outcome", "1", count("outcome=check_error", log_of(P)))
+    ck("check error: and publishes it", "check_error", routed(r, "pre_review_verdict"))
 
 
 def test_check_reverts_edits_task_check_could_not_scope(ck, tmp_path):
@@ -255,6 +299,7 @@ def test_check_reverts_edits_task_check_could_not_scope(ck, tmp_path):
        present(P.repo / "notes/new.md"))
     ck("check full: the outcome says the check was not scoped", "1",
        count("outcome=unscoped kept=false", log_of(P)))
+    ck("check full: and publishes it", "unscoped", routed(r, "pre_review_verdict"))
 
 
 def test_check_reverts_every_edit_when_one_touches_pipeline_config(ck, tmp_path):
@@ -282,6 +327,8 @@ def test_check_reverts_every_edit_when_one_touches_pipeline_config(ck, tmp_path)
            cat(P.repo / path) if tracked else present(P.repo / path))
         ck(f"check {name}: and so is every other edit", "branch", cat(P.repo / "src.txt"))
         ck(f"check {name}: the outcome", "1", count("outcome=forbidden_path", log_of(P)))
+        ck(f"check {name}: and publishes it", "forbidden_path",
+           routed(r, "pre_review_verdict"))
         ck(f"check {name}: task-check is not run", "absent", present(P.T / "fabro-io.log"))
 
 
@@ -296,6 +343,7 @@ def test_check_reverts_when_task_check_times_out(ck, tmp_path):
     ck("check slow: reports not kept", "false", routed(r, "pre_review_kept"))
     ck("check slow: the tracked file is back at the base", "branch", cat(P.repo / "src.txt"))
     ck("check slow: the outcome", "1", count("outcome=check_timeout", log_of(P)))
+    ck("check slow: and publishes it", "check_timeout", routed(r, "pre_review_verdict"))
     script = P.nodes["pre_review_check"]
     ck("check: task-check is held under the node's timeout", "1",
        count("TO='timeout 15m'", script, flags="F"))
@@ -361,3 +409,31 @@ def test_ralph_runs_the_same_two_nodes_as_backlog(ck):
     ck("the prompt is one file, copied", "1",
        str(int((WF / "backlog/prompts/pre_review.md.j2").read_text()
                == (WF / "ralph/prompts/pre_review.md.j2").read_text())))
+
+
+def test_check_publishes_no_base_when_prep_left_none(ck, tmp_path):
+    """A prep that never ran (a first visit routed past the review, then a re-entry that
+    reached the check) leaves no base, so there is nothing to compare the tree with."""
+    P = PreReview(ck, tmp_path, "check-nobase")
+    P.edit()
+    r = P.run("pre_review_check")
+    ck("check no base: reports not kept", "false", routed(r, "pre_review_kept"))
+    ck("check no base: and publishes it", "no_base", routed(r, "pre_review_verdict"))
+
+
+def test_every_check_outcome_publishes_a_known_verdict(ck):
+    """The scheduler's `run_summary` column counts these, so the published value must be one
+    of the nine `pre_review_check` can reach, spelled the way its log line spells it."""
+    script = extract(BACKLOG, "pre_review_check")
+    published = set()
+    for line in script.splitlines():
+        if "context_updates" in line and "pre_review_verdict" in line:
+            published.add(line)
+    ck("the check publishes the verdict on one line", "1", str(len(published)))
+    import re
+    reachable = set(re.findall(r"VERDICT=([a-z_]+)", script))
+    ck("every outcome the document names is reachable",
+       "check_error,check_timeout,forbidden_path,kept,no_base,no_receipt,red,unchanged,unscoped",
+       ",".join(sorted(reachable)))
+    ck("both graphs publish it identically", "1",
+       str(int(extract(RAPH, "pre_review_check") == script)))

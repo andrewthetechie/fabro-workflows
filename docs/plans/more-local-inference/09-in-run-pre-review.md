@@ -65,11 +65,21 @@ the stage is built in **both** arms, and the confound is handled by the A/B arm 
 
 ## The A/B arm
 
-Pre-review only when the issue number is **odd** (`issue_number % 2 == 1`). The box-plan trial's
-arm uses `issue_number // 2 % 2`, a different bit, so the two do not confound each other. The
-arm is published as `pre_review_arm` on every visit, so `fabro events` and the run summary say
-which one a run was in. The switch is one line in `pre_review_prep`, in both graphs: set
-`ARM=on` unconditionally to pre-review every run after the measurement.
+Pre-review only when **bit 2** of the issue number is set (`(issue_number / 4) % 2 == 1`):
+issues 4-7, 12-15, 20-23, and so on. The arm is published as `pre_review_arm`, and the
+`pre_review_check` verdict as `pre_review_verdict`, on every visit, and the scheduler's
+`run_summary` keeps both (`pre_review_arm`, `pre_review_verdict`), so `fabro events` and the
+run summary say which arm a run was in and what its pre-review did. The switch is one line in
+`pre_review_prep`, in both graphs: set `ARM=on` unconditionally to pre-review every run after
+the measurement.
+
+**It was `issue_number % 2 == 1` until 2026-10-31, and that was wrong.** Bit 0 is the ralph
+trial's (`dispatch.choose_workflow` sends an even issue to ralph and an odd one to backlog), so
+the pre-review ran on every `backlog` run and on no `ralph` run: it could not be measured
+within `ralph` at all, and it skewed the trial it shared a bit with. Bit 1 is the box-plan
+trial's arm (`issue_number // 2 % 2`). Three trials, three bits; never reuse one
+(`.scratch/more-local-inference/background-jobs-plan.md`, the traps list). Runs between
+2026-10-31 18:55Z and that fix's deploy used the old arm and are excluded from the measurement.
 
 ## How it will be measured (do not run this yet)
 

@@ -285,7 +285,13 @@ CREATE TABLE IF NOT EXISTS run_summary (
   -- run summarized before the trial: the scorecard reads NULL as "not measured".
   post_iterations INTEGER,
   loop_exhausted  INTEGER,
-  task_sources    TEXT             -- JSON object: a Task's source -> count
+  task_sources    TEXT,            -- JSON object: a Task's source -> count
+  -- The box pre-review (pre-review-and-calibration, Part B). `pre_review_arm` is
+  -- `pre_review_prep`'s `on`/`off` (bit 2 of the issue number), `pre_review_verdict` is
+  -- `pre_review_check`'s ending. NULL means the run was summarized before the stage
+  -- existed, or never reached that node; never read it as "arm off" or "unchanged".
+  pre_review_arm     TEXT,
+  pre_review_verdict TEXT
 );
 
 -- One row per node per run: every visit's totals. `box_ms` is the part of
@@ -441,6 +447,10 @@ ADDED_COLUMNS = {
         "post_iterations": "post_iterations INTEGER",
         "loop_exhausted": "loop_exhausted INTEGER",
         "task_sources": "task_sources TEXT",
+        # The box pre-review's arm and verdict (pre-review-and-calibration, Part B). NULL on
+        # a run summarized before the stage existed, or one that never reached the node.
+        "pre_review_arm": "pre_review_arm TEXT",
+        "pre_review_verdict": "pre_review_verdict TEXT",
     },
 }
 
@@ -1570,8 +1580,9 @@ class Store:
                 "INSERT INTO run_summary (run_id, status, attempts, summarized_at,"
                 " terminal_node, path, refute, events, error, first_edit_ms, dispositions,"
                 " task_validations, task_validation_unchecked, task_validation_untested,"
-                " final_routes, post_iterations, loop_exhausted, task_sources)"
-                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " final_routes, post_iterations, loop_exhausted, task_sources,"
+                " pre_review_arm, pre_review_verdict)"
+                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO UPDATE SET status = 'ok',"
                 "  attempts = run_summary.attempts + 1, summarized_at = excluded.summarized_at,"
                 "  terminal_node = excluded.terminal_node, path = excluded.path,"
@@ -1583,7 +1594,9 @@ class Store:
                 "  final_routes = excluded.final_routes,"
                 "  post_iterations = excluded.post_iterations,"
                 "  loop_exhausted = excluded.loop_exhausted,"
-                "  task_sources = excluded.task_sources",
+                "  task_sources = excluded.task_sources,"
+                "  pre_review_arm = excluded.pre_review_arm,"
+                "  pre_review_verdict = excluded.pre_review_verdict",
                 (
                     summary.run_id,
                     stamp,
@@ -1600,6 +1613,8 @@ class Store:
                     summary.post_iterations,
                     1 if summary.loop_exhausted else 0,
                     json.dumps(dict(sorted(summary.task_sources.items()))),
+                    summary.pre_review_arm,
+                    summary.pre_review_verdict,
                 ),
             )
 

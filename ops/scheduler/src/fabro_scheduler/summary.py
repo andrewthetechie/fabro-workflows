@@ -121,6 +121,14 @@ NODES: dict[str, WorkflowNodes] = {
 # every ralph run would be classed by `learn_post`, the last node it started.
 LEARN_PREP_NODE = "learn_prep"
 
+# The box pre-review's two nodes (pre-review-and-calibration, Part B). Both graphs spell them
+# identically, so unlike `NODES` they need no workflow key. `pre_review_prep` publishes the A/B
+# arm and `pre_review_check` its verdict; a run that never reached them (a run from before the
+# stages existed) records NULL, which the Phase 4 report reads as "not measured", never as
+# "arm off" or "unchanged".
+PRE_REVIEW_PREP_NODE = "pre_review_prep"
+PRE_REVIEW_CHECK_NODE = "pre_review_check"
+
 # The plan trial's coder measurements (#25). Superseded by `NODES`, kept because the
 # docstrings and the tests below name them.
 EDIT_TOOLS = frozenset({"edit_file", "write_file"})
@@ -197,6 +205,13 @@ class RunSummary:
     # Task id -> `source` (`plan`, `refute`, `review`, `final_fix`, `ci`). Filled by
     # the collector, which is the only reader of the run's `tasks.json`.
     task_sources: Counter[str] = field(default_factory=Counter)
+    # --- the box pre-review (pre-review-and-calibration, Part B). ------------------
+    # The A/B arm `pre_review_prep` decided (`on` or `off`), and the verdict
+    # `pre_review_check` reached (`unchanged`, `kept`, `no_receipt`, `forbidden_path`,
+    # `unscoped`, `red`, `check_timeout`, `check_error`, `no_base`). Both None on a run that
+    # never reached the node, which is every run from before the stage existed.
+    pre_review_arm: str | None = None
+    pre_review_verdict: str | None = None
 
 
 def summarize(
@@ -249,6 +264,8 @@ def summarize(
     final_routes: list[str] = []
     post_iterations = 0
     loop_exhausted = False
+    pre_review_arm: str | None = None
+    pre_review_verdict: str | None = None
     phase = "pre"
     ending: str | None = None
     count = 0
@@ -359,6 +376,22 @@ def summarize(
                 route = _str(updates.get("final_route"))
                 if route:
                     final_routes.append(route)
+        elif name == "stage.completed" and node == PRE_REVIEW_PREP_NODE:
+            # The pre-review's A/B arm (`on` or `off`), published on every visit, the ones that
+            # route past the review included, so a run's arm is never inferred from its edits.
+            updates = props.get("context_updates")
+            if isinstance(updates, Mapping):
+                arm = _str(updates.get("pre_review_arm"))
+                if arm:
+                    pre_review_arm = arm
+        elif name == "stage.completed" and node == PRE_REVIEW_CHECK_NODE:
+            # The pre-review's verdict. A run that reached the check without publishing one is
+            # left NULL rather than read as `unchanged`, which is a different fact.
+            updates = props.get("context_updates")
+            if isinstance(updates, Mapping):
+                verdict = _str(updates.get("pre_review_verdict"))
+                if verdict:
+                    pre_review_verdict = verdict
         elif name == "stage.completed" and node == nodes.refute_gate:
             updates = props.get("context_updates")
             if isinstance(updates, Mapping):
@@ -394,6 +427,8 @@ def summarize(
         final_routes=final_routes,
         post_iterations=post_iterations,
         loop_exhausted=loop_exhausted,
+        pre_review_arm=pre_review_arm,
+        pre_review_verdict=pre_review_verdict,
     )
 
 
