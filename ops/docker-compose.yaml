@@ -82,10 +82,10 @@ services:
       # runs with `box-noop` absent here. `issue-precheck` (more-local-inference 07, shadow mode:
       # it posts a verdict and holds nothing) is the first real producer; `context-pack` (08)
       # maps the issues the precheck passed, for `decompose` and `plan`. An unknown kind (the
-      # removed `pr-doctor` among them) fails startup. **`precheck-calibration` is
-      # deliberately absent**: the operator turns it on here (or in ~/fabro/.env) once the
-      # deploy that ships it is in place. An empty value reads as unset here (`:-`), and
-      # config.py's own default is every live kind.
+      # removed `pr-doctor` among them) fails startup. **`precheck-calibration` and
+      # `flaky-investigation` are deliberately absent**: the operator turns each on here (or in
+      # ~/fabro/.env) once the deploy that ships it is in place. An empty value reads as unset
+      # here (`:-`), and config.py's own default is every live kind.
       SCHEDULER_BG_KINDS: "${SCHEDULER_BG_KINDS:-box-noop,issue-precheck,context-pack}"
       # The precheck calibration's producer (pre-review-and-calibration, Part A): how many
       # `precheck-calibration` jobs it keeps queued, and how far back it looks for finished

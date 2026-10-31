@@ -454,6 +454,9 @@ class Counts(unittest.TestCase):
             # (it re-checks issues that already have a live marker) and no `post` (it writes
             # nothing). 9 edges: 2 into exit from claim and prep, 2 out of gate, 1 out of record.
             "precheck-calibration": (7, 9),
+            # flaky-investigation (more-local-inference task 10): issue-precheck's shape --
+            # start, exit, claim, stop, prep, investigate, gate, post -- with one agent stage.
+            "flaky-investigation": (8, 11),
             # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
             # this pair grows with each one; it is the offline parser's count, not a
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.
@@ -536,7 +539,10 @@ class CalibrationCopies(unittest.TestCase):
         saved = cgi.R10_CALIBRATION_COPIES
         try:
             cgi.R10_CALIBRATION_COPIES = {
-                "precheck-calibration": (".fabro/workflows/orig/workflow.fabro", ("a",), "b")
+                "precheck-calibration": (
+                    ".fabro/workflows/orig/workflow.fabro", ("a",), "b",
+                    tuple(kw.pop("repls", ())),
+                )
             }
             return cgi.r10_calibration_copies(self._root(tmp, **kw))
         finally:
@@ -558,6 +564,40 @@ class CalibrationCopies(unittest.TestCase):
             found = self._violations(tmp, copy_script="echo hi", original_script="echo hi",
                                      copy_prompt="same\n", original_prompt="same")
             self.assertEqual([(r, n) for _, r, n, _ in found], [("R10", "b")], found)
+
+    def test_a_recorded_replacement_passes_and_a_missing_one_fails(self):
+        """`flaky-investigation` runs the precheck's `prep` with its own staging directory, and
+        the replacement is how that difference is recorded rather than discovered later."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                self._violations(tmp, copy_script="echo /tmp/fabro/flaky",
+                                 original_script="echo /tmp/fabro/precheck",
+                                 repls=[("/tmp/fabro/precheck", "/tmp/fabro/flaky")]), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self._violations(tmp, copy_script="echo /tmp/fabro/flaky",
+                                     original_script="echo /tmp/fabro/precheck")
+            self.assertEqual([(r, n) for _, r, n, _ in found], [("R10", "a")], found)
+        with tempfile.TemporaryDirectory() as tmp:
+            found = self._violations(tmp, copy_script="echo x", original_script="echo x",
+                                     repls=[("nothing here", "nothing")])
+            self.assertEqual([(r, n) for _, r, n, _ in found], [("R10", "a")], found)
+            self.assertIn("occurs 0 times", found[0][3])
+
+    def test_a_package_with_its_own_rubric_compares_no_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, copy_script="echo hi", original_script="echo hi",
+                              copy_prompt="ours", original_prompt="theirs")
+            saved = cgi.R10_CALIBRATION_COPIES
+            try:
+                cgi.R10_CALIBRATION_COPIES = {
+                    "precheck-calibration": (
+                        ".fabro/workflows/orig/workflow.fabro", ("a",), "",
+                        (),
+                    )
+                }
+                self.assertEqual(cgi.r10_calibration_copies(root), [])
+            finally:
+                cgi.R10_CALIBRATION_COPIES = saved
 
     def test_the_real_calibration_package_matches_the_live_precheck(self):
         self.assertEqual(cgi.r10_calibration_copies(REAL), [])

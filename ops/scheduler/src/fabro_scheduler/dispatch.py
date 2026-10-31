@@ -70,6 +70,7 @@ from .github import (
 )
 from .lease import Lease, LeaseConflict, LeaseStore
 from .calibration import CalibrationProducer
+from .flaky import FlakyProducer
 from .pack import PackProducer
 from .precheck import PrecheckProducer
 from .queue import QueueItem, build_queue
@@ -260,6 +261,10 @@ class DispatchLoop:
         # live precheck's own package against finished runs, newest first, from the store
         # alone. Off unless `precheck-calibration` is an enabled kind.
         self._calibration = CalibrationProducer(config, store)
+        # The flaky investigation's producer (more-local-inference 10): queues a diagnosis for
+        # each issue the scout filed and no coder loop has taken. Off unless
+        # `flaky-investigation` is an enabled kind.
+        self._flaky = FlakyProducer(config, store)
         # The last peak-hours decision, so the log says when dispatch paused and
         # resumed once each rather than on every 5-second tick.
         self._peak_paused: bool | None = None
@@ -355,15 +360,16 @@ class DispatchLoop:
         return attempts
 
     def _produce(self, now: datetime) -> None:
-        """Run the issue producers (07, 08) on the ranked queue, when either is on.
+        """Run the issue producers (07, 08, 10) on the ranked queue, when any is on.
 
         The calibration producer (Part A) needs no queue: everything it reads is in the store,
         so it runs last and alone, and its own switch decides whether it does anything.
         """
-        if self._precheck.enabled or self._pack.enabled:
+        if self._precheck.enabled or self._pack.enabled or self._flaky.enabled:
             ranked, running = self._ranked(now), self._running_issues()
             self._precheck.tick(ranked, running, now)
             self._pack.tick(ranked, running, now)
+            self._flaky.tick(ranked, running, now)
         self._calibration.tick(now)
 
     def _running_issues(self) -> set[tuple[str, int]]:

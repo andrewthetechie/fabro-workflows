@@ -1972,6 +1972,34 @@
           "box": true
         }
       }
+    },
+    "flaky-investigation": {
+      "stages": {
+        "investigate": {
+          "live": true,
+          "prompt": ".fabro/workflows/flaky-investigation/prompts/investigate.md.j2",
+          "inputs": [
+            {
+              "name": "issue.md",
+              "path": "/tmp/fabro/flaky/issue.md",
+              "required": true,
+              "about": "the issue the scout filed: its title, labels, body, its last ten comments that are not fabro markers, and the scout fingerprint that names the test or job"
+            },
+            {
+              "name": "flakeradar.md",
+              "path": "/tmp/fabro/flaky/flakeradar.md",
+              "required": false,
+              "about": "what FlakeRadar holds for this test or job: its score, tier, proven flakes, failure category, and the recent failures with their messages and newest traceback, or for a job each run's outcome and which test explained it",
+              "absent": "FlakeRadar has no readable record of this failure; diagnose from the issue and the code alone, and say so"
+            }
+          ],
+          "output": {
+            "path": "/tmp/fabro/flaky.json",
+            "schema": "flaky_investigation"
+          },
+          "box": true
+        }
+      }
     }
   }
 }

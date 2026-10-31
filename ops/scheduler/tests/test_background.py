@@ -708,7 +708,9 @@ def test_box_noop_is_the_one_producer(store, leases):
     assert job_id is not None
     assert lane_.enqueue_box_noop(JELLY, NOW) is None, "idempotent while queued"
     row = store.background_job(job_id)
-    assert (row["kind"], row["priority"], row["typical_box_minutes"]) == ("box-noop", 5, 5)
+    # Task 10 put the flaky investigation at 3 and moved the calibration to 5, so the
+    # hand-queued `box-noop` is last.
+    assert (row["kind"], row["priority"], row["typical_box_minutes"]) == ("box-noop", 6, 5)
 
 
 def test_box_noop_is_not_enqueued_when_its_kind_is_off(store, leases):
@@ -777,6 +779,7 @@ def test_the_page_and_the_api_render_the_lane(tmp_path):
         assert body["kinds"] == [
             "issue-precheck",
             "context-pack",
+            "flaky-investigation",
             "precheck-calibration",
             "box-noop",
         ]

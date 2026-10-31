@@ -171,7 +171,7 @@ def test_the_producer_takes_the_first_run_of_each_issue_newest_first(store):
         "newest first, and issue 5's first run rather than its newer one"
     )
     job = store.background_job(created[0])
-    assert (job["priority"], job["typical_box_minutes"]) == (4, CALIBRATION_TYPICAL_MINUTES)
+    assert (job["priority"], job["typical_box_minutes"]) == (5, CALIBRATION_TYPICAL_MINUTES)
     assert job["inputs_json"] == (
         '{"at": "2026-10-08T09:00:00+00:00", "issue_number": 6}'
     )

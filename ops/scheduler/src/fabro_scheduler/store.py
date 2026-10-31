@@ -1455,6 +1455,29 @@ class Store:
             ).fetchone()
         return None if row is None else row["outcome"]
 
+    def issues_without_job(self, kind: str) -> set[tuple[str, int]]:
+        """Every cached queue item that has never had a `kind` background job, in any state.
+
+        The producers' one-job-per-issue rule, as a query rather than a check after the
+        window: filtering *after* a `LIMIT` makes a producer that reads a fixed set seed
+        nothing once that set is covered (the calibration's stall, fixed in `runs_to_calibrate`
+        on 2026-10-31). A cancelled attempt comes back as the same row
+        (`requeue_background_job`), so it stays in this set's complement and is not queued
+        twice.
+
+        The kind is spelled out here rather than imported from `flaky`, which imports this
+        module.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT i.repo, i.number FROM issue_cache i"
+                " WHERE NOT EXISTS (SELECT 1 FROM background_jobs j"
+                "   WHERE j.kind = ? AND j.repo = i.repo"
+                "     AND j.target = CAST(i.number AS TEXT))",
+                (kind,),
+            ).fetchall()
+        return {(str(row["repo"]), int(row["number"])) for row in rows}
+
     def background_job_exists(self, kind: str, repo: str, target: str) -> bool:
         """Whether any job of this kind ever existed for `(repo, target)`, in any state.
 

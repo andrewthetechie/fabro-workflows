@@ -457,7 +457,8 @@ def test_the_background_lane_is_off_by_default_and_reads_on_and_off(tmp_path):
     # `pr-doctor`); the precheck calibration (Part A) is 4, between the
     # pack and the hand-queued `box-noop`.
     assert cfg.bg_kinds == (
-        "issue-precheck", "context-pack", "precheck-calibration", "box-noop",
+        "issue-precheck", "context-pack", "flaky-investigation", "precheck-calibration",
+        "box-noop",
     )
     # The precheck producer keeps the next three issues of each repository checked.
     assert cfg.precheck_per_repo == 3

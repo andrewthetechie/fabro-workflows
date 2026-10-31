@@ -41,8 +41,9 @@ from .config import BACKGROUND_JOB_PRIORITY, SchedulerConfig, predicted_gap_minu
 from .fabro import FabroClient, FabroError, RunNotStarted, status_kind, status_reason
 from .github import GitHubError
 from .lease import Lease, LeaseStore
-from . import calibration, pack, precheck
+from . import calibration, flaky, pack, precheck
 from .calibration import KIND as CALIBRATION_KIND
+from .flaky import KIND as FLAKY_KIND, FlakyMarker
 from .pack import KIND as PACK_KIND, PackMarker
 from .precheck import KIND as PRECHECK_KIND, Marker
 from .store import Store
@@ -59,6 +60,10 @@ JOB_WORKFLOWS = {
     # the calibrated run was dispatched. It posts nothing, so it is the one kind whose outcome
     # comes from the run rather than from a marker.
     "precheck-calibration": "precheck-calibration",
+    # Task 10's diagnosis of one queued flaky-test issue. Every value here must also be in
+    # `workflow_version.ENTRYPOINTS`, or `dispatch_job` refuses it and the lane's whole tick
+    # fails on it (2026-10-31: that is how the calibration shipped, and no job started).
+    "flaky-investigation": "flaky-investigation",
 }
 
 
@@ -287,6 +292,7 @@ class BackgroundLane:
         health: BoxHealth | None = None,
         precheck_reader: Callable[[str, int], Marker | None] | None = None,
         pack_reader: Callable[[str, int], PackMarker | None] | None = None,
+        flaky_reader: Callable[[str, int], FlakyMarker | None] | None = None,
         calibration_reader: Callable[[str], str] | None = None,
         github_token: str = "",
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -308,6 +314,13 @@ class BackgroundLane:
         # `run_history.had_pack` is computed from.
         self._read_pack = pack_reader or (
             (lambda repo, number: pack.read_marker(repo, number, github_token))
+            if github_token
+            else None
+        )
+        # The flaky investigation's marker, read the same way (task 10): its cause becomes the
+        # job's outcome, so Phase 4 can count diagnoses without opening a comment.
+        self._read_flaky = flaky_reader or (
+            (lambda repo, number: flaky.read_marker(repo, number, github_token))
             if github_token
             else None
         )
@@ -600,6 +613,8 @@ class BackgroundLane:
                 )
             elif str(job["kind"]) == PACK_KIND and end.state == "done":
                 end = self._record_marker(job, end, now, self._read_pack, pack.outcome_for)
+            elif str(job["kind"]) == FLAKY_KIND and end.state == "done":
+                end = self._record_marker(job, end, now, self._read_flaky, flaky.outcome_for)
             elif str(job["kind"]) == CALIBRATION_KIND and end.state == "done":
                 end = self._record_calibration(job, end, now)
             ended.append(end)

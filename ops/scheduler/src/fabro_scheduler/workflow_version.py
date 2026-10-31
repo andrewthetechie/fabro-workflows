@@ -71,6 +71,8 @@ CONTEXT_PACK_ENTRYPOINT = "workflows/context-pack/workflow.fabro"
 # value must be here, or `dispatch_job` refuses the job and the lane's tick fails on it
 # (2026-10-31: deployed without it, the first calibration job stopped every fill).
 PRECHECK_CALIBRATION_ENTRYPOINT = "workflows/precheck-calibration/workflow.fabro"
+# Task 10's two background packages.
+FLAKY_INVESTIGATION_ENTRYPOINT = "workflows/flaky-investigation/workflow.fabro"
 ENTRYPOINTS = {
     "backlog": BACKLOG_ENTRYPOINT,
     "ralph": RALPH_ENTRYPOINT,
@@ -78,6 +80,7 @@ ENTRYPOINTS = {
     "issue-precheck": ISSUE_PRECHECK_ENTRYPOINT,
     "context-pack": CONTEXT_PACK_ENTRYPOINT,
     "precheck-calibration": PRECHECK_CALIBRATION_ENTRYPOINT,
+    "flaky-investigation": FLAKY_INVESTIGATION_ENTRYPOINT,
 }
 
 # The server's limits, from the `WorkflowVersion` schema: at most 512 files, 512

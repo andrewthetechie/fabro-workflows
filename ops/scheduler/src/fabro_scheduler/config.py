@@ -101,12 +101,16 @@ DEFAULT_MAX_CONCURRENT_RUNS = 8
 BACKGROUND_JOB_PRIORITY = {
     "issue-precheck": 2,
     "context-pack": 3,
-    # The precheck calibration (pre-review-and-calibration, Part A): after the live precheck and
-    # the pack, so it starts only when neither is queued, and ahead of the hand-queued
-    # `box-noop`. It measures a package that is already running; the live precheck's holds
-    # cannot start without that measurement, so it is the third most valuable use of a gap.
-    "precheck-calibration": 4,
-    "box-noop": 5,
+    # Task 10's flaky investigation sits with the pack (task 10 moved the two below it down by
+    # two): both feed an issue that is already in the queue, and what they write is read by the
+    # run that takes it.
+    "flaky-investigation": 3,
+    # The precheck calibration (pre-review-and-calibration, Part A): after everything that
+    # feeds a queued issue, because it measures a package that is already running while the
+    # other three change what a run does. Queued rows keep the priority they were enqueued
+    # with; `ops/README.md` has the SQL that moves a deployment's waiting rows.
+    "precheck-calibration": 5,
+    "box-noop": 6,
 }
 
 # How many of the next issues in dispatch order, **in each repository**, the precheck producer

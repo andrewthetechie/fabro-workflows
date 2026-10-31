@@ -882,7 +882,7 @@ def r15_claim_hooks(package: str, root: Graph | None, hooks: list[dict]) -> list
 # run's box, `box-guard` runs before each of them, and nothing else does. Later tasks add
 # their packages here.
 BACKGROUND_PACKAGES = ["box-noop", "issue-precheck", "context-pack",
-                       "precheck-calibration"]
+                       "precheck-calibration", "flaky-investigation"]
 
 # The only model a background package may name: the run's `coder_pool`, whose scheduler set
 # names end in `-bg` (C5).
@@ -1125,9 +1125,25 @@ R10_SHARED_PROMPTS: list[tuple[str, str, str]] = [
     ("pre_review", ".fabro/workflows/backlog/workflow.fabro", "pre_review"),
 ]
 
-R10_CALIBRATION_COPIES: dict[str, tuple[str, tuple[str, ...], str]] = {
+# A row is (original .fabro, the command nodes whose scripts must match, the agent node whose
+# prompt file must match or `""` for a package with a rubric of its own, and the replacements
+# the copy is allowed to make). `flaky-investigation` reads the same checkout the precheck
+# does, so it runs the precheck's `prep` with its own staging directory and its own log line:
+# two recorded replacements, the same mechanism `R10_COPIES` uses for ralph.
+R10_CALIBRATION_COPIES: dict[
+    str, tuple[str, tuple[str, ...], str, tuple[tuple[str, str], ...]]
+] = {
     "precheck-calibration": (
-        ".fabro/workflows/issue-precheck/workflow.fabro", ("prep", "gate"), "check",
+        ".fabro/workflows/issue-precheck/workflow.fabro", ("prep", "gate"), "check", (),
+    ),
+    "flaky-investigation": (
+        ".fabro/workflows/issue-precheck/workflow.fabro",
+        ("prep",),
+        "",
+        (
+            ("/tmp/fabro/precheck", "/tmp/fabro/flaky"),
+            ("the check runs without the index", "investigate runs without the index"),
+        ),
     ),
 }
 
@@ -1193,7 +1209,7 @@ def r10_shared_nodes(root: Path) -> list[tuple]:
 def r10_calibration_copies(root: Path) -> list[tuple]:
     """R10: `precheck-calibration`'s copies of the live precheck's nodes and its prompt."""
     out = []
-    for package, (src, node_ids, prompt_node) in R10_CALIBRATION_COPIES.items():
+    for package, (src, node_ids, prompt_node, repls) in R10_CALIBRATION_COPIES.items():
         graph = root / ".fabro" / "workflows" / package / "workflow.fabro"
         if not graph.exists():
             continue
@@ -1202,13 +1218,19 @@ def r10_calibration_copies(root: Path) -> list[tuple]:
             if original is None:
                 out.append((package, "R10", node, f"original node {node} is missing from {src}"))
                 continue
+            expected, why = _apply(original, repls)
+            if expected is None:
+                out.append((package, "R10", node, why or "a replacement does not fit"))
+                continue
             copy = _script_of(graph, node)
             if copy is None:
                 out.append((package, "R10", node, "the copy is missing its script"))
-            elif copy != original:
+            elif copy != expected:
                 out.append((package, "R10", node,
-                            f"drifted from {src} {node}; the calibration must run the same node, "
+                            f"drifted from {src} {node}; the package must run the same node, "
                             "not a lookalike"))
+        if not prompt_node:
+            continue
         original_p = _prompt_of(root / src, prompt_node)
         copy_p = _prompt_of(graph, prompt_node)
         if original_p is None or copy_p is None:
