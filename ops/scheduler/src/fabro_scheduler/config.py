@@ -126,11 +126,16 @@ PR_DOCTOR_TYPICAL_MINUTES = 40
 # queue. A review that failed to dispatch does not count.
 DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY = 6
 
-# How many of the next issues in dispatch order the precheck producer keeps checked
-# (more-local-inference 07), and the context-pack producer keeps mapped once the precheck
-# passed them (08). The queue's head is what dispatches next, so a job further down would
-# mostly go stale before its issue runs. 0 queues none of either.
-DEFAULT_PRECHECK_TOP_N = 10
+# How many of the next issues in dispatch order, **in each repository**, the precheck producer
+# keeps checked (more-local-inference 07), and the context-pack producer keeps mapped once the
+# precheck passed them (08). Per repository because the boxes take the diversity pass
+# (`dispatch.choose_next`): each box runs the head of a different repository, so the head of
+# the whole ranked queue is one repository's issues and misses half the dispatches. A window
+# of 10 over the whole queue did exactly that on 2026-10-30/31: every job went to writers-app,
+# and lawncare-saas, 7 of the 11 overnight dispatches, got none. The head of each repository is
+# what its next runs take, so a job further down would mostly go stale before its issue runs.
+# 0 queues none of either.
+DEFAULT_PRECHECK_PER_REPO = 3
 
 # Gap prediction (C7 step 9): the coder loop's median remaining gap once a node starts, in
 # minutes, keyed by `(workflow, node id)`. **Measured** 2026-10-30 over the 164 released
@@ -334,8 +339,8 @@ class SchedulerConfig:
     )
     # The doctor's daily follow-up-review cap (operator decision 3), per UTC day.
     pr_doctor_reviews_per_day: int = DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY
-    # The precheck producer's reach: the next N issues in dispatch order.
-    precheck_top_n: int = DEFAULT_PRECHECK_TOP_N
+    # The precheck and pack producers' reach: the next N issues of each repository.
+    precheck_per_repo: int = DEFAULT_PRECHECK_PER_REPO
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -432,8 +437,8 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
             DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY,
             0,
         ),
-        precheck_top_n=_env_int_at_least(
-            environ, "SCHEDULER_PRECHECK_TOP_N", DEFAULT_PRECHECK_TOP_N, 0
+        precheck_per_repo=_env_int_at_least(
+            environ, "SCHEDULER_PRECHECK_PER_REPO", DEFAULT_PRECHECK_PER_REPO, 0
         ),
     )
 

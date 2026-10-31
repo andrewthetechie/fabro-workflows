@@ -456,8 +456,8 @@ def test_the_background_lane_is_off_by_default_and_reads_on_and_off(tmp_path):
     # Every live kind, in D10's value order. `pr-doctor` (task 06) was retired on 2026-10-30;
     # task 07 added `issue-precheck` at 2.
     assert cfg.bg_kinds == ("issue-precheck", "context-pack", "box-noop")
-    # The precheck producer keeps the next ten issues in dispatch order checked.
-    assert cfg.precheck_top_n == 10
+    # The precheck producer keeps the next three issues of each repository checked.
+    assert cfg.precheck_per_repo == 3
     # The doctor's daily review cap (operator decision 3): 6 per UTC day, on by default.
     assert cfg.pr_doctor_reviews_per_day == 6
 
@@ -512,7 +512,7 @@ def test_the_lane_knobs_read_and_reject_their_bounds(tmp_path):
         ("SCHEDULER_BG_KINDS", "box-noop,pr-doctor"),
         # The doctor's cap is `>= 0`: 0 is the reviews' kill switch, a negative is a typo.
         ("SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY", "-1"),
-        ("SCHEDULER_PRECHECK_TOP_N", "-1"),
+        ("SCHEDULER_PRECHECK_PER_REPO", "-1"),
     ):
         with pytest.raises(ConfigError, match=key):
             load_config(write(tmp_path, repo()), env={key: value})

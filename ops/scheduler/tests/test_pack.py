@@ -81,7 +81,7 @@ def test_the_producer_maps_only_what_the_precheck_passed_once_each(store):
 
 
 def test_the_producer_never_maps_an_issue_a_coder_loop_holds(store):
-    cfg = dataclasses.replace(config(), precheck_top_n=1)
+    cfg = dataclasses.replace(config(), precheck_per_repo=1)
     for n in (3, 4):
         seed(store, JELLY, n)
         checked(store, n, "verdict=ready")

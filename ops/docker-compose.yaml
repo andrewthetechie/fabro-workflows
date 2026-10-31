@@ -85,9 +85,9 @@ services:
       # retired on 2026-10-30, and naming it fails startup. An empty value reads as unset here
       # (`:-`), and config.py's own default is every live kind.
       SCHEDULER_BG_KINDS: "${SCHEDULER_BG_KINDS:-box-noop,issue-precheck,context-pack}"
-      # How many of the next issues in dispatch order the precheck producer keeps checked,
-      # and the context-pack producer keeps mapped.
-      SCHEDULER_PRECHECK_TOP_N: "${SCHEDULER_PRECHECK_TOP_N:-10}"
+      # How many of the next issues of each repository, in dispatch order, the precheck
+      # producer keeps checked and the context-pack producer keeps mapped.
+      SCHEDULER_PRECHECK_PER_REPO: "${SCHEDULER_PRECHECK_PER_REPO:-3}"
       # The PR doctor's daily cap on follow-up `pr-review` runs, counted per UTC day across
       # every repository (operator decision 3). A review spends hosted credits; over the cap,
       # a pushed PR waits in the pending-review state and goes first the next day. 0 HOLDS

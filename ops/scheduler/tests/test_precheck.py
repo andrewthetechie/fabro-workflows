@@ -69,7 +69,7 @@ def jobs(store: Store) -> list[tuple[str, str, str, str]]:
 
 
 def test_the_producer_queues_the_next_issues_once_each(store):
-    cfg = dataclasses.replace(config(), precheck_top_n=2)
+    cfg = dataclasses.replace(config(), precheck_per_repo=2)
     for n in (3, 4, 5):
         seed(store, JELLY, n)
     producer = PrecheckProducer(cfg, store)
@@ -86,7 +86,7 @@ def test_the_producer_queues_the_next_issues_once_each(store):
 
 
 def test_the_producer_never_queues_an_issue_a_coder_loop_holds(store):
-    cfg = dataclasses.replace(config(), precheck_top_n=1)
+    cfg = dataclasses.replace(config(), precheck_per_repo=1)
     seed(store, JELLY, 3)
     seed(store, JELLY, 4)
     producer = PrecheckProducer(cfg, store)
@@ -119,8 +119,26 @@ def test_the_producer_is_off_with_the_lane_or_its_kind_off(store):
     assert jobs(store) == []
 
 
-def test_top_n_zero_queues_nothing(store):
-    cfg = config(SCHEDULER_PRECHECK_TOP_N="0")
+def test_the_producer_takes_the_next_issues_of_each_repository(store):
+    # The diversity pass gives each box a different repository's head, so the window is per
+    # repository: a ranked queue headed by one repository must not starve the others.
+    cfg = dataclasses.replace(config(), precheck_per_repo=2)
+    for n in (3, 4, 5):
+        seed(store, JELLY, n)
+        seed(store, WRITERS, n)
+    PrecheckProducer(cfg, store).tick(ranked(store, cfg), running={(WRITERS, 3)}, now=NOW)
+    assert sorted(jobs(store)) == sorted(
+        [
+            (KIND, JELLY, "3", "queued"),
+            (KIND, JELLY, "4", "queued"),
+            (KIND, WRITERS, "4", "queued"),
+            (KIND, WRITERS, "5", "queued"),
+        ]
+    ), "two per repository, the held issue not counted"
+
+
+def test_per_repo_zero_queues_nothing(store):
+    cfg = config(SCHEDULER_PRECHECK_PER_REPO="0")
     seed(store, JELLY, 3)
     assert PrecheckProducer(cfg, store).tick(ranked(store, cfg), now=NOW) == []
 

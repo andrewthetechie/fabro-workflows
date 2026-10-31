@@ -731,12 +731,12 @@ def test_the_compose_file_carries_the_eight_variables_with_their_defaults():
         ("SCHEDULER_BG_SLOT_RESERVE", "3"),
         ("SCHEDULER_MAX_CONCURRENT_RUNS", "8"),
         # The kinds: the manual `box-noop` and the precheck producer (task 07, shadow mode;
-        # `pr-doctor` is retired), the precheck's reach, and the follow-up reviews' daily cap
+        # `pr-doctor` is retired), the precheck's reach in each repository, and the follow-up reviews' daily cap
         # (operator decision 3). A variable missing from these lines is a variable the
         # container never sees: the scheduler reads its environment from them and
         # scheduler.env only, never .env as an env file.
         ("SCHEDULER_BG_KINDS", "box-noop,issue-precheck,context-pack"),
-        ("SCHEDULER_PRECHECK_TOP_N", "10"),
+        ("SCHEDULER_PRECHECK_PER_REPO", "3"),
         ("SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY", "6"),
     ):
         pattern = rf'^\s+{name}: "\$\{{{name}:-{re.escape(default)}\}}"$'

@@ -77,7 +77,8 @@ This task also builds the path every background output takes into a hosted stage
      cap), and a failing `gh api`. Each: stdout unchanged, routing unchanged.
 4. **Scheduler producer:**
    - Enqueue a precheck (priority 2, `typical_box_minutes` 10) for each of the top N (default
-     10, `SCHEDULER_PRECHECK_TOP_N`) queued issues whose precheck marker is missing or stale
+     10, `SCHEDULER_PRECHECK_TOP_N`; built 2026-10-31 as the next 3 of each repository,
+     `SCHEDULER_PRECHECK_PER_REPO`, see `ops/README.md`) queued issues whose precheck marker is missing or stale
      (C6 *Staleness*). Compute `body=` the same way in Python and in the package; a test pins
      both to one fixture.
    - `queue.py`: held issues (the table above) leave the ranked queue and appear in a

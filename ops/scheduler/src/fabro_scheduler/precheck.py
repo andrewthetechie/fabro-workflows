@@ -5,7 +5,8 @@ credits on it, and posts a verdict as the issue's one precheck marker comment
 (`.fabro/workflows/issue-precheck/`). This module is the scheduler's half:
 
 - **The producer** queues one `issue-precheck` job for each of the next
-  `SCHEDULER_PRECHECK_TOP_N` issues in dispatch order that has never had one, and skips a
+  `SCHEDULER_PRECHECK_PER_REPO` issues of each repository, in dispatch order, that has never
+  had one (`next_per_repo`), and skips a
   queued job whose issue left the queue before its precheck ran (it was dispatched, closed or
   relabelled). How often that happens is part of what the shadow measures: a verdict that
   arrives after the run started is worth nothing.
@@ -136,6 +137,27 @@ def posted_since(at: str, queued_at: str | None) -> bool:
         return False
 
 
+def next_per_repo(
+    ranked: Sequence[QueueItem], running: Set[tuple[str, int]], per_repo: int
+) -> list[QueueItem]:
+    """The first `per_repo` issues of each repository in `ranked` that no coder loop holds.
+
+    In dispatch order. Per repository, not the head of the whole queue: the diversity pass
+    gives each box a different repository's head, so a lower-priority repository dispatches
+    as often as the top one while its issues sit far down the ranked queue
+    (`DEFAULT_PRECHECK_PER_REPO` has the night that showed it).
+    """
+    taken: dict[str, int] = {}
+    chosen: list[QueueItem] = []
+    for item in ranked:
+        repo = item.issue.repo
+        if (repo, item.issue.number) in running or taken.get(repo, 0) >= per_repo:
+            continue
+        taken[repo] = taken.get(repo, 0) + 1
+        chosen.append(item)
+    return chosen
+
+
 class PrecheckProducer:
     """Queues `issue-precheck` jobs for the next issues in dispatch order.
 
@@ -169,8 +191,7 @@ class PrecheckProducer:
         now = now or datetime.now(UTC)
         skip_departed(self._store, KIND, running, now)
         created: list[int] = []
-        waiting = [item for item in ranked if (item.issue.repo, item.issue.number) not in running]
-        for item in waiting[: self._config.precheck_top_n]:
+        for item in next_per_repo(ranked, running, self._config.precheck_per_repo):
             repo, number = item.issue.repo, item.issue.number
             if self._store.background_job_exists(KIND, repo, str(number)):
                 continue

@@ -149,7 +149,7 @@ variables reach the container only through `ops/docker-compose.yaml`'s `environm
 and `~/fabro/scheduler.env`, never `.env` as an env file. `GET :32280/api/background` is the
 lane's state and the queue page's *Background* strip is the same document;
 `POST /api/background/box-noop` with `{"repo"}` queues a measuring job by hand. The precheck
-and pack producers queue jobs for the next `SCHEDULER_PRECHECK_TOP_N` issues in dispatch order.
+and pack producers queue jobs for the next `SCHEDULER_PRECHECK_PER_REPO` issues of each repository.
 `ops/README.md` has the runbook.
 
 The operational history is `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md` on the Mac,

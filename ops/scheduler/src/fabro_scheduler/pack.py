@@ -6,7 +6,7 @@ posts the map as the issue's one context-pack marker comment (`.fabro/workflows/
 read, so the hosted planners explore less.
 
 - **The producer** queues one `context-pack` job for each of the next
-  `SCHEDULER_PRECHECK_TOP_N` issues in dispatch order whose precheck said `ready` (D10: the
+  `SCHEDULER_PRECHECK_PER_REPO` issues of each repository whose precheck said `ready` (D10: the
   pack comes after the precheck, and an issue the precheck doubts is not worth mapping yet)
   and that has never had a pack job. It skips a queued job whose issue left the queue first,
   as the precheck producer does.
@@ -31,7 +31,13 @@ from typing import Any
 import httpx
 
 from .config import BACKGROUND_JOB_PRIORITY, SchedulerConfig
-from .precheck import KIND as PRECHECK_KIND, fetch_comments, posted_since, skip_departed
+from .precheck import (
+    KIND as PRECHECK_KIND,
+    fetch_comments,
+    next_per_repo,
+    posted_since,
+    skip_departed,
+)
 from .queue import QueueItem
 from .store import Store
 
@@ -136,8 +142,7 @@ class PackProducer:
         now = now or datetime.now(UTC)
         skip_departed(self._store, KIND, running, now)
         created: list[int] = []
-        waiting = [item for item in ranked if (item.issue.repo, item.issue.number) not in running]
-        for item in waiting[: self._config.precheck_top_n]:
+        for item in next_per_repo(ranked, running, self._config.precheck_per_repo):
             repo, target = item.issue.repo, str(item.issue.number)
             if self._store.latest_background_outcome(PRECHECK_KIND, repo, target) != READY:
                 continue
