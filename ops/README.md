@@ -996,17 +996,20 @@ never dropped.
 `context_updates` in the run's events, recorded as the job's outcome —
 
 ```
-verdict=<v> raw=<v> main=<sha12> changed=<0|1>
+verdict=<v> raw=<v> main=<sha12> changed=<0|1|?>
 ```
 
 `succeeded (no verdict)` is a run whose `gate` failed; it is listed and left out of the counts.
+`changed=?` means the body was edited after `at` but no edit entry reaches back to `at`, so the
+check read the current text; the row's `body_changed` is `null`.
 
 **The producer** (`calibration.py`) keeps `SCHEDULER_CALIBRATION_QUEUED` jobs queued, priority
 4 (after the precheck and the pack, ahead of `box-noop`). One job per issue, for its **first**
 finished run — a later run of the same issue saw a changed issue. It skips a run whose summary
 is missing or not `ok`, and the endings `launch_failed`, `cancelled` and `lost`. Its `target` is
 the calibrated run id, so the job row says which run it is about, and its inputs are
-`{"issue_number", "at"}`.
+`{"issue_number", "at"}`. Runs that already have a job are left out by the query itself, so the
+producer works back through the window one batch at a time.
 
 **The comparison.** `GET /api/background/calibration` is the whole document; it reads the store
 only.
@@ -1024,7 +1027,10 @@ curl -fsS "$B/api/background/calibration" | jq '.ready_unproductive'
 Outcome classes: `merged` (`run_history.merged = 1`), `noop` (`close_noop`), `returned`
 (`return_to_triage`), `stuck` (`mark_stuck`, `mark_needs_human`, `human_rescue`), `demoted`
 (`demote_lane`), `held` (a PR was opened and not merged; `pr_reason` is the report's reason),
-`other` (anything else, with `terminal_node` named). Per verdict, `by_class` is the whole mix
+`held_architecture` (held because it implements an Architecture issue, ADR 0012: held by design,
+so not an issue signal), `held_unread` (a PR with no `pr_facts` row, so no reason), `failed` (no PR,
+and `terminal_node` is a mid-graph node: the run died there), and `other` (a run the store has
+no row for). Per verdict, `by_class` is the whole mix
 and `agrees`/`comparable` is how often it ended as the verdict implies — `already_done` →
 `noop`, and `contradiction`, `unclear`, `unverifiable` → `returned`. **`blocked` has no expected
 class**: the issue should not have been dispatched at all. For `unverifiable`, the row also

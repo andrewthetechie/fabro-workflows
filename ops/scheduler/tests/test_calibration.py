@@ -127,11 +127,15 @@ def test_the_outcome_round_trips():
         assert parse_outcome(other) is None, other
 
 
-def test_body_changed_reads_false_for_anything_but_true():
+def test_body_changed_reads_false_for_anything_but_true_or_unknown():
     base = Recorded(verdict="ready", raw="ready", main="abc", body_changed="false")
     assert outcome_for(base).endswith("changed=0")
-    assert outcome_for(dataclasses.replace(base, body_changed="unknown")).endswith("changed=0")
+    assert outcome_for(dataclasses.replace(base, body_changed="")).endswith("changed=0")
     assert outcome_for(dataclasses.replace(base, body_changed="TRUE")).endswith("changed=1")
+    # `unknown`: edited after `at`, but no entry reaches back, so the current text was read.
+    unknown = outcome_for(dataclasses.replace(base, body_changed="unknown"))
+    assert unknown.endswith("changed=?")
+    assert parse_outcome(unknown)["changed"] == "?"
 
 
 # --- the producer ---------------------------------------------------------------------
@@ -184,6 +188,39 @@ def test_the_producer_keeps_only_its_cap_queued(store):
     assert len(producer.tick(NOW)) == 2
     assert producer.tick(NOW) == [], "the cap is already reached"
     assert len(calibration_jobs(store)) == 2
+
+
+def test_the_producer_moves_on_once_its_batch_has_finished(store):
+    """The dedupe is in the query: a finished batch must not come back and stall the producer."""
+    for n in range(20, 25):
+        seed(store, JELLY, n)
+        labelled(store, f"R{n}", n, dispatched=f"2026-10-0{n - 15}T09:00:00+00:00",
+                 terminal_node="close_noop")
+    producer = CalibrationProducer(
+        dataclasses.replace(config(), calibration_queued=2), store
+    )
+    first = producer.tick(NOW)
+    assert [store.background_job(j)["target"] for j in first] == ["R24", "R23"]
+    for job_id in first:
+        store.finish_background_job(job_id, state="done", outcome="succeeded", now=NOW)
+    second = producer.tick(NOW)
+    assert [store.background_job(j)["target"] for j in second] == ["R22", "R21"], (
+        "the next two runs, not nothing"
+    )
+    store.finish_background_job(second[0], state="failed", outcome="no", now=NOW)
+    assert [store.background_job(j)["target"] for j in producer.tick(NOW)] == ["R20"]
+    assert producer.tick(NOW) == [], "every run has its one job"
+
+
+def test_an_issue_whose_first_run_was_calibrated_never_offers_its_second(store):
+    seed(store, JELLY, 5)
+    labelled(store, "R5old", 5, dispatched="2026-10-01T09:00:00+00:00", terminal_node="close_noop")
+    labelled(store, "R5new", 5, dispatched="2026-10-09T09:00:00+00:00", terminal_node="close_noop")
+    producer = CalibrationProducer(config(), store)
+    first = producer.tick(NOW)
+    store.finish_background_job(first[0], state="done", outcome="succeeded", now=NOW)
+    assert producer.tick(NOW) == []
+    assert [row[2] for row in calibration_jobs(store)] == ["R5old"]
 
 
 def test_the_producer_never_queues_the_same_run_twice(store):
@@ -282,11 +319,23 @@ def test_a_calibration_job_starts_its_own_package(store):
     (0, "demote_lane", None, "demoted"),
     (0, "open_pr", 12, "held"),
     (0, "report_blocked", 12, "held"),
-    (0, "integrate", None, "other"),
+    (0, "integrate", None, "failed"),  # no PR and no ending: the run died there
     (None, None, None, "other"),
 ])
 def test_the_outcome_classes(merged, terminal, pr, expected):
-    assert outcome_class(merged=merged, terminal_node=terminal, pr_number=pr) == expected
+    assert outcome_class(merged=merged, terminal_node=terminal, pr_number=pr,
+                         pr_reason="unspecified") == expected
+
+
+def test_a_held_pr_says_when_the_hold_is_not_about_the_issue():
+    arch = ("This PR implements an Architecture issue (label architecture). ADR 0012 requires "
+            "a human to merge it.")
+    assert outcome_class(merged=0, terminal_node="open_pr", pr_number=12,
+                         pr_reason=arch) == "held_architecture"
+    assert outcome_class(merged=0, terminal_node="open_pr", pr_number=12,
+                         pr_reason=None) == "held_unread"
+    assert outcome_class(merged=0, terminal_node="open_pr", pr_number=12,
+                         pr_reason="") == "held"
 
 
 def test_the_report_puts_each_verdict_next_to_its_ending(store):

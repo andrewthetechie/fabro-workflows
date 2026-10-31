@@ -1326,6 +1326,12 @@ class Store:
         string prefix against `dispatched_at` (both UTC, both ISO-8601), so `2026-09-25`
         includes everything from that day on.
 
+        A run that already has a calibration job, in any state, is left out here rather than
+        by the caller: with the dedupe after the `LIMIT`, the newest `limit` runs came back on
+        every tick once they had jobs, and the producer stalled after its first batch (review
+        F2). The test is on the first run, after `rn = 1`, so an issue whose first run was
+        calibrated never offers its second.
+
         The kind and the excluded nodes are spelled out here rather than imported from
         `calibration`, which imports this module.
         """
@@ -1340,7 +1346,10 @@ class Store:
                 "    AND s.status = 'ok' AND s.terminal_node IS NOT NULL"
                 "    AND s.terminal_node NOT IN ('launch_failed', 'cancelled', 'lost')"
                 ") SELECT run_id, repo, issue_number, dispatched_at, terminal_node FROM firsts"
-                " WHERE rn = 1 ORDER BY dispatched_at DESC, run_id DESC LIMIT ?",
+                " WHERE rn = 1 AND NOT EXISTS (SELECT 1 FROM background_jobs j"
+                "   WHERE j.kind = 'precheck-calibration' AND j.repo = firsts.repo"
+                "     AND j.target = firsts.run_id)"
+                " ORDER BY dispatched_at DESC, run_id DESC LIMIT ?",
                 (since, limit),
             ).fetchall()
         return rows

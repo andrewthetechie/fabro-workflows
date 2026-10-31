@@ -63,6 +63,11 @@ NOT_AN_ENDING = frozenset({"launch_failed", "cancelled", "lost"})
 # through on the way, and `merged` is the only class that says so from `run_history`.
 STUCK_NODES = frozenset({"mark_stuck", "mark_needs_human", "human_rescue"})
 
+# The reason `open_pr`'s report gives an architecture issue's PR (ADR 0012). Such a PR is held
+# by design whatever the issue said, so it is `held_architecture`, not a `held` the precheck
+# could have predicted.
+ARCHITECTURE_HOLD = "Architecture issue"
+
 # What a non-`ready` verdict expects its run to have ended as, where the two can be compared at
 # all. `already_done` is the precheck's own name for `close_noop`, and a `contradiction`, an
 # `unclear` or an `unverifiable` criterion is a question for a human, which is what
@@ -132,16 +137,21 @@ def read_record(events: Iterable[Mapping[str, Any]]) -> Recorded | None:
 def outcome_for(recorded: Recorded | None) -> str:
     """The job outcome a finished calibration run earned.
 
-    `verdict=<v> raw=<v> main=<sha12> changed=<0|1>`; `succeeded (no verdict)` when the run
+    `verdict=<v> raw=<v> main=<sha12> changed=<0|1|?>`; `succeeded (no verdict)` when the run
     ended without one, which is a run whose `gate` failed and is worth reading. Everything is
     in the outcome on purpose: the report reads this string alone, so it stays true even after
     the run's events are pruned.
+
+    `changed=?` is `claim`'s `unknown`: the body was edited after `at`, but no edit entry reaches
+    back to `at`, so the check read the current text. Recording it as `0` would count exactly
+    the rewritten issues as unchanged.
     """
     if recorded is None:
         return "succeeded (no verdict)"
     raw = recorded.raw or recorded.verdict
     main = (recorded.main or "unknown")[:12]
-    changed = "1" if recorded.body_changed.strip().lower() in ("true", "1", "yes") else "0"
+    flag = recorded.body_changed.strip().lower()
+    changed = "1" if flag in ("true", "1", "yes") else "?" if flag == "unknown" else "0"
     return f"verdict={recorded.verdict} raw={raw} main={main} changed={changed}"
 
 
@@ -193,7 +203,8 @@ class CalibrationProducer:
             run_id = str(row["run_id"])
             repo = str(row["repo"])
             # The target is the run, so this both says which run the row is about and makes
-            # the producer idempotent: one run never gets two jobs.
+            # the producer idempotent: one run never gets two jobs. `runs_to_calibrate` already
+            # leaves those runs out; this is the guard, not the filter.
             if self._store.background_job_exists(KIND, repo, run_id):
                 continue
             job_id = self._store.enqueue_background_job(
@@ -246,8 +257,15 @@ class VerdictStats:
         return row
 
 
-def outcome_class(*, merged: object, terminal_node: object, pr_number: object) -> str:
-    """The ending class of one calibrated run (the plan's table, in its priority order)."""
+def outcome_class(*, merged: object, terminal_node: object, pr_number: object,
+                  pr_reason: object = "") -> str:
+    """The ending class of one calibrated run (the plan's table, in its priority order).
+
+    A held PR splits three ways, because two of them say nothing about the issue:
+    `held_architecture` (ADR 0012's human merge) and `held_unread` (no `pr_facts` row, so the
+    reason is unknown). A run with no PR that stopped on any other node died mid-graph: `failed`.
+    `other` is left for a run the store knows nothing about.
+    """
     if merged == 1:
         return "merged"
     node = str(terminal_node or "")
@@ -260,7 +278,13 @@ def outcome_class(*, merged: object, terminal_node: object, pr_number: object) -
     if node == "demote_lane":
         return "demoted"
     if pr_number is not None:
+        if pr_reason is None:
+            return "held_unread"
+        if ARCHITECTURE_HOLD in str(pr_reason):
+            return "held_architecture"
         return "held"
+    if node:
+        return "failed"
     return "other"
 
 
@@ -301,6 +325,7 @@ def report(rows: Iterable[Mapping[str, Any]]) -> dict[str, object]:
             merged=row["merged"],
             terminal_node=row["terminal_node"],
             pr_number=row["pr_number"],
+            pr_reason=row["pr_reason"],
         )
         verdict = None if fields is None else fields["verdict"]
         entry: dict[str, object] = {
@@ -313,7 +338,8 @@ def report(rows: Iterable[Mapping[str, Any]]) -> dict[str, object]:
             "verdict": verdict,
             "raw_verdict": None if fields is None else fields["raw"],
             "main_sha": None if fields is None else fields["main"],
-            "body_changed": None if fields is None else fields["changed"] == "1",
+            "body_changed": (None if fields is None or fields["changed"] == "?"
+                             else fields["changed"] == "1"),
             "outcome_class": klass,
             "terminal_node": row["terminal_node"],
             "pr_number": row["pr_number"],
