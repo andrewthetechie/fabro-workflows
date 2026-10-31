@@ -2031,8 +2031,9 @@
             {
               "name": "repomap.md",
               "path": "/tmp/fabro/repomap.md",
-              "required": true,
-              "about": "ranked outline of the checkout, produced by fabro-code map in prep; start from it instead of reading the tree"
+              "required": false,
+              "about": "ranked outline of the checkout, produced by fabro-code map in prep; start from it instead of reading the tree",
+              "absent": "fabro-code map could not build the outline; start from the top-level directories"
             },
             {
               "name": "orientation-prior.md",

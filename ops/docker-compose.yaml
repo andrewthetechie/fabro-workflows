@@ -104,6 +104,11 @@ services:
       # Which verdicts hold an issue. `unverifiable` is accepted and not in the default. `ready`
       # is refused: it is the absence of a hold, and naming it would take the whole queue out.
       SCHEDULER_PRECHECK_HOLD_VERDICTS: "${SCHEDULER_PRECHECK_HOLD_VERDICTS:-already_done,contradiction,unclear,blocked}"
+      # The first `dispatched_at` whose pre-review arm is a measurement (Phase 4,
+      # `/api/background/measure`): before it the arm was the ralph trial's bit. Set it in
+      # ~/fabro/.env to the push that shipped the bit-2 arm; without this line that setting
+      # never reaches the container.
+      SCHEDULER_PRE_REVIEW_ARM_SINCE: "${SCHEDULER_PRE_REVIEW_ARM_SINCE:-2026-11-01T00:00:00+00:00}"
     # Deliberately **not** `env_file: .env`. That file carries fabro's
     # SESSION_SECRET — a cookie-signing key this service has no use for — and the
     # scheduler's credentials are its own two: GITHUB_TOKEN today, FABRO_API_TOKEN

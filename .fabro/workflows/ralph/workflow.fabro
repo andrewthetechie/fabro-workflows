@@ -216,7 +216,7 @@ if gh issue list --label fabro-orientation --state open --json number,body --lim
   if [ -s /tmp/fabro/orientation.tmp ]; then
     sed 1d /tmp/fabro/orientation.tmp > /tmp/fabro/orientation.tmp2
     if [ -s /tmp/fabro/orientation.tmp2 ]; then
-      jq -Rrs 'if length > 6000 then .[0:6000] + \" [cut to 6000 characters]\" else . end' /tmp/fabro/orientation.tmp2 > /tmp/fabro/orientation.md
+      jq -Rrs 'if length > 6000 then .[0:6000] + \" [cut to 6000 characters]\" else . end' /tmp/fabro/orientation.tmp2 > /tmp/fabro/orientation.md || rm -f /tmp/fabro/orientation.md
     fi
   fi
   [ -s /tmp/fabro/orientation.md ] || rm -f /tmp/fabro/orientation.md

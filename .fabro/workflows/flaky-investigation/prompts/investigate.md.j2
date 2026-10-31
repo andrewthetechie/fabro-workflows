@@ -74,7 +74,7 @@ Write the diagnosis to `/tmp/fabro/flaky.json` with the `submit` tool. Fields:
   the evidence is FlakeRadar's failure texts alone.
 - `reproduced`: always `false`. You did not run the test.
 
-Keep it short: the comment is published only if it fits in 2,500 characters, and the run that
-takes this issue reads it as one of several background notes.
+Keep it short: the published comment is cut at 2,500 characters, so what runs past that is
+lost, and the run that takes this issue reads it as one of several background notes.
 
 [Submit exactly once. The stage is done when `submit` succeeds.]

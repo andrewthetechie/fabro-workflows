@@ -431,7 +431,8 @@ def orientation(history: Sequence[Any], stages: Sequence[Any]) -> dict[str, obje
         "groups": out,
         "note": (
             "`had_orientation` is whether a done repo-orientation job finished before the run "
-            "was dispatched; a run in neither group predates the column"
+            "was dispatched; a run recorded before the column existed reads as without, which it was: "
+            "no map existed then"
         ),
     }
 

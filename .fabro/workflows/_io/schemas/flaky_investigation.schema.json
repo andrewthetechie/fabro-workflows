@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "flaky_investigation",
   "title": "flaky_investigation — a box diagnosis of one queued flaky-test issue (more-local-inference 10)",
-  "description": "What a local model concluded about one flaky test or CI job, from FlakeRadar's records and the code at main: the likely cause, the evidence, and the fix it proposes. It never reproduced the failure. `gate` checks the Input receipt, requires every cited file:line to exist in the checkout, and fails a comment over the 2,500 characters C9 gives this kind in background.md. `post` publishes it as the issue's flaky-investigation marker comment, which backlog's and ralph's `claim` copy into background.md for the run that takes the issue. _io is stamped by the server and is not part of this schema.",
+  "description": "What a local model concluded about one flaky test or CI job, from FlakeRadar's records and the code at main: the likely cause, the evidence, and the fix it proposes. It never reproduced the failure. `gate` checks the Input receipt, requires every cited file:line to exist in the checkout, and cuts the rendered comment at a whole line to fit the 2,500 characters C9 gives this kind in background.md. `post` publishes it as the issue's flaky-investigation marker comment, which backlog's and ralph's `claim` copy into background.md for the run that takes the issue. _io is stamped by the server and is not part of this schema.",
   "type": "object",
   "additionalProperties": false,
   "required": ["cause", "summary", "evidence", "fix", "confidence", "reproduced"],

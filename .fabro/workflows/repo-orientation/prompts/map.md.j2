@@ -2,7 +2,7 @@
 
 You are a background step on a local model. Every automated agent that works on this
 repository starts by working out how it is laid out: where a change belongs, what the tests
-are, how they run stack up, which conventions a reviewer enforces. You have the code and the
+are and how they run, which conventions a reviewer enforces. You have the code and the
 time, so write that once, and every later run reads it instead of exploring.
 
 The map is published as the body of one pinned issue in the repository, titled
@@ -18,7 +18,8 @@ anything: this run writes exactly one issue body, and a later node does it.
 Call `inputs` first. It returns each of these whole; when it ends with `MORE:` lines, ask for
 each part before you continue.
 
-- `repomap.md`: a ranked outline of the checkout, produced by the code index. Start from it.
+- `repomap.md`: a ranked outline of the checkout, produced by the code index. Start from it
+  when present; when it is absent, start from the top-level directories.
 - `orientation-prior.md`: the map the last run wrote, when there is one. It is **`main` as it
   was then**, so it may be wrong now: keep what still describes this code, fix what has moved,
   and drop what is gone. Do not write a diff — write the new map.
@@ -57,7 +58,7 @@ Write the map to `/tmp/fabro/orientation.json` with the `submit` tool. Fields:
   logic, a test that needs a service, a directory that looks authoritative and is not.
 
 Every path must exist in the checkout; a path that does not is dropped before anyone sees the
-map. Keep each line short: the whole map is published only if it fits in 6,000 characters, and
-every planning run that reads it pays for it.
+map. Keep each line short: the published map is cut at 6,000 characters, so what runs past that is
+lost, and every planning run that reads it pays for it.
 
 [Submit exactly once. The stage is done when `submit` succeeds.]
