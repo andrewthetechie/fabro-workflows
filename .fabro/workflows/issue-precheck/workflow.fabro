@@ -138,7 +138,8 @@ echo '{\"context_updates\":{\"prep_ok\":true}}'"]
     // `typical_box_minutes` for the whole run is 10.
     check [label="Check the issue against main", class="bg", timeout="20m", prompt="@prompts/check.md.j2"]
 
-    // Checks the Input receipt and applies task 07's two rules. A missing receipt (a failed,
+    // Checks the Input receipt and applies task 07's two rules, plus a third for `unverifiable`
+    // (2026-10-31): it must quote the criterion from the issue body. A missing receipt (a failed,
     // timed-out or unsubmitted turn) fails the node, so the run ends failed and nothing is
     // posted. The model's own verdict is kept as `raw_verdict`, so the marker can say when a
     // rule overrode it.
@@ -152,7 +153,7 @@ if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
   exit 1
 fi
 RAW=$(jq -r '.verdict // empty' $F)
-case \"$RAW\" in ready | already_done | blocked | contradiction | unclear) ;; *) echo 'precheck.json carries no known verdict' >&2; exit 1;; esac
+case \"$RAW\" in ready | already_done | blocked | contradiction | unclear | unverifiable) ;; *) echo 'precheck.json carries no known verdict' >&2; exit 1;; esac
 VERDICT=$RAW
 RULE=''
 if [ \"$VERDICT\" != ready ] && [ \"$(jq '(.evidence // []) | length' $F)\" -eq 0 ]; then
@@ -167,6 +168,10 @@ if [ \"$VERDICT\" = blocked ]; then
     VERDICT=ready
     RULE='its blocker #'$B' is not another open issue in this repository'
   fi
+fi
+if [ \"$VERDICT\" = unverifiable ] && ! jq -e 'any((.evidence // [])[]; (.where // \"\") == \"issue body\")' $F >/dev/null; then
+  VERDICT=ready
+  RULE='it quoted no criterion from the issue body'
 fi
 echo \"$RAW\" > $P/raw_verdict
 echo \"$VERDICT\" > $P/verdict
@@ -206,6 +211,7 @@ echo \"<!-- fabro:precheck verdict=$V body=$HASH main=$MAIN at=$AT run=$RUN -->\
     blocked) echo '**Precheck: blocked?** A local model read this issue and thinks it needs #'\"$(jq -r '.blocker // \"?\"' /tmp/fabro/precheck.json)\"' first.' ;;
     contradiction) echo '**Precheck: contradiction?** A local model read this issue and thinks an acceptance criterion needs something a non-goal excludes.' ;;
     unclear) echo '**Precheck: unclear?** A local model read this issue and could not find an acceptance criterion it could check.' ;;
+    unverifiable) echo '**Precheck: unverifiable?** A local model read this issue and thinks an acceptance criterion is one the factory cannot check or meet on its own, so the pull request would wait for a human.' ;;
   esac
   echo
   jq -r '.summary // \"\"' /tmp/fabro/precheck.json

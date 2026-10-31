@@ -914,8 +914,11 @@ FABRO_API_TOKEN=$(ssh andrew@10.10.0.32 'docker exec fabro-fabro-1 cat /storage/
 
 A local model reads a queued issue and the code at `main`, before the factory spends hosted
 credits on it, and says whether it is worth running: `ready`, `already_done`, `blocked` (on
-another open issue in the repository), `contradiction` (a criterion a non-goal excludes) or
-`unclear`. The `issue-precheck` package posts the verdict as the issue's one precheck comment,
+another open issue in the repository), `contradiction` (a criterion a non-goal excludes),
+`unclear`, or `unverifiable` (a criterion the pipeline cannot check or meet: a command
+`.fabro/ci.sh` does not run, or PR-description text, a screenshot, a manual check; added
+2026-10-31 after the night's held PRs all cited one). An `unverifiable` issue still gets a
+context pack. The `issue-precheck` package posts the verdict as the issue's one precheck comment,
 edited in place on a re-check:
 
 ```

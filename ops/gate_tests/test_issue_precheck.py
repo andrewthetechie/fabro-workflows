@@ -10,7 +10,8 @@ matters here is a runtime one:
   newline and the body. The scheduler will compare it with its own (task 07 step 4).
 * `gate` must refuse a check with no Input receipt, and apply task 07's two rules: a verdict
   other than `ready` with no evidence is `ready`, and so is a `blocked` whose blocker is not
-  another open issue in the repository.
+  another open issue in the repository. A third (2026-10-31): an `unverifiable` that quotes no
+  criterion from the issue body is `ready`.
 * `post` is the only GitHub writer. It posts the marker comment, or edits the existing one in
   place, with the marker on the first line, capped at 1,500 characters (cut at a whole line,
   keeping the shadow-mode footer), and with no token in it.
@@ -257,6 +258,13 @@ def test_gate_applies_the_evidence_and_blocker_rules(ck, tmp_path):
          "ready", "its blocker #7 is not another open issue in this repository"),
         ("blocked-self", {"verdict": "blocked", "summary": "s", "evidence": ev, "blocker": 42},
          "ready", "its blocker #42 is not another open issue in this repository"),
+        ("unverifiable", {"verdict": "unverifiable", "summary": "s", "evidence": [
+            {"where": "issue body", "says": "`npm run lint` passes"},
+            {"where": ".fabro/ci.sh:16", "says": "runs npm test, not lint"}]},
+         "unverifiable", ""),
+        ("unverifiable-unquoted", {"verdict": "unverifiable", "summary": "s", "evidence": [
+            {"where": ".fabro/ci.sh:16", "says": "runs npm test, not lint"}]},
+         "ready", "it quoted no criterion from the issue body"),
     ):
         P = Precheck(ck, tmp_path, f"gate-{name}")
         staged_for_gate(P)
@@ -313,6 +321,20 @@ def test_post_edits_the_existing_marker_in_place(ck, tmp_path):
     ck("post: posts no second comment", "0", count("^issue comment", P.gh()))
     ck("post: the edit carries the new marker", "1",
        count("fabro:precheck verdict=ready", jq(".body", file=P.posted)))
+
+
+def test_post_names_an_unverifiable_criterion(ck, tmp_path):
+    P = Precheck(ck, tmp_path, "post-unverifiable")
+    staged_for_post(P, "unverifiable", payload={
+        "verdict": "unverifiable", "summary": "Add `npm run lint` to `.fabro/ci.sh`.",
+        "evidence": [{"where": "issue body", "says": "`npm run lint` passes"}],
+    })
+    r = P.run("post")
+    ck("post unverifiable: succeeds", "0", str(r.rc))
+    body = cat(P.posted)
+    ck("post unverifiable: the marker", "1", count("fabro:precheck verdict=unverifiable ", body))
+    ck("post unverifiable: the headline", "1", count("**Precheck: unverifiable?**", body, flags="F"))
+    ck("post unverifiable: the quoted criterion", "1", count("- `issue body`: `npm run lint` passes", body, flags="F"))
 
 
 def test_post_says_when_a_rule_overrode_the_model(ck, tmp_path):

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "precheck",
   "title": "precheck — the issue precheck's verdict (more-local-inference 07)",
-  "description": "A local model's check of one queued issue before the factory spends hosted credits on it. `gate` checks the Input receipt and applies two rules of its own: a verdict other than ready with no evidence counts as ready, and a blocked verdict whose blocker is not an open issue in the same repository counts as ready. `post` publishes the result as the issue's precheck marker comment. _io is stamped by the server and is not part of this schema.",
+  "description": "A local model's check of one queued issue before the factory spends hosted credits on it. `gate` checks the Input receipt and applies three rules of its own: a verdict other than ready with no evidence counts as ready, a blocked verdict whose blocker is not an open issue in the same repository counts as ready, and an unverifiable verdict that quotes no criterion from the issue body counts as ready. `post` publishes the result as the issue's precheck marker comment. _io is stamped by the server and is not part of this schema.",
   "type": "object",
   "additionalProperties": false,
   "required": ["verdict", "summary", "evidence"],
@@ -10,8 +10,8 @@
   "then": { "required": ["blocker"] },
   "properties": {
     "verdict": {
-      "enum": ["ready", "already_done", "blocked", "contradiction", "unclear"],
-      "description": "ready: nothing found against running it. already_done: the checkout already does what every acceptance criterion asks. blocked: it needs another open issue in this repository first. contradiction: an acceptance criterion needs something a non-goal of the same issue excludes. unclear: no acceptance criterion can be checked."
+      "enum": ["ready", "already_done", "blocked", "contradiction", "unclear", "unverifiable"],
+      "description": "ready: nothing found against running it. already_done: the checkout already does what every acceptance criterion asks. blocked: it needs another open issue in this repository first. contradiction: an acceptance criterion needs something a non-goal of the same issue excludes. unclear: no acceptance criterion can be checked. unverifiable: an acceptance criterion the pipeline cannot check or meet on its own (a command `.fabro/ci.sh` does not run, or PR-description text, a screenshot, a manual check), so the PR would wait for a human."
     },
     "summary": {
       "type": "string",
@@ -22,7 +22,7 @@
     "evidence": {
       "type": "array",
       "maxItems": 6,
-      "description": "What the verdict rests on, one entry each. Must name where: a file and line for already_done, the blocking issue for blocked, the criterion and the non-goal for contradiction. May be empty only for ready.",
+      "description": "What the verdict rests on, one entry each. Must name where: a file and line for already_done, the blocking issue for blocked, the criterion and the non-goal for contradiction, the criterion (`issue body`) and the `.fabro/ci.sh` line for unverifiable. May be empty only for ready.",
       "items": {
         "type": "object",
         "additionalProperties": false,

@@ -35,6 +35,7 @@ This task also builds the path every background output takes into a hosted stage
 | `blocked` | It needs another open issue in the same repository first; it cites the number | adds `precheck-blocked`; holds the issue while the blocker is open, then removes the label |
 | `contradiction` | A criterion conflicts with a non-goal (#17); it quotes both | adds `precheck-contradiction`; holds the issue |
 | `unclear` | No criterion can be checked | adds `precheck-unclear`; holds the issue |
+| `unverifiable` | A criterion the pipeline cannot check or meet: a command `.fabro/ci.sh` does not run, or PR-description text, a screenshot, a manual check; it quotes the criterion (added 2026-10-31, shadow only) | not decided; the issue still gets a context pack |
 
 - A held issue is not dispatched while its `precheck-*` label is on it. It is listed on the
   queue page under *Held by precheck*, with the verdict's summary and a link to the comment. A

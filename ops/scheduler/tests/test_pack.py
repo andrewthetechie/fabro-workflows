@@ -62,15 +62,18 @@ def packs(store: Store) -> list[tuple[str, str, str, str]]:
 
 
 def test_the_producer_maps_only_what_the_precheck_passed_once_each(store):
-    cfg = config()
-    for n in (3, 4, 5, 6):
+    cfg = dataclasses.replace(config(), precheck_per_repo=10)
+    for n in (3, 4, 5, 6, 7):
         seed(store, JELLY, n)
     checked(store, 3, "verdict=ready")
     checked(store, 4, "verdict=already_done")
     checked(store, 5, "succeeded")
+    checked(store, 7, "verdict=unverifiable")
     producer = PackProducer(cfg, store)
     created = producer.tick(ranked(store, cfg), now=NOW)
-    assert packs(store) == [(KIND, JELLY, "3", "queued")], "only #3 said ready; #6 has no precheck"
+    assert packs(store) == [(KIND, JELLY, "3", "queued"), (KIND, JELLY, "7", "queued")], (
+        "#3 said ready and #7 unverifiable, whose run still goes ahead; #6 has no precheck"
+    )
     row = store.background_job(created[0])
     assert (row["priority"], row["typical_box_minutes"], row["inputs_json"]) == (
         3,

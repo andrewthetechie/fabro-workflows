@@ -20,9 +20,10 @@ The repository checkout in the current working directory is the code at `main`. 
 tools in your guide (`code_def`, `code_search`, `code_show`, ...) answer most questions in
 one call.
 
-## The five verdicts
+## The six verdicts
 
-Pick exactly one. Every verdict except `ready` needs evidence a human can check in a minute.
+Pick exactly one; when more than one fits, take the first in this list. Every verdict except
+`ready` needs evidence a human can check in a minute.
 
 - **`already_done`**: the code at `main` already does what **every** acceptance criterion
   asks. Cite the file and line for each criterion. If even one criterion is not met, it is
@@ -40,6 +41,24 @@ Pick exactly one. Every verdict except `ready` needs evidence a human can check 
 - **`unclear`**: the issue has no acceptance criterion that anyone could check: no expected
   behaviour, no command, no observable result. Vague wording alone is not unclear if the
   intent can still be checked.
+- **`unverifiable`**: an acceptance criterion the pipeline cannot check or meet on its own,
+  so the finished pull request would wait for a human however good the code is. Two cases:
+  - A **command criterion** ("`npm run lint` passes", "`cargo nextest run` passes",
+    "coverage does not drop below the current value") names a tool that `.fabro/ci.sh` does
+    not run. The pipeline's only proof that a command passes is `.fabro/ci.sh` passing on the
+    finished code. Before you decide, read `.fabro/ci.sh` and follow what it calls (a
+    `package.json` script, a `Makefile` target, a test that runs the tool as a subprocess):
+    if any of them runs the same tool over the files the issue touches, the criterion is
+    fine. A different flag or a narrower scope that still covers those files is fine too.
+  - A criterion that needs something the pipeline cannot produce: text in the pull request
+    description ("list the before/after numbers in the PR"), a screenshot, a manual or
+    visual check, or a run on another operating system. A test, a code comment or a file in
+    the repository is fine. Ignore everything under a `## Post-deploy checks` heading.
+
+  Quote the criterion with `where` set to `issue body`. For a command criterion, also cite
+  the `.fabro/ci.sh` line whose command comes closest, or say that the file runs no such
+  tool. In `summary`, say what would fix it: add the command to `.fabro/ci.sh`, or reword
+  the criterion.
 - **`ready`**: anything else. When in doubt, `ready`: a wrong `ready` costs one normal run,
   while a wrong hold keeps good work out of the queue.
 
@@ -48,8 +67,10 @@ Pick exactly one. Every verdict except `ready` needs evidence a human can check 
 1. Read `issue.md`. List its acceptance criteria to yourself.
 2. For each criterion, look for the code that would satisfy it, with the code tools: at most
    two or three lookups per criterion. You are checking existence, not quality.
-3. Only if the issue names or plainly depends on other work, check `open_issues.md`.
-4. Decide, and submit.
+3. If a criterion names a command or asks for something outside the code, read
+   `.fabro/ci.sh` (once) and check it as `unverifiable` describes.
+4. Only if the issue names or plainly depends on other work, check `open_issues.md`.
+5. Decide, and submit.
 
 Stop after about fifteen tool calls in total, whatever you have found: decide on what you know.
 
@@ -57,7 +78,8 @@ Stop after about fifteen tool calls in total, whatever you have found: decide on
 
 Write the verdict to `/tmp/fabro/precheck.json` with the `submit` tool. Fields:
 
-- `verdict`: one of `ready`, `already_done`, `blocked`, `contradiction`, `unclear`.
+- `verdict`: one of `ready`, `already_done`, `blocked`, `contradiction`, `unclear`,
+  `unverifiable`.
 - `summary`: one to three plain sentences a human can act on. Published verbatim on the issue.
 - `evidence`: up to six entries, each `{"where": ..., "says": ...}`. `where` is `path:line`,
   `#N`, or `issue body`; `says` is what is there, quoted or in one sentence. May be empty

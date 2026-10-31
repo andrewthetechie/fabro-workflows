@@ -6,8 +6,9 @@ posts the map as the issue's one context-pack marker comment (`.fabro/workflows/
 read, so the hosted planners explore less.
 
 - **The producer** queues one `context-pack` job for each of the next
-  `SCHEDULER_PRECHECK_PER_REPO` issues of each repository whose precheck said `ready` (D10: the
-  pack comes after the precheck, and an issue the precheck doubts is not worth mapping yet)
+  `SCHEDULER_PRECHECK_PER_REPO` issues of each repository whose precheck said `ready` or
+  `unverifiable` (D10: the pack comes after the precheck, and an issue the precheck doubts is
+  not worth mapping yet; `unverifiable` doubts a criterion, not the work)
   and that has never had a pack job. It skips a queued job whose issue left the queue first,
   as the precheck producer does.
 - **The outcome** of a succeeded run is read back from the issue's marker: `pack run=<run_id>`
@@ -52,8 +53,10 @@ KIND = "context-pack"
 # not a ceiling; the first guess was 8. The job rows keep measuring it.
 PACK_TYPICAL_MINUTES = 5
 
-# The outcome a precheck job must have recorded before its issue gets a pack.
-READY = "verdict=ready"
+# The outcomes a precheck job must have recorded before its issue gets a pack: `ready`, and
+# `unverifiable` (2026-10-31), whose doubt is about a criterion the pipeline cannot check, not
+# about the work, so the run still goes ahead and still needs the map.
+PACKABLE = frozenset({"verdict=ready", "verdict=unverifiable"})
 
 # C6's context-pack marker, the comment's first line.
 MARKER = re.compile(
@@ -144,7 +147,7 @@ class PackProducer:
         created: list[int] = []
         for item in next_per_repo(ranked, running, self._config.precheck_per_repo):
             repo, target = item.issue.repo, str(item.issue.number)
-            if self._store.latest_background_outcome(PRECHECK_KIND, repo, target) != READY:
+            if self._store.latest_background_outcome(PRECHECK_KIND, repo, target) not in PACKABLE:
                 continue
             if self._store.background_job_exists(KIND, repo, target):
                 continue
