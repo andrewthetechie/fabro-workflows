@@ -726,6 +726,9 @@ whole factory in one place and a host rebuild brings it back with everything els
 | `scheduler/src/fabro_scheduler/peak.py` | z.ai's peak hours: parses `SCHEDULER_PEAK_HOURS` and answers whether an instant is inside a dispatch block (the window minus the lead) and when it ends. Pure; `DispatchLoop.tick` and `/api/peak` call it. |
 | `scheduler/src/fabro_scheduler/background.py` | The **background lane** (more-local-inference C7, ADR 0031): `BackgroundLane` evicts, fills and finishes box-only jobs, and `BoxHealth` reads strix-infer's `/health`. Every decision is pure over state the caller hands in, so a test drives a tick by hand. `evict` cancels a background run whose box's coder loop has reached a box stage; `fill` starts one job per box only when all six conditions hold (switch on, box undrained and free of a background run, the loop outside a box stage read **fresh** from fabro, `/health` idle for `SCHEDULER_BG_GAP_S`, `SCHEDULER_BG_SLOT_RESERVE` run slots free, and a job that fits the predicted gap); `sync` finishes, requeues or fails a running job from its fabro status; `make_room` cancels the youngest background run when a coder-loop dispatch needs the last slot. `box_views`/`state` are what the page's **Background** strip and `/api/background` render; `state`'s `queue` (running, then queued in the order `fill` tries them, then the last ten that ended) is the page's **Background jobs** table. Every `JOB_WORKFLOWS` value must also be in `workflow_version.ENTRYPOINTS`, or `dispatch_job` raises and the lane's tick fails (a test checks it). The gap table is `config.BACKGROUND_GAP_MINUTES`, **measured** on 2026-10-28 (task 12 Phase 0 step 2) from every non-box visit of the 170 `backlog`/`ralph` runs released since 10-21: the median minutes from a visit's end to the next box-stage start (or the run's end), per node; any node not in it, and any other workflow, predicts 0. Re-measure when the graphs change: the method is in the table's comment. |
 | `scheduler/src/fabro_scheduler/precheck.py` | The **issue precheck**'s scheduler half (more-local-inference 07, shadow mode): `PrecheckProducer` queues one `issue-precheck` job per issue for the next `SCHEDULER_PRECHECK_PER_REPO` issues of each repository in dispatch order (`next_per_repo`) and skips one whose issue left the queue; `read_marker`/`outcome_for` turn a finished run's marker into the job's `verdict=<v>` outcome. It holds and labels nothing. |
+| `scheduler/src/fabro_scheduler/precheck.py` | The issue precheck's scheduler half: `PrecheckProducer`, the C6 marker reader and its outcome, and D20's holds — `hold_label`/`holding_labels`, and `release_blocked`, the inventory pass that drops `precheck-blocked` when the marker's blocker closes. |
+| `scheduler/src/fabro_scheduler/flaky.py` | The **flaky investigation**'s producer (task 10): one `flaky-investigation` job per queued issue labelled `flaky-test`, and the marker reader that turns a finished run into `flaky cause=<c> run=<id>`. |
+| `scheduler/src/fabro_scheduler/orientation.py` | The **repository orientation**'s producer (task 10): one `repo-orientation` job per repository per day, and the reader that turns a finished run into `orientation main=<sha12> chars=<n>` or `orientation unchanged`. |
 | `scheduler/src/fabro_scheduler/calibration.py` | The **precheck calibration**'s scheduler half (pre-review-and-calibration, Part A): `CalibrationProducer` queues one `precheck-calibration` job per issue for the issue's first finished run since `SCHEDULER_CALIBRATION_SINCE`, newest first, capped at `SCHEDULER_CALIBRATION_QUEUED`; `read_record`/`outcome_for` read a finished run's verdict from its own `record` node (the package posts nothing), and `report` turns `Store.calibration_rows` into the verdict-against-outcome document behind `GET /api/background/calibration`. |
 | `scheduler/src/fabro_scheduler/pack.py` | The **context pack**'s scheduler half (more-local-inference 08): `PackProducer` queues one `context-pack` job per issue the precheck passed (`verdict=ready`), in the same window; `read_marker`/`outcome_for` record a finished run as `pack run=<id>`, which `Store.archive_and_release_lease` reads into `run_history.had_pack`. |
 | `scheduler/src/fabro_scheduler/templates/queue.html` | The page: the **coder instances** (state, lease, ETA, and the Drain/Undrain and Cancel-run controls), the queue with per-row up/down/to-top controls and drag-and-drop reordering, and a per-repo freshness strip. Inline CSS and a few lines of inline JS, no external assets, refreshes itself on the same 60s beat. Each control is a real `<form method="post">`, so the buttons work with scripting off (the response is raw JSON); with scripting on the submit is intercepted, the page reloads on success and shows the error otherwise. |
@@ -1003,7 +1006,8 @@ verdict=<v> raw=<v> main=<sha12> changed=<0|1|?>
 check read the current text; the row's `body_changed` is `null`.
 
 **The producer** (`calibration.py`) keeps `SCHEDULER_CALIBRATION_QUEUED` jobs queued, priority
-4 (after the precheck and the pack, ahead of `box-noop`). One job per issue, for its **first**
+5 since task 10 (after the precheck, the pack, the flaky investigation and the orientation;
+ahead of `box-noop`). One job per issue, for its **first**
 finished run — a later run of the same issue saw a changed issue. It skips a run whose summary
 is missing or not `ok`, and the endings `launch_failed`, `cancelled` and `lost`. Its `target` is
 the calibrated run id, so the job row says which run it is about, and its inputs are
@@ -1045,6 +1049,54 @@ SCHEDULER_BG_KINDS=box-noop,issue-precheck,context-pack,precheck-calibration
 # 2. Recreate only the scheduler; running background jobs finish first.
 cd ~/fabro && docker compose up -d --no-deps scheduler
 ```
+
+#### The precheck's holds (D20), off until the calibration supports them
+
+**What a hold is.** A precheck verdict of `already_done`, `contradiction`, `unclear` or
+`blocked` can keep an issue **out of dispatch** until someone releases it. When the lane records
+such a verdict (reading the issue's marker after its run succeeds) and the switch is on, the
+scheduler adds one label to the issue:
+
+| verdict | label | released by |
+|---|---|---|
+| `already_done` | `precheck-already-done` | a human, who removes the label |
+| `contradiction` | `precheck-contradiction` | a human |
+| `unclear` | `precheck-unclear` | a human |
+| `blocked` | `precheck-blocked` | **the inventory**, when the marker's `blocker=<n>` issue closes |
+| `unverifiable` | `precheck-unverifiable` | a human (accepted, **not** in the default set) |
+
+**It never closes an issue, edits its body, or reorders the queue.** The label is the whole
+mechanism, it is visible on GitHub, and removing it is the release. The scheduler removes exactly
+one of them by itself: `precheck-blocked`, and only when the issue its marker names has closed.
+A `blocked` marker written before 2026-11-03 has no `blocker=`, so nothing releases it but a
+human — that is what the field was added for.
+
+**A label holds whatever the switch says.** `SCHEDULER_PRECHECK_HOLDS=off` stops *new* holds
+being applied; an issue that already carries a `precheck-*` label stays out of the queue, which
+is what makes a hold an operator's decision rather than a transient. The queue page's **Held by
+the precheck** table lists them with the reason.
+
+**It ships off.** The precheck has run in shadow mode since 2026-10-30: it posts a verdict and
+holds nothing. Turn it on **per verdict**, from the calibration's numbers, never all at once:
+
+```sh
+B=http://10.10.0.32:32280
+# 1. For the verdict you are considering: at least 20 calibrated runs, and agrees/comparable
+#    at least two thirds. `blocked` has no `agrees` (nothing says what ending a held issue
+#    should have had), so read its rows by hand.
+curl -fsS "$B/api/background/calibration" | jq '.verdicts[] | select(.verdict=="already_done")'
+curl -fsS "$B/api/background/calibration" | jq -c '.rows[] | select(.verdict=="blocked") | {issue_number, outcome_class, terminal_node, pr_reason}'
+# 2. In ~/fabro/.env, name only the verdicts you trust, then recreate the scheduler.
+SCHEDULER_PRECHECK_HOLDS=on
+SCHEDULER_PRECHECK_HOLD_VERDICTS=already_done
+cd ~/fabro && docker compose up -d --no-deps scheduler
+```
+
+**The turn-off rule** (task 12, Phase 3): a verdict whose false-hold rate is over a third is
+turned off the same way — drop it from `SCHEDULER_PRECHECK_HOLD_VERDICTS` and recreate the
+scheduler. Labels already on issues stay until a human removes them: the switch was never a
+release. `ready` is refused in the list, because naming it would hold every issue the precheck
+approved and empty the queue.
 
 #### The PR doctor (removed 2026-10-31)
 
@@ -1235,6 +1287,8 @@ how this project already passes per-host values:
 | `SCHEDULER_BG_KINDS` | every live kind (compose: `box-noop,issue-precheck,context-pack`) | Which job kinds' **producers** run, comma-separated. An unknown kind is a `ConfigError` (the removed `pr-doctor` among them). `precheck-calibration` (Part A) is a live kind but **deliberately absent from the compose default**: the operator adds it after the deploy that ships the package. Turning one kind off leaves the rest of the lane alone, and a job queued by hand (`POST /api/background/box-noop`) still runs, because this gates producers and not the lane's pick (C7). |
 | `SCHEDULER_CALIBRATION_QUEUED` | `4` | How many `precheck-calibration` jobs the producer keeps queued (Part A). The lane runs one background job at a time per box, so this is only how far ahead the next job is ready; `0` turns the producer off without touching the kind switch. |
 | `SCHEDULER_CALIBRATION_SINCE` | `2026-09-25` | The oldest `run_history.dispatched_at` the calibration producer reaches back to, as an ISO date compared as a string prefix (both UTC). 2026-09-25 is where the scheduler's labelled run history starts. |
+| `SCHEDULER_PRECHECK_HOLDS` | `off` | D20's holds, `on` or `off` (compose passes `off` too). Off means no **new** hold is applied; an issue already carrying a `precheck-*` label stays out of the queue, so turning it off never releases one. Anything but `on`/`off` is a `ConfigError`. |
+| `SCHEDULER_PRECHECK_HOLD_VERDICTS` | `already_done,contradiction,unclear,blocked` | Which verdicts hold an issue. `unverifiable` is accepted and not in the default (a criterion the pipeline cannot check is the merge phase's question, not a reason to keep the work from starting). **`ready` is refused**: it is the absence of a hold, and naming it would take the whole queue out. An unknown name is a `ConfigError`. |
 | `SCHEDULER_PRECHECK_PER_REPO` | `3` | How many of the next issues of each repository, in dispatch order, the precheck producer keeps checked (more-local-inference 07), and the context-pack producer keeps mapped once their precheck said `ready` (08). Issues a coder loop holds do not count. `0` queues none. |
 | `FABRO_API_TOKEN` | — | The dispatch credential, from `~/fabro/scheduler.env`. It is fabro's **dev token**, read from `/storage/server.dev-token` in the container — fabro supports exactly one, so this cannot be rotated independently of the CLI and `discord-notify.sh`. Needed by `POST /api/dispatch-once` and by the dispatch loop: without it the endpoint answers `503`, the loop does not start, and everything else, `/health` included, works unchanged. Never logged, never rendered, never stored in SQLite. |
 | `GITHUB_TOKEN` | — | The inventory's credential **and, from draft 08, the label writer's**, from `~/fabro/scheduler.env` on the host. **Not** in `~/fabro/.env`: the scheduler gets its own env file so it never receives fabro's `SESSION_SECRET`, and this repository is public, so neither belongs in `repos.toml`. It needs `issues: read` **and `issues: write`** on the four repos — the read is the inventory, the write is `agent-in-progress` and removing `agent`. A classic token's `repo` scope covers both; a fine-grained PAT must be given both. Without it the inventory is not refreshed *and* the dispatch loop does not start. Never logged, never rendered and never stored in SQLite. |

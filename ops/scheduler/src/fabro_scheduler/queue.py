@@ -34,7 +34,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from .config import RepoConfig
+from .config import PRECHECK_HOLD_PREFIX, RepoConfig
 from .github import PRIORITY_LABEL, Issue
 from .store import Store
 
@@ -128,6 +128,22 @@ def rank(items: Sequence[QueueItem], ceiling: timedelta) -> list[QueueItem]:
     return overridden + prioritized + starved + waiting
 
 
+def holding_labels(issue: Issue) -> list[str]:
+    """The `precheck-*` labels an issue carries, sorted. `[]` when it is not held.
+
+    A held issue is one the precheck said not to run (`already_done`, `contradiction`, `unclear`
+    or `blocked`) and a human has not released (D20). The label decides, not the scheduler's
+    switch: a switch turned off stops *new* holds, and must never silently release the ones
+    already on an issue. Removing one is the operator's, except `precheck-blocked`, which the
+    inventory drops when its blocker closes (`precheck.release_blocked`).
+    """
+    return sorted(
+        name for name in issue.labels
+        if isinstance(name, str) and name.startswith(PRECHECK_HOLD_PREFIX)
+        and len(name) > len(PRECHECK_HOLD_PREFIX)
+    )
+
+
 def build_queue(
     repos: Sequence[RepoConfig],
     store: Store,
@@ -153,6 +169,11 @@ def build_queue(
     for issue in store.issues():
         priority = priorities.get(issue.repo)
         if priority is None:
+            continue
+        if holding_labels(issue):
+            # Held by the precheck (D20): out of the queue until a human removes the label. Not
+            # counted, not ranked, and not dispatched — the page lists it with the label as the
+            # reason (`Store.held_issues`).
             continue
         items.append(
             QueueItem(

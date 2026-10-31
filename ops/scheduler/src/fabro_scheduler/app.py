@@ -72,7 +72,7 @@ from .fabro import FabroClient, FabroError, RunNotStarted
 from .inventory import InventoryPoller
 from .lease import Lease, LeaseConflict, LeaseStore
 from .probe import RunProbe
-from .queue import QueueItem, RepoStatus, build_queue, repo_statuses
+from .queue import QueueItem, RepoStatus, build_queue, repo_statuses, holding_labels
 from .reconcile import ReleasePoller, recover
 from .store import DEFAULT_HISTORY_LIMIT, DEFAULT_HISTORY_SORT, Store
 from .workflow_version import WorkflowVersionError
@@ -1041,6 +1041,12 @@ def build_app(
             item.issue.repo in busy_repos for item in items
         )
         peak = peak_state(now)
+        # A held issue is in the cache and out of `items`, so the list and the reason come from
+        # the same rows the queue read (D20).
+        held_issues = lambda: [
+            {"issue": issue, "why": ", ".join(holding_labels(issue))}
+            for issue in store.held_issues()
+        ]
 
         # Time-left estimate per leased run (feature: ETA). Most-specific wins: the
         # sandbox subtask rate when decomposition has made progress, else the repo's
@@ -1099,6 +1105,10 @@ def build_app(
                 # evictions. Read from the lane's cached state, so the page makes no
                 # network call of its own.
                 "background": lane.state(now),
+                # D20: the issues the precheck holds out of the queue, with the label that
+                # holds each. Read from the cache, so this is the same list the queue skipped.
+                "held": held_issues(),
+                "hold_switch": "on" if config.precheck_holds else "off",
                 # The provider's peak-hours block and the override button.
                 "peak": peak,
                 "peak_status": config.peak_hours.status(now),

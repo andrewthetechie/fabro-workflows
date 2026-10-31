@@ -319,6 +319,54 @@
   </table>
 </div>
 
+{# The precheck's holds (D20): the issues out of the queue because a verdict held them, and the
+   label that holds each. The switch decides only whether a NEW verdict adds a label, so these
+   stay out with the switch off; a human removes the label to release one, except
+   `precheck-blocked`, which the inventory drops when its blocker closes. #}
+<h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Held by the precheck</h2>
+<div class="mb-4 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
+  <p class="px-4 py-3 text-sm leading-6 text-slate-400">
+    Holds are <strong class="{% if hold_switch == 'on' %}text-emerald-400{% else %}text-slate-300{% endif %}">{{ hold_switch }}</strong>.
+    {% if hold_switch == 'off' %}
+      A verdict adds no new hold. An issue that already carries a <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">precheck-*</code> label stays out of the queue:
+      remove the label to release it.
+    {% else %}
+      A precheck verdict in the hold set adds <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">precheck-&lt;verdict&gt;</code>. Remove the label to release the issue.
+    {% endif %}
+    Turn it on with <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">SCHEDULER_PRECHECK_HOLDS=on</code>
+    once <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">GET :32280/api/background/calibration</code> supports the verdict.
+  </p>
+  <table class="w-full text-sm">
+    <thead class="bg-slate-900/60 text-slate-400">
+      <tr>
+        <th class="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide">Issue</th>
+        <th class="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide">Held by</th>
+        <th class="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide">Waiting since</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800">
+      {% for row in held %}
+      <tr>
+        <td class="px-2 py-2 align-top">
+          <a class="text-sky-400 hover:underline" href="https://github.com/{{ row.issue.repo }}/issues/{{ row.issue.number }}">#{{ row.issue.number }}</a>
+          <span class="text-slate-500">{{ row.issue.repo.split('/')[-1] }}</span>
+          <div class="text-slate-300">{{ row.issue.title }}</div>
+        </td>
+        <td class="whitespace-nowrap px-2 py-2 align-top">
+          {% for name in row.why.split(', ') %}
+          <span class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs text-amber-300">{{ name }}</span>
+          {% endfor %}
+        </td>
+        <td class="whitespace-nowrap px-2 py-2 align-top tabular-nums text-slate-400">{{ row.issue.first_seen|compact_ts }}</td>
+      </tr>
+      {% endfor %}
+      {% if not held %}
+      <tr><td colspan="3" class="px-2 py-2 text-slate-500">No issue is held.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
 <h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Queue</h2>
 {% if items %}
 <div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">

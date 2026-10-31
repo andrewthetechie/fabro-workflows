@@ -128,6 +128,31 @@ BACKGROUND_JOB_PRIORITY = {
 # 0 queues none of either.
 DEFAULT_PRECHECK_PER_REPO = 3
 
+# --- the precheck's holds (more-local-inference D20) ---------------------------------
+#
+# A verdict of `already_done`, `contradiction`, `unclear` or `blocked` may keep an issue out of
+# dispatch until a human releases it (or, for `blocked`, until the cited blocker closes). It is
+# **off by default, in code and in compose**: the precheck has run in shadow mode since
+# 2026-10-30, and a hold is only turned on per verdict once the calibration
+# (`GET /api/background/calibration`) shows that verdict is right. A hold that is wrong keeps
+# good work out of the queue, which is worse than a run that was not worth starting.
+DEFAULT_PRECHECK_HOLDS = False
+
+# The verdicts whose hold is applied when the switch is on. `unverifiable` is accepted and not
+# in the default: a criterion the pipeline cannot check is a question for the merge phase, not a
+# reason to keep the work from starting.
+DEFAULT_PRECHECK_HOLD_VERDICTS = ("already_done", "contradiction", "unclear", "blocked")
+
+# What `SCHEDULER_PRECHECK_HOLD_VERDICTS` may name. `ready` is **refused**, not ignored: it is
+# the absence of a hold, and a list that named it would take the whole queue out at once — the
+# one setting here that could stop all work with no error anywhere.
+PRECHECK_HOLDABLE = ("already_done", "blocked", "contradiction", "unclear", "unverifiable")
+
+# The label prefix a held issue carries: `precheck-already-done`, `precheck-blocked`, and so on
+# (C6). Any label with this prefix keeps an issue out of the queue **whatever the switch says**,
+# because a label a human left on is still a hold.
+PRECHECK_HOLD_PREFIX = "precheck-"
+
 # How many precheck-calibration jobs the producer keeps queued (pre-review-and-calibration,
 # Part A). The lane runs one background job at a time per box, so a deeper queue only ever
 # means the next job is ready when a gap opens; 4 is a day or two of gaps. The oldest runs'
@@ -346,6 +371,10 @@ class SchedulerConfig:
     # The calibration producer: how many jobs it keeps queued, and how far back it looks.
     calibration_queued: int = DEFAULT_CALIBRATION_QUEUED
     calibration_since: str = DEFAULT_CALIBRATION_SINCE
+    # The precheck's holds (D20). Off by default; a held issue carries `precheck-<verdict>`,
+    # and the queue skips any issue carrying a `precheck-` label whether or not this is on.
+    precheck_holds: bool = DEFAULT_PRECHECK_HOLDS
+    precheck_hold_verdicts: tuple[str, ...] = DEFAULT_PRECHECK_HOLD_VERDICTS
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -445,6 +474,8 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
         calibration_since=_env_str(
             environ, "SCHEDULER_CALIBRATION_SINCE", DEFAULT_CALIBRATION_SINCE
         ),
+        precheck_holds=_env_switch(environ, "SCHEDULER_PRECHECK_HOLDS", DEFAULT_PRECHECK_HOLDS),
+        precheck_hold_verdicts=_env_verdicts(environ),
     )
 
 
@@ -628,6 +659,44 @@ def _env_bg_kinds(environ: Mapping[str, str]) -> tuple[str, ...]:
             f"{', '.join(BACKGROUND_JOB_PRIORITY)}"
         )
     return kinds
+
+
+def _env_switch(environ: Mapping[str, str], key: str, default: bool) -> bool:
+    """An `on`/`off` switch. Anything else is a `ConfigError`, as `SCHEDULER_BACKGROUND` is.
+
+    A typo must not read as "the operator turned it off": that is the answer they would
+    believe, and the one that hides a hold they meant to apply (or an outage they meant to
+    stop).
+    """
+    raw = environ.get(key, "").strip().lower()
+    if not raw:
+        return default
+    if raw == "on":
+        return True
+    if raw == "off":
+        return False
+    raise ConfigError(f"{key}: {raw!r} is not 'on' or 'off'")
+
+
+def _env_verdicts(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """`SCHEDULER_PRECHECK_HOLD_VERDICTS`: which verdicts hold an issue (D20).
+
+    An empty value is the default set, not "none": use `SCHEDULER_PRECHECK_HOLDS=off` to turn
+    the holds off. An unknown verdict is a `ConfigError`, because a name that matches no verdict
+    would silently hold nothing.
+    """
+    key = "SCHEDULER_PRECHECK_HOLD_VERDICTS"
+    raw = environ.get(key, "").strip()
+    if not raw:
+        return DEFAULT_PRECHECK_HOLD_VERDICTS
+    verdicts = tuple(part.strip() for part in raw.split(",") if part.strip())
+    unknown = [verdict for verdict in verdicts if verdict not in PRECHECK_HOLDABLE]
+    if unknown:
+        raise ConfigError(
+            f"{key}: {unknown[0]!r} is not a verdict that can hold an issue; expected one of "
+            f"{', '.join(PRECHECK_HOLDABLE)} (ready is the absence of a hold)"
+        )
+    return verdicts
 
 
 def _env_int_at_least(

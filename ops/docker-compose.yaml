@@ -95,6 +95,15 @@ services:
       # How many of the next issues of each repository, in dispatch order, the precheck
       # producer keeps checked and the context-pack producer keeps mapped.
       SCHEDULER_PRECHECK_PER_REPO: "${SCHEDULER_PRECHECK_PER_REPO:-3}"
+      # The precheck's HOLDS (more-local-inference D20). **Off by default here and in
+      # config.py**: the precheck has run in shadow mode since 2026-10-30, and a hold is turned
+      # on per verdict only once `GET :32280/api/background/calibration` shows that verdict is
+      # right (ops/README.md has the rule). Off means no new hold is applied; an issue that
+      # already carries a `precheck-*` label stays out of the queue either way.
+      SCHEDULER_PRECHECK_HOLDS: "${SCHEDULER_PRECHECK_HOLDS:-off}"
+      # Which verdicts hold an issue. `unverifiable` is accepted and not in the default. `ready`
+      # is refused: it is the absence of a hold, and naming it would take the whole queue out.
+      SCHEDULER_PRECHECK_HOLD_VERDICTS: "${SCHEDULER_PRECHECK_HOLD_VERDICTS:-already_done,contradiction,unclear,blocked}"
     # Deliberately **not** `env_file: .env`. That file carries fabro's
     # SESSION_SECRET — a cookie-signing key this service has no use for — and the
     # scheduler's credentials are its own two: GITHUB_TOKEN today, FABRO_API_TOKEN

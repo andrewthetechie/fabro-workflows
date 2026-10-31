@@ -658,6 +658,23 @@ class Store:
             ).fetchall()
         return [_row_to_issue(row) for row in rows]
 
+    def held_issues(self) -> list[Issue]:
+        """Every cached issue carrying a `precheck-*` label, in repo then number order.
+
+        The page's *Held* list (D20): these are in the cache because they are open and labelled
+        `agent`, and they are out of the ranked queue because `queue.holding_labels` found one of
+        these labels on them. One row per issue, whichever labels it has.
+        """
+        prefix = "precheck-"
+        out: list[Issue] = []
+        for issue in self.issues():
+            if any(
+                isinstance(name, str) and name.startswith(prefix) and len(name) > len(prefix)
+                for name in issue.labels
+            ):
+                out.append(issue)
+        return sorted(out, key=lambda issue: (issue.repo, issue.number))
+
     def issue_counts(self) -> dict[str, int]:
         """Cached queue-item count per repo, for repos that have any rows.
 

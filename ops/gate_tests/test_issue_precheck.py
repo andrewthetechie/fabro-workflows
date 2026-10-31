@@ -372,3 +372,43 @@ def test_every_failure_ends_the_run_and_only_gate_reaches_post(ck):
     ck("edge: post is reached only from gate", "1", count("->post", e, flags="F"))
     ck("edge: and only when gate succeeded", "1", count("gate->post outcome=succeeded", e, flags="xF"))
     ck("edge: check always goes to gate", "1", count("check->gate ", e, flags="xF"))
+
+
+def test_a_blocked_markers_names_its_blocker_and_others_do_not(ck, tmp_path):
+    """D20: the scheduler releases a `blocked` hold when the cited issue closes, so the marker
+    has to name it. Every other verdict's marker is unchanged."""
+    P = Precheck(ck, tmp_path, "post-blocker")
+    staged_for_post(P, "blocked", payload={
+        "verdict": "blocked", "blocker": 40, "summary": "This needs #40 first.",
+        "evidence": [{"where": "src/settings.ts:12", "says": "the settings page it adds"}],
+    })
+    P.run("post")
+    first = cat(P.posted).split("\n", 1)[0]
+    ck("blocked: the marker names the blocker", "1",
+       count(r" run=01RUN blocker=40 -->$", first, flags="E"))
+
+    for verdict in ("ready", "already_done", "contradiction", "unclear", "unverifiable"):
+        Q = Precheck(ck, tmp_path, f"post-no-blocker-{verdict}")
+        staged_for_post(Q, verdict, payload={
+            "verdict": verdict, "summary": "x",
+            "evidence": [{"where": "src/settings.ts:12", "says": "x"}],
+        })
+        Q.run("post")
+        ck(f"{verdict}: the marker carries no blocker", "0",
+           count("blocker=", cat(Q.posted).split("\n", 1)[0], flags="F"))
+
+
+def test_a_blocked_rule_override_writes_no_blocker(ck, tmp_path):
+    """`gate` turns a `blocked` whose blocker is not another open issue into `ready`; the marker
+    must follow the recorded verdict, not the model's, or the hold would name a stranger."""
+    P = Precheck(ck, tmp_path, "post-blocked-overridden")
+    write(P.fabro / "precheck.json", json.dumps({
+        "verdict": "blocked", "blocker": 40, "summary": "x",
+        "evidence": [{"where": "src/settings.ts:12", "says": "x"}],
+    }))
+    staged_for_post(P, "ready", raw="blocked",
+                    rule="its blocker #40 is not another open issue in this repository")
+    P.run("post")
+    first = cat(P.posted).split("\n", 1)[0]
+    ck("overridden: the marker says ready", "1", count("verdict=ready ", first, flags="F"))
+    ck("overridden: and names no blocker", "0", count("blocker=", first, flags="F"))

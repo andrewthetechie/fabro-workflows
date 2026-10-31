@@ -47,11 +47,19 @@ KIND = "issue-precheck"
 # so 3 leaves margin without keeping it out of the many 5-minute gaps (the first guess was 10).
 PRECHECK_TYPICAL_MINUTES = 3
 
-# C6's precheck marker, the comment's first line.
+# C6's precheck marker, the comment's first line. `blocker=<n>` is written only for a `blocked`
+# verdict (2026-11-03, D20's release rule needs to know which issue to watch), and it is
+# optional so a marker posted before it parses unchanged.
 MARKER = re.compile(
     r"^<!-- fabro:precheck verdict=(?P<verdict>\S+) body=(?P<body>\S+) main=(?P<main>\S+) "
-    r"at=(?P<at>\S+) run=(?P<run>\S+) -->"
+    r"at=(?P<at>\S+) run=(?P<run>\S+)(?: blocker=(?P<blocker>\d+))? -->"
 )
+
+# The label prefix a held issue carries, and the verdicts whose hold is applied by default
+# (C6, D20). `precheck-already-done` is a verdict with `_` written as `-`, so a label is a
+# legal GitHub label and the verdict is readable back from it.
+HOLD_PREFIX = "precheck-"
+HOLD_VERDICTS = ("already_done", "contradiction", "unclear", "blocked")
 
 REQUEST_TIMEOUT_SECONDS = 10.0
 
@@ -63,6 +71,9 @@ class Marker:
     main: str
     at: str
     run: str
+    # The issue a `blocked` verdict waits for, as a string, or "" for every other verdict and
+    # for a marker written before the field existed.
+    blocker: str = ""
 
 
 def parse_marker(body: object) -> Marker | None:
@@ -72,7 +83,10 @@ def parse_marker(body: object) -> Marker | None:
     match = MARKER.match(body.split("\n", 1)[0])
     if match is None:
         return None
-    return Marker(**match.groupdict())
+    found = match.groupdict()
+    # An absent optional group is None, not "": `Marker` says "" so every caller has one shape.
+    found["blocker"] = found.get("blocker") or ""
+    return Marker(**found)
 
 
 def newest_marker(comments: Sequence[Mapping[str, Any]]) -> Marker | None:
@@ -239,3 +253,98 @@ def skip_departed(store: Store, kind: str, running: Set[tuple[str, int]], now: d
             job["repo"],
             job["target"],
         )
+
+
+# --- the holds (D20) -----------------------------------------------------------------
+
+
+def hold_label(verdict: str) -> str:
+    """The label a held issue carries: `precheck-` + the verdict with `_` written as `-`."""
+    return f"{HOLD_PREFIX}{verdict.replace('_', '-')}"
+
+
+def verdict_for_label(label: str) -> str | None:
+    """The verdict a `precheck-*` label names, or None for a label that names none."""
+    if not label.startswith(HOLD_PREFIX):
+        return None
+    verdict = label[len(HOLD_PREFIX):].replace("-", "_")
+    return verdict or None
+
+
+def holding_labels(labels: object) -> list[str]:
+    """Every `precheck-*` label among `labels`, sorted. `[]` when there is none.
+
+    Whatever the switch says, an issue that carries one of these is held: a human who left a
+    label on is still holding the issue, and the scheduler never removes a label it did not add
+    (only `blocked`, when its blocker closes). The switch decides only whether a *new* verdict
+    adds one.
+    """
+    if not isinstance(labels, (set, frozenset, list, tuple)):
+        return []
+    return sorted(
+        name for name in labels
+        if isinstance(name, str) and name.startswith(HOLD_PREFIX) and len(name) > len(HOLD_PREFIX)
+    )
+
+
+def should_hold(verdicts: Sequence[str], marker: Marker | None) -> bool:
+    """Whether `marker`'s verdict is one the operator asked the scheduler to hold on."""
+    return marker is not None and marker.verdict in verdicts
+
+
+def release_blocked(
+    repo: str, token: str, *, client: httpx.Client | None = None
+) -> list[tuple[int, str]]:
+    """Drop `precheck-blocked` from every held issue whose cited blocker has closed.
+
+    The inventory's pass, run once per poll after the other promotions (D20). Only that label is
+    ever removed: `precheck-already-done`, `precheck-contradiction` and `precheck-unclear` are a
+    human's to release, because nothing observable says they have stopped applying.
+
+    **Never raises.** A failed read or write is logged and retried on the next poll, exactly as
+    the remainder and held-child passes are: the inventory itself is fine.
+    """
+    from .github import fetch_label_all_states, fetch_issue_state, remove_label
+
+    out: list[tuple[int, str]] = []
+    blocked = hold_label("blocked")
+    try:
+        held = fetch_label_all_states(repo, blocked, token, client=client)
+    except GitHubError as exc:
+        log.warning("precheck: %s: cannot list %s issues (%s)", repo, blocked, exc)
+        return out
+    for issue in held:
+        if issue.state != "open":
+            continue
+        try:
+            marker = read_marker(repo, issue.number, token, client=client)
+        except GitHubError as exc:
+            log.warning("precheck: %s#%s: cannot read its marker (%s)", repo, issue.number, exc)
+            continue
+        if marker is None or marker.verdict != "blocked":
+            continue
+        if not marker.blocker:
+            # A marker from before the field existed: the release is a human's, and the run that
+            # would have written it is long gone.
+            continue
+        try:
+            state, _ = fetch_issue_state(repo, int(marker.blocker), token, client=client)
+        except (GitHubError, ValueError) as exc:
+            log.warning(
+                "precheck: %s#%s: cannot read blocker #%s (%s)",
+                repo, issue.number, marker.blocker, exc,
+            )
+            continue
+        if state != "closed":
+            continue
+        try:
+            remove_label(repo, issue.number, blocked, token, client=client)
+        except GitHubError as exc:
+            log.warning("precheck: %s#%s: cannot remove %s (%s)", repo, issue.number, blocked, exc)
+            continue
+        log.info(
+            "precheck: %s#%s released: its blocker #%s is closed", repo, issue.number,
+            marker.blocker,
+        )
+        out.append((issue.number, f"released: blocker #{marker.blocker} closed"))
+    return out

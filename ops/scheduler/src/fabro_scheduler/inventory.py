@@ -26,6 +26,7 @@ import httpx
 
 from .config import RepoConfig
 from .github import REQUEST_TIMEOUT_SECONDS, GitHubError, fetch_issues
+from .precheck import release_blocked
 from .remainder import promote_remainders
 from .split import close_parents, promote_held
 from .store import Store
@@ -111,11 +112,12 @@ class InventoryPoller:
         self._promote(repo)
 
     def _promote(self, repo: RepoConfig) -> None:
-        """Promote held work and close finished parents (ADR 0011 D6, ADR 0015 C5).
+        """Promote held work, close finished parents and release spent holds (ADR 0011 D6,
+        ADR 0015 C5, D20).
 
-        Runs three independent passes -- remainder promotion, held-child promotion
-        and split-parent closing -- each in its own `try`, so one failure never
-        stops the others. **Never raises.** Deliberately outside `_poll`'s error
+        Runs four independent passes -- remainder promotion, held-child promotion,
+        split-parent closing and the precheck's `blocked` release -- each in its own `try`, so
+        one failure never stops the others. **Never raises.** Deliberately outside `_poll`'s error
         handling: a promotion failure is logged, and it must not mark the repo's
         inventory stale, because the inventory itself is fine. Each pass is
         retried on the next poll.
@@ -141,6 +143,15 @@ class InventoryPoller:
                 log.info("inventory: %s#%s split parent %s", repo.name, number, action)
         except Exception:  # noqa: BLE001 - see the docstring
             log.exception("inventory: %s: split-parent close failed", repo.name)
+        # D20: a `blocked` hold ends when its blocker closes, and nothing else releases it. This
+        # pass removes that one label and never another `precheck-*` one.
+        try:
+            for number, action in release_blocked(
+                repo.name, self._token, client=self._client
+            ):
+                log.info("inventory: %s#%s precheck hold %s", repo.name, number, action)
+        except Exception:  # noqa: BLE001 - see the docstring
+            log.exception("inventory: %s: precheck hold release failed", repo.name)
 
     def _poll(self, repo: RepoConfig) -> None:
         state = self._store.fetch_state(repo.name)

@@ -38,10 +38,10 @@ from typing import Any
 import httpx
 
 from .config import BACKGROUND_JOB_PRIORITY, SchedulerConfig, predicted_gap_minutes
+from . import calibration, flaky, github, orientation, pack, precheck
 from .fabro import FabroClient, FabroError, RunNotStarted, status_kind, status_reason
 from .github import GitHubError
 from .lease import Lease, LeaseStore
-from . import calibration, flaky, orientation, pack, precheck
 from .calibration import KIND as CALIBRATION_KIND
 from .flaky import KIND as FLAKY_KIND, FlakyMarker
 from .orientation import KIND as ORIENTATION_KIND, OrientationMarker
@@ -296,6 +296,7 @@ class BackgroundLane:
         pack_reader: Callable[[str, int], PackMarker | None] | None = None,
         flaky_reader: Callable[[str, int], FlakyMarker | None] | None = None,
         orientation_reader: Callable[[str], OrientationMarker | None] | None = None,
+        hold_writer: Callable[[str, int, str], None] | None = None,
         calibration_reader: Callable[[str], str] | None = None,
         github_token: str = "",
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -340,6 +341,14 @@ class BackgroundLane:
         self._read_calibration = calibration_reader or (
             (lambda run_id: calibration.read_outcome(fabro.iter_events(run_id)))
             if fabro is not None
+            else None
+        )
+        # The precheck's holds (D20): one label write when a verdict the operator asked to hold
+        # on is recorded. Injected so a test drives it; the default writes through GitHub with
+        # the lane's token, and with no token there is no hold to apply.
+        self._hold = hold_writer or (
+            (lambda repo, number, label: github.add_label(repo, number, label, github_token))
+            if github_token
             else None
         )
         self._clock = clock
@@ -621,6 +630,7 @@ class BackgroundLane:
                 end = self._record_marker(
                     job, end, now, self._read_precheck, precheck.outcome_for
                 )
+                self._apply_hold(job, end, now)
             elif str(job["kind"]) == PACK_KIND and end.state == "done":
                 end = self._record_marker(job, end, now, self._read_pack, pack.outcome_for)
             elif str(job["kind"]) == FLAKY_KIND and end.state == "done":
@@ -691,6 +701,47 @@ class BackgroundLane:
         outcome = outcome_for(marker, str(job["run_id"] or ""), job["created_at"])
         self._store.set_background_outcome(int(job["job_id"]), outcome=outcome, now=now)
         return JobEnd(end.job_id, end.kind, end.state, outcome)
+
+    def _apply_hold(self, job, end: JobEnd, now: datetime) -> None:
+        """Add the precheck's hold label, when the operator asked for this verdict (D20).
+
+        Only a `done` precheck has a verdict to hold on, so a run that stopped on a current
+        marker adds nothing: that marker's hold, if any, is already there. The switch and the
+        verdict set are read from the config here rather than at the call site, so a lane with
+        the holds off makes **no** write at all (the review's trap 4). A failed write is one
+        stderr line: the verdict is still recorded, and the next precheck of a changed issue
+        tries again.
+
+        Nothing else is ever written: no close, no body edit, no reorder (D20).
+        """
+        if not self._config.precheck_holds or self._hold is None:
+            return
+        if end.outcome is None or not end.outcome.startswith("verdict="):
+            return
+        verdict = end.outcome.split("=", 1)[1].split()[0]
+        if verdict not in self._config.precheck_hold_verdicts:
+            return
+        label = precheck.hold_label(verdict)
+        target = str(job["target"] or "")
+        if not target.isdigit():
+            return
+        try:
+            self._hold(str(job["repo"]), int(target), label)
+        except (GitHubError, ValueError) as exc:
+            log.warning(
+                "background: precheck job %s: could not add %s (%s)",
+                job["job_id"],
+                label,
+                exc,
+            )
+            return
+        log.info(
+            "background: precheck job %s holds %s#%s as %s",
+            job["job_id"],
+            job["repo"],
+            target,
+            label,
+        )
 
     def _record_orientation(self, job, end: JobEnd, now: datetime) -> JobEnd:
         """A succeeded orientation run's outcome, read from the repository's pinned issue.

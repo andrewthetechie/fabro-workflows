@@ -181,6 +181,12 @@ echo '{\"context_updates\":{\"verdict\":\"'$VERDICT'\"}}'"]
 
     // ---- The one node that writes to GitHub (D9, C6) ----
     //
+    // A `blocked` verdict's marker also carries `blocker=<n>`, the issue it waits for, so the
+    // scheduler can release the hold when that issue closes (`precheck.release_blocked`, D20).
+    // It is the one field this marker gained, and it is written only for `blocked`: every other
+    // verdict's marker is byte for byte what it was, and `parse_marker` reads a marker without
+    // it as `blocker=""`.
+    //
     // It posts the issue's precheck marker comment, or edits the existing one in place. The
     // body is capped at 1,500 characters, the size C9 gives a precheck in `background.md`, by
     // cutting the model's text at a whole line so the shadow-mode footer always survives. It
@@ -202,7 +208,12 @@ AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 RUN=$(cat $P/run_id 2>/dev/null || true)
 [ -n \"$RUN\" ] || RUN=unknown
 BODY=$P/comment.md
-echo \"<!-- fabro:precheck verdict=$V body=$HASH main=$MAIN at=$AT run=$RUN -->\" > $P/comment.head
+EXTRA=''
+if [ \"$V\" = blocked ]; then
+  B=$(jq -r '.blocker // empty' /tmp/fabro/precheck.json 2>/dev/null || true)
+  case \"$B\" in '' | *[!0-9]*) ;; *) EXTRA=' blocker='$B ;; esac
+fi
+echo \"<!-- fabro:precheck verdict=$V body=$HASH main=$MAIN at=$AT run=$RUN$EXTRA -->\" > $P/comment.head
 {
   echo
   case \"$V\" in
