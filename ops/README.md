@@ -725,6 +725,7 @@ whole factory in one place and a host rebuild brings it back with everything els
 | `scheduler/src/fabro_scheduler/dispatch.py` | The **5-second dispatch loop**. `choose_next` is pure — it takes the already-ranked queue and skips any repo with a run in flight rather than idling the box — and `DispatchLoop.tick` performs the side effects for every free box it can fill. Order: labels, create, start, lease; a failure before the run exists rolls the labels back, and a failed repo is backed off for the rest of that tick. It owns the two `agent-in-progress` writes and the `issue_number`/`coder_pool` inputs, excludes a drained box via `pool_state`, and clears an operator override once the lease is recorded. Every dispatch also sends `lane=coder` and `box=<pool>`: the claim hook and the lane's eviction match on them. `tick` runs the background lane last — evict, then fill — so no coder dispatch ever waits on it. |
 | `scheduler/src/fabro_scheduler/peak.py` | z.ai's peak hours: parses `SCHEDULER_PEAK_HOURS` and answers whether an instant is inside a dispatch block (the window minus the lead) and when it ends. Pure; `DispatchLoop.tick` and `/api/peak` call it. |
 | `scheduler/src/fabro_scheduler/background.py` | The **background lane** (more-local-inference C7, ADR 0031): `BackgroundLane` evicts, fills and finishes box-only jobs, and `BoxHealth` reads strix-infer's `/health`. Every decision is pure over state the caller hands in, so a test drives a tick by hand. `evict` cancels a background run whose box's coder loop has reached a box stage; `fill` starts one job per box only when all six conditions hold (switch on, box undrained and free of a background run, the loop outside a box stage read **fresh** from fabro, `/health` idle for `SCHEDULER_BG_GAP_S`, `SCHEDULER_BG_SLOT_RESERVE` run slots free, and a job that fits the predicted gap); `sync` finishes, requeues or fails a running job from its fabro status; `make_room` cancels the youngest background run when a coder-loop dispatch needs the last slot. `box_views`/`state` are what the page's **Background** strip and `/api/background` render; `state`'s `queue` (running, then queued in the order `fill` tries them, then the last ten that ended) is the page's **Background jobs** table. Every `JOB_WORKFLOWS` value must also be in `workflow_version.ENTRYPOINTS`, or `dispatch_job` raises and the lane's tick fails (a test checks it). The gap table is `config.BACKGROUND_GAP_MINUTES`, **measured** on 2026-10-28 (task 12 Phase 0 step 2) from every non-box visit of the 170 `backlog`/`ralph` runs released since 10-21: the median minutes from a visit's end to the next box-stage start (or the run's end), per node; any node not in it, and any other workflow, predicts 0. Re-measure when the graphs change: the method is in the table's comment. |
+| `scheduler/src/fabro_scheduler/measure.py` | Task 12's Phase 3 and Phase 4 exit numbers as one pure document (`GET /api/background/measure`): box use, endings against the baseline window, tokens and credits per planner visit, the holds, the pre-review by arm, the orientation and the flaky diagnoses. `Store.measure_rows` is the one snapshot it reads. |
 | `scheduler/src/fabro_scheduler/precheck.py` | The **issue precheck**'s scheduler half (more-local-inference 07, shadow mode): `PrecheckProducer` queues one `issue-precheck` job per issue for the next `SCHEDULER_PRECHECK_PER_REPO` issues of each repository in dispatch order (`next_per_repo`) and skips one whose issue left the queue; `read_marker`/`outcome_for` turn a finished run's marker into the job's `verdict=<v>` outcome. It holds and labels nothing. |
 | `scheduler/src/fabro_scheduler/precheck.py` | The issue precheck's scheduler half: `PrecheckProducer`, the C6 marker reader and its outcome, and D20's holds — `hold_label`/`holding_labels`, and `release_blocked`, the inventory pass that drops `precheck-blocked` when the marker's blocker closes. |
 | `scheduler/src/fabro_scheduler/flaky.py` | The **flaky investigation**'s producer (task 10): one `flaky-investigation` job per queued issue labelled `flaky-test`, and the marker reader that turns a finished run into `flaky cause=<c> run=<id>`. |
@@ -1098,6 +1099,42 @@ scheduler. Labels already on issues stay until a human removes them: the switch 
 release. `ready` is refused in the list, because naming it would hold every issue the precheck
 approved and empty the queue.
 
+#### Task 12's Phase 3 and Phase 4 numbers: `GET /api/background/measure`
+
+`GET :32280/api/background/measure?days=14` computes the phase exit checks task 12 asks the
+operator to read, from the scheduler's store, and `&format=md` renders the same document as one
+markdown page to paste into the deployment log. Every number states its window, its `n` and what
+it is compared with. Phase 3's is what ADR 0031 is accepted or rejected on.
+
+```sh
+B=http://10.10.0.32:32280
+curl -fsS "$B/api/background/measure" | jq .window
+curl -fsS "$B/api/background/measure" | jq '.phase_3.box_use.boxes'      # busy share vs Phase 0
+curl -fsS "$B/api/background/measure" | jq '.phase_3.endings_per_100'    # window vs the 14 days before
+curl -fsS "$B/api/background/measure" | jq '.phase_3.planner_visits.groups'
+curl -fsS "$B/api/background/measure?format=md"
+```
+
+| Section | What it is | Read it against |
+|---|---|---|
+| `phase_3.box_use` | per box per day: coder box-stage minutes plus the lane's minutes, as a share of 24 h | Phase 0's 32-39% (coders-a) and 44-48% (coders-b), quoted in the same row |
+| `phase_3.endings_per_100` | `close_noop`, `return_to_triage`, `mark_stuck` per 100 issue runs, from `run_summary.terminal_node` | `baseline`: the 14 days before the precheck went live (2026-10-30T21:21Z) |
+| `phase_3.planner_visits` | tokens and z.ai credits per `decompose` and `plan` visit | grouped by workflow, `had_pack` and the box-plan trial's arm, so a pack's effect is not confounded with the trial's |
+| `phase_3.precheck_holds` | the issues carrying a `precheck-*` label, and how many were holdable | `released_at_most` is null while the switch is off: the store keeps no label history |
+| `phase_4.pre_review` | hosted review visits per Task, and the `pre_review_verdict` mix, by arm | only runs dispatched at or after `SCHEDULER_PRE_REVIEW_ARM_SINCE` |
+| `phase_4.orientation` | tokens per `decompose` visit, with and without a map | `had_orientation` |
+| `phase_4.flaky` | diagnoses and their causes, and how the runs after one ended | the store keeps no issue labels or closed state, so "flaky-test issues closed" stays a GitHub read |
+
+**Credits.** tokens x the glm-5.3 rates / 10,000 (input 6.9, cached input 1.7, output 24), at
+50% off-peak, computed per run from its dispatch time. Only `decompose` and `plan` are priced:
+the store keeps tokens per node and no node -> model map, so any other node reports tokens only
+and `credits_per_visit` is null. `plan` in the box arm is not priced either, because it ran on a
+box and costs no credits.
+
+**`SCHEDULER_PRE_REVIEW_ARM_SINCE`** is the first `dispatched_at` whose pre-review arm is a
+measurement. Before it the arm was the ralph trial's bit, so those runs are left out. Its
+default is the fix's date; **set it to the deploy's timestamp** when the fix is pushed.
+
 #### The PR doctor (removed 2026-10-31)
 
 Task 06's PR doctor was retired on 2026-10-30, before its first run: a run held a box for about
@@ -1288,6 +1325,7 @@ how this project already passes per-host values:
 | `SCHEDULER_CALIBRATION_QUEUED` | `4` | How many `precheck-calibration` jobs the producer keeps queued (Part A). The lane runs one background job at a time per box, so this is only how far ahead the next job is ready; `0` turns the producer off without touching the kind switch. |
 | `SCHEDULER_CALIBRATION_SINCE` | `2026-09-25` | The oldest `run_history.dispatched_at` the calibration producer reaches back to, as an ISO date compared as a string prefix (both UTC). 2026-09-25 is where the scheduler's labelled run history starts. |
 | `SCHEDULER_PRECHECK_HOLDS` | `off` | D20's holds, `on` or `off` (compose passes `off` too). Off means no **new** hold is applied; an issue already carrying a `precheck-*` label stays out of the queue, so turning it off never releases one. Anything but `on`/`off` is a `ConfigError`. |
+| `SCHEDULER_PRE_REVIEW_ARM_SINCE` | `2026-11-01T00:00:00+00:00` | The first `dispatched_at` whose pre-review arm is a measurement (`/api/background/measure`, Phase 4). Before it the arm was the ralph trial's bit. Set it to the deploy's timestamp when Part 0's fix is pushed. |
 | `SCHEDULER_PRECHECK_HOLD_VERDICTS` | `already_done,contradiction,unclear,blocked` | Which verdicts hold an issue. `unverifiable` is accepted and not in the default (a criterion the pipeline cannot check is the merge phase's question, not a reason to keep the work from starting). **`ready` is refused**: it is the absence of a hold, and naming it would take the whole queue out. An unknown name is a `ConfigError`. |
 | `SCHEDULER_PRECHECK_PER_REPO` | `3` | How many of the next issues of each repository, in dispatch order, the precheck producer keeps checked (more-local-inference 07), and the context-pack producer keeps mapped once their precheck said `ready` (08). Issues a coder loop holds do not count. `0` queues none. |
 | `FABRO_API_TOKEN` | — | The dispatch credential, from `~/fabro/scheduler.env`. It is fabro's **dev token**, read from `/storage/server.dev-token` in the container — fabro supports exactly one, so this cannot be rotated independently of the CLI and `discord-notify.sh`. Needed by `POST /api/dispatch-once` and by the dispatch loop: without it the endpoint answers `503`, the loop does not start, and everything else, `/health` included, works unchanged. Never logged, never rendered, never stored in SQLite. |

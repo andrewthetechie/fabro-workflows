@@ -1446,11 +1446,17 @@ class Store:
     def finish_background_job(
         self, job_id: int, *, state: str, outcome: str | None, now: datetime
     ) -> None:
-        """Record a terminal state: `done`, `failed` or `skipped`."""
+        """Record a terminal state: `done`, `failed` or `skipped`.
+
+        `box` is **kept**: `last_started_at` to `last_finished_at` is the job's box time, and
+        without the box on the row that time belongs to no box, which is exactly the number
+        task 12's Phase 3 exit check needs (`measure.box_use`). `run_id` is cleared because the
+        run is over and the column means "the run holding this job".
+        """
         with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE background_jobs SET state = ?, outcome = ?, run_id = NULL, "
-                "box = NULL, last_finished_at = ? WHERE job_id = ?",
+                "last_finished_at = ? WHERE job_id = ?",
                 (state, outcome, now.isoformat(), job_id),
             )
 
@@ -1921,6 +1927,60 @@ class Store:
                 f"SELECT * FROM run_model_usage WHERE run_id IN ({in_window})", bounds
             ).fetchall()
         return ScorecardRows(history, summaries, stages, failovers, prs, models)
+
+    def measure_rows(self, *, since: datetime, baseline_since: datetime) -> dict[str, list]:
+        """The rows `measure.report` computes task 12's Phase 3 and Phase 4 numbers from.
+
+        One snapshot under the lock. `since` bounds the window; `baseline_since` reaches back
+        far enough to include the 14 days before the precheck went live, because the endings are
+        compared with that period. `background_jobs` are the lane's rows since `baseline_since`
+        (their `last_started_at` to `last_finished_at` is the box time), `issue_cache` is the
+        held issues, and the precheck jobs are every done one with a verdict, in any window: a
+        hold applied months ago is still a hold.
+
+        Issue runs only, for the same reason `scorecard_rows` filters: a `pr` row would count a
+        pull request as an issue.
+        """
+        bounds = (baseline_since.isoformat(), datetime.now(UTC).isoformat())
+        with self._lock:
+            history = self._conn.execute(
+                "SELECT * FROM run_history WHERE dispatched_at >= ? AND target_kind = 'issue'"
+                " ORDER BY dispatched_at",
+                (bounds[0],),
+            ).fetchall()
+            run_ids = [row["run_id"] for row in history]
+            placeholders = ",".join("?" * len(run_ids)) or "''"
+            summaries = (
+                self._conn.execute(
+                    f"SELECT * FROM run_summary WHERE run_id IN ({placeholders})", run_ids
+                ).fetchall()
+                if run_ids else []
+            )
+            stages = (
+                self._conn.execute(
+                    f"SELECT * FROM run_stage_stats WHERE run_id IN ({placeholders})", run_ids
+                ).fetchall()
+                if run_ids else []
+            )
+            jobs = self._conn.execute(
+                "SELECT * FROM background_jobs WHERE state IN ('running', 'done', 'failed')"
+                " AND ((last_started_at IS NOT NULL AND last_started_at >= ?)"
+                "  OR (last_finished_at IS NOT NULL AND last_finished_at >= ?))",
+                (since.isoformat(), bounds[0]),
+            ).fetchall()
+            cache = self._conn.execute("SELECT * FROM issue_cache").fetchall()
+            prechecks = self._conn.execute(
+                "SELECT * FROM background_jobs WHERE kind = 'issue-precheck'"
+                " AND state = 'done'"
+            ).fetchall()
+        return {
+            "history": history,
+            "summaries": summaries,
+            "stages": stages,
+            "jobs": jobs,
+            "cache": cache,
+            "prechecks": prechecks,
+        }
 
     def first_dispatch(self) -> datetime | None:
         """When the oldest `run_history` row was dispatched, or None if there is none."""

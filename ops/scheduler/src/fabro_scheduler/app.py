@@ -59,7 +59,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, calibration, charts, github, retro, scorecard
+from . import __version__, calibration, charts, github, measure, retro, scorecard
 from .collector import ScorecardCollector
 from .background import BackgroundLane
 from .config import (
@@ -542,6 +542,36 @@ def build_app(
         diagnosing "why is this box not filling?" can curl it.
         """
         return lane.state(datetime.now(UTC))
+
+    @app.get("/api/background/measure")
+    def api_background_measure(days: int = 14, format: str | None = None):
+        """Task 12's Phase 3 and Phase 4 exit numbers, from the store (`measure.py`).
+
+        `?days=` is the window (14 by default, which is the phase's own period), and
+        `?format=md` renders the same document as one markdown page to paste into the
+        deployment log. Every number states its window, its `n` and what it is compared with:
+        Phase 3's is what ADR 0031 is accepted or rejected on.
+        """
+        if not 1 <= days <= 120:
+            raise HTTPException(status_code=400, detail="days must be between 1 and 120")
+        now = datetime.now(UTC)
+        rows = store.measure_rows(
+            since=now - timedelta(days=days),
+            baseline_since=now - timedelta(days=days + measure.BASELINE_DAYS),
+        )
+        document = measure.report(
+            measure.Rows(**rows),
+            days=days,
+            now=now,
+            holds_on=config.precheck_holds,
+            hold_verdicts=config.precheck_hold_verdicts,
+            pre_review_since=config.pre_review_arm_since,
+        )
+        if (format or "").lower() in ("md", "markdown"):
+            return PlainTextResponse(
+                measure.as_markdown(document), media_type="text/markdown"
+            )
+        return document
 
     @app.get("/api/background/calibration")
     def api_background_calibration() -> dict[str, object]:

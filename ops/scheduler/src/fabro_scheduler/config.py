@@ -153,6 +153,13 @@ PRECHECK_HOLDABLE = ("already_done", "blocked", "contradiction", "unclear", "unv
 # because a label a human left on is still a hold.
 PRECHECK_HOLD_PREFIX = "precheck-"
 
+# The first `dispatched_at` whose pre-review arm is a measurement (`GET /api/background/measure`,
+# Phase 4). The arm was the ralph trial's bit until the 2026-10-31 fix, so a run dispatched
+# before this ran under the old arm and is left out of the pre-review figures. The default is
+# the fix's own date; the operator sets it to the deploy's timestamp, because the fix does
+# nothing until it is pushed and `main` deploys every workflow at fire time.
+DEFAULT_PRE_REVIEW_ARM_SINCE = "2026-11-01T00:00:00+00:00"
+
 # How many precheck-calibration jobs the producer keeps queued (pre-review-and-calibration,
 # Part A). The lane runs one background job at a time per box, so a deeper queue only ever
 # means the next job is ready when a gap opens; 4 is a day or two of gaps. The oldest runs'
@@ -375,6 +382,8 @@ class SchedulerConfig:
     # and the queue skips any issue carrying a `precheck-` label whether or not this is on.
     precheck_holds: bool = DEFAULT_PRECHECK_HOLDS
     precheck_hold_verdicts: tuple[str, ...] = DEFAULT_PRECHECK_HOLD_VERDICTS
+    # The first dispatched_at whose pre-review arm is a measurement (Phase 4).
+    pre_review_arm_since: str = DEFAULT_PRE_REVIEW_ARM_SINCE
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -476,6 +485,9 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
         ),
         precheck_holds=_env_switch(environ, "SCHEDULER_PRECHECK_HOLDS", DEFAULT_PRECHECK_HOLDS),
         precheck_hold_verdicts=_env_verdicts(environ),
+        pre_review_arm_since=_env_str(
+            environ, "SCHEDULER_PRE_REVIEW_ARM_SINCE", DEFAULT_PRE_REVIEW_ARM_SINCE
+        ),
     )
 
 
