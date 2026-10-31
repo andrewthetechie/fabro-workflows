@@ -42,7 +42,8 @@ from .doctor import HANDOFF_NOT_PUSHED_COMMENT, KIND as DOCTOR_KIND, hand_off, p
 from .fabro import FabroClient, FabroError, RunNotStarted, status_kind, status_reason
 from .github import GitHubError
 from .lease import Lease, LeaseStore
-from . import pack, precheck
+from . import calibration, pack, precheck
+from .calibration import KIND as CALIBRATION_KIND
 from .pack import KIND as PACK_KIND, PackMarker
 from .precheck import KIND as PRECHECK_KIND, Marker
 from .prfacts import PrFacts
@@ -57,6 +58,10 @@ JOB_WORKFLOWS = {
     "pr-doctor": "pr-doctor",
     "issue-precheck": "issue-precheck",
     "context-pack": "context-pack",
+    # The calibration's own package: the live precheck's nodes against `main` as it stood when
+    # the calibrated run was dispatched. It posts nothing, so it is the one kind whose outcome
+    # comes from the run rather than from a marker.
+    "precheck-calibration": "precheck-calibration",
 }
 
 
@@ -271,6 +276,7 @@ class BackgroundLane:
         pr_reader: Callable[[str, int], PrFacts] | None = None,
         precheck_reader: Callable[[str, int], Marker | None] | None = None,
         pack_reader: Callable[[str, int], PackMarker | None] | None = None,
+        calibration_reader: Callable[[str], str] | None = None,
         github_token: str = "",
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -296,6 +302,14 @@ class BackgroundLane:
         self._read_pack = pack_reader or (
             (lambda repo, number: pack.read_marker(repo, number, github_token))
             if github_token
+            else None
+        )
+        # The calibration's verdict is read from the calibrated run's own events, never from
+        # GitHub: its package posts nothing (Part A). Injected for the same reasons as the two
+        # above; the default pages the run's events through the fabro client the lane holds.
+        self._read_calibration = calibration_reader or (
+            (lambda run_id: calibration.read_outcome(fabro.iter_events(run_id)))
+            if fabro is not None
             else None
         )
         self._clock = clock
@@ -584,6 +598,8 @@ class BackgroundLane:
                 )
             elif str(job["kind"]) == PACK_KIND and end.state == "done":
                 end = self._record_marker(job, end, now, self._read_pack, pack.outcome_for)
+            elif str(job["kind"]) == CALIBRATION_KIND and end.state == "done":
+                end = self._record_calibration(job, end, now)
             ended.append(end)
         for end in ended:
             log.info(
@@ -644,6 +660,29 @@ class BackgroundLane:
             )
             return end
         outcome = outcome_for(marker, str(job["run_id"] or ""), job["created_at"])
+        self._store.set_background_outcome(int(job["job_id"]), outcome=outcome, now=now)
+        return JobEnd(end.job_id, end.kind, end.state, outcome)
+
+    def _record_calibration(self, job, end: JobEnd, now: datetime) -> JobEnd:
+        """A succeeded calibration run's verdict, read from the run's `record` node.
+
+        Not from a marker: the package posts nothing, which is the point. A read that fails,
+        or a run with no `record` update, leaves the plain `succeeded` — the run is still in
+        fabro, and the report can be read again after the API answers.
+        """
+        if self._read_calibration is None:
+            return end
+        run_id = str(job["target"] or "")
+        try:
+            outcome = self._read_calibration(run_id)
+        except FabroError as exc:
+            log.info(
+                "background: calibration job %s: cannot read run %s's events (%s)",
+                job["job_id"],
+                run_id,
+                exc,
+            )
+            return end
         self._store.set_background_outcome(int(job["job_id"]), outcome=outcome, now=now)
         return JobEnd(end.job_id, end.kind, end.state, outcome)
 

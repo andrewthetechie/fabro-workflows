@@ -101,6 +101,11 @@ BACKGROUND_JOB_PRIORITY = {
     "pr-doctor": 1,
     "issue-precheck": 2,
     "context-pack": 3,
+    # The precheck calibration (pre-review-and-calibration, Part A): after the live precheck and
+    # the pack, so it starts only when neither is queued, and ahead of the hand-queued
+    # `box-noop`. It measures a package that is already running; the live precheck's holds
+    # cannot start without that measurement, so it is the third most valuable use of a gap.
+    "precheck-calibration": 4,
     "box-noop": 5,
 }
 
@@ -136,6 +141,19 @@ DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY = 6
 # what its next runs take, so a job further down would mostly go stale before its issue runs.
 # 0 queues none of either.
 DEFAULT_PRECHECK_PER_REPO = 3
+
+# How many precheck-calibration jobs the producer keeps queued (pre-review-and-calibration,
+# Part A). The lane runs one background job at a time per box, so a deeper queue only ever
+# means the next job is ready when a gap opens; 4 is a day or two of gaps. The oldest runs'
+# issues are the ones whose verdicts are least like a live precheck's (the code has moved on),
+# so the producer takes the newest first and this cap keeps it from hoarding them.
+DEFAULT_CALIBRATION_QUEUED = 4
+
+# The oldest dispatched_at the calibration producer reaches back to. 2026-09-25 is where the
+# scheduler's `run_history` starts holding labelled runs (its first archived run), which is
+# what makes this measurement possible without waiting for live prechecks. An ISO date: it is
+# compared as a string prefix against `dispatched_at`, which is ISO-8601 UTC.
+DEFAULT_CALIBRATION_SINCE = "2026-09-25"
 
 # Gap prediction (C7 step 9): the coder loop's median remaining gap once a node starts, in
 # minutes, keyed by `(workflow, node id)`. **Measured** 2026-10-30 over the 164 released
@@ -341,6 +359,9 @@ class SchedulerConfig:
     pr_doctor_reviews_per_day: int = DEFAULT_PR_DOCTOR_REVIEWS_PER_DAY
     # The precheck and pack producers' reach: the next N issues of each repository.
     precheck_per_repo: int = DEFAULT_PRECHECK_PER_REPO
+    # The calibration producer: how many jobs it keeps queued, and how far back it looks.
+    calibration_queued: int = DEFAULT_CALIBRATION_QUEUED
+    calibration_since: str = DEFAULT_CALIBRATION_SINCE
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -439,6 +460,12 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
         ),
         precheck_per_repo=_env_int_at_least(
             environ, "SCHEDULER_PRECHECK_PER_REPO", DEFAULT_PRECHECK_PER_REPO, 0
+        ),
+        calibration_queued=_env_int_at_least(
+            environ, "SCHEDULER_CALIBRATION_QUEUED", DEFAULT_CALIBRATION_QUEUED, 0
+        ),
+        calibration_since=_env_str(
+            environ, "SCHEDULER_CALIBRATION_SINCE", DEFAULT_CALIBRATION_SINCE
         ),
     )
 

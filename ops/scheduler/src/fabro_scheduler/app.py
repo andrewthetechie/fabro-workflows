@@ -59,7 +59,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, charts, github, retro, scorecard
+from . import __version__, calibration, charts, github, retro, scorecard
 from .collector import ScorecardCollector
 from .background import BackgroundLane
 from .doctor import PrDoctorProducer
@@ -559,6 +559,17 @@ def build_app(
         diagnosing "why is this box not filling?" can curl it.
         """
         return lane.state(datetime.now(UTC))
+
+    @app.get("/api/background/calibration")
+    def api_background_calibration() -> dict[str, object]:
+        """The precheck calibration: each verdict next to how its run ended.
+
+        One row per calibration job, a verdict x outcome-class confusion matrix, and the
+        per-verdict counts D20's holds are waiting for (`ready_unproductive`: runs the precheck
+        passed that ended `stuck`, `returned` or `noop`). Read from the store only — the
+        calibration posts nothing, so there is nothing on GitHub to read.
+        """
+        return calibration.report(store.calibration_rows())
 
     @app.post("/api/background/box-noop")
     def api_background_box_noop(body: BoxNoopRequest) -> dict[str, object]:

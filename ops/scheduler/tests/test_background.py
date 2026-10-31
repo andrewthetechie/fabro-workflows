@@ -723,7 +723,7 @@ def test_box_noop_is_not_enqueued_when_its_kind_is_off(store, leases):
 # --- the compose file (C7 step 3, D12) ---------------------------------------------
 
 
-def test_the_compose_file_carries_the_eight_variables_with_their_defaults():
+def test_the_compose_file_carries_the_ten_variables_with_their_defaults():
     text = COMPOSE.read_text()
     for name, default in (
         ("SCHEDULER_BACKGROUND", "off"),
@@ -738,6 +738,11 @@ def test_the_compose_file_carries_the_eight_variables_with_their_defaults():
         ("SCHEDULER_BG_KINDS", "box-noop,issue-precheck,context-pack"),
         ("SCHEDULER_PRECHECK_PER_REPO", "3"),
         ("SCHEDULER_PR_DOCTOR_REVIEWS_PER_DAY", "6"),
+        # The precheck calibration's producer (pre-review-and-calibration, Part A): its queue
+        # depth and how far back it looks. The kind itself stays out of the default
+        # `SCHEDULER_BG_KINDS` above until the operator turns it on.
+        ("SCHEDULER_CALIBRATION_QUEUED", "4"),
+        ("SCHEDULER_CALIBRATION_SINCE", "2026-09-25"),
     ):
         pattern = rf'^\s+{name}: "\$\{{{name}:-{re.escape(default)}\}}"$'
         assert re.search(pattern, text, re.M), name
@@ -771,7 +776,12 @@ def test_the_page_and_the_api_render_the_lane(tmp_path):
         body = client.get("/api/background").json()
         assert body["switch"] == "on"
         assert {box["box"] for box in body["boxes"]} == {"coders-a", "coders-b"}
-        assert body["kinds"] == ["issue-precheck", "context-pack", "box-noop"]
+        assert body["kinds"] == [
+            "issue-precheck",
+            "context-pack",
+            "precheck-calibration",
+            "box-noop",
+        ]
         # The doctor's review accounting (operator decision 3) is on the same document.
         assert body["reviews"] == {"today": 0, "per_day": 6, "waiting": [], "failed": []}
 

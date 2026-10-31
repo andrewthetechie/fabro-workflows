@@ -82,9 +82,16 @@ services:
       # runs with `box-noop` absent here. `issue-precheck` (more-local-inference 07, shadow mode:
       # it posts a verdict and holds nothing) is the first real producer; `context-pack` (08)
       # maps the issues the precheck passed, for `decompose` and `plan`. `pr-doctor` was
-      # retired on 2026-10-30, and naming it fails startup. An empty value reads as unset here
-      # (`:-`), and config.py's own default is every live kind.
+      # retired on 2026-10-30, and naming it fails startup. **`precheck-calibration` is
+      # deliberately absent**: the operator turns it on here (or in ~/fabro/.env) once the
+      # deploy that ships it is in place. An empty value reads as unset here (`:-`), and
+      # config.py's own default is every live kind.
       SCHEDULER_BG_KINDS: "${SCHEDULER_BG_KINDS:-box-noop,issue-precheck,context-pack}"
+      # The precheck calibration's producer (pre-review-and-calibration, Part A): how many
+      # `precheck-calibration` jobs it keeps queued, and how far back it looks for finished
+      # runs (an ISO date, compared as a string prefix against `dispatched_at`).
+      SCHEDULER_CALIBRATION_QUEUED: "${SCHEDULER_CALIBRATION_QUEUED:-4}"
+      SCHEDULER_CALIBRATION_SINCE: "${SCHEDULER_CALIBRATION_SINCE:-2026-09-25}"
       # How many of the next issues of each repository, in dispatch order, the precheck
       # producer keeps checked and the context-pack producer keeps mapped.
       SCHEDULER_PRECHECK_PER_REPO: "${SCHEDULER_PRECHECK_PER_REPO:-3}"

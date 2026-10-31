@@ -454,10 +454,16 @@ def test_the_background_lane_is_off_by_default_and_reads_on_and_off(tmp_path):
     assert cfg.box_health == {}
     assert cfg.max_concurrent_runs == 8
     # Every live kind, in D10's value order. `pr-doctor` (task 06) was retired on 2026-10-30;
-    # task 07 added `issue-precheck` at 2.
-    assert cfg.bg_kinds == ("issue-precheck", "context-pack", "box-noop")
+    # task 07 added `issue-precheck` at 2; the precheck calibration (Part A) is 4, between the
+    # pack and the hand-queued `box-noop`.
+    assert cfg.bg_kinds == (
+        "issue-precheck", "context-pack", "precheck-calibration", "box-noop",
+    )
     # The precheck producer keeps the next three issues of each repository checked.
     assert cfg.precheck_per_repo == 3
+    # The calibration producer keeps four jobs queued and looks back to 2026-09-25, where the
+    # scheduler's labelled run history starts.
+    assert (cfg.calibration_queued, cfg.calibration_since) == (4, "2026-09-25")
     # The doctor's daily review cap (operator decision 3): 6 per UTC day, on by default.
     assert cfg.pr_doctor_reviews_per_day == 6
 

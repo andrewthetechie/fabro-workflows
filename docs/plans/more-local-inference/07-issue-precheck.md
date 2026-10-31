@@ -37,6 +37,12 @@ This task also builds the path every background output takes into a hosted stage
 | `unclear` | No criterion can be checked | adds `precheck-unclear`; holds the issue |
 | `unverifiable` | A criterion the pipeline cannot check or meet: a command `.fabro/ci.sh` does not run, or PR-description text, a screenshot, a manual check; it quotes the criterion (added 2026-10-31, shadow only) | not decided; the issue still gets a context pack |
 
+**Status (2026-11-01):** the holds below wait on the calibration measurement, not on more live
+prechecks. `precheck-calibration` re-runs this package's own `check` on issues whose runs have
+already finished, against `main` as it stood when each was dispatched, and
+`GET :32280/api/background/calibration` puts each verdict next to how the run ended (see
+`ops/README.md`). Nothing in step 4's hold rules is built yet; the shadow-mode note above stands.
+
 - A held issue is not dispatched while its `precheck-*` label is on it. It is listed on the
   queue page under *Held by precheck*, with the verdict's summary and a link to the comment. A
   human removes the label to release it, and the scheduler then does not hold it again for the

@@ -142,15 +142,21 @@ The scheduler's **background lane** fills a coder box's gaps with box-only runs:
 precheck (`issue-precheck`, task 07, in shadow mode: it posts a verdict comment and holds
 nothing), the context pack (`context-pack`, task 08: a code map of an issue the precheck
 passed, which `backlog`'s and `ralph`'s `claim` copy into `background.md` for `decompose` and
-`plan`), and `box-noop` by hand. One
+`plan`), the precheck calibration (`precheck-calibration`, pre-review-and-calibration Part A:
+the live precheck re-run on issues whose runs have finished, against `main` as it stood when
+each was dispatched; it posts nothing and its verdict is read from its own run's events), and
+`box-noop` by hand. One
 switch turns it off: `SCHEDULER_BACKGROUND=off` (the default) in `~/fabro/.env`, applied with
-`docker compose up -d --no-deps scheduler`; running background runs finish. Its eight
+`docker compose up -d --no-deps scheduler`; running background runs finish. Its ten
 variables reach the container only through `ops/docker-compose.yaml`'s `environment:` lines
 and `~/fabro/scheduler.env`, never `.env` as an env file. `GET :32280/api/background` is the
 lane's state and the queue page's *Background* strip is the same document;
 `POST /api/background/box-noop` with `{"repo"}` queues a measuring job by hand. The precheck
-and pack producers queue jobs for the next `SCHEDULER_PRECHECK_PER_REPO` issues of each repository.
-`ops/README.md` has the runbook.
+and pack producers queue jobs for the next `SCHEDULER_PRECHECK_PER_REPO` issues of each repository;
+the calibration producer keeps `SCHEDULER_CALIBRATION_QUEUED` jobs queued from finished runs, and
+`GET :32280/api/background/calibration` is its verdict-against-outcome report. The calibration is
+**off until the operator adds `precheck-calibration` to `SCHEDULER_BG_KINDS`**. `ops/README.md`
+has the runbook.
 
 The operational history is `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md` on the Mac,
 mode 600, deliberately outside this public tree. Append a dated section rather than

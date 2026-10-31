@@ -1315,6 +1315,60 @@ class Store:
                 "ORDER BY last_started_at, job_id"
             ).fetchall()
 
+    def runs_to_calibrate(self, *, since: str, limit: int) -> list[sqlite3.Row]:
+        """Finished issue runs worth re-checking with the precheck, newest first.
+
+        One row per **issue**: its first finished run, because a later run of the same issue
+        saw a changed issue and measuring it would answer a different question. A run counts
+        when it is an issue run, its summary is `ok`, and it has a `terminal_node` that is an
+        ending rather than a launch failure, a cancel or a lost run — so the calibration is
+        only ever compared with runs that did something. `since` is an ISO date compared as a
+        string prefix against `dispatched_at` (both UTC, both ISO-8601), so `2026-09-25`
+        includes everything from that day on.
+
+        The kind and the excluded nodes are spelled out here rather than imported from
+        `calibration`, which imports this module.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "WITH firsts AS ("
+                "  SELECT h.run_id, h.repo, h.issue_number, h.dispatched_at, s.terminal_node,"
+                "         ROW_NUMBER() OVER (PARTITION BY h.repo, h.issue_number"
+                "                            ORDER BY h.dispatched_at, h.run_id) AS rn"
+                "  FROM run_history h JOIN run_summary s ON s.run_id = h.run_id"
+                "  WHERE h.target_kind = 'issue' AND h.dispatched_at >= ?"
+                "    AND s.status = 'ok' AND s.terminal_node IS NOT NULL"
+                "    AND s.terminal_node NOT IN ('launch_failed', 'cancelled', 'lost')"
+                ") SELECT run_id, repo, issue_number, dispatched_at, terminal_node FROM firsts"
+                " WHERE rn = 1 ORDER BY dispatched_at DESC, run_id DESC LIMIT ?",
+                (since, limit),
+            ).fetchall()
+        return rows
+
+    def calibration_rows(self) -> list[sqlite3.Row]:
+        """One row per `precheck-calibration` job, joined to the run it calibrated.
+
+        Everything the verdict-against-outcome report needs: the job's outcome (which carries
+        the verdict), how the calibrated run ended (`terminal_node`), whether it merged, and
+        the PR's reason when it opened one without merging. Plus `run_summary.refute`, the
+        Refuter's per-pass verdicts, which the `unverifiable` line compares with.
+
+        The shaping is `calibration.report`'s; the kind is spelled out here because that module
+        imports this one.
+        """
+        with self._lock:
+            return self._conn.execute(
+                "SELECT j.job_id, j.repo, j.target AS run_id, j.state, j.outcome,"
+                "       j.last_finished_at, h.issue_number, h.merged, h.pr_number,"
+                "       s.terminal_node, f.reason AS pr_reason, s.refute"
+                "  FROM background_jobs j"
+                "  LEFT JOIN run_history h ON h.run_id = j.target"
+                "  LEFT JOIN run_summary s ON s.run_id = j.target"
+                "  LEFT JOIN pr_facts f ON f.repo = h.repo AND f.pr_number = h.pr_number"
+                " WHERE j.kind = 'precheck-calibration'"
+                " ORDER BY j.job_id DESC",
+            ).fetchall()
+
     def background_job(self, job_id: int) -> sqlite3.Row | None:
         with self._lock:
             return self._conn.execute(
