@@ -687,7 +687,11 @@ class BackgroundLane:
         """
         if self._read_calibration is None:
             return end
-        run_id = str(job["target"] or "")
+        # The job's own run, which has the `record` node. Not `target`: that is the coder run
+        # being calibrated, which has no `record`, so reading it gave every job
+        # `succeeded (no verdict)` (2026-10-31, job 180). `job` is the row as it was while
+        # running; `finish_background_job` has already cleared `run_id` in the store.
+        run_id = str(job["run_id"] or "")
         try:
             outcome = self._read_calibration(run_id)
         except FabroError as exc:

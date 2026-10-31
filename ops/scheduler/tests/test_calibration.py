@@ -267,7 +267,10 @@ def test_a_succeeded_calibration_run_records_the_verdict_from_the_run(store):
     assert store.start_background_job(job_id, run_id="CALRUN", box="coders-a", now=NOW)
     fabro = FakeFabro(runs={"CALRUN": {"lifecycle": {"status": {"kind": "succeeded"}}}})
     lane_ = lane(config(), store, LeaseStore(store), fabro, FakeHealth())
-    lane_._read_calibration = lambda run_id: "verdict=ready raw=ready main=0123456789ab changed=0"
+    read: list[str] = []
+    lane_._read_calibration = lambda run_id: (
+        read.append(run_id) or "verdict=ready raw=ready main=0123456789ab changed=0"
+    )
     lane_._read_precheck = lambda repo, number: pytest.fail("a calibration is not a precheck")
     ends = lane_.sync(NOW)
     assert [(end.state, end.outcome) for end in ends] == [
@@ -276,6 +279,7 @@ def test_a_succeeded_calibration_run_records_the_verdict_from_the_run(store):
     assert store.background_job(job_id)["outcome"] == (
         "verdict=ready raw=ready main=0123456789ab changed=0"
     )
+    assert read == ["CALRUN"], "the calibration's own run, not the run it calibrates (C1)"
 
 
 def test_a_reader_that_cannot_read_leaves_plain_succeeded(store):
