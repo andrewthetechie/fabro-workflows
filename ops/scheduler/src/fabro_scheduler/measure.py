@@ -175,6 +175,11 @@ def box_use(
     return {
         "window_days": days,
         "unit": "box-stage minutes of 24 h per box, averaged over the window",
+        "note": (
+            "the share is divided by the window's days, not by the days of history the store "
+            "holds: on a store younger than the window every box reads low, so check `n` "
+            "against the window on the first measurement after a fresh deployment"
+        ),
         "boxes": boxes,
     }
 
