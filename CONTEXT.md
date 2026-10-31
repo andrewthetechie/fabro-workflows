@@ -95,8 +95,8 @@ starts a fresh session and a handover therefore costs nothing in the KV cache (A
 _Avoid_: coder run (when the precedence is what is meant), worker
 
 **Background run**:
-A run of a box-only package (`box-noop`, `issue-precheck`, `context-pack` and
-`precheck-calibration` today; `repo-orientation` and `flaky-investigation` later) that the
+A run of a box-only package (`box-noop`, `issue-precheck`, `context-pack`,
+`precheck-calibration`, `flaky-investigation` and `repo-orientation`) that the
 **Scheduler** starts in a **Coder loop**'s gap. At most one per box, every stage on the box's
 own `coders-?-bg` model, no hosted credits, and always cancellable: it writes to GitHub only
 in its last node, and that node writes its marker first (ADR 0031, more-local-inference D9).

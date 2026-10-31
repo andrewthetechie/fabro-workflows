@@ -1051,6 +1051,84 @@ SCHEDULER_BG_KINDS=box-noop,issue-precheck,context-pack,precheck-calibration
 cd ~/fabro && docker compose up -d --no-deps scheduler
 ```
 
+#### The flaky investigation (more-local-inference 10)
+
+**What it does.** For a queued issue the scout filed with `flaky-test`, a box reads what
+FlakeRadar holds about the failing test or job, reads the code at `main`, and posts the likely
+cause, the evidence and a proposed fix as the issue's **one marker comment**. The `backlog` or
+`ralph` run that later takes the issue copies that comment into `background.md` (C9), so its
+planners and its coder start from a diagnosis.
+
+**It does not run the test, and that is the design.** Reproducing needs the repository's
+`.fabro/setup.sh` and its test environment, which take longer than any gap the lane can predict
+— a 30-minute job fits 5 of the 58 predicted gaps, which is why the PR doctor was retired.
+FlakeRadar already holds what a reproduction would show, so the whole run is budgeted at
+**8 minutes**.
+
+**What the marker looks like** — the comment's first line, edited in place on a rerun:
+
+```
+<!-- fabro:flaky-investigation test=<id> cause=<cause> at=<iso> run=<run_id> -->
+```
+
+`test=` is FlakeRadar's id of the test **or of the job** (`unknown` when nothing resolved:
+FlakeRadar does not cover the repository, or the read failed — the diagnosis then rests on the
+issue and the code, and the comment says so). `cause=` is one of `timing`, `ordering`,
+`shared-state`, `resource`, `network`, `environment`, `test-data`, `other`.
+
+**How it finds its subject.** The scout names it in the issue body's first line, the C3
+fingerprint: `flaky:test-<project>:<fingerprint>` for a test, `flaky:<workflow>:<job slug>` for a
+job. Neither id is in the body, so `claim` looks a test up by `fingerprint` in `/api/tests`, and a
+job by the issue number FlakeRadar has it linked to (`/api/jobs`' `github_issue_number`, which the
+scout's write-back sets). Both are plain GETs against `FLAKERADAR_URL`, which need no token.
+
+**The outcome string** on the job row is `flaky cause=<cause> run=<run_id>`; a run that stopped
+on a current diagnosis, or posted nothing, records `succeeded (no new diagnosis)`.
+
+**One diagnosis per issue unless the issue was edited after it**, compared with the newest
+`userContentEdits.editedAt` and never `updated_at` (this package's own comment bumps that).
+
+**Turn it on / off.** It is a kind, so add or remove `flaky-investigation` in
+`SCHEDULER_BG_KINDS` and recreate the scheduler. Removing it stops new jobs; a queued job still
+runs, and `GET :32280/api/background` shows them.
+
+#### The repository orientation (more-local-inference 10, D22)
+
+**What it does.** Once a day per repository, and sooner when `main` has moved ten commits or the
+map is a day old, a box writes a map of that repository at `main` — its modules, the conventions
+a change follows, where the tests live, the commands that run them, the traps — into the body of
+**one pinned issue**. `backlog`'s and `ralph`'s `prep` fetch that body to
+`/tmp/fabro/orientation.md`, and `decompose` and `plan` read it as an optional input.
+
+**The issue.** Titled `fabro: repository orientation`, labelled **`fabro-orientation` and
+nothing else**, pinned on the run that creates it. No automation selects that label: the
+scheduler's inventory is `agent`/`agent-in-progress`, `issue-triage` and `arch-review` select
+`needs-triage`/`needs-info`/`architecture`, the scout and ralph's `learn` select
+`scout`/`learning`, `dependabot` selects `security`, and the precheck, pack and flaky producers
+read the scheduler's queue. A gate test (`ops/gate_tests/test_repo_orientation.py`) reads every
+selector in the repository and fails if one names it. Do not add `agent` to it: that is the one
+label that would put it in the queue.
+
+**The marker**, the body's first line, rewritten in place:
+
+```
+<!-- fabro:orientation main=<sha> at=<iso> run=<run_id> -->
+```
+
+**How far `main` has moved** is read from `repos/O/R/compare/<old>...<new>` — never from local
+history, because the sandbox clone is shallow. A compare that cannot be read re-maps rather than
+stopping.
+
+**The outcome string** is `orientation main=<sha12> chars=<n>`, or `orientation unchanged` for a
+run whose `stop` found the map current.
+
+**Turn it on / off.** A kind: add or remove `repo-orientation` in `SCHEDULER_BG_KINDS` and
+recreate the scheduler. Turning it off leaves the existing map in place, and `prep` keeps
+reading it: to stop that, delete the issue or its label.
+
+**If the pin fails**, the run says so on stderr and the issue is still found by label; pin it by
+hand with `gh issue pin <n>`.
+
 #### The precheck's holds (D20), off until the calibration supports them
 
 **What a hold is.** A precheck verdict of `already_done`, `contradiction`, `unclear` or
@@ -1321,7 +1399,7 @@ how this project already passes per-host values:
 | `SCHEDULER_BG_SLOT_RESERVE` | `3` | Run slots fabro must have free — `SCHEDULER_MAX_CONCURRENT_RUNS` minus every active run, `pending` included — before a background run starts (D8). Keeps fabro's first-come run cap from being spent on background work. |
 | `SCHEDULER_BOX_HEALTH` | the two boxes' `/health` (compose) | The boxes in the lane, as `pool=url` pairs in the same format `fabro-io box-claim` reads. **Empty means no box is in the lane and the lane does nothing at all** — no `/health` read, no fabro call, no row. |
 | `SCHEDULER_MAX_CONCURRENT_RUNS` | `8` | fabro's own `server.scheduler.max_concurrent_runs`, copied here because the scheduler can read the cap only from itself. Keep the two equal: a larger value would hand background runs slots that do not exist. |
-| `SCHEDULER_BG_KINDS` | every live kind (compose: `box-noop,issue-precheck,context-pack`) | Which job kinds' **producers** run, comma-separated. An unknown kind is a `ConfigError` (the removed `pr-doctor` among them). `precheck-calibration` (Part A) is a live kind but **deliberately absent from the compose default**: the operator adds it after the deploy that ships the package. Turning one kind off leaves the rest of the lane alone, and a job queued by hand (`POST /api/background/box-noop`) still runs, because this gates producers and not the lane's pick (C7). |
+| `SCHEDULER_BG_KINDS` | every live kind (compose: `box-noop,issue-precheck,context-pack`) | Which job kinds' **producers** run, comma-separated. An unknown kind is a `ConfigError` (the removed `pr-doctor` among them). `precheck-calibration` (Part A), `flaky-investigation` and `repo-orientation` (task 10) are live kinds but **deliberately absent from the compose default**: the operator adds each after the deploy that ships its package. **No new kind turns itself on.** Turning one kind off leaves the rest of the lane alone, and a job queued by hand (`POST /api/background/box-noop`) still runs, because this gates producers and not the lane's pick (C7). |
 | `SCHEDULER_CALIBRATION_QUEUED` | `4` | How many `precheck-calibration` jobs the producer keeps queued (Part A). The lane runs one background job at a time per box, so this is only how far ahead the next job is ready; `0` turns the producer off without touching the kind switch. |
 | `SCHEDULER_CALIBRATION_SINCE` | `2026-09-25` | The oldest `run_history.dispatched_at` the calibration producer reaches back to, as an ISO date compared as a string prefix (both UTC). 2026-09-25 is where the scheduler's labelled run history starts. |
 | `SCHEDULER_PRECHECK_HOLDS` | `off` | D20's holds, `on` or `off` (compose passes `off` too). Off means no **new** hold is applied; an issue already carrying a `precheck-*` label stays out of the queue, so turning it off never releases one. Anything but `on`/`off` is a `ConfigError`. |

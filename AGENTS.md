@@ -23,7 +23,7 @@ actually lives.
 
 | Path | What it is |
 |---|---|
-| `.fabro/workflows/<name>/` | **The only tree the automations read.** Twelve packages — the eight the automations fire (`backlog`, `ralph`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue` and `scout`; `merge-queue` and `scout` have no agent stage), and the four box-only packages the **Scheduler**'s background lane runs in a coder loop's gap (more-local-inference, ADR 0031): `box-noop`, `issue-precheck`, `context-pack` and `precheck-calibration` (the live precheck re-run on finished runs, posting nothing) — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in (it has a queue mode that only `backlog`'s fast lane uses), and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `ralph` imports neither: it copies the shared merge nodes, and `ops/check-graph-invariants.py` R10 fails when a copy drifts. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
+| `.fabro/workflows/<name>/` | **The only tree the automations read.** Fourteen packages — the eight the automations fire (`backlog`, `ralph`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue` and `scout`; `merge-queue` and `scout` have no agent stage), and the six box-only packages the **Scheduler**'s background lane runs in a coder loop's gap (more-local-inference, ADR 0031): `box-noop`, `issue-precheck`, `context-pack`, `precheck-calibration` (the live precheck re-run on finished runs, posting nothing), `flaky-investigation` (a diagnosis of one queued `flaky-test` issue, posted as its marker comment) and `repo-orientation` (a map of one repository, kept in a pinned `fabro-orientation` issue that `backlog`'s and `ralph`'s `prep` read) — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in (it has a queue mode that only `backlog`'s fast lane uses), and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `ralph` imports neither: it copies the shared merge nodes, and `ops/check-graph-invariants.py` R10 fails when a copy drifts. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
 | `.fabro/workflows/_io/` | The **Stage manifest** and output schemas (ADR 0016): the only source of every `FABRO_IO_MANIFEST` block, generated into each `workflow.toml`. Never hand-edit the generated blocks; `check` fails on drift. |
 | `ops/` | Host replication: compose, the coder scheduler, profile images, provisioning, sweepers, and the offline checkers. No automation reads this tree. `ops/README.md` has its contents table and the runbooks. |
 | `docs/` | `docs/adr/` holds the decisions; every other folder is a task series or a set of design records. `docs/README.md` indexes them with their status. |
@@ -85,7 +85,7 @@ Baselines (fabro 0.362.0-nightly.0, last verified by `make check-host` on 2026-1
 `Backlog` was `82 nodes, 210 edges` (with one warning, `issue_number` unbound in `claim`);
 `PrReview (39 nodes, 87 edges)` with two warnings, `pr_number` unbound in `validate_input` and `coder_pool` unbound in `claim` (the claim's box file, more-local-inference C2; since 2026-10-28);
 `IssueTriage (16 nodes, 36 edges)`, `ArchReview (24 nodes, 54 edges)`,
-`Dependabot (51 nodes, 115 edges)`, `MergeQueue (8 nodes, 10 edges)` and `Scout (9 nodes, 11 edges)` clean (Scout verified by `make check-host` on 2026-10-16). `BoxNoop (4 nodes, 3 edges)`, the background lane's box-only package, with one warning, `coder_pool` unbound in `claim` (verified by `make check-host` on 2026-10-28). `IssuePrecheck (8 nodes, 11 edges)` (more-local-inference task 07) and `ContextPack (8 nodes, 11 edges)` (task 08) each carry one warning, `coder_pool` unbound in `claim`, with `issue_number` folded into it: fabro emits one undefined-input diagnostic per node *attribute* (`docs/agents/validating.md`) (both verified by `make check-host` on 2026-10-30). `PrecheckCalibration (7 nodes, 9 edges)` (pre-review-and-calibration, Part A) carries the same one warning, `coder_pool` unbound in `claim`, with `issue_number` and `at` folded into it; no `stop` node, because it re-checks issues that already have a live marker, and no `post` node, because it writes nothing (verified by `make check-host` on 2026-10-31). Every
+`Dependabot (51 nodes, 115 edges)`, `MergeQueue (8 nodes, 10 edges)` and `Scout (9 nodes, 11 edges)` clean (Scout verified by `make check-host` on 2026-10-16). `BoxNoop (4 nodes, 3 edges)`, the background lane's box-only package, with one warning, `coder_pool` unbound in `claim` (verified by `make check-host` on 2026-10-28). `IssuePrecheck (8 nodes, 11 edges)` (more-local-inference task 07) and `ContextPack (8 nodes, 11 edges)` (task 08) each carry one warning, `coder_pool` unbound in `claim`, with `issue_number` folded into it: fabro emits one undefined-input diagnostic per node *attribute* (`docs/agents/validating.md`) (both verified by `make check-host` on 2026-10-30). `PrecheckCalibration (7 nodes, 9 edges)` (pre-review-and-calibration, Part A) carries the same one warning, `coder_pool` unbound in `claim`, with `issue_number` and `at` folded into it; no `stop` node, because it re-checks issues that already have a live marker, and no `post` node, because it writes nothing (verified by `make check-host` on 2026-10-31). `FlakyInvestigation (8 nodes, 11 edges)` (task 10) and `RepoOrientation (8 nodes, 11 edges)` (task 10) carry the same one warning each, `coder_pool` unbound in `claim`, with `issue_number` folded into the first and nothing into the second (it takes no issue number: its subject is the repository the run was fired for); the first also carries `flaky-investigation R10 prep` as a recorded copy of `issue-precheck`'s `prep`, as `precheck-calibration` does (all four verified by `make check-host` on 2026-11-03). Every
 warning is deliberate: never bind those inputs in `[run.inputs]`. A bound `coder_pool` would pin every hand-fired run to one box and let a fire without one claim nothing. The fast-path series
 added `report_queued` to the three importing graphs (+1 node, +3 edges each), and
 `route_lane` and `demote_lane` to `backlog`. The gate-relief series (#29) added `refute_fix` and `refute_fix_gate` to the three importing graphs (+2 nodes, +5 edges each). The final-merge fix (2026-10-12) added `final_merge` to `backlog` (+1 node, +4 edges). The base-conflict fix (#37, 2026-10-13) added `resolve_base` and `resolve_base_gate` to the three importing graphs (+2 nodes, +6 edges each). The final-validation fix (#35, 2026-10-13) added `drop_unreviewed` and `final_fix_prep` to `backlog` (+2 nodes, +9 edges). The unmet-criteria series (#17, 2026-10-13) added `return_to_triage` and `task_block_gate` to `backlog` (+2 nodes, +6 edges). The plan trial (#25, 2026-10-13) added `plan` to `backlog` (+1 node, +5 edges); closing it (2026-10-21, ADR 0030) deleted `improve` and the three arm-split edge pairs, so **`Backlog` was 81 nodes and 205 edges**. `make check-host` confirmed it on 2026-10-22. The pre-review (pre-review-and-calibration, Part B) added `pre_review_prep`, `pre_review` and `pre_review_check` between `next_task` and `extra_prep` (+3 nodes, +4 edges), so **`Backlog` is 84 nodes and 209 edges**, verified by `make check-host` on 2026-10-31.
@@ -141,24 +141,35 @@ schedule (every 20 minutes, created disabled) or its `api:manual` trigger; it ta
 automation endpoint cannot carry the input, and covers the scheduler.
 
 The scheduler's **background lane** fills a coder box's gaps with box-only runs: the issue
-precheck (`issue-precheck`, task 07, in shadow mode: it posts a verdict comment and holds
-nothing), the context pack (`context-pack`, task 08: a code map of an issue the precheck
-passed, which `backlog`'s and `ralph`'s `claim` copy into `background.md` for `decompose` and
-`plan`), the precheck calibration (`precheck-calibration`, pre-review-and-calibration Part A:
-the live precheck re-run on issues whose runs have finished, against `main` as it stood when
-each was dispatched; it posts nothing and its verdict is read from its own run's events), and
-`box-noop` by hand. One
+precheck (`issue-precheck`, task 07, in shadow mode: it posts a verdict comment, and holds an
+issue only when the operator turns D20's holds on), the context pack (`context-pack`, task 08: a
+code map of an issue the precheck passed, which `backlog`'s and `ralph`'s `claim` copy into
+`background.md` for `decompose` and `plan`), the flaky investigation (`flaky-investigation`, task
+10: a diagnosis of one queued `flaky-test` issue from FlakeRadar's records and the code, posted
+as its marker comment for the run that takes the issue), the repository orientation
+(`repo-orientation`, task 10: a map of one repository per day, kept in a pinned
+`fabro-orientation` issue that `backlog`'s and `ralph`'s `prep` read into `orientation.md`), the
+precheck calibration (`precheck-calibration`, pre-review-and-calibration Part A: the live
+precheck re-run on issues whose runs have finished, against `main` as it stood when each was
+dispatched; it posts nothing and its verdict is read from its own run's events), and `box-noop`
+by hand. One
 switch turns it off: `SCHEDULER_BACKGROUND=off` (the default) in `~/fabro/.env`, applied with
-`docker compose up -d --no-deps scheduler`; running background runs finish. Its ten
-variables reach the container only through `ops/docker-compose.yaml`'s `environment:` lines
+`docker compose up -d --no-deps scheduler`; running background runs finish. Its variables
+reach the container only through `ops/docker-compose.yaml`'s `environment:` lines
 and `~/fabro/scheduler.env`, never `.env` as an env file. `GET :32280/api/background` is the
 lane's state and the queue page's *Background* strip is the same document;
-`POST /api/background/box-noop` with `{"repo"}` queues a measuring job by hand. The precheck
-and pack producers queue jobs for the next `SCHEDULER_PRECHECK_PER_REPO` issues of each repository;
-the calibration producer keeps `SCHEDULER_CALIBRATION_QUEUED` jobs queued from finished runs, and
-`GET :32280/api/background/calibration` is its verdict-against-outcome report. The calibration is
-**off until the operator adds `precheck-calibration` to `SCHEDULER_BG_KINDS`**. `ops/README.md`
-has the runbook.
+`POST /api/background/box-noop` with `{"repo"}` queues a measuring job by hand. The precheck,
+pack and flaky producers queue jobs for the next `SCHEDULER_PRECHECK_PER_REPO` issues of each
+repository, and the orientation producer one job per repository per day; the calibration
+producer keeps `SCHEDULER_CALIBRATION_QUEUED` jobs queued from finished runs, and
+`GET :32280/api/background/calibration` is its verdict-against-outcome report.
+`GET :32280/api/background/measure` computes task 12's Phase 3 and Phase 4 exit numbers from the
+store (`&format=md` for the log); ADR 0031 is decided on Phase 3's. **No new kind turns itself
+on**: `precheck-calibration`, `flaky-investigation` and `repo-orientation` are absent from the
+compose default, and the operator adds each to `SCHEDULER_BG_KINDS`. **The precheck's holds ship
+off** (`SCHEDULER_PRECHECK_HOLDS=off`) and are turned on per verdict from the calibration's
+numbers; an issue that already carries a `precheck-*` label stays out of the queue whatever the
+switch says. `ops/README.md` has the runbook.
 
 The operational history is `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md` on the Mac,
 mode 600, deliberately outside this public tree. Append a dated section rather than

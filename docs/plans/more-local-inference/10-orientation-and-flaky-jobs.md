@@ -1,5 +1,28 @@
 # Task 10: repo orientation and flaky-test investigation
 
+**Status (2026-11-03): BUILT by `.scratch/more-local-inference/background-jobs-plan.md`.** Both
+packages exist, are registered in every checker, and are **off**: the operator adds
+`flaky-investigation` and `repo-orientation` to `SCHEDULER_BG_KINDS`. Four departures from the
+steps below, each argued in its commit:
+
+- **`typical_box_minutes` is 8, not 30.** A 30-minute job fits 5 of the 58 predicted gaps; the PR
+  doctor was a 40-minute job and its one queued canary waited 23 hours and never started. Both
+  packages are shaped like `issue-precheck` (0.9-2.5 min measured) with one longer reading stage.
+- **The flaky investigation does not reproduce the test.** Reproducing needs the repository's
+  `.fabro/setup.sh` and its test environment, which is exactly what does not fit a gap. It reads
+  FlakeRadar's records (the failure messages and tracebacks across runs, the failure category, the
+  proven flakes, the file and line at the last failing commit) and the code, and the comment says
+  so. See `background-jobs-handoff.md` for what FlakeRadar returns and where the scout names the
+  test.
+- **Priority: the flaky investigation is 3** (with the pack: both feed an issue already in the
+  queue), **the orientation is 4**, and `precheck-calibration` and `box-noop` moved to 5 and 6.
+- **Where the orientation is read.** `decompose` and `plan` in `backlog` and `plan` in `ralph`
+  take `orientation.md`; `coder` and ralph's `iterate_t*` do not, because neither takes the
+  `background.md`-shaped note step 2's "where the manifest gives them `background.md`-like
+  inputs" is conditioned on. The dossier those stages read is this run's own, written by `plan`.
+
+The rest of this file is kept as written: it is the design the packages implement.
+
 Read `00-overview-and-contracts.md` first (D9, D10, D11, D19, D22; C6, C7, C9). **Invoke
 `/fabro-workflow`.** Read `_io/agent-guide.md` (the `FABRO_AGENT_GUIDE` block and its
 3,000-byte cap), `ops/check-graph-invariants.py` R10, and `docs/scout/` and `docs/flakeradar/`

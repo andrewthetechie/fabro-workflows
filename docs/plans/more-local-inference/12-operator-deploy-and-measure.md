@@ -113,13 +113,18 @@ phase's agent reads it there.
    as in Phase 1. Then push the rest and `make deploy-scheduler`.
 2. Check that a new `backlog` run's `decompose` received `background.md` when the issue has a
    marker, and that runs without one are unchanged.
-3. **Exit after 14 days:**
-   - the box busy share, against Phase 0's;
-   - runs that ended `close_noop`, `return_to_triage` or `mark_stuck`, per 100 runs;
-   - issues held by precheck, and how many a human released (a false hold);
+3. **Exit after 14 days.** Read every number from `GET :32280/api/background/measure`
+   (`&format=md` for the deployment log); `measure.py` computes each one from the scheduler's
+   store, with its window and its `n`:
+   - the box busy share, against Phase 0's (`phase_3.box_use`, which quotes Phase 0's 32-48%):
+   - runs that ended `close_noop`, `return_to_triage` or `mark_stuck`, per 100 runs
+     (`phase_3.endings_per_100`, window against the 14 days before the precheck went live);
+   - issues held by precheck, and how many a human released (a false hold)
+     (`phase_3.precheck_holds`; with the holds off it says so, and `released_at_most` is null
+     because the store keeps no label history);
    - z.ai credits per `decompose` and `plan` visit, with a pack against without (task 08's
      `had_pack`), stratified by the box-plan trial's arm, priced at the overview's z.ai credit
-     rates (*Facts*), with off-peak at half.
+     rates (*Facts*), with off-peak at half (`phase_3.planner_visits`).
 
    A pack that does not lower credits per visit is turned off (producer disabled) and recorded.
    A precheck whose false-hold rate is over a third is turned off the same way.
@@ -129,11 +134,15 @@ phase's agent reads it there.
 1. **Before task 09 starts:** record in the Status line either the ralph trial's verdict or
    that you accept the confound (D21).
 2. Push, deploy, and `make check-host` (new `Backlog` baseline).
-3. **Exit after 14 days:**
-   - hosted `review` and `rework` visits per task, before and after;
-   - pre-review reverts per task;
-   - the orientation issue's effect on credits per `decompose` visit;
-   - flaky issues closed with the investigation's cause.
+3. **Exit after 14 days.** Read every number from `GET :32280/api/background/measure`, as in
+   Phase 3 — and set `SCHEDULER_PRE_REVIEW_ARM_SINCE` to the deploy's timestamp first, because the
+   pre-review figures start there:
+   - hosted `review` and `rework` visits per task, by arm (`phase_4.pre_review`);
+   - the pre-review verdict mix, by arm (`phase_4.pre_review.arms[*].verdicts`);
+   - the orientation issue's effect on credits per `decompose` visit (`phase_4.orientation`);
+   - flaky issues closed with the investigation's cause (`phase_4.flaky`: the diagnoses and their
+     causes, and how the runs after one ended — the store keeps no closed state, so the closed
+     count itself is a GitHub read).
 
 ## Housekeeping
 
