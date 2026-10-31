@@ -356,7 +356,86 @@ def test_post_scrubs_tokens(ck, tmp_path):
     ck("post: the body file has none either", "0", count(secret, cat(F.fabro / "orientation/body.full")))
 
 
+# --- the reader in backlog and ralph ------------------------------------------------
+
+
+def prep_reader(graph: Path) -> str:
+    """The orientation block `prep` runs, as the graph spells it."""
+    script = extract(graph, "prep")
+    start = script.find("rm -f /tmp/fabro/orientation.md")
+    assert start >= 0, "prep does not read the orientation"
+    end = script.find("rm -f /tmp/fabro/orientation.raw")
+    assert end > start
+    return script[start:end + len("rm -f /tmp/fabro/orientation.raw /tmp/fabro/orientation.tmp /tmp/fabro/orientation.tmp2")]
+
+
+def test_the_reader_is_the_same_block_in_both_graphs(ck):
+    a, b = prep_reader(BACKLOG), prep_reader(RAPH)
+    ck("reader: identical in backlog and ralph (R10)", "1", str(int(a == b)))
+    ck("reader: one gh call, by label", "1",
+       count(f"gh issue list --label {LABEL} --state open", a, flags="F"))
+    ck("reader: capped at 6,000 characters", "1", count("6000", a, flags="F"))
+    ck("reader: the marker line is stripped", "1", count("sed 1d", a, flags="F"))
+    ck("reader: it never fails the node", "1", count("the run goes on without it", a, flags="F"))
+    ck("reader: its one message goes to stderr", "1",
+       count("the run goes on without it' >&2", a, flags="F"))
+
+
+def test_the_reader_stages_the_body_and_tolerates_every_failure(ck, tmp_path):
+    """Run `prep`'s block on its own against a stub `gh`: present, absent, and failing."""
+    for name, issues, env in (
+        ("present", [{"number": 9, "body": orientation_body("a" * 40, "2026-11-01T00:00:00Z")}], {}),
+        ("absent", [], {}),
+        ("nobody", [], {"RO_ISSUES_JSON": "/nonexistent.json"}),
+        ("unmarked", [{"number": 9, "body": "no marker here"}], {}),
+    ):
+        F = Orientation(ck, tmp_path, f"reader-{name}")
+        F.issues_json(issues)
+        block = prep_reader(BACKLOG)
+        # The block is a fragment of a bigger script: run it standalone, as the graph does.
+        script = rebase(block, F.fabro)
+        path = write(F.T / "reader.sh", "set -e\n" + script)
+        r = sh(path, cwd=F.repo, path=f"{F.bin}:{ORIG_PATH}",
+               env={"RO_GH_LOG": str(F.log), "RO_ISSUES_JSON": str(F.T / "issues.json"), **env},
+               stderr="keep")
+        ck(f"reader {name}: the block succeeds under set -e", "0", str(r.rc))
+        ck(f"reader {name}: and prints nothing to stdout", "", (r.out or "").strip())
+        if name == "present":
+            staged = cat(F.fabro / "orientation.md")
+            ck("reader present: the map is staged", "1", count("^A map\\.$", staged, flags="E"))
+            ck("reader present: without the marker", "0", count("fabro:orientation", staged))
+        else:
+            ck(f"reader {name}: no file, so the input is absent",
+               "absent", present(F.fabro / "orientation.md"))
+
+
+def test_the_reader_caps_a_long_body(ck, tmp_path):
+    F = Orientation(ck, tmp_path, "reader-big")
+    F.issues_json([{"number": 9, "body": orientation_body("a" * 40, "2026-11-01T00:00:00Z",
+                                                         text="x" * 9000)}])
+    path = write(F.T / "reader.sh", "set -e\n" + rebase(prep_reader(BACKLOG), F.fabro))
+    sh(path, cwd=F.repo, path=f"{F.bin}:{ORIG_PATH}",
+       env={"RO_GH_LOG": str(F.log), "RO_ISSUES_JSON": str(F.T / "issues.json")})
+    staged = cat(F.fabro / "orientation.md")
+    ck("reader: a long body is cut", "1", count("cut to 6000 characters", staged))
+    ck("reader: and fits the cap", "true", str(len(staged) <= 6100).lower())
+
+
 # --- the Stage I/O and manifest wiring ---------------------------------------------
+
+
+def test_the_planners_read_it_as_an_optional_input(ck):
+    manifest = json.loads((WF / "_io" / "manifest.json").read_text())
+    for wf, stage in (("backlog", "decompose"), ("backlog", "plan"), ("ralph", "plan")):
+        inputs = {i["name"]: i for i in manifest["workflows"][wf]["stages"][stage]["inputs"]}
+        assert "orientation.md" in inputs, (wf, stage)
+        entry = inputs["orientation.md"]
+        ck(f"{wf} {stage}: optional", "false", str(entry["required"]).lower())
+        ck(f"{wf} {stage}: at the path prep writes", "/tmp/fabro/orientation.md", entry["path"])
+        ck(f"{wf} {stage}: with an absent sentence", "true",
+           str(bool(entry.get("absent"))).lower())
+        ck(f"{wf} {stage}: and an about that says what to do with it", "true",
+           str("check" in entry["about"].lower()).lower())
 
 
 def test_the_package_manifest_and_its_registrations(ck):

@@ -554,6 +554,13 @@
               "required": false,
               "about": "notes local models wrote on this issue before the run: the precheck's verdict, and a context pack mapping the files, symbols, tests and commands the work touches; start from it and verify each claim against the checkout",
               "absent": "there is no background note for this issue; proceed without it"
+            },
+            {
+              "name": "orientation.md",
+              "path": "/tmp/fabro/orientation.md",
+              "required": false,
+              "about": "a local model's map of this repository at main, written a day or less before this run: its modules, the conventions a change follows, where the tests live, the commands that run them and the traps; find the right files and commands from it, and check what you use against the checkout",
+              "absent": "there is no repository orientation for this repository; find the code with the repo map and the code tools"
             }
           ],
           "sealed": [],
@@ -621,6 +628,13 @@
               "required": false,
               "about": "notes local models wrote on this issue before the run: the precheck's verdict, and a context pack mapping the files, symbols, tests and commands the work touches; start from it and verify each claim against the checkout",
               "absent": "there is no background note for this issue; proceed without it"
+            },
+            {
+              "name": "orientation.md",
+              "path": "/tmp/fabro/orientation.md",
+              "required": false,
+              "about": "a local model's map of this repository at main, written a day or less before this run: its modules, the conventions a change follows, where the tests live, the commands that run them and the traps; find the right files and commands from it, and check what you use against the checkout",
+              "absent": "there is no repository orientation for this repository; find the code with the repo map and the code tools"
             }
           ],
           "sealed": [],
@@ -1428,6 +1442,13 @@
               "required": false,
               "about": "notes local models wrote on this issue before the run: the precheck's verdict, and a context pack mapping the files, symbols, tests and commands the work touches; start from it and verify each claim against the checkout",
               "absent": "there is no background note for this issue; proceed without it"
+            },
+            {
+              "name": "orientation.md",
+              "path": "/tmp/fabro/orientation.md",
+              "required": false,
+              "about": "a local model's map of this repository at main, written a day or less before this run: its modules, the conventions a change follows, where the tests live, the commands that run them and the traps; find the right files and commands from it, and check what you use against the checkout",
+              "absent": "there is no repository orientation for this repository; find the code with the repo map and the code tools"
             }
           ],
           "sealed": [],
