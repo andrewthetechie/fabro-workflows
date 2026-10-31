@@ -457,6 +457,8 @@ class Counts(unittest.TestCase):
             # flaky-investigation (more-local-inference task 10): issue-precheck's shape --
             # start, exit, claim, stop, prep, investigate, gate, post -- with one agent stage.
             "flaky-investigation": (8, 11),
+            # repo-orientation (task 10): the same shape again, with no issue number.
+            "repo-orientation": (8, 11),
             # Ralph (ADR 0029, docs/ralph). The series builds the package over tasks 02-08, so
             # this pair grows with each one; it is the offline parser's count, not a
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.

@@ -41,9 +41,10 @@ from .config import BACKGROUND_JOB_PRIORITY, SchedulerConfig, predicted_gap_minu
 from .fabro import FabroClient, FabroError, RunNotStarted, status_kind, status_reason
 from .github import GitHubError
 from .lease import Lease, LeaseStore
-from . import calibration, flaky, pack, precheck
+from . import calibration, flaky, orientation, pack, precheck
 from .calibration import KIND as CALIBRATION_KIND
 from .flaky import KIND as FLAKY_KIND, FlakyMarker
+from .orientation import KIND as ORIENTATION_KIND, OrientationMarker
 from .pack import KIND as PACK_KIND, PackMarker
 from .precheck import KIND as PRECHECK_KIND, Marker
 from .store import Store
@@ -64,6 +65,7 @@ JOB_WORKFLOWS = {
     # `workflow_version.ENTRYPOINTS`, or `dispatch_job` refuses it and the lane's whole tick
     # fails on it (2026-10-31: that is how the calibration shipped, and no job started).
     "flaky-investigation": "flaky-investigation",
+    "repo-orientation": "repo-orientation",
 }
 
 
@@ -293,6 +295,7 @@ class BackgroundLane:
         precheck_reader: Callable[[str, int], Marker | None] | None = None,
         pack_reader: Callable[[str, int], PackMarker | None] | None = None,
         flaky_reader: Callable[[str, int], FlakyMarker | None] | None = None,
+        orientation_reader: Callable[[str], OrientationMarker | None] | None = None,
         calibration_reader: Callable[[str], str] | None = None,
         github_token: str = "",
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -321,6 +324,13 @@ class BackgroundLane:
         # job's outcome, so Phase 4 can count diagnoses without opening a comment.
         self._read_flaky = flaky_reader or (
             (lambda repo, number: flaky.read_marker(repo, number, github_token))
+            if github_token
+            else None
+        )
+        # The orientation's marker, read back the same way but by repository: the map lives in
+        # one issue per repository, not one comment per issue.
+        self._read_orientation = orientation_reader or (
+            (lambda repo: orientation.read_marker(repo, github_token))
             if github_token
             else None
         )
@@ -615,6 +625,8 @@ class BackgroundLane:
                 end = self._record_marker(job, end, now, self._read_pack, pack.outcome_for)
             elif str(job["kind"]) == FLAKY_KIND and end.state == "done":
                 end = self._record_marker(job, end, now, self._read_flaky, flaky.outcome_for)
+            elif str(job["kind"]) == ORIENTATION_KIND and end.state == "done":
+                end = self._record_orientation(job, end, now)
             elif str(job["kind"]) == CALIBRATION_KIND and end.state == "done":
                 end = self._record_calibration(job, end, now)
             ended.append(end)
@@ -677,6 +689,32 @@ class BackgroundLane:
             )
             return end
         outcome = outcome_for(marker, str(job["run_id"] or ""), job["created_at"])
+        self._store.set_background_outcome(int(job["job_id"]), outcome=outcome, now=now)
+        return JobEnd(end.job_id, end.kind, end.state, outcome)
+
+    def _record_orientation(self, job, end: JobEnd, now: datetime) -> JobEnd:
+        """A succeeded orientation run's outcome, read from the repository's pinned issue.
+
+        The map lives in one issue per repository (D22), and the job's `target` is empty, so the
+        reader takes the repository alone — the one `_record_marker` shape that differs. A run
+        whose `stop` found a current map leaves a marker that is not its own, and
+        `orientation.outcome_for` reads that as `orientation unchanged`. A read that fails leaves
+        the plain `succeeded`: the issue is still there and the report can read it later.
+        """
+        if self._read_orientation is None:
+            return end
+        try:
+            marker = self._read_orientation(str(job["repo"]))
+        except (GitHubError, ValueError) as exc:
+            log.info(
+                "background: orientation job %s: cannot read the issue (%s)",
+                job["job_id"],
+                exc,
+            )
+            return end
+        outcome = orientation.outcome_for(
+            marker, str(job["run_id"] or ""), job["created_at"]
+        )
         self._store.set_background_outcome(int(job["job_id"]), outcome=outcome, now=now)
         return JobEnd(end.job_id, end.kind, end.state, outcome)
 

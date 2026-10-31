@@ -73,6 +73,7 @@ CONTEXT_PACK_ENTRYPOINT = "workflows/context-pack/workflow.fabro"
 PRECHECK_CALIBRATION_ENTRYPOINT = "workflows/precheck-calibration/workflow.fabro"
 # Task 10's two background packages.
 FLAKY_INVESTIGATION_ENTRYPOINT = "workflows/flaky-investigation/workflow.fabro"
+REPO_ORIENTATION_ENTRYPOINT = "workflows/repo-orientation/workflow.fabro"
 ENTRYPOINTS = {
     "backlog": BACKLOG_ENTRYPOINT,
     "ralph": RALPH_ENTRYPOINT,
@@ -81,6 +82,7 @@ ENTRYPOINTS = {
     "context-pack": CONTEXT_PACK_ENTRYPOINT,
     "precheck-calibration": PRECHECK_CALIBRATION_ENTRYPOINT,
     "flaky-investigation": FLAKY_INVESTIGATION_ENTRYPOINT,
+    "repo-orientation": REPO_ORIENTATION_ENTRYPOINT,
 }
 
 # The server's limits, from the `WorkflowVersion` schema: at most 512 files, 512

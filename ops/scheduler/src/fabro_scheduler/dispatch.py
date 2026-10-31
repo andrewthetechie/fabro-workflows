@@ -71,6 +71,7 @@ from .github import (
 from .lease import Lease, LeaseConflict, LeaseStore
 from .calibration import CalibrationProducer
 from .flaky import FlakyProducer
+from .orientation import OrientationProducer
 from .pack import PackProducer
 from .precheck import PrecheckProducer
 from .queue import QueueItem, build_queue
@@ -265,6 +266,10 @@ class DispatchLoop:
         # each issue the scout filed and no coder loop has taken. Off unless
         # `flaky-investigation` is an enabled kind.
         self._flaky = FlakyProducer(config, store)
+        # The repository orientation's producer (more-local-inference 10): one job per repository
+        # per day, so the map every planner reads is current. Off unless `repo-orientation` is an
+        # enabled kind.
+        self._orientation = OrientationProducer(config, store)
         # The last peak-hours decision, so the log says when dispatch paused and
         # resumed once each rather than on every 5-second tick.
         self._peak_paused: bool | None = None
@@ -370,6 +375,7 @@ class DispatchLoop:
             self._precheck.tick(ranked, running, now)
             self._pack.tick(ranked, running, now)
             self._flaky.tick(ranked, running, now)
+        self._orientation.tick(now)
         self._calibration.tick(now)
 
     def _running_issues(self) -> set[tuple[str, int]]:

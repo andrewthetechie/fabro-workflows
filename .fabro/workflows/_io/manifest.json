@@ -2000,6 +2000,34 @@
           "box": true
         }
       }
+    },
+    "repo-orientation": {
+      "stages": {
+        "map": {
+          "live": true,
+          "prompt": ".fabro/workflows/repo-orientation/prompts/map.md.j2",
+          "inputs": [
+            {
+              "name": "repomap.md",
+              "path": "/tmp/fabro/repomap.md",
+              "required": true,
+              "about": "ranked outline of the checkout, produced by fabro-code map in prep; start from it instead of reading the tree"
+            },
+            {
+              "name": "orientation-prior.md",
+              "path": "/tmp/fabro/orientation/prior.md",
+              "required": false,
+              "about": "the map the last run wrote, and the main= commit it described; it may be stale, so keep what still describes this code and fix what has moved",
+              "absent": "there is no earlier map for this repository; write this one from the code"
+            }
+          ],
+          "output": {
+            "path": "/tmp/fabro/orientation.json",
+            "schema": "repo_orientation"
+          },
+          "box": true
+        }
+      }
     }
   }
 }

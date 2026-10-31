@@ -882,7 +882,7 @@ def r15_claim_hooks(package: str, root: Graph | None, hooks: list[dict]) -> list
 # run's box, `box-guard` runs before each of them, and nothing else does. Later tasks add
 # their packages here.
 BACKGROUND_PACKAGES = ["box-noop", "issue-precheck", "context-pack",
-                       "precheck-calibration", "flaky-investigation"]
+                       "precheck-calibration", "flaky-investigation", "repo-orientation"]
 
 # The only model a background package may name: the run's `coder_pool`, whose scheduler set
 # names end in `-bg` (C5).
@@ -1135,6 +1135,15 @@ R10_CALIBRATION_COPIES: dict[
 ] = {
     "precheck-calibration": (
         ".fabro/workflows/issue-precheck/workflow.fabro", ("prep", "gate"), "check", (),
+    ),
+    "repo-orientation": (
+        ".fabro/workflows/issue-precheck/workflow.fabro",
+        ("prep",),
+        "",
+        (
+            ("/tmp/fabro/precheck", "/tmp/fabro/orientation"),
+            ("the check runs without the index", "map runs without the index"),
+        ),
     ),
     "flaky-investigation": (
         ".fabro/workflows/issue-precheck/workflow.fabro",

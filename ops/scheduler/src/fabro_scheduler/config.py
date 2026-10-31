@@ -105,6 +105,10 @@ BACKGROUND_JOB_PRIORITY = {
     # two): both feed an issue that is already in the queue, and what they write is read by the
     # run that takes it.
     "flaky-investigation": 3,
+    # The repository orientation (task 10): no queued run waits for it, but every planner that
+    # reads it explores less, so it comes after the two that feed one issue and before the
+    # measurement.
+    "repo-orientation": 4,
     # The precheck calibration (pre-review-and-calibration, Part A): after everything that
     # feeds a queued issue, because it measures a package that is already running while the
     # other three change what a run does. Queued rows keep the priority they were enqueued

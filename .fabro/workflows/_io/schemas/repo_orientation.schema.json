@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "repo_orientation",
+  "title": "repo_orientation — a box-written map of one repository at main (more-local-inference 10)",
+  "description": "What a local model found about how one repository is laid out and works: its modules, the conventions a change has to follow, where the tests live and the commands that run them, and the traps a newcomer hits. `gate` requires every cited path to exist in the checkout and holds the rendered map to 6,000 characters. `post` writes it as the body of the repository's one pinned `fabro-orientation` issue, which `backlog`'s and `ralph`'s `prep` copy to /tmp/fabro/orientation.md for `decompose` and `plan`. _io is stamped by the server and is not part of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "modules", "conventions", "tests", "commands"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "description": "Two or three sentences: what this repository is, and how a change usually gets made in it. Published verbatim."
+    },
+    "modules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "description": "The parts of the repository a change lands in, biggest first. A path that does not exist is dropped before anyone sees the map.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "what"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Repository-relative directory or file, exactly as in the checkout." },
+          "what": { "type": "string", "minLength": 1, "maxLength": 200, "description": "One line: what lives there and what it is responsible for." }
+        }
+      }
+    },
+    "conventions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "description": "The rules a change in this repository follows that a newcomer would get wrong: naming, layering, error handling, where a new file goes, what must be updated with it.",
+      "items": { "type": "string", "minLength": 1, "maxLength": 220 }
+    },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "description": "Where the tests live and what each kind covers.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "what"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "what": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "description": "The commands this repository runs, exactly as its own configuration runs them (`Makefile`, `package.json`, `pyproject.toml`, `.fabro/ci.sh`), and what each is for.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run", "why"],
+        "properties": {
+          "run": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "why": { "type": "string", "minLength": 1, "maxLength": 160 }
+        }
+      }
+    },
+    "gotchas": {
+      "type": "array",
+      "maxItems": 5,
+      "description": "Traps that cost a newcomer a run: a generated file, a second copy of the same logic, a test that needs a service, a directory that looks authoritative and is not.",
+      "items": { "type": "string", "minLength": 1, "maxLength": 220 }
+    }
+  }
+}

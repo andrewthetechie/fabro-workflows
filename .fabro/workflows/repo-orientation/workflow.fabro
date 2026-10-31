@@ -1,0 +1,308 @@
+// repo-orientation (more-local-inference task 10): once a night, and sooner when `main` has
+// moved, a local model writes a map of the repository at `main` -- its modules, the conventions
+// a change follows, where the tests live, the commands that run them, and the traps -- into the
+// body of **one pinned issue per repository** (D22). `backlog`'s and `ralph`'s `prep` fetch that
+// body to `/tmp/fabro/orientation.md`, and `decompose` and `plan` read it as an optional input,
+// so every hosted planner explores less. That is the point: exploring the checkout was most of
+// what the planners spent in the week the z.ai quota ran out.
+//
+// It is a **background package** (D4, R16): every agent stage resolves to the run's `-bg` model
+// row, `box-guard` protects the box, and nothing here takes a box-claim. The scheduler starts it
+// in a coder loop's gap and may cancel it at any moment before `post` (D9). It takes no
+// `issue_number`: the subject is the repository the run was fired for, which the sandbox has
+// already cloned at `main`.
+//
+// **The orientation issue is invisible to every automation.** It is titled
+// `fabro: repository orientation` and carries exactly one label, `fabro-orientation`, which no
+// selector in this repository asks for: the scheduler's inventory is `labels=agent` and
+// `labels=agent-in-progress`, `issue-triage` and `arch-review` select `needs-triage`,
+// `needs-info` and `architecture`, the scout and ralph's `learn` select `scout` and `learning`,
+// `dependabot` selects `security`, and the precheck, pack and flaky producers read the
+// scheduler's queue. A gate test fails if that ever stops being true, and if this package ever
+// adds another label.
+//
+// **How far `main` has moved is read from the API, never from the history.** The sandbox clone
+// is shallow and single-branch (fabro's default depth is 100), so `git log` cannot say how many
+// commits separate the marker's `main=` from HEAD. `gh api repos/O/R/compare/<old>...<new>` can,
+// and a compare that cannot be read re-maps rather than stopping: a stale map costs every
+// planner credits, and a redundant map costs one gap.
+//
+// **Nothing writes to GitHub before `post`**, and `post` writes only that issue: the body with
+// its marker first, then, on the run that creates it, the pin.
+//
+// A failed node takes its unconditional edge to `exit`, which ends the run failed. `stop` is the
+// one quiet ending: a map that is already of this commit, or under a day old and under 10
+// commits behind.
+digraph RepoOrientation {
+    graph [
+        goal="Map how one repository is laid out and works, at main, into one pinned issue body that the planning stages read",
+        // Above every node timeout below (`prep`'s 15m included): R2 compares them, and the
+        // watchdog must never fire before a node's own timeout does.
+        stall_timeout="30m",
+        // Bound the preamble: the prompt names its inputs by path (invariants-graph, the
+        // `default_fidelity` row).
+        default_fidelity="truncate",
+        // Every model in a background package is the run's `-bg` pool (R16): the `*` rule and
+        // `.bg` are the same expression, so an agent node that lost its class would still run
+        // on the box and never reach a hosted model. There is no `[run.model.fallbacks]` row for
+        // either `-bg` name, so a box error fails the stage instead of spending credits (R14).
+        model_stylesheet="
+            *   { model: {{ inputs.coder_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+            .bg { model: {{ inputs.coder_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // ---- Which repository, at which commit, and is the map still current ----
+    //
+    // `/tmp/fabro/box` is this package's half of C2/R16: the pool arrives with the `-bg` suffix
+    // the scheduler added, and `box-guard` looks up the loop's box, which never carries it.
+    //
+    // The issue is found by label, and its body's first line is the C6 marker. With no issue,
+    // `post` creates one. With one carrying the label but no marker (a hand-written issue, or a
+    // body a human rewrote), the run adopts it rather than posting a second: `issue_number` is
+    // left set, and the marker goes back on the first line.
+    //
+    // The staleness rule, in order: the same commit is done; `main=` missing is not; then the
+    // API's commit count decides, with 10 commits or a day as the two triggers.
+    claim [label="Read the orientation issue", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="set -e
+P=/tmp/fabro/orientation
+mkdir -p $P
+POOL='{{ inputs.coder_pool }}'
+echo \"${POOL%-bg}\" > /tmp/fabro/box || true
+rm -f /tmp/fabro/orientation.json $P/prior.md $P/issue_number $P/marker_main $P/marker_at $P/commits $P/why $P/body.md
+if ! R=$(gh repo view --json nameWithOwner -q .nameWithOwner); then
+  echo 'Could not work out which repository this run is for.' >&2
+  exit 1
+fi
+case \"$R\" in */*) ;; *) echo 'The repository name is not owner/name.' >&2; exit 1 ;; esac
+echo \"$R\" > $P/repo
+MAIN=$(git rev-parse HEAD 2>/dev/null || true)
+[ -n \"$MAIN\" ] || MAIN=unknown
+echo \"$MAIN\" > $P/main_sha
+GO=true
+WHY='there is no orientation issue yet'
+if ! gh issue list --label fabro-orientation --state open --json number,body --limit 5 > $P/issues.json; then
+  echo 'Could not list the fabro-orientation issues.' >&2
+  exit 1
+fi
+ID=$(jq -r '[.[] | select(((.body // \"\") | startswith(\"<!-- fabro:orientation \")))][0].number // empty' $P/issues.json)
+if [ -z \"$ID\" ]; then
+  ID=$(jq -r '[.[].number] | last // empty' $P/issues.json)
+fi
+if [ -z \"$ID\" ]; then
+  echo 'claim: no orientation issue in '$R'; this run creates one' >&2
+else
+  echo \"$ID\" > $P/issue_number
+  jq -r --argjson n \"$ID\" '.[] | select(.number == $n) | .body // \"\"' $P/issues.json > $P/body.md
+  HEADLINE=$(sed -n 1p $P/body.md)
+  OLD_MAIN=$(printf '%s' \"$HEADLINE\" | jq -Rr 'try (capture(\"main=(?<v>[^ ]+)\").v) catch \"\"')
+  AT=$(printf '%s' \"$HEADLINE\" | jq -Rr 'try (capture(\"at=(?<v>[^ ]+)\").v) catch \"\"')
+  if [ -n \"$OLD_MAIN\" ]; then echo \"$OLD_MAIN\" > $P/marker_main; fi
+  if [ -n \"$AT\" ]; then echo \"$AT\" > $P/marker_at; fi
+  sed 1d $P/body.md > $P/prior.md
+  if [ ! -s $P/prior.md ]; then rm -f $P/prior.md; fi
+  GO=false
+  WHY='the map is current'
+  if [ -z \"$OLD_MAIN\" ]; then
+    GO=true
+    WHY='the orientation issue carries no marker, so there is nothing to compare'
+  elif [ \"$OLD_MAIN\" = \"$MAIN\" ]; then
+    GO=false
+    WHY='the map is of the commit this run checked out'
+  else
+    C=$(gh api \"repos/$R/compare/$OLD_MAIN...$MAIN\" --jq '.total_commits' 2>/dev/null || true)
+    case \"$C\" in '' | *[!0-9]*) C='' ;; esac
+    if [ -n \"$C\" ]; then echo \"$C\" > $P/commits; fi
+    FRESH=$(jq -rn --arg at \"$AT\" 'try ((now - ($at | fromdateiso8601)) < 86400) catch false' 2>/dev/null || echo false)
+    if [ -z \"$C\" ]; then
+      GO=true
+      WHY='main has moved and the compare could not be read'
+    elif [ \"$C\" -ge 10 ]; then
+      GO=true
+      WHY='main has moved '$C' commit(s) since the map'
+    elif [ \"$FRESH\" = true ]; then
+      GO=false
+      WHY='the map is '$C' commit(s) behind and under a day old'
+    else
+      GO=true
+      WHY='the map is a day old and '$C' commit(s) behind'
+    fi
+  fi
+fi
+echo \"$WHY\" > $P/why
+if [ \"$GO\" != true ]; then
+  echo 'repo-orientation: not mapping '$R': '$WHY >&2
+  echo '{\"context_updates\":{\"orientation_go\":false}}'
+  exit 0
+fi
+echo 'repo-orientation: mapping '$R' at '$MAIN': '$WHY >&2
+echo '{\"context_updates\":{\"orientation_go\":true}}'"]
+
+    stop [label="Leave the map alone", shape=parallelogram, output_schema="routing", timeout="1m",
+        script="echo 'repo-orientation: the run stops without writing anything to GitHub.' >&2
+echo '{\"context_updates\":{\"orientation_stop\":true}}'"]
+
+    // ---- The checkout at main, the code index, and the outline the map starts from ----
+    //
+    // `issue-precheck`'s `prep`, with the two recorded replacements (R10): it writes
+    // `/tmp/fabro/orientation/main_sha`, builds the code index and the repository outline
+    // (`/tmp/fabro/repomap.md`, the `map` stage's first input), and installs the agent guide. The
+    // outline is what keeps this inside 12 minutes: without it the stage would re-derive the
+    // layout the index already has.
+    prep [label="Index the checkout", shape=parallelogram, output_schema="routing", timeout="15m",
+        script="set -e
+git rev-parse HEAD > /tmp/fabro/orientation/main_sha
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index >/dev/null 2>&1 || echo 'prep: fabro-code index failed; map runs without the index' >&2; fabro-code map >/dev/null 2>&1 || true; else echo 'prep: fabro-code is not in the image' >&2; fi
+if [ -z \"$FABRO_AGENT_GUIDE\" ]; then echo 'agent guide: FABRO_AGENT_GUIDE is empty, nothing installed' >&2
+elif git ls-files --error-unmatch .codex/instructions.md >/dev/null 2>&1; then echo 'agent guide: the repository tracks .codex/instructions.md, left alone' >&2
+elif mkdir -p .codex && printf '%s' \"$FABRO_AGENT_GUIDE\" > .codex/instructions.md; then grep -qx '.codex/instructions.md' .git/info/exclude 2>/dev/null || echo '.codex/instructions.md' >> .git/info/exclude
+else echo 'agent guide: could not write .codex/instructions.md' >&2; fi
+echo '{\"context_updates\":{\"prep_ok\":true}}'"]
+
+    // The box's one agent stage. Bounded at 12m; the prompt asks for about eight minutes and
+    // twenty-five tool calls, and the scheduler's `typical_box_minutes` for the whole run is 8.
+    map [label="Map the repository", class="bg", timeout="12m", prompt="@prompts/map.md.j2"]
+
+    // Checks the Input receipt, drops every module and test path the checkout does not have, and
+    // fails a map with no module left. Then it renders the body and cuts it to 5,800 characters,
+    // which with the marker and the footer keeps the whole issue body inside the 6,000 the
+    // reader in `prep` keeps. A wrong path costs every planner that reads the map, so it is
+    // dropped rather than published.
+    gate [label="Check the map", shape=parallelogram, output_schema="routing", timeout="2m",
+        script="F=/tmp/fabro/orientation.json
+P=/tmp/fabro/orientation
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
+  echo 'orientation.json has no valid Input receipt, so map did not finish; nothing is posted' >&2
+  exit 1
+fi
+: > $P/found
+jq -r '[(.modules // [])[].path, (.tests // [])[].path] | unique | .[]' $F | while IFS= read -r W; do
+  case \"$W\" in /* | *..*) continue ;; esac
+  [ -e \"$W\" ] || continue
+  echo \"$W\" >> $P/found
+done
+jq -R . $P/found | jq -s . > $P/found.json
+if ! jq --slurpfile ok $P/found.json '$ok[0] as $k | .modules = [(.modules // [])[] | select(.path as $p | any($k[]; . == $p))] | .tests = [(.tests // [])[] | select(.path as $p | any($k[]; . == $p))]' $F > $P/kept.json; then
+  echo 'could not read orientation.json' >&2
+  exit 1
+fi
+DROPPED=$(( $(jq '((.modules // []) | length) + ((.tests // []) | length)' $F) - $(jq '(.modules | length) + (.tests | length)' $P/kept.json) ))
+echo \"$DROPPED\" > $P/dropped
+if [ \"$(jq '.modules | length' $P/kept.json)\" -eq 0 ]; then
+  echo 'not one module path exists in the checkout; a map with nothing in it is not posted' >&2
+  exit 1
+fi
+{
+  echo '**Repository orientation.** A local model mapped this repository at `main`. Planning runs read it as an optional input, so they start from it and check what they use against the checkout.'
+  echo
+  jq -r '.summary // \"\"' $P/kept.json
+  echo
+  echo '## Modules'
+  echo
+  jq -r '.modules[] | \"- `\" + .path + \"`: \" + .what' $P/kept.json
+  echo
+  echo '## Conventions'
+  echo
+  jq -r '.conventions[] | \"- \" + .' $P/kept.json
+  echo
+  echo '## Tests'
+  echo
+  jq -r '.tests[] | \"- `\" + .path + \"`: \" + .what' $P/kept.json
+  echo
+  echo '## Commands'
+  echo
+  jq -r '.commands[] | \"- `\" + .run + \"`: \" + .why' $P/kept.json
+  if [ \"$(jq '(.gotchas // []) | length' $P/kept.json)\" -gt 0 ]; then
+    echo
+    echo '## Gotchas'
+    echo
+    jq -r '.gotchas[] | \"- \" + .' $P/kept.json
+  fi
+} > $P/comment.md
+SIZE=$(wc -c < $P/comment.md)
+LIMIT=5800
+if [ \"$SIZE\" -gt \"$LIMIT\" ]; then
+  { head -c \"$LIMIT\" $P/comment.md | sed '$d'; echo '- (cut to fit: a planning run reads 6,000 characters of this map)'; } > $P/comment.cut
+  mv $P/comment.cut $P/comment.md
+  SIZE=$(wc -c < $P/comment.md)
+fi
+echo 'gate: '$SIZE' characters, '$DROPPED' path(s) dropped'
+echo '{\"context_updates\":{\"orientation_ok\":true}}'"]
+
+    // ---- The one node that writes to GitHub (D9, C6, D22) ----
+    //
+    // It edits the orientation issue's body in place, or creates the issue (with its label, and
+    // nothing else) and pins it on the run that finds none. The body starts with the C6 marker,
+    // so a later run reads `main=` and `at=` from its first line. Two of the repositories are
+    // public, so the values of `FABRO_API_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` are replaced
+    // before anything is written (a literal match, as `issue-precheck`'s `post` does it). A pin
+    // that fails is one stderr line: the label is what the reader selects on, not the pin.
+    post [label="Write the orientation issue", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="exec 3>&1 >>/tmp/fabro/orientation/post.log 2>&1
+P=/tmp/fabro/orientation
+R=$(cat $P/repo)
+MAIN=$(cat $P/main_sha 2>/dev/null || true)
+[ -n \"$MAIN\" ] || MAIN=unknown
+AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+RUN=$(cat $P/run_id 2>/dev/null || true)
+[ -n \"$RUN\" ] || RUN=unknown
+N=$(cat $P/issue_number 2>/dev/null || true)
+BODY=$P/body.full
+FOOT='_Written by a local model while a coder box was idle. It describes `main` at the commit named on the first line of this issue, and it is rewritten in place._'
+echo \"<!-- fabro:orientation main=$MAIN at=$AT run=$RUN -->\" > $P/body.head
+{
+  cat $P/body.head
+  echo
+  cat $P/comment.md
+  echo
+  echo \"$FOOT\"
+} | awk -v t1=\"${FABRO_API_TOKEN:-}\" -v t2=\"${GITHUB_TOKEN:-}\" -v t3=\"${GH_TOKEN:-}\" 'function scrub(line, t,  out, i) { if (length(t) < 8) return line; out = \"\"; while ((i = index(line, t)) > 0) { out = out substr(line, 1, i - 1) \"[redacted]\"; line = substr(line, i + length(t)) } return out line } { $0 = scrub($0, t1); $0 = scrub($0, t2); $0 = scrub($0, t3); print }' > $BODY
+SIZE=$(wc -c < $BODY)
+if [ \"$SIZE\" -gt 6000 ]; then
+  { head -c 6000 $BODY | sed '$d'; echo '- (cut to fit)'; } > $BODY.cut
+  mv $BODY.cut $BODY
+fi
+if [ ! -s $BODY ]; then echo 'could not build the orientation body' >&2; exit 1; fi
+if [ -z \"$N\" ]; then
+  gh label create fabro-orientation --color 0E8A16 --description 'The repository map a background job keeps (more-local-inference 10)' < /dev/null 2>/dev/null || true
+  if ! OUT=$(gh issue create --title 'fabro: repository orientation' --body-file $BODY --label fabro-orientation < /dev/null 2>$P/create.err); then
+    echo 'could not create the orientation issue' >&2
+    exit 1
+  fi
+  N=$(printf '%s' \"$OUT\" | grep -o '[0-9]*$')
+  echo \"$N\" > $P/issue_number
+  if gh issue pin \"$N\" < /dev/null > /dev/null 2>$P/pin.err; then
+    echo 'post: pinned the new issue '$N
+  else
+    echo 'post: created issue '$N' but could not pin it; it is still readable by label' >&2
+  fi
+else
+  if ! jq -n --rawfile b $BODY '{body: $b}' | gh api -X PATCH \"repos/$R/issues/$N\" --input - >/dev/null; then
+    echo 'could not edit the orientation issue body' >&2
+    exit 1
+  fi
+fi
+echo 'post: orientation for '$R' in issue '$N
+echo '{\"context_updates\":{\"posted\":true}}' >&3
+exit 0"]
+
+    start -> claim
+    claim -> prep [condition="outcome=succeeded && context.orientation_go=true"]
+    claim -> stop [condition="outcome=succeeded && context.orientation_go=false"]
+    claim -> exit
+    prep -> map [condition="outcome=succeeded && context.prep_ok=true"]
+    prep -> exit
+    map -> gate
+    gate -> post [condition="outcome=succeeded"]
+    gate -> exit
+    post -> exit
+    stop -> exit
+}

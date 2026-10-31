@@ -780,6 +780,7 @@ def test_the_page_and_the_api_render_the_lane(tmp_path):
             "issue-precheck",
             "context-pack",
             "flaky-investigation",
+            "repo-orientation",
             "precheck-calibration",
             "box-noop",
         ]

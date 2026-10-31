@@ -254,7 +254,8 @@ CREATE TABLE IF NOT EXISTS run_history (
   target_kind   TEXT NOT NULL DEFAULT 'issue',    -- 'issue' | 'pr' (more-local-inference 06)
   had_pack         INTEGER,     -- 0 | 1: a context pack was posted before dispatch (08, D21)
   pack_run         TEXT,        -- that pack's run id
-  precheck_verdict TEXT         -- the precheck's verdict before dispatch, or NULL
+  precheck_verdict TEXT,        -- the precheck's verdict before dispatch, or NULL
+  had_orientation  INTEGER      -- 0 | 1: a repository orientation was written before dispatch (10)
 );
 
 -- Issue #22, the scorecard. Five tables the collector fills after a run is released
@@ -393,6 +394,10 @@ RUN_HISTORY_COLUMNS = {
     "had_pack": "had_pack INTEGER",
     "pack_run": "pack_run TEXT",
     "precheck_verdict": "precheck_verdict TEXT",
+    # more-local-inference 10: whether the repository had an orientation map when the run was
+    # dispatched. Same shape as `had_pack`, and Phase 4 compares credits per `decompose` visit
+    # with and without it. NULL on a row written before, and on a PR run.
+    "had_orientation": "had_orientation INTEGER",
 }
 
 # The same, for the scorecard tables: the plan trial (#25) added per-stage tokens and
@@ -1056,7 +1061,7 @@ class Store:
                     row["repo"], str(row["issue_number"]), row["dispatched_at"]
                 )
                 if row["target_kind"] == "issue"
-                else (None, None, None)
+                else (None, None, None, None)
             )
             self._conn.execute(
                 "INSERT INTO run_history ("
@@ -1064,8 +1069,8 @@ class Store:
                 "  kind, reason, category, requeue_attempt, pr_lookup, pr_number,"
                 "  pr_url, merged, local_tokens, hosted_tokens,"
                 "  local_cost_usd_micros, hosted_cost_usd_micros, workflow, target_kind,"
-                "  had_pack, pack_run, precheck_verdict"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "  had_pack, pack_run, precheck_verdict, had_orientation"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO NOTHING",
                 (
                     row["run_id"],
@@ -1100,8 +1105,9 @@ class Store:
 
     def _background_at_dispatch(
         self, repo: str, target: str, dispatched_at: str
-    ) -> tuple[int, str | None, str | None]:
-        """`(had_pack, pack_run, precheck_verdict)` for an issue run, as of its dispatch.
+    ) -> tuple[int, str | None, str | None, int]:
+        """`(had_pack, pack_run, precheck_verdict, had_orientation)` for an issue run, as of its
+        dispatch.
 
         The newest `done` job of each kind that finished before the run was dispatched, read
         from the outcomes the lane records (`pack.outcome_for`, `precheck.outcome_for`). The
@@ -1118,7 +1124,20 @@ class Store:
             ).fetchone()
             found[kind] = None if hit is None else str(hit["outcome"])[len(prefix):]
         pack_run = found["context-pack"]
-        return (0 if pack_run is None else 1, pack_run, found["issue-precheck"])
+        # The orientation is about the repository, not the issue: its job's target is empty, so
+        # it is matched by repository and kind alone. `had_orientation` is 0 or 1 on every issue
+        # run since, exactly as `had_pack` is.
+        orientation = self._conn.execute(
+            "SELECT 1 FROM background_jobs WHERE kind = 'repo-orientation' AND repo = ?"
+            " AND state = 'done' AND last_finished_at <= ? LIMIT 1",
+            (repo, dispatched_at),
+        ).fetchone()
+        return (
+            0 if pack_run is None else 1,
+            pack_run,
+            found["issue-precheck"],
+            0 if orientation is None else 1,
+        )
 
     def forget_issue(self, repo: str, number: int) -> bool:
         """Drop one cached queue item. Returns whether a row was there to drop.
@@ -1477,6 +1496,40 @@ class Store:
                 (kind,),
             ).fetchall()
         return {(str(row["repo"]), int(row["number"])) for row in rows}
+
+    def repos_due_for_job(
+        self, kind: str, repos: Sequence[str], *, since: str
+    ) -> set[str]:
+        """Which of `repos` are due for a `kind` job: never had one, or its newest is older.
+
+        The orientation's producer (`orientation.py`): one job per repository per day, and never
+        a second while one is queued or running. The two conditions are one aggregate over the
+        table — a repository with no row at all is due, which a `WHERE state = ...` filter would
+        have made invisible — so a repository whose job was cancelled stays out until its row
+        settles, and the answer does not depend on how much the table holds (the review's
+        trap 3). The kind is spelled out by the caller rather than imported, because the module
+        that names it imports this one.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT repo, MAX(last_finished_at) AS last,"
+                "       MAX(CASE WHEN state IN ('queued','running') THEN 1 ELSE 0 END) AS live"
+                "  FROM background_jobs WHERE kind = ? GROUP BY repo",
+                (kind,),
+            ).fetchall()
+        state = {str(row["repo"]): row for row in rows}
+        due: set[str] = set()
+        for repo in repos:
+            row = state.get(repo)
+            if row is None:
+                due.add(repo)
+                continue
+            if int(row["live"] or 0):
+                continue
+            last = row["last"]
+            if last is None or str(last) < since:
+                due.add(repo)
+        return due
 
     def background_job_exists(self, kind: str, repo: str, target: str) -> bool:
         """Whether any job of this kind ever existed for `(repo, target)`, in any state.
