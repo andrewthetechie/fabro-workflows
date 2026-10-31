@@ -61,29 +61,37 @@ digraph PrecheckCalibration {
     //
     // `main` is worked out here rather than passed: `git rev-list -1 --before="$AT"
     // origin/main`. The sandbox clone is **shallow and single-branch** (fabro's default depth
-    // is 100), so a run from weeks ago needs older history: `git fetch --shallow-since="$AT"`
-    // deepens the clone back to `at`, exactly as `arch-review`'s `history` node deepens its
-    // own for 90 days. A fetch that fails leaves the clone as it is, and `rev-list` then finds
-    // no commit before `at` if every fetched commit is newer, which fails the run rather than
-    // calibrating against the wrong tree. `prep` rewrites `main_sha` from HEAD, which is that
+    // is 100), so a run from weeks ago needs older history. `git fetch --shallow-since="$AT"`
+    // moves the shallow boundary to `at`, but it keeps only commits **after** `at`, so it
+    // cuts off the one commit wanted here, and on a clone that already reached past `at` it
+    // shortens the history (review F1, reproduced on git 2.53). The `--deepen=1` that follows
+    // brings back exactly one commit behind the new boundary: the last one before `at`.
+    // `arch-review` can use the first fetch alone because its window slides. A fetch that
+    // fails leaves the clone as it is, and `rev-list` then finds no commit before `at` if
+    // every fetched commit is newer, which fails the run rather than calibrating against the
+    // wrong tree. `prep` rewrites `main_sha` from HEAD, which is that
     // same commit: `claim` checks it out detached.
     //
     // The issue text is the issue **at `at`**, not now. GitHub's GraphQL
     // `userContentEdits` returns one entry per body edit whose `diff` is the whole body as
     // that edit left it (read 2026-10-31 against writers-app#1274: three entries, 4,593,
-    // 10,106 and 16,364 characters, each the complete body), so the last entry created at or
-    // before `at` is the body then, and `body_changed=true` records that a later edit exists.
+    // 10,106 and 16,364 characters, each the complete body). The timestamp to use is
+    // `editedAt`, not `createdAt`: the entry holding the **original** body has `createdAt` =
+    // the first edit's time and `editedAt` = the issue's creation (the same issue: 05:30:02
+    // and 05:10:49). So the last entry edited at or before `at` is the body then, and
+    // `body_changed=true` records that a later edit exists.
     // The **title** is the current one: `userContentEdits` carries the body only, and a title
     // edit is not visible this way. `unknown` means a later edit exists but no entry reaches
     // back to `at`, so the current text was used. Comments are the ones created before `at`,
     // fabro markers excluded as the live `claim` excludes them.
     //
     // `open_issues.json` is what `gate` tests a `blocked` verdict's blocker against. The
-    // issues open **at `at`** cannot be listed cheaply, so this reads every issue, open and
-    // closed, and keeps those open now plus those closed after `at`: an issue closed since
-    // `at` was open then, and one opened since is kept as well. Over-inclusion is the safe
-    // direction — `gate` only asks whether a cited blocker is an open issue in this
-    // repository.
+    // issues open **at `at`** cannot be listed cheaply, so this reads the issues open now (the
+    // live `claim`'s own read, `--state open --limit 300`) plus those closed after `at`, and
+    // merges them by number: an issue closed since `at` was open then, and one opened since is
+    // kept as well. Over-inclusion is the safe direction — `gate` only asks whether a cited
+    // blocker is an open issue in this repository. A single `--state all` read would return
+    // only the newest issues and drop an old one that is still open (review F7).
     claim [label="Read the issue as it was", shape=parallelogram, output_schema="routing", timeout="5m",
         script="set -e
 P=/tmp/fabro/precheck
@@ -103,7 +111,7 @@ case \"$AT_RAW\" in
   *) echo 'at must be UTC: a trailing Z or +00:00' >&2; exit 1 ;;
 esac
 AT=$(printf '%s' \"$AT\" | cut -d. -f1); AT=${AT}Z
-rm -f /tmp/fabro/precheck.json $P/verdict $P/raw_verdict $P/rule $P/main_sha $P/body_changed $P/body_hash $P/issue.md $P/open_issues.md $P/open_issues.json $P/open_issues.all.json $P/comments.json $P/comments.all.json $P/comments.raw $P/edits.json
+rm -f /tmp/fabro/precheck.json $P/verdict $P/raw_verdict $P/rule $P/main_sha $P/body_changed $P/body_hash $P/issue.md $P/open_issues.md $P/open_issues.json $P/open_issues.open.json $P/open_issues.closed.json $P/comments.json $P/comments.all.json $P/comments.raw $P/edits.json
 echo \"$N\" > $P/issue_number
 if ! gh issue view \"$N\" --json number,title,body,state,url,labels > $P/issue.json; then
   echo 'Could not read issue '$N' from GitHub.' >&2
@@ -117,7 +125,7 @@ if ! gh api \"repos/$R/issues/$N/comments?per_page=100\" --paginate > $P/comment
 fi
 jq -s 'add // []' $P/comments.raw > $P/comments.all.json
 jq --arg at \"$AT\" '[.[] | select((.created_at // \"\") <= $at)]' $P/comments.all.json > $P/comments.json
-if ! gh api graphql -f query='query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { issue(number: $n) { userContentEdits(first: 100) { nodes { createdAt diff } } } } }' -f owner=\"${R%%/*}\" -f name=\"${R##*/}\" -F n=\"$N\" > $P/edits.json; then
+if ! gh api graphql -f query='query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { issue(number: $n) { userContentEdits(first: 100) { nodes { editedAt diff } } } } }' -f owner=\"${R%%/*}\" -f name=\"${R##*/}\" -F n=\"$N\" > $P/edits.json; then
   echo 'Could not read the issue body edits.' >&2
   exit 1
 fi
@@ -127,14 +135,15 @@ if ! jq -e '.data.repository.issue.userContentEdits.nodes' $P/edits.json >/dev/n
 fi
 BODY=$(jq -r '.body // \"\"' $P/issue.json)
 CHANGED=false
-if jq -e --arg at \"$AT\" 'any(.data.repository.issue.userContentEdits.nodes[]; (.createdAt // \"\") > $at)' $P/edits.json >/dev/null; then
+if jq -e --arg at \"$AT\" 'any(.data.repository.issue.userContentEdits.nodes[]; (.editedAt // \"\") > $at)' $P/edits.json >/dev/null; then
   CHANGED=true
-  PAST=$(jq -r --arg at \"$AT\" '[.data.repository.issue.userContentEdits.nodes[] | select((.createdAt // \"\") <= $at)] | sort_by(.createdAt) | last | (.diff // \"\")' $P/edits.json)
+  PAST=$(jq -r --arg at \"$AT\" '[.data.repository.issue.userContentEdits.nodes[] | select((.editedAt // \"\") <= $at)] | sort_by(.editedAt) | last | (.diff // \"\")' $P/edits.json)
   if [ -n \"$PAST\" ]; then BODY=$PAST; else CHANGED=unknown; fi
 fi
 printf '%s' \"$CHANGED\" > $P/body_changed
 if [ \"$(git rev-parse --is-shallow-repository 2>/dev/null || echo false)\" = true ]; then
   git fetch --shallow-since=\"$AT\" origin main >/dev/null 2>&1 || echo 'claim: could not deepen the shallow clone to at; using what is here' >&2
+  git fetch --deepen=1 origin main >/dev/null 2>&1 || echo 'claim: could not fetch the commit before at; using what is here' >&2
 fi
 SHA=$(git rev-list -1 --before=\"$AT\" origin/main)
 if [ -z \"$SHA\" ]; then
@@ -143,11 +152,15 @@ if [ -z \"$SHA\" ]; then
 fi
 git checkout -q --detach \"$SHA\"
 echo \"$SHA\" > $P/main_sha
-if ! gh issue list --state all --limit 500 --json number,title,state,closedAt > $P/open_issues.all.json; then
-  echo 'Could not list the issues.' >&2
+if ! gh issue list --state open --limit 300 --json number,title,state,closedAt > $P/open_issues.open.json; then
+  echo 'Could not list the open issues.' >&2
   exit 1
 fi
-jq --arg at \"$AT\" --argjson n \"$N\" '[.[] | select(.number != $n) | select(.state == \"OPEN\" or ((.closedAt // \"\") > $at))]' $P/open_issues.all.json > $P/open_issues.json
+if ! gh issue list --state closed --search \"closed:>$AT\" --limit 300 --json number,title,state,closedAt > $P/open_issues.closed.json; then
+  echo 'Could not list the issues closed since '$AT'.' >&2
+  exit 1
+fi
+jq -s --arg at \"$AT\" --argjson n \"$N\" 'add | unique_by(.number) | [.[] | select(.number != $n) | select(.state == \"OPEN\" or ((.closedAt // \"\") > $at))]' $P/open_issues.open.json $P/open_issues.closed.json > $P/open_issues.json
 {
   echo '# #'$N': '\"$(jq -r '.title // \"\"' $P/issue.json)\"
   echo
