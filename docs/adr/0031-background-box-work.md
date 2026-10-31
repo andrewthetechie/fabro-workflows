@@ -2,8 +2,22 @@
 
 **Status:** proposed (2026-10-28). The decisions below are the operator's, from the planning
 session of 2026-10-27/28, revised the same day after a review against the repository. The task
-series is `docs/plans/more-local-inference/`. This ADR becomes accepted when that series'
-Phase 2 exit check passes (task 12).
+series is `docs/plans/more-local-inference/`.
+
+**Acceptance gate (revised 2026-10-31).** It was "Phase 2's exit check passes", but Phase 2's
+only job, the PR doctor (D4), was retired before its first run and removed, so that check can
+never pass. The gate is now **task 12's Phase 3 exit check, with at least one job kind kept on**:
+14 days of the precheck and the context pack (live since 2026-10-30), measured against the
+question the ADR exists to answer, whether box work raises the merge rate or lowers hosted
+token use. The operator records the result:
+- **Accepted** if the check keeps the pack on (it lowered z.ai credits per `decompose`/`plan`
+  visit) or the precheck on (its false-hold rate is a third or less), so at least one kind has
+  earned its gap.
+- **Rejected** if the check turns every kind off. The claim and the lane (D1-D3) then stay only
+  if the operator decides they are worth keeping for later kinds, recorded in a new ADR.
+
+Phase 1 (the claim, the guard and the lane) already passed its exit check on 2026-10-29: that
+proved the mechanism is safe for the coder loop, not that it is worth anything.
 
 The two coder boxes (`coders-a`, `coders-b`, both serving qwen3.8-flash-next through
 strix-infer) are free to run and have no capacity limit, but they sit idle most of the day.
@@ -69,11 +83,12 @@ run on a drained box. One switch, `SCHEDULER_BACKGROUND`, off by default, turns 
 
 ## D4. The PR doctor gets one attempt per pull request
 
-**Retired 2026-10-30.** The operator retired the doctor before its first run. It holds its box
+**Retired 2026-10-30, removed 2026-10-31.** The operator retired the doctor before its first run. It holds its box
 for about 40 minutes, and the measured gaps do not allow that: half of all gap time is in gaps of
 30 minutes or more, but no stage outside a rescue gives even odds of 41 free minutes, so the
 lane cannot tell which gap to start it in. The canary job waited 23 hours without starting. The
-lane keeps only jobs that fit a gap of about 10 to 20 minutes. What follows is the decision as
+lane keeps only jobs that fit a gap of about 10 to 20 minutes. Its package, the scheduler's
+follow-up review and its daily cap were deleted on 2026-10-31. What follows is the decision as
 it stood.
 
 The first background job is the **PR doctor**. It fixes a blocked factory pull request on the

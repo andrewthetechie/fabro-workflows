@@ -10,6 +10,9 @@ nothing on GitHub. ADR 0031 (proposed). Phase 2 (the PR doctor) was deployed 202
 **retired by the operator on 2026-10-30** before its first run: a 40-minute job did not fit
 the gaps, and the canary waited 23 hours (`06-pr-doctor.md`). The operator then directed
 Phase 3 to start with the precheck, and the context pack cut to fit a gap. The lane is on.
+On 2026-10-31 the doctor's code was removed (package, scheduler module, follow-up review), the
+precheck calibration and task 09's pre-review went live (`pre-review-and-calibration`), and ADR
+0031's acceptance gate moved to task 12's Phase 3 exit check.
 Phase 0's sampler runs on the fabro host until about 2026-10-30 03:50 UTC
 (`~/coder-util/box-{a,b}.tsv`, read-only). Revised 2026-10-28 after a review against the
 repository (see *Facts*).
