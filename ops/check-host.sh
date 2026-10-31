@@ -52,7 +52,7 @@ declare -A BASELINE=(
     [context-pack]="8 nodes, 11 edges"
     # The precheck calibration (pre-review-and-calibration): start, exit, claim, prep, check,
     # gate, record -- no stop and no post, because it re-checks an issue that already has a
-    # live marker and writes nothing. Verified by this script on 2026-11-02.
+    # live marker and writes nothing. Verified by this script on 2026-10-31.
     [precheck-calibration]="7 nodes, 9 edges"
 )
 

@@ -1,10 +1,11 @@
 # Task 09: in-run box pre-review
 
-**Status (2026-11-01): SUPERSEDED by `pre-review-and-calibration` Part B.** The pre-review was
+**Status (2026-10-31): SUPERSEDED by `pre-review-and-calibration` Part B.** The pre-review was
 built, in `backlog` and `ralph`, **once per run on the whole branch** — not per task, and not in
-`backlog` only — and behind an issue-number A/B arm. Read
-`.scratch/more-local-inference/pre-review-and-calibration-plan.md` for the build; the rules are
-in `docs/agents/invariants-backlog.md` and `invariants-ralph.md`. The rest of this file is kept
+`backlog` only — and behind an issue-number A/B arm. The build is commits `25304e4` (the nodes, the prompt and the
+schema) and `5e02681` (the docs), with the review's fixes on top; the rules are the
+pre-review rows in `docs/agents/invariants-backlog.md` and `invariants-ralph.md`, and the
+graph comment above `pre_review_check` in `backlog/workflow.fabro`. The rest of this file is kept
 as the record of what it said and why the placement changed; step 1-7 below are no longer the
 task.
 

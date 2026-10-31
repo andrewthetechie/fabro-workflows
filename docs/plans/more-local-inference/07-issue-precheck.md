@@ -37,7 +37,7 @@ This task also builds the path every background output takes into a hosted stage
 | `unclear` | No criterion can be checked | adds `precheck-unclear`; holds the issue |
 | `unverifiable` | A criterion the pipeline cannot check or meet: a command `.fabro/ci.sh` does not run, or PR-description text, a screenshot, a manual check; it quotes the criterion (added 2026-10-31, shadow only) | not decided; the issue still gets a context pack |
 
-**Status (2026-11-01):** the holds below wait on the calibration measurement, not on more live
+**Status (2026-10-31):** the holds below wait on the calibration measurement, not on more live
 prechecks. `precheck-calibration` re-runs this package's own `check` on issues whose runs have
 already finished, against `main` as it stood when each was dispatched, and
 `GET :32280/api/background/calibration` puts each verdict next to how the run ended (see
