@@ -287,11 +287,6 @@ def holding_labels(labels: object) -> list[str]:
     )
 
 
-def should_hold(verdicts: Sequence[str], marker: Marker | None) -> bool:
-    """Whether `marker`'s verdict is one the operator asked the scheduler to hold on."""
-    return marker is not None and marker.verdict in verdicts
-
-
 def release_blocked(
     repo: str, token: str, *, client: httpx.Client | None = None
 ) -> list[tuple[int, str]]:

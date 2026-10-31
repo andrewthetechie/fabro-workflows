@@ -31,7 +31,7 @@ from typing import Any
 import httpx
 
 from .config import BACKGROUND_JOB_PRIORITY, SchedulerConfig
-from .precheck import fetch_comments, posted_since
+from .precheck import posted_since
 from .store import Store
 
 log = logging.getLogger(__name__)
