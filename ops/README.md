@@ -1147,7 +1147,7 @@ scheduler adds one label to the issue:
 **It never closes an issue, edits its body, or reorders the queue.** The label is the whole
 mechanism, it is visible on GitHub, and removing it is the release. The scheduler removes exactly
 one of them by itself: `precheck-blocked`, and only when the issue its marker names has closed.
-A `blocked` marker written before 2026-11-03 has no `blocker=`, so nothing releases it but a
+A `blocked` marker written before 2026-10-31 has no `blocker=`, so nothing releases it but a
 human — that is what the field was added for.
 
 **A label holds whatever the switch says.** `SCHEDULER_PRECHECK_HOLDS=off` stops *new* holds

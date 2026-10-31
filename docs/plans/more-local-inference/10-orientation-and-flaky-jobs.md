@@ -1,6 +1,6 @@
 # Task 10: repo orientation and flaky-test investigation
 
-**Status (2026-11-03): BUILT by `.scratch/more-local-inference/background-jobs-plan.md`.** Both
+**Status (2026-10-31): BUILT by `.scratch/more-local-inference/background-jobs-plan.md`.** Both
 packages exist, are registered in every checker, and are **off**: the operator adds
 `flaky-investigation` and `repo-orientation` to `SCHEDULER_BG_KINDS`. Four departures from the
 steps below, each argued in its commit:

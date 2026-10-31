@@ -334,7 +334,7 @@ class BackgroundPackages(unittest.TestCase):
         root = BoxStages.root(BoxStages(), tmp, stylesheet=stylesheet or self.BG_STYLESHEET,
                               drop_class=drop_class)
         toml = root / ".fabro/workflows/ok/workflow.toml"
-        # The three variables `box-guard` reads (R16, added 2026-11-03): a fixture package that
+        # The three variables `box-guard` reads (R16, added 2026-10-31): a fixture package that
         # lacks them is a fixture package with a dead guard, which is what R16 now reports.
         toml.write_text(toml.read_text() + self.GUARD_ENV)
         toml.write_text(toml.read_text() + (self.GUARD if guard is None else guard))
@@ -656,7 +656,7 @@ if __name__ == "__main__":
 class BackgroundPackageEnv(unittest.TestCase):
     """R16: a background package carries the three variables `box-guard` reads.
 
-    `flaky-investigation` and `repo-orientation` shipped without them on 2026-11-03: the hook
+    `flaky-investigation` and `repo-orientation` shipped without them on 2026-10-31: the hook
     was wired exactly as C10 gives it, the checker passed, and the guard logged one line and let
     every stage run, because it cannot find the box's `/health` URL or the run API.
     """

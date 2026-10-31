@@ -52,7 +52,7 @@ declare -A BASELINE=(
     # live marker and writes nothing. Verified by this script on 2026-10-31.
     [precheck-calibration]="7 nodes, 9 edges"
     # The flaky investigation (more-local-inference task 10): start, exit, claim, stop, prep,
-    # investigate, gate, post -- the precheck's shape. Verified by this script on 2026-11-03.
+    # investigate, gate, post -- the precheck's shape. Verified by this script on 2026-10-31.
     [flaky-investigation]="8 nodes, 11 edges"
     # The repository orientation (task 10): the same shape -- claim, stop, prep, map, gate,
     # post -- with no issue number: the subject is the run's own repository.

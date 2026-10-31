@@ -960,7 +960,7 @@ def r16_background_packages(package: str, root: Graph | None, nodes: dict[str, d
     if root is None or "/tmp/fabro/box" not in (root.nodes.get("claim") or {}).get("script", ""):
         out.append(("R16", "claim",
                     "does not write /tmp/fabro/box, so box-guard cannot tell which box it is on"))
-    # 2026-11-03: `flaky-investigation` and `repo-orientation` shipped without the three
+    # 2026-10-31: `flaky-investigation` and `repo-orientation` shipped without the three
     # variables `box-guard` reads. The hook was there, the checker passed, and the guard did
     # nothing: it logs and returns 0 when the pool or the box's `/health` URL is unknown. A
     # missing key is the silent failure; find it here.

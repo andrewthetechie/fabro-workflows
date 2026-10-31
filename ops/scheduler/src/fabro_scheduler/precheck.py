@@ -48,7 +48,7 @@ KIND = "issue-precheck"
 PRECHECK_TYPICAL_MINUTES = 3
 
 # C6's precheck marker, the comment's first line. `blocker=<n>` is written only for a `blocked`
-# verdict (2026-11-03, D20's release rule needs to know which issue to watch), and it is
+# verdict (2026-10-31, D20's release rule needs to know which issue to watch), and it is
 # optional so a marker posted before it parses unchanged.
 MARKER = re.compile(
     r"^<!-- fabro:precheck verdict=(?P<verdict>\S+) body=(?P<body>\S+) main=(?P<main>\S+) "
