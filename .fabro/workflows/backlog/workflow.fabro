@@ -1402,15 +1402,25 @@ echo '{\"context_updates\":{\"pre_review_go\":true,\"pre_review_arm\":\"'$ARM'\"
     // reviewers' own, so its edits are the branch's best chance of passing them; but an edit
     // nothing validated is worse than no edit, so a changed tree is kept only when
     // `fabro-io task-check --gate --base` -- the scoped validation `validate` runs -- is green
-    // over exactly that change. `task-check`'s `full` mode is kept: it means it could not
-    // scope the diff, and Final validation (`open_pr_prep`) is the full net that will.
+    // over exactly that change. Everything else reverts:
+    //
+    // - `forbidden_path`: any change under `.github/workflows/` or `.fabro/`. Diff hygiene
+    //   holds a PR for `config_changed`, and the prompt alone is not a guarantee.
+    // - `unscoped`: `task-check`'s `full` mode, which means it could not scope the diff (about
+    //   1 check in 10). Keeping those edits would leave Final validation or `final_check` to
+    //   find a red tree, at a hosted `final_fix` or a `mark_needs_human` the pre-review caused.
+    // - `red`, `check_timeout` (task-check is held to 15m, under this node's 25m, so the node
+    //   is never killed before it reverts) and `check_error` (no readable `task_check.json`).
+    //
+    // `task-check` exits 1 on a red scoped check, so the verdict is read from `task_check.json`,
+    // not from the exit code. The script has no `set -e`: the revert and the log line must
+    // run whatever fails before them.
     //
     // A revert is `drop_followup`'s shape: `git restore --source=<base>` for the tracked
     // files, then `git clean -fd` for the files the stage added (ignored paths -- the code
     // index and the agent guide -- are left alone), then the same two checks it makes.
     pre_review_check [label="Keep or revert the pre-review", shape=parallelogram, output_schema="routing", timeout="25m",
-        script="set -e
-F=/tmp/fabro
+        script="F=/tmp/fabro
 P=$F/pre_review
 : > $F/pre_reviewed
 BASE=$(cat $F/pre_review_base 2>/dev/null || true)
@@ -1430,23 +1440,32 @@ if [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}\" 2>/dev/null; then
     VERDICT=no_receipt
     V=$(jq -r '.visit // empty' $F/.io/stage.json 2>/dev/null || true)
     RV=$(jq -r '._io.visit // empty' $F/pre_review.json 2>/dev/null || true)
-    if [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
+    FORBIDDEN=$( { git diff --name-only \"$BASE\" -- .github/workflows .fabro; git ls-files --others --exclude-standard -- .github/workflows .fabro; } 2>/dev/null | head -1)
+    if [ -n \"$FORBIDDEN\" ]; then
+      VERDICT=forbidden_path
+      echo 'pre_review_check: the pre-review changed '$FORBIDDEN', which it may not touch' >&2
+    elif [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
+      TO=''
+      if command -v timeout >/dev/null 2>&1; then TO='timeout 15m'; fi
       RC=0
-      fabro-io task-check --gate --base \"$BASE\" --out $P/task_check.json > $P/validate_output.log 2>&1 || RC=$?
+      rm -f $P/task_check.json
+      $TO fabro-io task-check --gate --base \"$BASE\" --out $P/task_check.json > $P/validate_output.log 2>&1 || RC=$?
       MODE=$(jq -r '.mode // empty' $P/task_check.json 2>/dev/null || true)
       OK=$(jq -r '.ok // false' $P/task_check.json 2>/dev/null || true)
-      VERDICT=check_error
-      if [ \"$RC\" -eq 0 ] && [ -n \"$MODE\" ]; then
-        if [ \"$MODE\" = full ]; then VERDICT=kept_unscoped; elif [ \"$OK\" = true ]; then VERDICT=kept; else VERDICT=red; fi
-      fi
+      if [ \"$RC\" -eq 124 ]; then VERDICT=check_timeout
+      elif [ -z \"$MODE\" ]; then VERDICT=check_error
+      elif [ \"$MODE\" = full ]; then VERDICT=unscoped
+      elif [ \"$OK\" = true ] && [ \"$RC\" -eq 0 ]; then VERDICT=kept
+      elif [ \"$OK\" = false ]; then VERDICT=red
+      else VERDICT=check_error; fi
     fi
   fi
 fi
 KEPT=true
-case \"$VERDICT\" in unchanged | kept | kept_unscoped) KEPT=true ;; *) KEPT=false ;; esac
+case \"$VERDICT\" in unchanged | kept) KEPT=true ;; *) KEPT=false ;; esac
 if [ \"$KEPT\" = false ] && [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}\" 2>/dev/null; then
-  git restore --source=\"$BASE\" --staged --worktree -- .
-  git clean -fdq
+  git restore --source=\"$BASE\" --staged --worktree -- . || echo 'pre_review_check: git restore failed' >&2
+  git clean -fdq || echo 'pre_review_check: git clean failed' >&2
   if [ -n \"$(git diff --name-only \"$BASE\" -- .)\" ] || [ -n \"$(git ls-files --others --exclude-standard)\" ]; then
     echo 'pre_review_check: the tree did not come back to the pre-review base' >&2
   fi

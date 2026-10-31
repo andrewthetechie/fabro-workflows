@@ -85,6 +85,14 @@ Fix what you find, in the code, in the same pass:
 - **Never edit `.github/workflows/`.** The pipeline pushes with a token that may not update a
   workflow file, and a commit that touches one is refused at the PR, after the work is done. If
   a criterion needs a workflow change, that criterion is `unverifiable` here — say so.
+- **Never edit anything under `.fabro/`** (`ci.sh`, `setup.sh`, `test.toml`, `hygiene.json` and
+  the rest). They are the pipeline's configuration, and changing one blocks the merge. If a
+  criterion needs a command added to CI (for example "`npm run test:coverage` passes"), that
+  criterion is `unverifiable` here — say so.
+- Do not edit tests to make them pass, and do not delete tests, add skips or weaken
+  assertions. Diff hygiene counts those, and they block the merge.
+- The node after you reverts **every** edit if any of them touches `.github/workflows/` or
+  `.fabro/`, so one such edit costs you all the others.
 - Do not write a pull-request description, a changelog entry or `completed.md`: none of them is
   yours, and the last becomes the PR body.
 - Do not run `git` commands that change files or branches. Your edits are the change; the

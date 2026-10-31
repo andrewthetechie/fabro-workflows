@@ -27,6 +27,7 @@ BACKLOG = WF / "backlog" / "workflow.fabro"
 
 # A `fabro-io` that writes a canned task-check result to --out and exits with a chosen code.
 FABRO_IO_STUB = """#!/bin/sh
+[ -n "${PR_IO_LOG:-}" ] && printf '%s\\n' "$*" >> "$PR_IO_LOG"
 out=
 while [ $# -gt 0 ]; do
   case "$1" in --out) out=$2; shift 2 ;; *) shift ;; esac
@@ -84,7 +85,8 @@ class PreReview:
                 ck.fail(f"{node} is not valid POSIX sh", err)
 
     def run(self, node: str, **env: str):
-        base = {"PR_CANNED": str(self.canned), "PR_IO_RC": "0"}
+        base = {"PR_CANNED": str(self.canned), "PR_IO_RC": "0",
+                "PR_IO_LOG": str(self.T / "fabro-io.log")}
         base.update(env)
         script = write(self.T / f"{node}.sh", self.nodes[node])
         return sh(script, cwd=self.repo, path=f"{self.bin}:{ORIG_PATH}", env=base,
@@ -211,12 +213,14 @@ def test_check_keeps_edits_a_green_scoped_check_passed(ck, tmp_path):
 
 
 def test_check_reverts_edits_a_red_scoped_check_failed(ck, tmp_path):
+    # `fabro-io task-check` exits 1 on a red scoped check (`taskcheck.rs`: success only for
+    # `full` or `ok`), so the verdict must come from task_check.json, not the exit code.
     P = PreReview(ck, tmp_path, "check-red")
     P.run("pre_review_prep")
     P.edit()
     P.receipt()
     write(P.canned, SCOPED_RED)
-    r = P.run("pre_review_check")
+    r = P.run("pre_review_check", PR_IO_RC="1")
     ck("check red: reports not kept", "false", routed(r, "pre_review_kept"))
     ck("check red: the tracked file is back at the base", "branch", cat(P.repo / "src.txt"))
     ck("check red: the file the stage added is gone", "absent",
@@ -235,18 +239,67 @@ def test_check_reverts_when_task_check_errors(ck, tmp_path):
     ck("check error: the outcome", "1", count("outcome=check_error", log_of(P)))
 
 
-def test_check_keeps_edits_task_check_could_not_scope(ck, tmp_path):
-    # `full` means task-check could not attribute the diff; Final validation (backlog) and
-    # final_check (ralph) are the full net that will judge these edits.
+def test_check_reverts_edits_task_check_could_not_scope(ck, tmp_path):
+    # `full` means task-check could not attribute the diff, so nothing validated the edits.
+    # Keeping them would leave Final validation (backlog) or final_check (ralph) to find a red
+    # tree, at a hosted final_fix or a mark_needs_human the pre-review caused (review F4).
     P = PreReview(ck, tmp_path, "check-full")
     P.run("pre_review_prep")
     P.edit()
     P.receipt()
     write(P.canned, FULL)
     r = P.run("pre_review_check")
-    ck("check full: reports kept", "true", routed(r, "pre_review_kept"))
+    ck("check full: reports not kept", "false", routed(r, "pre_review_kept"))
+    ck("check full: the tracked file is back at the base", "branch", cat(P.repo / "src.txt"))
+    ck("check full: the file the stage added is gone", "absent",
+       present(P.repo / "notes/new.md"))
     ck("check full: the outcome says the check was not scoped", "1",
-       count("outcome=kept_unscoped", log_of(P)))
+       count("outcome=unscoped kept=false", log_of(P)))
+
+
+def test_check_reverts_every_edit_when_one_touches_pipeline_config(ck, tmp_path):
+    # Diff hygiene holds a PR for `config_changed` and a workflow file is refused at the push;
+    # the prompt forbids both, and this is the guarantee (review F3).
+    for name, path, tracked in (
+        ("ci", ".fabro/ci.sh", True),
+        ("new-config", ".fabro/test.toml", False),
+        ("workflow", ".github/workflows/ci.yml", True),
+    ):
+        P = PreReview(ck, tmp_path, f"check-forbidden-{name}")
+        if tracked:
+            write(P.repo / path, "original\n")
+            git("-c", "user.email=t@t", "-c", "user.name=t", "add", ".", cwd=P.repo)
+            git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "cfg",
+                cwd=P.repo)
+        P.run("pre_review_prep")
+        P.edit()
+        write(P.repo / path, "changed by the pre-review\n")
+        P.receipt()
+        write(P.canned, SCOPED_OK)
+        r = P.run("pre_review_check")
+        ck(f"check {name}: reports not kept", "false", routed(r, "pre_review_kept"))
+        ck(f"check {name}: the config is back", "original" if tracked else "absent",
+           cat(P.repo / path) if tracked else present(P.repo / path))
+        ck(f"check {name}: and so is every other edit", "branch", cat(P.repo / "src.txt"))
+        ck(f"check {name}: the outcome", "1", count("outcome=forbidden_path", log_of(P)))
+        ck(f"check {name}: task-check is not run", "absent", present(P.T / "fabro-io.log"))
+
+
+def test_check_reverts_when_task_check_times_out(ck, tmp_path):
+    # 124 is `timeout`'s own exit code. The node's 25m must never be reached first: a killed
+    # node takes its unconditional edge with the edits still in the tree (review F5).
+    P = PreReview(ck, tmp_path, "check-slow")
+    P.run("pre_review_prep")
+    P.edit()
+    P.receipt()
+    r = P.run("pre_review_check", PR_IO_RC="124")
+    ck("check slow: reports not kept", "false", routed(r, "pre_review_kept"))
+    ck("check slow: the tracked file is back at the base", "branch", cat(P.repo / "src.txt"))
+    ck("check slow: the outcome", "1", count("outcome=check_timeout", log_of(P)))
+    script = P.nodes["pre_review_check"]
+    ck("check: task-check is held under the node's timeout", "1",
+       count("TO='timeout 15m'", script, flags="F"))
+    ck("check: no set -e, so the revert always runs", "0", count("^set -e", script))
 
 
 def test_check_survives_a_timeout_that_left_no_files(ck, tmp_path):

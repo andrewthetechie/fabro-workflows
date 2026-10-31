@@ -1273,8 +1273,7 @@ echo '{\"context_updates\":{\"pre_review_go\":true,\"pre_review_arm\":\"'$ARM'\"
     pre_review [label="Pre-review the whole branch", class="coder", timeout="30m", max_retries=0, prompt="@prompts/pre_review.md.j2"]
 
     pre_review_check [label="Keep or revert the pre-review", shape=parallelogram, output_schema="routing", timeout="25m",
-        script="set -e
-F=/tmp/fabro
+        script="F=/tmp/fabro
 P=$F/pre_review
 : > $F/pre_reviewed
 BASE=$(cat $F/pre_review_base 2>/dev/null || true)
@@ -1294,23 +1293,32 @@ if [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}\" 2>/dev/null; then
     VERDICT=no_receipt
     V=$(jq -r '.visit // empty' $F/.io/stage.json 2>/dev/null || true)
     RV=$(jq -r '._io.visit // empty' $F/pre_review.json 2>/dev/null || true)
-    if [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
+    FORBIDDEN=$( { git diff --name-only \"$BASE\" -- .github/workflows .fabro; git ls-files --others --exclude-standard -- .github/workflows .fabro; } 2>/dev/null | head -1)
+    if [ -n \"$FORBIDDEN\" ]; then
+      VERDICT=forbidden_path
+      echo 'pre_review_check: the pre-review changed '$FORBIDDEN', which it may not touch' >&2
+    elif [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
+      TO=''
+      if command -v timeout >/dev/null 2>&1; then TO='timeout 15m'; fi
       RC=0
-      fabro-io task-check --gate --base \"$BASE\" --out $P/task_check.json > $P/validate_output.log 2>&1 || RC=$?
+      rm -f $P/task_check.json
+      $TO fabro-io task-check --gate --base \"$BASE\" --out $P/task_check.json > $P/validate_output.log 2>&1 || RC=$?
       MODE=$(jq -r '.mode // empty' $P/task_check.json 2>/dev/null || true)
       OK=$(jq -r '.ok // false' $P/task_check.json 2>/dev/null || true)
-      VERDICT=check_error
-      if [ \"$RC\" -eq 0 ] && [ -n \"$MODE\" ]; then
-        if [ \"$MODE\" = full ]; then VERDICT=kept_unscoped; elif [ \"$OK\" = true ]; then VERDICT=kept; else VERDICT=red; fi
-      fi
+      if [ \"$RC\" -eq 124 ]; then VERDICT=check_timeout
+      elif [ -z \"$MODE\" ]; then VERDICT=check_error
+      elif [ \"$MODE\" = full ]; then VERDICT=unscoped
+      elif [ \"$OK\" = true ] && [ \"$RC\" -eq 0 ]; then VERDICT=kept
+      elif [ \"$OK\" = false ]; then VERDICT=red
+      else VERDICT=check_error; fi
     fi
   fi
 fi
 KEPT=true
-case \"$VERDICT\" in unchanged | kept | kept_unscoped) KEPT=true ;; *) KEPT=false ;; esac
+case \"$VERDICT\" in unchanged | kept) KEPT=true ;; *) KEPT=false ;; esac
 if [ \"$KEPT\" = false ] && [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}\" 2>/dev/null; then
-  git restore --source=\"$BASE\" --staged --worktree -- .
-  git clean -fdq
+  git restore --source=\"$BASE\" --staged --worktree -- . || echo 'pre_review_check: git restore failed' >&2
+  git clean -fdq || echo 'pre_review_check: git clean failed' >&2
   if [ -n \"$(git diff --name-only \"$BASE\" -- .)\" ] || [ -n \"$(git ls-files --others --exclude-standard)\" ]; then
     echo 'pre_review_check: the tree did not come back to the pre-review base' >&2
   fi
