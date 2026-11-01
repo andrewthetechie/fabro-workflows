@@ -103,7 +103,7 @@ called by background work, and nothing new sits in the coder loop's path.
 | D16 | Out of scope: a z.ai credit governor, a second coder loop per box, in-run parallel background branches, scheduled automations for the lane, and a proxy. The latent `issue.json` comments gap (*Facts*) was kept out of this series and filed as its own issue; #58 fixes it there. |
 | D17 | **The precedence guarantee has three layers**, because the claim runs once, at stage start, and cannot see a background run created after it: (1) the scheduler's fresh stage read before a start (D7); (2) the scheduler **evicts**, on every tick, any background run on a box whose coder loop is in a box stage; (3) every background package runs **`fabro-io box-guard`** before each of its own agent stages, which cancels its own run when the box's coder loop is in a box stage or the box is busy (C10). |
 | D18 | **The binary ships before the data.** `fabro-io`'s manifest structs use `deny_unknown_fields`, so a manifest carrying `box` or `coder_box_stages` fails to load in the deployed 0.8.1, and with it `submit`, `serve`, `guard` and `git-guard` in every run. Task 02 teaches the binary the new fields and is pushed and deployed alone, before task 01's data. Task 01 raises `min_binary` to task 02's version. |
-| D19 | **Hosted stages read background output through a Stage I/O input, `/tmp/fabro/background.md` (C9), never through issue comments.** `issue.json` carries the human discussion, but every fabro marker comment is dropped from it (#58), so a background note still reaches a stage only through this file. The `claim` nodes of `backlog` and `ralph` build it from the newest marker comment of each kind. |
+| D19 | **Hosted stages read background output through a Stage I/O input, `/tmp/fabro/background.md` (C9), never through issue comments.** `issue.json` carries the human discussion, but every fabro marker comment except `triage-questions` is dropped from it (#58), so a background note still reaches a stage only through this file. The `claim` nodes of `backlog` and `ralph` build it from the newest marker comment of each kind. |
 | D20 | **Precheck verdicts hold an issue; they do not reorder it.** `already_done`, `contradiction` and `unclear` keep an issue out of dispatch while its `precheck-*` label is on it; a human removes the label to release it. `blocked` holds it while the cited blocker, in the same repository, is open. The scheduler never closes an issue or edits its body. |
 | D21 | **Live trials are not confounded silently.** Task 09 changes only `backlog`, so Phase 4 does not start until the ralph trial (ADR 0029) has a recorded verdict, or the operator records in the Status line that the confound is accepted. Context packs change `plan`'s credits in both arms of the box-plan trial (`docs/plan-box-trial/`), so the scheduler records per run whether a pack existed at dispatch (task 08), and the trial's analysis stratifies on it. |
 | D22 | **Repository orientation lives in one pinned issue per repository**, labelled `fabro-orientation`, whose body the job edits in place. It is never a pull request, so it needs no hosted review. No automation selects issues by that label. |
@@ -219,9 +219,10 @@ called by background work, and nothing new sits in the coder loop's path.
 - **`issue.json` carried no comments until #58.** `claim` in `backlog` and `ralph` wrote it
   with `gh issue view --json state,number,title,body,labels`, while six prompts told the agent
   to read `.comments`; that was a latent bug, kept out of scope here (D16) and fixed in its own
-  issue. The fetch (`backlog/workflow.fabro:305`, `ralph/workflow.fabro:137`) now asks for
-  `comments`, and a `jq` pass drops every `<!-- fabro:` marker, keeps the newest ten and cuts
-  each body at 2,000 characters. `ralph`'s `claim` and `prep`
+  issue. The fetch (`backlog/workflow.fabro:312`, `ralph/workflow.fabro:144`) now asks for
+  `comments`, and a `jq` pass drops hidden comments and every `<!-- fabro:` marker but
+  `triage-questions`, keeps the newest ten with only `author.login`, `createdAt` and `body`, and
+  cuts each body at 2,000 characters. `ralph`'s `claim` and `prep`
   are checked copies of `backlog`'s (`ops/check-graph-invariants.py` R10, `R10_COPIES`): an edit
   to one needs the same edit in the other, or a recorded replacement.
 - **`fast-path` is an issue label** that routes `backlog` into its one-task lane

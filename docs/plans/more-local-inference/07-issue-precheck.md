@@ -24,8 +24,8 @@ worth running. Since 10-20, 32 of 176 runs ended in `close_noop`, `return_to_tri
 
 This task also builds the path every background output takes into a hosted stage:
 `/tmp/fabro/background.md` (C9). A background note reaches `decompose` and `plan` only this way:
-`claim` drops every `<!-- fabro:` comment from `issue.json` (#58), so the issue's human
-discussion is there and the markers are not.
+`claim` drops every `<!-- fabro:` comment but `triage-questions` from `issue.json` (#58), so
+the issue's human discussion is there and the background markers are not.
 
 ## Verdicts
 

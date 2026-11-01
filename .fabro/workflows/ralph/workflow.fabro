@@ -112,11 +112,16 @@ digraph Ralph {
     // read costs the run its notes and nothing else, so nothing here can fail the node, and
     // nothing goes to stdout.
     // `issue.json` carries the issue's human discussion too (#58). `gh issue view --json`
-    // asks for `comments`, and the pass below drops every fabro marker comment and keeps
-    // the newest ten, each cut at 2,000 characters. The markers go because the background
-    // ones already reach `decompose` and `plan` through `background.md` (D19) and triage's
-    // are its own record; the cap is because `issue.json` is a Stage I/O input to several
-    // stages and one long thread would otherwise be paid for by every one of them. `spec`
+    // asks for `comments`, and the pass below drops every comment a human hid, drops every
+    // fabro marker comment except `triage-questions`, keeps the newest ten with only
+    // `author.login`, `createdAt` and `body`, and cuts each body at 2,000 characters. The
+    // background markers go because they already reach `decompose` and `plan` through
+    // `background.md` (D19), and triage's report and original are its own record. The
+    // questions, which triage and `return_to_triage` post, stay because a human answers them
+    // in a plain comment after them, which `spec` cannot read without them. A hidden comment
+    // is one its human withdrew. The cap
+    // and the dropped keys are because `issue.json` is a Stage I/O input to several stages,
+    // so every byte here is paid for by every one of them. `spec`
     // reads `.comments` as the authority for an accepted requirement change, so a comment
     // that was cut says so in its own text. The trim sits in an `if` for the reason the
     // `background.md` block below does: `claim` runs under `set -e`, and an untrimmed file
@@ -145,7 +150,7 @@ while :; do
   A=$((A + 1))
   sleep 5
 done
-if jq '(.comments // []) as $c | .comments = ($c | map(select((.body // \"\") | startswith(\"<!-- fabro:\") | not)) | .[-10:] | map(if ((.body // \"\") | length) > 2000 then .body = ((.body // \"\")[0:2000] + \" [cut to 2000 characters]\") else . end))' /tmp/fabro/issue.json > /tmp/fabro/issue.json.new; then
+if jq '(.comments // []) as $c | .comments = ($c | map(select(.isMinimized != true)) | map(select((.body // \"\") | (startswith(\"<!-- fabro:\") | not) or startswith(\"<!-- fabro:triage-questions -->\"))) | .[-10:] | map({author: {login: .author.login}, createdAt, body}) | map(if ((.body // \"\") | length) > 2000 then .body = ((.body // \"\")[0:2000] + \" [cut to 2000 characters]\") else . end))' /tmp/fabro/issue.json > /tmp/fabro/issue.json.new; then
   mv /tmp/fabro/issue.json.new /tmp/fabro/issue.json
 else
   echo 'issue.json: could not trim the comments; the run goes on with all of them' >&2

@@ -367,8 +367,9 @@ def test_claim_writes_background_md(ck, tmp_path, graph, label):
 # agent to read `.comments`, and `spec` treats a comment as the authority for an accepted
 # requirement change. `claim` asked `gh issue view --json` for `state,number,title,body,labels`
 # only, so the agents saw the body and none of the clarifications, answers or scope changes
-# posted under it. The fetch now asks for `comments`; this test holds the three things the
-# fix must do with them: drop fabro's own markers, keep the newest ten, and cut each body.
+# posted under it. The fetch now asks for `comments`; this test holds what the fix must do
+# with them: drop the comments a human hid and fabro's own markers but `triage-questions`,
+# both before it keeps the newest ten, keep only the keys a prompt reads, and cut each body.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("graph,label", [(GRAPH, "backlog"), (RAPH, "ralph")])
 def test_claim_writes_the_issue_comments(ck, tmp_path, graph, label):
@@ -387,13 +388,20 @@ def test_claim_writes_the_issue_comments(ck, tmp_path, graph, label):
 
     def payload(*bodies):
         # `gh issue view --json comments` shape: `author.login` and `createdAt`, not the
-        # `gh api` shape's `user.login` and `created_at`.
+        # `gh api` shape's `user.login` and `created_at`, plus the keys gh adds that no
+        # prompt reads. A body given as a dict adds or overrides keys on that comment.
+        def comment(i, b):
+            c = {"id": f"c{i}", "author": {"login": f"u{i}"},
+                 "authorAssociation": "OWNER", "createdAt": f"2026-10-{i + 1:02d}T00:00:00Z",
+                 "includesCreatedEdit": False, "isMinimized": False, "minimizedReason": "",
+                 "reactionGroups": [{"content": "THUMBS_UP", "users": {"totalCount": 1}}],
+                 "url": f"https://github.com/o/r/issues/356#issuecomment-{i}",
+                 "viewerDidAuthor": False}
+            return {**c, **b} if isinstance(b, dict) else {**c, "body": b}
         return json.dumps({
             "state": "OPEN", "number": 356, "title": "t", "body": "b",
             "labels": [{"name": "agent-in-progress"}],
-            "comments": [{"id": f"c{i}", "author": {"login": f"u{i}"},
-                          "createdAt": f"2026-10-{i + 1:02d}T00:00:00Z", "body": b}
-                         for i, b in enumerate(bodies)],
+            "comments": [comment(i, b) for i, b in enumerate(bodies)],
         })
 
     def go(*bodies, raw=None):
@@ -413,23 +421,43 @@ def test_claim_writes_the_issue_comments(ck, tmp_path, graph, label):
        jq('[.comments[].body] | map(select(. == "a human comment")) | length', file=issue))
     ck(f"{label}: the issue itself is untouched", "b", jq(".body", file=issue))
 
-    # 2. Shape: gh's own keys, so the prompts' `.comments` wording stays correct.
+    # 2. Shape: gh's own keys, so the prompts' `.comments` wording stays correct, and only
+    #    the ones a prompt reads. gh adds eight more per comment (`reactionGroups`, `url`,
+    #    `id`, ...), about 350 bytes each, paid for by every stage that reads issue.json.
     ck(f"{label}: author.login survives", "u0", jq(".comments[0].author.login", file=issue))
     ck(f"{label}: createdAt survives", "2026-10-01T00:00:00Z",
        jq(".comments[0].createdAt", file=issue))
 
     # 3. fabro's own markers are dropped. The background ones already reach `decompose`
-    #    and `plan` through background.md (D19), triage's are its own record, and no
-    #    prompt in either graph reads one from here.
+    #    and `plan` through background.md (D19), and triage's report and original are its
+    #    own record. The one kept is `triage-questions`: triage and `return_to_triage` post
+    #    it, and the human's answer is a plain comment after it ("1. yes 2. drop the
+    #    export") that `spec` cannot read as authority without the questions it answers.
     r = go("<!-- fabro:precheck verdict=ready -->\nverdict",
-           "a human comment",
            "<!-- fabro:triage-questions -->\nwhat?",
+           "a human comment",
+           "<!-- fabro:triage-report -->\nreport",
            "<!-- fabro:context-pack body=a -->\nmap")
     ck(f"{label}: claim exits 0 with markers", "0", r.rc)
-    ck(f"{label}: only the human comment is left", "1", jq(".comments | length", file=issue))
-    ck(f"{label}: and it is the human one", "a human comment", jq(".comments[0].body", file=issue))
-    ck(f"{label}: no marker body survives", "0",
-       jq('[.comments[].body] | map(select(startswith("<!-- fabro:"))) | length', file=issue))
+    ck(f"{label}: the questions and the answer are left", "2",
+       jq(".comments | length", file=issue))
+    ck(f"{label}: the questions come first", "<!-- fabro:triage-questions -->\nwhat?",
+       jq(".comments[0].body", file=issue))
+    ck(f"{label}: then the human answer", "a human comment", jq(".comments[1].body", file=issue))
+    ck(f"{label}: every comment keeps only author, createdAt and body",
+       '["author","body","createdAt"]',
+       jq('[.comments[] | keys | tojson] | unique | join(" ")', file=issue))
+    ck(f"{label}: no other marker survives", "0",
+       jq('[.comments[].body] | map(select(startswith("<!-- fabro:") and '
+          '(startswith("<!-- fabro:triage-questions") | not))) | length', file=issue))
+
+    # 3b. A comment a human hid (outdated, resolved, off-topic) is dropped: `spec` reads
+    #     `.comments` as the authority for a requirement change, and a hidden comment is
+    #     one the human has withdrawn from the discussion.
+    go({"body": "the old ask", "isMinimized": True, "minimizedReason": "OUTDATED"},
+       "the current ask")
+    ck(f"{label}: a hidden comment is dropped", "the current ask",
+       jq("[.comments[].body] | join(\"|\")", file=issue))
 
     # 4. The newest ten, so a long thread cannot be paid for by every stage that reads it.
     go(*[f"c{i}" for i in range(14)])
@@ -440,10 +468,11 @@ def test_claim_writes_the_issue_comments(ck, tmp_path, graph, label):
     # 4b. The markers are dropped BEFORE the ten are taken. A slice-then-filter passes
     #     every case above, and would lose human comments on the shape these issues
     #     actually have: a prechecked, context-packed one, whose newest comments are all
-    #     background markers.
+    #     background markers. Hidden comments are dropped before the slice too.
     go(*[f"h{i}" for i in range(12)], "<!-- fabro:precheck -->\nverdict",
-       "<!-- fabro:context-pack -->\nmap")
-    ck(f"{label}: markers do not use up the ten", "10", jq(".comments | length", file=issue))
+       "<!-- fabro:context-pack -->\nmap",
+       {"body": "hidden a", "isMinimized": True}, {"body": "hidden b", "isMinimized": True})
+    ck(f"{label}: markers and hidden comments do not use up the ten", "10", jq(".comments | length", file=issue))
     ck(f"{label}: the ten are the newest human ones", "h2", jq(".comments[0].body", file=issue))
     ck(f"{label}: through the last human one", "h11", jq(".comments[-1].body", file=issue))
 

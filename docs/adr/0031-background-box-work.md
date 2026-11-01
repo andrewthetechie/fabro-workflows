@@ -102,7 +102,8 @@ doctored at most once, ever.
 ## D5. Background output reaches hosted stages through a Stage I/O input
 
 A background job publishes its result as a marker comment, edited in place. The hosted stages
-do not read issue comments: the `issue.json` the coder loop fetches has none. The coder loop's
+do not read marker comments: the `issue.json` the coder loop fetches carries the human
+discussion but drops every fabro marker except `triage-questions` (#58). The coder loop's
 `claim` node therefore copies the newest marker of each kind into one optional Stage I/O
 input, `background.md`, which `decompose` and `plan` read. Repository orientation is kept in
 one pinned issue per repository, not in a pull request, so it needs no hosted review.
