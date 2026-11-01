@@ -100,10 +100,10 @@ called by background work, and nothing new sits in the coder loop's path.
 | D13 | **PR doctor: one attempt per pull request, ever** (ADR 0031 D4). The attempt is recorded by the marker comment, which the doctor's last node posts before anything else (C6). Its push is followed by exactly one automatic `pr-review` run. Before pushing, the doctor removes `ai-review-needs-human` and `merge-on-green`, because the merge queue hands off any PR that carries the first. If the review does not end with the PR merged or queued, the PR gets `ai-review-needs-human` back and a comment saying a human must take it. The doctor never touches that PR again. |
 | D14 | The doctor's `pr-review` run spends hosted credits and uses box stages (`rebase_agent_t1`, `refute_fix`, `resolve_base`), so it is a **coder loop**. It takes a primary lease, obeys the peak-hours pause, and its box stages claim. It is dispatched **ahead of the issue queue** on the next free box, because it turns spend already made into a merge. |
 | D15 | Stay on fabro 0.362. Nothing here needs a newer build. A later upgrade is its own rehearsed series (`docs/fabro-upgrade/`) and must skip 0.370-0.386, where `stall_timeout` was not enforced (fabro PR #1032). |
-| D16 | Out of scope: a z.ai credit governor, a second coder loop per box, in-run parallel background branches, scheduled automations for the lane, a proxy, and fixing the latent `issue.json` comments gap (*Facts*; the operator files it as its own issue). |
+| D16 | Out of scope: a z.ai credit governor, a second coder loop per box, in-run parallel background branches, scheduled automations for the lane, and a proxy. The latent `issue.json` comments gap (*Facts*) was kept out of this series and filed as its own issue; #58 fixes it there. |
 | D17 | **The precedence guarantee has three layers**, because the claim runs once, at stage start, and cannot see a background run created after it: (1) the scheduler's fresh stage read before a start (D7); (2) the scheduler **evicts**, on every tick, any background run on a box whose coder loop is in a box stage; (3) every background package runs **`fabro-io box-guard`** before each of its own agent stages, which cancels its own run when the box's coder loop is in a box stage or the box is busy (C10). |
 | D18 | **The binary ships before the data.** `fabro-io`'s manifest structs use `deny_unknown_fields`, so a manifest carrying `box` or `coder_box_stages` fails to load in the deployed 0.8.1, and with it `submit`, `serve`, `guard` and `git-guard` in every run. Task 02 teaches the binary the new fields and is pushed and deployed alone, before task 01's data. Task 01 raises `min_binary` to task 02's version. |
-| D19 | **Hosted stages read background output through a Stage I/O input, `/tmp/fabro/background.md` (C9), never through issue comments.** `issue.json` carries no comments (*Facts*). The `claim` nodes of `backlog` and `ralph` build the file from the newest marker comment of each kind. |
+| D19 | **Hosted stages read background output through a Stage I/O input, `/tmp/fabro/background.md` (C9), never through issue comments.** `issue.json` carries the human discussion, but every fabro marker comment is dropped from it (#58), so a background note still reaches a stage only through this file. The `claim` nodes of `backlog` and `ralph` build it from the newest marker comment of each kind. |
 | D20 | **Precheck verdicts hold an issue; they do not reorder it.** `already_done`, `contradiction` and `unclear` keep an issue out of dispatch while its `precheck-*` label is on it; a human removes the label to release it. `blocked` holds it while the cited blocker, in the same repository, is open. The scheduler never closes an issue or edits its body. |
 | D21 | **Live trials are not confounded silently.** Task 09 changes only `backlog`, so Phase 4 does not start until the ralph trial (ADR 0029) has a recorded verdict, or the operator records in the Status line that the confound is accepted. Context packs change `plan`'s credits in both arms of the box-plan trial (`docs/plan-box-trial/`), so the scheduler records per run whether a pack existed at dispatch (task 08), and the trial's analysis stratifies on it. |
 | D22 | **Repository orientation lives in one pinned issue per repository**, labelled `fabro-orientation`, whose body the job edits in place. It is never a pull request, so it needs no hosted review. No automation selects issues by that label. |
@@ -216,10 +216,12 @@ called by background work, and nothing new sits in the coder loop's path.
   `not_met` or `unverifiable`, CI still red after two fix attempts, and diff hygiene
   (`asserts_removed`).
 - **How runs end** (since 10-20): `close_noop` 5, `return_to_triage` 5, `mark_stuck` 22 of 176.
-- **`issue.json` carries no comments.** `claim` in `backlog` and `ralph` writes it with
-  `gh issue view --json state,number,title,body,labels` (`backlog/workflow.fabro:286`,
-  `ralph/workflow.fabro:118`). The `decompose` and `plan` prompts nevertheless tell the agent to
-  read `.comments`; that is a latent bug, out of scope here (D16). `ralph`'s `claim` and `prep`
+- **`issue.json` carried no comments until #58.** `claim` in `backlog` and `ralph` wrote it
+  with `gh issue view --json state,number,title,body,labels`, while six prompts told the agent
+  to read `.comments`; that was a latent bug, kept out of scope here (D16) and fixed in its own
+  issue. The fetch (`backlog/workflow.fabro:305`, `ralph/workflow.fabro:137`) now asks for
+  `comments`, and a `jq` pass drops every `<!-- fabro:` marker, keeps the newest ten and cuts
+  each body at 2,000 characters. `ralph`'s `claim` and `prep`
   are checked copies of `backlog`'s (`ops/check-graph-invariants.py` R10, `R10_COPIES`): an edit
   to one needs the same edit in the other, or a recorded replacement.
 - **`fast-path` is an issue label** that routes `backlog` into its one-task lane

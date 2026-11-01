@@ -279,6 +279,16 @@ digraph Backlog {
     // as an optional input, never the comments themselves. No marker: no file. A failed
     // read costs the run its notes and nothing else, so nothing here can fail the node, and
     // nothing goes to stdout.
+    // `issue.json` carries the issue's human discussion too (#58). `gh issue view --json`
+    // asks for `comments`, and the pass below drops every fabro marker comment and keeps
+    // the newest ten, each cut at 2,000 characters. The markers go because the background
+    // ones already reach `decompose` and `plan` through `background.md` (D19) and triage's
+    // are its own record; the cap is because `issue.json` is a Stage I/O input to several
+    // stages and one long thread would otherwise be paid for by every one of them. `spec`
+    // reads `.comments` as the authority for an accepted requirement change, so a comment
+    // that was cut says so in its own text. The trim sits in an `if` for the reason the
+    // `background.md` block below does: `claim` runs under `set -e`, and an untrimmed file
+    // is the run this fix started from, while a failed node costs the whole run.
     claim [label="Claim issue and fetch it", shape=parallelogram,
         script="set -e
 mkdir -p /tmp/fabro
@@ -294,7 +304,7 @@ gh label create Review --color 0E8A16 2>/dev/null || true
 gh issue edit $ISSUE --add-label agent-in-progress --remove-label agent || true
 A=1
 while :; do
-  if gh issue view $ISSUE --json state,number,title,body,labels > /tmp/fabro/issue.json 2>/tmp/fabro/issue_view.err; then break; fi
+  if gh issue view $ISSUE --json state,number,title,body,labels,comments > /tmp/fabro/issue.json 2>/tmp/fabro/issue_view.err; then break; fi
   if [ $A -ge 3 ]; then
     echo 'could not read issue '$ISSUE' after '$A' attempts:' >&2
     cat /tmp/fabro/issue_view.err >&2
@@ -303,6 +313,12 @@ while :; do
   A=$((A + 1))
   sleep 5
 done
+if jq '(.comments // []) as $c | .comments = ($c | map(select((.body // \"\") | startswith(\"<!-- fabro:\") | not)) | .[-10:] | map(if ((.body // \"\") | length) > 2000 then .body = ((.body // \"\")[0:2000] + \" [cut to 2000 characters]\") else . end))' /tmp/fabro/issue.json > /tmp/fabro/issue.json.new; then
+  mv /tmp/fabro/issue.json.new /tmp/fabro/issue.json
+else
+  echo 'issue.json: could not trim the comments; the run goes on with all of them' >&2
+  rm -f /tmp/fabro/issue.json.new
+fi
 S=$(jq -r .state /tmp/fabro/issue.json)
 if [ \"$S\" != OPEN ]; then
   echo 'issue '$ISSUE' is '$S', not OPEN; refusing to work a closed issue' >&2

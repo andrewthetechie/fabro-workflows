@@ -546,7 +546,7 @@
               "name": "issue.json",
               "path": "/tmp/fabro/issue.json",
               "required": true,
-              "about": "the full parent issue; .body at body, .title at title, .number at number, human discussion at .comments"
+              "about": "the full parent issue; .body at body, .title at title, .number at number, human discussion at .comments (the newest ten)"
             },
             {
               "name": "background.md",
@@ -620,7 +620,7 @@
               "name": "issue.json",
               "path": "/tmp/fabro/issue.json",
               "required": true,
-              "about": "the parent issue, for reporter intent and human discussion"
+              "about": "the parent issue, for reporter intent and human discussion (the newest ten comments)"
             },
             {
               "name": "background.md",
@@ -675,7 +675,7 @@
               "name": "issue.json",
               "path": "/tmp/fabro/issue.json",
               "required": true,
-              "about": "the parent issue, for reporter intent and human discussion; supplemental"
+              "about": "the parent issue, for reporter intent and human discussion (the newest ten comments); supplemental"
             }
           ],
           "output": {
@@ -1028,7 +1028,7 @@
               "name": "issue.json",
               "path": "/tmp/fabro/issue.json",
               "required": true,
-              "about": "the parent issue; reporter intent and acceptance criteria"
+              "about": "the parent issue; reporter intent and acceptance criteria, and human discussion in .comments (the newest ten), the authority for an accepted requirement change"
             },
             {
               "name": "completed.md",
@@ -1420,7 +1420,7 @@
               "name": "issue.json",
               "path": "/tmp/fabro/issue.json",
               "required": true,
-              "about": "the full parent issue; .body at body, .title at title, .number at number, human discussion at .comments"
+              "about": "the full parent issue; .body at body, .title at title, .number at number, human discussion at .comments (the newest ten)"
             },
             {
               "name": "task-map.md",
@@ -1473,7 +1473,7 @@
               "name": "issue.json",
               "path": "/tmp/fabro/issue.json",
               "required": true,
-              "about": "the parent issue, for reporter intent and human discussion; supplemental"
+              "about": "the parent issue, for reporter intent and human discussion (the newest ten comments); supplemental"
             },
             {
               "name": "progress.md",
@@ -1519,7 +1519,7 @@
               "name": "issue.json",
               "path": "/tmp/fabro/issue.json",
               "required": true,
-              "about": "the parent issue, for reporter intent and human discussion; supplemental"
+              "about": "the parent issue, for reporter intent and human discussion (the newest ten comments); supplemental"
             },
             {
               "name": "progress.md",
@@ -1565,7 +1565,7 @@
               "name": "issue.json",
               "path": "/tmp/fabro/issue.json",
               "required": true,
-              "about": "the parent issue, for reporter intent and human discussion; supplemental"
+              "about": "the parent issue, for reporter intent and human discussion (the newest ten comments); supplemental"
             },
             {
               "name": "progress.md",
@@ -1611,7 +1611,7 @@
               "name": "issue.json",
               "path": "/tmp/fabro/issue.json",
               "required": true,
-              "about": "the parent issue, for reporter intent and human discussion; supplemental"
+              "about": "the parent issue, for reporter intent and human discussion (the newest ten comments); supplemental"
             },
             {
               "name": "progress.md",

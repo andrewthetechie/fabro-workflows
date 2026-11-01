@@ -45,8 +45,10 @@ task: `id`, title, a one-line intent, `files`, `covers`, and order.
 
 - **A skeleton, not full task drafts.** The map is never used verbatim, so full bodies
   would only make the issue longer.
-- **In the body, not a comment.** `backlog`'s `claim` fetches the body and no comments. A
-  human can read and correct the map before the issue is worked.
+- **In the body, not a comment.** `backlog`'s `claim` keeps only the newest ten comments, drops
+  fabro's marker comments and cuts each body at 2,000 characters (#58), and `prep` reads the
+  map out of `.body` for `task-map.md`. A human can read and correct the map before the issue
+  is worked.
 - **`decompose` always runs** (operator decision). It starts from the map, checks every
   file against the checkout, keeps an entry's `id` when it keeps that slice (so the dedupe
   keys stay stable), and may merge, split or drop entries. When the map and the checkout

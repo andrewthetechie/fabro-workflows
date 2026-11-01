@@ -361,6 +361,124 @@ def test_claim_writes_background_md(ck, tmp_path, graph, label):
 
 
 # ---------------------------------------------------------------------------
+# claim writes the issue's human discussion into issue.json (#58)
+#
+# `decompose`, `plan`, `coder` and `spec` -- and ralph's `plan` and `iterate` -- all tell the
+# agent to read `.comments`, and `spec` treats a comment as the authority for an accepted
+# requirement change. `claim` asked `gh issue view --json` for `state,number,title,body,labels`
+# only, so the agents saw the body and none of the clarifications, answers or scope changes
+# posted under it. The fetch now asks for `comments`; this test holds the three things the
+# fix must do with them: drop fabro's own markers, keep the newest ten, and cut each body.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("graph,label", [(GRAPH, "backlog"), (RAPH, "ralph")])
+def test_claim_writes_the_issue_comments(ck, tmp_path, graph, label):
+    T = tmp_path / f"comments-{label}"
+    (T / "bin").mkdir(parents=True)
+    FAB = T / "fabro"
+    stub(T / "bin", "sleep", SLEEP_STUB)
+    stub(T / "bin", "gh", CLAIM_GH)
+    path = f"{T / 'bin'}:{ORIG_PATH}"
+    env = {"GH_LOG": T / "gh.log", "GH_STATE": T}
+    script = T / "claim.sh"
+    script.write_text(rebase(extract(graph, "claim"), FAB)
+                      .replace("{{ inputs.issue_number }}", "356")
+                      .replace("{{ inputs.coder_pool }}", "coders-b"))
+    issue = FAB / "issue.json"
+
+    def payload(*bodies):
+        # `gh issue view --json comments` shape: `author.login` and `createdAt`, not the
+        # `gh api` shape's `user.login` and `created_at`.
+        return json.dumps({
+            "state": "OPEN", "number": 356, "title": "t", "body": "b",
+            "labels": [{"name": "agent-in-progress"}],
+            "comments": [{"id": f"c{i}", "author": {"login": f"u{i}"},
+                          "createdAt": f"2026-10-{i + 1:02d}T00:00:00Z", "body": b}
+                         for i, b in enumerate(bodies)],
+        })
+
+    def go(*bodies, raw=None):
+        rm(FAB)
+        write(T / "gh.log", "")
+        write(T / "issue_payload.json", payload(*bodies) if raw is None else raw)
+        return sh(script, path=path, env=env, stderr="keep")
+
+    # 1. The fetch asks for them, in the retried `gh issue view` -- not in a second call.
+    r = go("a human comment")
+    ck(f"{label}: claim exits 0", "0", r.rc)
+    ck(f"{label}: nothing on stdout", "", r.out)
+    ck(f"{label}: the fetch asks gh for comments", "1",
+       count("issue view 356 --json state,number,title,body,labels,comments",
+             file=T / "gh.log", flags="xF"))
+    ck(f"{label}: the comment reaches issue.json", "1",
+       jq('[.comments[].body] | map(select(. == "a human comment")) | length', file=issue))
+    ck(f"{label}: the issue itself is untouched", "b", jq(".body", file=issue))
+
+    # 2. Shape: gh's own keys, so the prompts' `.comments` wording stays correct.
+    ck(f"{label}: author.login survives", "u0", jq(".comments[0].author.login", file=issue))
+    ck(f"{label}: createdAt survives", "2026-10-01T00:00:00Z",
+       jq(".comments[0].createdAt", file=issue))
+
+    # 3. fabro's own markers are dropped. The background ones already reach `decompose`
+    #    and `plan` through background.md (D19), triage's are its own record, and no
+    #    prompt in either graph reads one from here.
+    r = go("<!-- fabro:precheck verdict=ready -->\nverdict",
+           "a human comment",
+           "<!-- fabro:triage-questions -->\nwhat?",
+           "<!-- fabro:context-pack body=a -->\nmap")
+    ck(f"{label}: claim exits 0 with markers", "0", r.rc)
+    ck(f"{label}: only the human comment is left", "1", jq(".comments | length", file=issue))
+    ck(f"{label}: and it is the human one", "a human comment", jq(".comments[0].body", file=issue))
+    ck(f"{label}: no marker body survives", "0",
+       jq('[.comments[].body] | map(select(startswith("<!-- fabro:"))) | length', file=issue))
+
+    # 4. The newest ten, so a long thread cannot be paid for by every stage that reads it.
+    go(*[f"c{i}" for i in range(14)])
+    ck(f"{label}: keeps the newest ten", "10", jq(".comments | length", file=issue))
+    ck(f"{label}: the oldest is dropped", "c4", jq(".comments[0].body", file=issue))
+    ck(f"{label}: the newest is kept", "c13", jq(".comments[-1].body", file=issue))
+
+    # 4b. The markers are dropped BEFORE the ten are taken. A slice-then-filter passes
+    #     every case above, and would lose human comments on the shape these issues
+    #     actually have: a prechecked, context-packed one, whose newest comments are all
+    #     background markers.
+    go(*[f"h{i}" for i in range(12)], "<!-- fabro:precheck -->\nverdict",
+       "<!-- fabro:context-pack -->\nmap")
+    ck(f"{label}: markers do not use up the ten", "10", jq(".comments | length", file=issue))
+    ck(f"{label}: the ten are the newest human ones", "h2", jq(".comments[0].body", file=issue))
+    ck(f"{label}: through the last human one", "h11", jq(".comments[-1].body", file=issue))
+
+    # 5. Each body is cut at 2,000 characters, and a cut comment says so: `spec` reads a
+    #    comment as the authority for a requirement change, and a silent cut reads as a
+    #    complete one. A body at the cap exactly is left alone.
+    go("x" * 2500)
+    ck(f"{label}: a long body is cut at 2,000", "1",
+       jq('[.comments[0].body[0:2000] | select(length == 2000 and test("^x+$"))] | length',
+          file=issue))
+    ck(f"{label}: and says it was cut", "true",
+       jq('.comments[0].body | endswith(" [cut to 2000 characters]")', file=issue))
+    go("y" * 2000)
+    ck(f"{label}: a body at the cap is untouched", "2000",
+       jq(".comments[0].body | length", file=issue))
+
+    # 6. An issue with no comments leaves an empty array, never a missing key: every prompt
+    #    iterates `.comments[]`.
+    r = go(raw='{"state":"OPEN","number":356,"title":"t","body":"b",'
+               '"labels":[{"name":"agent-in-progress"}]}')
+    ck(f"{label}: claim exits 0 without the key", "0", r.rc)
+    ck(f"{label}: .comments is an empty array", "0", jq(".comments | length", file=issue))
+
+    # 7. A trim that cannot run leaves the file gh wrote and says so. `claim` is the first
+    #    node of every run: an untrimmed file is the run this fix started from, a failed
+    #    node is a four-hour park holding a coder box.
+    r = go(raw='{"state":"OPEN","number":356,"title":"t","body":"b",'
+               '"labels":[{"name":"agent-in-progress"}],"comments":"not-a-list"}')
+    ck(f"{label}: claim survives a trim that cannot run", "0", r.rc)
+    ck(f"{label}: says so on stderr", "1", count("could not trim the comments", r.err))
+    ck(f"{label}: and nothing on stdout", "", r.out)
+    ck(f"{label}: the issue is still readable", "OPEN", jq(".state", file=issue))
+
+
+# ---------------------------------------------------------------------------
 # mark_stuck — the receipt must come off, especially when claim failed
 #
 # An issue left wearing `agent-in-progress` is in no collection the scheduler
