@@ -749,8 +749,9 @@ class BackgroundLane:
         The map lives in one issue per repository (D22), and the job's `target` is empty, so the
         reader takes the repository alone — the one `_record_marker` shape that differs. A run
         whose `stop` found a current map leaves a marker that is not its own, and
-        `orientation.outcome_for` reads that as `orientation unchanged`. A read that fails leaves
-        the plain `succeeded`: the issue is still there and the report can read it later.
+        `orientation.outcome_for` reads that as `orientation unchanged`. A read that fails, or
+        finds no map yet, leaves the plain `succeeded`: the issue is still there and the report
+        can read it later.
         """
         if self._read_orientation is None:
             return end
@@ -766,6 +767,13 @@ class BackgroundLane:
         outcome = orientation.outcome_for(
             marker, str(job["run_id"] or ""), job["created_at"]
         )
+        if outcome is None:
+            log.info(
+                "background: orientation job %s: no map found yet; keeping %s",
+                job["job_id"],
+                end.outcome,
+            )
+            return end
         self._store.set_background_outcome(int(job["job_id"]), outcome=outcome, now=now)
         return JobEnd(end.job_id, end.kind, end.state, outcome)
 

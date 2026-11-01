@@ -281,6 +281,23 @@ def test_fabro_code(ck, tmp_path):
         ck(f"fc: no-index {v} msg", "1", count("no code index; use grep", r.out))
 
 
+def test_fabro_code_cuts_long_lines(ck, tmp_path):
+    """Every answer is cut at 400 bytes a line as well as 200 lines. A writers-app `search`
+    matched one line of a minified bundle and returned ~640k tokens, more than the box's
+    whole context (2026-11-01). Runs without codegraph: with no index, `search` is grep."""
+    fc = REPO_ROOT / "ops/profile-images/fabro-code"
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    git("-C", wt, "init", "-q", ".")
+    write(wt / "bundle.min.js", "var a=1;" * 50000 + "speak();\n")
+    write(wt / "app.py", "def speak():\n    return 1\n")
+    r = run([fc, "search", "speak"], cwd=wt, env={"FABRO_CODE_STATE": tmp_path / "none"})
+    ck("fc-width: search rc=0", "0", r.rc)
+    ck("fc-width: the short match is whole", "1", count("app.py:1:def speak():", r.out, flags="F"))
+    ck("fc-width: the long match is cut", "1", count("^bundle.min.js:1:var a=1;.* bytes cut[)]$", r.out, flags="E"))
+    ck("fc-width: no line over 440 bytes", "1", "1" if max(map(len, r.out.split("\n"))) <= 440 else "0")
+
+
 # ---------------------------------------------------------------------------
 # fabro-io — the Stage-I/O binary (docs/stage-io C1-C5). Present inside every profile image
 # but not assumed on the Mac PATH, so it is skipped when absent. When present, probe

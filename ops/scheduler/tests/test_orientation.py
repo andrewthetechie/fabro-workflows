@@ -95,7 +95,11 @@ def test_a_run_that_stopped_on_a_current_map_earned_unchanged():
     assert outcome_for(marker(at="2026-10-01T10:00:00Z", run="R0"), "R1") == (
         "orientation unchanged"
     )
-    assert outcome_for(None, "R1") == "orientation unchanged"
+
+
+def test_no_map_in_sight_is_no_outcome():
+    # The run posted a map the labelled-issue list does not show yet (jobs 255, 257, 259).
+    assert outcome_for(None, "R1") is None
 
 
 def test_a_map_an_earlier_attempt_wrote_after_the_job_was_queued_counts():
@@ -214,6 +218,27 @@ def test_the_lane_records_the_map_from_the_repository_issue(store):
         "orientation main=abcdef123456 chars=200"
     )
     assert seen == [JELLY], "read by repository, not by an issue the job has no target for"
+
+
+def test_a_map_the_issue_list_does_not_show_yet_is_not_unchanged(store):
+    """GitHub's labelled-issue list lags a new issue by seconds; jobs 255, 257 and 259 read
+    no issue right after creating it and were recorded `orientation unchanged` (2026-10-31)."""
+    store.enqueue_background_job(
+        kind=KIND, repo=JELLY, target="", inputs={},
+        priority=BACKGROUND_JOB_PRIORITY[KIND],
+        typical_box_minutes=ORIENTATION_TYPICAL_MINUTES, now=NOW,
+    )
+    (job,) = store.queued_background_jobs()
+    store.start_background_job(int(job["job_id"]), run_id="R1", box="coders-a", now=NOW)
+    lane_ = BackgroundLane(
+        config(), store, LeaseStore(store),
+        FakeFabro(runs={"R1": {"lifecycle": {"status": {"kind": "succeeded"}}}}),
+        health=FakeHealth(), orientation_reader=lambda repo: None, clock=lambda: NOW,
+    )
+    lane_.sync(NOW)
+    row = store.background_job(int(job["job_id"]))
+    assert row["state"] == "done"
+    assert row["outcome"] != "orientation unchanged"
 
 
 def test_archiving_an_issue_run_records_had_orientation(store):

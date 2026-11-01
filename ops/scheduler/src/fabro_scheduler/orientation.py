@@ -124,16 +124,22 @@ def read_marker(
 
 def outcome_for(
     marker: OrientationMarker | None, run_id: str, queued_at: str | None = None
-) -> str:
+) -> str | None:
     """The job outcome a finished, succeeded orientation run earned.
 
     `orientation main=<sha12> chars=<n>` when the marker is this job's: this run's own, or one
     an earlier attempt posted after the job was queued (`precheck.outcome_for` says why that
-    happens). Anything else is `orientation unchanged`, which is the run's `stop`: the map it
-    found was of the commit it checked out, or under a day old and under ten commits behind.
+    happens). Another run's marker is `orientation unchanged`, which is the run's `stop`: the
+    map it found was of the commit it checked out, or under a day old and under ten commits
+    behind.
+
+    None when no map was found. A run can only stop on a map that exists, so a succeeded run
+    with none in sight posted one the read did not see yet: GitHub's labelled-issue list lags a
+    new issue by seconds, and three of the five first maps read as `unchanged` that way
+    (2026-10-31, jobs 255, 257 and 259). The caller keeps the plain `succeeded`.
     """
     if marker is None:
-        return "orientation unchanged"
+        return None
     if marker.run != run_id and not posted_since(marker.at, queued_at):
         return "orientation unchanged"
     return f"{POSTED_PREFIX}{marker.main[:12]} chars={marker.chars}"

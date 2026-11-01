@@ -29,6 +29,7 @@ DB=".codegraph/codegraph.db"
 STATE="${FABRO_CODE_STATE:-/tmp/fabro/code_index}"
 MAP="${FABRO_CODE_MAP:-/tmp/fabro/repomap.md}"
 CAP=200
+WIDTH=400
 MAP_BYTES=16000
 KNOWN_SCHEMA=9
 FOOTER='graph edges are calls and imports only, and a call is matched by name, so a same-name call on another type can appear; confirm with grep -rnw before deleting or renaming'
@@ -74,10 +75,17 @@ q() {
 
 sq() { printf '%s' "$1" | sed "s/'/''/g"; }
 
-# Cap stdin at CAP lines; the last line says how many were cut (C2 rule 5).
+# Cap stdin at CAP lines; the last line says how many were cut (C2 rule 5). Each line is
+# cut at WIDTH bytes as well: one match in a minified bundle is a single line of hundreds
+# of kilobytes, and a writers-app `search` returned ~640k tokens of it, more than the box's
+# whole context (2026-11-01). LC_ALL=C counts bytes and never warns on a split character;
+# fabro-io reads the output lossily.
 cap_out() {
   tmp=$(mktemp) || exit 1
-  cat > "$tmp"
+  LC_ALL=C awk -v w="$WIDTH" '{
+    if (length($0) > w) print substr($0, 1, w) " ...(" (length($0) - w) " bytes cut)"
+    else print
+  }' > "$tmp"
   n=$(wc -l < "$tmp")
   if [ "$n" -gt "$CAP" ]; then
     head -n "$CAP" "$tmp"

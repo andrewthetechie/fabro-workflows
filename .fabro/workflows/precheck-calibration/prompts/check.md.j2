@@ -76,7 +76,8 @@ Stop after about fifteen tool calls in total, whatever you have found: decide on
 
 ## Output
 
-Write the verdict to `/tmp/fabro/precheck.json` with the `submit` tool. Fields:
+Record the verdict by calling the `mcp__io__submit` tool, which writes
+`/tmp/fabro/precheck.json` with the receipt the next step checks. Fields:
 
 - `verdict`: one of `ready`, `already_done`, `blocked`, `contradiction`, `unclear`,
   `unverifiable`.
@@ -86,4 +87,6 @@ Write the verdict to `/tmp/fabro/precheck.json` with the `submit` tool. Fields:
   only for `ready`.
 - `blocker`: only for `blocked`, the issue number.
 
-[Submit exactly once. The stage is done when `submit` succeeds.]
+[Call `mcp__io__submit` once. If it returns an error, correct what it names and call it
+again. The stage is done when it succeeds; a file written any other way has no receipt
+and counts as no verdict.]
