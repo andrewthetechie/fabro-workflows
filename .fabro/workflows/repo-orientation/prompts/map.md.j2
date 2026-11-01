@@ -43,7 +43,8 @@ most questions in one call; `grep` and `rg` are right for a config key or an err
 
 ## Output
 
-Write the map to `/tmp/fabro/orientation.json` with the `submit` tool. Fields:
+Record the map by calling the `mcp__io__submit` tool, which writes `/tmp/fabro/orientation.json`
+with the receipt the next step checks. Fields:
 
 - `summary`: two or three sentences. What the repository is, and how a change usually gets made
   in it.
@@ -61,4 +62,6 @@ Every path must exist in the checkout; a path that does not is dropped before an
 map. Keep each line short: the published map is cut at 6,000 characters, so what runs past that is
 lost, and every planning run that reads it pays for it.
 
-[Submit exactly once. The stage is done when `submit` succeeds.]
+[Call `mcp__io__submit` once. If it returns an error, correct what it names and call it again.
+The stage is done when it succeeds; a file written any other way has no receipt and posts
+nothing.]

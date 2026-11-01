@@ -55,11 +55,12 @@ Pick the one the evidence points at, and put it in `cause`:
    file:line that the checkout does not have is worse than no evidence, so confirm each one.
 3. Look for the mechanism the cause names: the sleep or timeout, the shared fixture, the port,
    the ordering between tests. Cite the line where it is.
-4. Stop after about twenty-five tool calls, whatever you have found, and submit.
+4. Stop after about twenty-five tool calls, whatever you have found, and call `mcp__io__submit`.
 
 ## Output
 
-Write the diagnosis to `/tmp/fabro/flaky.json` with the `submit` tool. Fields:
+Record the diagnosis by calling the `mcp__io__submit` tool, which writes `/tmp/fabro/flaky.json`
+with the receipt the next step checks. Fields:
 
 - `cause`: one of the eight above.
 - `summary`: one to three plain sentences: what the evidence shows and what you would change.
@@ -77,4 +78,6 @@ Write the diagnosis to `/tmp/fabro/flaky.json` with the `submit` tool. Fields:
 Keep it short: the published comment is cut at 2,500 characters, so what runs past that is
 lost, and the run that takes this issue reads it as one of several background notes.
 
-[Submit exactly once. The stage is done when `submit` succeeds.]
+[Call `mcp__io__submit` once. If it returns an error, correct what it names and call it again.
+The stage is done when it succeeds; a file written any other way has no receipt and posts
+nothing.]
