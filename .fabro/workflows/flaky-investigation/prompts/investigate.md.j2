@@ -2,17 +2,16 @@
 
 You are a background step on a local model. A queued issue reports a test or a CI job that
 fails at random. An automated coding pipeline will take the issue later and fix it, and it
-starts from what you write here, so spend your time on the *why*.
+starts from what you write here, so spend your tool calls on the **mechanism**: the line whose
+outcome changes from one run to the next.
 
-**You do not run the test.** Reproducing it needs the repository's `.fabro/setup.sh` and its
-test environment, which take longer than the gap you are running in. FlakeRadar already holds
-what a reproduction would show — the failure messages and tracebacks across runs, the failure
-category, whether the test both passed and failed on one commit, and the file and line at the
-last failing commit — so read that, read the code, and say what you think is happening. The
-comment says so too: it is a diagnosis from records, not a reproduction.
-
-You have about eight minutes. Do not edit any file, do not run the test suite, and do not post
-anything: this run writes exactly one comment, and a later node does it.
+This run is a **diagnosis from records**. FlakeRadar already holds what a reproduction would
+show: the failure messages and tracebacks across runs, the failure category, whether one commit
+both passed and failed, and the file and line at the last failing commit. Read those and the
+code. Your tools for this stage are `inputs`, the five read tools below and `mcp__io__submit`;
+the guide's `run_tests`, `task_check` and `baseline_check` start the test environment, which
+takes longer than this run has, so they stay unused here. Read the checkout and leave every file
+in it as you found it. A later node posts the one comment this run makes, from what you submit.
 
 ## Inputs
 
@@ -22,11 +21,11 @@ each part before you continue.
 - `issue.md`: the issue the scout filed: its title, labels, body, and its last ten comments
   that are not fabro markers. Its body lists the failing occurrences, the failed step names,
   and, for a job, the log tail.
-- `flakeradar.md`: FlakeRadar's record of this test or job — its score, tier, how many commits
-  both failed and passed it, its failure category, the recent failures with their messages and
-  the newest traceback, or for a job each run's outcome (explained / unexplained) and which
-  test explained it. **It may be missing**: the read failed, or the repository is not covered
-  by FlakeRadar. Then diagnose from the issue and the code alone, and say that in `summary`.
+- `flakeradar.md`: FlakeRadar's record. For a **test**: its score, tier, proven flakes, failure
+  category, the recent failures with their messages, and the newest traceback. For a **job**:
+  each run's outcome (explained or unexplained) and the test that explained it. **It may be
+  missing** (the read failed, or FlakeRadar does not cover the repository): then diagnose from
+  the issue and the code alone.
 
 The repository checkout in the current working directory is the code at `main`. The code tools
 in your guide (`code_def`, `code_show`, `code_callers`, `code_search`, `code_tests`) answer
@@ -36,47 +35,61 @@ most questions in one call.
 
 Pick the one the evidence points at, and put it in `cause`:
 
-- `timing` — a sleep, a timeout, a wait for a state to settle, or a race on the clock.
-- `ordering` — the test depends on the order it runs in, or on another test having run first.
-- `shared-state` — a module-level value, a cache, or a database fixture that two tests share.
-- `resource` — a port, a lock, a file, or a browser/app instance the test takes and does not
+- `timing`: a sleep, a timeout, a wait for a state to settle, or a race on the clock.
+- `ordering`: the test depends on the order it runs in, or on another test having run first.
+- `shared-state`: a module-level value, a cache, or a database fixture that two tests share.
+- `resource`: a port, a lock, a file, or a browser/app instance the test takes and does not
   release.
-- `network` — something outside the runner answered slowly or not at all.
-- `environment` — a runner, an image, an OS or a toolchain difference between the runs.
-- `test-data` — a fixture, a seed, or a generated value that is not stable.
-- `other` — the evidence does not single one out. Say what you would need to know, and prefer
-  `low` confidence over a guess.
+- `network`: something outside the runner answered slowly or not at all.
+- `environment`: a runner, an image, an OS or a toolchain difference between the runs.
+- `test-data`: a fixture, a seed, or a generated value that is not stable.
+- `other`: the evidence does not single one out.
 
 ## How to work
 
-1. Read `issue.md` and `flakeradar.md`. Note the failure message, the failing step or test, and
-   whether the same commit both passed and failed.
-2. Follow the traceback's frames into the code with `code_show path:line` and `code_def`. A
-   file:line that the checkout does not have is worse than no evidence, so confirm each one.
-3. Look for the mechanism the cause names: the sleep or timeout, the shared fixture, the port,
-   the ordering between tests. Cite the line where it is.
-4. Stop after about twenty-five tool calls, whatever you have found, and call `mcp__io__submit`.
+1. Read `issue.md` and `flakeradar.md`, and write down three facts: the failure message, the
+   failing test or step, and whether one commit both passed and failed. When `flakeradar.md`
+   says the test has not failed recently, that is the finding: say so in `summary`.
+2. Open the failing code as it is at `main`.
+   - **A test**: follow the traceback's frames that are in the repository. FlakeRadar's file and
+     line are from the last failing commit, and `main` may have moved them, so find each one by
+     name with `code_def`, or with `code_show path:line`, and use the line the checkout shows.
+   - **A job**: there is no traceback. Read the job in `.github/workflows/` and the failed step
+     in the issue's log tail. When FlakeRadar says a test explained the failures, that test is
+     the subject: follow it as above.
+
+   The step is done when the failing test's body, or the failing step, is in a tool result.
+3. Find the mechanism the cause names: the sleep or timeout, the shared fixture, the port, the
+   order between tests. The step is done when a tool result shows that line, or when you have
+   checked every cause the failure message points at and can say in `summary` which ones the
+   code rules out.
+4. Call `mcp__io__submit` after about twenty-five tool calls, with what you have **seen** so far.
 
 ## Output
 
 Record the diagnosis by calling the `mcp__io__submit` tool, which writes `/tmp/fabro/flaky.json`
-with the receipt the next step checks. Fields:
+with the receipt the next step checks. Every entry is something you **saw** in a tool result
+this run. Fields:
 
 - `cause`: one of the eight above.
-- `summary`: one to three plain sentences: what the evidence shows and what you would change.
-  If `flakeradar.md` was missing, say the diagnosis rests on the issue and the code alone.
-- `evidence`: one to six entries, each `{"where": ..., "says": ...}`. `where` is `path:line` in
-  the checkout, the literal `flakeradar` for a fact from FlakeRadar's record, or `issue` for
-  what the issue body says. `says` is what is there, quoted or in one sentence.
-- `fix`: one to three entries, each `{"where": ..., "change": ...}`. A proposal only: this run
-  changes nothing. `where` is `path:line`, or `test` when the change is the test's own setup.
-  If the failure is a real product bug, say that in `summary` instead of a fix.
-- `confidence`: `high` only when a file:line in the checkout shows the mechanism; `low` when
-  the evidence is FlakeRadar's failure texts alone.
-- `reproduced`: always `false`. You did not run the test.
+- `summary`: one to three plain sentences, under 400 characters: what the evidence shows and
+  what you would change. When the failure is a real product bug, say so here. When
+  `flakeradar.md` was missing, say the diagnosis rests on the issue and the code alone.
+- `evidence`: one to six entries, each `{"where": ..., "says": ...}`; four are usually enough.
+  `where` is `path:line` as the checkout has it, the literal `flakeradar` for a fact from
+  FlakeRadar's record, or `issue` for what the issue says. A `path:line` the checkout does not
+  have is dropped before anyone sees it. `says` is what is there, quoted or in one line under
+  150 characters.
+- `fix`: one to three entries, each `{"where": ..., "change": ...}`: the change the pipeline
+  should make. `where` is `path:line`, or `test` when the change is the test's own setup.
+  For a product bug, point at the product line. For `other`, propose the log line or assertion
+  that would tell the causes apart. `change` is one line under 150 characters.
+- `confidence`: `high` only when a `path:line` you cite shows the mechanism; `low` when the
+  evidence is FlakeRadar's failure texts alone; `medium` otherwise.
+- `reproduced`: `false`.
 
-Keep it short: the published comment is cut at 2,500 characters, so what runs past that is
-lost, and the run that takes this issue reads it as one of several background notes.
+The published comment is cut at 2,360 characters, a whole line at a time from the end, and the
+fix is printed last, so an overlong diagnosis loses its fix first.
 
 [Call `mcp__io__submit` once. If it returns an error, correct what it names and call it again.
 The stage is done when it succeeds; a file written any other way has no receipt and posts
