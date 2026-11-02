@@ -69,5 +69,6 @@ Secondary (O3)
 --------------
   Refuter first verdict passed:  backlog 34/99, ralph 37/94
   Held PRs left for the operator: backlog 80 of 107, ralph 53 of 91
-  ralph's largest avoidable hold: 15 PRs held by its own review, 12 of them because the
-  3-round budget (ADR 0029 D3) was spent before the review's error could become a Task.
+  ralph's largest hold: 31 of its 53 held PRs failed the Refuter only on `unverifiable`
+  criteria. Its own review held 15, but the Refuter was holding 9 of those too. The round
+  budget (ADR 0029 D3) alone held 3.
