@@ -11,7 +11,7 @@ the guardrail was +20%). Hosted spend is estimated at about $66 a month for both
 guardrail is $100); the OpenAI and OpenRouter dashboards are still to be read into the result
 file. lawncare-saas is the one repository where `backlog` did better (8/37 against 4/30). So
 `ralph` becomes the standard lane and `backlog` keeps the fast lane, in a follow-up series
-that is not planned yet. Until that series changes it, `SCHEDULER_RALPH_SHARE` stays 50.
+that is not planned yet. `SCHEDULER_RALPH_SHARE` is 100 since 2026-11-02T19:13Z (3841a09): every issue that is not `fast-path` runs `ralph`.
 
 `backlog` was built to reproduce the operator's earlier workflow: decompose, then per task a
 dossier, a coder, a per-task LLM review and a rework ladder, then an extra review, then the

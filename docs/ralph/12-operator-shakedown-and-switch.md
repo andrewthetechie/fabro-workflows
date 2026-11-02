@@ -98,4 +98,4 @@ gate test. O3 is too early to read and is shown with and without those runs.
 `ralph` and 124 `backlog` runs. O3: 0.35 against 0.22 merges per run, box-hours per merge −49%,
 spend about $66 a month (estimate; the dashboards are still to be read into the result file).
 O24's outcome is **`ralph` wins**, recorded in ADR 0029 (accepted). The follow-up series is not
-planned yet; `SCHEDULER_RALPH_SHARE` stays 50 until it is.
+planned yet; `SCHEDULER_RALPH_SHARE` is 100 since 2026-11-02T19:13Z (3841a09): every issue that is not `fast-path` runs `ralph`.

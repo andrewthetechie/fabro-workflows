@@ -6,8 +6,8 @@ switch at 2026-10-22T21:28:06Z, read at about 18:30Z on 2026-11-02. Review:
 review-2026-11-02.md. Tool: ops/fabro-trial-review.sh (fabro_scheduler.scorecard rules).
 
 OUTCOME (O24): ralph wins. ralph becomes the standard lane; backlog keeps the fast lane
-(the follow-up series, not yet planned). SCHEDULER_RALPH_SHARE stays 50 until that series
-changes it.
+(the follow-up series, not yet planned). SCHEDULER_RALPH_SHARE is 100 since 2026-11-02T19:13Z
+(3841a09): every non-fast-path issue runs ralph.
 
 The arms' cards
 ---------------
