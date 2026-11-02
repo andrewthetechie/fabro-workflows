@@ -93,3 +93,9 @@ a scout flaky-test issue; succeeded in 57.7m, PR #2982, ending `report_blocked`)
 26 `backlog` runs. 3 `ralph` runs went to `report_queued` before CI ran, because R10's
 `watch_checks` replacement had dropped the deadline `if`s. That is fixed in 8e524e9, which has a
 gate test. O3 is too early to read and is shown with and without those runs.
+
+**2026-11-02, the result** (`review-2026-11-02.md`, `result-2026-11-02.txt`): step 9. 109
+`ralph` and 124 `backlog` runs. O3: 0.35 against 0.22 merges per run, box-hours per merge −49%,
+spend about $66 a month (estimate; the dashboards are still to be read into the result file).
+O24's outcome is **`ralph` wins**, recorded in ADR 0029 (accepted). The follow-up series is not
+planned yet; `SCHEDULER_RALPH_SHARE` stays 50 until it is.

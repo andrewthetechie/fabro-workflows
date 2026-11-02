@@ -1,0 +1,73 @@
+ralph vs backlog: the trial's result, 2026-11-02
+================================================
+
+Trial: ADR 0029, docs/ralph/. Window: runs dispatched 2026-10-22 to 2026-11-02 (UTC),
+switch at 2026-10-22T21:28:06Z, read at about 18:30Z on 2026-11-02. Review:
+review-2026-11-02.md. Tool: ops/fabro-trial-review.sh (fabro_scheduler.scorecard rules).
+
+OUTCOME (O24): ralph wins. ralph becomes the standard lane; backlog keeps the fast lane
+(the follow-up series, not yet planned). SCHEDULER_RALPH_SHARE stays 50 until that series
+changes it.
+
+The arms' cards
+---------------
+|  | backlog | ralph |
+|---|---|---|
+| runs | 124 | 109 |
+| PRs | 107 | 91 |
+| merged by the workflow | 27 | 38 |
+| merge rate | 25% | 42% |
+| box-hours | 371.8 | 264.3 |
+| box-hours per merge | 13.77 | 6.96 |
+
+
+The primary metric (O3): PRs merged by the workflow with no operator commit, per run
+-------------------------------------------------------------------------------------
+  backlog   27 / 124 = 0.22
+  ralph     38 / 109 = 0.35   (z ~ 2.2, p ~ 0.03)
+  ralph without the 3 watch_checks bug runs (8e524e9): 36 / 106 = 0.34
+
+Guardrail 1: box-hours per merged PR, no worse than +20%
+  backlog 13.77, ralph 6.96: -49%. Without the bug runs: 7.20, -48%. HOLDS.
+
+Guardrail 2: total hosted spend under $100 a month
+  Estimate from tokens (run_history only): backlog $19.12, ralph $6.78, $25.90 in 11.8 days,
+  about $66 a month. HOLDS on the estimate.
+  OpenAI and OpenRouter dashboards: NOT READ for this file (task 12 step 9 asks for them).
+  The operator adds them here:
+    OpenAI, 2026-10-22..11-02:      $____
+    OpenRouter, 2026-10-22..11-02:  $____
+
+Strata: repo x coder pool
+-------------------------
+| repo | pool | workflow | runs | PRs | merged | box-h | box-h/merge |
+|---|---|---|---|---|---|---|---|
+| andrewthetechie/flakeradar | coders-a | backlog | 22 | 20 | 8 | 40.0 | 5.00 |
+| andrewthetechie/flakeradar | coders-a | ralph | 22 | 20 | 14 | 20.7 | 1.48 |
+| andrewthetechie/lawncare-saas | coders-a | backlog | 30 | 27 | 3 | 85.8 | 28.61 |
+| andrewthetechie/lawncare-saas | coders-a | ralph | 26 | 22 | 3 | 45.7 | 15.23 |
+| andrewthetechie/lawncare-saas | coders-b | backlog | 7 | 7 | 5 | 10.8 | 2.17 |
+| andrewthetechie/lawncare-saas | coders-b | ralph | 4 | 4 | 1 | 4.8 | 4.79 |
+| andrewthetechie/womens-fantasy-sports | coders-a | backlog | 13 | 12 | 3 | 38.1 | 12.72 |
+| andrewthetechie/womens-fantasy-sports | coders-a | ralph | 7 | 7 | 5 | 16.3 | 3.27 |
+| andrewthetechie/womens-fantasy-sports | coders-b | backlog | 3 | 2 | 0 | 7.6 | — |
+| andrewthetechie/womens-fantasy-sports | coders-b | ralph | 3 | 2 | 0 | 6.0 | — |
+| andrewthetechie/womens-fantasy-sports | coders-d | backlog | 19 | 15 | 2 | 50.5 | 25.23 |
+| andrewthetechie/womens-fantasy-sports | coders-d | ralph | 21 | 15 | 9 | 37.5 | 4.17 |
+| andrewthetechie/writers-app | coders-a | backlog | 3 | 2 | 1 | 4.7 | 4.67 |
+| andrewthetechie/writers-app | coders-a | ralph | 2 | 2 | 1 | 18.7 | 18.74 |
+| andrewthetechie/writers-app | coders-b | backlog | 26 | 22 | 5 | 128.1 | 25.62 |
+| andrewthetechie/writers-app | coders-b | ralph | 23 | 18 | 5 | 108.8 | 21.77 |
+| andrewthetechie/writers-app | coders-d | backlog | 1 | 0 | 0 | 6.1 | — |
+| andrewthetechie/writers-app | coders-d | ralph | 1 | 1 | 0 | 5.7 | — |
+
+By repo: flakeradar 14/22 vs 8/22, womens-fantasy-sports 14/31 vs 5/35, writers-app 6/26 vs
+6/30, lawncare-saas 4/30 vs 8/37 (ralph vs backlog). lawncare-saas is the one repo where
+backlog did better. Without coders-d (freellm): ralph 29/87 (0.33) vs backlog 25/104 (0.24).
+
+Secondary (O3)
+--------------
+  Refuter first verdict passed:  backlog 34/99, ralph 37/94
+  Held PRs left for the operator: backlog 80 of 107, ralph 53 of 91
+  ralph's largest avoidable hold: 15 PRs held by its own review, 12 of them because the
+  3-round budget (ADR 0029 D3) was spent before the review's error could become a Task.

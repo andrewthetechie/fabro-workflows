@@ -1,8 +1,17 @@
 # A second issue workflow, `ralph`, is trialled against `backlog` and owns its merge stage
 
-**Status:** proposed (2026-10-21). Every decision below is the operator's, from the
-planning session of 2026-10-21. The task series is `docs/ralph/`. It becomes accepted or
-rejected by the trial's result (task 12).
+**Status:** accepted (2026-11-02), on the trial's result: `ralph` won (O24).
+Proposed 2026-10-21. Every decision below is the operator's, from the planning session of
+2026-10-21. The task series is `docs/ralph/`.
+
+**The result** (`docs/ralph/result-2026-11-02.txt`, `docs/ralph/review-2026-11-02.md`). Over
+2026-10-22..11-02, `ralph` merged 38 PRs in 109 runs with no operator commit (0.35 a run),
+against `backlog`'s 27 in 124 (0.22). Box-hours per merged PR were 6.96 against 13.77 (−49%;
+the guardrail was +20%). Hosted spend is estimated at about $66 a month for both arms (the
+guardrail is $100); the OpenAI and OpenRouter dashboards are still to be read into the result
+file. lawncare-saas is the one repository where `backlog` did better (8/37 against 4/30). So
+`ralph` becomes the standard lane and `backlog` keeps the fast lane, in a follow-up series
+that is not planned yet. Until that series changes it, `SCHEDULER_RALPH_SHARE` stays 50.
 
 `backlog` was built to reproduce the operator's earlier workflow: decompose, then per task a
 dossier, a coder, a per-task LLM review and a rework ladder, then an extra review, then the
