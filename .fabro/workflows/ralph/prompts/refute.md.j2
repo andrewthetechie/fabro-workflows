@@ -35,7 +35,8 @@ Call `inputs` first. It returns:
 - The diff of the branch against `origin/main`, and the changed files too large to fit in it.
 - `hygiene`: diff-hygiene counters, with `samples`.
 - `validation`: whether `./.fabro/setup.sh` and `./.fabro/ci.sh` passed on this exact
-  tree, and the text of `.fabro/ci.sh`.
+  tree, and the text of `.fabro/ci.sh`. It may end with `## Criterion checks`: commands
+  run on this exact tree for criteria that ci.sh does not prove (see **Criterion checks**).
 - From round 2 onward, `delta` (what changed since the tree you last judged) and
   `history` (one line per finding you raised earlier: the finding, the Task it became,
   and whether that Task passed).
@@ -104,8 +105,27 @@ Cite the chain in `evidence`, for example: "`.fabro/ci.sh:15` runs
 runs `uv run alembic check`."
 
 It is `unverifiable` when `validation` records no passing run for this tree, or when
-`ci.sh` does not run the tool over the changed files; say which. Checks in
-`.fabro/test.toml` did not run on this tree and are not evidence.
+`ci.sh` does not run the tool over the changed files and no criterion check ran it; say
+which. Checks in `.fabro/test.toml` did not run on this tree and are not evidence.
+
+## Criterion checks
+
+When `validation` ends with `## Criterion checks`, each check is one command, run in this
+checkout on this exact tree after the Final validation, for one criterion that `ci.sh`
+does not prove. You did not run it and must not run it; read its exit status and output.
+
+- **`met`** when the check exited 0 and its output shows what the criterion asks: the
+  tests passed, the coverage figure is at or above the threshold, the count is right. Cite
+  it in `evidence`, for example: "criterion check 2 (`cargo nextest run --all-features`)
+  exited 0: `Summary [ 41.2s] 812 tests run: 812 passed`".
+- **`not_met`** when it exited non-zero with failures, or its output shows a figure below
+  the threshold. Put the command in backticks in `evidence` and quote the failing lines,
+  so the gate keeps it and the loop can fix it.
+- **`unverifiable`** when the exit status is 124 (the time limit), 126 or 127 (not
+  installed), when the check is marked as not evidence or not run, or when the output does
+  not show the figure the criterion names. Say which.
+
+A check judges only its own criterion. Every other criterion is judged as above.
 
 ## Earlier rounds
 

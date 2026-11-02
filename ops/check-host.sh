@@ -37,7 +37,7 @@ declare -A BASELINE=(
     [scout]="9 nodes, 11 edges"
     # The offline parser's count (AGENTS.md *Validating*): unverified until the first run of
     # this script, which is task 12 of docs/ralph.
-    [ralph]="54 nodes, 139 edges"
+    [ralph]="55 nodes, 143 edges"
     # The background lane's box-only package (more-local-inference task 04). The offline
     # parser's count: expected, unverified until task 12, Phase 1 runs this script.
     [box-noop]="4 nodes, 3 edges"

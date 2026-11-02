@@ -143,11 +143,49 @@ edits the wrong lines. Verify every range before you submit.
 Complete this step when every Task has a context block whose citations you have read, and
 whose plan a coder could follow in order.
 
-### 6. Submit and stop
+### 6. Name the criterion checks
 
-Call `submit` with `disposition`, `summary`, `contradictions` and `tasks`. `tasks` is
-non-empty only for `ready`; `contradictions` is non-empty only for `contradiction`. Every
-Task carries `id`, `title`, `body`, `acceptance`, `files`, `covers` and `context`.
+After the loop, a Refuter checks every acceptance criterion in the issue against the
+branch. It credits a command criterion only when `.fabro/ci.sh` runs that command on this
+exact tree, and it cannot run anything itself. So a criterion that names a command ci.sh
+does not run (`cargo nextest run`, when ci.sh runs `cargo test`), or a figure nothing
+prints (per-file coverage, a bundle size, a test count), stays unverifiable, and the pull
+request is not merged, however good the code is.
+
+For each such criterion, write one entry in `checks`:
+
+- `criterion`: the criterion, quoted from the issue.
+- `command`: the one command line that settles it, run from the repository root after
+the Final validation. Use the issue's own command when it names one. Otherwise use the
+repository's own runner for that figure: read `.fabro/ci.sh`, `package.json`,
+`Cargo.toml`, `pyproject.toml` or the Makefile, and `orientation.md`, for the right
+invocation.
+
+Rules:
+
+- At most four. Leave out every criterion that `.fabro/ci.sh` already proves, and every
+criterion settled by reading the code. `[]` is the usual answer.
+- One plain command: a test, lint, type-check or coverage runner (`cargo`, `npm`, `pnpm`,
+`yarn`, `bun`, `npx`, `uv run`, `python -m`, `pytest`, `ruff`, `mypy`, `pyright`, `go`,
+`make`, `deno`). No pipe, `;`, `&&`, `$`, backtick, parenthesis or redirection. A
+command outside this list is dropped, and its criterion stays unverifiable.
+- It must only read: never a formatter that rewrites files, a deploy, a publish, a push
+or an install. A check that changes the checkout is reverted and does not count.
+- It must finish in eight minutes. Narrow it to the files or package the criterion is
+about when the full run would be slower.
+- It must print what the criterion asks for: a coverage tool's per-file table, the test
+runner's summary line. An exit status alone does not show 97% line coverage.
+
+Complete this step when every criterion that ci.sh and the code cannot settle has a check,
+or you know why it has none.
+
+### 7. Submit and stop
+
+Call `submit` with `disposition`, `summary`, `contradictions`, `tasks` and `checks`.
+`tasks` is non-empty only for `ready`; `contradictions` is non-empty only for
+`contradiction`; `checks` is `[]` unless the disposition is `ready` and step 6 found a
+criterion that needs one. Every Task carries `id`, `title`, `body`, `acceptance`, `files`,
+`covers` and `context`.
 
 - `id` is unique within this list, short and stable, e.g. `t1`. Later Tasks appended by the
 Refuter or the reviewers get their own ids, so a new attempt at the same work keeps the

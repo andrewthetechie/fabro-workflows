@@ -56,6 +56,24 @@ Findings the Refuter still holds after the last round are reported as Unmet crit
 the PR is not auto-merged. The two-axis review runs after the Refuter passes, and its
 blocking findings also become tasks, inside the same 3 rounds.
 
+*Amended 2026-11-02, after the trial's result.* Three changes, made because 31 of `ralph`'s
+53 held PRs in the trial failed the Refuter only on `unverifiable` criteria, and 3 were held
+by a review error found after the third Refute round:
+
+- **One round, both checks.** The two reviews run in every Refute round, right after the
+  Refuter, whether it passed or found work, and both sets of findings become Tasks together.
+  They run after the Refuter, not beside it: two agent stages at once would share the Stage
+  I/O identity file (ADR 0016 D3). A Refuter that holds the merge still turns no review
+  finding into a Task.
+- **One extra review pass.** A blocking review finding after the third Refute round, with the
+  Refuter passed, gets one more Iteration pass outside the budget: no Refuter, only the
+  reviewer that blocked re-runs, and then the PR opens whatever it says. It is O13's rule
+  for post-PR Iterations, used once before the PR.
+- **Criterion checks.** The plan names a command for each criterion that `.fabro/ci.sh` does
+  not prove. After the Final validation, a command node runs the allowlisted ones on the
+  validated tree and gives the Refuter their exit status and output. It loosens no gate:
+  the Refuter still decides.
+
 This replaces `backlog`'s per-task review, extra review, `review_fix` and `refute_fix` with
 one loop and one budget. The bet is that cheap iterations with a mechanical gate, plus an
 expensive adversarial check at the end, land more PRs per box-hour than an LLM review on

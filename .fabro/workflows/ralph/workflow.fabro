@@ -228,6 +228,7 @@ echo 0 > /tmp/fabro/plan_attempts
 echo pre > /tmp/fabro/phase
 rm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue /tmp/fabro/stuck_reason.md
 rm -f /tmp/fabro/loop_exhausted /tmp/fabro/progress.md /tmp/fabro/task-map.md
+rm -f /tmp/fabro/review_extra /tmp/fabro/review_rerun /tmp/fabro/criterion_checks.json /tmp/fabro/criterion_checks_tree
 ./.fabro/setup.sh
 grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
 if command -v fabro-code >/dev/null; then fabro-code index; fabro-code map || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi
@@ -286,6 +287,17 @@ if [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi"]
     // files as one `agent-remainder` issue (O7: the Task budget of 8 holds). Only command
     // nodes write `tasks.json`; no agent may (C10).
     //
+    // `ready` also writes `/tmp/fabro/criterion_checks.json`: the plan's `checks` (a command
+    // for a criterion `.fabro/ci.sh` does not prove) that pass the allowlist, at most four.
+    // A command passes when it is at most 200 characters, holds no newline, `$`, `&`, `(`,
+    // `)`, `;`, `<`, `>`, backslash, backtick or `|` (no chaining, substitution or
+    // redirection), starts with a test, lint, type-check, coverage or build runner of one of
+    // the target repositories' stacks (cargo, npm/pnpm/yarn/bun, npx, uv run, python -m,
+    // pytest, ruff, mypy, pyright, go, make, deno), and names no deploy, release, publish,
+    // push, upload or install. The characters are matched by code point in jq because a
+    // `.fabro` file may hold no backslash. A check that fails the list is dropped, never
+    // the plan: the criterion stays as `unverifiable` as it was before checks existed.
+    //
     // `redundant` and `invalid` both end at `close_noop`; `needs_human` writes the plan's
     // summary to `stuck_reason.md` and ends at `mark_stuck`. `triage_questions` is on every
     // routing object because the Discord hook on `return_to_triage` fires at that node's
@@ -316,6 +328,10 @@ echo 0 > /tmp/fabro/plan_attempts
 if [ \"$S\" = ready ]; then
   jq '[.tasks[] | . + {source: \"plan\", round: 0, status: \"open\", iterations: 0, misses: 0}] | .[0:8]' $F > /tmp/fabro/tasks.json
   jq '[.tasks[] | . + {source: \"plan\", round: 0, status: \"open\", iterations: 0, misses: 0}] | .[8:]' $F > /tmp/fabro/remainder.json
+  jq -c '[(.checks // [])[]? | select(((.criterion | type) == \"string\") and ((.command | type) == \"string\")) | {criterion: .criterion, command: (.command | sub(\"^ +\"; \"\") | sub(\" +$\"; \"\"))} | select(.criterion != \"\" and .command != \"\" and (.command | length) <= 200) | select(([.command | explode[] | select(. == 10 or . == 13 or . == 36 or . == 38 or . == 40 or . == 41 or . == 59 or . == 60 or . == 62 or . == 92 or . == 96 or . == 124)] | length) == 0) | select(.command | test(\"^(cargo (test|nextest|clippy|llvm-cov|tarpaulin|fmt|check|doc)|(npm|pnpm|yarn|bun) (test|run [A-Za-z0-9:_.-]+|exec [A-Za-z0-9@/_.-]+)|(npx|pnpx|bunx) [A-Za-z0-9@/_.-]+|uv run [A-Za-z0-9_.-]+|(python3?|python3[.][0-9]+) -m (pytest|mypy|ruff|coverage)|pytest|ruff|mypy|pyright|coverage|go (test|vet)|make [A-Za-z0-9_.-]+|deno (test|check|lint))( |$)\")) | select(.command | test(\"deploy|release|publish|push|upload|install\") | not)] | .[0:4]' $F > /tmp/fabro/criterion_checks.json 2>/dev/null || echo '[]' > /tmp/fabro/criterion_checks.json
+  NC=$(jq '.checks // [] | length' $F 2>/dev/null || echo 0)
+  KC=$(jq length /tmp/fabro/criterion_checks.json 2>/dev/null || echo 0)
+  if [ \"$NC\" != 0 ]; then echo 'plan: '$KC' of '$NC' criterion check(s) pass the allowlist, and criterion_checks runs them after the Final validation' >&2; fi
   echo 0 > /tmp/fabro/task_index
   MOVED=$(jq length /tmp/fabro/remainder.json 2>/dev/null || echo 0)
   if [ \"$MOVED\" != 0 ]; then echo 'plan: the first 8 Tasks run here and '$MOVED' go to the remainder, which file_remainder files as one issue after open_pr' >&2; fi
@@ -880,10 +896,27 @@ fi"]
     //
     // It never copies an Iteration's text: the Refuter's independence is the product (O20).
     // `refute_tree` holds this visit's tree, so the next visit can diff against it.
-    refute_prep [label="Prepare refuter inputs", shape=parallelogram, timeout="5m",
+    //
+    // THE EXTRA REVIEW PASS (2026-11-02, see `review_gate`). While `review_extra` is
+    // `pending` this node does nothing but publish `refute_skip=true`, which routes straight
+    // to `review_prep`: no visit is counted, and no Refuter file is touched, so the last
+    // round's `refute_verdict` (`pass`, or the pass would not have been granted) is still the
+    // one `merge_gate` check 14 reads. Every other visit publishes `refute_skip=false`.
+    //
+    // CRITERION CHECKS (2026-11-02). When `criterion_checks` ran on this exact tree, its
+    // report is appended to `refute_validation.md` under `## Criterion checks`: the command
+    // the plan named for each criterion, its exit status and the tail of its output. That is
+    // evidence for criteria that `.fabro/ci.sh` does not cover. A report from another tree
+    // is left out, as an old validation is.
+    refute_prep [label="Prepare refuter inputs", shape=parallelogram, timeout="5m", output_schema="routing",
         script="set -e
 R=/tmp/fabro/review
 mkdir -p $R
+if [ \"$(cat /tmp/fabro/review_extra 2>/dev/null || true)\" = pending ]; then
+  echo 'refuter skipped: this is the one extra review pass after the third Refute round' >&2
+  echo '{\"context_updates\":{\"refute_skip\":true}}'
+  exit 0
+fi
 V=$(cat /tmp/fabro/refute_visits 2>/dev/null || echo 0)
 case \"$V\" in '' | *[!0-9]*) V=0 ;; esac
 V=$((V + 1))
@@ -945,8 +978,14 @@ VS=$(cut -d' ' -f2 /tmp/fabro/validated_tree 2>/dev/null || true)
   echo '```sh'
   cat .fabro/ci.sh 2>/dev/null || echo '(this checkout has no .fabro/ci.sh)'
   echo '```'
+  CT=$(cat /tmp/fabro/criterion_checks_tree 2>/dev/null || true)
+  if [ -s $R/criterion_checks.md ] && [ \"$CT\" = \"$HT\" ] && git diff --quiet HEAD; then
+    echo
+    cat $R/criterion_checks.md
+  fi
 } > $R/refute_validation.md
-echo 'refuter inputs: round '$V', '$(jq length $R/refute_issues.json)' issue(s), '$SIZE' diff bytes, '$(wc -l < $R/refute_omitted.txt | tr -d ' ')' file(s) omitted'"]
+echo 'refuter inputs: round '$V', '$(jq length $R/refute_issues.json)' issue(s), '$SIZE' diff bytes, '$(wc -l < $R/refute_omitted.txt | tr -d ' ')' file(s) omitted' >&2
+echo '{\"context_updates\":{\"refute_skip\":false}}'"]
 
     // ---- The Refuter (O8, C5) ----
     // gpt-6-luna with `orfallback:qwen3.8-27b` behind it (ADR 0013 D6 and its luna
@@ -983,7 +1022,9 @@ echo 'refuter inputs: round '$V', '$(jq length $R/refute_issues.json)' issue(s),
     // Step 3, the route. `tasks` needs a surviving finding, fewer than 3 Refute rounds
     // (`refute_visits`, counted by `refute_prep`) and a loop that has not run out. `hold`
     // otherwise: the verdict stays `fail`, so `merge_gate` check 14 refuses the merge and
-    // the report lists the criteria still held. `pass` goes to the review.
+    // the report lists the criteria still held. Every route but an exhausted `hold` goes to
+    // the reviews next (since 2026-11-02, `tasks` too: `review_gate` sends both rounds'
+    // Tasks back to `pick` together).
     //
     // A loop that ran out (O18) is `hold` whatever the verdict, `pass` and `invalid`
     // included, and goes straight to `open_pr` with a `needs_human` `fix_result.json`
@@ -1099,10 +1140,26 @@ jq -nc --arg v \"$V\" --argjson n \"$NOT\" --argjson u \"$UO\" --argjson c \"$CC
     // The shared node's 2 MB ceiling stays. Over it, the shared phase writes
     // `needs_human_reason` and lets the merge phase stop; ralph has no PR yet, so it writes
     // `stuck_reason.md` and fails, which ends the run at `mark_stuck` with the reason.
-    review_prep [label="Prepare review inputs", shape=parallelogram, timeout="2m",
+    //
+    // It publishes `review_run_standards` and `review_run_spec` on every visit; the edges
+    // into and between the two reviewers read them. Both are `true` except in the one extra
+    // review pass (`review_extra` = `pending`), where only the axes in `review_rerun` -- the
+    // ones that blocked -- re-run, and the other reviewer's result from the previous round
+    // is kept for `review_gate` to read. An empty or unreadable `review_rerun` re-runs both.
+    review_prep [label="Prepare review inputs", shape=parallelogram, timeout="2m", output_schema="routing",
         script="set -e
 B=main
-rm -f /tmp/fabro/review/standards.json /tmp/fabro/review/spec.json /tmp/fabro/review/fix_result.json
+RS=true
+RP=true
+if [ \"$(cat /tmp/fabro/review_extra 2>/dev/null || true)\" = pending ]; then
+  RERUN=' '$(tr '[:space:]' ' ' < /tmp/fabro/review_rerun 2>/dev/null || true)' '
+  case \"$RERUN\" in *' standards '*) : ;; *) RS=false ;; esac
+  case \"$RERUN\" in *' spec '*) : ;; *) RP=false ;; esac
+  if [ \"$RS\" = false ] && [ \"$RP\" = false ]; then RS=true; RP=true; fi
+fi
+if [ \"$RS\" = true ]; then rm -f /tmp/fabro/review/standards.json; fi
+if [ \"$RP\" = true ]; then rm -f /tmp/fabro/review/spec.json; fi
+rm -f /tmp/fabro/review/fix_result.json
 git fetch origin \"$B\"
 git diff origin/\"$B\"...HEAD > /tmp/fabro/review/diff.patch
 git diff --stat origin/\"$B\"...HEAD > /tmp/fabro/review/diffstat.txt
@@ -1113,11 +1170,13 @@ if [ $BYTES -gt 2000000 ]; then
   echo 'The branch diff exceeds 2000000 bytes and is not safely reviewable in one pass. Split the issue.' > /tmp/fabro/stuck_reason.md
   exit 1
 fi
-echo 'review inputs: '$BYTES' diff bytes'"]
+echo 'review inputs: '$BYTES' diff bytes; standards '$RS', spec '$RP >&2
+jq -nc --argjson s $RS --argjson p $RP '{context_updates:{review_run_standards:$s,review_run_spec:$p}}'"]
 
     // ---- The two pre-PR reviews (O9, C6, R4, R5) ----
-    // They run AFTER the Refuter passes or holds, and before the pull request exists, so
-    // neither sees a PR number and neither is part of the shared merge phase.
+    // They run right after the Refuter in every round (`review_gate` says why), and before
+    // the pull request exists, so neither sees a PR number and neither is part of the
+    // shared merge phase. Since 2026-11-02 they run when the Refuter found work, too.
     //
     // timeout="25m" (standards) and "15m" (spec) are the shared phase's numbers, chosen
     // there for the shared prompts. They were measured with `.merge-standards` on
@@ -1147,11 +1206,26 @@ echo 'review inputs: '$BYTES' diff bytes'"]
     // before the reviewers run. A missing or invalid result fails the node: no PR exists, so
     // stopping is cheaper than opening one nobody reviewed.
     //
-    // `tasks` needs a blocking finding, Refute rounds left (`refute_visits < 3`) and a
-    // Refuter that passed -- `refute_gate` records its route in `/tmp/fabro/refute_route`
-    // for exactly this, since a command node cannot read another's context. Each blocking
-    // finding becomes a Task that keeps the finding's id, so the next round's
-    // `fixes_applied` can name it.
+    // ONE ROUND, BOTH CHECKS (2026-11-02). The reviews run in every Refute round, right
+    // after the Refuter, whether it passed or found work, so both sets of findings become
+    // Tasks in the same round and no round is spent on one side alone. They cannot run AT
+    // THE SAME TIME as the Refuter: two agent stages in parallel would share
+    // `.io/stage.json` (invariants-graph, ADR 0016 D3). `refute_gate` records its route in
+    // `/tmp/fabro/refute_route`, since a command node cannot read another's context:
+    //   - `tasks` (the Refuter's findings are already Tasks): route `tasks`, and every
+    //     blocking review finding becomes a Task beside them.
+    //   - `pass`, with a blocking finding and Refute rounds left (`refute_visits < 3`): route
+    //     `tasks`, as before.
+    //   - `pass`, with a blocking finding after the third Refute round: THE EXTRA PASS. Route
+    //     `tasks` once more, with ids `rvx{s,p}<N>`, and write `review_extra` = `pending`
+    //     and `review_rerun` (the axes that blocked). The next round skips the Refuter
+    //     (`refute_prep`), re-runs only those reviewers (`review_prep`), and this gate then
+    //     routes `pass` whatever they find, writing `review_extra` = `done`. It is O13's
+    //     rule for post-PR Iterations, used once before the PR: Task validation, hygiene and
+    //     the Final validation judge the fix, and no new Refute round runs.
+    //   - `hold` (the Refuter holds the merge anyway): no Task; the findings are reported.
+    // Each blocking finding becomes a Task that keeps the finding's id, so the next round's
+    // `fixes_applied` can name it. `not_fixed`'s reason says which of these left it.
     //
     // On the `pass` route it writes `/tmp/fabro/review/fix_result.json` in `review_fix`'s
     // shape (R5), because ralph has no fixer to write one: `outcome` is `fixed` when the
@@ -1192,16 +1266,36 @@ BLOCK=$(jq length $R/blocks.json)
 VIS=$(cat /tmp/fabro/refute_visits 2>/dev/null || echo 0)
 case \"$VIS\" in '' | *[!0-9]*) VIS=0 ;; esac
 RR=$(cat /tmp/fabro/refute_route 2>/dev/null || echo pass)
+XS=$(cat /tmp/fabro/review_extra 2>/dev/null || echo none)
+case \"$XS\" in pending | done) : ;; *) XS=none ;; esac
+SB=$(jq '[.findings[]? | select(.severity == \"error\")] | length' $SF 2>/dev/null || echo 0)
+PB=$(jq '[.findings[]? | select(.severity == \"error\")] | length' $PF 2>/dev/null || echo 0)
 ROUTE=pass
-if [ \"$BLOCK\" -gt 0 ] && [ \"$VIS\" -lt 3 ] && [ \"$RR\" = pass ] && [ \"$LE\" = false ]; then ROUTE=tasks; fi
+IDP=rv$VIS
+if [ \"$LE\" = false ] && [ \"$XS\" != pending ]; then
+  if [ \"$RR\" = tasks ]; then
+    ROUTE=tasks
+  elif [ \"$RR\" = pass ] && [ \"$BLOCK\" -gt 0 ]; then
+    if [ \"$VIS\" -lt 3 ]; then
+      ROUTE=tasks
+    elif [ \"$XS\" = none ]; then
+      ROUTE=tasks
+      IDP=rvx
+      echo pending > /tmp/fabro/review_extra
+      { if [ \"$SB\" -gt 0 ]; then echo standards; fi; if [ \"$PB\" -gt 0 ]; then echo spec; fi; } > /tmp/fabro/review_rerun
+      echo 'review: the third Refute round is spent, so '$BLOCK' blocking finding(s) get the one extra pass: no Refuter, and only '$(tr '[:space:]' ' ' < /tmp/fabro/review_rerun)'re-run' >&2
+    fi
+  fi
+fi
+if [ \"$XS\" = pending ]; then echo done > /tmp/fabro/review_extra; fi
 if [ \"$ROUTE\" = tasks ]; then
-  jq -n --slurpfile a $SF --slurpfile b $PF --argjson r $VIS '
+  jq -n --slurpfile a $SF --slurpfile b $PF --arg p \"$IDP\" --argjson r $VIS '
     def nl: [10] | implode;
     ([$a[0].findings[]? | select(.severity == \"error\") | {axis: \"standards\"} + .]
      + [$b[0].findings[]? | select(.severity == \"error\") | {axis: \"spec\"} + .])
     | to_entries
     | map(.value as $f | .key as $i | {
-        id: (\"rv\" + ($r | tostring) + (if $f.axis == \"standards\" then \"s\" else \"p\" end) + (($i + 1) | tostring)),
+        id: ($p + (if $f.axis == \"standards\" then \"s\" else \"p\" end) + (($i + 1) | tostring)),
         title: (($f.id // \"finding\") + \" \" + $f.message),
         body: (\"The \" + $f.axis + \" review found this in the branch: \" + $f.message + \" Files: \" + (($f.files // []) | join(\", \")) + \". Suggestion: \" + ($f.suggestion // \"none given\") + \".\"),
         acceptance: [\"the finding no longer applies to the branch\"],
@@ -1211,11 +1305,14 @@ if [ \"$ROUTE\" = tasks ]; then
         round: $r, status: \"open\", iterations: 0, misses: 0 })' > /tmp/fabro/review_tasks.json
   jq -s '.[0] + .[1]' /tmp/fabro/tasks.json /tmp/fabro/review_tasks.json > /tmp/fabro/tasks.new.json 2>/dev/null && mv /tmp/fabro/tasks.new.json /tmp/fabro/tasks.json
   rm -f /tmp/fabro/review_tasks.json
-  echo 'review: '$BLOCK' blocking finding(s) became Tasks' >&2
+  echo 'review: '$BLOCK' blocking finding(s) became Tasks (refuter route '$RR', round '$VIS')' >&2
 else
   jq '[.[] | select(.source == \"review\" and .status == \"passed\")]' /tmp/fabro/tasks.json > $R/fixed.json 2>/dev/null || echo '[]' > $R/fixed.json
   jq '[.[] | {finding_id: (.finding_id // .id), axis: (.axis // \"standards\"), severity: (.severity // \"error\"), message: (.title // .id)}]' $R/fixed.json > $R/fixes.json
-  jq '[ .[] | {finding_id: .id, original_finding: .message, reason: \"this review round found it and no Iteration round was left to fix it\"} ]' $R/blocks.json > $R/notfixed.json
+  NFR='this review round found it after the third Refute round and the one extra pass were spent'
+  if [ \"$XS\" = pending ]; then NFR='the one extra review pass after the third Refute round did not clear it'; fi
+  if [ \"$RR\" != pass ]; then NFR='the Refuter held the merge, so review findings did not become Tasks'; fi
+  jq --arg why \"$NFR\" '[ .[] | {finding_id: .id, original_finding: .message, reason: $why} ]' $R/blocks.json > $R/notfixed.json
   FA=$(jq length $R/fixes.json)
   NF=$(jq length $R/notfixed.json)
   OUT=no_changes_needed
@@ -1223,7 +1320,7 @@ else
   RSN=''
   if [ \"$D1\" = needs_human_review ]; then OUT=needs_human; RSN='the standards review asked for a human decision'; fi
   if [ \"$D2\" = needs_human_review ]; then OUT=needs_human; RSN='the spec review asked for a human decision'; fi
-  if [ \"$NF\" != 0 ] && [ -z \"$RSN\" ]; then OUT=needs_human; RSN='the round budget left '$NF' blocking finding(s) unfixed'; fi
+  if [ \"$NF\" != 0 ] && [ -z \"$RSN\" ]; then OUT=needs_human; RSN=$NF' blocking review finding(s) left unfixed: '$NFR; fi
   if [ \"$LE\" = true ]; then OUT=needs_human; RSN='the loop ran out with Tasks unpassed'; fi
   SUM='Ralph reviews: standards '$D1', spec '$D2'. '$FA' finding(s) were fixed by the loop and '$NF' left.'
   jq -n --arg o \"$OUT\" --argjson r \"$RISK\" --arg s \"$SUM\" --slurpfile fa $R/fixes.json --slurpfile nf $R/notfixed.json --arg d1 \"$D1\" --arg d2 \"$D2\" '{outcome: $o, risk: $r, summary: $s, own_findings: [], fixes_applied: $fa[0], not_fixed: $nf[0], notes: (\"standards=\" + $d1 + \" spec=\" + $d2)}' > $R/fix_result.json
@@ -1577,6 +1674,95 @@ fi
 cp $F/stuck_reason.md /tmp/fabro/merge_block_reason
 cp $F/stuck_reason.md /tmp/fabro/needs_human_reason
 jq -nc --arg p \"$PH\" '{context_updates:{final_ok:false,final_route:\"needs_human\",phase:$p}}'"]
+
+    // ---- Criterion checks (2026-11-02) ----
+    // The evidence a criterion needs when `.fabro/ci.sh` does not prove it: 31 of ralph's 53
+    // held PRs in the trial failed the Refuter only on `unverifiable` criteria, most of them
+    // a command that ci.sh does not run (`cargo nextest`) or a number nothing printed (a
+    // per-file coverage figure). `plan` names a command for each such criterion, `plan_gate`
+    // keeps the allowlisted ones in `criterion_checks.json`, and this node runs them on the
+    // tree `final_check` just validated, in phase `pre` only, so `refute_prep` can hand the
+    // results to the Refuter under `## Criterion checks`. It loosens no gate: the Refuter
+    // still decides, from the command's exit status and output.
+    //
+    // It may only help, like the pre-review. It always exits 0 and has one unconditional
+    // edge to `hygiene`, so a failure or a timeout of its own reaches `hygiene` exactly as
+    // `final_check` would have. It runs nothing when there is no check, during the one
+    // extra review pass (no Refuter reads it then), when `timeout` is missing, or when the
+    // checkout is not clean at the start (it could not tell a check's edits from the
+    // run's). Each command gets `timeout 480` and stdin from /dev/null; none starts after
+    // 1200 s, so the four fit inside the node's 30m. A command that changes the checkout or
+    // HEAD is reverted at once (`git reset --hard` plus `git clean -fd`, safe because the
+    // start was clean), and its result is marked as not evidence: the next stage
+    // checkpoint would otherwise commit what it wrote.
+    //
+    // It writes `review/criterion_checks.md` and the tree it ran on
+    // (`criterion_checks_tree`), and publishes `criterion_checks_run` and
+    // `criterion_checks_ok`, the two counts the measurement reads from the events.
+    criterion_checks [label="Run the criterion checks", shape=parallelogram, timeout="30m", output_schema="routing",
+        script="F=/tmp/fabro
+R=$F/review
+mkdir -p $R $F/checks
+rm -f $R/criterion_checks.md $F/criterion_checks_tree $F/checks/*.log
+N=$(jq length $F/criterion_checks.json 2>/dev/null || echo 0)
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+WHY=''
+if [ \"$N\" = 0 ]; then WHY='the plan named no allowlisted check'; fi
+if [ -z \"$WHY\" ] && [ \"$(cat $F/review_extra 2>/dev/null || true)\" = pending ]; then WHY='this is the extra review pass, and no Refuter reads the result'; fi
+if [ -z \"$WHY\" ] && ! command -v timeout >/dev/null 2>&1; then WHY='the sandbox has no timeout command'; fi
+if [ -z \"$WHY\" ] && [ -n \"$(git status --porcelain 2>/dev/null)\" ]; then WHY='the checkout was not clean, so a check could not be told from the run'; fi
+if [ -n \"$WHY\" ]; then
+  echo 'criterion checks: none run: '$WHY >&2
+  echo '{\"context_updates\":{\"criterion_checks_run\":0,\"criterion_checks_ok\":0}}'
+  exit 0
+fi
+HS=$(git rev-parse HEAD)
+TREE=$(git rev-parse 'HEAD^{tree}')
+START=$(date +%s)
+{
+  echo '## Criterion checks'
+  echo
+  echo 'The plan named a command for each criterion below, for evidence .fabro/ci.sh does not give. Each ran in this checkout, on tree '$TREE', right after the Final validation, with a limit of 480 seconds. Exit status 124 is that limit; 126 or 127 means the command or a tool it needs is not installed here.'
+  echo
+} > $R/criterion_checks.md
+RUN=0
+OK=0
+I=0
+while [ $I -lt $N ]; do
+  C=$(jq -r --argjson i $I '.[$i].command' $F/criterion_checks.json)
+  K=$(jq -r --argjson i $I '.[$i].criterion' $F/criterion_checks.json)
+  I=$((I + 1))
+  if [ $(( $(date +%s) - START )) -gt 1200 ]; then
+    { echo '### Check '$I': `'\"$C\"'`'; echo; echo '- criterion: '\"$K\"; echo '- not run: the time for criterion checks was spent'; echo; } >> $R/criterion_checks.md
+    continue
+  fi
+  RC=0
+  timeout 480 sh -c \"$C\" < /dev/null > $F/checks/$I.log 2>&1 || RC=$?
+  RUN=$((RUN + 1))
+  NOTE=''
+  if [ -n \"$(git status --porcelain 2>/dev/null)\" ] || [ \"$(git rev-parse HEAD)\" != \"$HS\" ]; then
+    git reset -q --hard \"$HS\" || true
+    git clean -qfd || true
+    NOTE='the command changed the checkout; the change was reverted, and this result is not evidence'
+  fi
+  if [ $RC = 0 ] && [ -z \"$NOTE\" ]; then OK=$((OK + 1)); fi
+  {
+    echo '### Check '$I': `'\"$C\"'`'
+    echo
+    echo '- criterion: '\"$K\"
+    echo '- exit status: '$RC
+    if [ -n \"$NOTE\" ]; then echo '- '\"$NOTE\"; fi
+    echo '- output, the last 60 of '$(wc -l < $F/checks/$I.log | tr -d ' ')' lines:'
+    echo
+    echo '```'
+    tail -n 60 $F/checks/$I.log | cut -c1-400
+    echo '```'
+    echo
+  } >> $R/criterion_checks.md
+done
+echo \"$TREE\" > $F/criterion_checks_tree
+echo 'criterion checks: '$RUN' of '$N' run, '$OK' exited 0' >&2
+jq -nc --argjson r $RUN --argjson o $OK '{context_updates:{criterion_checks_run:$r,criterion_checks_ok:$o}}'"]
 
     // copy: copy of review_merge.hygiene (C8). No replacement: it reads `base_ref`, which
     // `final_check` writes as `main` before the merge stage owns it.
@@ -3420,17 +3606,20 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     plan_gate -> close_noop                   [condition="context.plan_status=invalid"]
     plan_gate -> mark_stuck                   [condition="context.plan_status=needs_human"]
     plan_gate -> stop_reason
-    refute_prep -> refute                     [condition="outcome=succeeded"]
+    refute_prep -> refute                     [condition="outcome=succeeded && context.refute_skip=false"]
+    refute_prep -> review_prep                [condition="outcome=succeeded && context.refute_skip=true"]
     refute_prep -> stop_reason
     refute -> refute_gate                     [condition="outcome=succeeded"]
     refute -> refute_gate
-    refute_gate -> pick                       [condition="context.refute_route=tasks"]
+    refute_gate -> review_prep                [condition="context.refute_route=tasks"]
     refute_gate -> review_prep                [condition="context.refute_route=pass"]
     refute_gate -> review_prep                [condition="context.refute_route=hold && context.loop_exhausted=false"]
     refute_gate -> stop_reason
-    review_prep -> standards                  [condition="outcome=succeeded"]
+    review_prep -> standards                  [condition="outcome=succeeded && context.review_run_standards=true"]
+    review_prep -> spec                       [condition="outcome=succeeded && context.review_run_standards=false"]
     review_prep -> stop_reason
-    standards -> spec                         [condition="outcome=succeeded"]
+    standards -> spec                         [condition="outcome=succeeded && context.review_run_spec=true"]
+    standards -> review_gate                  [condition="outcome=succeeded && context.review_run_spec=false"]
     standards -> stop_reason
     spec -> review_gate                       [condition="outcome=succeeded"]
     spec -> stop_reason
@@ -3449,7 +3638,8 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     final_merge -> resolve_merge             [condition="outcome=succeeded && context.final_conflict=true"]
     final_merge -> stop_reason
     resolve_merge_gate -> final_merge        [condition="context.merge_ok=true && context.merge_return=pr", weight=10]
-    final_check -> hygiene                   [condition="outcome=succeeded && context.final_route=pr && context.phase=pre"]
+    final_check -> criterion_checks          [condition="outcome=succeeded && context.final_route=pr && context.phase=pre"]
+    criterion_checks -> hygiene
     final_check -> hygiene                   [condition="outcome=succeeded && context.final_route=pr && context.phase=post"]
     final_check -> mark_needs_human          [condition="outcome=succeeded && context.final_route=needs_human"]
     final_check -> pick                      [condition="outcome=succeeded && context.final_route=fix"]

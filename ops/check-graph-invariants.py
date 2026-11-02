@@ -1022,7 +1022,7 @@ R10_COPIES: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
     )),
     ('prep', '.fabro/workflows/backlog/workflow.fabro', 'prep', (
         ('echo 0 > /tmp/fabro/extra_round\necho 0 > /tmp/fabro/split_rounds\necho 0 > /tmp/fabro/tasks_coded\nrm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue /tmp/fabro/stuck_reason.md',
-         'echo 0 > /tmp/fabro/iterations\necho 0 > /tmp/fabro/post_iterations\necho 0 > /tmp/fabro/refute_visits\necho 0 > /tmp/fabro/final_fix_attempts\necho 0 > /tmp/fabro/plan_attempts\necho pre > /tmp/fabro/phase\nrm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue /tmp/fabro/stuck_reason.md\nrm -f /tmp/fabro/loop_exhausted /tmp/fabro/progress.md /tmp/fabro/task-map.md'),
+         'echo 0 > /tmp/fabro/iterations\necho 0 > /tmp/fabro/post_iterations\necho 0 > /tmp/fabro/refute_visits\necho 0 > /tmp/fabro/final_fix_attempts\necho 0 > /tmp/fabro/plan_attempts\necho pre > /tmp/fabro/phase\nrm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue /tmp/fabro/stuck_reason.md\nrm -f /tmp/fabro/loop_exhausted /tmp/fabro/progress.md /tmp/fabro/task-map.md\nrm -f /tmp/fabro/review_extra /tmp/fabro/review_rerun /tmp/fabro/criterion_checks.json /tmp/fabro/criterion_checks_tree'),
         ("else echo 'agent guide: could not write .codex/instructions.md' >&2; fi",
          'else echo \'agent guide: could not write .codex/instructions.md\' >&2; fi\njq -r \'.body // ""\' /tmp/fabro/issue.json 2>/dev/null | awk \'/^## Task map$/{s=1; next} s && /^## /{s=0} s && !/^[[:space:]]*$/{print}\' > /tmp/fabro/task-map.md\nif [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi'),
     )),

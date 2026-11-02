@@ -469,8 +469,10 @@ class Counts(unittest.TestCase):
             # `fabro validate` baseline. Task 12 records the validated numbers in AGENTS.md.
             # Part B: the same three nodes between `pick` and `final_merge` on the
             # `loop=done && phase=pre` edge only -- +3 nodes, +4 edges. `loop=exhausted` still
-            # goes straight to `final_merge`.
-            "ralph": (54, 139),
+            # goes straight to `final_merge`. 2026-11-02: `criterion_checks` (+1 node), and the
+            # round's new routes -- refute_prep->review_prep, review_prep->spec,
+            # standards->review_gate, criterion_checks->hygiene -- +4 edges.
+            "ralph": (55, 143),
         })
 
 

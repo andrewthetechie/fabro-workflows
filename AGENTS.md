@@ -91,8 +91,8 @@ added `report_queued` to the three importing graphs (+1 node, +3 edges each), an
 `route_lane` and `demote_lane` to `backlog`. The gate-relief series (#29) added `refute_fix` and `refute_fix_gate` to the three importing graphs (+2 nodes, +5 edges each). The final-merge fix (2026-10-12) added `final_merge` to `backlog` (+1 node, +4 edges). The base-conflict fix (#37, 2026-10-13) added `resolve_base` and `resolve_base_gate` to the three importing graphs (+2 nodes, +6 edges each). The final-validation fix (#35, 2026-10-13) added `drop_unreviewed` and `final_fix_prep` to `backlog` (+2 nodes, +9 edges). The unmet-criteria series (#17, 2026-10-13) added `return_to_triage` and `task_block_gate` to `backlog` (+2 nodes, +6 edges). The plan trial (#25, 2026-10-13) added `plan` to `backlog` (+1 node, +5 edges); closing it (2026-10-21, ADR 0030) deleted `improve` and the three arm-split edge pairs, so **`Backlog` was 81 nodes and 205 edges**. `make check-host` confirmed it on 2026-10-22. The pre-review (pre-review-and-calibration, Part B) added `pre_review_prep`, `pre_review` and `pre_review_check` between `next_task` and `extra_prep` (+3 nodes, +4 edges), so **`Backlog` is 84 nodes and 209 edges**, verified by `make check-host` on 2026-10-31.
 
 `Ralph` was 51 nodes and 135 edges, verified by `make check-host` on 2026-10-22; the pre-review
-adds the same three nodes on the `loop=done && phase=pre` edge only, so **`Ralph` is 54 nodes and
-139 edges**, verified by `make check-host` on 2026-10-31. It carries one
+adds the same three nodes on the `loop=done && phase=pre` edge only, so `Ralph` was 54 nodes and
+139 edges, verified by `make check-host` on 2026-10-31. The review-round change (2026-11-02: `criterion_checks`, the extra review pass, and the reviews in every Refute round) adds 1 node and 4 edges, so **`Ralph` is 55 nodes and 143 edges**, verified by `make check-host` on 2026-11-02. It carries one
 deliberate warning like `Backlog`'s, `issue_number` unbound in `claim`, for the same reason:
 binding it in `[run.inputs]` would route every hand-fired run to one box.
 

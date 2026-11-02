@@ -187,6 +187,21 @@ def test_ralph_edges(ck):
     ck("pg edges: no bare exit", "0", count("^exit ", pg))
     ck("edges: plan_gate has one unconditional edge", "1", count(" $", pg))
 
+    # One round, both checks; and the one extra review pass (2026-11-02).
+    for name, e in (
+        ("round edges: refuter tasks go to the reviews", "refute_gate->review_prep context.refute_route=tasks"),
+        ("round edges: refuter pass goes to the reviews", "refute_gate->review_prep context.refute_route=pass"),
+        ("round edges: the extra pass skips the Refuter", "refute_prep->review_prep outcome=succeeded && context.refute_skip=true"),
+        ("round edges: otherwise the Refuter runs", "refute_prep->refute outcome=succeeded && context.refute_skip=false"),
+        ("round edges: standards when asked", "review_prep->standards outcome=succeeded && context.review_run_standards=true"),
+        ("round edges: spec alone", "review_prep->spec outcome=succeeded && context.review_run_standards=false"),
+        ("round edges: spec after standards when asked", "standards->spec outcome=succeeded && context.review_run_spec=true"),
+        ("round edges: standards alone", "standards->review_gate outcome=succeeded && context.review_run_spec=false"),
+        ("round edges: review tasks return to pick", "review_gate->pick context.review_route=tasks"),
+    ):
+        ck(name, "1", count(e, redg, flags="xF"))
+    ck("round edges: refute_gate never returns to pick", "0", count("^refute_gate->pick", redg))
+
 
 R_MATCHES = r'''
     BEGIN { n = split(pairs, ps, / /); for (i = 1; i <= n; i++) { split(ps[i], kv, "="); v[kv[1]] = kv[2] } }
@@ -567,6 +582,35 @@ def test_ralph_refute_prep(ck, tmp_path):
     go()
     ck("rp: nothing earlier writes no history", "absent", present(hist))
 
+    # Routing: every visit publishes refute_skip.
+    setup("No post-deploy section here.", "1")
+    r = go()
+    ck("rp: a normal visit does not skip", "false", ctx(lastjson(r.out), "refute_skip"))
+    ck("rp: one routing object", "1", count("context_updates", r.out))
+
+    # Criterion checks from this exact tree reach the Refuter; from another tree they do not.
+    ht = git("-C", repo, "rev-parse", "HEAD^{tree}")
+    write(T / "validated_tree", ht + " final\n")
+    write(T / "review/criterion_checks.md", "## Criterion checks\n\n### Check 1: `cargo nextest run`\n- exit status: 0\n")
+    write(T / "criterion_checks_tree", ht + "\n")
+    go()
+    val_md = T / "review/refute_validation.md"
+    ck("rp checks: the section is appended", "1", count("^## Criterion checks", file=val_md))
+    ck("rp checks: the validation line stays", "1", count("Final validation passed on this exact tree", file=val_md))
+    write(T / "criterion_checks_tree", "0000000000000000000000000000000000000000\n")
+    go()
+    ck("rp checks: another tree's checks are left out", "0", count("Criterion checks", file=val_md))
+
+    # The extra review pass: no visit, no file touched, refute_skip=true.
+    setup("No post-deploy section here.", "3")
+    write(T / "review/refute_verdict", "pass\n")
+    write(T / "review_extra", "pending\n")
+    r = go()
+    ck("rp extra: exits 0", "0", r.rc)
+    ck("rp extra: skips", "true", ctx(lastjson(r.out), "refute_skip"))
+    ck("rp extra: no visit counted", "3", cat(T / "refute_visits"))
+    ck("rp extra: the verdict file is kept", "pass", cat(T / "review/refute_verdict"))
+
 
 def test_ralph_review_gate(ck, tmp_path):
     RW = tmp_path / "ralph-review-gate"
@@ -579,7 +623,8 @@ def test_ralph_review_gate(ck, tmp_path):
         (T / "review").mkdir(exist_ok=True)
         for p in (T / "review").iterdir():
             rm(p)
-        rm(T / "refute_visits", T / "refute_route", T / "merge_block_reason", T / "stuck_reason.md", T / "tasks.json", T / "loop_exhausted")
+        rm(T / "refute_visits", T / "refute_route", T / "merge_block_reason", T / "stuck_reason.md", T / "tasks.json", T / "loop_exhausted",
+           T / "review_extra", T / "review_rerun")
         write(T / "review/standards.json", jq('._io={stage:$n,visit:"v1"}', standards, args=["--arg", "n", "standards"], raw=False, pipe=True) + "\n")
         write(T / "review/spec.json", jq('._io={stage:$n,visit:"v2"}', spec, args=["--arg", "n", "spec"], raw=False, pipe=True) + "\n")
         write(T / "refute_visits", visits + "\n")
@@ -623,12 +668,46 @@ def test_ralph_review_gate(ck, tmp_path):
     ck("rv error: it keeps the finding id", "STD-001", jq(".[0].finding_id", file=T / "tasks.json"))
     ck("rv error: no fix_result yet", "absent", present(fix))
 
-    setup(std_ok, findings(find("STD-001", "error", "the retry never happens", "src/a.py"), ",risk:2"), "3", "pass"); go()
-    ck("rv round cap: routes pass", "pass", val("review_route"))
-    ck("rv round cap: no task", "0", ntasks())
-    ck("rv round cap: not mergeable", "needs_human", fx("outcome"))
-    ck("rv round cap: not_fixed lists it", "STD-001", jq(".not_fixed[0].finding_id", file=fix))
-    ck("rv round cap: merge_block_reason", "1", count("blocking finding", file=T / "merge_block_reason"))
+    # After the third Refute round, a blocking finding gets ONE extra pass (2026-11-02).
+    setup(std_ok, findings(find("SPEC-001", "error", "the retry never happens", "src/a.py"), ",risk:2"), "3", "pass"); go()
+    ck("rv extra: routes tasks", "tasks", val("review_route"))
+    ck("rv extra: one task", "1", ntasks())
+    ck("rv extra: its id is rvx", "rvxp1", jq(".[0].id", file=T / "tasks.json"))
+    ck("rv extra: pending", "pending", cat(T / "review_extra"))
+    ck("rv extra: only spec re-runs", "spec", cat(T / "review_rerun"))
+    ck("rv extra: no fix_result yet", "absent", present(fix))
+
+    # The extra pass's own review: whatever it finds, it routes pass and the pass is spent.
+    setup(std_ok, findings(find("SPEC-001", "error", "the retry still never happens", "src/a.py"), ",risk:2"), "3", "pass")
+    write(T / "review_extra", "pending\n"); go()
+    ck("rv extra spent: routes pass", "pass", val("review_route"))
+    ck("rv extra spent: no task", "0", ntasks())
+    ck("rv extra spent: done", "done", cat(T / "review_extra"))
+    ck("rv extra spent: not mergeable", "needs_human", fx("outcome"))
+    ck("rv extra spent: not_fixed lists it", "SPEC-001", jq(".not_fixed[0].finding_id", file=fix))
+    ck("rv extra spent: the reason names the extra pass", "1", count("extra review pass", jq(".not_fixed[0].reason", file=fix)))
+    ck("rv extra spent: merge_block_reason", "1", count("blocking review finding", file=T / "merge_block_reason"))
+
+    setup(std_ok, findings(find("SPEC-002", "error", "the retry never happens", "src/a.py"), ",risk:2"), "3", "pass")
+    write(T / "review_extra", "done\n"); go()
+    ck("rv extra used: routes pass", "pass", val("review_route"))
+    ck("rv extra used: no task", "0", ntasks())
+    ck("rv extra used: not mergeable", "needs_human", fx("outcome"))
+
+    setup(std_ok, spec_approve, "3", "pass"); write(T / "review_extra", "pending\n"); go()
+    ck("rv extra cleared: mergeable", "no_changes_needed", fx("outcome"))
+    ck("rv extra cleared: done", "done", cat(T / "review_extra"))
+
+    # One round, both checks: when the Refuter found work, review errors join its Tasks.
+    setup(findings(find("STD-005", "error", "the retry never happens", "src/a.py")), spec_approve, "2", "tasks",
+          '[{"id":"r2c1","title":"The parser rejects a bad token","source":"refute","status":"open"}]'); go()
+    ck("rv refuter tasks: routes tasks", "tasks", val("review_route"))
+    ck("rv refuter tasks: the review error is a task beside the refuter's", "2", ntasks())
+    ck("rv refuter tasks: its id", "rv2s1", jq(".[1].id", file=T / "tasks.json"))
+    ck("rv refuter tasks: no extra pass", "absent", present(T / "review_extra"))
+    setup(std_ok, spec_approve, "2", "tasks", '[{"id":"r2c1","title":"x","source":"refute","status":"open"}]'); go()
+    ck("rv refuter tasks, clean reviews: still routes tasks", "tasks", val("review_route"))
+    ck("rv refuter tasks, clean reviews: no task added", "1", ntasks())
 
     setup(jq_n('{decision:"findings",summary:"style",findings:$f}', "--argjson", "f", f"[{find('STD-002', 'warning', 'this could be tidier', 'src/b.py')}]"), spec_approve, "1", "pass"); go()
     ck("rv warning only: routes pass", "pass", val("review_route"))
@@ -638,6 +717,8 @@ def test_ralph_review_gate(ck, tmp_path):
     setup(findings(find("STD-003", "error", "the retry never happens", "src/a.py")), spec_approve, "1", "hold"); go()
     ck("rv refuter held: no task", "0", ntasks())
     ck("rv refuter held: not mergeable", "needs_human", fx("outcome"))
+    ck("rv refuter held: the reason says the Refuter held", "1", count("Refuter held the merge", jq(".not_fixed[0].reason", file=fix)))
+    ck("rv refuter held: no extra pass", "absent", present(T / "review_extra"))
 
     setup('{"decision":"needs_human_review","summary":"inputs disagree","findings":[]}', jq_n('{decision:"approve",summary:"ok",findings:[],risk:2}'), "1", "pass"); go()
     ck("rv human review: not mergeable", "needs_human", fx("outcome"))
@@ -653,7 +734,8 @@ def test_ralph_review_gate(ck, tmp_path):
 
     # Reviewer ids restart every round: a round-3 STD-001 is a new error, not the round-1 fix.
     setup(findings(find("STD-001", "error", "a different bug", "src/c.py")), spec_approve, "3", "pass",
-          '[{"id":"rv1s1","title":"STD-001 the retry never happens","source":"review","axis":"standards","finding_id":"STD-001","severity":"error","status":"passed"}]'); go()
+          '[{"id":"rv1s1","title":"STD-001 the retry never happens","source":"review","axis":"standards","finding_id":"STD-001","severity":"error","status":"passed"}]')
+    write(T / "review_extra", "pending\n"); go()
     ck("rv reused id: not mergeable", "needs_human", fx("outcome"))
     ck("rv reused id: not_fixed lists this round's error", "a different bug", jq(".not_fixed[0].original_finding", file=fix))
 
@@ -668,6 +750,145 @@ def test_ralph_review_gate(ck, tmp_path):
     go()
     ck("rv bad receipt: exits 1", "1", st["rc"])
     ck("rv bad receipt: names the cause", "1", count("no valid result", file=T / "stuck_reason.md"))
+
+
+def test_ralph_review_prep(ck, tmp_path):
+    RV = tmp_path / "ralph-review-prep"
+    T = RV / "sb"
+    (T / "review").mkdir(parents=True)
+    repo = RV / "repo"
+    bare_and_repo(RV / "origin.git", repo, {"a.txt": "one\n"})
+    append(repo / "a.txt", "two\n"); git("-C", repo, "commit", "-qam", "work")
+    prep = stage_r(ck, "review_prep", T)
+
+    def go(extra=None, rerun=None):
+        for n in ("standards.json", "spec.json", "fix_result.json"):
+            write(T / "review" / n, "{}")
+        rm(T / "review_extra", T / "review_rerun")
+        if extra:
+            write(T / "review_extra", extra + "\n")
+        if rerun is not None:
+            write(T / "review_rerun", rerun)
+        r = sh(prep, cwd=repo)
+        return r, lastjson(r.out)
+
+    r, j = go()
+    ck("rvp: exits 0", "0", r.rc)
+    ck("rvp: both reviewers run", "true|true", ctx(j, "review_run_standards") + "|" + ctx(j, "review_run_spec"))
+    ck("rvp: both results cleared", "absent|absent", present(T / "review/standards.json") + "|" + present(T / "review/spec.json"))
+    ck("rvp: fix_result cleared", "absent", present(T / "review/fix_result.json"))
+    ck("rvp: the diff is written", "1", count("two", file=T / "review/diff.patch"))
+    r, j = go("pending", "spec\n")
+    ck("rvp extra spec: only spec runs", "false|true", ctx(j, "review_run_standards") + "|" + ctx(j, "review_run_spec"))
+    ck("rvp extra spec: the standards result is kept", "present|absent", present(T / "review/standards.json") + "|" + present(T / "review/spec.json"))
+    r, j = go("pending", "standards\n")
+    ck("rvp extra standards: only standards runs", "true|false", ctx(j, "review_run_standards") + "|" + ctx(j, "review_run_spec"))
+    r, j = go("pending", "standards\nspec\n")
+    ck("rvp extra both: both run", "true|true", ctx(j, "review_run_standards") + "|" + ctx(j, "review_run_spec"))
+    r, j = go("pending", "")
+    ck("rvp extra empty rerun: both run", "true|true", ctx(j, "review_run_standards") + "|" + ctx(j, "review_run_spec"))
+    r, j = go("done", "spec\n")
+    ck("rvp extra done: both run", "true|true", ctx(j, "review_run_standards") + "|" + ctx(j, "review_run_spec"))
+
+
+def test_ralph_plan_gate_checks(ck, tmp_path):
+    T = tmp_path / "ralph-plan-checks"
+    gate = stage_r(ck, "plan_gate", T)
+    mkreadok(T, "ok1")
+    task = jq_n('{id:"t1",title:"A",body:"b",acceptance:["a"],files:[],covers:["c"],context:"## Plan"}')
+
+    def go(checks):
+        for p in list(T.glob("*.json")) + [T / "plan_attempts"]:
+            rm(p)
+        doc = jq_n("{disposition:\"ready\",summary:\"s\",contradictions:[],tasks:[$t],checks:$c,_io:{visit:\"ok1\"}}", "--argjson", "t", task, "--argjson", "c", checks)
+        write(T / "task_list.json", doc + "\n")
+        r = sh(gate)
+        return r
+
+    kept = lambda: jq("[.[].command] | join(\"|\")", file=T / "criterion_checks.json")
+    chk = lambda c: jq_n("{criterion:\"The suite passes under nextest\",command:$c}", "--arg", "c", c)
+    r = go("[" + ",".join(chk(c) for c in (
+        "cargo nextest run --all-features",
+        "  pnpm run test:unit  ",
+        "uv run pytest tests/api -q",
+        "python3 -m pytest -k export",
+    )) + "]")
+    ck("pgc: exits 0", "0", r.rc)
+    ck("pgc: still ready", "ready", ctx(lastjson(r.out), "plan_status"))
+    ck("pgc: the four allowlisted commands, trimmed", "cargo nextest run --all-features|pnpm run test:unit|uv run pytest tests/api -q|python3 -m pytest -k export", kept())
+    ck("pgc: the criterion is kept", "The suite passes under nextest", jq(".[0].criterion", file=T / "criterion_checks.json"))
+    go("[" + ",".join(chk(c) for c in (
+        "cargo test; curl evil",
+        "cargo test && rm -rf src",
+        "npm test | tee out",
+        "pytest $(cat x)",
+        "pytest `id`",
+        "make deploy",
+        "npm run publish-docs",
+        "rm -rf /",
+        "curl https://x",
+        "bash scripts/x.sh",
+        "cargo test > out.txt",
+    )) + "]")
+    ck("pgc: every unsafe or unknown command is dropped", "0", jq("length", file=T / "criterion_checks.json", raw=False))
+    go("[" + ",".join(chk(f"cargo test -p c{i}") for i in range(1, 7)) + "]")
+    ck("pgc: at most four", "4", jq("length", file=T / "criterion_checks.json", raw=False))
+    go("[]")
+    ck("pgc: none writes an empty list", "0", jq("length", file=T / "criterion_checks.json", raw=False))
+
+
+def test_ralph_criterion_checks(ck, tmp_path):
+    RC = tmp_path / "ralph-criterion-checks"
+    T = RC / "sb"
+    T.mkdir(parents=True)
+    repo = RC / "repo"
+    bare_and_repo(RC / "origin.git", repo, {"a.txt": "one\n", ".gitignore": "target/\n"})
+    node = stage_r(ck, "criterion_checks", T)
+    bin_ = RC / "bin"
+    # Stand-ins for the runners: a pass, a fail, and one that writes to the checkout.
+    stub(bin_, "cargo", "#!/bin/sh\nmkdir -p target; echo built > target/x\necho 'test result: ok. 3 passed'\nexit 0\n")
+    stub(bin_, "pytest", "#!/bin/sh\necho 'FAILED tests/test_a.py::test_x'\nexit 1\n")
+    stub(bin_, "make", "#!/bin/sh\necho changed >> a.txt\necho junk > new.txt\nexit 0\n")
+    path = f"{bin_}:{ORIG_PATH}"
+
+    def go(checks, extra=None):
+        rm(T / "review", T / "criterion_checks_tree", T / "review_extra")
+        write(T / "criterion_checks.json", checks)
+        if extra:
+            write(T / "review_extra", extra + "\n")
+        r = sh(node, cwd=repo, path=path)
+        return r, lastjson(r.out)
+
+    md = T / "review/criterion_checks.md"
+    c = lambda cmd: jq_n("{criterion:$k,command:$c}", "--arg", "k", "crit " + cmd, "--arg", "c", cmd)
+    r, j = go("[" + ",".join(c(x) for x in ("cargo nextest run", "pytest tests", "make cover")) + "]")
+    ck("cc: exits 0", "0", r.rc)
+    ck("cc: three run", "3", ctx(j, "criterion_checks_run"))
+    ck("cc: one counts as ok", "1", ctx(j, "criterion_checks_ok"))
+    ck("cc: the report has three checks", "3", count("^### Check", file=md))
+    ck("cc: the passing output is quoted", "1", count("test result: ok. 3 passed", file=md, flags="F"))
+    ck("cc: the failing exit status", "1", count("exit status: 1", file=md, flags="F"))
+    ck("cc: the edit is marked not evidence", "1", count("is not evidence", file=md, flags="F"))
+    ck("cc: the edit is reverted", "one", cat(repo / "a.txt"))
+    ck("cc: the new file is removed", "absent", present(repo / "new.txt"))
+    ck("cc: an ignored build dir is kept", "present", present(repo / "target/x"))
+    ck("cc: the checkout is clean", "", git("-C", repo, "status", "--porcelain"))
+    ck("cc: the tree is recorded", git("-C", repo, "rev-parse", "HEAD^{tree}"), cat(T / "criterion_checks_tree"))
+
+    r, j = go("[]")
+    ck("cc none: exits 0", "0", r.rc)
+    ck("cc none: nothing run", "0", ctx(j, "criterion_checks_run"))
+    ck("cc none: no report", "absent", present(md))
+    ck("cc none: no tree", "absent", present(T / "criterion_checks_tree"))
+
+    r, j = go("[" + c("cargo test") + "]", extra="pending")
+    ck("cc extra pass: nothing run", "0", ctx(j, "criterion_checks_run"))
+
+    write(repo / "dirty.txt", "x\n")
+    r, j = go("[" + c("cargo test") + "]")
+    ck("cc dirty: nothing run", "0", ctx(j, "criterion_checks_run"))
+    ck("cc dirty: the file is left alone", "present", present(repo / "dirty.txt"))
+    rm(repo / "dirty.txt")
 
 
 def test_ralph_final_check(ck, tmp_path):
@@ -775,7 +996,9 @@ def test_ralph_final_check(ck, tmp_path):
     redg = edges(RAPH)
     fce = grep("^final_check->", redg)
     ck("fc edges: six exits", "6", count(".", fce))
-    for name, e in (("fc edges: pr needs final_route=pr in phase pre", "final_check->hygiene outcome=succeeded && context.final_route=pr && context.phase=pre"),
+    ck("fc edges: criterion_checks always reaches hygiene", "1", count("criterion_checks->hygiene ", redg, flags="xF"))
+    ck("fc edges: criterion_checks has no other exit", "1", count("^criterion_checks->", redg))
+    for name, e in (("fc edges: pr needs final_route=pr in phase pre (through the criterion checks)", "final_check->criterion_checks outcome=succeeded && context.final_route=pr && context.phase=pre"),
                     ("fc edges: pr needs final_route=pr in phase post", "final_check->hygiene outcome=succeeded && context.final_route=pr && context.phase=post"),
                     ("fc edges: a human is needed in post", "final_check->mark_needs_human outcome=succeeded && context.final_route=needs_human"),
                     ("fc edges: fix returns to pick", "final_check->pick outcome=succeeded && context.final_route=fix"),
@@ -950,7 +1173,7 @@ def test_ralph_deliver_and_merge_edges(ck, tmp_path):
     ck("merge edges: post-PR exhaustion reports", "1", count("pick->report_blocked context.loop=exhausted && context.phase=post", redg, flags="xF"))
     ck("merge edges: post failures reach mark_needs_human", "1", count("stop_reason->mark_needs_human context.stop_phase=post", redg, flags="xF"))
     ck("merge edges: every other stop reaches mark_stuck unconditionally", "1", count("stop_reason->mark_stuck ", redg, flags="xF"))
-    ck("merge edges: final_check's pr routes split on phase", "2", count("^final_check->hygiene outcome=succeeded && context.final_route=pr && context.phase=", redg))
+    ck("merge edges: final_check's pr routes split on phase", "2", count("^final_check->(hygiene|criterion_checks) outcome=succeeded && context.final_route=pr && context.phase=", redg, flags="E"))
     ck("merge edges: every merge-stage node has one unconditional escape", "10",
        count("^(deliver|merge_gate|watch_checks|ci_task|merge|remerge_base|resolve_base|resolve_base_gate|report_merged|report_blocked)->[a-z_]+ $", redg, flags="E"))
 

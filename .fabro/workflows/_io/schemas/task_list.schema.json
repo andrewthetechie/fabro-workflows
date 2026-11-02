@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "task_list",
   "title": "task_list — the ralph plan's Task list and its disposition (docs/ralph C2)",
-  "description": "The ralph plan agent's output. It encodes plan_gate's shape checks at the structural level: the disposition enum, non-empty strings on every contradiction field, and the seven Task fields with a non-empty acceptance list and a 12,000-byte context. The cross-field rules (tasks only for ready, contradictions only for contradiction, unique ids, the remainder split at 8) are gate checks and stay in plan_gate, because a schema cannot see the other fields. _io is stamped by the server.",
+  "description": "The ralph plan agent's output. It encodes plan_gate's shape checks at the structural level: the disposition enum, non-empty strings on every contradiction field, and the seven Task fields with a non-empty acceptance list and a 12,000-byte context, and at most four criterion checks. The cross-field rules (tasks only for ready, contradictions only for contradiction, unique ids, the remainder split at 8) are gate checks and stay in plan_gate, because a schema cannot see the other fields. _io is stamped by the server.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["disposition", "summary", "contradictions", "tasks"],
+  "required": ["disposition", "summary", "contradictions", "tasks", "checks"],
   "properties": {
     "disposition": {
       "enum": ["ready", "redundant", "invalid", "contradiction", "needs_human"],
@@ -27,6 +27,25 @@
           "criterion": { "type": "string", "minLength": 1 },
           "non_goal": { "type": "string", "minLength": 1 },
           "needed_surface": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "maxItems": 4,
+      "description": "Commands that prove an acceptance criterion .fabro/ci.sh does not prove: a command the issue names that ci.sh does not run, or a figure (coverage, a size, a count) that nothing prints. [] when ci.sh and the code settle every criterion. plan_gate keeps the allowlisted ones, criterion_checks runs them on the validated tree, and the Refuter reads their exit status and output.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "command"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1, "description": "The acceptance criterion, quoted from the issue." },
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "One command line, run from the repository root with sh -c: a test, lint, type-check or coverage runner (cargo, npm/pnpm/yarn/bun, npx, uv run, python -m, pytest, ruff, mypy, pyright, go, make, deno). No pipe, ;, &&, $, backtick, parenthesis or redirection, and nothing that writes to the checkout, deploys, publishes or installs."
+          }
         }
       }
     },

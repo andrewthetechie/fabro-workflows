@@ -1675,7 +1675,7 @@
               "name": "validation",
               "path": "/tmp/fabro/review/refute_validation.md",
               "required": true,
-              "about": "which validation passed on this exact tree, and the text of .fabro/ci.sh; says so when none is recorded"
+              "about": "which validation passed on this exact tree, the text of .fabro/ci.sh, and under ## Criterion checks the exit status and output of each command the plan named for a criterion ci.sh does not prove; says so when no validation is recorded"
             },
             {
               "name": "delta",
