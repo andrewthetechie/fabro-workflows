@@ -42,13 +42,14 @@ services:
       # bind one port while compose publishes another when the value is set in the
       # shell instead of ~/fabro/.env.
       SCHEDULER_PORT: "${SCHEDULER_PORT:-32280}"
-      # The ralph trial's share (ADR 0029 O2, O21): 0 or 50. 50 since the trial's
-      # switch on 2026-10-22 (docs/ralph/12): even, non-fast-path issue numbers go
-      # to `ralph`, everything else to `backlog`. The kill switch is 0: here and
+      # ralph's share (ADR 0029 O2, O21, O24): 0, 50 or 100. 50 from the trial's
+      # switch on 2026-10-22 (docs/ralph/12); 100 since the trial's result on
+      # 2026-11-02: every non-fast-path issue goes to `ralph`, and `fast-path` issues
+      # stay on `backlog`'s fast lane. 50 is the trial's parity split. The kill switch is 0: here and
       # `make deploy-compose deploy-scheduler`, or `SCHEDULER_RALPH_SHARE=0` in
       # ~/fabro/.env and `docker compose up -d --no-deps scheduler` on the host.
       # Either recreates only the scheduler; in-flight `ralph` runs finish.
-      SCHEDULER_RALPH_SHARE: "${SCHEDULER_RALPH_SHARE:-50}"
+      SCHEDULER_RALPH_SHARE: "${SCHEDULER_RALPH_SHARE:-100}"
       # z.ai's peak hours (ops/scheduler/src/fabro_scheduler/peak.py): weekdays
       # 14:00-18:00 Singapore time, which has no DST, so 06:00-10:00 UTC. Usage
       # off-peak costs 50% of the peak credit rate (docs.z.ai/devpack/overview, read

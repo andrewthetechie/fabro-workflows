@@ -202,9 +202,9 @@ def choose_workflow(issue: Issue, share: int) -> str:
 
     * `share` is 0 (the default, and the kill switch) -> always `backlog`;
     * `share` is 50 -> an EVEN issue number is `ralph`, an odd one `backlog`;
-    * a `fast-path` issue is always `backlog`, whatever its number: the fast lane is
-      `backlog`'s own feature (ADR 0023), and splitting it would compare two things
-      at once.
+    * `share` is 100 -> every issue is `ralph` (the trial's result, O24);
+    * a `fast-path` issue is always `backlog`, whatever its number or the share: the
+      fast lane is `backlog`'s own feature (ADR 0023), and O24 keeps it there.
 
     Parity is the issue's own number, so a Remainder issue or a Child issue takes
     the parity of ITS number, not its parent's. That is deliberate: the arms are
@@ -219,6 +219,8 @@ def choose_workflow(issue: Issue, share: int) -> str:
         return "backlog"
     if "fast-path" in issue.labels:
         return "backlog"
+    if share == 100:
+        return "ralph"
     return "ralph" if issue.number % 2 == 0 else "backlog"
 
 

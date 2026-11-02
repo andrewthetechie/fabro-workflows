@@ -133,9 +133,10 @@ ssh andrew@10.10.0.32 'cd ~/fabro && docker compose exec -T fabro fabro events <
 bug surfaces. The coder scheduler is the only producer of `backlog` runs. Fire a run by
 hand only with `~/bin/fabro-fire-pr-review.sh <owner/repo> <pr>`,
 `~/bin/fabro-fire-backlog.sh <owner/repo> <issue>` or
-`~/bin/fabro-fire-ralph.sh <owner/repo> <issue>`. The scheduler routes an issue to
-`ralph` instead of `backlog` only while `SCHEDULER_RALPH_SHARE=50` (ADR 0029 O2), which
-`ops/docker-compose.yaml` sets since the trial's switch on 2026-10-22; 0 is the kill switch. A `dependabot-<repo>` run fires through
+`~/bin/fabro-fire-ralph.sh <owner/repo> <issue>`. The scheduler routes every issue that is
+not `fast-path` to `ralph` while `SCHEDULER_RALPH_SHARE=100`, which `ops/docker-compose.yaml`
+has set since the trial's result on 2026-11-02 (ADR 0029, O24). `fast-path` issues always run
+`backlog`. 50 is the trial's parity split, and 0 is the kill switch. A `dependabot-<repo>` run fires through
 its `api:manual` trigger (task 10 records the command). A `merge-queue-<repo>` run fires from its
 schedule (every 20 minutes, created disabled) or its `api:manual` trigger; it takes no input. A `scout-<repo>` run fires from its daily schedule (created disabled) or its `api:manual` trigger, and it takes no input. `docs/agents/server.md` says why the
 automation endpoint cannot carry the input, and covers the scheduler.

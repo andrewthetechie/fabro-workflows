@@ -892,6 +892,11 @@ def test_an_agent_shaped_ending_is_not_dispatched_again(config, store, leases, f
         # which is how the graph's own lane check reads it too.
         (50, 10, frozenset({"agent", "Fast-Path"}), "ralph"),
         (50, 11, frozenset({"agent", "review"}), "backlog"),
+        # 100, since the trial's result (ADR 0029 O24): every issue but the fast lane's.
+        (100, 2, frozenset({"agent"}), "ralph"),
+        (100, 3, frozenset({"agent"}), "ralph"),
+        (100, 5, frozenset({"agent", "fast-path"}), "backlog"),
+        (100, 6, frozenset({"agent", "fast-path"}), "backlog"),
     ],
 )
 def test_choose_workflow(share, number, labels, expected):

@@ -58,13 +58,13 @@ DEFAULT_STARVATION_CEILING_SECONDS = 4 * 60 * 60
 # Decision 8: GitHub every 60s, conditionally.
 DEFAULT_GITHUB_POLL_SECONDS = 60
 
-# The `ralph` trial's share of the queue (ADR 0029 D2, O2, O21). Only 0 and 50 are
-# allowed: 0 is the kill switch, 50 is the trial's issue parity. A percentage is not
-# a knob to tune mid-trial, because every value in between changes what the two arms
-# are compared on. When `ralph` wins the trial the share becomes a lane decision of
-# its own series, not a third value here.
+# `ralph`'s share of the queue (ADR 0029 D2, O2, O21, O24). Only 0, 50 and 100 are
+# allowed: 0 is the kill switch (every issue to `backlog`), 50 is the trial's issue
+# parity, and 100 is the trial's result (2026-11-02): every issue to `ralph` except a
+# `fast-path` one, which is `backlog`'s fast lane at every share. A percentage is not a
+# knob: a value in between would make the arm a coin toss that no run's history records.
 DEFAULT_RALPH_SHARE = 0
-RALPH_SHARES = (0, 50)
+RALPH_SHARES = (0, 50, 100)
 
 # The provider's peak hours (`peak.py`): no new dispatch from `lead` minutes before a
 # window opens until it closes. Off when unset, so a test or a fresh host never blocks
@@ -357,7 +357,7 @@ class SchedulerConfig:
     run_probe_seconds: int = DEFAULT_RUN_PROBE_SECONDS
     scorecard_seconds: int = DEFAULT_SCORECARD_SECONDS
     automation_author: str = DEFAULT_AUTOMATION_AUTHOR
-    # 0 or 50; see `DEFAULT_RALPH_SHARE`. Read by `choose_workflow`.
+    # 0, 50 or 100; see `DEFAULT_RALPH_SHARE`. Read by `choose_workflow`.
     ralph_share: int = DEFAULT_RALPH_SHARE
     # When dispatch pauses for the provider's peak hours; see `peak.py`. Off by default.
     peak_hours: PeakHours = field(default_factory=PeakHours)
@@ -607,12 +607,11 @@ def _env_str(environ: Mapping[str, str], key: str, default: str) -> str:
 
 
 def _env_ralph_share(environ: Mapping[str, str]) -> int:
-    """`SCHEDULER_RALPH_SHARE`: 0 (the default, and the kill switch) or 50.
+    """`SCHEDULER_RALPH_SHARE`: 0 (the default, and the kill switch), 50 or 100.
 
     Anything else — `25`, `yes`, `-1`, an empty-but-present value — is a
-    `ConfigError` naming the key. A share the trial never validated is worse than no
-    trial at all: the two arms would stop being comparable, and nothing in a run's
-    history says which share produced it.
+    `ConfigError` naming the key: nothing in a run's history says which share
+    produced it, so the arm must follow from the issue alone.
     """
     key = "SCHEDULER_RALPH_SHARE"
     raw = environ.get(key, "").strip()
@@ -622,7 +621,7 @@ def _env_ralph_share(environ: Mapping[str, str]) -> int:
         value = int(raw)
     except ValueError as exc:
         raise ConfigError(
-            f"{key}: {raw!r} is not an integer; use 0 (off) or 50 (the trial)"
+            f"{key}: {raw!r} is not an integer; use 0 (off), 50 (the trial) or 100"
         ) from exc
     if value not in RALPH_SHARES:
         raise ConfigError(
