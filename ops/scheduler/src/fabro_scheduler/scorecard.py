@@ -42,8 +42,15 @@ WEEK = timedelta(days=7)
 ARCHITECTURE_LABEL = "architecture"
 
 # The first pattern that matches a held PR's `**Reason:**` text names its bucket.
-# Ordered most specific first. Every string the merge gate, the merge phase and the
-# merge queue can write is covered (see `_shared/review-merge` and `merge-queue`).
+# Ordered most specific first. A reason no pattern matches lands in `other`, which the
+# retro lists with samples so the text can be given a bucket here (#62). The bucket is
+# computed from the stored reason each time, so a new pattern re-classifies past weeks.
+#
+# `review needs human` is `merge_gate` check 7 (`fix_result.outcome` is not mergeable).
+# Its text keeps the reason the review wrote after a colon, so it sits after the buckets
+# that reason may name (`refuter`, `unfixed findings`) and before `CI`, whose `checks?`
+# would claim prose. `stage failed` is `mark_needs_human`'s "<stage> failed (<category>)"
+# without "timed out", which `timeout` claims first.
 REASON_BUCKETS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("architecture", re.compile(r"Architecture issue|label architecture", re.I)),
     ("do-not-merge", re.compile(r"do-not-merge", re.I)),
@@ -52,6 +59,7 @@ REASON_BUCKETS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("risk", re.compile(r"risk rating", re.I)),
     ("authorship", re.compile(r"not authored by the automation|agent-authored", re.I)),
     ("unfixed findings", re.compile(r"unfixed findings|error-severity finding", re.I)),
+    ("review needs human", re.compile(r"did not end in a mergeable state", re.I)),
     ("review threads", re.compile(r"requested changes|unresolved review", re.I)),
     ("auto-merge off", re.compile(r"auto-merge is (switched )?off", re.I)),
     (
@@ -64,6 +72,7 @@ REASON_BUCKETS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     ("CI", re.compile(r"\bCI\b|checks?\b", re.I)),
     ("timeout", re.compile(r"timed out|did not finish|still running", re.I)),
+    ("stage failed", re.compile(r"\bfailed \([a-z_]+\)", re.I)),
     ("unspecified", re.compile(r"unspecified|no reason was recorded", re.I)),
 )
 
