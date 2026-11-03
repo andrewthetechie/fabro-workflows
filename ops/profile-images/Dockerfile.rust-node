@@ -67,6 +67,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends git jq curl xz-
   && gh --version && cargo -V && node -v && npm -v
 
 # ---------------------------------------------------------------------------
+# cargo-nextest -- writers-app's test runner
+# ---------------------------------------------------------------------------
+# writers-app's `.github/workflows/ci.yml` runs `cargo nextest run --all-features
+# --profile ci`, and its `.fabro/ci.sh` is meant to mirror CI (issue #57). `cargo
+# test` is not a substitute: that repository's `.config/nextest.toml` defines
+# `[profile.ci]` (retries, flaky-result handling, the JUnit report), and nextest
+# runs each test in its own process. Without this binary `cargo nextest` exits 101
+# "no such command: `nextest`", and under `set -euo pipefail` in ci.sh that is
+# every writers-app `validate` failing on a fault no code change can fix.
+#
+# Pinned by version and sha256 from the prebuilt release tarball, never
+# `cargo install` (a multi-minute compile) and never "latest": the tarball holds
+# one file, `cargo-nextest`, which is what cargo looks up on PATH for the
+# `cargo nextest` subcommand. Bump the pair together -- a bump of only one of them
+# fails the `sha256sum -c` below, and `build-images.sh` reads NEXTEST_VERSION back
+# out of this file and re-asserts `cargo nextest --version` in the built image.
+#
+# It sits AFTER the warm layers, which it does not touch, so a pin bump
+# invalidates this layer alone instead of re-running codegraph, the npm warm and
+# the 1.2 GB registry copy.
+ARG NEXTEST_VERSION=0.9.151
+ARG NEXTEST_SHA256=1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+
+# ---------------------------------------------------------------------------
 # Codegraph -- the code index backend (ADR 0014 / docs/code-context C5)
 # ---------------------------------------------------------------------------
 # Pinned by version and sha256; `codegraph upgrade` and the upstream install.sh
@@ -104,6 +128,14 @@ RUN cd /tmp/warm/repo \
 
 COPY --from=cargo-warm /usr/local/cargo/registry /usr/local/cargo/registry
 RUN du -sh /opt/cache/npm "$CARGO_HOME/registry"
+
+# cargo-nextest (see the ARG definitions above). Deliberately after the warm
+# layers: nothing here touches them, so a version bump re-runs this layer alone.
+RUN curl -fsSL -o /tmp/nextest.tgz "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+ && echo "${NEXTEST_SHA256}  /tmp/nextest.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/nextest.tgz -C /usr/local/bin cargo-nextest \
+ && rm /tmp/nextest.tgz \
+ && cargo nextest --version
 
 # The wrapper agents call instead of codegraph directly (docs/code-context C2).
 COPY fabro-code /usr/local/bin/fabro-code

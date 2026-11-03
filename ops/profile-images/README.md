@@ -10,7 +10,7 @@ dependency caches, and — where its tests need one — a PostgreSQL server.
 | `python` | jelly-swipe | `fabro-python:local` | `python:3.13.15-trixie` | python 3.13.15, **node 20.19.5**, uv | — |
 | `python-node` | lawncare-saas | `fabro-python-node:local` | `node:22.23.2-bookworm-slim` | node 22.23.2, uv + **baked CPython 3.13** | **PostgreSQL 17** |
 | `ts` | womens-fantasy-sports | `fabro-ts:local` | `oven/bun:1.4.2` | bun 1.4.2, **uv + baked CPython 3.14** | **PostgreSQL 18** |
-| `rust-node` | writers-app | `fabro-rust-node:local` | `rust:1.98.1-trixie` | rust 1.99.0 (rustup over base), **node 22.23.2** | — |
+| `rust-node` | writers-app | `fabro-rust-node:local` | `rust:1.98.1-trixie` | rust 1.99.0 (rustup over base), **node 22.23.2**, cargo-nextest 0.9.151 | — |
 
 Every image contains `git`, `jq`, `gh` (v2.100.0), `bash`, `rg`, `fabro-code` and `fabro-io`:
 the clone stage needs `git`, the gates need `jq`, the acquire/claim/validate/open_pr stages need `gh`,
@@ -29,7 +29,13 @@ repo could use.
 The fourth followed on 2026-10-03: fabro-ts had only bun, so vitest ran on Bun's
 runtime and every womens-fantasy-sports frontend test failed in worker setup once
 vitest reached 5.0.1. The repo's CI pins node 24 for that job, and so does the image.
-The verify step's tools check fails a fabro-ts build with no real Node.
+The verify step's tools check fails a fabro-ts build with no real Node. `fabro-rust-node`
+carries `cargo-nextest` pinned to 0.9.151 for the same reason: writers-app's `ci.yml`
+runs `cargo nextest run --all-features --profile ci`, so that repository's `.fabro/ci.sh`
+must be able to run the same command (#57). writers-app installs it through
+`taiki-e/install-action@nextest`, which resolves to whatever is current when the job
+runs; the image pins instead, and `build-images.sh`'s tools check compares the installed
+version to the `NEXTEST_VERSION` in `Dockerfile.rust-node`.
 
 ## Building
 
@@ -54,8 +60,8 @@ Nightly, clear of the schedules:
 A failed build leaves the previous image tagged and in use, so a bad night
 degrades to yesterday's cache rather than to a missing environment.
 
-These Dockerfiles pin `linux_amd64` for the `gh` and `node` tarballs. On an arm64
-host, change those URLs (and re-verify) before building.
+These Dockerfiles pin `linux_amd64` for the `gh`, `node` and `cargo-nextest`
+tarballs. On an arm64 host, change those URLs (and re-verify) before building.
 
 ## The offline gate
 
@@ -163,6 +169,8 @@ See `../../docs/perf/02-repo-contract-changes.md` for the per-repository diffs.
 ```sh
 docker run --rm --entrypoint bash fabro-python:local -c \
   'git --version; jq --version; gh --version | head -1; node -v; python3 -V; uv --version'
+docker run --rm --entrypoint bash fabro-rust-node:local -c \
+  'cargo -V; rustc -V; cargo nextest --version; node -v'
 docker inspect fabro-python:local --format '{{index .Config.Labels "fabro.warmed-from"}}'
 ```
 

@@ -60,6 +60,13 @@ FABRO_IO_BIN="$WORK/fabro-io-bin"
 SCHEMAS=$(cd "$HERE/.." && pwd)/fabro-io-schemas
 [ -d "$SCHEMAS" ] || SCHEMAS=$(cd "$HERE/../.." && pwd)/.fabro/workflows/_io/schemas
 
+# cargo-nextest is installed only in Dockerfile.rust-node, and only that image's tools
+# check looks for it. The pin lives there, in one place; read it back so the verify
+# step cannot claim a version the image was not built with (writers-app's ci.sh runs
+# `cargo nextest`, so a missing or mismatched binary fails every run of that
+# repository at validate -- issue #57).
+NEXTEST_VERSION=$(sed -n 's/^ARG NEXTEST_VERSION=//p' "$HERE/Dockerfile.rust-node")
+
 # To stderr, not stdout: sync_repo and assemble_context are read with $(...)
 # and anything they print on stdout becomes part of the sha or the context path.
 log() { printf '%s  %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
@@ -225,14 +232,30 @@ verify_image() {
   # real Node wherever a `node` is on PATH. fabro-ts once had no Node, so vitest ran
   # on Bun's runtime and every womens-fantasy-sports validate failed in worker
   # setup (docs/coder-tweaks result-2026-10-03.txt). fabro-ts must have Node.
+  # fabro-rust-node must carry the pinned cargo-nextest: writers-app's ci.sh calls
+  # `cargo nextest`, which cargo dispatches to `cargo-nextest` on PATH and which
+  # exits 101 when it is absent.
   log "verify $tag: tools check, offline"
-  if docker run --rm --network=none --entrypoint bash "$tag" -c '
+  if docker run --rm --network=none -e NEXTEST_VERSION="$NEXTEST_VERSION" --entrypoint bash "$tag" -c '
         set -eu
         rg --version | head -1
         if [ "'"$tag"'" = fabro-ts:local ]; then command -v node >/dev/null || { echo "no node"; exit 1; }; fi
         if command -v node >/dev/null; then
           node -e "process.exit(process.versions.bun ? 1 : 0)" || { echo "node is a bun shim"; exit 1; }
           echo "node $(node -v)"
+        fi
+        if [ "'"$repo"'" = writers-app ]; then
+          # Keyed on the repository, not the tag: a tag rename would otherwise
+          # skip this check silently, which is the drift it exists to catch.
+          [ -n "${NEXTEST_VERSION:-}" ] || { echo "no NEXTEST_VERSION in Dockerfile.rust-node"; exit 1; }
+          # The release binary prints a release line with its commit and date
+          # ("cargo-nextest 0.9.151 (6b3f99457 2026-11-02)") and then four more
+          # lines; only the first is the version.
+          got=$(cargo nextest --version 2>&1 | head -1)
+          case "$got" in
+            "cargo-nextest ${NEXTEST_VERSION}"|"cargo-nextest ${NEXTEST_VERSION} "*) echo "nextest ${NEXTEST_VERSION}" ;;
+            *) echo "nextest: ${got:-<nothing>} (want cargo-nextest ${NEXTEST_VERSION})"; exit 1 ;;
+          esac
         fi
       ' >"$WORK/verify-tools-$repo.log" 2>&1; then
     log "verify $tag: tools OK ($(tr '\n' ' ' <"$WORK/verify-tools-$repo.log"))"
