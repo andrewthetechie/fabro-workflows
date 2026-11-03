@@ -448,7 +448,17 @@ fi"]
     // assertion (assert x == y, expect(x).toEqual(...), assert_eq!(x, ...)) on a subject
     // that removal checked -- two asserts merged into one stronger one. A removal whose
     // subject no added assertion mentions still counts. eqsubj/rsubj define the two
-    // subjects; the prefixes . and [ keep `outbox` from matching `out`.
+    // subjects; the prefixes . and [ keep `outbox` from matching `out`. The jest call
+    // matchers (toHaveBeenCalledWith and its family) count as that stronger assertion too.
+    //
+    // #62, three false positives the counters used to report (31 held PRs read):
+    //   - a comment line, a Rust `#[expect(` lint attribute, and the words assertion(s),
+    //     asserted, asserts and asserting in prose are not assertions (isassert);
+    //   - an identical assertion added in ANOTHER hunk excuses a removal as a move only
+    //     while that hunk adds more assertions than it removes (RC). Without that, edits
+    //     that shift expected values (0 -> 1, 1 -> 2) took each other's additions;
+    //   - a removed `expect(x).toHaveBeenCalled()` beside an added
+    //     `expect(x).toHaveBeenCalledWith(...)` is a strengthening (eqsubj).
     //
     // It prints no routing object and never chooses a route. A failure to COUNT is
     // written into hygiene.json as `hygiene_error`, which blocks the merge; only a failure
@@ -495,6 +505,11 @@ function skipped(f) { return ex != \"\" && f ~ ex }
 function assertish(f) { return istest(f) || f ~ /[.]rs$/ }
 function emit(c, f, n, t) { print c S f S n S substr(t, 1, 160) }
 function trim(s) { gsub(/^ +| +$/, \"\", s); return s }
+function isassert(t,  s) {  # #62: not a comment line, a Rust #[expect( / #![expect( lint attribute, or the word assertion(s)/asserted/asserts in prose
+  if (t ~ COMMENT) return 0
+  s = t; gsub(/#!?[[]expect[(]/, \" \", s); gsub(PROSE, \" \", s)
+  return s ~ ASSERT
+}
 function akey(s) { gsub(WS, \"\", s); return s }
 function subjmatch(rs, es,  c) {  # equal, or rs a member or attribute of es; `outbox` never matches `out` (#38)
   if (rs == \"\" || es == \"\") return 0
@@ -503,7 +518,7 @@ function subjmatch(rs, es,  c) {  # equal, or rs a member or attribute of es; `o
   return 0
 }
 function eqsubj(t,  s, p, q) {  # subject of an added `assert x == y`, `expect(x).toEqual(...)` or `assert_eq!(x, ...)`; empty for any other added line (#38)
-  if (match(t, /expect[(][^()]*[)][.]to(Be|Equal|StrictEqual)[(]/)) { s = substr(t, RSTART + 7); p = index(s, \")\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /expect[(][^()]*[)][.]to(Be|Equal|StrictEqual|HaveBeenCalledWith|HaveBeenCalledTimes|HaveBeenLastCalledWith|HaveBeenNthCalledWith|HaveBeenCalledOnceWith|HaveBeenCalledExactlyOnceWith)[(]/)) { s = substr(t, RSTART + 7); p = index(s, \")\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
   if (match(t, /(assert_eq!|assertEqual|assertEquals)[(]/)) { s = substr(t, RSTART + RLENGTH); p = index(s, \",\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
   if (match(t, /assert +/)) {
     s = substr(t, RSTART + RLENGTH); q = index(s, \"==\")
@@ -523,11 +538,12 @@ function rsubj(t,  s, p, q) {  # subject a removed assertion checked: isinstance
   }
   return \"\"
 }
-function flush(  i, j, k, h, e, ok) {
+function flush(  i, j, k, h, g, e, ok) {
   for (i = 1; i <= rn; i++) {
-    k = rk[i]
-    if (AN[k] > 0) { HA[AH[k, AN[k]]]--; AN[k]--; moved[i] = 1; continue }
-    h = rh[i]; ok = 0
+    k = rk[i]; h = rh[i]
+    for (j = AN[k]; j >= 1; j--) { g = AH[k, j]; if (g == h || HA[g] > RC[g]) break }  # #62: an addition in another hunk is a move only from that hunk surplus
+    if (j >= 1) { HA[g]--; AH[k, j] = AH[k, AN[k]]; AN[k]--; moved[i] = 1; continue }
+    ok = 0
     for (j = 1; j <= EQL[h]; j++) {  # #38: a removal the added equality assertion of this hunk covers by subject is not a removal
       e = EQS[h, j]
       if (subjmatch(rsj[i], e)) {
@@ -568,6 +584,8 @@ BEGIN {
   SKIP_ANY = \"#[[]ignore[]]|@pytest[.]mark[.](skip|xfail)|pytest[.](skip|xfail)[(]|@unittest[.]skip|@(Disabled|Ignore)([^a-zA-Z]|$)\"
   SKIP_TEST = \"(^|[^a-zA-Z0-9_])(it|describe|test|context|suite)[.](skip|only|todo)[(]|(^|[^a-zA-Z0-9_.])x(it|describe|test)[(]\"
   ASSERT = \"(^|[^a-zA-Z0-9_])assert[a-zA-Z_]*[ .(!]|(^|[^a-zA-Z0-9_.])expect[(]\"
+  PROSE = \"(^|[^a-zA-Z0-9_])assert(ion|ions|ed|s|ing)([^a-zA-Z0-9_(!]|$)\"
+  COMMENT = \"^[ \" sprintf(\"%c\", 9) \"]*(//|/[*]|[*]( |/|$)|#( |$)|--( |$))\"
   TAUT = \"expect[(] *(true|false|null|undefined|[0-9]+) *[)]|(^|[^a-zA-Z0-9_])assert +(True|1 *== *1) *($|,|#)|assert![(] *true *[)]\"
   BROAD = \"except +(Exception|BaseException)( |:|$)|except *:|catch *([(][^)]*[)])? *[{] *[}]\"
   TYPE = \"#[ ]*type: *ignore|[ (]as any([^a-zA-Z0-9_]|$)|as unknown as|@ts-ignore|@ts-expect-error|cast[(] *Any\"
@@ -595,7 +613,7 @@ head { next }
   t = substr($0, 2)
   if (!skipped(file)) {
     if (t ~ SKIP_ANY || (istest(file) && t ~ SKIP_TEST)) emit(\"skips_added\", file, nl, t)
-    if (assertish(file) && t ~ ASSERT) { HA[hid]++; k = akey(t); AN[k]++; AH[k, AN[k]] = hid; e = eqsubj(t); if (e != \"\") { EQL[hid]++; EQS[hid, EQL[hid]] = e } }
+    if (assertish(file) && isassert(t)) { HA[hid]++; k = akey(t); AN[k]++; AH[k, AN[k]] = hid; e = eqsubj(t); if (e != \"\") { EQL[hid]++; EQS[hid, EQL[hid]] = e } }
     if (assertish(file) && (t ~ TAUT || same(t))) emit(\"tautologies_added\", file, nl, t)
     if (t ~ BROAD) emit(\"broad_except\", file, nl, t)
     if (t ~ TYPE) emit(\"type_escape\", file, nl, t)
@@ -608,7 +626,7 @@ head { next }
 }
 /^-/ {
   t = substr($0, 2)
-  if (!del && !skipped(file) && assertish(file) && t ~ ASSERT) { rn++; rf[rn] = file; rl[rn] = ol; rt[rn] = t; rh[rn] = hid; rk[rn] = akey(t); rsj[rn] = rsubj(t) }
+  if (!del && !skipped(file) && assertish(file) && isassert(t)) { RC[hid]++; rn++; rf[rn] = file; rl[rn] = ol; rt[rn] = t; rh[rn] = hid; rk[rn] = akey(t); rsj[rn] = rsubj(t) }
   ol++
   next
 }

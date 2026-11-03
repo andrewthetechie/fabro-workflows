@@ -268,7 +268,7 @@ def test_hygiene_config(ck, tmp_path):
 
 
 def test_hygiene_assertion_rules(ck, tmp_path):
-    """Cases 18-26: what does and does not count as a removed assertion."""
+    """Cases 18-30: what does and does not count as a removed assertion."""
     H = Hygiene(ck, tmp_path)
     wt = H.wt
     lines_to, hy_repo, commit, hy_run, hy, hy_base, hy_lint = H.lines_to, H.repo, H.commit, H.run, H.get, H.base, H.lint
@@ -331,6 +331,32 @@ def test_hygiene_assertion_rules(ck, tmp_path):
     hy_repo(); hy_base(*login)
     lines_to(wt / "tests/test_login.py", "def test_login():", "    assert out.state"); commit(); hy_run()
     ck("plain added assertion: still removed", "1", hy(".tamper.asserts_removed"))
+
+    # 27. #62: a Rust lint attribute and a comment are not assertions.
+    hy_repo()
+    hy_base("src/lib.rs", "#![expect(clippy::too_many_lines)]", "// the assertions below cover f", "#[expect(dead_code)]", "fn f() -> u8 { 1 }")
+    lines_to(wt / "src/lib.rs", "fn f() -> u8 { 1 }"); commit(); hy_run()
+    ck("rust #[expect( and a comment removed: not asserts", "0", hy(".tamper.asserts_removed"))
+
+    # 28. #62: the word in prose is not an assertion; a real one with it in a comment still is.
+    hy_repo()
+    hy_base("tests/test_p.py", "def test_p():", "    x = 1  # these assertions hold for x", "    assert x == 1  # assertions", "    y = 2")
+    lines_to(wt / "tests/test_p.py", "def test_p():", "    y = 2"); commit(); hy_run()
+    ck("prose assertions: only the real assert counts", "1", hy(".tamper.asserts_removed"))
+
+    # 29. #62: expected values that shift across hunks (0->1, 1->2, 2->3) are edits in place,
+    #     not one removal plus moves that steal the next hunk's addition.
+    hy_repo()
+    pa, pb = ("    pad_a = 1", "    pad_a2 = 1", "    pad_a3 = 1"), ("    pad_b = 1", "    pad_b2 = 1", "    pad_b3 = 1")
+    hy_base("tests/test_s.py", "def test_s():", "    assert_near(n, 0)", *pa, "    assert_near(n, 1)", *pb, "    assert_near(n, 2)")
+    lines_to(wt / "tests/test_s.py", "def test_s():", "    assert_near(n, 1)", *pa, "    assert_near(n, 2)", *pb, "    assert_near(n, 3)"); commit(); hy_run()
+    ck("shifted values across hunks: not removed", "0", hy(".tamper.asserts_removed"))
+
+    # 30. #62: two call assertions replaced by one stronger call matcher on the same subject.
+    hy_repo()
+    hy_base("web/b.test.ts", "function t() {", "  expect(onError).toHaveBeenCalled()", "  expect(onError).toHaveBeenCalledTimes(1)", "}")
+    lines_to(wt / "web/b.test.ts", "function t() {", "  expect(onError).toHaveBeenCalledWith('boom')", "}"); commit(); hy_run()
+    ck("stronger call matcher: not removed", "0", hy(".tamper.asserts_removed"))
 
 
 # ---------------------------------------------------------------------------
