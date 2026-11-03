@@ -17,7 +17,7 @@ locations instead.
 |---|---|
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). 0.362 no longer creates `fabro/meta/*`; it still sweeps the ones earlier versions left. Deterministic; see its header comments. |
 | `fabro-run-prune.sh` | Archives every `succeeded` `merge-queue` run, then deletes `merge-queue` runs older than 7 days with `fabro system prune --workflow merge-queue` (daily cron; ADR 0024 D8). The merge queue makes 288 runs a day and nothing else deletes them; archiving keeps them out of the run listing the fabro UI pages through. Dry run unless `DRY_RUN=0`. |
-| `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (daily cron). Deterministic; see its header comments. |
+| `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (hourly cron): the normal rule is a grace, and disk pressure overrides it, reaping oldest first until the root filesystem drops below a target (issue #50). Deterministic; see its header comments. |
 | `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
 | `fabro-retro.sh` | The weekly **retro** (Monday 12:00 UTC cron, issue #33 / ADR 0026): runs `python -m fabro_scheduler retro --last-week` in the scheduler container over the previous ISO week of `backlog` runs, files at most 3 issues a week in `andrewthetechie/fabro-workflows` for new **failure classes**, comments on known ones, and posts the scorecard summary plus the class totals to Discord. `DRY_RUN=1` by default: a dry run reads GitHub and posts the message but writes no issue, which is how the operator reviews it before going live. Contract: `../docs/factory-retro/00-overview-and-contracts.md`, `../docs/adr/0026-weekly-retro-files-issues.md`. |
 | `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
@@ -1543,12 +1543,17 @@ grows: `: > ~/.local/state/fabro-branch-sweep.log`.
 
 ```sh
 ( crontab -l 2>/dev/null; \
-  echo '43 4 * * * DRY_RUN=0 /home/andrew/bin/fabro-sandbox-sweep.sh >> /home/andrew/.local/state/fabro-sandbox-sweep.log 2>&1' \
+  echo '43 * * * * DRY_RUN=0 /home/andrew/bin/fabro-sandbox-sweep.sh >> /home/andrew/.local/state/fabro-sandbox-sweep.log 2>&1' \
 ) | crontab -
 ```
 
-04:43 daily, after the branch sweeper rather than alongside it — both are chatty and
-neither is urgent.
+Hourly at :43, so the 04:43 pass follows the 04:17 branch sweep. It replaced the daily
+04:43 pass on 2026-11-03 (issue #50): a fixed grace held 500 GB+ of writers-app `backlog`
+sandboxes on 2026-10-19 and the disk filled. The script is idempotent and cheap when
+nothing is past grace (one `keep` line per container, no removal), and a pressure pass now
+checks `df` every hour instead of once a day. Cron redirects the output, so a nonzero
+exit shows up as a `FAIL  disk pressure` line in
+`~/.local/state/fabro-sandbox-sweep.log`; that is the line to read.
 
 ```sh
 ( crontab -l 2>/dev/null; \
@@ -1682,20 +1687,42 @@ design: it is either an in-flight run or a sandbox someone deliberately restarte
 look inside, and killing the second one silently is worse than leaving it. It reports
 and moves on.
 
+A fixed grace alone could not protect this disk. On 2026-10-19 `/` filled: 383 stopped
+sandboxes held 724 GB reclaimable, 778 GB of it in writers-app `backlog` sandboxes at
+22–62 GB each, and the 04:43Z sweep removed 0 and kept 152 within grace. The grace is
+still the normal rule, and **disk pressure overrides it**: at `PRESSURE_PCT` (70) the
+sweep removes stopped sandboxes oldest `FinishedAt` first, ignoring the grace, re-reading
+`df` after each removal, until use is below `TARGET_PCT` (60). It never removes one
+stopped less than `MIN_GRACE_MINUTES` (30) ago — the sandbox of a run that just failed
+must still be openable — and if it cannot reach the target (typically the floor, or a
+failed remove) it logs `FAIL  disk pressure` and exits nonzero. Cron redirects both
+streams, so that log line is the signal; the monitor's C6 alert at 85% is the independent
+backstop. An oversized writable layer over `BIG_GB` (5) gets `BIG_GRACE_HOURS` (2)
+instead of `GRACE_HOURS` (24). `fabro-monitor.sh`'s C6
+alert stays at `DISK_PCT=85` on purpose: 70 is where the sweep acts, 85 is where a human
+is told it could not.
+
 `/storage/scratch` inside the server container accumulates the same way — 178
 directories, 9.6 MB. Left alone: at that rate it is not worth a script.
 
 ```sh
-DRY_RUN=1 ~/bin/fabro-sandbox-sweep.sh                 # default: dry run, 48h grace
+DRY_RUN=1 ~/bin/fabro-sandbox-sweep.sh                 # default: dry run, 24h grace
 DRY_RUN=0 ~/bin/fabro-sandbox-sweep.sh                 # remove
 DRY_RUN=0 GRACE_HOURS=168 ~/bin/fabro-sandbox-sweep.sh # keep a week of post-mortems
+DRY_RUN=1 PRESSURE_PCT=60 TARGET_PCT=50 ~/bin/fabro-sandbox-sweep.sh  # earlier pressure
 ```
+
+The dry run names the rule that would remove each container — `(grace)`, `(big)` or
+`(pressure)` — and its summary reports the bytes it would free and the `df` use before and
+simulated after. A real pass reports the same, with `df` re-read after the last removal.
 
 Skip rules (mechanical, no judgment): the name must be exactly
 `fabro-run-<26-char ULID>`, which is what keeps `fabro-fabro-1` and this host's
 unrelated `sandcastle-*` containers out of reach — a substring filter would not;
-running containers are never touched; anything stopped within `GRACE_HOURS` is kept,
-because the sandbox of the run that just failed is the one you want to open.
+running containers are never touched; containers that never ran are left alone; anything
+stopped within `MIN_GRACE_MINUTES` is kept even under pressure; and in normal mode
+anything stopped within its grace (`GRACE_HOURS`, or `BIG_GRACE_HOURS` when oversized) is
+kept, because the sandbox of the run that just failed is the one you want to open.
 
 ## Sweeper usage
 

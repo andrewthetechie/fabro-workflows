@@ -107,7 +107,10 @@
 #   ARCH_STUCK_HOURS=9            C4: the same limit for an arch-review run, which
 #                                 triages up to 18 issues and stops starting new
 #                                 ones at 6h (ADR 0012)
-#   DISK_PCT=85                   C6: df / use at or above this
+#   DISK_PCT=85                   C6: df / use at or above this. Deliberately above
+#                                 the sandbox sweep's PRESSURE_PCT (70): that is where
+#                                 the sweep acts, so this alert is for when it could not
+#                                 get below its target.
 #   FABRO_HOST=10.10.0.32
 #   FABRO_PORT=32276
 #   FABRO_CONTAINER=fabro-fabro-1

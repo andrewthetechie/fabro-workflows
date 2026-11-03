@@ -124,18 +124,184 @@ def test_fabro_sandbox_sweep(ck, tmp_path):
     stub(SW / "bin", "docker", """#!/bin/sh
 case "$1" in
   ps) printf 'fabro-run-01AAAAAAAAAAAAAAAAAAAAAAAA\\nfabro-run-01BBBBBBBBBBBBBBBBBBBBBBBB\\nfabro-run-01CCCCCCCCCCCCCCCCCCCCCCCC\\nfabro-fabro-1\\n' ;;
-  inspect) cat >/dev/null; echo "false 2020-01-01T00:00:00Z" ;;
+  inspect)
+    case "$2" in
+      --size) echo 1024 ;;
+      *) cat >/dev/null; echo "false 2020-01-01T00:00:00Z" ;;
+    esac ;;
   rm) cat >/dev/null; echo "rm $2" >> "$SW_LOG" ;;
 esac
 exit 0
 """)
     # The sweep is GNU-only (`date -d`); this stub lets it run here. The FinishedAt is in 2020.
     stub(SW / "bin", "date", '#!/bin/sh\n[ "$1" = "-d" ] && { echo 1577836800; exit 0; }\nexec /bin/date "$@"\n')
+    # Under pressure the real host disk would be read; keep this test about stdin only.
+    stub(SW / "bin", "df", '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted"\necho "/dev/x 1000000 500000 500000 50% /"\n')
     log = write(SW / "log", "")
     sh(REPO_ROOT / "ops/fabro-sandbox-sweep.sh", path=f"{SW / 'bin'}:{ORIG_PATH}",
        env={"SW_LOG": log, "DRY_RUN": "0", "GRACE_HOURS": "0"})
     ck("fabro-sandbox-sweep: a docker call that reads stdin does not end the pass", "3", count("^rm fabro-run-", file=log))
     ck("fabro-sandbox-sweep: never removes fabro-fabro-1", "0", count("fabro-fabro-1", file=log))
+
+
+# ---------------------------------------------------------------------------
+# fabro-sandbox-sweep.sh, the disk-pressure rules (issue #50): grace below the
+# threshold, oldest-first pressure above it, the minimum-age floor, and the big
+# writable-layer cap. docker, df and date are stubs; only the host script runs.
+# ---------------------------------------------------------------------------
+SWEEP_DOCKER = """#!/bin/sh
+case "$1" in
+  ps) cut -d'|' -f1 "$SW_CONTAINERS" ;;
+  inspect)
+    if [ "$2" = "--size" ]; then
+      name=$5
+    else
+      name=$2
+    fi
+    line=$(grep -F "$name|" "$SW_CONTAINERS")
+    if [ "$2" = "--size" ]; then
+      printf '%s\\n' "$(printf '%s' "$line" | cut -d'|' -f4)"
+    else
+      printf '%s %s\\n' "$(printf '%s' "$line" | cut -d'|' -f2)" "$(printf '%s' "$line" | cut -d'|' -f3)"
+    fi ;;
+  rm)
+    name=$2
+    printf '%s\\n' "$name" >> "$SW_RM"
+    # A pressure test can say what df reads after each removal: one percentage per line.
+    if [ -s "$SW_DF_STEPS" ]; then
+      pct=$(head -1 "$SW_DF_STEPS")
+      sed '1d' "$SW_DF_STEPS" > "$SW_DF_STEPS.next"
+      mv "$SW_DF_STEPS.next" "$SW_DF_STEPS"
+      printf '%s\\n' "$pct" > "$SW_DF"
+    fi ;;
+esac
+exit 0
+"""
+SWEEP_DF = """#!/bin/sh
+pct=$(cat "$SW_DF")
+total=${SW_TOTAL:-1000000}
+used=$(( total * pct / 100 ))
+avail=$(( total - used ))
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/x %s %s %s %s%% /\\n' "$total" "$used" "$avail" "$pct"
+"""
+SWEEP_DATE = """#!/bin/sh
+if [ "$1" = -d ] && [ "$3" = +%s ]; then
+    python3 -c 'import sys,datetime as d; print(int(d.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")).timestamp()))' "$2"
+else exec /bin/date "$@"; fi
+"""
+
+
+def _iso_ago(seconds):
+    t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=seconds)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _run_name(last):
+    return "fabro-run-01ARZ3NDEKTSV4RRFFQ69G5FA" + last
+
+
+class Sweep:
+    """A stubbed docker host: containers as name|running|finished|size_in_bytes."""
+
+    def __init__(self, tmp_path, rows, pct=50, steps=(), total_kb=1000000):
+        sw = self.sw = tmp_path / "sweep"
+        self.total_kb = total_kb
+        write(sw / "containers", "\n".join("|".join(str(v) for v in r) for r in rows) + "\n")
+        write(sw / "pct", f"{pct}\n")
+        write(sw / "steps", "".join(f"{s}\n" for s in steps))
+        self.rm = write(sw / "rm.log", "")
+        stub(sw / "bin", "docker", SWEEP_DOCKER)
+        stub(sw / "bin", "df", SWEEP_DF)
+        stub(sw / "bin", "date", SWEEP_DATE)
+
+    def run(self, **env):
+        write(self.rm, "")
+        return sh(REPO_ROOT / "ops/fabro-sandbox-sweep.sh", path=f"{self.sw / 'bin'}:{ORIG_PATH}",
+                  env={"SW_CONTAINERS": self.sw / "containers", "SW_RM": self.rm,
+                       "SW_DF": self.sw / "pct", "SW_DF_STEPS": self.sw / "steps",
+                       "SW_TOTAL": self.total_kb, "DRY_RUN": "0", "GRACE_HOURS": "24", "BIG_GB": "5",
+                       "BIG_GRACE_HOURS": "2", "PRESSURE_PCT": "70",
+                       "TARGET_PCT": "60", "MIN_GRACE_MINUTES": "30", **env})
+
+
+def test_fabro_sandbox_sweep_pressure(ck, tmp_path):
+    gb = 1024 ** 3
+    # Below the pressure threshold the grace rules are unchanged, including the big cap.
+    old, young = _run_name("V"), _run_name("W")
+    bigold, bigyoung = _run_name("X"), _run_name("Y")
+    running, never = _run_name("Z"), _run_name("0")
+    s = Sweep(tmp_path / "grace", [
+        (old, "false", _iso_ago(30 * 3600), gb),
+        (young, "false", _iso_ago(12 * 3600), gb),
+        (bigold, "false", _iso_ago(3 * 3600), 6 * gb),
+        (bigyoung, "false", _iso_ago(3600), 6 * gb),
+        (running, "true", _iso_ago(40 * 3600), gb),
+        (never, "false", "0001-01-01T00:00:00Z", gb),
+        ("fabro-fabro-1", "false", _iso_ago(40 * 3600), gb),
+    ], pct=50)
+    r = s.run()
+    ck("sweep below pressure: a 30h sandbox is removed by grace", "1", count(f"^{old}$", file=s.rm))
+    ck("sweep below pressure: a 3h 6GB sandbox is removed by the 2h big grace", "1", count(f"^{bigold}$", file=s.rm))
+    ck("sweep below pressure: 12h and 1h sandboxes stay within grace", "0",
+       count(f"^{young}$|^{bigyoung}$", file=s.rm, flags="E"))
+    ck("sweep below pressure: a running sandbox and fabro-fabro-1 are never removed", "0",
+       count(f"^{running}$|fabro-fabro-1", file=s.rm, flags="E"))
+    ck("sweep below pressure: the output names the rule that removed each", "1|1|0",
+       count("(grace)", r.out) + "|" + count("(big)", r.out) + "|" + count("(pressure)", r.out))
+
+    # Above the threshold: oldest FinishedAt first, ignoring the grace, stopping once below target.
+    p1, p2, p3, p4 = _run_name("1"), _run_name("2"), _run_name("3"), _run_name("4")
+    hot_running = _run_name("5")
+    s = Sweep(tmp_path / "pressure", [
+        (p4, "false", _iso_ago(5 * 3600), gb),
+        (p2, "false", _iso_ago(20 * 3600), gb),
+        (p1, "false", _iso_ago(30 * 3600), gb),
+        (p3, "false", _iso_ago(10 * 3600), gb),
+        (hot_running, "true", _iso_ago(40 * 3600), gb),
+        ("fabro-fabro-1", "false", _iso_ago(40 * 3600), gb),
+    ], pct=80, steps=(65, 55))
+    r = s.run()
+    ck("sweep pressure: removes oldest first, then stops below the target", f"{p1}\n{p2}", cat(s.rm))
+    ck("sweep pressure: never removes a running or non-ULID container", "0",
+       count(f"^{hot_running}$|fabro-fabro-1", file=s.rm, flags="E"))
+    ck("sweep pressure: the output names pressure as the rule", "2", count("(pressure)", r.out))
+    ck("sweep pressure: the summary reports the df before and after", "1", count("df 80% -> 55%", r.out))
+
+    # The 30-minute floor holds under pressure, and an unreachable target exits nonzero.
+    floor, onehour = _run_name("7"), _run_name("8")
+    s = Sweep(tmp_path / "floor", [
+        (floor, "false", _iso_ago(10 * 60), gb),
+        (onehour, "false", _iso_ago(3600), gb),
+    ], pct=90, steps=(55,))
+    r = s.run()
+    ck("sweep floor: a 10 minute sandbox is kept under pressure", "0", count(f"^{floor}$", file=s.rm))
+    ck("sweep floor: the 1h sandbox is still reaped", "1", count(f"^{onehour}$", file=s.rm))
+    ck("sweep floor: the output says the floor kept it", "1", count(f"^keep  {floor} .*within 30m floor", r.out))
+    ck("sweep floor: reaching the target exits 0", "0", r.rc)
+    s = Sweep(tmp_path / "floor-only", [(floor, "false", _iso_ago(10 * 60), gb)], pct=90)
+    r = s.run()
+    ck("sweep floor: a target the floor blocks fails the pass", "1", r.rc)
+    ck("sweep floor: the failure names the target", "1", count("^FAIL  disk pressure: still at .*target 60%", r.out))
+
+    # A dry run removes nothing and says which rule would have taken each sandbox.
+    dryold, drynew = _run_name("9"), _run_name("A")
+    s = Sweep(tmp_path / "dry", [
+        (dryold, "false", _iso_ago(30 * 3600), 30 * gb),
+        (drynew, "false", _iso_ago(10 * 60), gb),
+    ], pct=75, total_kb=100000000)
+    r = s.run(DRY_RUN="1")
+    ck("sweep dry run: removes nothing", "0", count("^rm ", r.out))
+    ck("sweep dry run: names the pressure rule", "1", count(f"^DRY   {dryold} .*would be removed (pressure)", r.out))
+    ck("sweep dry run: names the floor", "1", count(f"^keep  {drynew} .*within 30m floor", r.out))
+    ck("sweep dry run: reports freed bytes and the simulated df", "1|1",
+       count("would free 32212254720 bytes", r.out) + "|" + count("df 75% -> 43% (simulated)", r.out))
+    # A below-threshold dry run simulates its grace removals too, not only pressure ones.
+    drygrace = _run_name("B")
+    s = Sweep(tmp_path / "dry-grace", [(drygrace, "false", _iso_ago(30 * 3600), gb)],
+              pct=50, total_kb=100000000)
+    r = s.run(DRY_RUN="1")
+    ck("sweep dry run below pressure: reports the simulated df for a grace removal", "1|1",
+       count("would free 1073741824 bytes", r.out) + "|" + count("df 50% -> 48% (simulated)", r.out))
 
 
 # ---------------------------------------------------------------------------
