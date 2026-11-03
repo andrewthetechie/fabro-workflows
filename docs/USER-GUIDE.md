@@ -56,6 +56,39 @@ blocking questions.
 **The expert shortcut:** when you already know exactly what you want, label the
 issue **`agent`** directly and skip triage.
 
+### Writing criteria the factory can verify
+
+A PR merges on its own only when the Refuter can mark every acceptance criterion
+`met` from the code, the diff and `.fabro/ci.sh`'s run. A criterion it cannot check
+holds the PR for you however good the code is: in the two weeks to 2026-11-01, 70
+of the 85 agent PRs with an unmet criterion were held by one of the first two
+cases below (#57). Skipping triage means nothing rewrites these for you, so apply
+the rules yourself (the precheck's `unverifiable` comment flags a miss before the
+run):
+
+1. **No criterion needs text in the PR description.** No stage after `open_pr`
+   writes the PR body, and the Refuter often runs before the PR exists.
+   - "The PR explains why X is unreachable" → "a code comment at the line says
+     why X is unreachable".
+   - "The uncovered remainder is listed in the PR" → the same code-comment form,
+     or drop it.
+   - "The PR lists before/after coverage" → drop it. Keep the before numbers in
+     the issue as context; the after numbers are in GitHub CI's coverage summary.
+2. **A command criterion names only a command `.fabro/ci.sh` runs.** Read the
+   repository's `ci.sh` first. Otherwise name a state the Refuter can read from
+   the diff.
+3. **"Coverage must not drop" becomes a raised threshold:** "`coverage.thresholds`
+   in `<config>` (or `fail_under`) is raised to the new totals, rounded down".
+   `ci.sh` enforces the threshold, and the Refuter verifies the raise in the diff.
+   It also ratchets coverage, which is what the criterion was for.
+4. **A check only a human can make after merge goes under `## Post-deploy
+   checks`.** The pipeline cuts that heading from the Refuter's input and lists
+   it in the PR body for you.
+
+A change to a file under `.github/workflows/` cannot be the agent's work at all:
+its token cannot push one, so the run stops before opening a PR. Make that edit
+yourself.
+
 Once work is moving, the labels mean:
 
 | Label | Meaning |

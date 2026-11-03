@@ -67,8 +67,10 @@ Pick exactly one; when more than one fits, take the first in this list.
     the criterion is fine.
   - A criterion that needs something the pipeline cannot produce: text in the pull request
     description ("list the before/after numbers in the PR"), a screenshot, a manual or
-    visual check, or a run on another operating system. A test, a code comment or a file in
-    the repository is fine.
+    visual check, a run on another operating system, or a change to a file under
+    `.github/workflows/` (the pipeline's token cannot push one, so such a branch is refused
+    before its pull request opens). A test, a code comment or any other file in the
+    repository is fine.
 
   Quote the criterion with `where` set to `issue body`. For a command criterion, also cite
   the `.fabro/ci.sh` line whose command comes closest, or say that the file runs no such
