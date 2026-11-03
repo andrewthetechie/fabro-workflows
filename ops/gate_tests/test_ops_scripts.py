@@ -457,7 +457,9 @@ def test_fabro_monitor_disk_gate(ck, tmp_path):
           '{"status":"ok","disk":{"gated":true,"free_gb":40.0,"min_free_gb":50,"hysteresis_gb":10}}')
     out = m.run(wedge="0")
     ck("monitor C8: a disk-gated scheduler does not fire wedged", "0", count("DRY.*scheduler-wedged", file=out))
-    ck("monitor C8: the gate state is reported", "1", count("dispatch paused by the disk gate (40 GB free, minimum 50 GB; 1 queued)", file=out))
+    ck("monitor C8: the gate state is reported", "1",
+       count(r"dispatch paused by the disk gate \(40(\.0)? GB free, minimum 50 GB; 1 queued\)",
+             file=out, flags="E"))
     # Above the gate, the same state is a wedge again.
     write(m.MM / "disk.json",
           '{"status":"ok","disk":{"gated":false,"free_gb":100.0,"min_free_gb":50,"hysteresis_gb":10}}')
