@@ -1240,7 +1240,10 @@ jq -nc --argjson s $RS --argjson p $RP '{context_updates:{review_run_standards:$
     // 7 refuses anything but `fixed`/`no_changes_needed`, 8 needs a risk, 9 refuses a
     // non-empty `not_fixed`, and 10 wants every `own_findings` error accounted for -- so
     // `own_findings` is empty here: this gate raises no findings of its own, and everything
-    // it saw is either in `fixes_applied` or in `not_fixed`.
+    // it saw is either in `fixes_applied` or in `not_fixed`. A `needs_human` outcome's
+    // `summary` starts with why (the loop ran out, a review asked for a human, or N findings
+    // left and which rule left them), because check 7's refusal prints the summary and the
+    // scorecard buckets that text (#62): "the Refuter held the merge" lands in `refuter`.
     review_gate [label="Decide the reviews", shape=parallelogram, timeout="1m", output_schema="routing",
         script="R=/tmp/fabro/review
 OK=yes
@@ -1323,6 +1326,7 @@ else
   if [ \"$NF\" != 0 ] && [ -z \"$RSN\" ]; then OUT=needs_human; RSN=$NF' blocking review finding(s) left unfixed: '$NFR; fi
   if [ \"$LE\" = true ]; then OUT=needs_human; RSN='the loop ran out with Tasks unpassed'; fi
   SUM='Ralph reviews: standards '$D1', spec '$D2'. '$FA' finding(s) were fixed by the loop and '$NF' left.'
+  if [ -n \"$RSN\" ]; then SUM=\"$RSN. $SUM\"; fi
   jq -n --arg o \"$OUT\" --argjson r \"$RISK\" --arg s \"$SUM\" --slurpfile fa $R/fixes.json --slurpfile nf $R/notfixed.json --arg d1 \"$D1\" --arg d2 \"$D2\" '{outcome: $o, risk: $r, summary: $s, own_findings: [], fixes_applied: $fa[0], not_fixed: $nf[0], notes: (\"standards=\" + $d1 + \" spec=\" + $d2)}' > $R/fix_result.json
   if [ -n \"$RSN\" ]; then printf '%s' \"$RSN\" > /tmp/fabro/merge_block_reason; fi
   rm -f $R/blocks.json $R/fixed.json $R/fixes.json $R/notfixed.json
@@ -2508,7 +2512,8 @@ fi"]
     // 4. no requested changes
     // 5. no unresolved review threads (GraphQL; gh pr view has no reviewThreads field)
     // 6. no human commits (author email; own merges of origin/<base> allowed)
-    // 7. fix_outcome mergeable
+    // 7. fix_outcome mergeable. The refusal names the outcome and carries fix_result.summary
+    //    (cut to 220), so the scorecard can tell a Refuter hold from a review hold (#62).
     // 8. risk present and <= 3
     // 9. not_fixed empty
     // 10. every own error finding is accounted for, by its own id, in fixes_applied
@@ -2565,7 +2570,10 @@ if [ \"$E\" = true ]; then
 fi
 if [ \"$E\" = true ]; then
   O=$(jq -r .outcome \"$F\" 2>/dev/null || echo missing)
-  if [ \"$O\" != fixed ] && [ \"$O\" != no_changes_needed ]; then fail 'The review did not end in a mergeable state.'; fi
+  if [ \"$O\" != fixed ] && [ \"$O\" != no_changes_needed ]; then
+    W=$(jq -r '(.summary // \"\") | tostring | gsub(\"[[:space:]]+\"; \" \") | ltrimstr(\" \") | rtrimstr(\" \") | .[0:220]' \"$F\" 2>/dev/null || true)
+    if [ -n \"$W\" ]; then fail \"The review did not end in a mergeable state ($O): $W\"; else fail \"The review did not end in a mergeable state ($O).\"; fi
+  fi
 fi
 if [ \"$E\" = true ]; then
   R=$(jq -r 'if (.risk | type) == \"number\" and (.risk >= 0) and (.risk <= 3) and ((.risk | floor) == .risk) then .risk else \"bad\" end' \"$F\" 2>/dev/null || echo bad)

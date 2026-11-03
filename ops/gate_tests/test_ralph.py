@@ -659,6 +659,7 @@ def test_ralph_review_gate(ck, tmp_path):
                    str(fix)]).rc
     ck("rv pass: the file matches the schema", "1", "1" if matches == 0 else "0")
     ck("rv pass: one routing object", "1", count("context_updates", st["out"]))
+    ck("rv pass: the summary has no reason in front", "1", count("^Ralph reviews:", fx("summary"), flags="E"))
 
     setup(findings(find("STD-001", "error", "the retry never happens", "src/a.py")), spec_approve, "1", "pass"); go()
     ck("rv error: routes tasks", "tasks", val("review_route"))
@@ -719,6 +720,7 @@ def test_ralph_review_gate(ck, tmp_path):
     ck("rv refuter held: not mergeable", "needs_human", fx("outcome"))
     ck("rv refuter held: the reason says the Refuter held", "1", count("Refuter held the merge", jq(".not_fixed[0].reason", file=fix)))
     ck("rv refuter held: no extra pass", "absent", present(T / "review_extra"))
+    ck("rv refuter held: the summary starts with why (#62)", "1", count("^1 blocking review finding.*Refuter held the merge.*Ralph reviews:", fx("summary"), flags="E"))
 
     setup('{"decision":"needs_human_review","summary":"inputs disagree","findings":[]}', jq_n('{decision:"approve",summary:"ok",findings:[],risk:2}'), "1", "pass"); go()
     ck("rv human review: not mergeable", "needs_human", fx("outcome"))
@@ -742,6 +744,7 @@ def test_ralph_review_gate(ck, tmp_path):
     setup(std_ok, spec_approve, "1", "pass"); write(T / "loop_exhausted", "true\n"); go()
     ck("rv exhausted: not mergeable", "needs_human", fx("outcome"))
     ck("rv exhausted: reason names it", "1", count("loop ran out", file=T / "merge_block_reason"))
+    ck("rv exhausted: the summary starts with why", "1", count("^the loop ran out with Tasks unpassed\\. Ralph reviews:", fx("summary"), flags="E"))
     setup(findings(find("STD-004", "error", "the retry never happens", "src/a.py")), spec_approve, "1", "pass")
     write(T / "loop_exhausted", "true\n"); go()
     ck("rv exhausted: a blocking finding is no task", "0", ntasks())
@@ -1122,6 +1125,10 @@ exit 0
     setup(fix='{"outcome":"needs_human","risk":2,"summary":"s","own_findings":[],"fixes_applied":[],"not_fixed":[]}'); go()
     ck("mg unmergeable fix_result: not eligible", "false", eligible())
     ck("mg unmergeable fix_result: says so", "1", count("did not end in a mergeable state", file=reason))
+    ck("mg unmergeable fix_result: names the outcome and the summary", "1", count(r"mergeable state \(needs_human\): s$", file=reason, flags="E"))
+
+    setup(fix='{"outcome":"needs_human","risk":2,"own_findings":[],"fixes_applied":[],"not_fixed":[]}'); go()
+    ck("mg unmergeable, no summary: names the outcome", "1", count(r"mergeable state \(needs_human\)\.$", file=reason, flags="E"))
 
     setup(fix='{"outcome":"fixed","risk":2,"summary":"s","own_findings":[],"fixes_applied":[],"not_fixed":[{"finding_id":"STD-001"}]}'); go()
     ck("mg not_fixed: not eligible", "false", eligible())
