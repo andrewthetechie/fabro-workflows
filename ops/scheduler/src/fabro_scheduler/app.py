@@ -1382,14 +1382,20 @@ def humanise_duration(delta: timedelta) -> str:
     return f"{seconds}s"
 
 
-def compact_timestamp(iso: str) -> str:
+def compact_timestamp(iso: str | datetime) -> str:
     """`2026-09-20T14:05:11+00:00` → `09-20 14:05`, for dense table cells.
 
     Drops the year and the seconds so a run-history row's start/finish fit one
     narrow cell; a run never spans a year, so the month-day still disambiguates
     at a glance. Any value that does not parse is returned unchanged rather than
     hiding the raw record.
+
+    A `datetime` is formatted as it is: the queue page's *Held* table passes an
+    `Issue.first_seen`, and a string-only filter there was a 500 on every page load
+    for as long as any issue was held (2026-11-03).
     """
+    if isinstance(iso, datetime):
+        return iso.strftime("%m-%d %H:%M")
     try:
         normalised = iso[:-1] + "+00:00" if iso.endswith("Z") else iso
         dt = datetime.fromisoformat(normalised)

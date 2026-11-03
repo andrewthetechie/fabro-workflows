@@ -1043,6 +1043,17 @@ def test_compact_timestamp_drops_year_and_seconds():
     assert compact_timestamp("2026-09-20T14:05:11Z") == "09-20 14:05"
     # A value that cannot parse is returned unchanged rather than hidden.
     assert compact_timestamp("not-a-time") == "not-a-time"
+    # The Held table passes `Issue.first_seen`, a datetime.
+    assert compact_timestamp(datetime(2026, 9, 20, 14, 5, 11, tzinfo=UTC)) == "09-20 14:05"
+
+
+def test_the_page_renders_a_held_issue(config, store, client):
+    # Regression (2026-11-03): the Held table's `first_seen|compact_ts` raised on a
+    # datetime, so the whole queue page was a 500 while any issue carried a hold.
+    store.upsert_issue(issue("andrewthetechie/writers-app", 7, labels=("agent", "precheck-blocked")))
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "precheck-blocked" in response.text
 
 
 def test_history_page_is_empty_and_friendly(client):
