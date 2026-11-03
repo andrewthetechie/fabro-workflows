@@ -242,7 +242,7 @@ digraph Backlog {
     // `mkdir -p /tmp/fabro` is load bearing. `claim` is the run's first node since draft
     // 10 deleted `acquire`, and `acquire` was the only node that created that directory.
     // Without it every redirect below fails with `/tmp/fabro/issue.json: No such file or
-    // directory` and the run parks on human_rescue for 4h holding its coder lease.
+    // directory` and the run parks on human_rescue for 2h holding its coder lease.
     // `ops/gate_tests/` stages this node against a path that does not exist, which
     // is the only way a test can catch it -- neither `fabro validate` nor
     // ops/check-graph-invariants.py runs a node's shell.
@@ -256,7 +256,7 @@ digraph Backlog {
     //
     // The fetch is retried three times, five seconds apart. It is the one network call
     // between the receipt being written and the run being able to do anything, and a
-    // single transient `gh` failure costs a coder box for four hours: the unconditional
+    // single transient `gh` failure costs a coder box for two hours: the unconditional
     // edge parks the run on human_rescue, whose default choice is mark_stuck, so the run
     // ends `succeeded` and the scheduler's requeue rule -- which keys on a FAILED run's
     // reason -- never sees it. A genuinely missing or unreadable issue still fails closed,
@@ -360,7 +360,7 @@ rm -f /tmp/fabro/background.raw"]
     // unconditional edge to `human_rescue` and opened an empty PR (#1236) instead.
     //
     // The cost is bounded at one extra 20m attempt on a genuinely broken setup, against
-    // a 4h `human_rescue` park holding one of two coder boxes. `uv`/`npm` already retry
+    // a 2h `human_rescue` park holding one of two coder boxes. `uv`/`npm` already retry
     // internally, so this only fires on an outage that outlasts their own backoff.
     // Build the code index after .fabro/setup.sh (docs/code-context C2/C4), which can
     // create or remove files the index should see. The `command -v` guard keeps an
@@ -1295,7 +1295,7 @@ echo '{\"context_updates\":{\"round\":'$R',\"task_exempt\":'$EX'}}'"]
     // An extra-review follow-up that the whole rework ladder could not get past
     // review is reverted and the run goes on, instead of waiting at human_rescue.
     // The follow-up fixes a branch whose decomposed tasks all passed review, so
-    // dropping it costs one fix. Waiting at the gate costs the whole run: its 4h
+    // dropping it costs one fix. Waiting at the gate costs the whole run: its 2h
     // default is mark_stuck, which throws away every task that landed.
     //
     // Cost, run 01M3XB5VAKR65RAVBFVD9SYYNS on 2026-10-02, womens-fantasy-sports#1300:
@@ -1325,7 +1325,7 @@ echo 'dropped follow-up '$I': tree restored to the task base '$BASE"]
 
     // A fast-lane task that the whole rework ladder could not land. The label was wrong:
     // the issue is bigger than one commit, so it goes back to the queue for the standard
-    // lane (decompose, plan) instead of waiting 4h at human_rescue on a held coder box.
+    // lane (decompose, plan) instead of waiting 2h at human_rescue on a held coder box.
     //
     // The ORDER of the label calls is load-bearing. `fast-path` comes off first, and the
     // node stops if that fails or if a re-read still shows it. Only then does `agent` go
@@ -1682,7 +1682,7 @@ echo '{\"context_updates\":{\"final_conflict\":true}}'"]
     // two treat a failure completely differently: `validate` writes
     // /tmp/fabro/feedback/rework.md and takes `validate -> rework_router` into the
     // escalation ladder, while this one used to `exit 1` with no feedback at all and take
-    // its unconditional edge to `human_rescue` -- a 4h gate holding a coder box, with no
+    // its unconditional edge to `human_rescue` -- a 2h gate holding a coder box, with no
     // route back to work.
     //
     // Run 01M2X2MVPC2NXY1BW5CVKPFF3S died that way on 2026-09-19 to a FLAKY TEST. The
@@ -1715,7 +1715,7 @@ echo '{\"context_updates\":{\"final_conflict\":true}}'"]
     //   pr      green.
     // "This code" is the patch-id of `git diff origin/main HEAD` -- the run's own change on
     // top of main, which ignores line shifts -- kept in final_fail_keys by fix and rescue.
-    // Not the tree: main moves on a busy repo during the gate's 4h wait, and a tree key
+    // Not the tree: main moves on a busy repo during the gate's 2h wait, and a tree key
     // would let the same failing code reach the gate on every [P].
     // The log never reaches stdout: this node now routes, and fabro scans stdout and
     // stderr for brace-balanced objects.
@@ -2379,12 +2379,16 @@ echo done"]
     // an interview blocks. A human node is handler-managed and copies its own
     // timeout onto the question (handler/human.rs:122).
     //
-    // 4h matches the monitor's re-alert interval, so two Discord pings go out
-    // before it gives up. `human.default_choice` is a NODE ID, not an edge label
+    // 2h, not 4h, since 2026-11-03 (#62): from 10-19 to 11-01, 15 of the 17 runs that
+    // reached this gate sat the full 4h and ended `mark_stuck` anyway, about 60 box-hours,
+    // while the three answers the operator did give came after 29, 62 and 78 minutes. 2h
+    // keeps all three and halves the hold. The Discord ping is the discord-rescue hook at
+    // stage_start; the monitor's C4 alert is on run age, not on this gate.
+    // `human.default_choice` is a NODE ID, not an edge label
     // -- make_choice_outcome puts it straight into suggested_next_ids -- so it is
     // `mark_stuck`, not "[X] Abandon". Without it, an expired gate returns
     // retry_classify("human gate timeout, no default") instead of routing.
-    human_rescue [shape=hexagon, timeout="4h", human.default_choice="mark_stuck",
+    human_rescue [shape=hexagon, timeout="2h", human.default_choice="mark_stuck",
         label="The run stopped and needs a decision. The summary below says why and what each option does."]
 
     // rescue_brief: every edge into human_rescue passes through here, so the gate can

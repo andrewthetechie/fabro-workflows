@@ -566,13 +566,23 @@ exit 0"]
     // from that result, its Input receipt and `check_ok`. There is no LLM review per Task
     // (O6) -- the mechanical gate is `check`, and the Refuter comes once at the end.
     //
-    // timeout="60m" is a NEW number and the overview does not derive it: backlog's `coder`
-    // is 180m for a whole task with its own dossier, while an Iteration is meant to finish
-    // ONE planned Task that already carries its edit plan. 60m is the cap O17 states, and it
-    // is the bound `allow_partial` exists for: a timed-out Iteration keeps its work, the
-    // checkpoint commits it, and `check` judges whatever landed. Re-derive it from task 12's
-    // shakedown once Iteration times are recorded. max_retries=1 for a provider error;
-    // a dead provider that survives the retry is a MISS, never a stop (see the edges).
+    // timeout="60m", derived 2026-11-03 (#62) from every `iterate_t1` attempt in the ralph
+    // runs dispatched 10-22..11-03 (121 runs, 587 attempts, read from the events):
+    // completed attempts p50 11.6, p95 41.3, p99 53.9 min (n=536), so 60m is about 1.45x
+    // p95 and above p99. 47 attempts (8%) timed out; they were sessions still generating at
+    // normal speed (~49 tok/s, ~150k tokens, 0-1 test runs), 36 of them in `writers-app`
+    // (14% of its attempts, 2-5% elsewhere), not slow boxes. Neither a longer cap (a
+    // runaway session would just run longer) nor a shorter one (19 completed attempts fall
+    // between 45 and 60 min) is supported.
+    //
+    // What a timeout actually does: `allow_partial` never fired (no attempt ended
+    // `partially_succeeded`). The first timeout is retried under max_retries=1 as a fresh
+    // session on the SAME checkout, which finds the earlier work with `git status`; 25 of
+    // 36 such retries finished, in a median 26 min. A second timeout fails the visit
+    // (120 min in all) and takes the unconditional edge to `record` as a MISS; the
+    // checkpoint keeps the work. A dead provider that survives the retry is a MISS too,
+    // never a stop (see the edges). The scorecard's stage time counts one attempt per
+    // visit, so it reads this node low.
     iterate_t1 [label="Iteration (rung 1, box)", class="coder", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
     iterate_t2 [label="Iteration (rung 2, glm-5.3-flash)", class="coder-t2", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
     iterate_t3 [label="Iteration (rung 3, kimi-for-coding)", class="coder-t3", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
