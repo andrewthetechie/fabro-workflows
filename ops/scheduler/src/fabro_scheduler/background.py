@@ -361,8 +361,13 @@ class BackgroundLane:
 
     # --- the tick -------------------------------------------------------------
 
-    def tick(self, now: datetime | None = None) -> LaneTick:
-        """Evict first, then fill (D17). Called after the primary dispatch loop."""
+    def tick(self, now: datetime | None = None, *, allow_starts: bool = True) -> LaneTick:
+        """Evict first, then fill (D17). Called after the primary dispatch loop.
+
+        `allow_starts=False` is the dispatch disk gate (issue #51): a full host must not
+        start a background run either, but the finish/evict passes still run so a run
+        already on a box is recorded when it ends.
+        """
         now = now or self._clock()
         if not self._config.box_health and not self._store.running_background_jobs():
             # No box in the lane and nothing running: nothing to read, nothing to decide, and
@@ -380,7 +385,7 @@ class BackgroundLane:
         if self._config.background or self._store.running_background_jobs():
             self._refresh_health()
         evictions = self.evict(now)
-        starts = self.fill(now) if self._config.background else ()
+        starts = self.fill(now) if self._config.background and allow_starts else ()
         if ends or evictions or starts:
             log.info(
                 "background: finished %d, evicted %d, started %d",

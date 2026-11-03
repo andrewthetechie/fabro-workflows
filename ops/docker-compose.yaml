@@ -37,6 +37,11 @@ services:
       - "${SCHEDULER_PORT:-32280}:${SCHEDULER_PORT:-32280}"
     volumes:
       - scheduler-data:/data  # SQLite, from draft 06 onward; mounted now so compose never changes again
+      # The dispatch disk gate (issue #51) samples this volume's filesystem with
+      # os.statvfs. Read-only: the scheduler only reads free space. It is the same
+      # host Docker data-root filesystem as the sandbox writable layers, which the
+      # scheduler container cannot see directly.
+      - fabro-storage:/fabro-storage:ro
     environment:
       # Resolved here rather than only read from env_file, so the container cannot
       # bind one port while compose publishes another when the value is set in the
@@ -78,6 +83,13 @@ services:
       # it only to count free slots, and a larger value would hand out slots that do not
       # exist.
       SCHEDULER_MAX_CONCURRENT_RUNS: "${SCHEDULER_MAX_CONCURRENT_RUNS:-8}"
+      # The dispatch disk gate (issue #51). Below this much free space on
+      # `/fabro-storage` or `/tmp`, no new coder or background run starts; dispatch
+      # resumes at the minimum plus the hysteresis band. A writers-app run can write
+      # 25-60 GB, so 50 GB is one more run's headroom.
+      SCHEDULER_DISPATCH_MIN_FREE_GB: "${SCHEDULER_DISPATCH_MIN_FREE_GB:-50}"
+      SCHEDULER_DISPATCH_DISK_HYSTERESIS_GB: "${SCHEDULER_DISPATCH_DISK_HYSTERESIS_GB:-10}"
+      SCHEDULER_DISPATCH_DISK_PATHS: "${SCHEDULER_DISPATCH_DISK_PATHS:-/fabro-storage,/tmp}"
       # Which job kinds' PRODUCERS run, comma-separated. It gates producers only, never the
       # lane's pick, so a job queued by hand through `POST /api/background/box-noop` still
       # runs with `box-noop` absent here. `issue-precheck` (more-local-inference 07, shadow mode:

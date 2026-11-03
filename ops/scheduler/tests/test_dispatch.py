@@ -25,9 +25,11 @@ import httpx
 import pytest
 import respx
 from fastapi.testclient import TestClient
+from types import SimpleNamespace
 
 from fabro_scheduler.app import build_app
 from fabro_scheduler.config import load_config
+from fabro_scheduler.disk import GIB, DiskGate
 from fabro_scheduler.dispatch import DispatchAttempt, DispatchLoop, choose_next
 from fabro_scheduler.fabro import FabroClient
 from fabro_scheduler.github import Issue
@@ -589,6 +591,116 @@ def test_a_refused_create_restores_the_queue_label_and_records_no_lease(loop, st
     assert leases.active() == []
     # Everything the receipt did is undone, and in the direction that leaves the
     # issue back in the queue: `agent-in-progress` off, `agent` on.
+    assert recorder.calls[-2:] == [
+        ("DELETE", label_remove(JELLY, 7, "agent-in-progress"), None),
+        ("POST", label_add(JELLY, 7), {"labels": ["agent"]}),
+    ]
+
+
+def disk_gate(free_gb: float, *, min_free_gb: int = 50, hysteresis_gb: int = 10):
+    """A gate over a mutable free-space reading, so a test can move the disk."""
+    state = {"free": int(free_gb * GIB)}
+    gate = DiskGate(
+        ["/disk"],
+        min_free_gb=min_free_gb,
+        hysteresis_gb=hysteresis_gb,
+        statvfs=lambda _path: SimpleNamespace(f_bavail=state["free"], f_frsize=1),
+    )
+    return gate, state
+
+
+@respx.mock
+def test_a_low_disk_tick_dispatches_nothing_and_writes_no_labels(
+    config, store, leases, fabro
+):
+    # Issue #51: a full disk used to leave `agent-in-progress` on the issue with no
+    # run behind it, every 5 seconds. The gate stops before the receipt.
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    gate, _ = disk_gate(40)
+    loop = DispatchLoop(
+        config, store, leases, fabro, "ghp_test", disk_gate=gate
+    )
+    seed(store, JELLY, 7)
+
+    assert loop.tick() == []
+    assert recorder.calls == []
+    assert leases.active() == []
+
+
+@respx.mock
+def test_a_tick_above_the_disk_threshold_dispatches_as_before(
+    config, store, leases, fabro
+):
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    gate, _ = disk_gate(100)
+    loop = DispatchLoop(
+        config, store, leases, fabro, "ghp_test", disk_gate=gate
+    )
+    seed(store, JELLY, 7)
+
+    attempts = loop.tick()
+
+    assert [attempt.dispatched for attempt in attempts] == [True]
+    assert receipts(recorder, JELLY, 7)
+    assert [lease.repo for lease in leases.active()] == [JELLY]
+
+
+@respx.mock
+def test_the_disk_gate_clears_only_above_the_hysteresis_band(
+    config, store, leases, fabro
+):
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    gate, state = disk_gate(40)
+    loop = DispatchLoop(
+        config, store, leases, fabro, "ghp_test", disk_gate=gate
+    )
+    seed(store, JELLY, 7)
+
+    assert loop.tick() == []
+    state["free"] = 55 * GIB
+    assert loop.tick() == []
+    assert receipts(recorder, JELLY, 7) == []
+
+    state["free"] = 60 * GIB
+    assert [attempt.dispatched for attempt in loop.tick()] == [True]
+    assert len(receipts(recorder, JELLY, 7)) == 1
+
+
+@respx.mock
+def test_an_oserror_from_ensure_version_rolls_both_labels_back_and_records_no_lease(
+    config, store, leases
+):
+    # The 2026-10-19 defect: `tempfile.mkdtemp` raised `[Errno 28] No space left on
+    # device`, which was neither `FabroError` nor `WorkflowVersionError`, so it
+    # escaped `tick()` and left the receipt labels on the issue.
+    class NoSpace:
+        def clone(self, repo: str, ref: str):
+            raise OSError(28, "No space left on device")
+
+    recorder = Recorder()
+    install_labels(recorder)
+    loop = DispatchLoop(
+        config,
+        store,
+        leases,
+        FabroClient(FABRO_API, FABRO_TOKEN, clone=NoSpace().clone),
+        "ghp_test",
+    )
+    seed(store, JELLY, 7)
+
+    attempts = loop.tick()
+
+    assert attempts[0].failed_stage == "create"
+    assert attempts[0].run_id is None
+    assert attempts[0].dispatched is False
+    assert leases.active() == []
+    assert recorder.made("POST", "/api/v1/runs") == []
     assert recorder.calls[-2:] == [
         ("DELETE", label_remove(JELLY, 7, "agent-in-progress"), None),
         ("POST", label_add(JELLY, 7), {"labels": ["agent"]}),

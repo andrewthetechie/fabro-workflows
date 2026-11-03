@@ -68,6 +68,7 @@ from .config import (
     load_config,
 )
 from .dispatch import DispatchLoop
+from .disk import DiskGate
 from .fabro import FabroClient, FabroError, RunNotStarted
 from .inventory import InventoryPoller
 from .lease import Lease, LeaseConflict, LeaseStore
@@ -162,6 +163,7 @@ def build_app(
     fabro_client: FabroClient | None = None,
     run_probe: RunProbe | None = None,
     background_lane: BackgroundLane | None = None,
+    disk_gate: DiskGate | None = None,
     start_poller: bool = False,
     start_dispatch_loop: bool = False,
     start_collector: bool = False,
@@ -250,7 +252,7 @@ def build_app(
             )
         else:
             dispatcher = DispatchLoop(
-                config, store, leases, client, github_token, lane=lane
+                config, store, leases, client, github_token, lane=lane, disk_gate=disk_gate
             )
             # Draft 09. The same credentials that arm dispatch arm recovery: it
             # reads fabro and writes the same GitHub labels.
@@ -356,6 +358,15 @@ def build_app(
             )
             for pool in config.coder_pools
         ]
+
+    def disk_state() -> dict[str, object] | None:
+        """The dispatch disk gate's last sample (issue #51), or None when unwired.
+
+        `/health` and the queue page read the same document, so they cannot disagree
+        about whether dispatch is paused for disk. Never samples: the dispatch loop's
+        5-second tick is the sampler.
+        """
+        return disk_gate.state() if disk_gate is not None else None
 
     def displayed_order() -> list[tuple[str, int]]:
         """The queue's `(repo, number)` in dispatch order, as currently shown.
@@ -473,6 +484,9 @@ def build_app(
                 "switch": "on" if config.background else "off",
                 "jobs": store.background_counts(),
             },
+            # The dispatch disk gate (issue #51). Null when the app is built without
+            # one (a test); production `main` always passes it.
+            "disk": disk_state(),
         }
 
     @app.get("/api/peak")
@@ -689,7 +703,9 @@ def build_app(
         The operator's override, which draft 07 built to prove the client and draft
         08 keeps. It takes `repo`, `issue_number` and `coder_pool` explicitly and
         does exactly one dispatch; the loop does the rest. It ignores the peak-hours
-        block (`peak.py`): a run started by hand is the operator choosing to spend.
+        block (`peak.py`) and the dispatch disk gate (ADR 0032, issue #51): a run
+        started by hand is the operator choosing to spend. The gate's state is on
+        `/health` and the page, so a hand-fired run on a full disk is a deliberate act.
 
         **It takes the lease, and refuses a box that is already leased.** Without
         that, the one write path the loop does not own would be the one way to put
@@ -761,9 +777,10 @@ def build_app(
             # run, and it is the scheduler that failed to finish making one.
             log.error("dispatch-once: %s#%s: %s", repo.name, body.issue_number, exc)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except (FabroError, WorkflowVersionError) as exc:
+        except (FabroError, WorkflowVersionError, OSError) as exc:
             # `WorkflowVersionError` is the fetch-and-read half: git is missing, the
-            # clone timed out, `.fabro/` moved. Fabro was never called, so no run
+            # clone timed out, `.fabro/` moved. `OSError` is the 2026-10-19 disk-full
+            # failure from `tempfile.mkdtemp`. Fabro was never called, so no run
             # exists — but the operator still gets the sentence that says why.
             log.error("dispatch-once: %s#%s: %s", repo.name, body.issue_number, exc)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -1142,6 +1159,9 @@ def build_app(
                 # The provider's peak-hours block and the override button.
                 "peak": peak,
                 "peak_status": config.peak_hours.status(now),
+                # The dispatch disk gate (issue #51): a full host pauses new runs
+                # before the receipt, instead of claiming issues it cannot start.
+                "disk": disk_state(),
                 # The fabro web UI root for the run link, derived from the API base
                 # by stripping `/api/v1`. Rendered only into the server-side HTML
                 # page the operator views, never into a JSON payload.
@@ -1612,6 +1632,7 @@ def create_app(
     fabro_client: FabroClient | None = None,
     run_probe: RunProbe | None = None,
     background_lane: BackgroundLane | None = None,
+    disk_gate: DiskGate | None = None,
     start_poller: bool = False,
     start_dispatch_loop: bool = False,
 ) -> FastAPI:
@@ -1636,6 +1657,7 @@ def create_app(
         fabro_token=fabro,
         fabro_client=fabro_client,
         run_probe=run_probe,
+        disk_gate=disk_gate,
         start_poller=start_poller,
         start_dispatch_loop=start_dispatch_loop,
     )
@@ -1946,6 +1968,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             store,
             github_token=os.environ.get("GITHUB_TOKEN", ""),
             fabro_token=os.environ.get("FABRO_API_TOKEN", ""),
+            disk_gate=DiskGate(
+                config.dispatch_disk_paths,
+                min_free_gb=config.dispatch_min_free_gb,
+                hysteresis_gb=config.dispatch_disk_hysteresis_gb,
+            ),
             start_poller=True,
             start_dispatch_loop=True,
             start_collector=True,

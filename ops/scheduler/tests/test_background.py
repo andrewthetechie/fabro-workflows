@@ -312,6 +312,22 @@ def test_the_switch_off_starts_nothing(store, leases):
     assert lane_.state(NOW)["switch"] == "off"
 
 
+def test_the_disk_gate_pauses_new_starts_but_not_the_tick(store, leases):
+    # Issue #51: a full host must not start a background run either, but finish/evict
+    # still run, so a background run already on a box is recorded when it ends.
+    enqueue(store)
+    fabro = FakeFabro()
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
+
+    paused = lane_.tick(NOW, allow_starts=False)
+    assert paused.starts == ()
+    assert fabro.dispatched == []
+
+    started = lane_.tick(NOW)
+    assert [start.box for start in started.starts] == ["coders-a"]
+    assert len(fabro.dispatched) == 1
+
+
 class CountingFabro(FakeFabro):
     """A `FakeFabro` that records every call the lane makes, not just its effects."""
 

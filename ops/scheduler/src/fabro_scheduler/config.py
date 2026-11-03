@@ -29,6 +29,11 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
+from .disk import (
+    DEFAULT_DISPATCH_DISK_HYSTERESIS_GB,
+    DEFAULT_DISPATCH_DISK_PATHS,
+    DEFAULT_DISPATCH_MIN_FREE_GB,
+)
 from .peak import PeakConfigError, PeakHours, parse_peak_hours
 
 # "owner/repo". Permissive about the characters GitHub allows, strict about the
@@ -384,6 +389,11 @@ class SchedulerConfig:
     precheck_hold_verdicts: tuple[str, ...] = DEFAULT_PRECHECK_HOLD_VERDICTS
     # The first dispatched_at whose pre-review arm is a measurement (Phase 4).
     pre_review_arm_since: str = DEFAULT_PRE_REVIEW_ARM_SINCE
+    # The dispatch disk gate (issue #51): no new run starts below this much free space,
+    # and dispatch resumes above the minimum plus the hysteresis band.
+    dispatch_min_free_gb: int = DEFAULT_DISPATCH_MIN_FREE_GB
+    dispatch_disk_hysteresis_gb: int = DEFAULT_DISPATCH_DISK_HYSTERESIS_GB
+    dispatch_disk_paths: tuple[str, ...] = DEFAULT_DISPATCH_DISK_PATHS
 
     def ordered_repos(self) -> list[RepoConfig]:
         """*Every* loaded repo, ordered: priority ascending, then name ascending.
@@ -488,6 +498,19 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
         pre_review_arm_since=_env_str(
             environ, "SCHEDULER_PRE_REVIEW_ARM_SINCE", DEFAULT_PRE_REVIEW_ARM_SINCE
         ),
+        dispatch_min_free_gb=_env_int_at_least(
+            environ,
+            "SCHEDULER_DISPATCH_MIN_FREE_GB",
+            DEFAULT_DISPATCH_MIN_FREE_GB,
+            0,
+        ),
+        dispatch_disk_hysteresis_gb=_env_int_at_least(
+            environ,
+            "SCHEDULER_DISPATCH_DISK_HYSTERESIS_GB",
+            DEFAULT_DISPATCH_DISK_HYSTERESIS_GB,
+            0,
+        ),
+        dispatch_disk_paths=_env_dispatch_disk_paths(environ),
     )
 
 
@@ -723,6 +746,23 @@ def _env_int_at_least(
     if value < minimum:
         raise ConfigError(f"{key}: {value} is below the minimum of {minimum}")
     return value
+
+
+def _env_dispatch_disk_paths(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """`SCHEDULER_DISPATCH_DISK_PATHS`: comma-separated paths the gate samples.
+
+    An empty value is the default pair, not "sample nothing": a gate with no path
+    cannot see the disk it exists to protect. A present-but-empty list (` , `) is a
+    `ConfigError`, naming the key.
+    """
+    key = "SCHEDULER_DISPATCH_DISK_PATHS"
+    raw = environ.get(key, "").strip()
+    if not raw:
+        return DEFAULT_DISPATCH_DISK_PATHS
+    paths = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if not paths:
+        raise ConfigError(f"{key}: no paths in {raw!r}")
+    return paths
 
 
 def _env_peak_hours(environ: Mapping[str, str]) -> PeakHours:

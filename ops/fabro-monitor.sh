@@ -25,6 +25,9 @@
 #   C7 scheduler-down   GET SCHEDULER_URL/health does not answer 200 in 5s   🔴 4h
 #   C8 scheduler-wedged queue non-empty AND every undrained coder pool idle
 #                       (at least one undrained), held for > WEDGE_MINUTES   🔴 4h
+#                       A scheduler paused by its disk gate (issue #51) is not
+#                       wedged: C8 reads `/health`'s `disk.gated` and reports the
+#                       pause instead of firing.
 #
 # C1 suppresses C2's connection failures (report the cause, not the symptom)
 # but never its 401 — a rejected token is its own problem. When the container
@@ -589,10 +592,14 @@ fi
 
 mark_evaluated C7
 c7_firing=0
+disk_gated=0
 http="$(curl -sS -o "$tmp/sched.json" -w '%{http_code}' -m 5 \
   "$SCHEDULER_URL/health" 2>"$tmp/sched.err")" || http=000
 if [ "$http" = 200 ]; then
   printf 'ok    C7 scheduler: %s/health 200\n' "$SCHEDULER_URL"
+  if jq -e '.disk.gated == true' "$tmp/sched.json" >/dev/null 2>&1; then
+    disk_gated=1
+  fi
 else
   c7_firing=1
   err="$(tr '\n' ' ' < "$tmp/sched.err" | cut -c1-120)"
@@ -641,7 +648,14 @@ else
     n_idle="$(jq '[.[] | select((.lease == null) and (.drained == false))] | length' \
       "$tmp/pools.json" 2>/dev/null)"
     n_drained=$(( ${n_pools:-0} - ${n_open:-0} ))
-    if [ "$peak_paused" = 1 ]; then
+    if [ "$disk_gated" = 1 ]; then
+      # The disk gate (issue #51) pauses dispatch on purpose. Reporting it as a wedge
+      # would page a human for the one condition that is already self-repairing; show
+      # the gate's own numbers instead and drop C8's window.
+      dstate="$(jq -r '.disk | "\(.free_gb // "?") GB free, minimum \(.min_free_gb // "?") GB"' "$tmp/sched.json" 2>/dev/null)"
+      printf 'ok    C8 scheduler-wedged: dispatch paused by the disk gate (%s; %s queued)\n' \
+        "$dstate" "$qlen"
+    elif [ "$peak_paused" = 1 ]; then
       # Paused on purpose: not a wedge, and C8_since is dropped so the window
       # restarts from the first sample after the pause ends.
       printf 'ok    C8 scheduler-wedged: dispatch paused for peak hours until %s (%s queued)\n' \

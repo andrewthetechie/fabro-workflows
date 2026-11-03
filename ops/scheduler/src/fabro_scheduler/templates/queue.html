@@ -96,6 +96,29 @@
 </div>
 {% endif %}
 
+{% if disk %}
+{# The dispatch disk gate (issue #51). Shown always, so "dispatch paused" cannot be
+   mistaken for an idle queue; the dispatch loop samples it every 5 seconds. #}
+<div class="mb-6 rounded-md border px-4 py-3 text-sm {% if disk.gated %}border-amber-700/60 bg-amber-950 text-amber-100{% else %}border-slate-800 bg-slate-900 text-slate-300{% endif %}">
+  <p>
+    {% if disk.gated %}
+      <strong class="text-amber-200">Disk gate &mdash; dispatch paused</strong>:
+      {% if disk.free_gb is not none %}{{ '%.1f'|format(disk.free_gb) }} GB{% else %}free space unknown{% endif %}
+      free{% if disk.path %} on <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">{{ disk.path }}</code>{% endif %},
+      below the <strong>{{ disk.min_free_gb }} GB</strong> minimum. No new coder or background
+      run starts; leases, release and receipt recovery keep running. Resumes at
+      <strong>{{ disk.min_free_gb + disk.hysteresis_gb }} GB</strong>.
+    {% else %}
+      <strong class="font-medium text-slate-200">Disk gate</strong> &mdash; dispatching;
+      {% if disk.free_gb is not none %}{{ '%.1f'|format(disk.free_gb) }} GB{% else %}free space unknown{% endif %}
+      free{% if disk.path %} on <code class="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.85em]">{{ disk.path }}</code>{% endif %}
+      (minimum {{ disk.min_free_gb }} GB).
+    {% endif %}
+    {% if disk.error %}<span class="text-slate-500">Unreadable: {{ disk.error }}</span>{% endif %}
+  </p>
+</div>
+{% endif %}
+
 {% if blocked_idle %}
 <div class="mb-6 rounded-md border border-amber-700/60 bg-amber-950 px-4 py-3 text-sm text-amber-100">
   <p><strong class="text-amber-200">Idle worker, queue momentarily blocked</strong> &mdash;

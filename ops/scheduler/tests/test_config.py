@@ -16,6 +16,9 @@ import pytest
 from fabro_scheduler.config import (
     DEFAULT_CODER_POOLS,
     DEFAULT_DB_PATH,
+    DEFAULT_DISPATCH_DISK_HYSTERESIS_GB,
+    DEFAULT_DISPATCH_DISK_PATHS,
+    DEFAULT_DISPATCH_MIN_FREE_GB,
     DEFAULT_FABRO_API_URL,
     DEFAULT_GITHUB_POLL_SECONDS,
     DEFAULT_PORT,
@@ -105,6 +108,33 @@ def test_zero_and_negative_priorities_are_kept_not_clamped(tmp_path):
         ("o/zero", 0),
         ("o/neg", -3),
     }
+
+
+def test_disk_gate_defaults_and_environment(tmp_path):
+    p = write(tmp_path, repo())
+    cfg = load_config(p, env={})
+    assert cfg.dispatch_min_free_gb == DEFAULT_DISPATCH_MIN_FREE_GB == 50
+    assert cfg.dispatch_disk_hysteresis_gb == DEFAULT_DISPATCH_DISK_HYSTERESIS_GB == 10
+    assert cfg.dispatch_disk_paths == DEFAULT_DISPATCH_DISK_PATHS
+    assert cfg.dispatch_disk_paths[0] == "/fabro-storage"
+
+    cfg = load_config(
+        p,
+        env={
+            "SCHEDULER_DISPATCH_MIN_FREE_GB": "80",
+            "SCHEDULER_DISPATCH_DISK_HYSTERESIS_GB": "5",
+            "SCHEDULER_DISPATCH_DISK_PATHS": "/data, /tmp",
+        },
+    )
+    assert cfg.dispatch_min_free_gb == 80
+    assert cfg.dispatch_disk_hysteresis_gb == 5
+    assert cfg.dispatch_disk_paths == ("/data", "/tmp")
+
+
+def test_an_empty_disk_gate_path_list_is_an_error(tmp_path):
+    p = write(tmp_path, repo())
+    with pytest.raises(ConfigError, match="SCHEDULER_DISPATCH_DISK_PATHS"):
+        load_config(p, env={"SCHEDULER_DISPATCH_DISK_PATHS": " , "})
 
 
 # --- names ----------------------------------------------------------------------

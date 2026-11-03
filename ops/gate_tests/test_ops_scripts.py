@@ -318,7 +318,7 @@ case "$url" in
   */runs\\?status=*) body=$(cat "$MM_ACTIVE") ;;
   */runs\\?*) body=$(cat "$MM_NEWEST") ;;
   # the scheduler answers only when a test wrote its pools; otherwise C7 fires and C8 skips
-  */health) [ -f "$MM_POOLS" ] || { printf '000'; exit 7; }; body='{"status":"ok"}' ;;
+  */health) [ -f "$MM_POOLS" ] || { printf '000'; exit 7; }; if [ -f "$MM_DISK" ]; then body=$(cat "$MM_DISK"); else body='{"status":"ok"}'; fi ;;
   */api/pools) [ -f "$MM_POOLS" ] || { printf '000'; exit 7; }; body=$(cat "$MM_POOLS") ;;
   */api/queue) [ -f "$MM_POOLS" ] || { printf '000'; exit 7; }; body=$(cat "$MM_QUEUE") ;;
   *) printf '000'; exit 22 ;;
@@ -363,6 +363,7 @@ class Monitor:
         run_files(["sh", REPO_ROOT / "ops/fabro-monitor.sh"], MM / "mon", path=f"{MM / 'bin'}:{ORIG_PATH}",
                   env={"MM_AUTOS": MM / "autos.json", "MM_ACTIVE": MM / "active.json", "MM_NEWEST": MM / "newest.json",
                        "MM_POOLS": MM / "pools.json", "MM_QUEUE": MM / "queue.json", "WEDGE_MINUTES": wedge,
+                       "MM_DISK": MM / "disk.json",
                        "DRY_RUN": "1", "FABRO_MONITOR_STATE": MM / "state", "FABRO_MONITOR_REPOS": "",
                        "SCHEDULER_URL": "http://127.0.0.1:1"})
         return MM / "mon.out"
@@ -442,3 +443,23 @@ def test_fabro_monitor_drained_pools(ck, tmp_path):
     (m.MM / "pools.json").unlink()
     out = m.run()
     ck("monitor C3: an unreadable /api/pools falls back to run age", "1|1", count("DRY.*dead-scheduler", file=out) + "|" + count("skip  C8", file=out))
+
+
+# A scheduler paused by its disk gate (issue #51) is not wedged. C8 reads
+# `/health`'s `disk.gated` and reports the pause instead of firing.
+def test_fabro_monitor_disk_gate(ck, tmp_path):
+    m = Monitor(tmp_path)
+    m.page("active.json", [])
+    m.page("newest.json", [m.row("BL1", "backlog", "running", m.ago(600))])
+    write(m.MM / "pools.json", '[{"coder_pool":"coders-a","drained":false,"lease":null}]')
+    write(m.MM / "queue.json", '[{"repo":"o/a","number":1}]')
+    write(m.MM / "disk.json",
+          '{"status":"ok","disk":{"gated":true,"free_gb":40.0,"min_free_gb":50,"hysteresis_gb":10}}')
+    out = m.run(wedge="0")
+    ck("monitor C8: a disk-gated scheduler does not fire wedged", "0", count("DRY.*scheduler-wedged", file=out))
+    ck("monitor C8: the gate state is reported", "1", count("dispatch paused by the disk gate (40 GB free, minimum 50 GB; 1 queued)", file=out))
+    # Above the gate, the same state is a wedge again.
+    write(m.MM / "disk.json",
+          '{"status":"ok","disk":{"gated":false,"free_gb":100.0,"min_free_gb":50,"hysteresis_gb":10}}')
+    out = m.run(wedge="0")
+    ck("monitor C8: an open disk gate restores the wedge alert", "1", count("DRY.*scheduler-wedged", file=out))

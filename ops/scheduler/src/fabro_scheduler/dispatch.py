@@ -59,6 +59,7 @@ import httpx
 
 from .background import BackgroundLane, BoxHealth
 from .config import SchedulerConfig
+from .disk import DiskGate
 from .fabro import FabroClient, FabroError, RunNotStarted
 from .github import (
     IN_PROGRESS_LABEL,
@@ -243,9 +244,14 @@ class DispatchLoop:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         lane: BackgroundLane | None = None,
         health: BoxHealth | None = None,
+        disk_gate: DiskGate | None = None,
     ) -> None:
         self._config = config
         self._clock = clock
+        # The dispatch disk gate (issue #51). `None` in a test that does not care about
+        # the host disk; `main` always passes one. Its `sample` is cheap and the gate
+        # logs only on a state change, so every tick can call it.
+        self._disk = disk_gate
         # The background lane (C7). Built here unless injected, so `tick` always has one;
         # with `SCHEDULER_BOX_HEALTH` empty it does nothing and makes no call at all.
         self._lane = (
@@ -309,13 +315,19 @@ class DispatchLoop:
         operator has set the override. Runs already on a box are not touched.
         """
         now = self._clock()
+        # Sample every tick, even during peak hours, so `/health` and the page always
+        # show the current gate and a state change is logged once, not per request.
+        disk_gated = self._disk.sample() if self._disk is not None else False
+        if disk_gated:
+            # No new coder or background run while the disk is too full. The producers
+            # and the lane's finish/evict passes still run: queued work is cheap, and a
+            # background run already on a box must still be recorded when it ends.
+            return self._paused(now, allow_background_starts=False)
         if self._peak_pause(now):
             # Background runs ignore the peak-hours pause (D7): they spend no hosted
             # credits, and a gap is a gap whatever the hour. The pause is when boxes are
             # most often free, so the prechecks are kept queued through it too.
-            self._produce(now)
-            self._lane.tick(now)
-            return []
+            return self._paused(now, allow_background_starts=True)
         ranked = self._ranked(now)
 
         attempts: list[DispatchAttempt] = []
@@ -365,6 +377,17 @@ class DispatchLoop:
         self._produce(now)
         self._lane.tick(now)
         return attempts
+
+    def _paused(self, now: datetime, *, allow_background_starts: bool) -> list[DispatchAttempt]:
+        """A pass with no coder dispatch: keep the producers and the lane moving.
+
+        Used by the peak-hours pause (background runs continue) and the disk gate
+        (they do not: a full host must not start one). Both still finish and evict, so
+        a run already on a box is recorded when it ends.
+        """
+        self._produce(now)
+        self._lane.tick(now, allow_starts=allow_background_starts)
+        return []
 
     def _produce(self, now: datetime) -> None:
         """Run the issue producers (07, 08, 10) on the ranked queue, when any is on.
@@ -500,6 +523,18 @@ class DispatchLoop:
             # Both mean the same thing: fabro has no run, so the labels go back.
             self._rollback_labels(repo, number)
             log.warning("dispatch: %s#%s: fabro refused the run: %s", repo, number, exc)
+            return attempt(failed_stage=STAGE_CREATE, error=str(exc))
+        except Exception as exc:  # noqa: BLE001 - any pre-run failure must restore labels
+            # The 2026-10-19 `OSError: No space left on device` from
+            # `tempfile.mkdtemp` was neither of the above, escaped `tick()`, and left
+            # the receipt on the issue with no run behind it. The module docstring's
+            # promise is "a failure anywhere before the run exists rolls the labels
+            # back", so this catches the rest of that window. `RunNotStarted` is
+            # handled above: by then the run exists and stays.
+            self._rollback_labels(repo, number)
+            log.exception(
+                "dispatch: %s#%s: failed before a run existed: %s", repo, number, exc
+            )
             return attempt(failed_stage=STAGE_CREATE, error=str(exc))
 
         # 3. The lease.

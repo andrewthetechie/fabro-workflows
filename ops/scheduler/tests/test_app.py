@@ -19,9 +19,11 @@ import httpx
 import pytest
 import respx
 from fastapi.testclient import TestClient
+from types import SimpleNamespace
 
 from fabro_scheduler.app import build_app, create_app
 from fabro_scheduler.config import load_config
+from fabro_scheduler.disk import GIB, DiskGate
 from fabro_scheduler.fabro import FabroClient
 from fabro_scheduler.github import Issue
 from fabro_scheduler.inventory import InventoryPoller
@@ -192,6 +194,39 @@ def test_health_reports_whether_the_dispatch_path_is_armed(config, store):
 def test_health_reports_the_starvation_ceiling(config, store):
     body = TestClient(build_app(config, store)).get("/health").json()
     assert body["starvation_ceiling_seconds"] == 4 * 60 * 60
+
+
+def test_health_reports_the_disk_gate(config, store, tmp_path):
+    gate = DiskGate(
+        [str(tmp_path)],
+        min_free_gb=50,
+        hysteresis_gb=10,
+        statvfs=lambda _path: SimpleNamespace(f_bavail=40 * GIB, f_frsize=1),
+    )
+    assert gate.sample() is True
+
+    body = TestClient(build_app(config, store, disk_gate=gate)).get("/health").json()
+
+    assert body["disk"]["gated"] is True
+    assert body["disk"]["free_gb"] == 40.0
+    assert body["disk"]["min_free_gb"] == 50
+    assert body["disk"]["hysteresis_gb"] == 10
+
+
+def test_the_page_shows_the_disk_gate(config, store, tmp_path):
+    gate = DiskGate(
+        [str(tmp_path)],
+        min_free_gb=50,
+        hysteresis_gb=10,
+        statvfs=lambda _path: SimpleNamespace(f_bavail=40 * GIB, f_frsize=1),
+    )
+    gate.sample()
+
+    html = TestClient(build_app(config, store, disk_gate=gate)).get("/").text
+
+    assert "Disk gate" in html
+    assert "dispatch paused" in html
+    assert "50 GB" in html
 
 
 # --- the queue page and its JSON ---------------------------------------------------

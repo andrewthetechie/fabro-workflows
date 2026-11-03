@@ -823,6 +823,15 @@ class FabroClient:
                 status_code=exc.status_code,
                 detail=exc.detail,
             ) from exc
+        except Exception as exc:  # noqa: BLE001 - after create, the run exists
+            # Any other start failure still leaves a run in `submitted`. It must be
+            # `RunNotStarted`, not a pre-run error: `DispatchLoop` rolls the labels
+            # back for the latter, which would mark an issue free while its run is
+            # still there.
+            raise RunNotStarted(
+                f"run {run_id} was created but starting it raised: {exc}",
+                run_id=run_id,
+            ) from exc
 
         log.info(
             "fabro: dispatched %s#%s -> run %s (%s) status=%s pool=%s env=%s version=%s sha=%s reused=%s",
