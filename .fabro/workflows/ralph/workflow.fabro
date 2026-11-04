@@ -2068,6 +2068,16 @@ jq -r '\"diff hygiene: config \" + .config + \", blocking [\" + (.blocking | joi
     // \"tolerate an already-open PR\" but swallows every real gh error into a
     // discarded fallback, and then dies at the next line under `set -e` with the
     // cause buried. Asking first is the same idempotency with the error intact.
+    //
+    // Creating the PR and labelling it are separate calls, and only the PR decides the
+    // node's outcome. `gh pr create --label` creates the PR, then adds the label in a second
+    // request, and exits 1 if that request fails: run 01M6K00SQAN7RQJCWKKZ7HWBBY left
+    // flakeradar#126 open, unlabelled and unreported when GitHub returned an empty body. So
+    // `pr_number` is written as soon as a PR is confirmed, a failed create is read back
+    // before it counts, and a missing label is not fatal: `merge_gate` refuses an unlabelled
+    // PR and the report says why. The label is added on the existing-PR path too, so a
+    // retry repairs it. A failed create with no PR writes gh's own error to
+    // `stuck_reason.md`, because the failure signature is cut off inside the push output.
     open_pr [label="Push and open PR", shape=parallelogram, output_schema="routing",
         script="set -e
 B=$(git rev-parse --abbrev-ref HEAD)
@@ -2080,30 +2090,32 @@ T=$(cat /tmp/fabro/pr_title.txt)
 if [ -s /tmp/fabro/loop_exhausted ]; then
   { echo; echo '### Unmet criteria'; echo; echo 'The loop ran out before these Tasks passed, so this pull request must not merge automatically:'; echo; jq -r '.[] | select(.status != \"passed\") | \"- \" + (.title // .id) + \" (\" + (.status // \"open\") + \")\"' /tmp/fabro/tasks.json; } >> /tmp/fabro/pr_body.md
 fi
-rm -f /tmp/fabro/draft_reason.md
+rm -f /tmp/fabro/draft_reason.md /tmp/fabro/pr_create.err /tmp/fabro/stuck_reason.md
 DRAFT=false
 if [ -e /tmp/fabro/pr_draft ]; then DRAFT=true; fi
 PR_URL=$(gh pr view \"$B\" --json url --jq .url 2>/dev/null || true)
 if [ -z \"$PR_URL\" ]; then
   if [ $DRAFT = true ]; then
-    gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md --label agent-authored --draft
+    gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md --draft 2> /tmp/fabro/pr_create.err || cat /tmp/fabro/pr_create.err >&2
   else
-    gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md --label agent-authored
+    gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md 2> /tmp/fabro/pr_create.err || cat /tmp/fabro/pr_create.err >&2
   fi
-  PR_URL=$(gh pr view \"$B\" --json url --jq .url)
+  PR_URL=$(gh pr view \"$B\" --json url --jq .url 2>/dev/null || true)
 elif [ $DRAFT = true ]; then
   gh pr ready \"$B\" --undo || echo 'could not turn the open PR back into a draft' >&2
   gh pr edit \"$B\" --body-file /tmp/fabro/pr_body.md || echo 'could not update the PR body' >&2
 fi
 if [ -z \"$PR_URL\" ]; then
-  echo 'no PR is visible for head branch '\"$B\"' after create; refusing to report an empty pr_url' >&2
+  { echo 'no PR is visible for head branch '\"$B\"' after create; refusing to report an empty pr_url'; cat /tmp/fabro/pr_create.err 2>/dev/null || true; } > /tmp/fabro/stuck_reason.md
+  head -n 1 /tmp/fabro/stuck_reason.md >&2
   exit 1
 fi
+echo $PR_URL | sed 's|.*/||' > /tmp/fabro/pr_number
+gh pr edit \"$B\" --add-label agent-authored || { sleep 10; gh pr edit \"$B\" --add-label agent-authored; } || echo 'could not add the agent-authored label, so merge_gate will refuse this PR and report why' >&2
 if jq -e '[.labels[]?.name] | index(\"architecture\") != null' /tmp/fabro/issue.json > /dev/null 2>&1; then
   gh label create architecture --color 0E8A16 --description 'Architecture review: a deepening candidate (ADR 0012)' 2>/dev/null || true
-  gh pr edit \"$B\" --add-label architecture
+  gh pr edit \"$B\" --add-label architecture || echo 'could not add the architecture label' >&2
 fi
-echo $PR_URL | sed 's|.*/||' > /tmp/fabro/pr_number
 if [ $DRAFT = true ]; then
   { echo 'The final validation failed twice on the same code, so this run stopped before review and merge. Draft PR '$PR_URL' holds the work that passed review; a human makes CI pass and marks it ready for review.'; if [ -s /tmp/fabro/final_failures.txt ]; then echo; echo 'Failing tests:'; echo; echo '```'; cat /tmp/fabro/final_failures.txt; echo '```'; fi; } > /tmp/fabro/draft_reason.md
 else
@@ -3558,9 +3570,14 @@ case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
 if [ \"$N\" != 0 ]; then
   gh issue edit $N --remove-label agent-in-progress --add-label agent-stuck || true
   if [ -s /tmp/fabro/stuck_reason.md ]; then
-    { echo 'Agent run stopped before implementing this issue. The run reported:'; echo; cat /tmp/fabro/stuck_reason.md; } > /tmp/fabro/stuck_comment.md
+    { echo 'Agent run stopped without opening a pull request. The run reported:'; echo; cat /tmp/fabro/stuck_reason.md; } > /tmp/fabro/stuck_comment.md
   else
     echo 'Agent run could not complete this issue and gave up. See the fabro run for details.' > /tmp/fabro/stuck_comment.md
+  fi
+  PR=$(cat /tmp/fabro/pr_number 2>/dev/null || true)
+  if [ -n \"$PR\" ] && [ ! -s /tmp/fabro/draft_reason.md ]; then
+    { echo 'Agent run stopped after opening pull request #'$PR', which holds its work but did not finish review and merge.'; echo; cat /tmp/fabro/stuck_comment.md; } > /tmp/fabro/stuck_comment.tmp
+    mv /tmp/fabro/stuck_comment.tmp /tmp/fabro/stuck_comment.md
   fi
   gh issue comment $N --body-file /tmp/fabro/stuck_comment.md || true
 fi
@@ -3581,7 +3598,9 @@ echo done"]
     // decides (invariants-merge). Every node that writes `stuck_reason.md` either ends the
     // run or exits into this node, and `prep` deletes it, so the file is never stale here.
     //
-    // `phase` is `pre` until `pr_handoff` writes `post`. `pre` -> `mark_stuck`: the issue
+    // `phase` is `pre` until `pr_handoff` writes `post`, but a PR exists from the moment
+    // `open_pr` writes `pr_number`, so a recorded PR counts as `post`: `pr_handoff` failing on
+    // a GitHub error must not tell the issue that nothing was opened. `pre` -> `mark_stuck`: the issue
     // gets `agent-stuck` and a comment, and no PR exists. That edge is the unconditional one,
     // because fabro rejects a node whose every edge has a condition (R12). `post` -> `mark_needs_human`, which
     // needs BOTH reason files -- the blocked and needs-human renderers read different ones,
@@ -3600,6 +3619,7 @@ echo done"]
 SIG=$(head -c 600)
 PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
 case \"$PH\" in pre | post) : ;; *) PH=pre ;; esac
+if [ \"$PH\" = pre ] && [ -s /tmp/fabro/pr_number ]; then PH=post; fi
 WHY=''
 if [ -n \"$SIG\" ]; then
   NODE=${SIG%%|*}

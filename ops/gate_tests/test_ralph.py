@@ -1286,11 +1286,13 @@ def test_ralph_stop_reason(ck, tmp_path):
     T = tmp_path / "sb"
     stop = stage_r(ck, "stop_reason", tmp_path / "stage", root=T)
 
-    def go(sig, reason=None, phase="pre"):
+    def go(sig, reason=None, phase="pre", pr=None):
         rm(T); T.mkdir()
         write(T / "phase", phase + "\n")
         if reason:
             write(T / "stuck_reason.md", reason + "\n")
+        if pr:
+            write(T / "pr_number", pr + "\n")
         r = sh(stop, stdin=sig)
         return r, cat(T / "stuck_reason.md")
 
@@ -1309,6 +1311,10 @@ def test_ralph_stop_reason(ck, tmp_path):
     r, why = go("", None, "post")
     ck("stop_reason: no signature, no file: names the last agent stage", "1", count("The last agent stage was unknown", why, flags="F"))
     ck("stop_reason: post routes post", "post", ctx(lastjson(r.out), "stop_phase"))
+    # A PR exists before `pr_handoff` writes `post`, so a stop there reaches the PR.
+    r, why = go("pr_handoff|deterministic|script failed with exit code: <n>", None, "pre", "126")
+    ck("stop_reason: a recorded PR routes post while phase is pre", "post", ctx(lastjson(r.out), "stop_phase"))
+    ck("stop_reason: and the PR's reason file names the node", "1", count("pr_handoff failed", file=T / "needs_human_reason", flags="F"))
 
 
 def test_ralph_endings(ck):

@@ -710,12 +710,15 @@ def test_dependabot_open_pr_after_merge(ck, tmp_path):
 echo "gh $*" >> "$GH_LOG"
 case "$1 $2" in
   "pr view") [ -f "$GH_STATE/created" ] && echo "https://github.com/andrewthetechie/jelly-swipe/pull/412" ;;
-  "pr create") touch "$GH_STATE/created"; echo "https://github.com/andrewthetechie/jelly-swipe/pull/412" ;;
+  "pr create") touch "$GH_STATE/created"; echo "https://github.com/andrewthetechie/jelly-swipe/pull/412"
+      [ -n "${GH_CREATE_ERRORS:-}" ] && exit 1 ;;
+  "pr edit") [ -n "${GH_EDIT_FAIL:-}" ] && exit 1 ;;
   *) : ;;
 esac
 [ -n "${GH_FAIL:-}" ] && exit 1
 exit 0
 """)
+    stub(op_stubs, "sleep", "#!/bin/sh\nexit 0\n")
 
     def op_repo(name):
         """A bare origin, a clone on run, and the contract files open_pr reads."""
@@ -754,10 +757,26 @@ exit 0
     ck("open_pr: commit body ends with Resolves", "1", count("^Resolves #412$", file=OP / "fab/commit_body.md"))
     ck("open_pr: PR body has the start marker", "1", count("fabro:commit-body:start", file=OP / "fab/pr_body.md"))
     ck("open_pr: PR body has the end marker", "1", count("fabro:commit-body:end", file=OP / "fab/pr_body.md"))
-    ck("open_pr: the pr_create call has all three labels", "1", count("pr create.*--label agent-authored --label security --label dependencies", file=OP / "gh.log"))
+    ck("open_pr: the pr_create call has no labels", "0", count("pr create.*--label", file=OP / "gh.log"))
+    ck("open_pr: all three labels are their own call", "1", count("pr edit run --add-label agent-authored --add-label security --add-label dependencies", file=OP / "gh.log"))
     ck("open_pr: the tracking issue gets Review", "1", count("issue edit 412 --add-label Review", file=OP / "gh.log"))
     ck("open_pr: pr_number is 412", "412", cat(OP / "fab/pr_number"))
     ck("open_pr: publishes pr_url", "https://github.com/andrewthetechie/jelly-swipe/pull/412", route(OP / "open_pr", ".context_updates.pr_url"))
+
+    # A failed label request cannot strand an open PR (flakeradar#126): the node still hands
+    # it to the phase, and merge_gate refuses it with a report.
+    OP = op_repo("oplabel")
+    op_run(OP, "open_pr", GH_EDIT_FAIL="1")
+    ck("open_pr, label fails: exit 0", "0", cat(OP / "open_pr.rc"))
+    ck("open_pr, label fails: tried twice", "2", count("pr edit run --add-label", file=OP / "gh.log"))
+    ck("open_pr, label fails: pr_number is 412", "412", cat(OP / "fab/pr_number"))
+    ck("open_pr, label fails: publishes pr_url", "https://github.com/andrewthetechie/jelly-swipe/pull/412", route(OP / "open_pr", ".context_updates.pr_url"))
+
+    # gh reports a failure, but the PR is there: the PR decides.
+    OP = op_repo("opcreate")
+    op_run(OP, "open_pr", GH_CREATE_ERRORS="1")
+    ck("open_pr, create errors, PR exists: exit 0", "0", cat(OP / "open_pr.rc"))
+    ck("open_pr, create errors, PR exists: pr_number is 412", "412", cat(OP / "fab/pr_number"))
 
     # A manifest path with no spaces is never cut mid-path into an empty "in": the subject
     # falls back to the manifest's basename, then drops " in <manifest>" (jelly-swipe issue

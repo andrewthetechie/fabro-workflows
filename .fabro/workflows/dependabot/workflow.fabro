@@ -686,6 +686,9 @@ echo blocked"]
     // The patch PR (ADR 0022 D5, D6). The subject is `fix:`, deliberately: release-please cuts a patch release
     // for a security fix on jelly-swipe and lawncare-saas, which is right. The commit body's marker block holds
     // `Resolves #N`, which GitHub reads, and the shared phase reads `linked_issues.json` from the link.
+    // The labels are a separate, non-fatal call after `pr_number` is written. `gh pr create --label` exits 1 when
+    // its second request fails, with the PR already open (backlog's `open_pr` says what that cost). `merge_gate`
+    // refuses a PR without `agent-authored`, and the report says why.
     open_pr [label="Push and open the patch PR", shape=parallelogram, output_schema="routing", timeout="10m",
         script="echo open_pr > /tmp/fabro/dep/stopped_at
 stop() { printf '%s' \"$1\" > /tmp/fabro/dep/stop_reason; echo \"$1\" >&2; exit 1; }
@@ -736,13 +739,14 @@ git fetch origin \"$R\"
 T=$(cat /tmp/fabro/pr_title.txt)
 PR_URL=$(gh pr view \"$B\" --json url --jq .url 2>/dev/null || true)
 if [ -z \"$PR_URL\" ]; then
-  gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md --label agent-authored --label security --label dependencies
-  PR_URL=$(gh pr view \"$B\" --json url --jq .url)
+  gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md || echo 'gh pr create failed; reading the branch back before giving up' >&2
+  PR_URL=$(gh pr view \"$B\" --json url --jq .url 2>/dev/null || true)
 fi
 if [ -z \"$PR_URL\" ]; then
   stop \"no PR is visible for head branch $B after create; refusing to report an empty pr_url\"
 fi
 echo \"$PR_URL\" | sed 's|.*/||' > /tmp/fabro/pr_number
+gh pr edit \"$B\" --add-label agent-authored --add-label security --add-label dependencies || { sleep 10; gh pr edit \"$B\" --add-label agent-authored --add-label security --add-label dependencies; } || echo 'could not add the PR labels, so merge_gate will refuse this PR and report why' >&2
 gh issue edit \"$N\" --add-label Review >/dev/null 2>&1 || true
 rm -f $D/stopped_at
 jq -cn --arg u \"$PR_URL\" '{context_updates: {pr_url: $u}}'"]

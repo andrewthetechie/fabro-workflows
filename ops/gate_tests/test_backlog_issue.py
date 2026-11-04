@@ -45,6 +45,7 @@ def test_open_pr(ck, tmp_path):
     T = tmp_path / "openpr"
     (T / "bin").mkdir(parents=True)
     gate = stage(ck, "open_pr", T)
+    stub(T / "bin", "sleep", SLEEP_STUB)
 
     # The sandbox clone is single-branch, so `refs/remotes/origin/<run branch>` never
     # exists and gh cannot resolve the head remote from it. These stubs therefore do
@@ -70,7 +71,22 @@ case "$1 $2" in
           echo "aborted: you must first push the current branch to a remote, or use the --head flag" >&2
           exit 1
       fi
-      : > "$GH_STATE/created"; exit 0 ;;
+      : > "$GH_STATE/created"
+      if [ -f "$GH_STATE/create_errors_after" ]; then
+          echo "https://github.com/andrewthetechie/jelly-swipe/pull/123"
+          echo "pull request create failed: unexpected end of JSON input" >&2
+          exit 1
+      fi
+      exit 0 ;;
+  "pr edit")
+      case "$*" in *--add-label*)
+          if [ -f "$GH_STATE/edit_fails" ]; then
+              echo "GraphQL: unexpected end of JSON input" >&2; exit 1
+          fi
+          if [ -f "$GH_STATE/edit_fails_once" ]; then
+              rm "$GH_STATE/edit_fails_once"; exit 1
+          fi ;;
+      esac ;;
 esac
 exit 0
 """)
@@ -80,7 +96,8 @@ exit 0
     log = T / "gh.log"
 
     def setup(marker=None):
-        rm(log, T / "pr_exists", T / "created", T / "create_fails", T / "pr_number")
+        rm(log, T / "pr_exists", T / "created", T / "create_fails", T / "pr_number",
+           T / "create_errors_after", T / "edit_fails", T / "edit_fails_once")
         write(T / "issue.json", '{"number":350,"title":"t"}')
         write(T / "pr_title.txt", "fix: a title")
         write(T / "pr_body.md", "")
@@ -116,6 +133,39 @@ exit 0
     ck("create failure fails stage", "1", r.rc)
     ck("gh's own error survives", "1", count("you must first push the current branch", r.out))
     ck("no pr_url on failure", "", jq('.context_updates.pr_url // ""', lastjson(r.out), pipe=True))
+    ck("create failure: the reason carries gh's error", "1", count("you must first push the current branch", file=T / "stuck_reason.md"))
+    ck("create failure: no pr_number", "absent", present(T / "pr_number"))
+
+    # 3a. THE REGRESSION (flakeradar#126). The label is not part of the create, so a failed
+    #     label request cannot fail the node, and the PR is still handed to the merge stage,
+    #     whose report is the only thing that posts the Refuter's findings.
+    setup()
+    r = go()
+    ck("create carries no label", "0", count("^pr create.*--label", file=log, flags="E"))
+    ck("the label is its own call", "1", count(f"^pr edit {BR} --add-label agent-authored", file=log))
+    setup("edit_fails")
+    r = go()
+    ck("label fails: exit 0", "0", r.rc)
+    ck("label fails: pr_number written", "123", cat(T / "pr_number"))
+    ck("label fails: pr_url reported", "https://github.com/andrewthetechie/jelly-swipe/pull/123", url(r.out))
+    ck("label fails: tried twice", "2", count(f"^pr edit {BR} --add-label agent-authored", file=log))
+    ck("label fails: says so", "1", count("merge_gate will refuse this PR", r.out))
+    setup("edit_fails_once")
+    r = go()
+    ck("label fails once: exit 0", "0", r.rc)
+    ck("label fails once: the retry lands", "2", count(f"^pr edit {BR} --add-label agent-authored", file=log))
+    ck("label fails once: no warning", "0", count("merge_gate will refuse this PR", r.out))
+
+    # 3b. gh reports a failure, but the PR is there. The PR decides, not the exit code.
+    setup("create_errors_after")
+    r = go()
+    ck("create errors, PR exists: exit 0", "0", r.rc)
+    ck("create errors, PR exists: pr_number written", "123", cat(T / "pr_number"))
+
+    # 3c. A retry over an open PR repairs the label that the first visit lost.
+    setup("pr_exists")
+    go()
+    ck("existing PR: the label is added", "1", count(f"^pr edit {BR} --add-label agent-authored", file=log))
 
     # 4. An Architecture issue's PR gets the label (ADR 0012 D8); a plain one does not.
     setup()
@@ -125,6 +175,11 @@ exit 0
     setup()
     go()
     ck("plain PR: not labelled", "0", count("add-label architecture", file=log))
+    setup("edit_fails")
+    write(T / "issue.json", '{"number":350,"title":"t","labels":[{"name":"architecture"}]}')
+    r = go()
+    ck("architecture label fails: exit 0", "0", r.rc)
+    ck("architecture label fails: pr_number written", "123", cat(T / "pr_number"))
 
     # 5. #35: the same tree failed the final validation again. The PR opens as a draft so
     #    the reviewed work is not lost, the issue is not handed to review, and the reason
@@ -530,7 +585,7 @@ def test_mark_stuck(ck, tmp_path):
     def setup():
         write(log, "")
         rm(FAB / "issue.json", FAB / "issue_number", FAB / "stuck_reason.md",
-           FAB / "stuck_comment.md", FAB / "draft_reason.md")
+           FAB / "stuck_comment.md", FAB / "draft_reason.md", FAB / "pr_number")
 
     setup()
     write(FAB / "issue.json", '{"number":356}')
@@ -548,7 +603,24 @@ def test_mark_stuck(ck, tmp_path):
     ck("reason: exits 0", "0", r.rc)
     ck("reason: still swaps the label", "1", count("issue edit 1279 --remove-label agent-in-progress --add-label agent-stuck", file=log))
     ck("reason: comment carries it", "1", count("^blocker #1278 is not merged$", file=FAB / "stuck_comment.md"))
-    ck("reason: introduces it", "1", count("^Agent run stopped before implementing this issue. The run reported:$", file=FAB / "stuck_comment.md"))
+    ck("reason: introduces it", "1", count("^Agent run stopped without opening a pull request. The run reported:$", file=FAB / "stuck_comment.md"))
+    ck("reason, no PR: names no PR", "0", count("stopped after opening pull request", file=FAB / "stuck_comment.md"))
+
+    # A PR exists: the comment says so first, with or without a reason.
+    setup()
+    write(FAB / "issue.json", '{"number":356}')
+    write(FAB / "pr_number", "126\n")
+    r = go()
+    ck("open PR: exits 0", "0", r.rc)
+    ck("open PR: names it first", "1", count("^Agent run stopped after opening pull request #126,", cat(FAB / "stuck_comment.md").splitlines()[0]))
+    ck("open PR: keeps the generic line", "1", count("could not complete this issue", file=FAB / "stuck_comment.md"))
+    ck("open PR: comments from the file", "1", count(f"issue comment 356 --body-file {FAB}/stuck_comment.md", file=log))
+    setup()
+    write(FAB / "issue.json", '{"number":356}')
+    write(FAB / "pr_number", "126\n")
+    write(FAB / "draft_reason.md", "Draft PR holds the work\n")
+    go()
+    ck("draft: its own reason names the PR", "0", count("stopped after opening pull request", file=FAB / "stuck_comment.md"))
 
     # THE REGRESSION: claim died before writing issue.json, so the only record of the
     # issue is the number claim wrote first.
