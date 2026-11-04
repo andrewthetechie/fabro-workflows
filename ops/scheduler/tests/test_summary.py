@@ -41,25 +41,31 @@ EVENT_LINES = """
 {"seq": 1, "event": "run.created", "properties": {"title": "Backlog"}}
 {"seq": 2, "event": "stage.started", "node_id": "start", "properties": {"index": 0}}
 {"seq": 3, "event": "edge.selected", "properties": {"from_node": "start", "to_node": "claim", "reason": "unconditional", "stage_status": "succeeded", "is_jump": false}}
-{"seq": 4, "event": "stage.started", "node_id": "spec", "properties": {"index": 3}}
-{"seq": 5, "event": "agent.error", "node_id": "spec", "properties": {"stage": "spec", "visit": 1, "event": {"Error": {"error": {"kind": "llm", "llm_kind": "access_denied", "provider": "kimi"}}}}}
-{"seq": 6, "event": "agent.route.failover", "node_id": "spec", "properties": {"stage": "spec", "visit": 1, "event": {"RouteFailover": {"from": "kimi/kimi-k3", "to": "zai/glm-5.3", "attempt": 1, "error": {"kind": "llm", "llm_kind": "access_denied", "provider": "kimi", "status": 403}}}}}
-{"seq": 7, "event": "agent.route.failover", "properties": {"stage": "spec", "visit": 2, "event": {"RouteFailover": {"from": "kimi/kimi-k3", "to": "zai/glm-5.3", "error": {"llm_kind": "access_denied"}}}}}
-{"seq": 8, "event": "stage.started", "node_id": "review_merge.review_fix", "properties": {"index": 88}}
-{"seq": 9, "event": "stage.failed", "node_id": "review_merge.review_fix", "properties": {"index": 88, "failure": {"message": "handler timed out after 900000ms", "category": "transient_infra", "system_actor": "timeout"}, "will_retry": true}}
-{"seq": 10, "event": "stage.retrying", "node_id": "review_merge.review_fix", "properties": {"index": 88, "attempt": 1, "max_attempts": 2}}
-{"seq": 11, "event": "stage.failed", "node_id": "review_merge.review_fix", "properties": {"index": 88, "failure": {"message": "handler timed out after 900000ms", "category": "transient_infra", "system_actor": "timeout"}, "will_retry": false}}
-{"seq": 12, "event": "stage.failed", "node_id": "validate", "properties": {"failure": {"message": "Script failed with exit code: 1", "category": "deterministic"}}}
-{"seq": 13, "event": "stage.completed", "node_id": "review_merge.refute_gate", "properties": {"status": "succeeded", "context_updates": {"refute_verdict": "fail", "refute_not_met": true, "refute_fix_attempts": 0}}}
-{"seq": 14, "event": "stage.completed", "node_id": "review_merge.refute_gate", "properties": {"status": "succeeded", "context_updates": {"refute_verdict": "pass", "refute_not_met": "false"}}}
-{"seq": 15, "event": "stage.completed", "node_id": "review_merge.refute_gate", "properties": {"status": "succeeded", "context_updates": {"refute_verdict": "fail"}}}
-{"seq": 16, "event": "stage.completed", "node_id": "review_merge.standards_gate", "properties": {"context_updates": {"refute_verdict": "pass"}}}
-{"seq": 17, "event": "stage.started", "node_id": "human_rescue", "properties": {}}
-{"seq": 18, "event": "edge.selected", "properties": {"from_node": "review_merge.review_fix", "to_node": "review_merge.mark_needs_human", "reason": "unconditional", "stage_status": "failed"}}
-{"seq": 19, "event": "stage.started", "node_id": "exit", "properties": {}}
-{"seq": 20, "event": "stage.failed", "node_id": "validate", "properties": "not an object"}
-{"seq": 21, "event": "agent.route.failover", "properties": {"stage": "spec", "event": "not an object"}}
-{"seq": 22, "event": "edge.selected", "properties": {"from_node": "x"}}
+{"seq": 4, "event": "stage.started", "node_id": "claim", "properties": {"index": 1}}
+{"seq": 5, "event": "stage.completed", "node_id": "claim", "properties": {"status": "succeeded", "timing": {"wall_time_ms": 5407}}}
+{"seq": 6, "event": "stage.started", "node_id": "improve", "properties": {"index": 2}}
+{"seq": 7, "event": "stage.completed", "node_id": "improve", "properties": {"status": "succeeded", "timing": {"wall_time_ms": 600000}}}
+{"seq": 8, "event": "stage.started", "node_id": "improve", "properties": {"index": 2}}
+{"seq": 9, "event": "stage.completed", "node_id": "improve", "properties": {"status": "succeeded", "timing": {"wall_time_ms": 2700000}}}
+{"seq": 10, "event": "stage.started", "node_id": "spec", "properties": {"index": 3}}
+{"seq": 11, "event": "agent.error", "node_id": "spec", "properties": {"stage": "spec", "visit": 1, "event": {"Error": {"error": {"kind": "llm", "llm_kind": "access_denied", "provider": "kimi"}}}}}
+{"seq": 12, "event": "agent.route.failover", "node_id": "spec", "properties": {"stage": "spec", "visit": 1, "event": {"RouteFailover": {"from": "kimi/kimi-k3", "to": "zai/glm-5.3", "attempt": 1, "error": {"kind": "llm", "llm_kind": "access_denied", "provider": "kimi", "status": 403}}}}}
+{"seq": 13, "event": "agent.route.failover", "properties": {"stage": "spec", "visit": 2, "event": {"RouteFailover": {"from": "kimi/kimi-k3", "to": "zai/glm-5.3", "error": {"llm_kind": "access_denied"}}}}}
+{"seq": 14, "event": "stage.started", "node_id": "review_merge.review_fix", "properties": {"index": 88}}
+{"seq": 15, "event": "stage.failed", "node_id": "review_merge.review_fix", "properties": {"index": 88, "failure": {"message": "handler timed out after 900000ms", "category": "transient_infra", "system_actor": "timeout"}, "will_retry": true}}
+{"seq": 16, "event": "stage.retrying", "node_id": "review_merge.review_fix", "properties": {"index": 88, "attempt": 1, "max_attempts": 2}}
+{"seq": 17, "event": "stage.failed", "node_id": "review_merge.review_fix", "properties": {"index": 88, "failure": {"message": "handler timed out after 900000ms", "category": "transient_infra", "system_actor": "timeout"}, "will_retry": false}}
+{"seq": 18, "event": "stage.failed", "node_id": "validate", "properties": {"failure": {"message": "Script failed with exit code: 1", "category": "deterministic"}}}
+{"seq": 19, "event": "stage.completed", "node_id": "review_merge.refute_gate", "properties": {"status": "succeeded", "context_updates": {"refute_verdict": "fail", "refute_not_met": true, "refute_fix_attempts": 0}}}
+{"seq": 20, "event": "stage.completed", "node_id": "review_merge.refute_gate", "properties": {"status": "succeeded", "context_updates": {"refute_verdict": "pass", "refute_not_met": "false"}}}
+{"seq": 21, "event": "stage.completed", "node_id": "review_merge.refute_gate", "properties": {"status": "succeeded", "context_updates": {"refute_verdict": "fail"}}}
+{"seq": 22, "event": "stage.completed", "node_id": "review_merge.standards_gate", "properties": {"context_updates": {"refute_verdict": "pass"}}}
+{"seq": 23, "event": "stage.started", "node_id": "human_rescue", "properties": {}}
+{"seq": 24, "event": "edge.selected", "properties": {"from_node": "review_merge.review_fix", "to_node": "review_merge.mark_needs_human", "reason": "unconditional", "stage_status": "failed"}}
+{"seq": 25, "event": "stage.started", "node_id": "exit", "properties": {}}
+{"seq": 26, "event": "stage.failed", "node_id": "validate", "properties": "not an object"}
+{"seq": 27, "event": "agent.route.failover", "properties": {"stage": "spec", "event": "not an object"}}
+{"seq": 28, "event": "edge.selected", "properties": {"from_node": "x"}}
 """
 
 
@@ -84,6 +90,35 @@ def test_every_timed_out_attempt_counts_even_when_retried():
     review_fix = summary.stages["review_merge.review_fix"]
     assert review_fix.timeouts == 2
     assert review_fix.failures == {"transient_infra": 2}
+
+
+def test_a_retried_stage_counts_both_attempts_wall_time():
+    """Issue #66: the stage list's `wall_time_ms` records only the final attempt of a
+    retried stage, so its time comes from the events instead -- the sum of both attempts.
+    The first attempt times out (still counted), the second succeeds."""
+    stages = [
+        # the stage list's `wall_time_ms` is only the successful attempt (the bug)
+        {"node_id": "coder", "handler": "agent", "wall_time_ms": 340_000,
+         "provider_used": {"model": "coders-b"}},
+    ]
+    lines = [
+        # attempt 1: times out after 30 minutes
+        {"event": "stage.started", "node_id": "coder", "ts": "2026-10-27T15:28:36Z"},
+        {"event": "stage.failed", "node_id": "coder",
+         "properties": {"failure": {"system_actor": "timeout", "category": "transient_infra"},
+                        "timing": {"wall_time_ms": 1_800_000}}},
+        {"event": "stage.retrying", "node_id": "coder", "properties": {"attempt": 1}},
+        # attempt 2: succeeds
+        {"event": "stage.started", "node_id": "coder", "ts": "2026-10-27T15:58:43Z"},
+        {"event": "stage.completed", "node_id": "coder",
+         "properties": {"status": "succeeded", "timing": {"wall_time_ms": 340_000}}},
+    ]
+    summary = summarize("R1", stages, lines)
+    coder = summary.stages["coder"]
+    assert coder.wall_ms == 1_800_000 + 340_000
+    assert coder.timeouts == 1
+    # both attempts ran on the box, so its corrected wall time is all box time
+    assert coder.box_ms == coder.wall_ms
 
 
 def test_a_failure_on_a_node_missing_from_the_stage_list_is_still_counted():
@@ -155,7 +190,7 @@ def test_refute_verdict_reads_the_new_field_keys():
 
 
 def test_counts_every_event_and_survives_an_empty_log():
-    assert summarize("R1", STAGES, events()).events == 22
+    assert summarize("R1", STAGES, events()).events == 28
     empty = summarize("R1", [], [])
     assert empty.events == 0
     assert empty.stages == {}
@@ -164,7 +199,7 @@ def test_counts_every_event_and_survives_an_empty_log():
 
 def test_events_are_consumed_once_from_a_generator():
     summary = summarize("R1", STAGES, (event for event in events()))
-    assert summary.events == 22
+    assert summary.events == 28
 
 
 # --- the plan trial (#25): tokens per node, the coder's first edit, dispositions -----

@@ -71,6 +71,9 @@ class FakeFabro:
     def iter_events(self, run_id):
         self.streamed.append(run_id)
         yield {"event": "stage.started", "node_id": "coder"}
+        # the stage's wall time comes from the events' per-attempt timing (issue #66)
+        yield {"event": "stage.completed", "node_id": "coder",
+               "properties": {"status": "succeeded", "timing": {"wall_time_ms": 1000}}}
 
 
 def facts(state="open"):

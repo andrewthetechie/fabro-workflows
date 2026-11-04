@@ -6,15 +6,18 @@ and keeps only what this module returns, a few hundred bytes per run.
 
 Two sources, each used for what only it answers well:
 
+* **`GET /runs/{id}/events`** (streamed) is where a stage's wall time comes from
+  (issue #66). The stage list's `wall_time_ms` records only the final attempt of a
+  stage that was retried, so a timed-out + retried stage reads low; the events carry
+  one `stage.<terminal>` per attempt, each with its own `properties.timing.wall_time_ms`,
+  and those are summed per node. Being an agent, command or human stage is read from
+  the stage list's `provider_used` + handler. Provider failovers
+  (`agent.route.failover`), the edge path into the end of the run (`edge.selected`) and
+  the refuter's verdicts (`review_merge.refute_gate`'s `context_updates`) also exist
+  only here.
 * **`GET /runs/{id}/stages`** gives every stage visit with its node, handler,
-  status, `wall_time_ms` and `provider_used`. Stage time and visits come from
-  here, because the event log repeats them across several event kinds.
-* **`GET /runs/{id}/events`** (streamed) gives what the stage list hides. A
-  timed-out stage that was retried, or promoted by `on_failure`, can still end
-  `succeeded` in the stage list; only its `stage.failed` event says
-  `system_actor: "timeout"`. Provider failovers (`agent.route.failover`), the
-  edge path into the end of the run (`edge.selected`) and the refuter's verdicts
-  (`review_merge.refute_gate`'s `context_updates`) exist only here.
+  status, `provider_used` and usage tokens. Visits and cost come from here; the wall
+  time does not.
 
 Event shapes, verified live on fabro 0.362 (2026-10-12):
 
@@ -156,8 +159,10 @@ class StageStat:
     node_id: str
     handler: str
     visits: int = 0
-    wall_ms: int = 0
-    # The part of `wall_ms` spent on the run's coder pool (see CODER_MODEL_PREFIX).
+    wall_ms: int = 0  # the sum of every attempt's `timing.wall_time_ms` (issue #66)
+    # The part of `wall_ms` spent on the run's coder pool (see CODER_MODEL_PREFIX). A
+    # node runs on one stylesheet model, so this is the node's wall_ms when it is a
+    # box node and 0 otherwise, resolved after both loops (the events carry no provider).
     box_ms: int = 0
     timeouts: int = 0
     failures: Counter[str] = field(default_factory=Counter)  # category -> count
@@ -229,6 +234,12 @@ def summarize(
     """
     nodes = NODES.get(workflow, NODES["backlog"])
     stats: dict[str, StageStat] = {}
+    # Whether each node is a coder-box stage, read from the stage list's
+    # `provider_used.model`. A node runs on one stylesheet model, so its visits share
+    # one answer; it is `True` if any visit ran on a coder pool. `box_ms` is resolved
+    # from this after the events, because the events carry per-attempt timing but not
+    # the provider.
+    box_of: dict[str, bool] = {}
     for stage in stages:
         node = _str(stage.get("node_id"))
         if not node:
@@ -237,13 +248,11 @@ def summarize(
         if stat is None:
             stat = stats[node] = StageStat(node, _str(stage.get("handler")) or "unknown")
         stat.visits += 1
-        wall = _int(stage.get("wall_time_ms"))
-        stat.wall_ms += wall
         provider = stage.get("provider_used")
-        if isinstance(provider, Mapping) and _str(provider.get("model")).startswith(
-            CODER_MODEL_PREFIX
-        ):
-            stat.box_ms += wall
+        if isinstance(provider, Mapping):
+            box_of[node] = box_of.get(node, False) or _str(
+                provider.get("model")
+            ).startswith(CODER_MODEL_PREFIX)
         usage = stage.get("usage")
         tokens = usage.get("tokens") if isinstance(usage, Mapping) else None
         if isinstance(tokens, Mapping):
@@ -277,6 +286,21 @@ def summarize(
         if not isinstance(props, Mapping):
             props = {}
         node = _str(event.get("node_id")) or _str(props.get("stage"))
+
+        # A stage's wall time is the sum of every attempt's own duration, read from the
+        # events' per-attempt `timing.wall_time_ms` rather than the stage list, which
+        # records only the final attempt of a stage that was retried (issue #66). Both
+        # `stage.completed` and `stage.failed` carry the attempt's timing; `timeouts`
+        # still comes from `stage.failed` below. A terminal event with no timing (an old
+        # run, or a zero-duration node) adds nothing, which the tests' fixture rows rely
+        # on, so only a nonzero timing is accumulated.
+        if name in ("stage.completed", "stage.failed") and node:
+            wall = _timing_ms(props)
+            if wall:
+                stat = stats.get(node)
+                if stat is None:
+                    stat = stats[node] = StageStat(node, "unknown")
+                stat.wall_ms += wall
 
         if name == "stage.started":
             if node and node != "exit":
@@ -408,6 +432,12 @@ def summarize(
                             ci_credited if isinstance(ci_credited, int) else _int_or_none(ci_credited),
                         )
                     )
+
+    # A node's box time is its corrected wall time when the node is a coder box, so a
+    # retried box stage's both attempts count as box time (issue #66).
+    for stat in stats.values():
+        if box_of.get(stat.node_id):
+            stat.box_ms = stat.wall_ms
 
     return RunSummary(
         run_id=run_id,
