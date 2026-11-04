@@ -124,6 +124,13 @@ are inclusive, and `run_history`, the leases and the PR facts are never touched.
 first `resummarize` after the Task validation deploy (#26) rebuilt the whole history so
 the trial had a baseline.
 
+A stage's wall time changed source in #66 (2026-11-04): it is now the sum of every
+attempt's `timing.wall_time_ms` from the events, not the stage list's `wall_time_ms`,
+which recorded only the final attempt of a retried stage (so every timed-out stage read
+low). The re-summarize for #66 covered everything dispatched since 2026-10-19; any run
+dispatched before then still reads its pre-#66 (single-attempt) stage time until it is
+re-summarized.
+
 `ops/fabro-scorecard.sh --repo OWNER/REPO` (or `?repo=` on `GET /api/scorecard`) narrows
 every series to one repository, which is how the womens-fantasy-sports trial window is
 read.
