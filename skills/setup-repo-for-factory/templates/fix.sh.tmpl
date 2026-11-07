@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# @@MARKER@@.
+# Formatters and machine-applicable lint fixes only (fabro-workflows ADR 0011 D5): fabro's `autofix`
+# stage runs this after every coder or rework stage. ci.sh is the gate, so every step runs even if
+# an earlier one fails, and this script always exits 0.
+set -u
+
+@@STEPS@@
+
+exit 0

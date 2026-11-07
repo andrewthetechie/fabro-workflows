@@ -30,6 +30,8 @@ prints no routing object fails deterministically with no retry, which cost run
 `precheck-calibration` to `issue-precheck`'s nodes and prompt, and `ralph`'s pre-review to
 `backlog`'s), the Stage I/O hooks (R11), and an unconditional fallback edge out of every node that has edges (R12, which `fabro validate` also enforces). It runs offline in `make check`. `make check-host` proves that its reader agrees with `fabro parse` on the six graphs. It does not run a script, judge a prompt, or check the rows of the invariants files that carry no `Checked by` line; those still need a run or a review.
 
+`skills/setup-repo-for-factory/tests` runs in both `make check` and `make check-fast`. Its rule tests use a frozen fixture, so onboarding a repository cannot fail its own push; its edit tests apply every registration edit to copies of the real `ops/` files, and its catalog test reads the graphs and the scheduler. It fails when an edit's anchor has moved or a fixed label is missing from `data/labels.toml`. It runs no onboarding step against GitHub or the host.
+
 The Agent profile (ADR 0017) is checked the same way, against the tracked template — and
 in `make verify-host`, against the live overlay.
 

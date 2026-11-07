@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# @@MARKER@@ from @@SOURCES@@.
+# Idempotent dependency install: every run's prep runs this, and validate runs it again before ci.sh.
+set -euo pipefail
+
+@@STEPS@@

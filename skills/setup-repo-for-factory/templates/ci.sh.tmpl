@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# @@MARKER@@ from @@SOURCES@@.
+# The gate: validate and the merge phase run `./.fabro/setup.sh && ./.fabro/ci.sh`, and the Refuter
+# quotes this file to credit command criteria. Exit non-zero on any failure.
+#
+# The Test environment is declared in .fabro/test.toml and read through `fabro-io test-env`.
+# A PR that edits this file trips `config_changed` and is never auto-merged.
+#
+# Left out of this gate:
+@@SKIPPED@@
+set -euo pipefail
+test_env=$(fabro-io test-env); eval "$test_env"
+
+@@STEPS@@

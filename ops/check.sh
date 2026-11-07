@@ -4,8 +4,9 @@
 # A push to `main` is live on the next automation fire (AGENTS.md, *Pushing to
 # `main` deploys*), so these run on every push: `make hooks` installs the pre-push
 # hook (ops/hooks/pre-push) that runs this. They need no host, no container and no
-# LAN — only jq, awk, git, python3.11, uv (for the gate tests' pytest) and (when the
-# fabro-io tree changed) cargo — so they are cheap enough to gate every push.
+# LAN — only jq, awk, git, python3.11, uv (for the pytest suites, which it fetches once and
+# then caches) and (when the fabro-io tree changed) cargo — so they are cheap enough to gate
+# every push.
 #
 # The gates are the commands AGENTS.md *Validating* used to list by hand. Each one
 # is echoed as it starts; with `set -e` the script stops at the first failure, so
@@ -113,5 +114,11 @@ fi
 #    checker reads the .fabro files itself, so it needs no fabro binary and runs on every push.
 say "python3.11 ops/check-graph-invariants.py"
 "$PY" ops/check-graph-invariants.py
+
+# 8. The onboarding tool (skills/setup-repo-for-factory) edits ops/ files by anchor and reads the
+#    labels and images from them. A change here it cannot follow fails now, not during an onboarding.
+say "pytest skills/setup-repo-for-factory/tests"
+(unset VIRTUAL_ENV; uv run --no-project --quiet --python 3.11 --with 'pytest>=8' --with 'pyyaml>=6' \
+    pytest -q -p no:cacheprovider skills/setup-repo-for-factory/tests)
 
 printf '\nPASS: make check — all offline gates green\n'

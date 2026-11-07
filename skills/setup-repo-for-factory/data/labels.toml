@@ -1,0 +1,158 @@
+# The factory's labels. `onboard.py labels` creates whichever of these a repository lacks and leaves
+# every existing label alone. tests/test_onboard.py fails when the graphs or the scheduler start
+# using a fixed label that is not listed here.
+
+# The ways into the factory
+[[label]]
+name = "needs-triage"
+color = "D4C5F9"
+description = "Waiting for triage"
+
+[[label]]
+name = "agent"
+color = "5319E7"
+description = "Handled by fabro backlog automation"
+
+[[label]]
+name = "fast-path"
+color = "1D76DB"
+description = "Small, well-scoped follow-up ready for the fast lane"
+
+[[label]]
+name = "priority"
+color = "B60205"
+description = "Goes to the front of the coder queue"
+
+# An issue in flight
+[[label]]
+name = "agent-in-progress"
+color = "FBCA04"
+description = "A fabro run holds this issue"
+
+[[label]]
+name = "agent-stuck"
+color = "D93F0B"
+description = "A fabro run could not finish; read its comment"
+
+[[label]]
+name = "agent-noop"
+color = "D4C5F9"
+description = "Agent run found nothing to do; read the comment before re-adding agent"
+
+[[label]]
+name = "agent-held"
+color = "C5DEF5"
+description = "A child issue waiting on an earlier child (ADR 0015)"
+
+[[label]]
+name = "agent-split"
+color = "BFD4F2"
+description = "A split parent waiting on its children (ADR 0015)"
+
+[[label]]
+name = "agent-remainder"
+color = "C5DEF5"
+description = "Work a fabro run left for a follow-up"
+
+[[label]]
+name = "triage-in-progress"
+color = "FBCA04"
+description = "Owned by the fabro issue-triage loop"
+
+[[label]]
+name = "needs-info"
+color = "FEF2C0"
+description = "Waiting on a human for triage answers"
+
+[[label]]
+name = "needs-human"
+color = "D93F0B"
+description = "A human must look before the run continues"
+
+# The precheck's holds: one per precheck.HOLD_VERDICTS, with `_` written as `-`
+[[label]]
+name = "precheck-already-done"
+color = "EDEDED"
+description = "Held by the precheck: the checkout already does this"
+
+[[label]]
+name = "precheck-contradiction"
+color = "EDEDED"
+description = "Held by the precheck: the issue contradicts itself"
+
+[[label]]
+name = "precheck-unclear"
+color = "EDEDED"
+description = "Held by the precheck: the issue is too unclear to run"
+
+[[label]]
+name = "precheck-blocked"
+color = "EDEDED"
+description = "Held by the precheck: waiting on another issue"
+
+# Pull requests
+[[label]]
+name = "agent-authored"
+color = "1D76DB"
+description = "Written by a fabro run"
+
+[[label]]
+name = "ai-generated"
+color = "EDEDED"
+description = "Written by an agent"
+
+[[label]]
+name = "Review"
+color = "0E8A16"
+description = "Agent produced a review-ready branch; open a PR."
+
+[[label]]
+name = "ai-review-complete"
+color = "0E8A16"
+description = "pr-review finished and found nothing that holds this PR"
+
+[[label]]
+name = "ai-review-needs-human"
+color = "D93F0B"
+description = "pr-review needs a human on this PR"
+
+[[label]]
+name = "merge-on-green"
+color = "0E8A16"
+description = "Approved by the fabro merge phase; the merge queue merges it when CI is green (ADR 0024)"
+
+[[label]]
+name = "dependencies"
+color = "0366D6"
+description = "Pull requests that update a dependency file"
+
+[[label]]
+name = "security"
+color = "D73A4A"
+description = "Security vulnerability alert"
+
+# Filed by the factory's own packages
+[[label]]
+name = "architecture"
+color = "0E8A16"
+description = "Architecture review: a deepening candidate (ADR 0012)"
+
+[[label]]
+name = "scout"
+color = "1D76DB"
+description = "Filed by the scout (ADR 0027)"
+
+[[label]]
+name = "flaky-test"
+color = "FBCA04"
+description = "A CI job that fails at random"
+
+[[label]]
+name = "learning"
+color = "0E8A16"
+description = "A rule a ralph run proposed; a human accepts or ignores it"
+
+[[label]]
+name = "fabro-orientation"
+color = "0E8A16"
+description = "The repository map a background job keeps (more-local-inference 10)"
