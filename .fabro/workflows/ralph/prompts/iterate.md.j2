@@ -51,10 +51,18 @@ watch it fail for the intended reason, make the smallest implementation pass it,
 Scope tests to the seam with `run_tests`; `task_check` selects what the gate runs, and the
 run's Final validation owns the full suite.
 
+**Ration the edits against checks.** Count the edits you make since your last `task_check`
+or `run_tests`. At five, run the check before the sixth and work from its answer: a red one
+names the next edit, and a green one over the acceptance list means the Task is finished.
+An unbroken run of edits is not progress you can see. If the same failure comes back red
+twice with nothing to show between the runs, stop and submit `progress` naming it: the next
+Iteration starts from your tree and reads it under `## Last attempt`.
+
 ## 3. Finish with the gate
 
 Run `task_check`. It runs the checks and tests the Task validation gate will select for
-your diff, so it shows exactly what will be judged.
+your diff, so it shows exactly what will be judged. A `done` submission ends on that green
+check, not on an edit.
 
 Then choose one status:
 

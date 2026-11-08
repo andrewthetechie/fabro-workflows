@@ -1,0 +1,72 @@
+Iteration attempts that fail, writers-app against flakeradar, 2026-11-08
+=======================================================================
+
+#63's measurement. Window: every `ralph` run dispatched 2026-10-22..11-03 for writers-app
+(34 runs) and flakeradar (29 runs), read from `fabro events <run> --json`. Read with
+`--before 2026-11-03` to end at the issue's own boundary; the 2026-11-03 runs are in the
+sample but not in these tables. Analysis: docs/ralph/14-iteration-runaways.md.
+
+    python3.11 ops/iterate-attempts.py --before 2026-11-03 /tmp/runs-63/*.jsonl
+
+`failed` is an attempt with no `stage.completed`: a timeout (30), a context-length failure
+(2) or a deterministic failure (1) on writers-app, and 2 timeouts on flakeradar. Attempts,
+not visits: see the script's docstring.
+
+=== writers-app: 239 attempts, 33 failed (13.8%)
+  failure actors: {'timeout': 30, 'budget_exhausted': 2, 'deterministic': 1}
+  metric                    failed p50  passed p50
+  dur                             60.0        17.9
+  turns                          126.0        67.0
+  calls                          127.0        72.5
+  tool_m                           3.2         3.4
+  model_m                         55.0        13.5
+  reason_tok                  117285.0     27241.0
+  out_tok                      24078.0     10671.5
+  peak                        208032.0    104746.0
+  comps                            1.0         0.0
+  slow_gaps                       15.0         3.0
+  checks                           1.0         5.0
+  check_min                        0.0         1.6
+  edits                           15.0        12.0
+  edits_after_check                4.0         0.0
+  free_streak                     11.0         7.0
+  first_check                     16.8         6.7
+  task_files                       1.0         1.0
+  task_acc                         3.0         4.0
+  task_ctx                      2581.0      3239.0
+  inputs_bytes                 23381.0     24539.0
+  attempts that ran >=1 check: failed 21/33, passed 201/206
+  attempts that reached 80% context: failed 12/33, passed 7/206
+
+=== flakeradar: 86 attempts, 2 failed (2.3%)
+  failure actors: {'timeout': 2}
+  metric                    failed p50  passed p50
+  dur                             60.0         5.4
+  turns                           72.5        33.0
+  calls                           76.5        35.0
+  tool_m                          12.6         1.2
+  model_m                         47.4         4.2
+  reason_tok                  121845.0      7565.0
+  out_tok                      15118.0      4930.0
+  peak                        196899.0     44913.0
+  comps                            0.0         0.0
+  slow_gaps                       24.0         0.0
+  checks                           0.0         5.0
+  check_min                        0.0         0.5
+  edits                            9.0         6.0
+  edits_after_check                9.0         0.0
+  free_streak                      9.0         4.0
+  first_check                     None         1.9
+  task_files                       0.0         2.0
+  task_acc                         4.0         4.0
+  task_ctx                      3423.0      3532.5
+  inputs_bytes                  5392.0     28621.5
+  attempts that ran >=1 check: failed 0/2, passed 84/84
+  attempts that reached 80% context: failed 0/2, passed 0/84
+
+failed share by the longest run of edits with no check in between
+   0-0    n=   5 failed=  2 =  40.0%
+   1-2    n=  60 failed=  3 =   5.0%
+   3-4    n=  59 failed=  2 =   3.4%
+   5-9    n= 105 failed=  9 =   8.6%
+  10-+    n=  96 failed= 19 =  19.8%

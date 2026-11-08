@@ -583,6 +583,13 @@ exit 0"]
     // checkpoint keeps the work. A dead provider that survives the retry is a MISS too,
     // never a stop (see the edges). The scorecard's stage time counts one attempt per
     // visit, so it reads this node low.
+    //
+    // The prompt carries a check cadence since #63 (2026-11-08,
+    // docs/ralph/14-iteration-runaways.md): at five edits since the last `task_check` or
+    // `run_tests`, check before the sixth. Read from the same events, an attempt that made
+    // 10 or more edits with no check in between failed 19.8% of the time against 3.4% at
+    // 3-4; on writers-app 12 of 33 failed attempts never checked at all and every passing
+    // one ends on a check (274 of 290 have no edit after their last).
     iterate_t1 [label="Iteration (rung 1, box)", class="coder", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
     iterate_t2 [label="Iteration (rung 2, glm-5.3-flash)", class="coder-t2", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
     iterate_t3 [label="Iteration (rung 3, kimi-for-coding)", class="coder-t3", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
