@@ -68,21 +68,42 @@ out of scope and yields no criteria.
 
     A green CI shows only that the existing tests pass, so judge every behavioural
     criterion by reading the code. The one exception is a command criterion: see
-    **Command criteria**.
+    **Command criteria**. Weigh evidence of a **pre-existing** gap as **Pre-existing
+    behaviour** says.
     *Done when* every criterion has a status and evidence.
 
-3. **Hunt blocking defects.** A blocking defect is something a careful maintainer would
-    refuse to merge: wrong behaviour, a crash, lost or corrupted data, a security hole, a
-    broken public contract, or a test weakened until it no longer tests the behaviour.
-    Treat each `hygiene` sample as a lead and judge it; a test legitimately moved or
-    replaced is fine. Style, naming, formatting and tidiness are out of scope.
-    *Done when* you have read every changed file and judged every `hygiene` sample.
+3. **Hunt blocking defects.** A blocking defect is something the branch introduces that a
+    careful maintainer would refuse to merge: wrong behaviour, a crash, lost or corrupted
+    data, a security hole, a broken public contract, or a test weakened until it no longer
+    tests the behaviour. Treat each `hygiene` sample as a lead and judge it; a test
+    legitimately moved or replaced is fine. Style, naming, formatting and tidiness are out
+    of scope.
+    *Done when* you have read every changed file, judged every `hygiene` sample, and
+    checked every candidate defect against `origin/main` (**Pre-existing behaviour**).
 
 4. **Reconcile with earlier rounds** (round 2 onward). Apply **Earlier rounds** to every
     finding you are about to raise.
 
 5. **Verify your claims.** Re-open every `path:N` you cite and confirm it says what you
     claim. Then call `submit`.
+
+## Pre-existing behaviour
+
+A finding belongs to the branch when the branch introduces it or first makes it
+reachable. Behaviour the branch carries unchanged from `origin/main`, including code it
+moved verbatim, is **pre-existing**: it shipped before this work began, and changing it is
+scope the issue may not have asked for. Before you raise a finding, read the code on
+`origin/main` with `git show origin/main:<path>` (for moved code, the file it moved from)
+and confirm whether the same input took the same path there.
+
+A pre-existing gap:
+
+- goes in `summary`, one sentence per gap, naming the input and the `origin/main`
+  `path:N`, so a human can file it as a follow-up issue;
+- counts against a criterion only when the criterion names the gap's case: the input,
+  example or case family the issue asks the branch to change. A general requirement
+  ("mirror the editor", "match the spec") covers the cases the issue lists, not every
+  input the old code already mishandled.
 
 ## Command criteria
 
@@ -147,7 +168,8 @@ Call `submit` with `summary`, `criteria` and `defects`. It checks the shape and 
 what to fix. You get one retry; after that the merge is refused. Only a result written by
 `submit` counts.
 
-- `summary`: two or three sentences on what you checked and what you found.
+- `summary`: two or three sentences on what you checked and what you found, then one
+  sentence per pre-existing gap (**Pre-existing behaviour**).
 - `criteria`: at least one entry, each with
   - `criterion`: the requirement, in one sentence
   - `status`: `met` | `not_met` | `unverifiable`
