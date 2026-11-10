@@ -1,0 +1,55 @@
+# What the lint must find in each fixture, as rule ids: every listed id at least once, and no other.
+# The lint reads them against ../repo (its .fabro/ci.sh). Shared with the issue sharpening loop
+# (#68): a fixture's verdict is the same in both tools.
+
+["good-feature.md"]
+errors = []
+warnings = []
+
+["good-bugfix.md"]
+errors = []
+warnings = []
+
+["good-false-friends.md"]
+errors = []
+warnings = []
+
+["L1-pr-description.md"]
+errors = ["L1"]
+warnings = []
+
+["L2-uncovered-command.md"]
+errors = ["L2"]
+warnings = []
+
+["L2-github-check.md"]
+errors = ["L2"]
+warnings = []
+
+["L3-must-not-drop.md"]
+errors = ["L3"]
+warnings = []
+
+["L4-workflow-file.md"]
+errors = ["L4"]
+warnings = []
+
+["L5-manual-check.md"]
+errors = ["L5"]
+warnings = []
+
+["L6-missing-section.md"]
+errors = ["L6"]
+warnings = []
+
+["L7-title.md"]
+errors = ["L7"]
+warnings = []
+
+["L8-ordering.md"]
+errors = ["L8"]
+warnings = []
+
+["L9-oversized.md"]
+errors = []
+warnings = ["L9"]

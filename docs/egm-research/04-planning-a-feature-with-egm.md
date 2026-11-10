@@ -1,9 +1,8 @@
 # Planning a new feature with EGM, then into the factory
 
 **Status:** guide, written 2026-11-07. It pairs with the factory planning skill
-(`plan-factory-issues`, specified in #67 and not built yet). The skill ships
-nothing EGM needs. Until the skill exists, step 5 uses `issue-decomposer` and `issue-reviewer`,
-with the factory rules applied by hand.
+(`skills/plan-factory-issues/`, specified in #67, built 2026-11-10). The skill ships
+nothing EGM needs.
 
 This guide is for the operator planning a feature that needs design decisions before it can be
 cut into factory issues. A bug fix or a small, already-decided change skips EGM. It goes
@@ -185,15 +184,6 @@ How the skill uses the design:
 The skill lints every draft and runs its own fresh reviews: a starved implementer, a grounded
 audit and the Refuter's-eye pass. It then asks you to approve the graph, and publishes only
 after your explicit yes.
-
-**Until the skill exists:**
-
-1. Run `/issue-decomposer` on the design and `/issue-reviewer` on the drafts.
-2. Check every criterion against the USER-GUIDE section *Writing criteria the factory can
-   verify*, with `.fabro/ci.sh` open.
-3. Create a Split parent (`agent-split`) and its Children by hand, using the
-   `<!-- fabro:split-child parent=<P> after=<N> -->` first line, `agent` on the first child and
-   `agent-held` on the rest.
 
 ## 6. After publishing
 

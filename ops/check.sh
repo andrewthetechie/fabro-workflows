@@ -121,4 +121,10 @@ say "pytest skills/setup-repo-for-factory/tests"
 (unset VIRTUAL_ENV; uv run --no-project --quiet --python 3.11 --with 'pytest>=8' --with 'pyyaml>=6' \
     pytest -q -p no:cacheprovider skills/setup-repo-for-factory/tests)
 
+# 9. The planning skill (skills/plan-factory-issues): its lint is the tooling's definition of a
+#    verifiable criterion, and its publisher writes the Child-issue markers the scheduler reads.
+say "pytest skills/plan-factory-issues/tests"
+(unset VIRTUAL_ENV; uv run --no-project --quiet --python 3.11 --with 'pytest>=8' \
+    pytest -q -p no:cacheprovider skills/plan-factory-issues/tests)
+
 printf '\nPASS: make check — all offline gates green\n'

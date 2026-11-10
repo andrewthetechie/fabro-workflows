@@ -27,6 +27,7 @@ actually lives.
 | `.fabro/workflows/_io/` | The **Stage manifest** and output schemas (ADR 0016): the only source of every `FABRO_IO_MANIFEST` block, generated into each `workflow.toml`. Never hand-edit the generated blocks; `check` fails on drift. |
 | `ops/` | Host replication: compose, the coder scheduler, profile images, provisioning, sweepers, and the offline checkers. No automation reads this tree. `ops/README.md` has its contents table and the runbooks. |
 | `skills/setup-repo-for-factory/` | The `/setup-repo-for-factory` skill: onboard a target repository. Its `onboard.py` knows every `ops/` file a new repository touches, so a new hard-coded repository list goes in `scripts/onboarding/factory.py` too. |
+| `skills/plan-factory-issues/` | The `/plan-factory-issues` skill: turn a design or request into published factory issues. Its lint (`scripts/factory_issues/lint.py`) is the tooling's one definition of a verifiable criterion, each rule citing the USER-GUIDE or gate it comes from; `fixtures/issues/` is the corpus the sharpening loop (#68) shares. |
 | `docs/` | `docs/adr/` holds the decisions; every other folder is a task series or a set of design records. `docs/README.md` indexes them with their status. |
 | `docs/agents/` | Reference for working in this repo: the deployment invariants, why each validation gate exists, deploying, and the server. |
 | `.scratch/` | Untracked working notes. |
