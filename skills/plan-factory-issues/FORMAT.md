@@ -3,9 +3,18 @@
 What a draft must be for the factory to implement, prove and merge it with no human. The lint
 checks the mechanical part of each rule; its id is in brackets. The judgment part is yours.
 
-An issue is planned once by Ralph, coded Task by Task by fresh sessions, and judged by the
-**Refuter**, which sees only the issue, the diff and `.fabro/ci.sh`'s run, and is told to prove
-the work is not done. Write for that reader.
+## The sandbox
+
+An issue is planned once by Ralph, then coded Task by Task by fresh sessions that share nothing
+but `progress.md`. Each Iteration writes inside the checkout and stops: the pipeline owns commits,
+branches and publication, deterministic stages own `gh` and GitHub, and `ci.sh` is the only test
+runner anyone reads. There is no sub-agent to delegate to, a Task gets a 60-minute timeout, and a
+run gets 8 Tasks. The **Refuter** then sees only the issue, the diff and `ci.sh`'s run, and is told
+to prove the work is not done.
+
+Write the issue a stranger can finish: every name with its shape, every pattern with the excerpt to
+copy, every check as a command `ci.sh` runs. What needs a credential, a deployed environment, a
+GitHub setting or a workflow file is a human action or a post-deploy check.
 
 ## The factory issue format
 
@@ -53,8 +62,8 @@ Verified facts at `main` (<date>). Proposals are under *Requirements*.
 ## Context: facts, pasted
 
 Context holds facts you read in this session, each with `path:line`, apart from proposals and open
-questions. Paste what the implementer builds against: a signature, a type, a config key, the
-excerpt of a pattern to copy. A name alone makes a context-starved coder invent the shape. A fact
+questions. Paste what the implementer builds against — a signature, a type, a config key, the
+excerpt of a pattern to copy: a name alone makes a context-starved coder invent the shape. A fact
 you could not verify is a gap for the Grill, or a verification step in the issue.
 
 ## Criteria the Refuter can verify
@@ -87,10 +96,10 @@ triage.
 
 ## Expected files and the Task map
 
-Both are hints. Phrase expected files as "expected", each with its reason; the coder may also edit
-callers, fixtures, generated types and tests the change needs, and a reviewer must not call that
-scope creep. A Task map is an ordered list of steps, each with its files and the requirements it
-covers; Ralph's `plan` starts from it and decides for itself.
+Both are hints, and Ralph's `plan` decides for itself. Phrase expected files as "expected", each
+with its reason: the coder may also edit callers, fixtures, generated types and tests the change
+needs, and a reviewer must not call that scope creep. A Task map is an ordered list of steps, each
+with its files and the requirements it covers.
 
 ## Slices, order and lanes
 
@@ -110,7 +119,7 @@ Remainder issue, and a 60-minute Iteration timeout ends a Task too large to fini
 | None | A separate issue: `{"key": "a", "lane": "agent"}`. Independent issues run in parallel on different boxes. |
 | A chain | A **Split parent** (`{"key": "p", "role": "parent"}`) and **Child issues** listed in order, each with `"parent": "p"`; every child after the first names one predecessor with `"after": "<key>"`. The publisher labels the first child `agent` and each later one `agent-held`; the scheduler promotes it when its predecessor closes completed. |
 | Two predecessors | Not expressible. Merge the predecessors, re-order them into one chain, or hold the slice for the operator [L8]. |
-| Two parallel slices that expect the same file | A collision when both run at once [L11]. Chain them, merge them, or accept it with a waiver. |
+| Two parallel slices that expect the same file | A collision when both run at once [L11]. Chain, merge, or waive. |
 
 A wide refactor that cannot stay green slice by slice is an expand–migrate–contract chain: add the
 new form beside the old, move callers in batches, then remove the old form last.

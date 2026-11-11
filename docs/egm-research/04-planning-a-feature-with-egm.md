@@ -181,9 +181,10 @@ How the skill uses the design:
 | Risks only checkable after deploy | `## Post-deploy checks` |
 | Phase order | A Split parent with ordered Child issues (one predecessor each) |
 
-The skill lints every draft and runs its own fresh reviews: a starved implementer, a grounded
-audit and the Refuter's-eye pass. It then asks you to approve the graph, and publishes only
-after your explicit yes.
+The skill lints every draft and runs two fresh reviews: one cold subagent per draft, which
+reads the issue blind and audits every current-state claim against the code, then one over the
+whole set for the contracts between drafts. It then asks you to approve the graph, and publishes
+only after your explicit yes.
 
 ## 6. After publishing
 
