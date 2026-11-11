@@ -189,9 +189,9 @@ settings.toml only *selects* one; it does not define any.
 |---|---|---|---|---|
 | `default` | `buildpack-deps:noble` | 2 | 4GB | — |
 | `python` | `fabro-python:local` | 2 | 4GB | jelly-swipe |
-| `python-node` | `fabro-python-node:local` | 2 | 4GB | lawncare-saas, flakeradar |
+| `python-node` | `fabro-python-node:local` | 2 | 4GB | lawncare-saas |
 | `ts` | `fabro-ts:local` | 2 | 4GB | womens-fantasy-sports |
-| `rust-node` | `fabro-rust-node:local` | 4 | 8GB | writers-app |
+| `rust-node` | `fabro-rust-node:local` | 4 | 8GB | writers-app, flakeradar |
 
 The images are rebuilt nightly rather than being static artefacts, because their
 value is a dependency cache warmed from each repository's current lockfiles. Add

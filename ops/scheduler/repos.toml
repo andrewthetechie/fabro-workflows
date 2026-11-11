@@ -52,5 +52,5 @@ enabled        = true
 [[repo]]
 name           = "andrewthetechie/flakeradar"
 priority       = 40
-environment_id = "python-node"
+environment_id = "rust-node"
 enabled        = true
