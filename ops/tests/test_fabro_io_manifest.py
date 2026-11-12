@@ -86,11 +86,18 @@ class Box(unittest.TestCase):
     def test_the_real_source_manifest_is_clean(self):
         self.assertEqual(fim.box_problems(fim.load_source()), [])
 
-    def test_only_a_background_package_carries_coder_box_stages(self):
+    def test_the_packages_that_judge_another_run_carry_coder_box_stages(self):
+        # The guard judges coder loops from a background package; since two-slot boxes D4 the
+        # claim judges a sibling slot's loop from a coder loop, which may be another workflow.
         src = fim.load_source()
         schemas = fim.load_schemas()
-        self.assertNotIn("coder_box_stages", fim.generated_for("backlog", src, schemas))
-        self.assertNotIn("coder_box_stages", fim.generated_for("ralph", src, schemas))
+        expected = fim.generated_for("box-noop", src, schemas)["coder_box_stages"]
+        for loop in fim.CODER_LOOP_WORKFLOWS:
+            with self.subTest(loop=loop):
+                self.assertEqual(fim.generated_for(loop, src, schemas)["coder_box_stages"], expected)
+        for other in ("issue-triage", "arch-review", "dependabot"):
+            with self.subTest(other=other):
+                self.assertNotIn("coder_box_stages", fim.generated_for(other, src, schemas))
 
     def test_coder_box_stages_lists_every_box_stage_of_every_coder_loop(self):
         # C1: box-guard reads this to judge another run's current stage, so the ids must be

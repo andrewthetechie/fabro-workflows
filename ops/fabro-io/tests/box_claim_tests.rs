@@ -185,6 +185,10 @@ fn siblings_are_the_pools_sharing_one_url_in_sorted_order() {
         ["coders-c"],
         "a pool nobody shares is a one-slot box"
     );
+    // Today's host value before the cutover: one pool per URL, so each is its own box.
+    let today = parse_box_health(TWO_BOXES);
+    assert_eq!(siblings(&today, "coders-a"), ["coders-a"]);
+    assert_eq!(siblings(&today, "coders-b"), ["coders-b"]);
 }
 
 #[test]
@@ -211,7 +215,7 @@ fn confirmed_idle_needs_the_last_two_reads() {
 
 #[test]
 fn health_needs_both_fields_and_reads_them_as_the_contract_says() {
-    assert_eq!(Health::parse(IDLE), Some(Health { busy: false, queued: 0 }));
+    assert_eq!(Health::parse(IDLE), Some(Health { busy: false, queued: 0, slots: None, busy_slots: None }));
     assert_eq!(Health::parse(IDLE).map(Health::is_idle), Some(true));
     assert_eq!(
         Health::parse(r#"{"busy":true,"queued":0}"#).map(Health::is_idle),
@@ -223,6 +227,39 @@ fn health_needs_both_fields_and_reads_them_as_the_contract_says() {
     );
     assert_eq!(Health::parse(r#"{"queued":0}"#), None, "no `busy` reads as not idle");
     assert_eq!(Health::parse("not json"), None);
+}
+
+/// A strix-infer 0.7.0 `/health` body as 10.10.0.56 answered it on 2026-11-11, trimmed of
+/// the `backend` string: one slot serving, one free.
+const ONE_OF_TWO_BUSY: &str = r#"{"status":"ok","kv_budget":{"generations_left":[1023,1023],"generations_capacity":1024,"parked_left":1024,"renewals":0},"model":"qwen3.8-flash-next","vision":{"enabled":true},"context_length":524288,"busy":true,"queued":0,"idle_seconds":0.0,"live_tokens":30,"slots":2,"busy_slots":1,"slot_states":[{"request":0,"live_tokens":30,"snapshot_pos":16},{"request":2,"live_tokens":0,"snapshot_pos":-1}]}"#;
+
+#[test]
+fn health_reads_the_slot_fields_of_a_two_slot_build() {
+    let health = Health::parse(ONE_OF_TWO_BUSY).expect("a 0.7.0 body parses");
+    assert_eq!(
+        health,
+        Health { busy: true, queued: 0, slots: Some(2), busy_slots: Some(1) }
+    );
+    assert!(!health.is_idle(), "box-wide, the box is busy: the guard and the lane yield");
+    assert!(health.has_free_slot(), "but a claim's request would start at once (D4)");
+}
+
+#[test]
+fn a_free_slot_needs_nothing_queued_and_a_slot_unused() {
+    let two = |busy, queued, busy_slots| Health { busy, queued, slots: Some(2), busy_slots: Some(busy_slots) };
+    assert!(two(false, 0, 0).has_free_slot());
+    assert!(two(true, 0, 1).has_free_slot());
+    assert!(!two(true, 0, 2).has_free_slot(), "both slots serving");
+    assert!(!two(true, 1, 1).has_free_slot(), "a queued request is ahead of ours");
+    // Without slot fields a free slot is the box reading idle, as before.
+    let old = |busy, queued| Health { busy, queued, slots: None, busy_slots: None };
+    assert!(old(false, 0).has_free_slot());
+    assert!(!old(true, 0).has_free_slot());
+    // Half the pair is no pair.
+    assert_eq!(
+        Health::parse(r#"{"busy":true,"queued":0,"slots":2}"#).map(Health::has_free_slot),
+        Some(false)
+    );
 }
 
 #[test]
@@ -336,19 +373,19 @@ fn coder(workflow: &str, issue: Option<u64>, stage: Option<&str>) -> CoderRun {
 
 #[test]
 fn guard_is_clear_with_no_coder_run_on_an_idle_box() {
-    let idle = Health { busy: false, queued: 0 };
+    let idle = Health { busy: false, queued: 0, slots: None, busy_slots: None };
     assert!(guard_clear(&guard_manifest(), &[], idle));
 }
 
 #[test]
 fn guard_clears_a_coder_run_in_a_hosted_stage() {
-    let idle = Health { busy: false, queued: 0 };
+    let idle = Health { busy: false, queued: 0, slots: None, busy_slots: None };
     assert!(guard_clear(&guard_manifest(), &[coder("backlog", Some(2), Some("review"))], idle));
 }
 
 #[test]
 fn guard_blocks_a_coder_run_in_a_box_stage() {
-    let idle = Health { busy: false, queued: 0 };
+    let idle = Health { busy: false, queued: 0, slots: None, busy_slots: None };
     let run = coder("backlog", Some(2), Some("coder"));
     assert!(is_box_stage(&guard_manifest(), &run));
     assert!(!guard_clear(&guard_manifest(), &[run], idle));
@@ -357,7 +394,7 @@ fn guard_blocks_a_coder_run_in_a_box_stage() {
 #[test]
 fn guard_judges_a_plan_arm_stage_by_the_issue() {
     let manifest = guard_manifest();
-    let idle = Health { busy: false, queued: 0 };
+    let idle = Health { busy: false, queued: 0, slots: None, busy_slots: None };
     // (1 // 2) % 2 == 0: the arm is off, so the stage is not a box stage.
     let off_arm = coder("backlog", Some(1), Some("plan"));
     assert!(!is_box_stage(&manifest, &off_arm));
@@ -372,7 +409,7 @@ fn guard_judges_a_plan_arm_stage_by_the_issue() {
 
 #[test]
 fn guard_treats_between_stages_on_an_idle_box_as_clear() {
-    let idle = Health { busy: false, queued: 0 };
+    let idle = Health { busy: false, queued: 0, slots: None, busy_slots: None };
     let between = coder("backlog", Some(2), None);
     assert!(!is_box_stage(&guard_manifest(), &between));
     assert!(guard_clear(&guard_manifest(), &[between], idle));
@@ -380,9 +417,9 @@ fn guard_treats_between_stages_on_an_idle_box_as_clear() {
 
 #[test]
 fn guard_blocks_any_box_whose_health_is_not_idle() {
-    let busy = Health { busy: true, queued: 0 };
+    let busy = Health { busy: true, queued: 0, slots: None, busy_slots: None };
     assert!(!guard_clear(&guard_manifest(), &[], busy));
-    let queued = Health { busy: false, queued: 3 };
+    let queued = Health { busy: false, queued: 3, slots: None, busy_slots: None };
     assert!(!guard_clear(&guard_manifest(), &[], queued));
 }
 
@@ -700,6 +737,31 @@ fn a_sibling_loop_in_a_hosted_stage_does_not_stop_the_wait() {
         health_reads(&stub),
         2,
         "a hosted sibling stage leaves the box free, so the claim confirms idle as before"
+    );
+}
+
+#[test]
+fn a_claim_confirms_a_free_slot_while_the_other_slot_serves() {
+    // The background run is cancelled, the sibling slot is mid-request (a hosted stage by the
+    // run list, so D4's sibling skip does not apply), and the box reads busy box-wide. The
+    // claim needs one free slot, not an idle box, so it confirms in two reads (D4).
+    let stub = Stub::start(vec![
+        Route::get("/health", Reply::Json(200, ONE_OF_TWO_BUSY.to_string())),
+        Route::get(
+            "/runs?",
+            runs_body(r#"{"id":"bg1","labels":{"lane":"background","box":"coders-a"}}"#),
+        ),
+        Route::post("/runs/bg1/cancel", Reply::Status(202)),
+    ]);
+    let sandbox = Sandbox::new("claim-free-slot");
+    claim_on_box_1(&stub, &sandbox);
+
+    let started = Instant::now();
+    assert_eq!(boxclaim::run_claim(), ExitCode::SUCCESS);
+    assert_eq!(health_reads(&stub), 2, "two reads with a free slot confirm it");
+    assert!(
+        started.elapsed().as_secs() < 10,
+        "a busy sibling slot no longer holds the claim to its deadline"
     );
 }
 

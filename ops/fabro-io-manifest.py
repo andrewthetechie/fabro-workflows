@@ -43,7 +43,9 @@ WF_ORDER = ["backlog", "pr-review", "arch-review", "issue-triage", "dependabot",
 CODER_LOOP_WORKFLOWS = ["backlog", "ralph", "pr-review"]
 
 # The box-only packages. Their generated manifests carry `coder_box_stages`, which
-# `fabro-io box-guard` reads to judge *another* run's current stage (C1, C10).
+# `fabro-io box-guard` reads to judge *another* run's current stage (C1, C10). The coder
+# loops carry it too: since two-slot boxes D4, `box-claim` judges a *sibling* slot's coder
+# loop, which may be a different workflow from the claiming run's own.
 BACKGROUND_PACKAGES = ["box-noop", "issue-precheck", "context-pack",
                        "precheck-calibration", "flaky-investigation", "repo-orientation"]
 
@@ -199,14 +201,17 @@ def coder_box_stages(src: dict, schemas: dict[str, dict]) -> dict[str, dict[str,
     directly.
     """
     out: dict[str, dict[str, object]] = {}
-    for loop in CODER_LOOP_WORKFLOWS:
-        generated = generated_for(loop, src, schemas)
-        out[loop] = {sid: stage["box"] for sid, stage in generated["stages"].items()
+    # A source without a loop (a test's synthetic one) has nothing to list for it; the real
+    # source names all three, which test_fabro_io_manifest pins.
+    for loop in (name for name in CODER_LOOP_WORKFLOWS if name in src["workflows"]):
+        stages = stages_for(loop, src, schemas)
+        out[loop] = {sid: stage["box"] for sid, stage in stages.items()
                      if stage["box"] is not False}
     return out
 
 
-def generated_for(workflow: str, src: dict, schemas: dict[str, dict]) -> dict:
+def stages_for(workflow: str, src: dict, schemas: dict[str, dict]) -> dict[str, dict]:
+    """The live stages of `workflow`, materialized, keyed by the ids fabro reports."""
     stages: dict[str, dict] = {}
     wf = src["workflows"][workflow]
     for sid, spec in wf.get("stages", {}).items():
@@ -216,8 +221,16 @@ def generated_for(workflow: str, src: dict, schemas: dict[str, dict]) -> dict:
         for sid, spec in src["phases"].get(phase, {}).items():
             if spec.get("live"):
                 stages[f"{node}.{sid}"] = materialize(spec, schemas, box_for(spec, workflow))
+    return stages
+
+
+def generated_for(workflow: str, src: dict, schemas: dict[str, dict]) -> dict:
+    stages = stages_for(workflow, src, schemas)
     generated = {"version": src["version"], "min_binary": src["min_binary"], "stages": stages}
-    if workflow in BACKGROUND_PACKAGES:
+    # Every package that judges another run's stage: the guard (background packages) and,
+    # since two-slot boxes D4, the claim (coder loops), which asks whether a sibling slot's
+    # loop is in a box stage. Without this the claim's lookup reads every stage as hosted.
+    if workflow in BACKGROUND_PACKAGES or workflow in CODER_LOOP_WORKFLOWS:
         generated["coder_box_stages"] = coder_box_stages(src, schemas)
     return generated
 

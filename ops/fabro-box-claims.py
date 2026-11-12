@@ -47,6 +47,11 @@ from datetime import datetime
 
 DEFAULT_API = "http://10.10.0.32:32276/api/v1"
 
+# The two-slot layout (since 2026-11-11), matching `ops/docker-compose.yaml`'s default. For a
+# window before the cutover pass the value then in force, one pool per URL, with --box-health.
+DEFAULT_BOX_HEALTH = ("coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.29:5300/health,"
+                      "coders-c=http://10.10.0.56:5300/health,coders-d=http://10.10.0.56:5300/health")
+
 # The claim's whole-command deadline (C3) is 45 s; a wait at or past this is the deadline,
 # which the hook reports as `idle=false`.
 IDLE_FALSE_AT = 44.0
@@ -221,13 +226,40 @@ def background_run(run: dict) -> Background:
                       status.get("kind") or "", status.get("reason") or "", first, cancel, ended)
 
 
-def analyse(runs: list[dict]) -> dict:
-    """The claim, guard and overlap facts for a set of runs (coder and background)."""
+def parse_box_health(raw: str) -> dict[str, str]:
+    """`pool=url` pairs, as `fabro-io` and the scheduler parse them (C3)."""
+    pairs: dict[str, str] = {}
+    for entry in raw.split(","):
+        pool, sep, url = entry.partition("=")
+        if sep and pool.strip() and url.strip():
+            pairs[pool.strip()] = url.strip()
+    return pairs
+
+
+def box_of(box_health: dict[str, str] | None, pool: str) -> str:
+    """The box `pool` is on, named by its first pool (two-slot boxes C1, C2).
+
+    Runs keep labelling their own pool (D2), so a claim from `coders-b` and a background run
+    dispatched under `coders-a` are on one box only when the two share a URL. Without a map,
+    or for a pool the map does not name, every pool is its own box.
+    """
+    url = (box_health or {}).get(pool)
+    if url is None:
+        return pool
+    return min(other for other, other_url in box_health.items() if other_url == url)
+
+
+def analyse(runs: list[dict], box_health: dict[str, str] | None = None) -> dict:
+    """The claim, guard and overlap facts for a set of runs (coder and background).
+
+    `box_health` is the `pool=url` map in force over the window: it decides which pools share
+    a box, so which cancels and overlaps a claim answers for.
+    """
     claims = [c for r in runs if (r.get("labels") or {}).get("lane") == "coder" for c in coder_claims(r)]
     bgs = [background_run(r) for r in runs if (r.get("labels") or {}).get("lane") == "background"]
     for claim in claims:
         for bg in bgs:
-            if bg.box != claim.box:
+            if box_of(box_health, bg.box) != box_of(box_health, claim.box):
                 continue
             if bg.cancel_at and claim.edge_at <= bg.cancel_at <= claim.started_at:
                 claim.cancelled.append(bg.run_id)
@@ -364,6 +396,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--since", help="ISO time, e.g. 2026-10-28T22:20:00Z (the event report)")
     parser.add_argument("--api", default=os.environ.get("FABRO_API_URL", DEFAULT_API))
     parser.add_argument("--lines", help="a file of `box-claim` hook lines, read instead of the API")
+    parser.add_argument("--box-health", default=os.environ.get("FABRO_BOX_HEALTH", DEFAULT_BOX_HEALTH),
+                        help="the `pool=url` map in force over the window, which says which pools "
+                             "share a box (default: $FABRO_BOX_HEALTH, else the two-slot layout)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.lines:
@@ -379,7 +414,7 @@ def main(argv: list[str]) -> int:
     if not token:
         print("FABRO_API_TOKEN is not set (see the module docstring)", file=sys.stderr)
         return 64
-    result = analyse(fetch(args.api, token, ts(args.since)))
+    result = analyse(fetch(args.api, token, ts(args.since)), parse_box_health(args.box_health))
     print(json.dumps(result, default=str, indent=1) if args.json else render(result))
     return 1 if result["overlaps"] or result["idle_false"] else 0
 

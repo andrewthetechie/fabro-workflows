@@ -1,6 +1,6 @@
 # Two-slot boxes: overview and canonical contracts
 
-**Status:** planned 2026-11-11. Not started.
+**Status:** tasks 01–03 done and reviewed 2026-11-11 (local commits, not pushed). Task 04 is ready.
 
 **Read this file first.** Every task in this folder assumes the decisions, facts and contracts
 below. If a task and this file disagree, this file is correct: stop and report the conflict.
@@ -43,6 +43,10 @@ coder pools. The spark box keeps serving `long-context`, and nothing else change
   `{"status":"ok","model":"qwen3.8-flash-next",…,"context_length":524288,"busy":true,
   "queued":0,"idle_seconds":0.0,"live_tokens":131985}`. `busy`, `queued` and `idle_seconds`
   are what `Health::parse` already reads. `live_tokens` is new and unused.
+  **Superseded 2026-11-11 by strix-infer 0.7.0**, which both boxes run before task 04. Its
+  body adds `"slots":2,"busy_slots":<n>` and a `slot_states` array (plus `kv_budget`,
+  `backend`, `vision`). `busy` is still box-wide: true while any slot serves. Both parsers
+  ignore the extra fields. Only the claim's wait uses the slot fields (D4).
 - F5. Model rows live in the host settings overlay. `ops/settings.toml.example` is the
   tracked template. `coders-a`, `coders-a-bg`, `coders-b` and `coders-b-bg` use providers
   `box-a` and `box-b`, each `limits.context_tokens = 262144`. `coders-c` is on `spark` and
@@ -76,6 +80,11 @@ coder pools. The spark box keeps serving `long-context`, and nothing else change
   45 s deadline. This change removes that stall from every box stage. On a one-slot box,
   "cancelled nothing" now skips today's 2–4 s confirm-idle wait. That is accepted: with
   nothing cancelled, nothing of ours is on the box.
+  *Amended for 0.7.0 (F4):* the wait itself confirms **a free slot** (`busy_slots < slots`
+  and `queued == 0`, read twice), not an idle box. A box without the slot fields falls back
+  to `busy == false`. So a sibling that starts a box stage *during* the wait no longer holds
+  the claim to its deadline. The sibling check reads the sibling run's stage from
+  `coder_box_stages`, which the coder loops' generated manifests now carry too.
 - **D5. The guard judges every sibling.** `box-guard` cancels its own background run when
   any coder loop labelled with a sibling pool is in a box stage, or when the box reads busy
   (C10, unchanged otherwise).

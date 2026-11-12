@@ -156,25 +156,55 @@ pub fn siblings(map: &BTreeMap<String, String>, pool: &str) -> Vec<String> {
 /// One strix-infer `/health` reading (C3 step 4, C10 step 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Health {
-    /// A request is in flight.
+    /// A request is in flight on any slot.
     pub busy: bool,
     /// Requests waiting behind it.
     pub queued: u64,
+    /// The sessions the box serves at once, when the build reports it (strix-infer 0.7.0).
+    pub slots: Option<u64>,
+    /// How many of those are serving a request now, reported with `slots`.
+    pub busy_slots: Option<u64>,
 }
 
 impl Health {
-    /// The two fields C3 and C10 name: `busy == false` and `queued == 0`.
+    /// The two fields C3 and C10 name: `busy == false` and `queued == 0`. Box-wide: the
+    /// guard and the lane keep this conservative reading (two-slot boxes D3, D5).
     pub fn is_idle(self) -> bool {
         !self.busy && self.queued == 0
     }
 
-    /// Parse a `/health` body. A body without both fields reads as `None`, which both
-    /// callers treat as "not idle".
+    /// Would a request sent now start at once rather than queue (two-slot boxes D4)?
+    ///
+    /// This is what the claim waits for. On a build that reports `slots` and `busy_slots`
+    /// it is "a slot is free and nothing is queued", so a sibling slot's coder loop no longer
+    /// keeps the claim waiting to its deadline; without them it is [`Health::is_idle`],
+    /// which is exact for a one-slot box.
+    pub fn has_free_slot(self) -> bool {
+        if self.queued != 0 {
+            return false;
+        }
+        match (self.slots, self.busy_slots) {
+            (Some(slots), Some(busy_slots)) => busy_slots < slots,
+            _ => !self.busy,
+        }
+    }
+
+    /// Parse a `/health` body. A body without both `busy` and `queued` reads as `None`,
+    /// which every caller treats as "not idle". The slot fields are optional, and a body
+    /// with only one of them reads as having neither.
     pub fn parse(raw: &str) -> Option<Self> {
         let body: Value = serde_json::from_str(raw).ok()?;
+        let slots = body.get("slots").and_then(Value::as_u64);
+        let busy_slots = body.get("busy_slots").and_then(Value::as_u64);
+        let (slots, busy_slots) = match (slots, busy_slots) {
+            (Some(slots), Some(busy_slots)) => (Some(slots), Some(busy_slots)),
+            _ => (None, None),
+        };
         Some(Self {
             busy: body.get("busy")?.as_bool()?,
             queued: body.get("queued")?.as_u64()?,
+            slots,
+            busy_slots,
         })
     }
 }
@@ -238,7 +268,7 @@ pub fn should_wait(cancelled: usize, sibling_in_box_stage: bool) -> bool {
 /// What the claim's `idle=` field reports (C3, two-slot boxes C3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Idle {
-    /// Two consecutive `/health` reads said idle.
+    /// Two consecutive `/health` reads showed a free slot (the box idle, on a one-slot box).
     Free,
     /// The deadline passed with the box still busy, queued or unreadable.
     Busy,
@@ -335,12 +365,13 @@ fn claim(deadline: Instant) -> Result<Option<String>, String> {
     )))
 }
 
-/// Poll `/health` every [`POLL_INTERVAL`] until two consecutive idle reads or the
-/// deadline (C3 step 4).
+/// Poll `/health` every [`POLL_INTERVAL`] until two consecutive reads show a free slot, or
+/// the deadline (C3 step 4, two-slot boxes D4). On a one-slot box, or a build without slot
+/// fields, a free slot is the box reading idle, which is the original rule.
 fn wait_for_idle(health_url: &str, api: &Api, deadline: Instant) -> bool {
     let mut recent: Vec<bool> = Vec::new();
     loop {
-        recent.push(read_health(health_url, api).is_some_and(Health::is_idle));
+        recent.push(read_health(health_url, api).is_some_and(Health::has_free_slot));
         if confirmed_idle(&recent) {
             return true;
         }

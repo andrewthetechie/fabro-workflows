@@ -21,8 +21,9 @@ pub struct Manifest {
     #[serde(default)]
     pub stages: HashMap<String, Stage>,
     /// For each coder loop (`backlog`, `ralph`, `pr-review`), the stages that run on
-    /// the run's box (C1). Only a background package's manifest carries it, and
-    /// `box-guard` reads it to judge *another* run's current stage (C10).
+    /// the run's box (C1). Background packages carry it for `box-guard` (C10) and coder
+    /// loops for `box-claim`'s sibling check (two-slot boxes D4): both judge *another*
+    /// run's current stage.
     #[serde(default)]
     pub coder_box_stages: HashMap<String, HashMap<String, BoxMode>>,
 }
@@ -162,8 +163,9 @@ impl Manifest {
 
     /// Whether a coder loop's stage runs on the box (C10 step 2).
     ///
-    /// Only a background package's manifest carries `coder_box_stages`; anywhere else
-    /// this is [`BoxMode::Never`], which reads as "not a box stage".
+    /// Background packages (for `box-guard`) and coder loops (for `box-claim`'s sibling
+    /// check, two-slot boxes D4) carry `coder_box_stages`; anywhere else this is
+    /// [`BoxMode::Never`], which reads as "not a box stage".
     pub fn coder_stage_mode(&self, workflow: &str, node: &str) -> BoxMode {
         self.coder_box_stages
             .get(workflow)

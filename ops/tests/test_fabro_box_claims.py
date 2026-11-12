@@ -94,6 +94,28 @@ class Analyse(unittest.TestCase):
         result = fbc.analyse(runs)
         self.assertEqual((result["claims_that_cancelled"], result["overlaps"]), (0, []))
 
+    def test_a_sibling_slots_background_run_is_on_the_claims_box(self):
+        # Two-slot boxes D2: the background run is labelled with the box's first pool and the
+        # claim with its own, so only the map says they share a box.
+        runs = [
+            coder("c1", [ev(1, "05:00.000000", "edge.selected"), ev(2, "05:04.000000", "stage.started", "coder")],
+                  box="coders-b"),
+            background("b1", [ev(1, "04:00.000000", "agent.llm.started", "work"),
+                              ev(2, "05:00.500000", "run.cancel.requested"),
+                              ev(3, "05:30.000000", "run.failed")], box="coders-a"),
+        ]
+        one_box = fbc.parse_box_health(fbc.DEFAULT_BOX_HEALTH)
+        result = fbc.analyse(runs, one_box)
+        self.assertEqual(result["claims_that_cancelled"], 1)
+        self.assertEqual([c["run_id"] for c in result["overlaps"]], ["c1"])
+        self.assertEqual(fbc.analyse(runs)["claims_that_cancelled"], 0, "no map: a pool is a box")
+
+    def test_box_of_names_a_box_by_its_first_pool(self):
+        layout = fbc.parse_box_health(fbc.DEFAULT_BOX_HEALTH)
+        self.assertEqual([fbc.box_of(layout, p) for p in ("coders-a", "coders-b", "coders-c", "coders-d")],
+                         ["coders-a", "coders-a", "coders-c", "coders-c"])
+        self.assertEqual(fbc.box_of(layout, "coders-z"), "coders-z")
+
     def test_a_cancel_before_the_first_request_is_the_guard_or_an_eviction(self):
         runs = [background("b1", [ev(1, "04:00.000000", "run.cancel.requested"),
                                   ev(2, "04:01.000000", "run.failed")])]
