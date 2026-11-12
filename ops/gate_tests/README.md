@@ -36,7 +36,7 @@ it (`cargo build --release` in `ops/fabro-io`) and put `ops/fabro-io/target/rele
 | `test_merge_*.py`, `test_receipts.py` | The shared review-merge phase, and Stage I/O receipts |
 | `test_fast_path.py`, `test_merge_queue.py` | The fast path and the merge-queue package |
 | `test_dependabot.py`, `test_scout.py`, `test_ralph.py` | Those packages |
-| `test_pre_review.py` | The whole-branch box pre-review (Part B): `pre_review_prep`'s arm and once-per-run latch, `pre_review_check`'s keep-or-revert, and the edges in both graphs |
+| `test_pre_review.py` | backlog's whole-branch box pre-review (Part B): `pre_review_prep`'s arm and once-per-run latch, `pre_review_check`'s keep-or-revert, its edges, and that ralph no longer has the stage |
 | `test_precheck_calibration.py` | The precheck calibration's `claim` (main at `at`, the issue text at `at`, the guards) and `record`, plus the no-write assertion |
 | `test_task_validation.py`, `test_ops_scripts.py`, `test_tools.py` | Task validation, host scripts, sandbox tools |
 

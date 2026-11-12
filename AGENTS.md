@@ -95,7 +95,7 @@ added `report_queued` to the three importing graphs (+1 node, +3 edges each), an
 
 `Ralph` was 51 nodes and 135 edges, verified by `make check-host` on 2026-10-22; the pre-review
 adds the same three nodes on the `loop=done && phase=pre` edge only, so `Ralph` was 54 nodes and
-139 edges, verified by `make check-host` on 2026-10-31. The review-round change (2026-11-02: `criterion_checks`, the extra review pass, and the reviews in every Refute round) adds 1 node and 4 edges, so **`Ralph` is 55 nodes and 143 edges**, verified by `make check-host` on 2026-11-02. It carries one
+139 edges, verified by `make check-host` on 2026-10-31. The review-round change (2026-11-02: `criterion_checks`, the extra review pass, and the reviews in every Refute round) adds 1 node and 4 edges, so `Ralph` was 55 nodes and 143 edges, verified by `make check-host` on 2026-11-02. The plan review (2026-11-12: `plan_review_prep`, `plan_review` and `plan_review_gate`, an enforcing box review of the Task list on every run, issue #69) adds 3 nodes and 8 edges, and the local review (`local_review_prep`, `local_standards`, `local_spec` and `local_review_gate`, one local standards and spec round before the hosted reviews) replaces the pre-review's three nodes (+1 node; the net edge change of the two is -4 + 8), so **`Ralph` is 59 nodes and 155 edges**, verified by `make check-host` on 2026-11-12. It carries one
 deliberate warning like `Backlog`'s, `issue_number` unbound in `claim`, for the same reason:
 binding it in `[run.inputs]` would route every hand-fired run to one slot.
 

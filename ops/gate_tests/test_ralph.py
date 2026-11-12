@@ -3,6 +3,7 @@ own graph and rebased onto its own scratch directory; the edge checks read the p
 rather than the text, because a wrong route is invisible to `fabro validate`."""
 
 
+import json
 import time
 
 from harness import (ORIG_PATH, RAPH, WF, cat, count, edges, extract, git,
@@ -180,8 +181,9 @@ def test_ralph_edges(ck):
     ck("pg edges: seven exits", "7", count(".", pg))
     statuses = run(["sort"], stdin=grep("context.plan_status", pg) + "\n").out
     ck("pg edges: the conditional set is exactly the five statuses",
-       "close_noop context.plan_status=invalid|close_noop context.plan_status=redundant|mark_stuck context.plan_status=needs_human|pick context.plan_status=ready|return_to_triage context.plan_status=contradiction",
+       "close_noop context.plan_status=invalid|close_noop context.plan_status=redundant|mark_stuck context.plan_status=needs_human|plan_review_prep context.plan_status=ready|return_to_triage context.plan_status=contradiction",
        statuses.replace("\n", "|"))
+    ck("pg edges: ready goes to the plan review, never straight to pick", "0", count("^pick ", pg))
     ck("pg edges: the retry is conditional on failure", "1", count("plan outcome=failed", pg, flags="xF"))
     ck("pg edges: unconditional escape to stop_reason", "1", count("stop_reason ", pg, flags="xF"))
     ck("pg edges: no bare exit", "0", count("^exit ", pg))
@@ -1009,7 +1011,8 @@ def test_ralph_final_check(ck, tmp_path):
                     ("fc edges: one unconditional escape", "final_check->stop_reason ")):
         ck(name, "1", count(e, fce, flags="xF"))
     hye = grep("^hygiene->", redg)
-    ck("hygiene edges: the pre-PR route only", "1", count("hygiene->refute_prep outcome=succeeded && context.phase=pre", hye, flags="xF"))
+    ck("hygiene edges: the pre-PR route goes through the local review", "1", count("hygiene->local_review_prep outcome=succeeded && context.phase=pre", hye, flags="xF"))
+    ck("hygiene edges: and never straight to the Refuter", "0", count("hygiene->refute_prep", hye, flags="F"))
     ck("hygiene edges: one unconditional escape", "1", count("hygiene->stop_reason ", hye, flags="xF"))
 
 
@@ -1460,3 +1463,289 @@ exit 0
     ck("learn edges: learn_prep is the guard", "1", count("learn_prep->learn context.learn=run", redg, flags="xF"))
     ck("learn edges: every terminal node reaches learn_prep", "7",
        count("^(close_noop|return_to_triage|mark_stuck|report_merged|report_blocked|report_queued|mark_needs_human)->learn_prep", redg, flags="E"))
+
+
+# --- the plan review (issue #69): enforcing, every run ------------------------------
+
+def test_ralph_plan_review_prep(ck, tmp_path):
+    T = tmp_path / "ralph-plan-review-prep"
+    (T / "plan_review").mkdir(parents=True)
+    repo = tmp_path / "ralph-plan-review-prep-repo"
+    repo.mkdir()
+    write(repo / "AGENTS.md", "rules\n")
+    prep = stage_r(ck, "plan_review_prep", T)
+    tasks = jq_n('[{id:"t1",title:"A",body:"b",acceptance:["a"],files:["x"],covers:["c"],context:"ctx",source:"plan",round:0,status:"open",iterations:0,misses:0}]')
+    write(T / "tasks.json", tasks + "\n")
+    write(T / "criterion_checks.json", "[]\n")
+    write(T / "plan_review.json", "{}\n")
+    j = lambda: lastjson(sh(prep, cwd=repo).out)
+
+    r = j()
+    ck("pr prep v1: goes", "true", ctx(r, "plan_review_go"))
+    ck("pr prep v1: visit 1", "1", ctx(r, "plan_review_visit"))
+    ck("pr prep v1: the counter is on disk", "1", cat(T / "plan_review_visits"))
+    ck("pr prep v1: a stale result is deleted", "absent", present(T / "plan_review.json"))
+    ck("pr prep v1: plan.json holds the Task as a coder sees it", "t1|ctx", jq('[.tasks[0].id, .tasks[0].context] | join("|")', file=T / "plan_review/plan.json"))
+    ck("pr prep v1: and none of the loop's bookkeeping", "id,title,body,acceptance,files,covers,context".replace(",", "|"), jq('.tasks[0] | keys_unsorted | join("|")', file=T / "plan_review/plan.json"))
+    ck("pr prep v1: no checks.json when the plan names none", "absent", present(T / "plan_review/checks.json"))
+    ck("pr prep v1: standards docs listed", "AGENTS.md", cat(T / "plan_review/standards_docs.txt").strip())
+
+    write(T / "criterion_checks.json", jq_n('[{criterion:"c",command:"cargo test"}]') + "\n")
+    r = j()
+    ck("pr prep v2: goes again (the re-review)", "true", ctx(r, "plan_review_go"))
+    ck("pr prep v2: visit 2", "2", ctx(r, "plan_review_visit"))
+    ck("pr prep v2: checks.json carries the allowlisted checks", "cargo test", jq(".[0].command", file=T / "plan_review/checks.json"))
+
+    r = j()
+    ck("pr prep v3: routes past the review", "false", ctx(r, "plan_review_go"))
+    ck("pr prep v3: visit 3", "3", ctx(r, "plan_review_visit"))
+
+    rm(T / "tasks.json", T / "plan_review_visits")
+    ck("pr prep: no Task list fails closed", "nonzero", "nonzero" if sh(prep, cwd=repo).rc != 0 else "zero")
+
+
+def test_ralph_plan_review_gate(ck, tmp_path):
+    T = tmp_path / "ralph-plan-review-gate"
+    (T / "plan_review").mkdir(parents=True)
+    gate = stage_r(ck, "plan_review_gate", T)
+    R = T / "plan_review.json"
+    st = {}
+
+    def finding(i, sev):
+        return {"id": i, "severity": sev, "lens": "readiness", "requirement": "r", "message": f"msg {i}", "files": ["a.py"], "evidence": "a.py:1"}
+
+    def setup(findings, visits="1", decision=None, stage="plan_review", visit="v1", stage_visit="v1"):
+        for p in (R, T / "task_list.json", T / "stuck_reason.md", T / "plan_review/findings.md", T / "plan_review/previous_task_list.json"):
+            rm(p)
+        errs = [f for f in findings if f["severity"] == "error"]
+        dec = decision or ("repair" if errs else "pass")
+        body = {"decision": dec, "paraphrase": {"plan": "p", "system": "s"}, "findings": findings}
+        if stage:
+            body["_io"] = {"stage": stage, "visit": visit}
+        write(R, jq_n("$b", "--argjson", "b", json.dumps(body)) + "\n")
+        write(T / "task_list.json", jq_n('{disposition:"ready",summary:"first",tasks:[],contradictions:[],checks:[]}') + "\n")
+        write(T / "plan_review_visits", visits + "\n")
+        write(T / ".io/stage.json", json.dumps({"visit": stage_visit}))
+
+    def go():
+        r = sh(gate)
+        st.update(out=r.out, rc=r.rc, j=lastjson(r.out))
+
+    route = lambda: ctx(st["j"], "plan_review_route")
+
+    setup([]); go()
+    ck("pr gate clean: exits 0", "0", st["rc"])
+    ck("pr gate clean: passes", "pass", route())
+    ck("pr gate clean: the planner is not re-run", "present", present(T / "task_list.json"))
+    ck("pr gate clean: one routing object", "1", count("context_updates", st["out"]))
+
+    setup([finding("PR-001", "warning")]); go()
+    ck("pr gate warning only: passes", "pass", route())
+    ck("pr gate warning only: recorded", "1", count("warning PR-001", cat(T / "plan_review/record_1.md"), flags="F"))
+
+    setup([finding("PR-001", "error"), finding("PR-002", "warning")]); go()
+    ck("pr gate error v1: exits 0", "0", st["rc"])
+    ck("pr gate error v1: repair", "repair", route())
+    ck("pr gate error v1: findings.md holds the error", "1", count("^## PR-001 ", cat(T / "plan_review/findings.md")))
+    ck("pr gate error v1: and not the warning", "0", count("PR-002", cat(T / "plan_review/findings.md"), flags="F"))
+    ck("pr gate error v1: the first list is kept for the planner", "first", jq(".summary", file=T / "plan_review/previous_task_list.json"))
+    ck("pr gate error v1: the planner's contract is deleted before it reruns", "absent", present(T / "task_list.json"))
+    ck("pr gate error v1: the routing line has no stray brace elsewhere", "1", count("context_updates", st["out"]))
+
+    setup([finding("PR-001", "error")], visits="2"); go()
+    ck("pr gate error v2: passes whatever it found", "pass", route())
+    ck("pr gate error v2: no second repair turn", "absent", present(T / "plan_review/findings.md"))
+    ck("pr gate error v2: the finding is recorded", "1", count("error PR-001", cat(T / "plan_review/record_2.md"), flags="F"))
+
+    setup([finding("PR-001", "error")], decision="pass"); go()
+    ck("pr gate: the errors decide, not the decision field", "repair", route())
+    setup([finding("PR-001", "warning")], decision="repair"); go()
+    ck("pr gate: a repair with no error finding passes", "pass", route())
+
+    # Fail closed.
+    for name, kw in (("no receipt stage", {"stage": None}), ("wrong stage", {"stage": "standards"}),
+                     ("stale visit", {"stage_visit": "v2"})):
+        setup([], **kw); go()
+        ck(f"pr gate {name}: fails the node", "1", st["rc"])
+        ck(f"pr gate {name}: names why", "1", count("plan reviewer wrote no valid result", cat(T / "stuck_reason.md"), flags="F"))
+    setup([]); rm(R); go()
+    ck("pr gate missing result: fails the node", "1", st["rc"])
+    setup([]); write(R, "{not json"); go()
+    ck("pr gate garbage result: fails the node", "1", st["rc"])
+    setup([], decision="maybe"); go()
+    ck("pr gate unknown decision: fails the node", "1", st["rc"])
+
+
+def test_ralph_plan_gate_keeps_the_first_plan_when_a_repair_turn_fails(ck, tmp_path):
+    T = tmp_path / "ralph-plan-repair"
+    gate = stage_r(ck, "plan_gate", T)
+    mkreadok(T, "ok1")
+    first = jq_n('[{id:"t1",title:"A",body:"b",acceptance:["a"],files:[],covers:["c"],context:"x",source:"plan",round:0,status:"open",iterations:0,misses:0}]')
+    write(T / "tasks.json", first + "\n")
+    write(T / "plan_review/previous_task_list.json", "{}\n")
+    write(T / "task_list.json", jq_n('{disposition:"ready",summary:"s",contradictions:[],tasks:[]}') + "\n")
+    r = sh(gate)
+    ck("pg repair: the first invalid attempt retries", "1", r.rc)
+    r = sh(gate)
+    ck("pg repair: the second does not close the issue", "ready", ctx(lastjson(r.out), "plan_status"))
+    ck("pg repair: tasks.json is the first plan, untouched", "t1", jq(".[0].id", file=T / "tasks.json"))
+    # Without a repair turn the same file closes the issue, as before.
+    rm(T / "plan_review/previous_task_list.json", T / "plan_attempts")
+    sh(gate); r = sh(gate)
+    ck("pg no repair: invalid still routes invalid", "invalid", ctx(lastjson(r.out), "plan_status"))
+
+
+def test_ralph_plan_review_edges(ck):
+    e = edges(RAPH)
+    for name, edge in (
+        ("pr edges: prep reviews on go", "plan_review_prep->plan_review outcome=succeeded && context.plan_review_go=true"),
+        ("pr edges: prep skips to pick on no go", "plan_review_prep->pick outcome=succeeded && context.plan_review_go=false"),
+        ("pr edges: prep escapes to stop_reason", "plan_review_prep->stop_reason "),
+        ("pr edges: a good review goes to the gate", "plan_review->plan_review_gate outcome=succeeded"),
+        ("pr edges: a failed review goes to the gate too, which fails closed", "plan_review->plan_review_gate "),
+        ("pr edges: repair returns to the planner", "plan_review_gate->plan context.plan_review_route=repair"),
+        ("pr edges: pass goes to pick", "plan_review_gate->pick context.plan_review_route=pass"),
+        ("pr edges: the gate escapes to stop_reason", "plan_review_gate->stop_reason "),
+    ):
+        ck(name, "1", count(edge, e, flags="xF"))
+    ck("pr edges: the plan is only left for pick through the review", "0", count("^plan_gate->pick", e))
+
+
+# --- the local review (replaces the pre-review) --------------------------------------
+
+def test_ralph_local_review_prep(ck, tmp_path):
+    T = tmp_path / "ralph-local-prep"
+    repo = tmp_path / "ralph-local-prep-repo"
+    T.mkdir()
+    git("init", "-q", "-b", "main", repo)
+    write(repo / "a.txt", "base\n")
+    git("-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    git("-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base")
+    git("-C", repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git("-C", repo, "checkout", "-q", "-b", "work")
+    write(repo / "a.txt", "branch\n")
+    git("-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "task")
+    prep = stage_r(ck, "local_review_prep", T)
+    L = T / "local_review"
+    run1 = lambda: lastjson(sh(prep, cwd=repo).out)
+    (L).mkdir()
+    write(L / "standards.json", "{}")
+    write(L / "spec.json", "{}")
+
+    r = run1()
+    ck("lr prep v1: goes", "true", ctx(r, "local_review_go"))
+    ck("lr prep v1: the latch is written", "present", present(T / "local_reviewed"))
+    ck("lr prep v1: the diff is against origin/main", "1", count("^+branch$", cat(L / "diff.patch")))
+    ck("lr prep v1: the changed files", "a.txt", cat(L / "changed_files.txt").strip())
+    ck("lr prep v1: the commits", "1", count(" task$", cat(L / "commits.txt")))
+    ck("lr prep v1: the diffstat", "1", count("a.txt", cat(L / "diffstat.txt"), flags="F"))
+    ck("lr prep v1: old results are cleared", "absent", present(L / "standards.json"))
+
+    r = run1()
+    ck("lr prep v2: the latch routes past the review", "false", ctx(r, "local_review_go"))
+
+    rm(T / "local_reviewed")
+    write(T / "loop_exhausted", "true\n")
+    r = run1()
+    ck("lr prep exhausted: no review for a branch about to be held", "false", ctx(r, "local_review_go"))
+    ck("lr prep exhausted: and no latch, since nothing was reviewed", "absent", present(T / "local_reviewed"))
+    rm(T / "loop_exhausted")
+
+    # A prep that cannot take the diff still exits 0 and routes on.
+    other = tmp_path / "ralph-local-prep-norepo"
+    other.mkdir()
+    r = sh(prep, cwd=other)
+    ck("lr prep no repo: exits 0", "0", r.rc)
+    ck("lr prep no repo: routes past the review", "false", ctx(lastjson(r.out), "local_review_go"))
+
+
+def test_ralph_local_review_gate(ck, tmp_path):
+    T = tmp_path / "ralph-local-gate"
+    L = T / "local_review"
+    L.mkdir(parents=True)
+    gate = stage_r(ck, "local_review_gate", T)
+    st = {}
+
+    def f(i, sev, line=3):
+        return {"id": i, "severity": sev, "message": f"msg {i}", "files": ["a.py"], "line": line, "suggestion": "fix"}
+
+    def setup(std=(), spec=(), stage_std="local_standards", stage_spec="local_spec", visit="v1", tasks="[]"):
+        for p in L.iterdir():
+            rm(p)
+        rm(T / "tasks.json")
+        for name, items, stage, extra in (("standards", std, stage_std, {}), ("spec", spec, stage_spec, {"risk": 2})):
+            body = {"decision": "findings" if items else "approve", "summary": "s", "findings": list(items), **extra}
+            if stage:
+                body["_io"] = {"stage": stage, "visit": visit}
+            write(L / f"{name}.json", jq_n("$b", "--argjson", "b", json.dumps(body)) + "\n")
+        write(T / "tasks.json", tasks + "\n")
+
+    def go():
+        r = sh(gate)
+        st.update(out=r.out, rc=r.rc, j=lastjson(r.out))
+
+    route = lambda: ctx(st["j"], "local_review_route")
+    ntasks = lambda: jq("length", file=T / "tasks.json", raw=False)
+    existing = jq_n('[{id:"t1",title:"A",body:"b",acceptance:["a"],files:[],covers:[],context:"c",source:"plan",round:0,status:"passed",iterations:1,misses:0}]')
+
+    setup(); go()
+    ck("lr gate clean: exits 0", "0", st["rc"])
+    ck("lr gate clean: passes", "pass", route())
+    ck("lr gate clean: no task added", "0", ntasks())
+
+    setup(std=[f("STD-001", "warning")], spec=[f("SPEC-001", "info")], tasks=existing); go()
+    ck("lr gate warnings: pass", "pass", route())
+    ck("lr gate warnings: nothing becomes a Task", "1", ntasks())
+
+    setup(std=[f("STD-001", "error"), f("STD-002", "warning")], spec=[f("SPEC-001", "error")], tasks=existing); go()
+    ck("lr gate errors: exits 0", "0", st["rc"])
+    ck("lr gate errors: routes tasks", "tasks", route())
+    ck("lr gate errors: two Tasks appended to the one", "3", ntasks())
+    ck("lr gate errors: ids are lr-prefixed", "t1|lrs1|lrp1", jq("[.[].id] | join(\"|\")", file=T / "tasks.json"))
+    ck("lr gate errors: source local_review, not review", "local_review|local_review", jq("[.[1].source, .[2].source] | join(\"|\")", file=T / "tasks.json"))
+    ck("lr gate errors: axes", "standards|spec", jq("[.[1].axis, .[2].axis] | join(\"|\")", file=T / "tasks.json"))
+    ck("lr gate errors: finding ids kept", "STD-001|SPEC-001", jq("[.[1].finding_id, .[2].finding_id] | join(\"|\")", file=T / "tasks.json"))
+    ck("lr gate errors: open, no misses", "open|0", jq("[.[1].status, (.[1].misses | tostring)] | join(\"|\")", file=T / "tasks.json"))
+    ck("lr gate errors: the context cites file and line", "1", count("a.py:3", jq(".[1].context", file=T / "tasks.json"), flags="F"))
+    ck("lr gate errors: the existing Task is untouched", "passed", jq(".[0].status", file=T / "tasks.json"))
+    ck("lr gate errors: no hosted-review leftovers", "absent", present(T / "review_tasks.json"))
+    ck("lr gate errors: one routing object", "1", count("context_updates", st["out"]))
+
+    # A reviewer's needs_human_review decision is not an error.
+    setup(tasks=existing)
+    write(L / "spec.json", jq_n('{decision:"needs_human_review",summary:"s",findings:[],risk:5,_io:{stage:"local_spec",visit:"v1"}}') + "\n")
+    go()
+    ck("lr gate needs_human_review: ignored, the review may only help", "pass", route())
+
+    # Missing or unreceipted results drop the round and still exit 0.
+    for name, kw in (("wrong stage", {"stage_spec": "spec"}), ("no receipt", {"stage_std": None})):
+        setup(std=[f("STD-001", "error")], tasks=existing, **kw); go()
+        ck(f"lr gate {name}: exits 0", "0", st["rc"])
+        ck(f"lr gate {name}: passes", "pass", route())
+        ck(f"lr gate {name}: adds nothing", "1", ntasks())
+    setup(std=[f("STD-001", "error")], tasks=existing); rm(L / "spec.json"); go()
+    ck("lr gate missing result: exits 0", "0", st["rc"])
+    ck("lr gate missing result: passes", "pass", route())
+    setup(std=[f("STD-001", "error")], tasks=existing); write(L / "spec.json", "{garbage"); go()
+    ck("lr gate garbage result: passes", "pass", route())
+    setup(std=[f("STD-001", "error")], tasks="not json"); go()
+    ck("lr gate broken tasks.json: exits 0 and passes", "0|pass", f"{st['rc']}|{route()}")
+
+
+def test_ralph_local_review_edges(ck):
+    e = edges(RAPH)
+    for name, edge in (
+        ("lr edges: hygiene enters the prep on the pre-PR route", "hygiene->local_review_prep outcome=succeeded && context.phase=pre"),
+        ("lr edges: the prep reviews on go", "local_review_prep->local_standards outcome=succeeded && context.local_review_go=true"),
+        ("lr edges: the prep falls back to the Refuter, never a stop", "local_review_prep->refute_prep "),
+        ("lr edges: standards then spec, succeeded", "local_standards->local_spec outcome=succeeded"),
+        ("lr edges: standards then spec, whatever happened", "local_standards->local_spec "),
+        ("lr edges: spec then the gate, succeeded", "local_spec->local_review_gate outcome=succeeded"),
+        ("lr edges: spec then the gate, whatever happened", "local_spec->local_review_gate "),
+        ("lr edges: Tasks return to pick", "local_review_gate->pick context.local_review_route=tasks"),
+        ("lr edges: the gate falls back to the Refuter, never a stop", "local_review_gate->refute_prep "),
+    ):
+        ck(name, "1", count(edge, e, flags="xF"))
+    ck("lr edges: nothing in the local review reaches stop_reason", "0", count("^local_[a-z_]*->stop_reason", e))
+    ck("lr edges: nothing in the local review reaches mark_needs_human", "0", count("^local_[a-z_]*->mark", e))
+    ck("lr edges: hygiene never reaches the Refuter directly", "0", count("^hygiene->refute_prep", e))

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plan_review",
+  "title": "plan_review — the box's review of ralph's Task list before the first Iteration (issue #69)",
+  "description": "One fresh reviewer's verdict on the Task list, through three lenses: comprehension (the two paraphrases, written first), architecture and readiness. `plan_review_gate` reads `decision` and the findings' severities: any `error` sends the plan back to the planner for one repair turn, and the second review is recorded and never blocks. The cross-field rule (`repair` exactly when a finding has severity error) is the gate's, which counts the errors itself. _io is stamped by the server and is not part of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "paraphrase", "findings"],
+  "properties": {
+    "decision": {
+      "enum": ["pass", "repair"],
+      "description": "pass: no finding has severity error. repair: at least one does."
+    },
+    "paraphrase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan", "system"],
+      "description": "Written before any finding, from the issue and the Task list only.",
+      "properties": {
+        "plan": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1500,
+          "description": "What the plan does, in your own words: the change, Task by Task, and how each Task hands off to the next."
+        },
+        "system": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1500,
+          "description": "How the current system works in the area the plan changes, as the issue and the code show it."
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "One entry per grounded finding; [] when there is none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "lens", "requirement", "message", "files", "evidence"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "description": "PR-001, PR-002 and so on." },
+          "severity": {
+            "enum": ["error", "warning"],
+            "description": "error: the plan as written would miss a criterion, cite something that does not exist, or cannot be carried out without a design decision it does not state. warning: a preference or an alternative."
+          },
+          "lens": { "enum": ["architecture", "comprehension", "readiness"] },
+          "requirement": {
+            "type": "string",
+            "maxLength": 600,
+            "description": "The issue requirement or acceptance criterion the finding is about, quoted; empty when it concerns no single requirement."
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1500,
+            "description": "What is wrong with the plan and what the planner must change."
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Repository-relative paths the finding is about; may be empty but must be present."
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600,
+            "description": "What you read that shows it: a path:line, a search that found nothing, or a quote from the issue or a Task."
+          }
+        }
+      }
+    }
+  }
+}

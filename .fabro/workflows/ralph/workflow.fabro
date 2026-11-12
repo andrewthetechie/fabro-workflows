@@ -53,6 +53,12 @@ digraph Ralph {
         //                     OpenAI outage still leaves an independent Refuter.
         //   .learn            the run's box, reasoning_effort medium: it reads one run's own
         //                     record, and it is the coder pool's model by O25.
+        //   .plan-review      the run's leased box, reasoning_effort medium, no hosted class or
+        //                     fallback class: the enforcing review of the Task list (issue #69).
+        //                     It spends box time only, which is the point of putting it there.
+        //   .review-local     the run's leased box, reasoning_effort medium: the one local
+        //                     standards and spec round before the hosted reviews. It replaced
+        //                     the whole-branch `pre_review`.
         //
         // NO CLASS MAY NAME glm-4.7: it is the only model in the catalog with
         // `features.reasoning: false`, z.ai returns reasoning blocks from it anyway, and
@@ -74,6 +80,8 @@ digraph Ralph {
             .review-spec      { model: kimi-k3; }
             .refute           { model: gpt-6-luna; }
             .learn            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .plan-review      { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .review-local     { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
         "
     ]
     rankdir=LR
@@ -299,6 +307,12 @@ if [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi"]
     // `.fabro` file may hold no backslash. A check that fails the list is dropped, never
     // the plan: the criterion stays as `unverifiable` as it was before checks existed.
     //
+    // The plan review (issue #69) can send the plan back once. On that repair turn
+    // `plan_review_gate` has copied the first list to `plan_review/previous_task_list.json`, so
+    // a repair turn that then writes nothing valid (`invalid` after its two attempts) does not
+    // close the issue as a no-op: the first plan stands, `tasks.json` is left as it was, and
+    // the gate publishes `ready` so the second review still runs on it.
+    //
     // `redundant` and `invalid` both end at `close_noop`; `needs_human` writes the plan's
     // summary to `stuck_reason.md` and ends at `mark_stuck`. `triage_questions` is on every
     // routing object because the Discord hook on `return_to_triage` fires at that node's
@@ -325,8 +339,10 @@ if [ \"$S\" = invalid ]; then
   echo $A > /tmp/fabro/plan_attempts
   if [ $A -lt 2 ]; then if [ $RM = 1 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; else echo 'task_list.json missing or invalid; rewrite it exactly per the contract' >&2; fi; exit 1; fi
 fi
+KEEP=''
+if [ \"$S\" = invalid ] && [ -s /tmp/fabro/plan_review/previous_task_list.json ]; then S=ready; KEEP=1; echo 'plan_gate: the repair turn wrote no valid Task list, so the first plan stands' >&2; fi
 echo 0 > /tmp/fabro/plan_attempts
-if [ \"$S\" = ready ]; then
+if [ \"$S\" = ready ] && [ -z \"$KEEP\" ]; then
   jq '[.tasks[] | . + {source: \"plan\", round: 0, status: \"open\", iterations: 0, misses: 0}] | .[0:8]' $F > /tmp/fabro/tasks.json
   jq '[.tasks[] | . + {source: \"plan\", round: 0, status: \"open\", iterations: 0, misses: 0}] | .[8:]' $F > /tmp/fabro/remainder.json
   jq -c '[(.checks // [])[]? | select(((.criterion | type) == \"string\") and ((.command | type) == \"string\")) | {criterion: .criterion, command: (.command | sub(\"^ +\"; \"\") | sub(\" +$\"; \"\"))} | select(.criterion != \"\" and .command != \"\" and (.command | length) <= 200) | select(([.command | explode[] | select(. == 10 or . == 13 or . == 36 or . == 38 or . == 40 or . == 41 or . == 59 or . == 60 or . == 62 or . == 92 or . == 96 or . == 124)] | length) == 0) | select(.command | test(\"^(cargo (test|nextest|clippy|llvm-cov|tarpaulin|fmt|check|doc)|(npm|pnpm|yarn|bun) (test|run [A-Za-z0-9:_.-]+|exec [A-Za-z0-9@/_.-]+)|(npx|pnpx|bunx) [A-Za-z0-9@/_.-]+|uv run [A-Za-z0-9_.-]+|(python3?|python3[.][0-9]+) -m (pytest|mypy|ruff|coverage)|pytest|ruff|mypy|pyright|coverage|go (test|vet)|make [A-Za-z0-9_.-]+|deno (test|check|lint))( |$)\")) | select(.command | test(\"deploy|release|publish|push|upload|install\") | not)] | .[0:4]' $F > /tmp/fabro/criterion_checks.json 2>/dev/null || echo '[]' > /tmp/fabro/criterion_checks.json
@@ -344,6 +360,111 @@ if [ \"$S\" = contradiction ]; then
   QT=$(jq -r '[.items[] | \"- \" + .criterion + \" (conflicts with: \" + .non_goal + \")\"] | join(\"  \")' /tmp/fabro/return.json | tr -d '\"' | cut -c1-1200)
 fi
 jq -nc --arg s \"$S\" --arg q \"$QT\" '{context_updates:{plan_status:$s,triage_questions:$q}}'"]
+
+    // ---- The plan review (issue #69, enforcing, every run) ----
+    // One fresh reviewer, on the run's leased box, reads the issue and the Task list through
+    // three lenses (comprehension, architecture, readiness) and submits a schema-checked
+    // verdict. It is the issue's three shadow reviews collapsed into one stage, and enforcing
+    // from the first run: there is no arm and no shadow period.
+    //
+    // The loop: `plan_gate -> plan_review_prep -> plan_review -> plan_review_gate`, which
+    // routes `repair` back to `plan` at most once. Visit 1 reviews; any finding of severity
+    // `error` sends the findings (as markdown) and the first Task list to the planner for one
+    // repair turn, and `plan_gate` re-validates the new list. Visit 2 reviews again and routes
+    // `pass` whatever it finds: the remaining findings are recorded in `/tmp/fabro/plan_review/`
+    // and on stderr, and the plan goes on. Visit 3 cannot happen (nothing leads back to `plan`
+    // after a `pass`), and `plan_review_prep` routes past the review if it ever did. The
+    // counter is `/tmp/fabro/plan_review_visits`, so R1's breaker (limit 100) is not what bounds
+    // this cycle; the counter is.
+    //
+    // A contradiction in the issue is still the planner's call: on a repair turn it returns
+    // `contradiction` when the reviewer showed the issue contradicts itself, and `plan_gate`
+    // sends that to `return_to_triage` as it always has.
+    //
+    // It fails CLOSED. A missing, unreceipted or malformed result writes `stuck_reason.md` and
+    // exits 1 to `stop_reason`: a plan nobody could review is not waved through, which is the
+    // opposite of the local review of the code below.
+    //
+    // The reviewer reads the Task list as the coder will (`plan_review/plan.json`: id, title,
+    // body, acceptance, files, covers, context) and never the planner's raw `task_list.json`, its
+    // summary or any transcript. `tasks.json` and the review files are Sealed (the manifest).
+    plan_review_prep [label="Prepare the plan review", shape=parallelogram, timeout="2m", output_schema="routing",
+        script="set -e
+F=/tmp/fabro
+P=$F/plan_review
+mkdir -p $P
+V=$(cat $F/plan_review_visits 2>/dev/null || echo 0)
+case \"$V\" in '' | *[!0-9]*) V=0 ;; esac
+V=$((V + 1))
+echo $V > $F/plan_review_visits
+if [ $V -gt 2 ]; then
+  echo 'plan_review_prep: visit '$V' is past the one review and the one re-review; routing on' >&2
+  echo '{\"context_updates\":{\"plan_review_go\":false,\"plan_review_visit\":'$V'}}'
+  exit 0
+fi
+rm -f $F/plan_review.json $P/plan.json $P/checks.json $P/standards_docs.txt
+jq '{tasks: [.[] | {id, title, body, acceptance, files, covers, context}]}' $F/tasks.json > $P/plan.json
+if [ -s $F/criterion_checks.json ] && [ \"$(jq length $F/criterion_checks.json 2>/dev/null || echo 0)\" != 0 ]; then cp $F/criterion_checks.json $P/checks.json; fi
+: > $P/standards_docs.txt
+for f in AGENTS.md CLAUDE.md CONTRIBUTING.md docs/adr; do
+  if [ -e \"$f\" ]; then echo \"$f\" >> $P/standards_docs.txt; fi
+done
+echo 'plan_review_prep: visit '$V', '\"$(jq '.tasks | length' $P/plan.json)\"' Task(s) to review' >&2
+echo '{\"context_updates\":{\"plan_review_go\":true,\"plan_review_visit\":'$V'}}'"]
+
+    // 2026-11-12: NEW stage, timeout unmeasured. 40m is the hosted `standards` 20m doubled for
+    // the slower two-slot box (the convention of the nodes above), and a plan review reads the
+    // whole Task list plus the code it cites. Re-time it from the first runs' visits.
+    plan_review [label="Review the plan", class="plan-review", timeout="40m", max_retries=1, prompt="@prompts/plan_review.md.j2"]
+
+    plan_review_gate [label="Decide the plan review", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro
+P=$F/plan_review
+R=$F/plan_review.json
+V=$(cat $F/plan_review_visits 2>/dev/null || echo 0)
+case \"$V\" in '' | *[!0-9]*) V=0 ;; esac
+SV=$(jq -r '.visit // empty' $F/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $R 2>/dev/null)
+RS=$(jq -r '._io.stage // empty' $R 2>/dev/null)
+DEC=$(jq -r '.decision // empty' $R 2>/dev/null)
+if [ ! -s $R ] || [ \"$RS\" != plan_review ] || [ -z \"$RV\" ] || [ \"$RV\" != \"$SV\" ] || { [ \"$DEC\" != pass ] && [ \"$DEC\" != repair ]; }; then
+  echo 'The plan reviewer wrote no valid result, so the Task list was not reviewed and the run stops before any code is written.' > $F/stuck_reason.md
+  exit 1
+fi
+NERR=$(jq '[.findings[]? | select(.severity == \"error\")] | length' $R 2>/dev/null || echo 0)
+NWARN=$(jq '[.findings[]? | select(.severity == \"warning\")] | length' $R 2>/dev/null || echo 0)
+case \"$NERR\" in '' | *[!0-9]*) NERR=0 ;; esac
+case \"$NWARN\" in '' | *[!0-9]*) NWARN=0 ;; esac
+if [ \"$DEC\" = repair ] && [ \"$NERR\" = 0 ]; then echo 'plan_review: decision repair with no error finding; treated as pass' >&2; fi
+if [ \"$DEC\" = pass ] && [ \"$NERR\" != 0 ]; then echo 'plan_review: decision pass with '$NERR' error finding(s); the errors decide' >&2; fi
+ROUTE=pass
+if [ $V -le 1 ] && [ $NERR -gt 0 ]; then ROUTE=repair; fi
+cp $R $P/review_$V.json
+{
+  echo \"### Plan review (visit $V)\"
+  echo
+  echo \"Decision $DEC; $NERR error(s), $NWARN warning(s); route $ROUTE.\"
+  echo
+  jq -r '.findings[]? | \"- \" + .severity + \" \" + .id + \" (\" + .lens + \"): \" + .message' $R
+} > $P/record_$V.md
+if [ \"$ROUTE\" = repair ]; then
+  cp $F/task_list.json $P/previous_task_list.json
+  jq -r 'def nl: [10] | implode;
+    [\"# Plan review findings\", \"\",
+     \"A fresh reviewer read the issue and your Task list, and found the errors below. Address each one: change the Task list, or say in the plan why the finding is wrong. Keep what was right.\", \"\"]
+    + [.findings[] | select(.severity == \"error\")
+       | \"## \" + .id + \" (\" + .lens + \")\" + nl + nl
+         + (if (.requirement // \"\") == \"\" then \"\" else \"Requirement: \" + .requirement + nl + nl end)
+         + .message + nl + nl
+         + \"Files: \" + ((.files // []) | join(\", \")) + nl + nl
+         + \"Evidence: \" + .evidence + nl]
+    | join(nl)' $R > $P/findings.md
+  rm -f $F/task_list.json
+  echo 'plan_review: '$NERR' error finding(s); one planner repair turn follows' >&2
+else
+  echo 'plan_review: visit '$V', '$NERR' error(s) and '$NWARN' warning(s) recorded in '$P'; the plan goes on unchanged' >&2
+fi
+jq -nc --arg r \"$ROUTE\" '{context_updates:{plan_review_route:$r}}'"]
 
     // ---- The loop's head (C3) ----
     // One node owns "what happens next", so the loop has one place to read. In order:
@@ -1352,140 +1473,138 @@ else
 fi
 jq -nc --arg r \"$ROUTE\" --argjson le \"$LE\" '{context_updates:{review_route:$r,loop_exhausted:$le}}'"]
 
-    // ---- The pre-review (whole branch, once per run) ----
+    // ---- The local review (standards and spec on the box, once per run) ----
+    // It REPLACED the whole-branch `pre_review` (2026-11-12). The pre-review edited the code
+    // itself; this is the existing Standards and Spec reviewers, unchanged prompts, run once on
+    // the run's leased box with fresh sessions BEFORE the hosted Refuter, Standards and Spec
+    // rounds, which stay exactly as they were. Its findings are fixed through the normal loop:
+    // every `error` becomes a Task, and the hosted rounds then review the fixed branch.
     //
-    // Task 09 as written put the pre-review **per task**, between a green `check` and the
-    // hosted reviewers. The data says that buys almost nothing: a per-task review almost never
-    // sends work back, while the hosted spend and the merge holds are in the WHOLE-BRANCH
-    // reviewers -- `standards` and `spec` here, and the Refuter, whose unfixed findings are the
-    // second most common hold reason across all PRs. So it runs once, on the whole branch,
-    // after the loop is done and **before `final_merge`**.
+    // Where it sits: after `hygiene`, on the `phase=pre` edge into `refute_prep`. The loop is
+    // `tasks -> pick -> iterate -> ... -> pick done -> final_merge -> final_check ->
+    // criterion_checks -> hygiene -> local_review_prep` and then `refute_prep`. It is NOT before
+    // `final_check`: that node writes `validated_tree`, the Refuter's "validation passed on
+    // this exact tree" evidence, and any Task the review adds sends the run back through
+    // `final_check` and `hygiene` before the local review is reached again.
     //
-    // It sits BEFORE `final_check`, not after it, on purpose: `final_check` runs
-    // `./.fabro/setup.sh && ./.fabro/ci.sh` and writes `/tmp/fabro/validated_tree`, which is the
-    // Refuter's "validation passed on this exact tree" evidence. An edit made after
-    // `final_check` would leave the Refuter with no validation for the tree it is judging, and
-    // every command criterion would become `unverifiable`. Before it, `final_check` validates
-    // the pre-review's edits like any other, and the Refuter's evidence still holds.
+    // Once per run. `/tmp/fabro/local_reviewed` is the latch, written by `local_review_prep` on
+    // its first visit, so the second visit (after the review's Tasks have passed) routes
+    // straight to `refute_prep` with `local_review_go=false`. That is also why R1's breaker is
+    // not what bounds this cycle: the latch is.
     //
-    // **The A/B arm** is one line in `pre_review_prep` and the byte-identical one in backlog:
-    // bit 2 of the issue number, `(N / 4) % 2`, so issues 4-7, 12-15, ... pre-review and the
-    // rest do not. It is deliberately NOT `N % 2`: that is this trial's own bit (the scheduler
-    // sends an even issue to ralph and an odd one to backlog), so under the first arm the
-    // pre-review ran on no ralph run at all and skewed the trial it shares the bit with. Bit 1
-    // is the box-plan trial's arm (`issue_number // 2 % 2`). The arm is published as
-    // `pre_review_arm`, and its outcome as `pre_review_verdict`, on every visit of the next
-    // node. **To pre-review every run**, set `ARM=on` unconditionally in `pre_review_prep`
-    // (one line, in both graphs).
+    // It may only help. Every failure routes on to `refute_prep`: a prep that could not take the
+    // diff, an agent stage that failed or timed out (each agent edge has an unconditional twin),
+    // and a gate that finds a missing or unreceipted result, which drops the whole local round
+    // with a stderr note. None reaches `stop_reason`. A `needs_human_review` decision from a
+    // local reviewer is ignored for the same reason: only `error` findings count here.
     //
-    // **Once per run.** `pick` comes back here after Refuter and review rounds, so
-    // `/tmp/fabro/pre_reviewed` is the latch: a second visit routes past the review, which is
-    // why R1's breaker is unaffected -- no new cycle, only a second entry to a path the graph
-    // already takes.
+    // Tasks. Each `error` becomes a Task with id `lrs<N>` (standards) or `lrp<N>` (spec),
+    // `axis` standards|spec, `finding_id` the reviewer's id, and `source: local_review`. The
+    // source is NOT `review`: `review_gate` reads `source == review` for `fixes_applied`, which
+    // merge_gate checks 7-10 and the PR body report as the HOSTED reviews' fixes, and the
+    // local reviewers restart their ids at `STD-001` / `SPEC-001`, so reusing `review` would
+    // list a local fix under a hosted id. Nothing else reads `source` except `refute_history`
+    // (`refute` only) and the scorecard's tasks-by-source counts, which gets a new `local_review`
+    // line: exactly the measurement this stage needs.
     //
-    // **The pre-review may only help.** Any failure -- no receipt, a failed or timed-out stage,
-    // a red `task-check`, a `task-check` that errored -- reverts the tree to
-    // `/tmp/fabro/pre_review_base` and routes on. It never reaches `stop_reason` or
-    // `mark_needs_human`, so the run continues exactly as it would have.
-    //
-    // **Independence.** `standards`, `spec`, the Refuter and `review_gate` never read
-    // `/tmp/fabro/pre_review.json` or its log: only the code changes reach them. Do not add
-    // either file to their manifest inputs.
-
-    pre_review_prep [label="Prepare the branch pre-review", shape=parallelogram, output_schema="routing", timeout="5m",
-        script="set -e
-F=/tmp/fabro
-P=$F/pre_review
-mkdir -p $P
-N=$(cat $F/issue_number 2>/dev/null || true)
-case \"$N\" in '' | *[!0-9]*) N=$(jq -r '.number // 0' $F/issue.json 2>/dev/null || echo 0) ;; esac
-case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
-ARM=off
-if [ $(( (N / 4) % 2 )) -eq 1 ]; then ARM=on; fi
-if [ -e $F/pre_reviewed ]; then
-  echo 'pre_review_prep: this run already had its pre-review; routing on' >&2
-  echo '{\"context_updates\":{\"pre_review_go\":false,\"pre_review_arm\":\"'$ARM'\"}}'
-  exit 0
-fi
-: > $F/pre_reviewed
-GO=false
-if [ \"$ARM\" = on ]; then GO=true; fi
-if [ \"$GO\" = false ]; then
-  echo 'pre_review_prep: arm='$ARM' for issue '$N'; this run does not pre-review'
-  echo '{\"context_updates\":{\"pre_review_go\":false,\"pre_review_arm\":\"'$ARM'\"}}'
-  exit 0
-fi
-rm -f $F/pre_review.json $P/task_check.json $P/validate_output.log
-git fetch origin main >/dev/null 2>&1 || echo 'pre_review_prep: could not refresh origin/main; diffing against the one in the checkout' >&2
-git diff origin/main...HEAD > $P/diff.patch
-git diff --stat origin/main...HEAD > $P/diffstat.txt
-git diff --name-only origin/main...HEAD > $P/changed_files.txt
-: > $P/standards_docs.txt
-for f in AGENTS.md CLAUDE.md CONTRIBUTING.md docs/adr; do
-  if [ -e \"$f\" ]; then echo \"$f\" >> $P/standards_docs.txt; fi
-done
-git rev-parse HEAD > $F/pre_review_base
-echo \"$ARM\" > $P/arm
-echo 'pre_review_prep: arm='$ARM' base='\"$(cat $F/pre_review_base)\"
-echo '{\"context_updates\":{\"pre_review_go\":true,\"pre_review_arm\":\"'$ARM'\"}}'"]
-
-    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
-    pre_review [label="Pre-review the whole branch", class="coder", timeout="60m", max_retries=0, prompt="@prompts/pre_review.md.j2"]
-
-    pre_review_check [label="Keep or revert the pre-review", shape=parallelogram, output_schema="routing", timeout="25m",
+    // Independence. The hosted Refuter, Standards and Spec never read `/tmp/fabro/local_review/`
+    // (their Sealed lists), and the local reviewers never read the hosted results or the plan
+    // review. Only the code changes reach the hosted reviewers.
+    local_review_prep [label="Prepare the local review", shape=parallelogram, timeout="5m", output_schema="routing",
         script="F=/tmp/fabro
-P=$F/pre_review
-: > $F/pre_reviewed
-BASE=$(cat $F/pre_review_base 2>/dev/null || true)
-ARM=$(cat $P/arm 2>/dev/null || echo unknown)
-UNMET=0
-if jq -e . $F/pre_review.json >/dev/null 2>&1; then
-  UNMET=$(jq '[.criteria[]? | select(.status != \"met\")] | length' $F/pre_review.json 2>/dev/null || echo 0)
+L=$F/local_review
+if [ -s $F/loop_exhausted ]; then
+  echo 'local_review_prep: the loop ran out, so the branch is about to be held; no local review' >&2
+  echo '{\"context_updates\":{\"local_review_go\":false}}'
+  exit 0
 fi
-FILES=0
-VERDICT=no_base
-if [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}\" 2>/dev/null; then
-  TRACKED=$(git diff --name-only \"$BASE\" -- . | wc -l | tr -d ' ')
-  UNTRACKED=$(git ls-files --others --exclude-standard | wc -l | tr -d ' ')
-  FILES=$((TRACKED + UNTRACKED))
-  VERDICT=unchanged
-  if [ \"$FILES\" -gt 0 ]; then
-    VERDICT=no_receipt
-    V=$(jq -r '.visit // empty' $F/.io/stage.json 2>/dev/null || true)
-    RV=$(jq -r '._io.visit // empty' $F/pre_review.json 2>/dev/null || true)
-    FORBIDDEN=$( { git diff --name-only \"$BASE\" -- .github/workflows .fabro; git ls-files --others --exclude-standard -- .github/workflows .fabro; } 2>/dev/null | head -1)
-    if [ -n \"$FORBIDDEN\" ]; then
-      VERDICT=forbidden_path
-      echo 'pre_review_check: the pre-review changed '$FORBIDDEN', which it may not touch' >&2
-    elif [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
-      TO=''
-      if command -v timeout >/dev/null 2>&1; then TO='timeout 15m'; fi
-      RC=0
-      rm -f $P/task_check.json
-      $TO fabro-io task-check --gate --base \"$BASE\" --out $P/task_check.json > $P/validate_output.log 2>&1 || RC=$?
-      MODE=$(jq -r '.mode // empty' $P/task_check.json 2>/dev/null || true)
-      OK=$(jq -r '.ok // false' $P/task_check.json 2>/dev/null || true)
-      if [ \"$RC\" -eq 124 ]; then VERDICT=check_timeout
-      elif [ -z \"$MODE\" ]; then VERDICT=check_error
-      elif [ \"$MODE\" = full ]; then VERDICT=unscoped
-      elif [ \"$OK\" = true ] && [ \"$RC\" -eq 0 ]; then VERDICT=kept
-      elif [ \"$OK\" = false ]; then VERDICT=red
-      else VERDICT=check_error; fi
-    fi
-  fi
+if [ -e $F/local_reviewed ]; then
+  echo 'local_review_prep: this run already had its local review; routing on' >&2
+  echo '{\"context_updates\":{\"local_review_go\":false}}'
+  exit 0
 fi
-KEPT=true
-case \"$VERDICT\" in unchanged | kept) KEPT=true ;; *) KEPT=false ;; esac
-if [ \"$KEPT\" = false ] && [ -n \"$BASE\" ] && git cat-file -e \"$BASE^{commit}\" 2>/dev/null; then
-  git restore --source=\"$BASE\" --staged --worktree -- . || echo 'pre_review_check: git restore failed' >&2
-  git clean -fdq || echo 'pre_review_check: git clean failed' >&2
-  if [ -n \"$(git diff --name-only \"$BASE\" -- .)\" ] || [ -n \"$(git ls-files --others --exclude-standard)\" ]; then
-    echo 'pre_review_check: the tree did not come back to the pre-review base' >&2
-  fi
+: > $F/local_reviewed
+mkdir -p $L
+rm -f $L/standards.json $L/spec.json $L/diff.patch $L/diffstat.txt $L/changed_files.txt $L/commits.txt $L/blocks.json
+git fetch origin main >/dev/null 2>&1 || echo 'local_review_prep: could not refresh origin/main; diffing against the one in the checkout' >&2
+OKD=yes
+git diff origin/main...HEAD > $L/diff.patch 2>/dev/null || OKD=no
+git diff --stat origin/main...HEAD > $L/diffstat.txt 2>/dev/null || OKD=no
+git diff --name-only origin/main...HEAD > $L/changed_files.txt 2>/dev/null || OKD=no
+git log origin/main..HEAD --format='%h %s' > $L/commits.txt 2>/dev/null || OKD=no
+if [ \"$OKD\" != yes ]; then
+  echo 'local_review_prep: could not take the branch diff; the local review is skipped' >&2
+  echo '{\"context_updates\":{\"local_review_go\":false}}'
+  exit 0
 fi
-echo \"arm=$ARM outcome=$VERDICT kept=$KEPT files=$FILES unmet=$UNMET\" >> $F/pre_review.log
-echo 'pre_review_check: '$VERDICT' (arm '$ARM'), '$FILES' file(s), '$UNMET' criteria not met'
-echo '{\"context_updates\":{\"pre_review_kept\":'$KEPT',\"pre_review_verdict\":\"'$VERDICT'\"}}'"]
+BYTES=$(wc -c < $L/diff.patch | tr -d ' ')
+if [ \"$BYTES\" -gt 2000000 ]; then
+  echo 'local_review_prep: the branch diff is '$BYTES' bytes, over 2000000; the local review is skipped' >&2
+  echo '{\"context_updates\":{\"local_review_go\":false}}'
+  exit 0
+fi
+echo 'local_review_prep: '$BYTES' diff bytes' >&2
+echo '{\"context_updates\":{\"local_review_go\":true}}'"]
+
+    // 2026-11-12: NEW stages, timeouts unmeasured. 60m and 40m are the hosted `standards` 30m
+    // and `spec` 20m doubled for the slower two-slot box (the convention of the nodes above).
+    // Re-time them from the first runs' visits. The prompts are `standards` and `spec`'s own.
+    local_standards [label="Local standards review", class="review-local", timeout="60m", max_retries=1, prompt="@prompts/standards.md.j2"]
+    local_spec [label="Local spec review", class="review-local", timeout="40m", max_retries=1, prompt="@prompts/spec.md.j2"]
+
+    local_review_gate [label="Decide the local review", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro
+L=$F/local_review
+OK=yes
+for X in standards spec; do
+  if [ ! -s $L/$X.json ]; then OK=no; fi
+  if [ \"$(jq -r '._io.stage // empty' $L/$X.json 2>/dev/null)\" != \"local_$X\" ]; then OK=no; fi
+  if [ -z \"$(jq -r '._io.visit // empty' $L/$X.json 2>/dev/null)\" ]; then OK=no; fi
+done
+if [ \"$OK\" != yes ]; then
+  echo 'local_review: a local reviewer wrote no valid result, so the local review is dropped and the hosted reviews go on' >&2
+  echo '{\"context_updates\":{\"local_review_route\":\"pass\"}}'
+  exit 0
+fi
+SF=$L/standards.json
+PF=$L/spec.json
+jq -n --slurpfile a $SF --slurpfile b $PF '([$a[0].findings[]? | select(.severity == \"error\")] | length) + ([$b[0].findings[]? | select(.severity == \"error\")] | length)' > $L/nblocks 2>/dev/null || echo 0 > $L/nblocks
+BLOCK=$(cat $L/nblocks)
+rm -f $L/nblocks
+case \"$BLOCK\" in '' | *[!0-9]*) BLOCK=0 ;; esac
+if [ \"$BLOCK\" = 0 ]; then
+  D1=$(jq -r '.decision // empty' $SF 2>/dev/null)
+  D2=$(jq -r '.decision // empty' $PF 2>/dev/null)
+  echo 'local_review: no blocking finding (standards '$D1', spec '$D2')' >&2
+  echo '{\"context_updates\":{\"local_review_route\":\"pass\"}}'
+  exit 0
+fi
+GOT=no
+if jq -n --slurpfile a $SF --slurpfile b $PF '
+    def nl: [10] | implode;
+    def task($f; $p; $n): {
+        id: (\"lr\" + $p + ($n | tostring)),
+        title: (($f.id // \"finding\") + \" \" + $f.message),
+        body: (\"The local \" + $f.axis + \" review found this in the branch before the hosted reviews: \" + $f.message + \" Files: \" + (($f.files // []) | join(\", \")) + \". Suggestion: \" + ($f.suggestion // \"none given\") + \".\"),
+        acceptance: [\"the finding no longer applies to the branch\"],
+        files: ($f.files // []), covers: [],
+        context: (\"## Files and symbols\" + nl + nl + (($f.files // []) | map(\"- \" + . + (if ($f.line // null) == null then \"\" else \":\" + ($f.line | tostring) end)) | join(nl)) + nl + nl + \"## Done when\" + nl + nl + \"- \" + $f.message),
+        source: \"local_review\", axis: $f.axis, finding_id: $f.id, severity: $f.severity,
+        round: 0, status: \"open\", iterations: 0, misses: 0 };
+    ([$a[0].findings[]? | select(.severity == \"error\") | {axis: \"standards\"} + .] | to_entries | map(task(.value; \"s\"; .key + 1)))
+    + ([$b[0].findings[]? | select(.severity == \"error\") | {axis: \"spec\"} + .] | to_entries | map(task(.value; \"p\"; .key + 1)))' > $F/local_review_tasks.json 2>/dev/null; then
+  if jq -s '.[0] + .[1]' $F/tasks.json $F/local_review_tasks.json > $F/tasks.new.json 2>/dev/null; then GOT=yes; fi
+fi
+if [ \"$GOT\" = yes ]; then
+  mv $F/tasks.new.json $F/tasks.json
+  echo 'local_review: '$BLOCK' blocking finding(s) became Tasks' >&2
+  rm -f $F/local_review_tasks.json
+  echo '{\"context_updates\":{\"local_review_route\":\"tasks\"}}'
+else
+  rm -f $F/local_review_tasks.json $F/tasks.new.json
+  echo 'local_review: could not turn '$BLOCK' finding(s) into Tasks; the local review is dropped and the hosted reviews go on' >&2
+  echo '{\"context_updates\":{\"local_review_route\":\"pass\"}}'
+fi"]
 
     // copy: copy of backlog.final_merge (C8). No replacement; its `final_conflict=true` target is
     // `resolve_merge`, whose gate now also routes `merge_return=pr` back here.
@@ -3668,7 +3787,15 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     plan -> plan_gate                         [condition="outcome=succeeded"]
     plan -> stop_reason
     plan_gate -> plan                         [condition="outcome=failed"]
-    plan_gate -> pick                         [condition="context.plan_status=ready"]
+    plan_gate -> plan_review_prep             [condition="context.plan_status=ready"]
+    plan_review_prep -> plan_review           [condition="outcome=succeeded && context.plan_review_go=true"]
+    plan_review_prep -> pick                  [condition="outcome=succeeded && context.plan_review_go=false"]
+    plan_review_prep -> stop_reason
+    plan_review -> plan_review_gate           [condition="outcome=succeeded"]
+    plan_review -> plan_review_gate
+    plan_review_gate -> plan                  [condition="context.plan_review_route=repair"]
+    plan_review_gate -> pick                  [condition="context.plan_review_route=pass"]
+    plan_review_gate -> stop_reason
     plan_gate -> return_to_triage             [condition="context.plan_status=contradiction"]
     plan_gate -> close_noop                   [condition="context.plan_status=redundant"]
     plan_gate -> close_noop                   [condition="context.plan_status=invalid"]
@@ -3693,14 +3820,10 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     spec -> stop_reason
     review_gate -> pick                       [condition="context.review_route=tasks"]
     review_gate -> stop_reason
-    // The loop is done: pre-review the whole branch once, then merge main and open the PR.
+    // The loop is done: merge main and open the PR (the local review comes later, after hygiene).
     // `loop=exhausted` keeps its direct edge to `final_merge`: a run that ran out has no
     // reason to spend box time on a branch it is going to hold (O18).
-    pick -> pre_review_prep                  [condition="context.loop=done && context.phase=pre"]
-    pre_review_prep -> pre_review            [condition="outcome=succeeded && context.pre_review_go=true"]
-    pre_review_prep -> final_merge
-    pre_review -> pre_review_check
-    pre_review_check -> final_merge
+    pick -> final_merge                      [condition="context.loop=done && context.phase=pre"]
     pick -> final_merge                      [condition="context.loop=exhausted && context.phase=pre"]
     final_merge -> final_check               [condition="outcome=succeeded && context.final_conflict=false"]
     final_merge -> resolve_merge             [condition="outcome=succeeded && context.final_conflict=true"]
@@ -3713,7 +3836,15 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     final_check -> pick                      [condition="outcome=succeeded && context.final_route=fix"]
     final_check -> mark_stuck                [condition="outcome=succeeded && context.final_route=stuck"]
     final_check -> stop_reason
-    hygiene -> refute_prep                   [condition="outcome=succeeded && context.phase=pre"]
+    hygiene -> local_review_prep             [condition="outcome=succeeded && context.phase=pre"]
+    local_review_prep -> local_standards     [condition="outcome=succeeded && context.local_review_go=true"]
+    local_review_prep -> refute_prep
+    local_standards -> local_spec            [condition="outcome=succeeded"]
+    local_standards -> local_spec
+    local_spec -> local_review_gate          [condition="outcome=succeeded"]
+    local_spec -> local_review_gate
+    local_review_gate -> pick                [condition="context.local_review_route=tasks"]
+    local_review_gate -> refute_prep
     hygiene -> deliver                       [condition="outcome=succeeded && context.phase=post"]
     hygiene -> stop_reason
     refute_gate -> open_pr                   [condition="context.refute_route=hold && context.loop_exhausted=true"]

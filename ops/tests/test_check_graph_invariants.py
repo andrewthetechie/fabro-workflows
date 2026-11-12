@@ -485,7 +485,12 @@ class Counts(unittest.TestCase):
             # goes straight to `final_merge`. 2026-11-02: `criterion_checks` (+1 node), and the
             # round's new routes -- refute_prep->review_prep, review_prep->spec,
             # standards->review_gate, criterion_checks->hygiene -- +4 edges.
-            "ralph": (55, 143),
+            # 2026-11-12: the plan review (plan_review_prep, plan_review, plan_review_gate: +3
+            # nodes, +8 edges) and the local review in place of the pre-review (local_review_prep,
+            # local_standards, local_spec, local_review_gate replace pre_review_prep, pre_review
+            # and pre_review_check: +1 node; +8 edges for the four, -5 for the three, and the
+            # done edge from `pick` goes straight to final_merge again: net -4 on that half).
+            "ralph": (59, 155),
         })
 
 

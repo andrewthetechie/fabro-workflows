@@ -1,5 +1,6 @@
 """The box pre-review (pre-review-and-calibration, Part B): `pre_review_prep` and
-`pre_review_check`, in both `backlog` and `ralph`.
+`pre_review_check`, in `backlog`. `ralph` had the same two nodes until 2026-11-12, when its
+pre-review was replaced by the local standards/spec review (`test_ralph.py`).
 
 `fabro validate` proves the graphs parse. It never runs a node's script, and the whole contract
 of this stage is in two scripts:
@@ -12,8 +13,7 @@ of this stage is in two scripts:
   the stage added**. It never fails the run and never calls a rework node: the pre-review may
   only help.
 
-The two nodes and the prompt are byte-identical in both graphs (R10), so what differs is tested
-too: the exact edges.
+backlog's edges are tested exactly, and so is the absence of the stage from ralph.
 """
 
 from __future__ import annotations
@@ -127,9 +127,9 @@ def log_of(P: PreReview) -> str:
 ON, OFF = (4, 5, 6, 7, 12, 13, 14, 15), (0, 1, 2, 3, 8, 9, 10, 11)
 
 
-def test_the_arm_is_bit_two_of_the_issue_number_in_both_graphs(ck, tmp_path):
+def test_the_arm_is_bit_two_of_the_issue_number(ck, tmp_path):
     """Issues 4-7 pre-review, 0-3 do not, and the same for the next block of eight."""
-    for graph, name in ((BACKLOG, "backlog"), (RAPH, "ralph")):
+    for graph, name in ((BACKLOG, "backlog"),):
         for number in ON:
             P = PreReview(ck, tmp_path, f"arm-{name}-{number}", graph=graph,
                           number=str(number))
@@ -147,7 +147,7 @@ def test_the_arm_is_not_the_ralph_trials_bit(ck, tmp_path):
     (`dispatch.choose_workflow`), so the pre-review ran on no ralph run. Bit 2 must put half
     of each workflow's runs on each arm, and every issue the old bit switched on must not
     decide it."""
-    for graph in (BACKLOG, RAPH):
+    for graph in (BACKLOG,):
         on, off = [], []
         for number in range(0, 16):
             P = PreReview(ck, tmp_path, f"bits-{graph}-{number}", graph=graph,
@@ -385,30 +385,16 @@ def test_the_arm_and_the_latch_decide_the_backlog_edges(ck):
              e, flags="xF"))
 
 
-def test_the_arm_and_the_latch_decide_ralphs_edges(ck):
+def test_ralph_has_no_pre_review(ck):
+    """ralph's whole-branch pre-review was replaced by the local review (2026-11-12): none of
+    its nodes may come back by a merge, and the finished loop goes straight to final_merge."""
     e = edges(RAPH)
-    ck("ralph: a finished loop enters the prep", "1",
-       count("pick->pre_review_prep context.loop=done && context.phase=pre", e, flags="xF"))
-    ck("ralph: an exhausted loop still goes straight to final_merge", "1",
+    ck("ralph: no edge touches a pre_review node", "0", count("pre_review", e, flags="F"))
+    ck("ralph: a finished loop goes straight to final_merge", "1",
+       count("pick->final_merge context.loop=done && context.phase=pre", e, flags="xF"))
+    ck("ralph: an exhausted loop does too", "1",
        count("pick->final_merge context.loop=exhausted && context.phase=pre", e, flags="xF"))
-    ck("ralph: the prep enters the review only on its own go", "1",
-       count("pre_review_prep->pre_review outcome=succeeded && context.pre_review_go=true",
-             e, flags="xF"))
-    ck("ralph: the prep has an unconditional fallback", "1",
-       count("pre_review_prep->final_merge ", e, flags="xF"))
-    ck("ralph: the review always goes to the check", "1",
-       count("pre_review->pre_review_check ", e, flags="xF"))
-    ck("ralph: the check always routes on to final_merge", "1",
-       count("pre_review_check->final_merge ", e, flags="xF"))
-
-
-def test_ralph_runs_the_same_two_nodes_as_backlog(ck):
-    for node in ("pre_review_prep", "pre_review_check"):
-        ck(f"{node}: identical in both graphs", "1",
-           str(int(extract(RAPH, node) == extract(BACKLOG, node))))
-    ck("the prompt is one file, copied", "1",
-       str(int((WF / "backlog/prompts/pre_review.md.j2").read_text()
-               == (WF / "ralph/prompts/pre_review.md.j2").read_text())))
+    ck("ralph: its prompt is gone", "absent", present(WF / "ralph/prompts/pre_review.md.j2"))
 
 
 def test_check_publishes_no_base_when_prep_left_none(ck, tmp_path):
@@ -435,5 +421,3 @@ def test_every_check_outcome_publishes_a_known_verdict(ck):
     ck("every outcome the document names is reachable",
        "check_error,check_timeout,forbidden_path,kept,no_base,no_receipt,red,unchanged,unscoped",
        ",".join(sorted(reachable)))
-    ck("both graphs publish it identically", "1",
-       str(int(extract(RAPH, "pre_review_check") == script)))

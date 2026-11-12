@@ -41,6 +41,9 @@ a context pack. `background.md` may hold a code map a local model built for this
 
 - `orientation.md`: optional. A local model's map of this repository at `main` -- its modules, conventions, where the tests live and the commands that run them -- written a day or less before this run. Use it to find the right files and the right command, and check what you use against the checkout: it is a map, and this branch may already differ.
 
+- `findings.md` and `previous_task_list.json`: optional, present only on a repair turn.
+Read *Repair turn* below before you plan.
+
 Complete this step when you have the issue, the Task map if there is one, and the repo map
 or the knowledge that it is absent.
 
@@ -198,6 +201,23 @@ one.
 
 If submission fails validation, correct the reported fields and submit again. Stop
 immediately after a successful submit, and do not print the JSON.
+
+## Repair turn
+
+When `inputs` returns `findings.md`, a fresh reviewer read your first Task list and found
+errors in it; `previous_task_list.json` is that list. This is your one repair turn.
+
+For each finding, do one of these and record which:
+
+- **Fix it**: change the Task list so the finding no longer applies, and re-verify every
+  citation you touch against the checkout.
+- **Refute it**: when the finding is wrong, keep the Tasks as they were and say why in
+  `summary`, with the path, symbol or issue quote that shows it.
+- **Return the issue**: when the finding shows the issue contradicts itself, submit
+  `contradiction` as *Contradictions* describes.
+
+Keep every Task, id and citation the findings do not touch. Submit the complete list, as on
+the first turn.
 
 ## Contradictions
 

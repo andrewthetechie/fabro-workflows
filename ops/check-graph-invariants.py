@@ -1129,18 +1129,13 @@ R10_PROMPTS: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
 # `issue-precheck`'s. A fix to one that does not reach the other turns the calibration into a
 # measurement of something else, silently. A row is (package, original .fabro, the command
 # nodes whose scripts must match, the agent node whose prompt file must match).
-# The whole-branch pre-review (Part B) runs in both `backlog` and `ralph` and the two arms are
-# compared, so it has to be the same stage in both: its two command nodes' scripts and its
-# prompt are byte-identical, and only the edges differ (backlog continues to `extra_prep`,
-# ralph to `final_merge`). A fix to one that does not reach the other makes the measurement a
-# measurement of two different things. Rows are (ralph node, backlog .fabro, backlog node).
-R10_SHARED_NODES: list[tuple[str, str, str]] = [
-    ("pre_review_prep", ".fabro/workflows/backlog/workflow.fabro", "pre_review_prep"),
-    ("pre_review_check", ".fabro/workflows/backlog/workflow.fabro", "pre_review_check"),
-]
-R10_SHARED_PROMPTS: list[tuple[str, str, str]] = [
-    ("pre_review", ".fabro/workflows/backlog/workflow.fabro", "pre_review"),
-]
+# Rows are (ralph node, backlog .fabro, backlog node). The whole-branch pre-review (Part B) used
+# to be here, byte for byte in both graphs so the two arms could be compared. ralph's was
+# replaced on 2026-11-12 by the local standards/spec review (`local_review_*`), which has no
+# counterpart in backlog, so there is nothing left to compare; backlog keeps its own. The
+# mechanism stays for the next node the two graphs must share.
+R10_SHARED_NODES: list[tuple[str, str, str]] = []
+R10_SHARED_PROMPTS: list[tuple[str, str, str]] = []
 
 # A row is (original .fabro, the command nodes whose scripts must match, the agent node whose
 # prompt file must match or `""` for a package with a rubric of its own, and the replacements
@@ -1202,7 +1197,7 @@ def _apply(text: str, repls) -> tuple[str | None, str | None]:
 
 
 def r10_shared_nodes(root: Path) -> list[tuple]:
-    """R10: backlog's and ralph's pre-review nodes and prompt must not drift apart."""
+    """R10: nodes and prompts that backlog and ralph must run identically must not drift apart."""
     graph = root / RALPH_GRAPH
     if not graph.exists():
         return []

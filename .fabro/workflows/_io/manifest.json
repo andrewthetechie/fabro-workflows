@@ -1449,6 +1449,20 @@
               "required": false,
               "about": "a local model's map of this repository at main, written a day or less before this run: its modules, the conventions a change follows, where the tests live, the commands that run them and the traps; find the right files and commands from it, and check what you use against the checkout",
               "absent": "there is no repository orientation for this repository; find the code with the repo map and the code tools"
+            },
+            {
+              "name": "findings.md",
+              "path": "/tmp/fabro/plan_review/findings.md",
+              "required": false,
+              "about": "only on a repair turn: the errors a fresh reviewer found in your first Task list, each with the requirement, the files and the evidence",
+              "absent": "this is the first planning turn; there is no review to answer"
+            },
+            {
+              "name": "previous_task_list.json",
+              "path": "/tmp/fabro/plan_review/previous_task_list.json",
+              "required": false,
+              "about": "only on a repair turn: the Task list you submitted on the first turn, which the findings are about",
+              "absent": "this is the first planning turn; there is no earlier Task list"
             }
           ],
           "sealed": [],
@@ -1700,7 +1714,8 @@
             "/tmp/fabro/task-context.md",
             "/tmp/fabro/task-code.md",
             "/tmp/fabro/task_list.json",
-            "/tmp/fabro/feedback/"
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/local_review/"
           ],
           "also": [],
           "output": {
@@ -1758,7 +1773,8 @@
             "/tmp/fabro/review/refute_history.md",
             "/tmp/fabro/review/refute_dropped.json",
             "/tmp/fabro/review/refute_survivors.json",
-            "/tmp/fabro/review/refute_reason.txt"
+            "/tmp/fabro/review/refute_reason.txt",
+            "/tmp/fabro/local_review/"
           ],
           "also": [],
           "output": {
@@ -1816,7 +1832,8 @@
             "/tmp/fabro/review/refute_history.md",
             "/tmp/fabro/review/refute_dropped.json",
             "/tmp/fabro/review/refute_survivors.json",
-            "/tmp/fabro/review/refute_reason.txt"
+            "/tmp/fabro/review/refute_reason.txt",
+            "/tmp/fabro/local_review/"
           ],
           "also": [],
           "output": {
@@ -1913,45 +1930,195 @@
           },
           "box": true
         },
-        "pre_review": {
+        "local_standards": {
           "live": true,
-          "prompt": ".fabro/workflows/ralph/prompts/pre_review.md.j2",
+          "prompt": ".fabro/workflows/ralph/prompts/standards.md.j2",
+          "inputs": [
+            {
+              "name": "diff.patch",
+              "path": "/tmp/fabro/local_review/diff.patch",
+              "required": true,
+              "about": "the full unified diff of everything the branch changed, origin/main...HEAD, taken just before the hosted reviews"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/local_review/diffstat.txt",
+              "required": true,
+              "about": "the change's file-by-file size summary"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/local_review/changed_files.txt",
+              "required": true,
+              "about": "every path the change touches"
+            },
+            {
+              "name": "commits.txt",
+              "path": "/tmp/fabro/local_review/commits.txt",
+              "required": true,
+              "about": "the commits on the branch"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue the branch closes; .body at body, .title at title, human discussion at .comments"
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/progress.md",
+            "/tmp/fabro/iteration.json",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/current_task.json",
+            "/tmp/fabro/task-context.md",
+            "/tmp/fabro/task-code.md",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/plan_review/",
+            "/tmp/fabro/plan_review.json",
+            "/tmp/fabro/review/standards.json",
+            "/tmp/fabro/review/spec.json",
+            "/tmp/fabro/review/refute.json",
+            "/tmp/fabro/review/refute_verdict",
+            "/tmp/fabro/review/refute_history.md",
+            "/tmp/fabro/review/refute_dropped.json",
+            "/tmp/fabro/review/refute_survivors.json",
+            "/tmp/fabro/review/refute_reason.txt"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/local_review/standards.json",
+            "schema": "standards"
+          },
+          "box": true
+        },
+        "local_spec": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/spec.md.j2",
+          "inputs": [
+            {
+              "name": "diff.patch",
+              "path": "/tmp/fabro/local_review/diff.patch",
+              "required": true,
+              "about": "the full unified diff of everything the branch changed, origin/main...HEAD, taken just before the hosted reviews"
+            },
+            {
+              "name": "diffstat.txt",
+              "path": "/tmp/fabro/local_review/diffstat.txt",
+              "required": true,
+              "about": "the change's file-by-file size summary"
+            },
+            {
+              "name": "changed_files.txt",
+              "path": "/tmp/fabro/local_review/changed_files.txt",
+              "required": true,
+              "about": "every path the change touches"
+            },
+            {
+              "name": "commits.txt",
+              "path": "/tmp/fabro/local_review/commits.txt",
+              "required": true,
+              "about": "the commits on the branch"
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "the parent issue the branch closes; .body at body, .title at title, human discussion at .comments"
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/progress.md",
+            "/tmp/fabro/iteration.json",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/current_task.json",
+            "/tmp/fabro/task-context.md",
+            "/tmp/fabro/task-code.md",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/plan_review/",
+            "/tmp/fabro/plan_review.json",
+            "/tmp/fabro/review/standards.json",
+            "/tmp/fabro/review/spec.json",
+            "/tmp/fabro/review/refute.json",
+            "/tmp/fabro/review/refute_verdict",
+            "/tmp/fabro/review/refute_history.md",
+            "/tmp/fabro/review/refute_dropped.json",
+            "/tmp/fabro/review/refute_survivors.json",
+            "/tmp/fabro/review/refute_reason.txt"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/local_review/spec.json",
+            "schema": "ralph_spec"
+          },
+          "box": true
+        },
+        "plan_review": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph/prompts/plan_review.md.j2",
           "inputs": [
             {
               "name": "issue.json",
               "path": "/tmp/fabro/issue.json",
               "required": true,
-              "about": "the issue this branch closes: title, body and labels, for its acceptance criteria and its scope"
+              "about": "the issue the plan answers; .body and .title, human discussion at .comments (the newest ten)"
             },
             {
-              "name": "diff.patch",
-              "path": "/tmp/fabro/pre_review/diff.patch",
+              "name": "plan.json",
+              "path": "/tmp/fabro/plan_review/plan.json",
               "required": true,
-              "about": "the whole branch's change, `git diff origin/main...HEAD`"
+              "about": "the Task list the loop will work, as the coder sees it: each Task's id, title, body, acceptance, files, covers and context"
             },
             {
-              "name": "diffstat.txt",
-              "path": "/tmp/fabro/pre_review/diffstat.txt",
-              "required": true,
-              "about": "the same change, file by file"
+              "name": "checks.json",
+              "path": "/tmp/fabro/plan_review/checks.json",
+              "required": false,
+              "about": "commands the plan names to prove criteria that .fabro/ci.sh does not, each with its criterion",
+              "absent": "the plan names no criterion check"
             },
             {
-              "name": "changed_files.txt",
-              "path": "/tmp/fabro/pre_review/changed_files.txt",
-              "required": true,
-              "about": "every path the branch touches"
+              "name": "orientation.md",
+              "path": "/tmp/fabro/orientation.md",
+              "required": false,
+              "about": "a local model's map of this repository at main: its modules, conventions, where the tests live and the commands that run them; check what you use against the checkout",
+              "absent": "there is no repository orientation; find the code with the code tools"
+            },
+            {
+              "name": "background.md",
+              "path": "/tmp/fabro/background.md",
+              "required": false,
+              "about": "notes local models wrote on this issue before the run: the precheck's verdict and a context pack; verify each claim against the checkout",
+              "absent": "there is no background note for this issue; proceed without it"
             },
             {
               "name": "standards_docs.txt",
-              "path": "/tmp/fabro/pre_review/standards_docs.txt",
+              "path": "/tmp/fabro/plan_review/standards_docs.txt",
               "required": false,
               "about": "which of AGENTS.md, CLAUDE.md, CONTRIBUTING.md and docs/adr/ this repository has, one per line",
               "absent": "this repository ships none of the standards documents the prompt names; its rules are wherever it states them, and the code is the fallback"
             }
           ],
+          "sealed": [
+            "/tmp/fabro/progress.md",
+            "/tmp/fabro/iteration.json",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/current_task.json",
+            "/tmp/fabro/task-context.md",
+            "/tmp/fabro/task-code.md",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/remainder.json",
+            "/tmp/fabro/criterion_checks.json",
+            "/tmp/fabro/review/",
+            "/tmp/fabro/local_review/",
+            "/tmp/fabro/plan_review/findings.md",
+            "/tmp/fabro/plan_review/previous_task_list.json"
+          ],
+          "also": [],
           "output": {
-            "path": "/tmp/fabro/pre_review.json",
-            "schema": "pre_review"
+            "path": "/tmp/fabro/plan_review.json",
+            "schema": "plan_review"
           },
           "box": true
         }

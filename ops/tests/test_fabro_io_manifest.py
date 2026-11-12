@@ -125,8 +125,10 @@ class Box(unittest.TestCase):
             "ralph": {
                 "iterate_t1": True,
                 "learn": True,
+                "local_spec": True,
+                "local_standards": True,
                 "plan": "plan-arm",
-                "pre_review": True,
+                "plan_review": True,
                 "resolve_base": True,
             },
         })
