@@ -266,7 +266,8 @@ echo '{\"context_updates\":{\"prep_ok\":true}}'"]
     // The box's one agent stage. Bounded at 12m; the prompt asks for about twenty-five tool
     // calls (the model has no clock), and the scheduler's `typical_box_minutes` for the whole
     // run is 8.
-    investigate [label="Diagnose the failure", class="bg", timeout="12m", prompt="@prompts/investigate.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    investigate [label="Diagnose the failure", class="bg", timeout="24m", prompt="@prompts/investigate.md.j2"]
 
     // Checks the Input receipt, requires a cause the package knows, and drops every cited
     // `file:line` that is not in the checkout -- a wrong pointer costs the coder more than a

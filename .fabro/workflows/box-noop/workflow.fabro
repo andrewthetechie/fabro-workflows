@@ -38,7 +38,8 @@ echo \"${POOL%-bg}\" > /tmp/fabro/box || true"]
     // The prompt is about ten minutes of work, which is `typical_box_minutes` for this job
     // kind in the scheduler (a whole run). Thirty minutes is only the ceiling, so an
     // uncancelled run ends `succeeded` instead of on a timeout the lane counts as a failure.
-    work [label="Describe the repository", class="bg", timeout="30m",
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    work [label="Describe the repository", class="bg", timeout="60m",
         prompt="@prompts/work.md"]
 
     start -> claim -> work -> exit

@@ -189,7 +189,8 @@ echo '{\"context_updates\":{\"prep_ok\":true}}'"]
 
     // The box's one agent stage. Bounded at 20m and told when it is done; the scheduler's
     // `typical_box_minutes` for the whole run is 3.
-    check [label="Check the issue against main", class="bg", timeout="20m", prompt="@prompts/check.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    check [label="Check the issue against main", class="bg", timeout="40m", prompt="@prompts/check.md.j2"]
 
     // Checks the Input receipt and applies task 07's two rules, plus a third for `unverifiable`
     // (2026-10-31): it must quote the criterion from the issue body. A missing receipt (a failed,

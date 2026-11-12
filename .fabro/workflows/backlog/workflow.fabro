@@ -592,7 +592,8 @@ fi"]
     // 30k output tokens. The box emits 30.2 output tok per wall-second against glm-5.3's
     // 45.4 (all stages, 2026-10-22..27), so the worst visit projects to ~14m and ralph's
     // to ~23m. Unmeasured on the box: re-time it from its first ten box visits.
-    resolve_merge [label="Resolve the mainline merge", class="merge-resolve", timeout="30m", max_retries=1, prompt="@prompts/resolve_merge.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    resolve_merge [label="Resolve the mainline merge", class="merge-resolve", timeout="60m", max_retries=1, prompt="@prompts/resolve_merge.md.j2"]
 
     // The conflict-marker scan covers what this merge can have touched — the files
     // changed since the pre-merge SHA, dirty tracked files, and untracked files the
@@ -704,7 +705,8 @@ fi"]
     // boxes emits 33-45 output tok per wall-second, so p95 projects to ~16m and the
     // heaviest visit to ~26m. The hosted arm's stall now costs 30m instead of 20m; that
     // is the price of one node serving both. Unmeasured on QFN: re-time from the trial.
-    plan [label="Plan task", class="plan", timeout="30m", max_retries=1, prompt="@prompts/plan.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    plan [label="Plan task", class="plan", timeout="60m", max_retries=1, prompt="@prompts/plan.md.j2"]
 
     // The `split` disposition, and why the size check lives HERE rather than in
     // `decompose`.
@@ -1355,7 +1357,8 @@ gh issue edit $N --add-label agent --remove-label agent-in-progress || true
 gh issue comment $N --body-file $F/demote_comment.md || true
 echo demoted"]
 
-    rework_t1 [label="Rework (tier 1: coders)", class="coder", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    rework_t1 [label="Rework (tier 1: coders)", class="coder", timeout="90m", max_retries=1, prompt="@prompts/rework.md.j2"]
     rework_t2 [label="Rework (tier 2: glm-5.3-flash)", class="coder-t2", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
     rework_t3 [label="Rework (tier 3: kimi-for-coding)", class="coder-t3", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
     rework_t4 [label="Rework (tier 4: glm-5.3)", class="coder-t4", timeout="45m", max_retries=1, prompt="@prompts/rework.md.j2"]
@@ -1436,7 +1439,8 @@ echo \"$ARM\" > $P/arm
 echo 'pre_review_prep: arm='$ARM' base='\"$(cat $F/pre_review_base)\"
 echo '{\"context_updates\":{\"pre_review_go\":true,\"pre_review_arm\":\"'$ARM'\"}}'"]
 
-    pre_review [label="Pre-review the whole branch", class="coder", timeout="30m", max_retries=0, prompt="@prompts/pre_review.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    pre_review [label="Pre-review the whole branch", class="coder", timeout="60m", max_retries=0, prompt="@prompts/pre_review.md.j2"]
 
     // Keeps or reverts what the pre-review did. The prompt's three axes are the hosted
     // reviewers' own, so its edits are the branch's best chance of passing them; but an edit
@@ -1595,7 +1599,8 @@ echo '{\"context_updates\":{\"quality_status\":\"'$D'\"}}'"]
     // heaviest visit to ~29m. The old 15m was already short on hosted: four qwen3.8-27b
     // fallback visits ended at exactly 15.0m. Unmeasured on the box: re-time it from its
     // first ten box visits.
-    extra_decompose [label="Follow-up decomposer", class="extra-decomp", timeout="30m", max_retries=1, prompt="@prompts/extra_decompose.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    extra_decompose [label="Follow-up decomposer", class="extra-decomp", timeout="60m", max_retries=1, prompt="@prompts/extra_decompose.md.j2"]
     extra_gate [label="Merge follow-up tasks", shape=parallelogram, output_schema="routing",
         script="F=/tmp/fabro/extra/followups.json
 A=$(cat /tmp/fabro/extra_decompose_attempts 2>/dev/null || echo 0)

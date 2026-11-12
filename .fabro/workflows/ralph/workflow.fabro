@@ -272,7 +272,8 @@ if [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi"]
     // 73k output tokens, and 7 visits hit the 20m timeout. The heaviest visit projects to
     // ~34m on QFN (33-45 tok/s) and ~40m on the chain's flash rung (30.9 tok/s), which now
     // carries this node while Kimi's quota is spent. Unmeasured on QFN: re-time from the trial.
-    plan [label="Plan the issue", class="plan", timeout="40m", max_retries=1, prompt="@prompts/plan.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    plan [label="Plan the issue", class="plan", timeout="80m", max_retries=1, prompt="@prompts/plan.md.j2"]
 
     // ---- Validate the plan (C2) ----
     // The receipt check, the attempt counter and the `QT=` line are decompose_gate's, word
@@ -590,7 +591,8 @@ exit 0"]
     // 10 or more edits with no check in between failed 19.8% of the time against 3.4% at
     // 3-4; on writers-app 12 of 33 failed attempts never checked at all and every passing
     // one ends on a check (274 of 290 have no edit after their last).
-    iterate_t1 [label="Iteration (rung 1, box)", class="coder", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    iterate_t1 [label="Iteration (rung 1, box)", class="coder", timeout="120m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
     iterate_t2 [label="Iteration (rung 2, glm-5.3-flash)", class="coder-t2", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
     iterate_t3 [label="Iteration (rung 3, kimi-for-coding)", class="coder-t3", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
     iterate_t4 [label="Iteration (rung 4, glm-5.3)", class="coder-t4", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
@@ -1427,7 +1429,8 @@ echo \"$ARM\" > $P/arm
 echo 'pre_review_prep: arm='$ARM' base='\"$(cat $F/pre_review_base)\"
 echo '{\"context_updates\":{\"pre_review_go\":true,\"pre_review_arm\":\"'$ARM'\"}}'"]
 
-    pre_review [label="Pre-review the whole branch", class="coder", timeout="30m", max_retries=0, prompt="@prompts/pre_review.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    pre_review [label="Pre-review the whole branch", class="coder", timeout="60m", max_retries=0, prompt="@prompts/pre_review.md.j2"]
 
     pre_review_check [label="Keep or revert the pre-review", shape=parallelogram, output_schema="routing", timeout="25m",
         script="F=/tmp/fabro
@@ -3124,7 +3127,8 @@ exit 0"]
     // backlog's resolve_merge does; it is the third git exception ("git": "write" in the Stage
     // manifest). A resolution is code nobody reviewed, so resolve_base_gate sends it back
     // through validate, hygiene and the refuter before deliver and merge_gate see it again.
-    resolve_base [label="Resolve the base merge", class="merge-resolve", timeout="30m", max_retries=1, prompt="@prompts/resolve_base.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    resolve_base [label="Resolve the base merge", class="merge-resolve", timeout="60m", max_retries=1, prompt="@prompts/resolve_base.md.j2"]
 
     // copy: copy of review_merge.resolve_base_gate (C8). One replacement, inside its human-facing
     // message: the node that re-runs after a resolution is `final_check`, not `validate`.
@@ -3350,7 +3354,8 @@ jq -nc --arg l \"$LEARN\" '{context_updates:{learn:$l}}'"]
     // timeout="10m" is O25's bound, not a measurement: the input is one file of a few
     // hundred lines and the output is at most five rules. Nothing here reads the checkout
     // beyond what the input quotes.
-    learn [label="Propose learnings", class="learn", timeout="10m", max_retries=0, prompt="@prompts/learn.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    learn [label="Propose learnings", class="learn", timeout="20m", max_retries=0, prompt="@prompts/learn.md.j2"]
 
     // ---- Post the learnings (O26, C9) ----
     // Nothing here may change the run's ending, so every path exits 0: no result file, no

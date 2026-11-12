@@ -815,7 +815,8 @@ echo '{\"context_updates\":{\"refute_verdict\":\"'$V'\",\"refute_not_met\":'$NOT
     // The fix turn (gate-relief G9-G11). refute_fix runs on the run's coder pool in backlog and
     // pr-review, and on glm-5.3-flash in dependabot (the stylesheet rows). Both of its outcomes go
     // to refute_fix_gate, so a failed turn's edits are reverted before deliver pushes.
-    refute_fix [label="Fix the refuter's findings", class="refute-fix", timeout="45m", max_retries=1, prompt="@prompts/refute_fix.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    refute_fix [label="Fix the refuter's findings", class="refute-fix", timeout="90m", max_retries=1, prompt="@prompts/refute_fix.md.j2"]
 
     // Checks the fixer's Input receipt. The change is committed by fabro's checkpoint, as
     // review_fix's is: no node in this graph runs git commit. A missing receipt (a failed, timed-out
@@ -1532,7 +1533,8 @@ exit 0"]
     // backlog's resolve_merge does; it is the third git exception ("git": "write" in the Stage
     // manifest). A resolution is code nobody reviewed, so resolve_base_gate sends it back
     // through validate, hygiene and the refuter before deliver and merge_gate see it again.
-    resolve_base [label="Resolve the base merge", class="merge-resolve", timeout="30m", max_retries=1, prompt="@prompts/resolve_base.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    resolve_base [label="Resolve the base merge", class="merge-resolve", timeout="60m", max_retries=1, prompt="@prompts/resolve_base.md.j2"]
 
     // Verifies the merge from git, not from the agent's account: the Input receipt (every
     // required input read), no merge in progress, no unmerged path, no conflict marker in a file

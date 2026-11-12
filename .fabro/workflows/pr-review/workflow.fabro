@@ -221,7 +221,8 @@ fi"]
     // only backstop, and it classifies `transient_infra` with `default_max_retries` at 0.
     // Every one of these nodes routes to `mark_needs_human` on failure, so without a
     // retry a single stall ends the review and labels the PR for a human.
-    rebase_agent_t1 [label="Resolve rebase (tier 1: coders)", class="rebase", timeout="30m", max_retries=1, prompt="@prompts/rebase.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    rebase_agent_t1 [label="Resolve rebase (tier 1: coders)", class="rebase", timeout="60m", max_retries=1, prompt="@prompts/rebase.md.j2"]
     rebase_agent_t2 [label="Resolve rebase (tier 2: glm-5.3)", class="rebase-t2", timeout="30m", max_retries=1, prompt="@prompts/rebase.md.j2"]
 
     // The conflict-marker scan covers exactly the files the rebase can have

@@ -167,7 +167,8 @@ echo '{\"context_updates\":{\"prep_ok\":true}}'"]
 
     // The box's one agent stage. Bounded at 12m; the prompt asks for about eight minutes and
     // twenty-five tool calls, and the scheduler's `typical_box_minutes` for the whole run is 8.
-    map [label="Map the repository", class="bg", timeout="12m", prompt="@prompts/map.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    map [label="Map the repository", class="bg", timeout="24m", prompt="@prompts/map.md.j2"]
 
     // Checks the Input receipt, drops every module and test path the checkout does not have, and
     // fails a map with no module left. Then it renders the body and cuts it to 5,800 characters,

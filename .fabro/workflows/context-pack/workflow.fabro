@@ -138,7 +138,8 @@ echo '{\"context_updates\":{\"prep_ok\":true}}'"]
 
     // The box's one agent stage. Bounded at 15m; the prompt asks for about five minutes and
     // twenty tool calls, and the scheduler's `typical_box_minutes` for the whole run is 5.
-    gather [label="Map the code", class="bg", timeout="15m", prompt="@prompts/gather.md.j2"]
+    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
+    gather [label="Map the code", class="bg", timeout="30m", prompt="@prompts/gather.md.j2"]
 
     // Checks the Input receipt, then holds the map to what a planner can trust and afford:
     // every file and test whose path is not in the checkout is dropped (a wrong pointer costs
