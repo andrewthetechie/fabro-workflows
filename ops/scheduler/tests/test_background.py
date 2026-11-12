@@ -898,13 +898,12 @@ def test_the_compose_file_carries_the_ten_variables_with_their_defaults():
     ):
         pattern = rf'^\s+{name}: "\$\{{{name}:-{re.escape(default)}\}}"$'
         assert re.search(pattern, text, re.M), name
-    # The two boxes' /health URLs, in the format the claim hook reads.
-    assert re.search(
-        r'^\s+SCHEDULER_BOX_HEALTH: "\$\{SCHEDULER_BOX_HEALTH:-'
-        r"coders-a=http://10\.10\.0\.29:5300/health,coders-b=http://10\.10\.0\.56:5300/health\}\"$",
-        text,
-        re.M,
-    ), "SCHEDULER_BOX_HEALTH"
+    # The four pools' `/health` URLs in two pairs, in the format the claim hook reads: pools
+    # sharing a URL are one box (two-slot boxes D1), so the compose default is the end state and
+    # task 04 sequences the host towards it a box at a time (D7).
+    pairs = ("coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.29:5300/health,"
+             "coders-c=http://10.10.0.56:5300/health,coders-d=http://10.10.0.56:5300/health")
+    assert f'SCHEDULER_BOX_HEALTH: "${{SCHEDULER_BOX_HEALTH:-{pairs}}}"' in text, "SCHEDULER_BOX_HEALTH"
 
 
 # --- the HTTP surface -------------------------------------------------------------

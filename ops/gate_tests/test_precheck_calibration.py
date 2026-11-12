@@ -63,7 +63,7 @@ AFTER = "2026-10-21T12:00:00Z"
 
 SUBSTITUTIONS = (
     ("{{ inputs.issue_number }}", "42"),
-    ("{{ inputs.coder_pool }}", "coders-b-bg"),
+    ("{{ inputs.coder_pool }}", "coders-c-bg"),
     ("{{ inputs.at }}", AT_RAW),
 )
 
@@ -209,7 +209,7 @@ def test_claim_checks_out_the_commit_before_at(ck, tmp_path):
     ck("claim: main_sha is the last commit before at", C.before, cat(C.fabro / "precheck/main_sha"))
     ck("claim: and the checkout is on it", C.before, git("rev-parse", "HEAD", cwd=C.repo))
     ck("claim: the tree is that commit's", "base", cat(C.repo / "src.txt"))
-    ck("claim: box written without the -bg suffix", "coders-b", cat(C.fabro / "box"))
+    ck("claim: box written without the -bg suffix", "coders-c", cat(C.fabro / "box"))
     ck("claim: no GitHub write", "0", count("issue comment|-X PATCH|-X POST|--method", C.gh()))
 
 

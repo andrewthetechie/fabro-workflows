@@ -974,7 +974,9 @@ def r16_background_packages(package: str, root: Graph | None, nodes: dict[str, d
 
 
 def is_bg_model(name: str) -> bool:
-    """A background model name: `coders-a-bg`, with or without a `provider:` prefix."""
+    """A background model name: the `-bg` row of a box's first pool — `coders-a-bg`, or
+    `coders-c-bg` on the second box since the two-slot boxes — with or without a `provider:`
+    prefix. A suffix test, so a new box needs no edit here."""
     return name.rsplit(":", 1)[-1].strip().endswith("-bg")
 
 

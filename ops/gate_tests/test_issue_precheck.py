@@ -75,7 +75,7 @@ def comments(*bodies: str) -> str:
 
 SUBSTITUTIONS = (
     ("{{ inputs.issue_number }}", "42"),
-    ("{{ inputs.coder_pool }}", "coders-b-bg"),
+    ("{{ inputs.coder_pool }}", "coders-c-bg"),
 )
 
 
@@ -148,7 +148,7 @@ def test_claim_stages_the_issue_and_routes_an_open_one(ck, tmp_path):
     ))
     r = P.run("claim")
     ck("claim: routes to prep", "true", routed(r, "precheck_go"))
-    ck("claim: box written without the -bg suffix", "coders-b", cat(P.fabro / "box"))
+    ck("claim: box written without the -bg suffix", "coders-c", cat(P.fabro / "box"))
     ck("claim: the issue number is recorded", "42", cat(P.fabro / "precheck/issue_number"))
     ck("claim: the repository is read from the issue url", "o/r", cat(P.fabro / "precheck/repo"))
     issue_md = cat(P.fabro / "precheck/issue.md")

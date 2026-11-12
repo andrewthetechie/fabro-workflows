@@ -12,8 +12,9 @@ graph = "workflow.fabro"
 enabled = false
 
 # box-noop (more-local-inference task 04): a background-only package. Every agent stage's
-# model is `{{ inputs.coder_pool }}`, which the scheduler sets to `coders-a-bg` or
-# `coders-b-bg`, so a box-noop run spends no hosted credits (D4, C5). It is the template the
+# model is `{{ inputs.coder_pool }}`, which the scheduler sets to the `-bg` row of the
+# box's first pool (`coders-a-bg`, or `coders-c-bg` on box 2: two-slot boxes D3), so a
+# box-noop run spends no hosted credits (D4, C5). It is the template the
 # later job kinds copy, and the package that lets Phase 1 measure cancel latency and the
 # guard before any of them exists.
 #

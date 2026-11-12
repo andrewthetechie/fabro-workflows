@@ -172,7 +172,7 @@ JOB_HISTORY = {
 
 SUBSTITUTIONS = (
     ("{{ inputs.issue_number }}", "42"),
-    ("{{ inputs.coder_pool }}", "coders-b-bg"),
+    ("{{ inputs.coder_pool }}", "coders-c-bg"),
 )
 
 
@@ -252,7 +252,7 @@ def test_claim_reads_flakeradar_by_the_fingerprint_the_scout_wrote(ck, tmp_path)
     F = Flaky(ck, tmp_path, "claim-test")
     r = F.run("claim")
     ck("claim: routes to prep", "true", routed(r, "flaky_go"))
-    ck("claim: box written without the -bg suffix", "coders-b", cat(F.fabro / "box"))
+    ck("claim: box written without the -bg suffix", "coders-c", cat(F.fabro / "box"))
     ck("claim: the repository comes from the issue url", "o/r", cat(F.fabro / "flaky/repo"))
     ck("claim: the fingerprint is staged", TEST_FP, cat(F.fabro / "flaky/fp"))
     ck("claim: FlakeRadar resolved the test id", "9354", cat(F.fabro / "flaky/entity_id"))

@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS repo_etag (
 );
 
 -- One row per coder instance currently holding a run. The primary key on
--- `coder_pool` is what makes double-dispatch to one box impossible: it is the
+-- `coder_pool` is what makes double-dispatch to one pool impossible: it is the
 -- database enforcing it, not the loop, so it holds even if the loop is entered
 -- twice or two scheduler processes share the file. `run_id` is UNIQUE as a
 -- second, different guard — the same run must never hold two boxes.

@@ -14,7 +14,7 @@ re-acquiring a box to continue and there is no mechanism for that.
 **The exclusion is enforced by the database, not by this class.** `leases` has
 `coder_pool` as its primary key, and `Store.acquire_lease` resolves the conflict
 inside the inserting statement. So `LeaseStore` can be constructed twice, or two
-scheduler processes can share the file, and one box still cannot be handed out
+scheduler processes can share the file, and one pool still cannot be handed out
 twice. `acquire` raises `LeaseConflict` after the fact; it does not defend the
 invariant itself.
 

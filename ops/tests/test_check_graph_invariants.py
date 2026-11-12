@@ -230,6 +230,19 @@ class BoxStages(unittest.TestCase):
             found = self.r14(root)
             self.assertEqual(found, [("R14", "coders-a")], found)
 
+    def test_the_second_box_bg_name_is_judged_exactly_the_same(self):
+        """R14 is a suffix rule, so `coders-c-bg` — box 2's row since the two-slot boxes — is
+        known without anything having to be added to a list, and no name list requires the
+        `coders-b-bg` this series deletes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.root(tmp, stylesheet=self.BOX_EVERYWHERE)
+            toml = root / ".fabro/workflows/ok/workflow.toml"
+            toml.write_text(toml.read_text()
+                            + '\n[run.model.fallbacks]\n"coders-c-bg" = ["glm-5.3"]\n'
+                            + '"coders-d" = ["box-b:coders-c-bg"]\n')
+            found = self.r14(root)
+            self.assertEqual(found, [("R14", "coders-c-bg"), ("R14", "coders-d")], found)
+
     def test_the_arm_rule_parser_tolerates_the_percent_in_its_arithmetic(self):
         variants = cgi.stylesheet_variants(self.PLAN_ARM)
         self.assertEqual(len(variants), 2)

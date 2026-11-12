@@ -14,13 +14,13 @@ graph = "workflow.fabro"
 # Keys containing a dot MUST be quoted or the TOML parse fails with a 422 at
 # automation fire time.
 [run.model.fallbacks]
-# The scheduler pins a run to one box by naming `coders-a` to `coders-d` in the
-# run's `coder_pool` input (see the stylesheet). Fallbacks are keyed on the
-# REQUESTED model name, so each pinned group needs its own entry or a pinned run
-# has no fallback at all. The both-boxes `coders` key has no home anymore --
-# task 04 retired that id with the LiteLLM provider (ADR 0007) and an unpinned
-# run resolves to `coders-a`; pinning changes only which box answers, never the
-# escalation ladder.
+# The scheduler pins a run to one coder **slot** by naming `coders-a` to `coders-d` in the
+# run's `coder_pool` input (see the stylesheet); the four slots are two boxes of two (two-slot
+# boxes D1), and all four serve the same weights. Fallbacks are keyed on the REQUESTED model
+# name, so each pinned slot needs its own entry or a pinned run has no fallback at all. The
+# both-boxes `coders` key has no home anymore -- task 04 retired that id with the LiteLLM
+# provider (ADR 0007) and an unpinned run resolves to `coders-a`; pinning changes only which
+# slot answers, never the escalation ladder — which is why the four rows below are identical.
 #
 # Nothing falls back to glm-4.7 and no stylesheet class may name it: it is the
 # only model in the server catalog with `features.reasoning: false`, the z.ai
@@ -37,9 +37,10 @@ graph = "workflow.fabro"
 # NOT extend this chain -- every rung must be listed here.
 "coders-a" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
 "coders-b" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
+# coders-c and coders-d are the second box's two slots (two-slot boxes D6/D7). They were the
+# spark box and the freellm router, so their rows once differed in kind; since all four slots
+# are the same weights they differ from coders-a only in being a separate fallback key.
 "coders-c" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
-# coders-d is the freellm router (free coding plans, model `auto`): less stable than the boxes,
-# so its fallback chain matters more. Same rungs as the boxes.
 "coders-d" = ["zai:glm-5.3-flash", "openai:gpt-6-luna"]
 kimi-for-coding = ["zai:glm-5.3"]
 "glm-5.3" = ["kimi:kimi-k3", "orfallback:qwen3.8-27b"]
@@ -161,10 +162,13 @@ FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
 # Read by pr_handoff for the per-repo auto-merge switch, and by the imported
 # review-merge phase for the host-wide one.
 FABRO_API_URL    = "{{ vars.FABRO_API_URL }}"
-# The boxes' strix-infer `/health` endpoints, as `pool=url` pairs (more-local-inference C3):
-# `coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.56:5300/health`. `box-claim`
-# reads it to find the URL for this run's box. A `{{ vars.X }}` that is not provisioned fails
-# the RunIntent at compile time, so the server variable must exist before this ships.
+# The boxes' strix-infer `/health` endpoints, as `pool=url` pairs (more-local-inference C3),
+# where **pools sharing a URL are one box** (two-slot boxes D1): today the two strix boxes each
+# serve two concurrent sessions, so the value is
+# `coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.29:5300/health,coders-c=http://10.10.0.56:5300/health,coders-d=http://10.10.0.56:5300/health`.
+# `box-claim` reads it to find this run's box — the URL, and every pool that shares it. A
+# `{{ vars.X }}` that is not provisioned fails the RunIntent at compile time, so the server
+# variable must exist before this ships.
 FABRO_BOX_HEALTH = "{{ vars.FABRO_BOX_HEALTH }}"
 FABRO_AUTO_MERGE = "{{ vars.FABRO_AUTO_MERGE }}"
 # FlakeRadar's base URL (ADR 0028 F1): watch_checks asks it whether a red check fails only on

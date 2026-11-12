@@ -80,68 +80,89 @@ url = "http://<HOST>:<FABRO_PORT>"
 # titles is the model marked `small_default = true` (long-context on `spark`),
 # and `[llm.providers.spark] default_model` names that model for the provider.
 
-# One direct provider per Local inference box (ADR 0007, docs/direct-providers/
-# 01-local-boxes-direct.md). `coders-a`/`coders-b`/`coders-c`/`long-context` resolve to a
-# provider whose base_url is the box, instead of crossing the LiteLLM ingress. The
-# model ids do not change; the graphs and workflow TOMLs address them by id. Replace
-# <IP>/<PORT> with each box's real address.
+# One direct provider per strix-infer coder box (ADR 0007, docs/direct-providers/
+# 01-local-boxes-direct.md). `coders-a` to `coders-d` and `long-context` resolve to a provider
+# whose base_url is the box, instead of crossing the LiteLLM ingress. The model ids do not
+# change; the graphs and workflow TOMLs address them by id. Replace <IP>/<PORT> with each box's
+# real address.
+#
+# Each box serves **two concurrent sessions** of the same weights behind its one endpoint
+# (two-slot boxes), so it carries two coder pools: `box-a` is `coders-a` and `coders-b`, and
+# `box-b` is `coders-c` and `coders-d`. That is what `pool=url` in `FABRO_BOX_HEALTH` and
+# `SCHEDULER_BOX_HEALTH` declares: two pools on one URL are one box, and the box's `/health`
+# says nothing about which slot is free (ADR 0031's precedence rules therefore treat a box as
+# one unit — docs/plans/two-slot-boxes/).
 #
 # A run's `coder_pool` input selects `coders-a` to `coders-d` through the root graph's
-# `model_stylesheet`, which is how the scheduler leases a whole llama.cpp box for a
-# run (docs/scheduler/00-overview-and-contracts.md, findings 3 and 4).
+# `model_stylesheet`, which is how the scheduler leases one *slot* of a box for a run
+# (docs/scheduler/00-overview-and-contracts.md, findings 3 and 4).
 #
 # `limits`/`capabilities` were copied from the litellm rows they replace, so
 # only the endpoint changed. `api_model` is the wire name the box
-# reports from `/v1/models` -- the same GGUF model answers all three names.
+# reports from `/v1/models`.
 #
 # A Local box needs no provider key (`auth = { type = "none" }`). These take effect
 # **without a restart** -- unlike `server.scheduler.max_concurrent_runs`, the LLM
 # catalog is rebuilt by `replace_runtime_settings` on the 5s settings poll. See the
 # `[server.scheduler]` note above for the one value that is not.
 [llm.providers.box-a]
-display_name = "Local coder A (10.10.0.29)"
+display_name = "Local coder box A (10.10.0.29)"
 base_url = "http://<IP>:5300/v1"
 auth = { type = "none" }
 
 [llm.providers.box-a.models."coders-a"]
-display_name = "Local coders A (strix 10.10.0.29)"
+display_name = "Local coders A (strix 10.10.0.29, slot 1)"
 api_model = "qwen3.8-flash-next"
-limits = { context_tokens = 262144, max_output_tokens = 38400 }
+limits = { context_tokens = 524288, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }
 
-# Background-lane rows (more-local-inference C5, ADR 0031). A box-only package resolves
-# every agent stage to `{{ inputs.coder_pool }}`, and the scheduler sets that input to
-# `coders-a-bg` or `coders-b-bg`, so background work names its own model while the weights
-# underneath are the same ones. NEITHER of these names has a `[run.model.fallbacks]` row, and
-# R14 forbids one: a box error must fail the background stage instead of falling through to
-# z.ai and spending the credits the lane exists to save.
+# The box's second slot (two-slot boxes D6). Same endpoint, same weights, same 524288-token
+# window: what separates the rows is the name the scheduler leases, not the model behind it.
+[llm.providers.box-a.models."coders-b"]
+display_name = "Local coders B (strix 10.10.0.29, slot 2)"
+api_model = "qwen3.8-flash-next"
+limits = { context_tokens = 524288, max_output_tokens = 38400 }
+capabilities = { text = true, tools = true, reasoning = true }
+
+# Background-lane rows (more-local-inference C5, ADR 0031). A box-only package resolves every
+# agent stage to `{{ inputs.coder_pool }}`, and the scheduler sets that input to the `-bg` row
+# of the box's **first pool** — `coders-a-bg` on this box, `coders-c-bg` on `box-b` (two-slot
+# boxes D3) — so background work names its own model while the weights underneath are the same
+# ones. NEITHER `-bg` name has a `[run.model.fallbacks]` row, and R14 forbids one: a box error
+# must fail the background stage instead of falling through to z.ai and spending the credits the
+# lane exists to save.
 [llm.providers.box-a.models."coders-a-bg"]
 display_name = "Background coders A (strix 10.10.0.29)"
 api_model = "qwen3.8-flash-next"
-limits = { context_tokens = 262144, max_output_tokens = 38400 }
+limits = { context_tokens = 524288, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }
 
 [llm.providers.box-b]
-display_name = "Local coder B (10.10.0.56)"
+display_name = "Local coder box B (10.10.0.56)"
 base_url = "http://<IP>:5300/v1"
 auth = { type = "none" }
 
-[llm.providers.box-b.models."coders-b"]
-display_name = "Local coders B (strix 10.10.0.56)"
+# `coders-c` and `coders-d` were the spark box's third coder slot and the freellm router's
+# `auto` model. Both are strix-infer slots on this box now (two-slot boxes D6, and the spark
+# box keeps only `long-context`).
+[llm.providers.box-b.models."coders-c"]
+display_name = "Local coders C (strix 10.10.0.56, slot 1)"
 api_model = "qwen3.8-flash-next"
-limits = { context_tokens = 262144, max_output_tokens = 38400 }
+limits = { context_tokens = 524288, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }
 
-# Background-lane rows (more-local-inference C5, ADR 0031). A box-only package resolves
-# every agent stage to `{{ inputs.coder_pool }}`, and the scheduler sets that input to
-# `coders-a-bg` or `coders-b-bg`, so background work names its own model while the weights
-# underneath are the same ones. NEITHER of these names has a `[run.model.fallbacks]` row, and
-# R14 forbids one: a box error must fail the background stage instead of falling through to
-# z.ai and spending the credits the lane exists to save.
-[llm.providers.box-b.models."coders-b-bg"]
-display_name = "Background coders B (strix 10.10.0.56)"
+[llm.providers.box-b.models."coders-d"]
+display_name = "Local coders D (strix 10.10.0.56, slot 2)"
 api_model = "qwen3.8-flash-next"
-limits = { context_tokens = 262144, max_output_tokens = 38400 }
+limits = { context_tokens = 524288, max_output_tokens = 38400 }
+capabilities = { text = true, tools = true, reasoning = true }
+
+# The `-bg` row of this box's first pool, which is where the background lane dispatches
+# (D3). No fallback row, as above.
+[llm.providers.box-b.models."coders-c-bg"]
+display_name = "Background coders C (strix 10.10.0.56)"
+api_model = "qwen3.8-flash-next"
+limits = { context_tokens = 524288, max_output_tokens = 38400 }
 capabilities = { text = true, tools = true, reasoning = true }
 
 [llm.providers.spark]
@@ -157,33 +178,6 @@ limits = { context_tokens = 1048576, max_output_tokens = 65536 }
 capabilities = { text = true, tools = true, reasoning = true, response_format = { json_object = true, json_schema = true } }
 # Preferred for small utility calls such as generated run titles.
 small_default = true
-
-# coders-c (added 2026-10-11): a third Coder slot on the spark box, leased one run at a time by
-# the coder scheduler like coders-a and coders-b. Same weights as long-context, served by vLLM
-# with a 1M context; checked to return OpenAI tool_calls and reasoning before it was added.
-# vLLM batches, so long-context's utility calls do not queue behind a leased run.
-[llm.providers.spark.models."coders-c"]
-display_name = "Local coders C (spark 10.10.0.30)"
-api_model = "deepseek-v4-flash-0731"
-limits = { context_tokens = 1048576, max_output_tokens = 65536 }
-capabilities = { text = true, tools = true, reasoning = true }
-
-# coders-d (2026-10-11): a fourth Coder slot, leased one run at a time by the coder scheduler.
-# freellm is a LAN router (OpenAI-compatible) over free coding plans; its `auto` model routes
-# each request to the best available free model, so consecutive turns can come from different
-# models and the endpoint can be unstable. Context is capped at 256k on purpose: /v1/models
-# reports 1M for `auto`, but some models behind it have far less. A custom provider (not a
-# built-in name), so it owns only this row; the key is FREELLM_API_KEY in the vault.
-[llm.providers.freellm]
-display_name = "freellm router (free coding plans)"
-base_url = "https://<FREELLM_HOST>/v1"
-auth = { type = "bearer" }
-
-[llm.providers.freellm.models."coders-d"]
-display_name = "Local coders D (freellm auto)"
-api_model = "auto"
-limits = { context_tokens = 262144, max_output_tokens = 32768 }
-capabilities = { text = true, tools = true, reasoning = true }
 
 # The hosted models now resolve to their own direct providers (ADR 0007,
 # docs/direct-providers/03-hosted-models-direct.md): glm-4.7/glm-5.3 to `zai`

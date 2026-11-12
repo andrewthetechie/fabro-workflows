@@ -22,7 +22,8 @@ contents = "read"
 issues = "read"
 
 # A background package (more-local-inference D4, R16): every agent stage's model is
-# `{{ inputs.coder_pool }}`, which the scheduler sets to `coders-a-bg` or `coders-b-bg`, so a
+# `{{ inputs.coder_pool }}`, which the scheduler sets to the `-bg` row of the box's first
+# pool (`coders-a-bg` on box 1, `coders-c-bg` on box 2, two-slot boxes D3), so a
 # calibration spends no hosted credits (C5). It binds no `[run.inputs]`: `coder_pool`,
 # `issue_number` and `at` are per-run, and a bound `coder_pool` would pin every hand-fired run
 # to one box. There is no `[run.model.fallbacks]` at all: a `-bg` name must not fall back

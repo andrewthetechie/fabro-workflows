@@ -6,8 +6,9 @@
 // Phase 1 can measure how fast a coder loop's claim takes the box back and how often the
 // guard fires before any real job is built.
 //
-// Every model comes from the run's `coder_pool` input, which the scheduler sets to
-// `coders-a-bg` or `coders-b-bg` (C5). The `*` rule is the same expression as `.bg`, so an
+// Every model comes from the run's `coder_pool` input, which the scheduler sets to the
+// `-bg` row of the box's first pool: `coders-a-bg`, or `coders-c-bg` on box 2 (C5, and
+// two-slot boxes D3). The `*` rule is the same expression as `.bg`, so an
 // agent node that lost its class would still run on the box and never reach a hosted model
 // (R16). Neither `-bg` name has a `[run.model.fallbacks]` row, so a box error fails the
 // stage instead of spending z.ai credits (R14).

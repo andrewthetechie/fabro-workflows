@@ -64,21 +64,28 @@ and no second run is created. `backlog` now runs `open_pr -> pr_handoff -> revie
 -> exit`. Kept here only so the word is not reused for something else.
 
 **Coder instance**:
-One llama.cpp server holding the `deepseek-v4-flash-0731-iq3-xxs` GGUF — `10.10.0.29`
-and `10.10.0.56` today. Each has exactly **one slot**, so whoever holds it blocks
-everything else for a whole turn. Measured ceiling 17.4 tok/s.
-_Avoid_: coder agent, box, GPU, worker (a fabro worker is a different thing)
+One strix-infer server serving `qwen3.8-flash-next` — `10.10.0.29` and `10.10.0.56` today.
+Each serves **two concurrent sessions** behind its one endpoint (the two-slot boxes), so an
+instance holds two pools; its `/health` says only whether the machine is busy, never which slot
+is free. That is why the claim, the guard and the background lane treat a box as one unit.
+_Avoid_: coder agent, GPU, worker (a fabro worker is a different thing)
+
+**Box**:
+One coder machine — the set of **Coder pools** that share a `/health` URL. It is declared by
+that sharing, never by a name or a separate variable, so the two health variables are the one
+source of truth for which pools are siblings. A box is a *precedence* unit: the background lane
+fills one per box, and the claim cancels across all of them. A box whose pools are listed on
+distinct URLs is a one-slot box, which is how every box was before the two-slot boxes.
 
 **Coder pool**:
-The set of coder instances, and the LiteLLM model group `coders` that fronts all of
-them. After the split there are three groups: `coders-a` and `coders-b` address one
-instance each, `coders` addresses both and is the fallback for anything unpinned.
-Since 2026-10-11 `coders-c` (the spark box, vLLM, 1M context) is a third single-run
-instance, addressed directly on fabro's `spark` provider. `coders-d` is the freellm router
-(model `auto`, free coding plans, capped at 256k context), also one run at a time.
-Saturation is no longer an accepted unknown: two concurrent runs on two single-slot
-instances with no affinity spend roughly half their turns queued behind each other,
-measured at ~1.7x on 2026-09-18.
+One **slot** of a coder instance, and the model row the scheduler pins a run to: `coders-a` and
+`coders-b` are the two slots of `10.10.0.29`, `coders-c` and `coders-d` the two of
+`10.10.0.56` (before that series `coders-c` was the spark box's vLLM slot and `coders-d` the
+freellm router's `auto` route). Two pools sharing one `/health` URL *is* the declaration that
+they are one box — `FABRO_BOX_HEALTH` and `SCHEDULER_BOX_HEALTH` say so in `pool=url` pairs,
+and both `fabro-io` and the scheduler derive the sibling set from it. Leasing is per pool, so a
+box may hold two runs at once. `coders` — the old load-balanced LiteLLM group — is retired
+(ADR 0007).
 
 **Coder lease**:
 A scheduler-held claim on one **Coder instance** for one **Queue item**, recorded as

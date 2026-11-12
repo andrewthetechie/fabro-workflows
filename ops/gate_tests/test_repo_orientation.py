@@ -50,7 +50,7 @@ fi
 exit 0
 """
 
-SUBSTITUTIONS = (("{{ inputs.coder_pool }}", "coders-b-bg"),)
+SUBSTITUTIONS = (("{{ inputs.coder_pool }}", "coders-c-bg"),)
 
 
 def orientation_body(main: str, at: str, *, text: str = "## Summary\nA map.\n") -> str:

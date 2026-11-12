@@ -64,10 +64,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 # A stage is coder-box work when it ran on the run's own coder pool. Every pool is
-# a LiteLLM-style group named `coders-<x>`, so the model name says it without a
-# provider list that goes stale each time a pool is added (coders-c is `spark`,
-# coders-d is `freellm`).
-# `coders-` also matches the background lane's `coders-a-bg` / `coders-b-bg` model names
+# a `coders-<x>` model name, so the name says it without a provider list that goes stale each
+# time a pool is added (all four pools are strix-infer slots since the two-slot boxes, and
+# `spark` no longer hosts one).
+# `coders-` also matches the background lane's `coders-a-bg` / `coders-c-bg` model names
 # (more-local-inference C5), and a background stage would then count as coder box time.
 # It cannot happen here: a summary is only ever built for a run that held a lease
 # (`store.runs_to_summarize` reads `run_history`, which only `archive_and_release_lease`

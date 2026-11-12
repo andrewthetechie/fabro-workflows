@@ -30,7 +30,7 @@ and it is the one loose end this draft knowingly leaves for draft 09.
 
 **The database, not this loop, is what makes a box exclusive.** `leases` has
 `coder_pool` as its primary key and the conflict is resolved inside the insert, so
-entering the loop twice cannot hand one box two runs even though this class does
+entering the loop twice cannot hand one pool two runs even though this class does
 nothing to prevent it.
 
 **A failed dispatch backs that repo off for the rest of the tick**, not forever:

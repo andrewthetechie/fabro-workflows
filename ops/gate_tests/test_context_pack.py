@@ -52,7 +52,7 @@ HASH = hashlib.sha256(f"{ISSUE['title']}\n{ISSUE['body']}".encode()).hexdigest()
 
 SUBSTITUTIONS = (
     ("{{ inputs.issue_number }}", "42"),
-    ("{{ inputs.coder_pool }}", "coders-b-bg"),
+    ("{{ inputs.coder_pool }}", "coders-c-bg"),
 )
 
 
@@ -146,7 +146,7 @@ def test_claim_stages_the_issue_with_the_precheck_note(ck, tmp_path):
     ))
     r = P.run("claim")
     ck("claim: routes to prep", "true", routed(r, "pack_go"))
-    ck("claim: box written without the -bg suffix", "coders-b", cat(P.fabro / "box"))
+    ck("claim: box written without the -bg suffix", "coders-c", cat(P.fabro / "box"))
     ck("claim: the repository is read from the issue url", "o/r", cat(P.fabro / "pack/repo"))
     ck("claim: main= is the checkout's HEAD", P.main, cat(P.fabro / "pack/main_sha"))
     ck("claim: body= is C6's hash", HASH, cat(P.fabro / "pack/body_hash"))

@@ -76,9 +76,14 @@ services:
       # Run slots fabro must have free, counting `pending`, before a background run
       # starts (D8). Fabro's own cap is `server.scheduler.max_concurrent_runs`.
       SCHEDULER_BG_SLOT_RESERVE: "${SCHEDULER_BG_SLOT_RESERVE:-3}"
-      # The boxes' strix-infer `/health` endpoints, in the same `pool=url` format
-      # `fabro-io box-claim` reads. Empty means no box is in the lane.
-      SCHEDULER_BOX_HEALTH: "${SCHEDULER_BOX_HEALTH:-coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.56:5300/health}"
+      # The coder boxes' strix-infer `/health` endpoints, in the same `pool=url` format
+      # `fabro-io box-claim` reads. **Pools that share a URL are one box** (two-slot boxes D1):
+      # each strix box serves two concurrent sessions, so `coders-a` and `coders-b` are the two
+      # slots of 10.10.0.29 and `coders-c` and `coders-d` the two of 10.10.0.56. The lane then
+      # reads each URL once per tick and fills each box with at most one background run (D3);
+      # a pool no other pool shares is a one-slot box, which is how it behaved before 2026-11-11.
+      # Empty means no box is in the lane.
+      SCHEDULER_BOX_HEALTH: "${SCHEDULER_BOX_HEALTH:-coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.29:5300/health,coders-c=http://10.10.0.56:5300/health,coders-d=http://10.10.0.56:5300/health}"
       # Keep equal to fabro's `server.scheduler.max_concurrent_runs`: the scheduler reads
       # it only to count free slots, and a larger value would hand out slots that do not
       # exist.

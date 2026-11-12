@@ -17,10 +17,10 @@ graph = "workflow.fabro"
 # The mechanical-check tier (.merge-standards in the imported review-merge
 # graph). Escalates UP to full glm-5.3, never sideways.
 "glm-5.3-flash" = ["zai:glm-5.3"]
-# The scheduler pins a run to one box by naming `coders-a` to `coders-d` in the
-# run's `coder_pool` input (see the stylesheet). Fallbacks are keyed on the
-# REQUESTED model name, so each pinned group needs its own entry or a pinned run
-# has no fallback at all. The both-boxes `coders` key has no home anymore --
+# The scheduler pins a run to one coder **slot** by naming `coders-a` to `coders-d` in the
+# run's `coder_pool` input (see the stylesheet) — four slots on two boxes, all serving the same
+# weights since the two-slot boxes. Fallbacks are keyed on the REQUESTED model name, so each
+# pinned slot needs its own entry or a pinned run has no fallback at all. The both-boxes `coders` key has no home anymore --
 # task 04 retired that id with the LiteLLM provider (ADR 0007) and an unpinned
 # run resolves to `coders-a`. Review and fixes stay on glm-5.3, and only the
 # first rebase attempt runs on a box.
@@ -163,10 +163,13 @@ FABRO_AUTO_MERGE = "{{ vars.FABRO_AUTO_MERGE }}"
 # never fires another run.
 FABRO_API_URL   = "{{ vars.FABRO_API_URL }}"
 FABRO_API_TOKEN = "{{ secrets.FABRO_API_TOKEN }}"
-# The boxes' strix-infer `/health` endpoints, as `pool=url` pairs (more-local-inference C3):
-# `coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.56:5300/health`. `box-claim`
-# reads it to find the URL for this run's box. A `{{ vars.X }}` that is not provisioned fails
-# the RunIntent at compile time, so the server variable must exist before this ships.
+# The boxes' strix-infer `/health` endpoints, as `pool=url` pairs (more-local-inference C3),
+# where **pools sharing a URL are one box** (two-slot boxes D1): each strix box serves two
+# concurrent sessions, so the value is
+# `coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.29:5300/health,coders-c=http://10.10.0.56:5300/health,coders-d=http://10.10.0.56:5300/health`.
+# `box-claim` reads it to find this run's box — the URL, and every pool that shares it. A
+# `{{ vars.X }}` that is not provisioned fails the RunIntent at compile time, so the server
+# variable must exist before this ships.
 FABRO_BOX_HEALTH = "{{ vars.FABRO_BOX_HEALTH }}"
 # FlakeRadar's base URL (ADR 0028 F1): watch_checks asks it whether a red check fails only on
 # known flaky tests. Empty means today's path.

@@ -20,15 +20,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-# The provider ids that mean "ran on a LAN coder box". These are the providers the
-# three pinned coder pools resolve to (deployment invariant; `models.mdx` in the
-# fabro checkout). A provider not in this set is hosted.
+# The provider ids that mean "ran on a LAN box". The four coder pools resolve to `box-a` and
+# `box-b` (two slots each, since the two-slot boxes), and `spark` hosts `long-context`; a
+# provider not in this set is hosted (deployment invariant; `models.mdx` in the fabro
+# checkout).
 LOCAL_PROVIDERS = frozenset({"box-a", "box-b", "spark"})
 
-# The background lane's `coders-a-bg` / `coders-b-bg` rows resolve to `box-a` and
-# `box-b`, so they classify as local here without a rule of their own
-# (more-local-inference C8). In any case no background run reaches this module: it is
-# called at lease release, and a background job takes no lease.
+# The background lane's `coders-a-bg` / `coders-c-bg` rows — the `-bg` row of each box's first
+# pool (two-slot boxes D3) — resolve to `box-a` and `box-b`, so they classify as local here
+# without a rule of their own (more-local-inference C8). In any case no background run reaches
+# this module: it is called at lease release, and a background job takes no lease.
 
 
 @dataclass(frozen=True)
