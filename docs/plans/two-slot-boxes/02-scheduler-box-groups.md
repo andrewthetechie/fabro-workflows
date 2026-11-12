@@ -42,6 +42,10 @@ four distinct URLs, every existing test passes unchanged.
    - two leased siblings use the minimum gap;
    - one background run per box at most;
    - a drained sibling blocks the fill;
+     *(amended 2026-11-12: it does not — see D3's amendment. A drained sibling leaves the box
+     in the lane; the test is `test_a_drained_sibling_leaves_the_box_in_the_lane`, and
+     `test_a_box_whose_every_slot_is_drained_stays_out_of_the_lane` holds the old rule where
+     it still applies. That step's rule silenced both boxes for two hours after the cutover.)*
    - one `/health` read per URL per tick.
 
 ## Done when
