@@ -22,6 +22,9 @@ advance without hammering either fabro or a busy browser. So this is a
 `RunProgress` on a fixed beat, and the page renders from the cache synchronously
 with no API work of its own.
 
+This module is the **only reader of a sandbox in this service**, and that is
+load-bearing rather than tidy: see the terminal-run rule below.
+
 The sandbox files are read only while the run is live. Fabro's docker provider
 answers `sandbox/file` on a STOPPED sandbox by starting the container again, and
 nothing stops it a second time. A lease outlives its run by up to one reconcile
@@ -31,6 +34,13 @@ restarted the sandbox it read: 14 succeeded runs between 2026-09-26 and
 after fabro stopped it, and `fabro-sandbox-sweep.sh` never removes a running
 container. So `_probe` reads the run's status kind first and skips both file
 reads once it is terminal.
+
+The same rule is why the **scorecard** does not read the Task list itself. A
+released run is what the collector summarizes, so every one of its reads would land
+on a stopped sandbox, and the collector's 2-minute settle window is exactly when the
+restart landed: 34 succeeded `ralph` runs on 2026-11-11 alone. So the beat below
+counts the sources too and hands them to `LeaseStore.set_task_sources`, the release
+carries them into `run_history`, and `collector` reads them from SQLite.
 
 Interval guidance: stages last tens of seconds to minutes each, so a 30-second
 beat keeps the display visibly current while making only ~4 API calls per beat
@@ -44,6 +54,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -104,6 +116,9 @@ class RunProbe:
         # Written only under `_lock`; the page reads via `_lock`.
         self._lock = threading.Lock()
         self._snapshots: dict[str, RunProgress] = {}
+        # The last Task-source JSON written per leased run, so a beat that saw no
+        # change writes nothing. Same lifetime as `_snapshots`.
+        self._sources_written: dict[str, str] = {}
 
     @property
     def interval_seconds(self) -> float:
@@ -124,6 +139,9 @@ class RunProbe:
             for run_id in list(self._snapshots):
                 if run_id not in active_ids:
                     del self._snapshots[run_id]
+            for run_id in list(self._sources_written):
+                if run_id not in active_ids:
+                    del self._sources_written[run_id]
 
         for lease in active:
             try:
@@ -147,7 +165,8 @@ class RunProbe:
         stage_name, stage_visit, status = self._current_stage(run_id)
         completed, total = None, None
         if self._run_is_live(run_id):
-            completed, total = self._task_progress(run_id)
+            completed, total, sources = self._task_progress(run_id)
+            self._record_task_sources(run_id, sources)
         return RunProgress(
             run_id=run_id,
             status=status,
@@ -188,37 +207,60 @@ class RunProbe:
             current.get("status"),
         )
 
-    def _task_progress(self, run_id: str) -> tuple[int | None, int | None]:
-        """`(completed, total)` from the sandbox, or `(None, None)` pre-decompose.
+    def _task_progress(self, run_id: str) -> tuple[int | None, int | None, Counter[str]]:
+        """`(completed, total, sources)` from the sandbox, `(None, None, Counter())` pre-decompose.
 
         `total` is the length of `tasks.json` — the authority on the task list, so
         it reflects any growth from an extra review. `completed` is `task_index −
         1` (fabro bumps the index after a task is selected), clamped to `[0, total]`
         so a consolidation that shrinks the list never shows a nonsense fraction.
-        Both files are read through the fabro API by absolute sandbox path
-        (verified against 0.354; a relative path resolves under the working dir
-        and 404s). A missing file (404/409 → `None`), an unparsable `tasks.json`,
-        or a `tasks.json` that is not a JSON array reads as "—".
+        `sources` counts the same list by each Task's `source` field, which is what
+        the scorecard's "Tasks by source" line wants and what `_record_task_sources`
+        carries to the release. Both files are read through the fabro API by absolute
+        sandbox path (verified against 0.354; a relative path resolves under the
+        working dir and 404s). A missing file (404/409 → `None`), an unparsable
+        `tasks.json`, or a `tasks.json` that is not a JSON array reads as "—" and an
+        empty Counter.
         """
         if self._fabro is None:
-            return None, None
+            return None, None, Counter()
         raw_tasks = self._fabro.read_sandbox_file(run_id, "/tmp/fabro/tasks.json")
         if raw_tasks is None:
-            return None, None  # not found, or no active sandbox: decompose not done
+            return None, None, Counter()  # not found, or no active sandbox: decompose not done
         try:
             tasks = json.loads(raw_tasks)
         except ValueError:
-            return None, None
+            return None, None, Counter()
         if not isinstance(tasks, list):
-            return None, None
+            return None, None, Counter()
         total = len(tasks)
+        sources = Counter(
+            str(task.get("source") or "unknown")
+            for task in tasks
+            if isinstance(task, Mapping)
+        )
         raw_index = self._fabro.read_sandbox_file(run_id, "/tmp/fabro/task_index")
         try:
             index = int((raw_index or "").strip())
         except ValueError:
             index = 0
         completed = max(min(index - 1, total), 0)
-        return completed, total
+        return completed, total, sources
+
+    def _record_task_sources(self, run_id: str, sources: Mapping[str, int]) -> None:
+        """Hand the live Task-source counts to the lease, once per change.
+
+        Never an empty write: no counts means this beat read no `tasks.json`, and
+        storing `{}` would replace an earlier real read with a loss. The list grows as
+        the loop adds Refute and review Tasks, so the last live beat wins.
+        """
+        if not sources:
+            return
+        encoded = json.dumps(dict(sources), sort_keys=True)
+        if self._sources_written.get(run_id) == encoded:
+            return
+        if self._leases.set_task_sources(run_id, sources):
+            self._sources_written[run_id] = encoded
 
     # -- the thread ----------------------------------------------------------
 

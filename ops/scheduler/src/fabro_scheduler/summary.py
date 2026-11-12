@@ -207,8 +207,9 @@ class RunSummary:
     # Whether the loop ever published `loop=exhausted`: the run ran out of rungs,
     # rounds or budget rather than finishing.
     loop_exhausted: bool = False
-    # Task id -> `source` (`plan`, `refute`, `review`, `final_fix`, `ci`). Filled by
-    # the collector, which is the only reader of the run's `tasks.json`.
+    # Task id -> `source` (`plan`, `refute`, `review`, `final_fix`, `ci`). Filled by the
+    # collector from the counts the live probe stored on the lease: nothing here reads
+    # a sandbox, because a released run's sandbox is stopped and must stay that way.
     task_sources: Counter[str] = field(default_factory=Counter)
     # --- the box pre-review (pre-review-and-calibration, Part B). ------------------
     # The A/B arm `pre_review_prep` decided (`on` or `off`), and the verdict

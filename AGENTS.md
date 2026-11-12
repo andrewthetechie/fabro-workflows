@@ -56,7 +56,8 @@ writes it, is the most common way to break one of these.
 - `docs/agents/invariants-merge.md`: the `_shared/review-merge/` phase, its report hooks,
   and the auto-merge switches.
 - `docs/agents/invariants-host.md`: stylesheet models and fallbacks, the settings overlay
-  and providers, and the profile images.
+  and providers, the profile images, and why nothing may read a run's sandbox once the
+  run has ended.
 - `docs/agents/invariants-dependabot.md`: the `dependabot` package: the merge loop's checkout,
   the patch path, and the tracking issue.
 - `docs/agents/invariants-merge-queue.md`: the `merge-queue` package: the approval chain, the

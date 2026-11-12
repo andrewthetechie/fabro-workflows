@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -26,11 +27,17 @@ def store(tmp_path) -> Store:
     opened.close()
 
 
-def released(store, run_id, *, finished=NOW - timedelta(hours=1), pr=None):
+def released(
+    store, run_id, *, finished=NOW - timedelta(hours=1), pr=None, workflow="backlog",
+    task_sources=None,
+):
     store.acquire_lease(
         coder_pool="coders-a", repo=REPO, issue_number=1, run_id=run_id,
-        dispatched_at=finished - timedelta(hours=1),
+        dispatched_at=finished - timedelta(hours=1), workflow=workflow,
     )
+    if task_sources is not None:
+        # What the live probe left on the lease, to be carried into `run_history`.
+        store.save_lease_task_sources(run_id, json.dumps(task_sources, sort_keys=True))
     store.archive_and_release_lease(
         run_id,
         RunOutcome(kind="succeeded", finished_at=finished,
@@ -55,6 +62,15 @@ class FakeFabro:
         self.usage = USAGE if usage is None else usage
         self.streamed = []
         self.usage_read = []
+        self.sandbox_reads = []
+
+    def read_sandbox_file(self, run_id, path):
+        # The collector must never reach a sandbox: it summarizes RELEASED runs, and
+        # fabro starts a stopped sandbox to serve this read with nothing left to stop it.
+        # `probe.py` is the only reader, and only of live runs. Recorded so a regression
+        # here fails a test rather than leaking a container on the host.
+        self.sandbox_reads.append((run_id, path))
+        return None
 
     def run_usage(self, run_id):
         self.usage_read.append(run_id)
@@ -143,6 +159,30 @@ def test_a_retried_error_that_succeeds_becomes_ok(store):
     collector(store, fabro, now=NOW + RETRY_AFTER + timedelta(minutes=1)).tick()
     assert summary_row(store, "FLAKY")["status"] == "ok"
     assert summary_row(store, "FLAKY")["error"] is None
+
+
+def test_the_collector_never_reads_a_sandbox(store):
+    # The whole bug this guards: reading `tasks.json` at summary time restarted the
+    # stopped sandbox of every summarized `ralph` run, and nothing stopped it again. The
+    # counts now come from the copy the live probe left on the lease and the release
+    # carried into `run_history`.
+    released(store, "RALPH", workflow="ralph", task_sources={"plan": 3, "refute": 2})
+    fabro = FakeFabro()
+
+    assert collector(store, fabro).tick().summarized == 1
+    assert fabro.sandbox_reads == []
+    assert json.loads(summary_row(store, "RALPH")["task_sources"]) == {"plan": 3, "refute": 2}
+
+
+def test_a_run_the_probe_never_recorded_is_unmeasured_rather_than_invented(store):
+    # A `ralph` run released before the probe recorded anything, or one whose graph wrote
+    # no `tasks.json`: no counts, and still no sandbox read to go and find them.
+    released(store, "BLIND", workflow="ralph")
+    fabro = FakeFabro()
+
+    assert collector(store, fabro).tick().summarized == 1
+    assert fabro.sandbox_reads == []
+    assert json.loads(summary_row(store, "BLIND")["task_sources"]) == {}
 
 
 def test_prs_are_read_until_final(store):

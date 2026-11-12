@@ -13,7 +13,9 @@ from datetime import UTC, datetime
 
 from fabro_scheduler.lease import Lease, LeaseStore
 from fabro_scheduler.probe import RunProgress, RunProbe
-from fabro_scheduler.store import Store
+from fabro_scheduler.store import RunOutcome, Store
+
+NOW = datetime(2026, 11, 11, 12, 0, tzinfo=UTC)
 
 TASKS = "/tmp/fabro/tasks.json"
 INDEX = "/tmp/fabro/task_index"
@@ -234,3 +236,150 @@ def test_probe_still_reads_the_sandbox_of_a_live_run(tmp_path):
     RunProbe(fabro, LeaseStore(store)).tick()
 
     assert fabro.reads == [TASKS, INDEX]
+
+
+# --- the Task list's `source` counts, which the scorecard may only read from the DB --
+#
+# `collector.py` summarizes RELEASED runs, and reading a file from a stopped sandbox
+# makes fabro start it again with nothing left to stop it. So the live beat below is the
+# one that counts the sources, and it hands them down the same path `workflow` takes:
+# lease -> release -> `run_history`.
+
+SOURCES = '[{"source":"plan"},{"source":"plan"},{"source":"refute"}]'
+
+
+def _lease_sources(store: Store, run_id: str = "01MRUN") -> str | None:
+    """The lease's `task_sources` column, or None when there is no such lease."""
+    row = store._conn.execute(
+        "SELECT task_sources FROM leases WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    return None if row is None else row["task_sources"]
+
+
+def _live_probe(store: Store, files: dict[str, str]) -> RunProbe:
+    return RunProbe(
+        FakeFabro(stages=_stages(), files=files, kind="running"), LeaseStore(store)
+    )
+
+
+def test_probe_records_the_task_sources_on_the_lease(tmp_path):
+    store = Store(tmp_path / "scheduler.db")
+    _lease(store)
+
+    _live_probe(store, {TASKS: SOURCES, INDEX: "2"}).tick()
+
+    assert _lease_sources(store) == '{"plan": 2, "refute": 1}'
+
+
+def test_the_recorded_counts_survive_the_release_into_history(tmp_path):
+    # The release copies the lease's column into `run_history`, where the collector is
+    # allowed to find it. Without that copy the C12 line would go back to a sandbox read.
+    store = Store(tmp_path / "scheduler.db")
+    _lease(store)
+    _live_probe(store, {TASKS: SOURCES, INDEX: "2"}).tick()
+
+    LeaseStore(store).archive_and_release("01MRUN", RunOutcome(kind="succeeded"))
+
+    assert store.history_task_sources("01MRUN") == {"plan": 2, "refute": 1}
+
+
+def test_probe_records_nothing_for_a_terminal_run(tmp_path):
+    # Same rule as the read above, one layer further down: a beat that landed after the
+    # terminal state must leave no state behind for the release to carry.
+    for kind in ("succeeded", "failed", "dead"):
+        store = Store(tmp_path / f"{kind}.db")
+        _lease(store)
+        RunProbe(
+            FakeFabro(stages=_stages(), files={TASKS: SOURCES}, kind=kind),
+            LeaseStore(store),
+        ).tick()
+
+        assert _lease_sources(store) is None, kind
+
+
+def test_a_beat_that_reads_nothing_keeps_the_earlier_counts(tmp_path):
+    # `tasks.json` is missing until decompose writes it, and the list only grows after
+    # that. An empty read is "no information", so it must not clear what was stored.
+    store = Store(tmp_path / "scheduler.db")
+    _lease(store)
+    _live_probe(store, {TASKS: SOURCES}).tick()
+
+    _live_probe(store, {}).tick()
+
+    assert _lease_sources(store) == '{"plan": 2, "refute": 1}'
+
+
+def test_probe_writes_the_counts_only_when_they_change(tmp_path):
+    # Two boxes, a beat every 30 seconds, all day: the beat writes when the Task list
+    # grew and not when it did not. One long-lived probe, because the whole point is
+    # that the memory of what it already wrote lives in the updater thread.
+    store = Store(tmp_path / "scheduler.db")
+    _lease(store)
+    writes: list[str] = []
+
+    class Counting(LeaseStore):
+        def set_task_sources(self, run_id, sources):
+            writes.append(run_id)
+            return super().set_task_sources(run_id, sources)
+
+    fabro = FakeFabro(stages=_stages(), files={TASKS: '[{"source":"plan"}]'}, kind="running")
+    probe = RunProbe(fabro, Counting(store))
+
+    beats = [
+        ("[{\"source\":\"plan\"}]", 1),  # first real read
+        ("[{\"source\":\"plan\"}]", 1),  # unchanged
+        ("[{\"source\":\"plan\"},{\"source\":\"refute\"}]", 2),  # the list grew
+        ("[{\"source\":\"plan\"},{\"source\":\"refute\"}]", 2),  # unchanged again
+    ]
+    for body, expected in beats:
+        fabro.files = {TASKS: body}
+        probe.tick()
+        assert len(writes) == expected, body
+
+    assert _lease_sources(store) == '{"plan": 1, "refute": 1}'
+
+
+def test_history_task_sources_reads_a_missing_or_broken_value_as_empty(tmp_path):
+    # Never a crash and never a fake zero: "not measured" is what the scorecard shows.
+    store = Store(tmp_path / "scheduler.db")
+    cases = {
+        "01NULLVAL": None,
+        "01EMPTYV": "",
+        "01SPACES1": "   ",
+        "01NOTJSON": "not json",
+        "01ANARRAY": "[]",
+        "01NOTINTS": '{"plan": "two"}',
+        "01NOTDICT": "3",
+    }
+    for i, (run_id, raw) in enumerate(cases.items()):
+        store.acquire_lease(
+            coder_pool=f"pool{i}",
+            repo="andrewthetechie/writers-app",
+            issue_number=i + 1,
+            run_id=run_id,
+            dispatched_at=NOW,
+        )
+        store.archive_and_release_lease(run_id, RunOutcome(kind="succeeded"))
+        store._conn.execute(
+            "UPDATE run_history SET task_sources = ? WHERE run_id = ?", (raw, run_id)
+        )
+    store._conn.commit()
+
+    for run_id in cases:
+        assert store.history_task_sources(run_id) == {}, run_id
+    # A run with no `run_history` row at all is the same answer.
+    assert store.history_task_sources("01NEVERDISPATCHED") == {}
+
+
+def test_a_released_lease_stops_being_written(tmp_path):
+    # The de-duplication cache must not outlive the lease, or a re-dispatched run id
+    # would be compared against a value from its previous life.
+    store = Store(tmp_path / "scheduler.db")
+    _lease(store)
+    probe = _live_probe(store, {TASKS: SOURCES})
+    probe.tick()
+    LeaseStore(store).release("01MRUN")
+
+    probe.tick()
+
+    assert probe._sources_written == {}

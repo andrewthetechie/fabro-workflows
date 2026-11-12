@@ -28,6 +28,12 @@
 #                       A scheduler paused by its disk gate (issue #51) is not
 #                       wedged: C8 reads `/health`'s `disk.gated` and reports the
 #                       pause instead of firing.
+#   C9 leaked-sandbox   a RUNNING fabro-run-* container whose run is terminal      🟠 4h
+#                       Fabro starts a stopped sandbox to serve a file read, and a run
+#                       that has already ended has no worker left to stop it again — so
+#                       this is the resurrection leak on its first instance, not on the
+#                       third day when the disk is full. Skipped with C4 when the API is
+#                       unreachable (it needs C4's live-run snapshot).
 #
 # C1 suppresses C2's connection failures (report the cause, not the symptom)
 # but never its 401 — a rejected token is its own problem. When the container
@@ -123,6 +129,10 @@
 #   WEDGE_MINUTES=20              C8: fire only after queued work with every
 #                                 undrained coder pool idle for this long; 0 fires on
 #                                 the first qualifying sample (the forced test)
+#   LEAK_GRACE_MINUTES=5          C9: ignore a sandbox whose run id is younger than
+#                                 this. C4's live-run snapshot is taken before the
+#                                 `docker ps` below, so a run dispatched in between would
+#                                 otherwise read as a leak. 0 fires on the first sample.
 #   FABRO_MONITOR_REPOS="a/b c/d"  space-separated; an EMPTY value falls back
 #                                 to the four factory repos (`:-`), so pass a
 #                                 real value to narrow a run
@@ -144,6 +154,7 @@ FABRO_PORT="${FABRO_PORT:-32276}"
 CONTAINER="${FABRO_CONTAINER:-fabro-fabro-1}"
 SCHEDULER_URL="${SCHEDULER_URL:-http://127.0.0.1:32280}"
 WEDGE_MINUTES="${WEDGE_MINUTES:-20}"
+LEAK_GRACE_MINUTES="${LEAK_GRACE_MINUTES:-5}"
 REPOS="${FABRO_MONITOR_REPOS:-andrewthetechie/jelly-swipe andrewthetechie/womens-fantasy-sports andrewthetechie/lawncare-saas andrewthetechie/writers-app andrewthetechie/flakeradar}"
 STATE_FILE="${FABRO_MONITOR_STATE:-$HOME/.local/state/fabro-monitor.state}"
 API="http://$FABRO_HOST:$FABRO_PORT/api/v1"
@@ -181,6 +192,7 @@ cond_name() {
     C6) printf '%s' "disk-pressure" ;;
     C7) printf '%s' "scheduler-down" ;;
     C8) printf '%s' "scheduler-wedged" ;;
+    C9) printf '%s' "leaked-sandbox" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -533,6 +545,56 @@ if [ "$api_ok" = 1 ]; then
       printf 'ok    C4 stuck-run: no non-terminal runs over their limit\n'
     fi
   fi
+
+  # ------------------------------------------------------- C9 leaked-sandbox ----
+  # Every running `fabro-run-*` container belongs to a non-terminal run. One that does
+  # not is resurrection: fabro's docker provider starts a STOPPED sandbox to answer a
+  # `sandbox/file` read, and a finished run has no worker left to stop it a second time.
+  # Measured 2026-11-11 — 112 such containers and 82% of /, none of which
+  # `fabro-sandbox-sweep.sh` could touch, because it never removes a running container.
+  # The sweep now reaps them at MAX_RUNNING_HOURS; this is the alarm that fires on the
+  # first one, while it is one container rather than a hundred and the disk is still idle.
+  if [ "$c4_ok" = 1 ]; then
+    mark_evaluated C9
+    if ! docker ps --format '{{.Names}}' > "$tmp/c9.running" 2>/dev/null; then
+      warn "docker ps failed — C9 unevaluable"
+      eval_failed=1
+    else
+      # C4 already holds every non-terminal run, so this costs no extra API traffic. It
+      # is filtered through TERMINAL the same way C4's own loop does, not trusted raw.
+      : > "$tmp/c9.live"
+      while IFS="$(printf '\t')" read -r c9_rid _c9_created c9_kind _c9_slug; do
+        [ -n "$c9_rid" ] || continue
+        case "$TERMINAL" in *" $c9_kind "*) continue ;; esac
+        printf '%s\n' "$c9_rid" >> "$tmp/c9.live"
+      done < "$tmp/c4.tsv"
+      c9_n=0
+      c9_leaked=""
+      c9_leaked_n=0
+      while read -r c9_name; do
+        # The same exact-name test the sweep uses, so `fabro-fabro-1` and anything else
+        # on this host is out of reach here too.
+        case "$c9_name" in fabro-run-*) ;; *) continue ;; esac
+        [ "${#c9_name}" -eq 36 ] || continue
+        c9_rid="${c9_name#fabro-run-}"
+        c9_n=$(( c9_n + 1 ))
+        grep -qx "$c9_rid" "$tmp/c9.live" && continue
+        # A run younger than the grace window may simply postdate C4's snapshot.
+        c9_e="$(ulid_epoch "$c9_rid" 2>/dev/null)" || c9_e=""
+        if [ -n "$c9_e" ] && [ $(( now - c9_e )) -lt $(( LEAK_GRACE_MINUTES * 60 )) ]; then
+          continue
+        fi
+        c9_leaked="$c9_leaked $c9_rid"
+        c9_leaked_n=$(( c9_leaked_n + 1 ))
+      done < "$tmp/c9.running"
+      if [ "$c9_leaked_n" -gt 0 ]; then
+        fire C9 "$ALERT_SECONDS" "🟠" \
+          "leaked-sandbox — $c9_leaked_n of $c9_n running fabro sandbox(es) belong to a terminal run:$(printf '%s' "$c9_leaked" | cut -c1-120). A finished run cannot stop a sandbox fabro restarted for a file read; fabro-sandbox-sweep.sh reaps them at MAX_RUNNING_HOURS."
+      else
+        printf 'ok    C9 leaked-sandbox: all %s running sandboxes belong to live runs\n' "$c9_n"
+      fi
+    fi
+  fi
 fi
 
 # ------------------------------------------------------------- C5 starvation ----
@@ -711,7 +773,7 @@ while IFS="$TAB" read -r cond interval emoji detail; do
 done < "$tmp/firing"
 
 if [ -f "$STATE_FILE" ]; then
-  for cond in C1 C2 C3 C4 C5 C6 C7 C8; do
+  for cond in C1 C2 C3 C4 C5 C6 C7 C8 C9; do
     s="$(stamp_of "$cond")"
     [ -n "$s" ] || continue
     case "$firing_ids" in *" $cond "*) continue ;; esac

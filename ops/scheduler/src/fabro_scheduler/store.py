@@ -103,7 +103,12 @@ CREATE TABLE IF NOT EXISTS leases (
   -- 'issue', always, since the PR doctor was removed (2026-10-31); 'pr' was its follow-up
   -- review's kind, with the PR number in `issue_number`. Issue-shaped readers still filter on
   -- it, so a hand-written 'pr' row can never be counted as an issue run.
-  target_kind   TEXT NOT NULL DEFAULT 'issue'
+  target_kind   TEXT NOT NULL DEFAULT 'issue',
+  -- A `ralph` run's Task list counted by `source`, as JSON. Written by the live run
+  -- probe (`probe.py`), which is the only component allowed to read a sandbox. It is
+  -- carried on the lease for the same reason `workflow` is: the release copies it
+  -- into `run_history`, and by then the sandbox is stopped and must not be read.
+  task_sources  TEXT                   -- JSON object: a Task's source -> count
 );
 
 -- The box that last ran each repo, kept after its lease is gone. Rewritten on
@@ -255,7 +260,10 @@ CREATE TABLE IF NOT EXISTS run_history (
   had_pack         INTEGER,     -- 0 | 1: a context pack was posted before dispatch (08, D21)
   pack_run         TEXT,        -- that pack's run id
   precheck_verdict TEXT,        -- the precheck's verdict before dispatch, or NULL
-  had_orientation  INTEGER      -- 0 | 1: a repository orientation was written before dispatch (10)
+  had_orientation  INTEGER,     -- 0 | 1: a repository orientation was written before dispatch (10)
+  -- Copied off the lease at release, exactly as `workflow` is. NULL on a run released
+  -- before the column existed, and on a run whose probe never saw a `tasks.json`.
+  task_sources     TEXT         -- JSON object: a Task's source -> count, from the probe
 );
 
 -- Issue #22, the scorecard. Five tables the collector fills after a run is released
@@ -398,6 +406,9 @@ RUN_HISTORY_COLUMNS = {
     # dispatched. Same shape as `had_pack`, and Phase 4 compares credits per `decompose` visit
     # with and without it. NULL on a row written before, and on a PR run.
     "had_orientation": "had_orientation INTEGER",
+    # The probe's Task-source counts, copied off the lease at release. NULL on a row
+    # written before it, which the scorecard reads as "not measured".
+    "task_sources": "task_sources TEXT",
 }
 
 # The same, for the scorecard tables: the plan trial (#25) added per-stage tokens and
@@ -414,6 +425,9 @@ ADDED_COLUMNS = {
         # lane can judge a lease that outlived a scheduler restart; NULL on a lease from
         # an older row, which the lane reads as "no box stages known".
         "box_stages": "box_stages TEXT",
+        # The probe's Task-source counts as JSON. An older lease has none, which the
+        # release records as NULL rather than as an empty Task list.
+        "task_sources": "task_sources TEXT",
         # more-local-inference 06: 'issue' or 'pr'. An older lease is an issue lease.
         "target_kind": "target_kind TEXT NOT NULL DEFAULT 'issue'",
     },
@@ -698,7 +712,8 @@ class Store:
         with self._lock:
             return self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since, workflow, box_stages, target_kind FROM leases ORDER BY coder_pool"
+                "queued_since, workflow, box_stages, target_kind, task_sources "
+                "FROM leases ORDER BY coder_pool"
             ).fetchall()
 
     def history_rows(
@@ -1025,6 +1040,20 @@ class Store:
                 (repo, attempted_at.isoformat(), error),
             )
 
+    def save_lease_task_sources(self, run_id: str, sources: str) -> int:
+        """Store the probe's Task-source counts on the live lease. Rows changed.
+
+        An UPDATE only, never an insert: a lease that is already gone has had its
+        `run_history` row written without these counts, and re-inserting a lease to
+        catch the value would hand a box to nobody. The caller re-reads on the next
+        beat, so the row simply keeps the earlier value.
+        """
+        with self._lock, self._conn:
+            return self._conn.execute(
+                "UPDATE leases SET task_sources = ? WHERE run_id = ?",
+                (sources, run_id),
+            ).rowcount
+
     def release_lease(self, run_id: str) -> sqlite3.Row | None:
         """Drop the lease for `run_id`, returning the row it held (or `None`).
 
@@ -1038,7 +1067,7 @@ class Store:
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since, workflow, box_stages, target_kind FROM leases WHERE run_id = ?",
+                "queued_since, workflow, box_stages, target_kind, task_sources FROM leases WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if row is None:
@@ -1068,7 +1097,7 @@ class Store:
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT coder_pool, repo, issue_number, run_id, dispatched_at, "
-                "queued_since, workflow, box_stages, target_kind FROM leases WHERE run_id = ?",
+                "queued_since, workflow, box_stages, target_kind, task_sources FROM leases WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if row is None:
@@ -1086,8 +1115,8 @@ class Store:
                 "  kind, reason, category, requeue_attempt, pr_lookup, pr_number,"
                 "  pr_url, merged, local_tokens, hosted_tokens,"
                 "  local_cost_usd_micros, hosted_cost_usd_micros, workflow, target_kind,"
-                "  had_pack, pack_run, precheck_verdict, had_orientation"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "  had_pack, pack_run, precheck_verdict, had_orientation, task_sources"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO NOTHING",
                 (
                     row["run_id"],
@@ -1115,6 +1144,7 @@ class Store:
                     row["workflow"],
                     row["target_kind"],
                     *background,
+                    row["task_sources"],
                 ),
             )
             self._conn.execute("DELETE FROM leases WHERE run_id = ?", (run_id,))
@@ -1630,6 +1660,35 @@ class Store:
         if row is None:
             return "backlog"
         return row["workflow"] or "backlog"
+
+    def history_task_sources(self, run_id: str) -> dict[str, int]:
+        """The Task-source counts the live probe recorded for a released run.
+
+        `{}` when there are none — a run released before the column existed, one the
+        probe never reached, or one whose graph wrote no `tasks.json`. Callers render
+        that as "not measured", never as a Task list of zero.
+
+        Read here rather than from the sandbox because a terminal run's sandbox is
+        stopped, and fabro answers a file read by starting the container again.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT task_sources FROM run_history WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        raw = row["task_sources"] if row is not None else None
+        if not isinstance(raw, str) or not raw.strip():
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {
+            str(k): int(v)
+            for k, v in parsed.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
 
     def save_run_summary(self, summary: RunSummary, *, at: datetime | None = None) -> None:
         """Replace one run's summary rows, in one transaction."""

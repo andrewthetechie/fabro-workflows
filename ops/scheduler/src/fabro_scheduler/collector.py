@@ -20,11 +20,14 @@ Each tick does a little of two jobs:
 * **Read model usage.** A summarized run's `GET /runs/{id}/usage` is read once and
   its `by_model` rows stored for the Metrics tab's "Tokens by model" table. One
   small GET per run, so a deploy backfills history in a few ticks.
+
+It never reads a run's **sandbox**. Fabro starts a stopped sandbox to serve a file
+read and nothing stops it afterwards, so a read here leaks a running container per
+run — see `probe.py`, which is the only reader and reads live runs only.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from collections import Counter
@@ -96,29 +99,19 @@ class ScorecardCollector:
         self._thread: threading.Thread | None = None
 
     def _task_sources(self, run_id: str) -> Counter[str]:
-        """A `ralph` run's Task list counted by `source`. Never raises.
+        """A `ralph` run's Task list counted by `source`, from the release's copy.
 
-        The summary is worth having even when this read fails, so a 404 (the sandbox
-        is gone), a malformed body or a run whose graph wrote no `tasks.json` all
-        return an empty Counter.
+        Read out of `run_history`, **never out of the sandbox**: this loop runs on
+        released runs, and fabro answers a file read on a stopped sandbox by starting
+        the container again with nothing left to stop it — which is how 34 succeeded
+        `ralph` runs ended 2026-11-11 with live sandboxes days old. The live probe has
+        already counted the same file; `probe.py` owns why it must be the one.
+
+        A run released before the probe recorded it, or one whose graph wrote no
+        `tasks.json`, has nothing stored: the empty Counter here is what the scorecard
+        renders as "not measured" rather than zero.
         """
-        try:
-            raw = self._fabro.read_sandbox_file(run_id, "/tmp/fabro/tasks.json")
-        except FabroError:
-            return Counter()
-        if not raw:
-            return Counter()
-        try:
-            tasks = json.loads(raw)
-        except ValueError:
-            return Counter()
-        if not isinstance(tasks, list):
-            return Counter()
-        return Counter(
-            str(task.get("source") or "unknown")
-            for task in tasks
-            if isinstance(task, Mapping)
-        )
+        return Counter(self._store.history_task_sources(run_id))
 
     def tick(self) -> CollectReport:
         """One pass of both jobs. Errors per run or PR are recorded, not raised."""
@@ -138,10 +131,12 @@ class ScorecardCollector:
                     workflow=workflow,
                 )
                 if workflow == "ralph":
-                    # C12: the Tasks by `source` line needs the Task list, which only
-                    # the run has. One read at summary time, as the probe does; a
-                    # missing file or an older graph leaves the counts empty, which
-                    # the scorecard renders as "not measured" rather than zero.
+                    # C12: the Tasks by `source` line needs the Task list. The collector
+                    # takes it from the copy the live probe stored on the lease and the
+                    # release carried here — it never reads the run's sandbox, because
+                    # reading a stopped one starts it again (see `_task_sources`). A run
+                    # the probe never recorded leaves the counts empty, which the
+                    # scorecard renders as "not measured" rather than zero.
                     summary.task_sources = self._task_sources(run_id)
             except FabroError as exc:
                 status = "missing" if exc.status_code == 404 else "error"

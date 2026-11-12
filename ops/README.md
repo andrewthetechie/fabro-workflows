@@ -17,8 +17,8 @@ locations instead.
 |---|---|
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). 0.362 no longer creates `fabro/meta/*`; it still sweeps the ones earlier versions left. Deterministic; see its header comments. |
 | `fabro-run-prune.sh` | Archives every `succeeded` `merge-queue` run, then deletes `merge-queue` runs older than 7 days with `fabro system prune --workflow merge-queue` (daily cron; ADR 0024 D8). The merge queue makes 288 runs a day and nothing else deletes them; archiving keeps them out of the run listing the fabro UI pages through. Dry run unless `DRY_RUN=0`. |
-| `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (hourly cron): the normal rule is a grace, and disk pressure overrides it, reaping oldest first until the root filesystem drops below a target (issue #50). Deterministic; see its header comments. |
-| `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
+| `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (hourly cron): the normal rule is a grace, and disk pressure overrides it, reaping oldest first until the root filesystem drops below a target (issue #50). A RUNNING one is left alone unless it is older than `MAX_RUNNING_HOURS` (36) — past that it is a sandbox fabro restarted for a file read and nobody stopped again, so it is stopped, removed, and `WARN`ed about. Deterministic; see its header comments. |
+| `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure, and a running sandbox whose run already ended (C9 — fabro starts a stopped sandbox to serve a file read) — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
 | `fabro-retro.sh` | The weekly **retro** (Monday 12:00 UTC cron, issue #33 / ADR 0026): runs `python -m fabro_scheduler retro --last-week` in the scheduler container over the previous ISO week of `backlog` runs, files at most 3 issues a week in `andrewthetechie/fabro-workflows` for new **failure classes**, comments on known ones, and posts the scorecard summary plus the class totals to Discord. `DRY_RUN=1` by default: a dry run reads GitHub and posts the message but writes no issue, which is how the operator reviews it before going live. Contract: `../docs/factory-retro/00-overview-and-contracts.md`, `../docs/adr/0026-weekly-retro-files-issues.md`. |
 | `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
 | `fabro-export-runs.sh` | Mac tool (not deployed; `make deploy` does not copy it). Lists the `backlog` runs created in a window (`--since`, `--until`, `--workflow`, `--status`), pages `GET /runs` on the host, and exports each run's `fabro events <id> --json` to `OUTDIR/<id>.jsonl`, with `index.tsv` (run, created, workflow, repo, status, issue, workflow_sha). A failed run leaves `<id>.err` and the rest go on. Reads the token on the host. Refuses an `OUTDIR` inside a git work tree, because event files hold issue text. Tests: `tests/test_fabro_export_runs.py`. |
@@ -1694,13 +1694,16 @@ once per container.
 millisecond. The one still `Up` had stopped correctly at 15:19:11 on 2026-09-15 and was
 started again **by hand** at 16:51:35 the same day, during the debugging session on the
 run that exposed the pr-review reporting bug — `RestartPolicy=no`, `RestartCount=0`, so
-Docker did not do it. There was no leak in fabro; there was a janitor missing from this
-tree.
+Docker did not do it. There was no leak in fabro's stop path; there was a janitor missing
+from this tree. That reading was right about fabro and wrong about the containers: a
+running sandbox of a finished run turned out to be real after all, and this tree was the
+one starting them. See *Resurrected sandboxes* below.
 
-`fabro-sandbox-sweep.sh` is that janitor. It never touches a running container, by
-design: it is either an in-flight run or a sandbox someone deliberately restarted to
-look inside, and killing the second one silently is worse than leaving it. It reports
-and moves on.
+`fabro-sandbox-sweep.sh` is that janitor. A **running** container it leaves alone unless
+it is older than `MAX_RUNNING_HOURS`: it is either an in-flight run or a sandbox someone
+deliberately restarted to look inside, and killing the second one silently is worse than
+leaving it. Under the limit it reports and moves on; past it, it is the resurrection
+below, and the sweep stops the container, removes it, and says so with a `WARN`.
 
 A fixed grace alone could not protect this disk. On 2026-10-19 `/` filled: 383 stopped
 sandboxes held 724 GB reclaimable, 778 GB of it in writers-app `backlog` sandboxes at
@@ -1720,16 +1723,55 @@ is told it could not.
 `/storage/scratch` inside the server container accumulates the same way — 178
 directories, 9.6 MB. Left alone: at that rate it is not worth a script.
 
+### Resurrected sandboxes — a read starts a stopped container, and nothing stops it twice
+
+**`GET /runs/{id}/sandbox/file` on a STOPPED sandbox starts it again** (docker provider,
+0.362.0-nightly.0, verified 2026-11-11 — even when the read 404s). A live run stops its
+own sandbox, so a read that lands after the terminal state leaves a container `Up` with no
+worker left to stop it. Nothing then removes it: the sweep's rule 2 kept every one.
+
+Twice, from this tree:
+
+* **2026-09-26 → 10-01, the run probe.** A lease outlives its run by up to one reconcile
+  poll, and a beat landing in that window read `/tmp/fabro/tasks.json`. 14 succeeded runs
+  held running containers for days — each restarted 0.3–11 s after fabro stopped it.
+  Fixed by `aeb94e4`: `probe.py` reads the run's status kind first and skips both file
+  reads once it is terminal.
+* **2026-10-21 → 11-11, the scorecard collector.** `de3b2a7` added `_task_sources`, which
+  reads the same `tasks.json` — and `collector.py` summarizes **released** runs by design,
+  so it read every one of them. Not the probe's window: the collector's own 2-minute
+  `SETTLE`. 34 succeeded `ralph` runs on 2026-11-11 alone were sitting on live containers
+  0.3–41 h old; 112 containers and 82% of `/` before a human reaped them by hand. Fixed
+  by moving the read to the live probe, which stores the counts on the lease and carries
+  them into `run_history.task_sources` at release. Twice is the rule: **`probe.py` is now
+  the only reader of a sandbox in this service** — see the row in `invariants-host.md`.
+
+Two defences so a third repeat is loud instead of geological:
+
+* **C9 `leaked-sandbox`** in `fabro-monitor.sh` — a running `fabro-run-*` container whose
+  run is terminal, checked every 15 minutes against the live-run list C4 already fetched.
+  That is day one of a leak, not day three of a full disk.
+* **`MAX_RUNNING_HOURS` (36)** in the sweep — a running sandbox older than that is stopped
+  and removed with a `WARN`. 36 h is above the longest run ever measured here (17.2 h, a
+  `ralph` run, over 800 recent runs; p99 14.5 h), so it cannot cut a real run off; under
+  disk pressure the limit tightens to `PRESSURE_RUNNING_HOURS` (24).
+
+The age rule is deliberately blunt — an age, not a run lookup — so the sweep still reads
+nothing from the fabro API and needs no token. Making it ask *"is this run terminal?"* is
+the obvious upgrade for whoever wants it.
+
 ```sh
 DRY_RUN=1 ~/bin/fabro-sandbox-sweep.sh                 # default: dry run, 24h grace
 DRY_RUN=0 ~/bin/fabro-sandbox-sweep.sh                 # remove
 DRY_RUN=0 GRACE_HOURS=168 ~/bin/fabro-sandbox-sweep.sh # keep a week of post-mortems
 DRY_RUN=1 PRESSURE_PCT=60 TARGET_PCT=50 ~/bin/fabro-sandbox-sweep.sh  # earlier pressure
+DRY_RUN=1 MAX_RUNNING_HOURS=6 ~/bin/fabro-sandbox-sweep.sh  # exercise rule 2 (can kill a live run)
 ```
 
-The dry run names the rule that would remove each container — `(grace)`, `(big)` or
-`(pressure)` — and its summary reports the bytes it would free and the `df` use before and
-simulated after. A real pass reports the same, with `df` re-read after the last removal.
+The dry run names the rule that would remove each container — `(grace)`, `(big)`,
+`(pressure)` or `(stale-running)` — and its summary reports the bytes it would free and the
+`df` use before and simulated after. A real pass reports the same, with `df` re-read after
+the last removal.
 
 Skip rules (mechanical, no judgment): the name must be exactly
 `fabro-run-<26-char ULID>`, which is what keeps `fabro-fabro-1` and this host's

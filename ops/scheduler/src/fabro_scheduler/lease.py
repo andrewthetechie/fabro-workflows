@@ -113,6 +113,18 @@ class LeaseStore:
             _lease_from_row(row) for row in self._store.lease_rows()
         ]
 
+    def set_task_sources(self, run_id: str, sources: Mapping[str, int]) -> bool:
+        """Persist the live Task-source counts on this run's lease. `False` if unleased.
+
+        The probe is the only writer, and it writes while the run is live — which is
+        the only moment a sandbox may be read at all. The release copies the value to
+        `run_history`, so the collector gets the same number without a second read.
+        """
+        stored = self._store.save_lease_task_sources(
+            run_id, json.dumps(dict(sources), sort_keys=True)
+        )
+        return stored > 0
+
     def release(self, run_id: str) -> Lease | None:
         """Drop the lease for `run_id`, returning it (or `None` if it was absent).
 

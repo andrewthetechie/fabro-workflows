@@ -32,6 +32,9 @@ def test_run_history_table_has_every_column(store):
         "had_pack", "pack_run", "precheck_verdict",
         # more-local-inference 10: whether the repository had an orientation map at dispatch.
         "had_orientation",
+        # The live probe's Task-source counts, copied from the lease on release so the
+        # scorecard never has to read the run's (stopped) sandbox.
+        "task_sources",
     ]
     not_null = {r["name"] for r in rows if r["notnull"]}
     # `requeue_attempt` is `NOT NULL DEFAULT 0` in the canonical schema block, so
@@ -578,9 +581,19 @@ def test_an_old_database_upgrades_and_its_rows_read_as_issue_rows(tmp_path):
             row["name"] for row in upgraded._conn.execute("PRAGMA table_info(leases)")
         }
         assert "target_kind" in columns
+        # The probe's Task-source counts arrive the same way, on both tables: the host's
+        # `scheduler-data` database is old and holds neither column.
+        assert "task_sources" in columns
+        assert "task_sources" in {
+            row["name"] for row in upgraded._conn.execute("PRAGMA table_info(run_history)")
+        }
         lease = upgraded.lease_rows()[0]
         assert lease["target_kind"] == "issue", "an older lease is an issue lease"
+        assert lease["task_sources"] is None
         history = upgraded.history_rows()[0]
+        # A run released before the column existed reads as "not measured", never as a
+        # Task list of zero -- and the collector asks the question this way.
+        assert upgraded.history_task_sources("RUN0") == {}
         assert history["target_kind"] == "issue"
         facts = upgraded._conn.execute(
             "SELECT * FROM pr_facts WHERE repo = 'o/r' AND pr_number = 7"

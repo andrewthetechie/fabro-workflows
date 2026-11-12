@@ -162,8 +162,13 @@ case "$1" in
     if [ "$2" = "--size" ]; then
       printf '%s\\n' "$(printf '%s' "$line" | cut -d'|' -f4)"
     else
-      printf '%s %s\\n' "$(printf '%s' "$line" | cut -d'|' -f2)" "$(printf '%s' "$line" | cut -d'|' -f3)"
+      printf '%s %s %s\\n' "$(printf '%s' "$line" | cut -d'|' -f2)" "$(printf '%s' "$line" | cut -d'|' -f3)" "$(printf '%s' "$line" | cut -d'|' -f5)"
     fi ;;
+  stop)
+    # `docker stop -t <n> <name>`: the container is the last argument.
+    shift
+    while [ "$#" -gt 1 ]; do shift; done
+    printf '%s\\n' "$1" >> "$SW_STOP" ;;
   rm)
     name=$2
     printf '%s\\n' "$name" >> "$SW_RM"
@@ -201,7 +206,12 @@ def _run_name(last):
 
 
 class Sweep:
-    """A stubbed docker host: containers as name|running|finished|size_in_bytes."""
+    """A stubbed docker host: containers as name|running|finished|size|started.
+
+    `started` is the fifth field and the one an existing row may leave out: an empty it
+    is an inspect that gives no StartedAt, which the sweep must read as "cannot judge,
+    leave the running container alone".
+    """
 
     def __init__(self, tmp_path, rows, pct=50, steps=(), total_kb=1000000):
         sw = self.sw = tmp_path / "sweep"
@@ -210,14 +220,17 @@ class Sweep:
         write(sw / "pct", f"{pct}\n")
         write(sw / "steps", "".join(f"{s}\n" for s in steps))
         self.rm = write(sw / "rm.log", "")
+        self.stop = write(sw / "stop.log", "")
         stub(sw / "bin", "docker", SWEEP_DOCKER)
         stub(sw / "bin", "df", SWEEP_DF)
         stub(sw / "bin", "date", SWEEP_DATE)
 
     def run(self, **env):
         write(self.rm, "")
+        write(self.stop, "")
         return sh(REPO_ROOT / "ops/fabro-sandbox-sweep.sh", path=f"{self.sw / 'bin'}:{ORIG_PATH}",
                   env={"SW_CONTAINERS": self.sw / "containers", "SW_RM": self.rm,
+                       "SW_STOP": self.stop,
                        "SW_DF": self.sw / "pct", "SW_DF_STEPS": self.sw / "steps",
                        "SW_TOTAL": self.total_kb, "DRY_RUN": "0", "GRACE_HOURS": "24", "BIG_GB": "5",
                        "BIG_GRACE_HOURS": "2", "PRESSURE_PCT": "70",
@@ -305,6 +318,92 @@ def test_fabro_sandbox_sweep_pressure(ck, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# fabro-sandbox-sweep.sh, rule 2 (the 2026-11-11 leak): a sandbox that is still RUNNING
+# is not necessarily a live run. Fabro starts a stopped sandbox to serve a file read and
+# nothing stops it again, so 34 succeeded runs were sitting on containers days old while
+# the sweep reported `keep ... (still running)` for every one. A running container past
+# MAX_RUNNING_HOURS is therefore reaped -- and only past it, because killing the sandbox
+# of a run in flight would kill the run.
+# ---------------------------------------------------------------------------
+def test_fabro_sandbox_sweep_stale_running(ck, tmp_path):
+    gb = 1024 ** 3
+    ancient, recent, nosource = _run_name("C"), _run_name("D"), _run_name("E")
+    between = _run_name("F")  # 30h: past the pressure limit, inside the normal one
+    s = Sweep(tmp_path / "stale", [
+        (ancient, "true", _iso_ago(40 * 3600), 4 * gb, _iso_ago(40 * 3600)),
+        (recent, "true", _iso_ago(2 * 3600), gb, _iso_ago(2 * 3600)),
+        (nosource, "true", _iso_ago(40 * 3600), gb, ""),
+        (between, "true", _iso_ago(30 * 3600), gb, _iso_ago(30 * 3600)),
+        ("fabro-fabro-1", "true", _iso_ago(90 * 86400), gb, _iso_ago(90 * 86400)),
+    ], pct=50)
+    r = s.run()
+
+    ck("sweep rule 2: a running sandbox 40h old is removed as stale-running", "1",
+       count(f"^{ancient}$", file=s.rm))
+    ck("sweep rule 2: it is stopped before it is removed", "1", count(f"^{ancient}$", file=s.stop))
+    ck("sweep rule 2: a 2h running sandbox is a live run and is kept", "0", count(f"^{recent}$", file=s.rm))
+    ck("sweep rule 2: a running sandbox with no StartedAt is left alone", "0", count(f"^{nosource}$", file=s.rm))
+    ck("sweep rule 2: 30h is inside the 36h limit when the disk is not in pressure", "0",
+       count(f"^{between}$", file=s.rm))
+    ck("sweep rule 2: fabro-fabro-1 is never touched even running for 90 days", "0",
+       count("fabro-fabro-1", file=s.rm))
+    ck("sweep rule 2: the pass names the resurrection, not just the removal", "1",
+       count("something is restarting stopped sandboxes", r.out))
+    ck("sweep rule 2: the summary counts the stale removals", "1", count("stale 1)", r.out))
+    ck("sweep rule 2: a stale removal says which rule took it", "1", count("(stale-running)", r.out))
+
+    # The same container at 26h is garbage once the disk is hot, and the removal is what
+    # brings the disk back under the target.
+    hot = _run_name("G")
+    s = Sweep(tmp_path / "stale-pressure", [(hot, "true", _iso_ago(26 * 3600), 40 * gb, _iso_ago(26 * 3600))],
+              pct=80, steps=(55,), total_kb=100000000)
+    r = s.run()
+    ck("sweep rule 2 under pressure: the tighter limit reaps a 26h sandbox", "1", count(f"^{hot}$", file=s.rm))
+    ck("sweep rule 2 under pressure: reaching the target still exits 0", "0", r.rc)
+    ck("sweep rule 2 under pressure: the note says pressure came off", "1", count("pressure off", r.out))
+
+    # A dry run reports it and touches nothing.
+    s = Sweep(tmp_path / "stale-dry", [(ancient, "true", _iso_ago(40 * 3600), 4 * gb, _iso_ago(40 * 3600))],
+              pct=50)
+    r = s.run(DRY_RUN="1")
+    ck("sweep rule 2 dry run: nothing is removed", "0", count(f"^{ancient}$", file=s.rm))
+    ck("sweep rule 2 dry run: nothing is stopped", "0", count(f"^{ancient}$", file=s.stop))
+    ck("sweep rule 2 dry run: the plan names the rule", "1",
+       count(f"^DRY   {ancient} (running since .* would be removed (stale-running)", r.out))
+
+
+# ---------------------------------------------------------------------------
+# fabro-monitor.sh, C9 (the 2026-11-11 leak): a RUNNING `fabro-run-*` container whose run
+# is already terminal. Fabro starts a stopped sandbox to serve a `sandbox/file` read, and a
+# finished run has no worker left to stop it again — so 112 of these accumulated while the
+# sweep reported `keep ... (still running)` for every one. C9 is the day-one alarm; the
+# sweep's MAX_RUNNING_HOURS rule is the backstop.
+# ---------------------------------------------------------------------------
+def test_fabro_monitor_c9_leaked_sandbox(ck, tmp_path):
+    m = Monitor(tmp_path)
+    live = "fabro-run-" + m.ulid(3600)          # its run is still running
+    leaked = "fabro-run-" + m.ulid(90 * 3600)   # its run ended 90 hours ago
+    fresh = "fabro-run-" + m.ulid(30)           # dispatched after C4's snapshot was taken
+    m.page("active.json", [m.row(live[10:], "ralph", "running", m.ago(3600))])
+    m.page("newest.json", [m.row(live[10:], "ralph", "succeeded", m.ago(60))])
+    write(m.MM / "ps", f"{live}\n{leaked}\n{fresh}\nnot-fabro-1\nfabro-fabro-1\n")
+
+    out = m.run()
+    ck("monitor C9: a running sandbox of a terminal run is a leak", "1", count("leaked-sandbox", file=out))
+    ck("monitor C9: the alert names the leaked run", "1", count(leaked[10:], file=out))
+    ck("monitor C9: a sandbox of a live run is not reported", "0", count(live[10:], file=out))
+    ck("monitor C9: a sandbox younger than the grace window is not reported", "0", count(fresh[10:], file=out))
+    ck("monitor C9: it counts itself, not the whole host", "1", count("1 of 3 running", file=out))
+
+    # Nothing leaked: the ok line, and no alert.
+    write(m.MM / "ps", f"{live}\n")
+    out = m.run()
+    ck("monitor C9: all running sandboxes belonging to live runs is ok", "1",
+       count("C9 leaked-sandbox: all 1 running sandboxes belong to live runs", file=out))
+    ck("monitor C9: nothing fires when nothing leaked", "0", count("leaked-sandbox —", file=out))
+
+
+# ---------------------------------------------------------------------------
 # fabro-monitor.sh: C3/C4 (task 08) -- merge-queue runs neither hide a stuck run nor reset
 # the idle clock -- and C3/C8 with drained pools (2026-10-20). docker, curl, df and gh are
 # stubs. Only the DRY_RUN output is read.
@@ -337,12 +436,30 @@ else exec /bin/date "$@"; fi
 class Monitor:
     def __init__(self, tmp_path):
         self.MM = MM = tmp_path / "monitor"
-        stub(MM / "bin", "docker", '#!/bin/sh\ncase "$*" in\n  "inspect "*) echo "running healthy" ;;\n  "exec "*"server.dev-token") echo tok ;;\n  *) exit 0 ;;\nesac\n')
+        # `ps` answers from $MM_PS when a test wrote it, and with nothing otherwise, so
+        # the conditions that predate C9 see the host they always saw (no sandboxes).
+        stub(MM / "bin", "docker", '#!/bin/sh\ncase "$*" in\n  "inspect "*) echo "running healthy" ;;\n  "exec "*"server.dev-token") echo tok ;;\n  "ps "*) if [ -f "$MM_PS" ]; then cat "$MM_PS"; fi ;;\n  *) exit 0 ;;\nesac\n')
         stub(MM / "bin", "curl", MONITOR_CURL)
         stub(MM / "bin", "date", MONITOR_DATE)
         stub(MM / "bin", "df", '#!/bin/sh\necho "Filesystem 1K Used Avail Use% Mounted\n/dev/x 100 10 90 10% /"\n')
         stub(MM / "bin", "gh", "#!/bin/sh\nexit 1\n")
         write(MM / "autos.json", '{"data":[{"name":"backlog-x","workflow":"backlog","triggers":[{"type":"schedule","id":"s","enabled":true}]}]}')
+        write(MM / "ps", "")
+
+    @staticmethod
+    def ulid(seconds_ago=0):
+        """A 26-char ULID whose first 10 chars encode `now - seconds_ago`, as fabro's do.
+
+        C9 reads a container's age out of its run id rather than out of Docker, so a
+        test that wants "this sandbox was created a minute ago" has to say so in the id.
+        """
+        alpha = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+        ms = int(time.time() * 1000) - seconds_ago * 1000
+        out = ""
+        for _ in range(10):
+            out = alpha[ms % 32] + out
+            ms //= 32
+        return out + alpha[1] * 16
 
     @staticmethod
     def ago(seconds):
@@ -363,7 +480,7 @@ class Monitor:
         run_files(["sh", REPO_ROOT / "ops/fabro-monitor.sh"], MM / "mon", path=f"{MM / 'bin'}:{ORIG_PATH}",
                   env={"MM_AUTOS": MM / "autos.json", "MM_ACTIVE": MM / "active.json", "MM_NEWEST": MM / "newest.json",
                        "MM_POOLS": MM / "pools.json", "MM_QUEUE": MM / "queue.json", "WEDGE_MINUTES": wedge,
-                       "MM_DISK": MM / "disk.json",
+                       "MM_DISK": MM / "disk.json", "MM_PS": MM / "ps",
                        "DRY_RUN": "1", "FABRO_MONITOR_STATE": MM / "state", "FABRO_MONITOR_REPOS": "",
                        "SCHEDULER_URL": "http://127.0.0.1:1"})
         return MM / "mon.out"
