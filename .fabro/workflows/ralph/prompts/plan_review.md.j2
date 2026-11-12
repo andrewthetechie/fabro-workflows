@@ -66,17 +66,26 @@ Done when every new thing the plan creates has had one search.
   edge the issue leaves silent).
 - **Verification**: the tests and commands in each Task, and `checks.json`, can fail when the
   work is wrong. Read `.fabro/ci.sh` to see what the gate runs.
+- **Delivery**: every path the plan changes is one this run can push. The run's token cannot
+  push a commit that touches `.github/workflows/`, so a branch that edits a file there never
+  becomes a pull request.
 
-Done when every criterion is mapped, every cited path is opened, and every Task is checked
-for open decisions.
+Done when every criterion is mapped, every cited path is opened, every Task is checked for
+open decisions, and every changed path is checked for delivery.
 
 ## Severity
 
-`error` is reserved for a plan that, as written, would do one of three things:
+`error` is reserved for a plan that, as written, would do one of four things:
 
 1. miss an acceptance criterion;
-2. cite a path, symbol or range that does not exist;
-3. need a design decision from the coder that it does not state.
+2. cite a path, symbol, range or count that does not exist as written: a step the plan puts
+   in the wrong file, a test count that is off;
+3. need a design decision from the coder that it does not state;
+4. change a file under `.github/workflows/`.
+
+Grade by the list, not by the size of the fix. A wrong citation is an `error` even when the
+correction is one line and the rest of the plan stands: the coder trusts every citation, and
+the repair turn is where it gets corrected.
 
 Everything else is a `warning`: a preference, an alternative, a naming point, extra scope
 that harms nothing. Each `error` makes the planner spend a repair turn and the box spend
