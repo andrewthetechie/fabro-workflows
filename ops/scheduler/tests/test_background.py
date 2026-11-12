@@ -738,6 +738,142 @@ def test_box_noop_is_not_enqueued_when_its_kind_is_off(store, leases):
     assert lane_.enqueue_box_noop(JELLY, NOW) is None
 
 
+# --- the two-slot box (two-slot boxes D3) -------------------------------------------
+
+# Box 1 after the cutover: two pools, one strix-infer, one `/health` that says nothing about
+# which slot is free (F4). The lane therefore decides once for the pair.
+TWO_SLOTS = "coders-a=http://a.invalid/health,coders-b=http://a.invalid/health"
+
+
+def held_sibling(leases: LeaseStore, *, pool: str = "coders-b", run_id: str = "sibling") -> Lease:
+    """A coder loop leasing the box's other slot.
+
+    The test's `FakeFabro` says what stage that loop is in: the lease alone only names the
+    slot it holds.
+    """
+    return held_lease(leases, box=pool, issue=3, run_id=run_id)
+
+
+def test_a_sibling_in_a_box_stage_evicts_the_box_and_blocks_its_fill(store, leases):
+    """One loop on either slot has the box (D3, D17), and so evicts the background run —
+    here one whose job row still names the sibling pool, as every row does before the
+    cutover."""
+    job_id = enqueue(store)
+    held_sibling(leases)
+    running(store, job_id, run_id="bgrun", box="coders-b")
+    fabro = FakeFabro(stages={"sibling": [{"node_id": "coder", "status": "running"}]})
+    enqueue(store, target="next")
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}),
+                  config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+
+    evicted = lane_.evict(NOW)
+    assert [e.run_id for e in evicted] == ["bgrun"], "the sibling's loop evicts it"
+    assert [e.box for e in evicted] == ["coders-a"], "and the eviction names the box"
+    assert fabro.cancelled == ["bgrun"]
+    store.requeue_background_job(job_id, now=NOW)  # the cancel lands, so the job is queued again
+    assert lane_.fill(NOW) == [], "and the box gets no new background run"
+    assert fabro.dispatched == []
+
+
+def test_a_sibling_in_a_hosted_stage_leaves_the_box_to_the_lane(store, leases):
+    """The other slot is on a hosted stage, so the box is idle and the run starts — under
+    the box's first pool, whichever slot asked for it (D3)."""
+    held_sibling(leases)
+    fabro = FakeFabro(stages={"sibling": [{"node_id": "review", "status": "running"}]})
+    fabro.active = [{"id": "sibling"}]
+    enqueue(store, typical=5)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}),
+                  config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+
+    assert [start.box for start in lane_.fill(NOW)] == ["coders-a"]
+    assert fabro.dispatched[0]["coder_pool"] == "coders-a-bg"
+    assert fabro.dispatched[0]["labels"]["box"] == "coders-a"
+
+
+def test_two_leased_siblings_predict_the_minimum_gap(store, leases):
+    """D3: the gap is the minimum over the sibling loops, and a sibling with no lease adds
+    no bound. `review` predicts 12 minutes, `next_task` 6, so 6 is the box's gap."""
+    held_lease(leases, run_id="coderun")
+    held_sibling(leases)
+    fabro = FakeFabro(stages={
+        "coderun": [{"node_id": "review", "status": "running"}],
+        "sibling": [{"node_id": "next_task", "status": "running"}],
+    })
+    enqueue(store, typical=10)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}),
+                  config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+
+    assert lane_.fill(NOW) == [], "10 minutes of work does not fit the shorter loop's 6"
+    assert fabro.dispatched == []
+
+    leases.release("sibling")
+    started = lane_.fill(NOW)
+    assert [start.box for start in started] == ["coders-a"]
+    assert started[0].gap_minutes == 12, "with one loop left, its gap is the box's"
+
+
+def test_one_background_run_per_box_even_with_two_slots(store, leases):
+    """The lane fills a box once, not once per slot: `/health` cannot tell a free slot from a
+    busy one, so the second slot gets no second run."""
+    enqueue(store, typical=5)
+    enqueue(store, target="second", typical=5)
+    fabro = FakeFabro()
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}),
+                  config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+
+    assert len(lane_.fill(NOW)) == 1, "one run for the box, not one per pool"
+    assert lane_.fill(NOW) == []
+    assert len(fabro.dispatched) == 1
+
+
+def test_a_drained_sibling_keeps_the_whole_box_out_of_the_lane(store, leases):
+    """C7 never fills a drained box, and the slots are one box: draining either stops the lane."""
+    store.set_drained("coders-b", True)
+    enqueue(store, typical=5)
+    fabro = FakeFabro()
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}),
+                  config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+
+    assert lane_.fill(NOW) == []
+    assert [view.blocked_by for view in lane_.box_views(NOW)] == ["drained"]
+
+
+def test_the_lane_reads_one_health_url_per_box_per_tick(store, leases):
+    """Two pools, one strix-infer: the tick reads the URL once, under the box's first pool."""
+    held_lease(leases, run_id="coderun")
+    held_sibling(leases)
+    fabro = FakeFabro(stages={
+        "coderun": [{"node_id": "review", "status": "running"}],
+        "sibling": [{"node_id": "review", "status": "running"}],
+    })
+    fabro.active = [{"id": "coderun"}, {"id": "sibling"}]
+    # coders-b's entry is never read: if the lane still keyed a read by pool, it would take it.
+    health = CountingHealth({"coders-a": IDLE, "coders-b": BUSY})
+    lane_ = check(store, leases, fabro, health, config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+
+    lane_.tick(NOW)
+    assert health.calls == ["coders-a"], f"one read per URL, got {health.calls}"
+    assert [b["box"] for b in lane_.state(NOW)["boxes"]] == ["coders-a"], "one row per box"
+
+
+def test_the_page_names_a_two_slot_box_by_both_pools(store, leases):
+    """One row, named `coders-a+coders-b`; `box` stays the first pool for old readers."""
+    from fastapi.testclient import TestClient
+
+    from fabro_scheduler.app import build_app
+
+    fabro = FakeFabro()
+    cfg = config(SCHEDULER_BOX_HEALTH=TWO_SLOTS)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), cfg)
+    box = lane_.state(NOW)["boxes"][0]
+    assert box["box"] == "coders-a"
+    assert box["pools"] == ["coders-a", "coders-b"]
+    assert len(lane_.state(NOW)["boxes"]) == 1, "one row for the box"
+
+    with TestClient(build_app(cfg, store, fabro_client=fabro, background_lane=lane_)) as client:
+        assert "coders-a+coders-b" in client.get("/").text, "the strip names both slots"
+
+
 # --- the compose file (C7 step 3, D12) ---------------------------------------------
 
 

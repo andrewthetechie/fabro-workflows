@@ -137,12 +137,19 @@ def _mean(total: int, n: int) -> float | None:
 def box_use(
     history: Sequence[Any], stages: Sequence[Any], jobs: Sequence[Any], *, days: int
 ) -> dict[str, object]:
-    """Per box: the coder loop's box-stage minutes plus the lane's minutes, as a share of a day.
+    """Per coder pool: its box-stage minutes, plus the lane's minutes for the box it leads.
 
     `run_stage_stats.box_ms` is the part of a node's wall time spent on the run's coder pool, so
-    summing it over a window and dividing by `days * 24 h` is the box's busy share — the number
+    summing it over a window and dividing by `days * 24 h` is that pool's busy share — the number
     Phase 0 measured (32-48%) and Phase 3 compares. A background job's minutes are its row's
     `last_started_at` to `last_finished_at`, which the lane writes on every start and finish.
+
+    The rows are keyed by **pool**, and since the two-slot boxes a pool is a slot, not a box
+    (D1): a two-slot box's coder minutes sit on its two pool rows, and its one background run's
+    minutes on the row of the box's first pool, which is what the job records (D3). Before the
+    cutover a job recorded the pool it was dispatched under, so the first weeks after it show one
+    box's lane minutes on two rows. And `phase_0_busy_share_pct` is the box that pool's *name*
+    addressed in October, which after the cutover is not always the box the pool now shares.
     """
     pool_of = {row["run_id"]: str(row["coder_pool"]) for row in history}
     coder_ms: Counter[str] = Counter()
@@ -174,11 +181,13 @@ def box_use(
         }
     return {
         "window_days": days,
-        "unit": "box-stage minutes of 24 h per box, averaged over the window",
+        "unit": "box-stage minutes of 24 h per coder pool, averaged over the window",
         "note": (
             "the share is divided by the window's days, not by the days of history the store "
             "holds: on a store younger than the window every box reads low, so check `n` "
-            "against the window on the first measurement after a fresh deployment"
+            "against the window on the first measurement after a fresh deployment; and since "
+            "the two-slot boxes a box is two of these rows, whose background minutes all sit "
+            "on the first pool's, so read a box as its pair"
         ),
         "boxes": boxes,
     }

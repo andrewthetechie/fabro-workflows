@@ -260,7 +260,7 @@
     <tbody class="divide-y divide-slate-800">
       {% for box in background.boxes %}
       <tr>
-        <td class="whitespace-nowrap px-2 py-2 align-top font-medium text-slate-200">{{ box.box }}</td>
+        <td class="whitespace-nowrap px-2 py-2 align-top font-medium text-slate-200">{{ box.pools|join('+') if box.pools else box.box }}</td>
         <td class="whitespace-nowrap px-2 py-2 align-top">
           {% if box.running %}
             <span class="text-amber-300">{{ box.running.kind }}</span>

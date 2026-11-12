@@ -24,7 +24,10 @@ from fabro_scheduler.config import (
     DEFAULT_PORT,
     DEFAULT_STARVATION_CEILING_SECONDS,
     ConfigError,
+    box_siblings,
+    boxes,
     load_config,
+    parse_box_health,
 )
 
 TRACKED_REPOS = Path(__file__).resolve().parents[1] / "repos.toml"
@@ -529,6 +532,35 @@ def test_box_health_is_parsed_in_the_format_the_claim_hook_reads(tmp_path):
         "coders-a": "http://10.10.0.29:5300/health",
         "coders-b": "http://10.10.0.56:5300/health",
     }
+
+
+# The same three cases `ops/fabro-io/src/boxclaim.rs`'s `siblings` test uses: C1 is one
+# function in two languages, so its tests are too.
+
+def test_pools_sharing_one_health_url_are_one_box():
+    health = parse_box_health(
+        "coders-a=http://h/health,coders-b=http://h/health,coders-c=http://i/health"
+    )
+    assert box_siblings(health, "coders-a") == ["coders-a", "coders-b"]
+    assert box_siblings(health, "coders-b") == ["coders-a", "coders-b"]
+    assert box_siblings(health, "coders-c") == ["coders-c"], "a pool nobody shares is a box"
+
+
+def test_a_pool_the_variable_does_not_name_has_no_box():
+    health = parse_box_health("coders-a=http://h/health")
+    assert box_siblings(health, "coders-z") == []
+    assert box_siblings({}, "coders-a") == []
+
+
+def test_boxes_names_each_box_by_its_first_pool_and_orders_them_by_it():
+    health = parse_box_health(
+        "coders-c=http://i/health,coders-b=http://h/health,coders-a=http://h/health"
+    )
+    assert boxes(health) == [
+        ("coders-a", ["coders-a", "coders-b"]),
+        ("coders-c", ["coders-c"]),
+    ], "the variable's order is not the lane's: the first pool of each box names it (C2)"
+    assert boxes({}) == []
 
 
 def test_the_lane_knobs_read_and_reject_their_bounds(tmp_path):

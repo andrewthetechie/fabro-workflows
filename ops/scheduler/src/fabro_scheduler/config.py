@@ -329,6 +329,40 @@ def parse_box_health(raw: str) -> dict[str, str]:
     return pairs
 
 
+def box_siblings(box_health: Mapping[str, str], pool: str) -> list[str]:
+    """The pools that share `pool`'s health URL, `pool` included (two-slot boxes C1).
+
+    Two pools on one URL *is* the declaration that they are one box (D1), so this is the
+    scheduler's whole notion of a box and the same function `ops/fabro-io/src/boxclaim.rs`
+    implements in Rust. Values are compared as `parse_box_health` stored them, which is
+    already stripped. Sorted, and empty for a pool the map does not name; a pool nobody
+    shares is a one-slot box, which is the layout the lane shipped with.
+    """
+    url = box_health.get(pool)
+    if url is None:
+        return []
+    return sorted(other for other, other_url in box_health.items() if other_url == url)
+
+
+def boxes(box_health: Mapping[str, str]) -> list[tuple[str, list[str]]]:
+    """The lane's boxes as `(first pool, siblings)`, ordered by first pool (two-slot boxes C2).
+
+    The background lane iterates this instead of `box_health`'s keys, so it decides once per
+    box: one `/health` read per URL per tick, one background run per box (D3). The first
+    pool is the box's name and the pool its background run is dispatched under, so the
+    grouping is stable however the variable is ordered.
+    """
+    out: list[tuple[str, list[str]]] = []
+    seen: set[str] = set()
+    for pool in sorted(box_health):
+        if pool in seen:
+            continue
+        siblings = box_siblings(box_health, pool)
+        seen.update(siblings)
+        out.append((pool, siblings))
+    return out
+
+
 @dataclass(frozen=True)
 class RepoConfig:
     """One target repository."""

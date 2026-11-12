@@ -21,6 +21,13 @@ the box's own `coders-?-bg` model row, so they spend no hosted credits.
 background usage out of the coder accounting (C8). The one shared resource is the run
 cap, and `make_room` gives a coder-loop dispatch the slot it needs.
 
+**A box is the pools that share one `/health`** (two-slot boxes D1). `config.boxes` is the
+lane's iteration — one decision, one health read and one background run per box — and
+`config.box_siblings` is the only membership test, the same function `fabro-io`'s claim and
+guard implement in Rust (C1). A pool no other pool shares is a one-slot box, which is what
+every host value held before the cutover and what every test that does not name two pools on
+one URL still exercises.
+
 **Every decision is a pure function of state the caller hands in**, so a test drives a
 tick by hand with a fake fabro and a fake health client, exactly as
 `tests/test_dispatch.py` drives the primary loop.
@@ -37,7 +44,13 @@ from typing import Any
 
 import httpx
 
-from .config import BACKGROUND_JOB_PRIORITY, SchedulerConfig, predicted_gap_minutes
+from .config import (
+    BACKGROUND_JOB_PRIORITY,
+    SchedulerConfig,
+    box_siblings,
+    boxes,
+    predicted_gap_minutes,
+)
 from . import calibration, flaky, github, orientation, pack, precheck
 from .fabro import FabroClient, FabroError, RunNotStarted, status_kind, status_reason
 from .github import GitHubError
@@ -183,7 +196,11 @@ class BoxHealth:
 
 @dataclass(frozen=True)
 class Loop:
-    """What the coder loop on one box is doing, read fresh (C7 step 7)."""
+    """What one coder loop is doing on its box's slot, read fresh (C7 step 7).
+
+    A two-slot box has one `Loop` per leased slot (D3), and every question the lane asks is
+    asked of the list: "is any loop on a box stage", "what is the shortest gap".
+    """
 
     lease: Lease
     node: str | None
@@ -192,7 +209,10 @@ class Loop:
 
 @dataclass(frozen=True)
 class Eviction:
-    """One background run cancelled so a coder loop could have its box."""
+    """One background run cancelled so a coder loop could have its box.
+
+    `box` is the box's first pool, whichever sibling the run was dispatched under.
+    """
 
     box: str
     run_id: str
@@ -234,9 +254,14 @@ class LaneTick:
 
 @dataclass(frozen=True)
 class BoxView:
-    """Why a box is, or is not, filling — the page's *Background* strip (C7 step 14)."""
+    """Why a box is, or is not, filling — the page's *Background* strip (C7 step 14).
+
+    `box` is the box's first pool (C2), which is also the pool its background run is
+    dispatched under; `pools` names every slot that shares the box's one `/health`.
+    """
 
     box: str
+    pools: tuple[str, ...]
     running: Mapping[str, object] | None
     blocked_by: str | None
     health: Health | None
@@ -352,8 +377,9 @@ class BackgroundLane:
             else None
         )
         self._clock = clock
-        # The last `/health` reading per box, so the page reads a cache instead of the
-        # network. Refreshed by every `tick`, at most one interval old.
+        # The last `/health` reading per box, keyed by the box's first pool (C2) so a two-slot
+        # box is read once per tick, and the page reads a cache instead of the network.
+        # Refreshed by every `tick`, at most one interval old.
         self._readings: dict[str, Health] = {}
         # Today's evictions, for the strip's counter. Process-local on purpose: it is a
         # "what has happened since midnight" readout, not a record.
@@ -395,42 +421,59 @@ class BackgroundLane:
             )
         return LaneTick(ends=tuple(ends), evictions=tuple(evictions), starts=tuple(starts))
 
+    def _box_of(self, pool: str) -> str:
+        """The box `pool` belongs to, named by its first pool (C1, C2).
+
+        A reader that has a pool — a cache key, a job row, a lease — resolves it here, so a
+        sibling pool and the box it names are never two different things.
+        """
+        siblings = box_siblings(self._config.box_health, pool)
+        return siblings[0] if siblings else pool
+
     def _reading(self, box: str) -> Health | None:
         """The box's `/health`, from the last tick's cache or read now.
 
-        The cache is what the page renders, so a page load never waits on a box; a
-        `fill` driven by hand (a test, or a tick that skipped the refresh) reads directly
-        rather than treating a missing cache entry as "not idle".
+        Keyed by the box's first pool, because `/health` is box-wide: two slots on one URL is
+        one reading, not two (F4). The page renders this cache, so a page load never waits on
+        a box; a `fill` driven by hand (a test, or a tick that skipped the refresh) reads
+        directly rather than treating a missing cache entry as "not idle".
         """
-        reading = self._readings.get(box)
+        key = self._box_of(box)
+        reading = self._readings.get(key)
         if reading is not None:
             return reading
-        reading = self._health.read(box)
+        reading = self._health.read(key)
         if reading is not None:
-            self._readings[box] = reading
+            self._readings[key] = reading
         return reading
 
     def _refresh_health(self) -> None:
-        for box in self._config.box_health:
-            reading = self._health.read(box)
+        # One read per URL: iterating the boxes, not the pools, is what keeps a two-slot box
+        # from asking its one `/health` twice in a tick.
+        for first, _pools in boxes(self._config.box_health):
+            reading = self._health.read(first)
             if reading is not None:
-                self._readings[box] = reading
+                self._readings[first] = reading
 
     # --- eviction (D17 layer 2) -----------------------------------------------
 
     def evict(self, now: datetime | None = None) -> list[Eviction]:
-        """Cancel every background run on a box whose loop is *in* a box stage."""
+        """Cancel every background run on a box whose loop is *in* a box stage.
+
+        Per box, not per pool (D3, D5): a loop on either slot has the box, so it evicts a
+        background run dispatched under either, including one whose job row still names the
+        sibling pool from before the cutover.
+        """
         now = now or self._clock()
         evicted: list[Eviction] = []
         running = self._store.running_background_jobs()
         if not running:
             return evicted
-        for box in self._config.box_health:
-            on_box = [job for job in running if job["box"] == box]
+        for first, pools in boxes(self._config.box_health):
+            on_box = [job for job in running if self._box_of(str(job["box"])) == first]
             if not on_box:
                 continue
-            loop = self._loop_on(box)
-            if loop is None or not loop.on_box:
+            if not any(loop.on_box for loop in self._loops_on(pools)):
                 continue
             for job in on_box:
                 run_id = job["run_id"]
@@ -438,7 +481,7 @@ class BackgroundLane:
                     continue
                 if self._cancel(run_id, "the coder loop is in a box stage"):
                     eviction = Eviction(
-                        box=box,
+                        box=first,
                         run_id=run_id,
                         job_id=int(job["job_id"]),
                         kind=str(job["kind"]),
@@ -451,7 +494,12 @@ class BackgroundLane:
     # --- filling --------------------------------------------------------------
 
     def fill(self, now: datetime | None = None) -> list[JobStart]:
-        """Start at most one job per box, when all six C7 conditions hold."""
+        """Start at most one job per box, when all six C7 conditions hold.
+
+        One pass per **box**, not per pool (D3): the box's `/health` cannot tell a free slot
+        from a busy one, so the lane takes the conservative reading and fills a box only when
+        no sibling slot is drained, running a background job, or in a box stage.
+        """
         now = now or self._clock()
         if not self._config.background:
             return []
@@ -459,15 +507,17 @@ class BackgroundLane:
             return []
         free_slots = self._free_slots()
         starts: list[JobStart] = []
-        for box in self._config.box_health:
+        for box, pools in boxes(self._config.box_health):
             if free_slots < self._config.bg_slot_reserve:
                 return starts
-            if box in self._store.drained_pools():
+            drained = self._store.drained_pools()
+            if any(pool in drained for pool in pools):
                 continue
-            if any(job["box"] == box for job in self._store.running_background_jobs()):
+            running = self._store.running_background_jobs()
+            if any(self._box_of(str(job["box"])) == box for job in running):
                 continue
-            loop = self._loop_on(box)
-            blocked, gap = self._gap_minutes(box, loop)
+            loops = self._loops_on(pools)
+            blocked, gap = self._gap_minutes(loops)
             if blocked:
                 continue
             reading = self._reading(box)
@@ -498,28 +548,31 @@ class BackgroundLane:
             return 0
         return max(0, self._config.max_concurrent_runs - len(active))
 
-    def _gap_minutes(
-        self, box: str, loop: Loop | None
-    ) -> tuple[bool, float | None]:
-        """`(blocked, predicted remaining gap in minutes)` for `box`.
+    def _gap_minutes(self, loops: list[Loop]) -> tuple[bool, float | None]:
+        """`(blocked, predicted remaining gap in minutes)` for the box these loops are on.
 
-        `gap` is `None` when there is no coder loop at all: the whole box is free.
-        `blocked` means the box does not qualify this tick — the loop is between stages,
-        is in a box stage, or its box stages are unknown. A loop with no stage in
-        `running` does not qualify (D7), because the gap after it has not started yet.
+        `gap` is `None` when no sibling has a coder loop at all: the whole box is free. A
+        sibling with no lease adds no bound, so the estimate is the **minimum** over the
+        loops that do exist (D3). `blocked` means the box does not qualify this tick — some
+        loop is between stages, is in a box stage, or has unknown box stages. A loop with no
+        stage in `running` does not qualify (D7), because the gap after it has not started
+        yet, and a loop whose stage read failed is judged the same way.
         """
-        if loop is None:
+        if not loops:
             return False, None
-        if loop.node is None:
-            return True, None
-        if loop.on_box:
-            return True, None
-        if not loop.lease.box_stages:
-            # The manifest for this run's version is unknown, so no stage can be shown
-            # *not* to be a box stage. Fail closed: a background run inside a coder box
-            # stage is the one outcome the lane exists to prevent.
-            return True, None
-        return False, predicted_gap_minutes(loop.lease.workflow, loop.node)
+        gaps: list[float] = []
+        for loop in loops:
+            if loop.node is None:
+                return True, None
+            if loop.on_box:
+                return True, None
+            if not loop.lease.box_stages:
+                # The manifest for this run's version is unknown, so no stage can be shown
+                # *not* to be a box stage. Fail closed: a background run inside a coder box
+                # stage is the one outcome the lane exists to prevent.
+                return True, None
+            gaps.append(predicted_gap_minutes(loop.lease.workflow, loop.node))
+        return False, min(gaps)
 
     def _pick(self, gap: float | None):
         """The next job that fits `gap`: lowest priority, then oldest (C7, D9)."""
@@ -862,26 +915,37 @@ class BackgroundLane:
 
     # --- what the page and the API read ---------------------------------------
 
-    def _loop_on(self, box: str) -> Loop | None:
-        """The coder loop leasing `box`, with its stage read **fresh** (C7 step 7)."""
-        lease = next(
-            (held for held in self._leases.active() if held.coder_pool == box), None
-        )
-        if lease is None:
-            return None
-        if self._fabro is None:
-            return Loop(lease=lease, node=None, on_box=False)
-        try:
-            stages = self._fabro.get_stages(lease.run_id)
-        except FabroError as exc:
-            log.info("background: cannot read %s's stages (%s)", lease.run_id, exc)
-            return Loop(lease=lease, node=None, on_box=False)
-        node = running_node(stages)
-        return Loop(
-            lease=lease,
-            node=node,
-            on_box=is_box_stage(lease.box_stages, lease.issue_number, node),
-        )
+    def _loops_on(self, pools: list[str]) -> list[Loop]:
+        """The coder loops leasing any of the box's `pools`, each with its stage read **fresh**
+        (C7 step 7, D3).
+
+        One slot may be idle while the other runs, so this returns every loop the box has —
+        usually one, two on a box whose slots are both leased, and none when the box is free.
+        """
+        held = self._leases.active()
+        loops: list[Loop] = []
+        for pool in pools:
+            lease = next((h for h in held if h.coder_pool == pool), None)
+            if lease is None:
+                continue
+            if self._fabro is None:
+                loops.append(Loop(lease=lease, node=None, on_box=False))
+                continue
+            try:
+                stages = self._fabro.get_stages(lease.run_id)
+            except FabroError as exc:
+                log.info("background: cannot read %s's stages (%s)", lease.run_id, exc)
+                loops.append(Loop(lease=lease, node=None, on_box=False))
+                continue
+            node = running_node(stages)
+            loops.append(
+                Loop(
+                    lease=lease,
+                    node=node,
+                    on_box=is_box_stage(lease.box_stages, lease.issue_number, node),
+                )
+            )
+        return loops
 
     def evictions_today(self, now: datetime | None = None) -> int:
         now = now or self._clock()
@@ -894,45 +958,65 @@ class BackgroundLane:
     def box_views(self, now: datetime | None = None) -> list[BoxView]:
         """Per box: the running job, or the first reason nothing can start.
 
+        One row per box, not per pool (two-slot boxes D3): a two-slot box is one row named by
+        both pools, because the one `/health` and the one background run are shared.
+
         Reads only state the last tick left behind — the store, the lease table and the
         cached `/health` reading — so a page load makes no network call.
         """
         now = now or self._clock()
-        running = {job["box"]: job for job in self._store.running_background_jobs()}
+        running = {
+            self._box_of(str(job["box"])): job
+            for job in self._store.running_background_jobs()
+        }
         queued = self._store.queued_background_jobs()
         views: list[BoxView] = []
-        for box in self._config.box_health:
+        for box, pools in boxes(self._config.box_health):
             health = self._readings.get(box)
             job = running.get(box)
             if job is not None:
                 views.append(
-                    BoxView(box=box, running=job_row(job), blocked_by=None, health=health)
+                    BoxView(
+                        box=box,
+                        pools=tuple(pools),
+                        running=job_row(job),
+                        blocked_by=None,
+                        health=health,
+                    )
                 )
                 continue
             views.append(
                 BoxView(
                     box=box,
+                    pools=tuple(pools),
                     running=None,
-                    blocked_by=self._blocked_by(box, health, queued),
+                    blocked_by=self._blocked_by(box, pools, health, queued),
                     health=health,
                 )
             )
         return views
 
-    def _blocked_by(self, box: str, health: Health | None, queued: list) -> str:
-        """The first C7 condition that stops this box, as a stable machine token."""
+    def _blocked_by(
+        self, box: str, pools: list[str], health: Health | None, queued: list
+    ) -> str:
+        """The first C7 condition that stops this box, as a stable machine token.
+
+        `pools` is the box's sibling set: a drained slot keeps the whole box out of the lane
+        (C7 never runs on a drained box), and a loop on either slot holds the box's one
+        `/health` (D3).
+        """
         if not self._config.background:
             return "switch off"
-        if box in self._store.drained_pools():
+        drained = self._store.drained_pools()
+        if any(pool in drained for pool in pools):
             return "drained"
-        loop = self._loop_on(box)
-        if loop is not None:
-            if loop.node is None:
-                return "loop between stages"
-            if loop.on_box:
-                return "loop in a box stage"
-            if not loop.lease.box_stages:
-                return "loop stages unknown"
+        loops = self._loops_on(pools)
+        if any(loop.on_box for loop in loops):
+            return "loop in a box stage"
+        if any(loop.node is None for loop in loops):
+            return "loop between stages"
+        if any(not loop.lease.box_stages for loop in loops):
+            return "loop stages unknown"
         if health is None:
             return "box health unknown"
         if not health.idle:
@@ -943,7 +1027,7 @@ class BackgroundLane:
             return "slots"
         if not queued:
             return "no job queued"
-        blocked, gap = self._gap_minutes(box, loop)
+        blocked, gap = self._gap_minutes(loops)
         if blocked:
             return "no gap"
         if self._pick(gap) is None:
@@ -963,7 +1047,10 @@ class BackgroundLane:
             "counts": self._store.background_counts(),
             "boxes": [
                 {
+                    # `box` stays the first pool, so a reader written before two-slot boxes
+                    # still keys on one pool per row; `pools` is what makes the box whole.
                     "box": view.box,
+                    "pools": list(view.pools),
                     "running": view.running,
                     "blocked_by": view.blocked_by,
                     "health": (
