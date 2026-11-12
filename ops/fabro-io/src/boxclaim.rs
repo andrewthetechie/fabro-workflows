@@ -10,6 +10,13 @@
 //! (C10). Its only non-zero path is C10 step 5's fallback — an unknown run id or a
 //! failed self-cancel — because going on would put two sessions on one box.
 //!
+//! A **box** is the set of pools that share one `/health` URL (two-slot boxes D1), and
+//! [`siblings`] is the whole of that definition. Both hooks judge every sibling pool,
+//! because `/health` is box-wide and cannot tell a free slot from a busy one: the claim
+//! cancels background runs labelled with any sibling (D2), and the guard yields to any
+//! sibling's coder loop (D5). A pool no other pool shares is a one-slot box, whose
+//! sibling list is itself, which is how both hooks behaved before two slots existed.
+//!
 //! Neither ever prints to stdout: fabro reads a hook's stdout as its decision. The
 //! decisions live in pure functions below; [`run_claim`] and [`run_guard`] are the I/O
 //! shells around them.
@@ -114,6 +121,7 @@ pub fn confirmed_idle(recent: &[bool]) -> bool {
 /// Whitespace around a pair, around either side of the `=`, and around a trailing
 /// comma are all tolerated; an entry without an `=` or with an empty side is skipped
 /// rather than treated as the box. An unknown pool is simply absent from the map.
+/// Values are stored trimmed, which is what makes [`siblings`] a plain equality test.
 pub fn parse_box_health(raw: &str) -> BTreeMap<String, String> {
     let mut pairs = BTreeMap::new();
     for entry in raw.split(',') {
@@ -127,6 +135,22 @@ pub fn parse_box_health(raw: &str) -> BTreeMap<String, String> {
         pairs.insert(pool.to_string(), url.to_string());
     }
     pairs
+}
+
+/// The pools that share `pool`'s health URL, `pool` included (two-slot boxes C1).
+///
+/// Sharing a URL *is* sharing a box (D1), so no new variable declares the group: this is
+/// the only reading of `FABRO_BOX_HEALTH` that knows what a box is. The result is sorted
+/// because `BTreeMap` iterates in key order. A pool absent from the map has no box, so
+/// the list is empty; a pool no other pool shares returns itself, which is a one-slot box.
+pub fn siblings(map: &BTreeMap<String, String>, pool: &str) -> Vec<String> {
+    let Some(url) = map.get(pool) else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter(|(_, other_url)| *other_url == url)
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 /// One strix-infer `/health` reading (C3 step 4, C10 step 3).
@@ -155,12 +179,15 @@ impl Health {
     }
 }
 
-/// The runs to cancel for `box_name`: background runs on that box, never the run's
-/// own (C3 step 3, C10 step 2).
-pub fn lane_runs_on(runs: &[Value], lane: &str, box_name: &str, own: Option<&str>) -> Vec<String> {
+/// The runs on `lane` whose `box` label is one of `pools`, never the run's own (C3 step 3,
+/// C10 step 2). `pools` is a box's sibling set ([`siblings`]): the `box` label keeps
+/// naming a run's own pool (D2), so a two-slot box is judged by the union of its pools.
+pub fn lane_runs_on(runs: &[Value], lane: &str, pools: &[String], own: Option<&str>) -> Vec<String> {
     runs.iter()
         .filter(|run| label(run, "lane") == Some(lane))
-        .filter(|run| label(run, "box") == Some(box_name))
+        .filter(|run| {
+            label(run, "box").is_some_and(|box_name| pools.iter().any(|pool| pool == box_name))
+        })
         .filter_map(|run| run.get("id").and_then(Value::as_str))
         .filter(|id| Some(*id) != own)
         .map(str::to_string)
@@ -187,10 +214,54 @@ pub fn is_box_stage(manifest: &Manifest, run: &CoderRun) -> bool {
     acts(mode, run.issue.is_some_and(plan_arm_true))
 }
 
+/// Is any of these coder loops running a box stage (C10 step 2, D4)?
+pub fn any_in_box_stage(manifest: &Manifest, coders: &[CoderRun]) -> bool {
+    coders.iter().any(|run| is_box_stage(manifest, run))
+}
+
 /// C10 step 4: the box is clear when no coder-loop box stage is running and
 /// strix-infer reports it idle.
 pub fn guard_clear(manifest: &Manifest, coders: &[CoderRun], health: Health) -> bool {
-    health.is_idle() && !coders.iter().any(|run| is_box_stage(manifest, run))
+    health.is_idle() && !any_in_box_stage(manifest, coders)
+}
+
+/// Does the claim wait for the box to report idle (D4)?
+///
+/// Waiting helps only when there is something of ours to wait for: with nothing
+/// cancelled, nothing of ours is on the box. And on a two-slot box a sibling's coder loop
+/// keeps the box-wide `/health` reading busy for the whole 45 s deadline (F3), which is the
+/// stall D4 removes. So a wait needs a cancel *and* no sibling loop in a box stage.
+pub fn should_wait(cancelled: usize, sibling_in_box_stage: bool) -> bool {
+    cancelled > 0 && !sibling_in_box_stage
+}
+
+/// What the claim's `idle=` field reports (C3, two-slot boxes C3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Idle {
+    /// Two consecutive `/health` reads said idle.
+    Free,
+    /// The deadline passed with the box still busy, queued or unreadable.
+    Busy,
+    /// The claim never read `/health`, because [`should_wait`] said waiting could not help.
+    Skip,
+}
+
+impl Idle {
+    /// The token the summary line carries (C3: `true`, `false`, or the new `skip`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Free => "true",
+            Self::Busy => "false",
+            Self::Skip => "skip",
+        }
+    }
+}
+
+impl From<bool> for Idle {
+    /// The verdict of `wait_for_idle`, which answers with the box's own reading.
+    fn from(idle: bool) -> Self {
+        if idle { Self::Free } else { Self::Busy }
+    }
 }
 
 /// The stage fabro reports as `running`, if any.
@@ -223,24 +294,44 @@ fn claim(deadline: Instant) -> Result<Option<String>, String> {
     }
     let started = Instant::now();
     let box_name = read_box().ok_or("no /tmp/fabro/box; nothing to claim")?;
-    let health_url = health_url(&box_name)?;
+    let health_map = box_health()?;
+    let health_url = health_map
+        .get(&box_name)
+        .ok_or_else(|| format!("FABRO_BOX_HEALTH has no entry for {box_name}"))?;
+    let pools = siblings(&health_map, &box_name);
     let (own, source) = resolve_run_id();
     let api = Api::from_env(deadline)?;
 
     let runs = api.get_json(&format!("/runs{ACTIVE_RUNS_QUERY}"))?;
     let active = runs.get("data").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     let mut cancelled = 0_usize;
-    for id in lane_runs_on(active, BACKGROUND_LANE, &box_name, own.as_deref()) {
+    for id in lane_runs_on(active, BACKGROUND_LANE, &pools, own.as_deref()) {
         api.cancel(&id)?;
         cancelled += 1;
     }
 
-    let idle = wait_for_idle(&health_url, &api, deadline);
+    // The other slots on this box. Our own loop is the one running this very stage, so it
+    // is not evidence that the box is busy with something this claim should wait for. One
+    // stage read per sibling loop is worth an HTTP call only when the claim has something of
+    // ours to wait for, so this is evaluated just when `should_wait` can still use it (D4).
+    let sibling_in_box_stage = cancelled > 0 && {
+        let other_pools: Vec<String> =
+            pools.iter().filter(|pool| **pool != box_name).cloned().collect();
+        let coders = coder_runs_on(&api, "box-claim", active, &other_pools, own.as_deref());
+        any_in_box_stage(&manifest, &coders)
+    };
+    let idle = if should_wait(cancelled, sibling_in_box_stage) {
+        Idle::from(wait_for_idle(health_url, &api, deadline))
+    } else {
+        Idle::Skip
+    };
     Ok(Some(format!(
-        "box-claim: {}/{node} box={box_name} cancelled={cancelled} waited={}s idle={idle} run={}",
+        "box-claim: {}/{node} box={box_name} cancelled={cancelled} waited={}s idle={} run={} siblings={}",
         workflow(),
         started.elapsed().as_secs(),
-        source.as_str()
+        idle.as_str(),
+        source.as_str(),
+        pools.len()
     )))
 }
 
@@ -276,34 +367,21 @@ fn guard(deadline: Instant) -> Result<GuardReport, String> {
     };
     let manifest = manifest::load().map_err(|e| format!("cannot read the manifest ({e})"))?;
     let box_name = read_box().ok_or("no /tmp/fabro/box; nothing to guard")?;
-    let health_url = health_url(&box_name)?;
+    let health_map = box_health()?;
+    let health_url = health_map
+        .get(&box_name)
+        .ok_or_else(|| format!("FABRO_BOX_HEALTH has no entry for {box_name}"))?;
+    let pools = siblings(&health_map, &box_name);
     let (own, source) = resolve_run_id();
     let api = Api::from_env(deadline)?;
 
     let runs = api.get_json(&format!("/runs{ACTIVE_RUNS_QUERY}"))?;
     let active = runs.get("data").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-    let mut coders = Vec::new();
-    for id in lane_runs_on(active, CODER_LANE, &box_name, own.as_deref()) {
-        let stages = match api.get_json(&format!("/runs/{id}/stages")) {
-            Ok(body) => body.get("data").and_then(Value::as_array).cloned().unwrap_or_default(),
-            Err(e) => {
-                // A run that ends between the listing and this read has no stages left
-                // to report; that is between stages, not a box stage.
-                eprintln!("box-guard: no stages for coder run {id} ({e}); treating it as between stages");
-                Vec::new()
-            }
-        };
-        let run = active.iter().find(|run| run.get("id").and_then(Value::as_str) == Some(id.as_str()));
-        coders.push(CoderRun {
-            workflow: run.and_then(|r| label(r, "workflow")).unwrap_or_default().to_string(),
-            issue: run
-                .and_then(|r| label(r, "issue"))
-                .and_then(|issue| issue.parse::<u64>().ok()),
-            running_stage: running_stage(&stages).map(str::to_string),
-        });
-    }
+    // Every sibling pool: a coder loop on either slot keeps the box's one `/health` busy,
+    // so the guard yields to all of them (D5).
+    let coders = coder_runs_on(&api, "box-guard", active, &pools, own.as_deref());
 
-    let health = read_health(&health_url, &api).ok_or("cannot read the box's /health")?;
+    let health = read_health(health_url, &api).ok_or("cannot read the box's /health")?;
     let clear = guard_clear(&manifest, &coders, health);
     let (action, blocked) = if clear {
         ("none", false)
@@ -318,6 +396,42 @@ fn guard(deadline: Instant) -> Result<GuardReport, String> {
         ),
         blocked,
     })
+}
+
+/// The coder loops on the box, reduced to what both hooks judge (C10 step 2, D4).
+///
+/// One `GET /runs/{id}/stages` per loop, through the caller's [`Api`], so the reads count
+/// against the hook's existing deadline rather than a budget of their own. A loop whose
+/// stages cannot be read is judged as between stages — that is what its absence says, and
+/// it is the reading that keeps a claim waiting when it has something of ours to wait for.
+fn coder_runs_on(
+    api: &Api,
+    prefix: &str,
+    active: &[Value],
+    pools: &[String],
+    own: Option<&str>,
+) -> Vec<CoderRun> {
+    let mut coders = Vec::new();
+    for id in lane_runs_on(active, CODER_LANE, pools, own) {
+        let stages = match api.get_json(&format!("/runs/{id}/stages")) {
+            Ok(body) => body.get("data").and_then(Value::as_array).cloned().unwrap_or_default(),
+            Err(e) => {
+                // A run that ends between the listing and this read has no stages left
+                // to report; that is between stages, not a box stage.
+                eprintln!("{prefix}: no stages for coder run {id} ({e}); treating it as between stages");
+                Vec::new()
+            }
+        };
+        let run = active.iter().find(|run| run.get("id").and_then(Value::as_str) == Some(id.as_str()));
+        coders.push(CoderRun {
+            workflow: run.and_then(|r| label(r, "workflow")).unwrap_or_default().to_string(),
+            issue: run
+                .and_then(|r| label(r, "issue"))
+                .and_then(|issue| issue.parse::<u64>().ok()),
+            running_stage: running_stage(&stages).map(str::to_string),
+        });
+    }
+    coders
 }
 
 /// C10 step 5: cancel the run's own id, or fall back to blocking the stage.
@@ -337,12 +451,13 @@ fn self_cancel(api: &Api, own: Option<&str>) -> Result<(&'static str, bool), Str
 
 // --- I/O ----------------------------------------------------------------------------
 
-/// The `pool=url` health URL for `box_name`, or a sentence naming what is missing.
-fn health_url(box_name: &str) -> Result<String, String> {
+/// The parsed `FABRO_BOX_HEALTH`, or a sentence naming what is missing (C3 step 2).
+///
+/// One read of the variable per hook: the map is both the box's URL and the sibling set
+/// (D1), so a claim and its sibling list cannot disagree about which URL it came from.
+fn box_health() -> Result<BTreeMap<String, String>, String> {
     let raw = nonempty_env("FABRO_BOX_HEALTH").ok_or("FABRO_BOX_HEALTH is not set")?;
-    parse_box_health(&raw)
-        .remove(box_name)
-        .ok_or_else(|| format!("FABRO_BOX_HEALTH has no entry for {box_name}"))
+    Ok(parse_box_health(&raw))
 }
 
 /// The box from `/tmp/fabro/box` (C2). Empty or missing reads as no box.

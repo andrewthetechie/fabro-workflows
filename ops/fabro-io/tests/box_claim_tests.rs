@@ -15,8 +15,9 @@ use std::sync::{MutexGuard, PoisonError};
 use std::time::Instant;
 
 use fabro_io::boxclaim::{
-    self, CoderRun, Health, RunIdSource, acts, confirmed_idle, guard_clear, is_box_stage, label,
-    lane_runs_on, nonempty_env, parse_box_health, plan_arm_true, resolve_run_id, running_stage,
+    self, CoderRun, Health, Idle, RunIdSource, acts, confirmed_idle, guard_clear, is_box_stage,
+    label, lane_runs_on, nonempty_env, parse_box_health, plan_arm_true, resolve_run_id,
+    running_stage, should_wait, siblings,
 };
 use fabro_io::manifest::{BoxMode, Manifest};
 
@@ -169,6 +170,35 @@ fn box_health_parse_skips_a_pair_without_a_url_and_carries_no_unknown_pool() {
     assert!(!parsed.contains_key("coders-z"), "an unknown pool is simply absent");
 }
 
+/// Two pools on one URL are one box; a pool on its own URL is a one-slot box (C1, D1).
+const ONE_BOX: &str = "coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.29:5300/health";
+const TWO_BOXES: &str =
+    "coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.56:5300/health";
+
+#[test]
+fn siblings_are_the_pools_sharing_one_url_in_sorted_order() {
+    let map = parse_box_health("coders-b=http://h/health,coders-a=http://h/health,coders-c=http://i/health");
+    assert_eq!(siblings(&map, "coders-a"), ["coders-a", "coders-b"]);
+    assert_eq!(siblings(&map, "coders-b"), ["coders-a", "coders-b"]);
+    assert_eq!(
+        siblings(&map, "coders-c"),
+        ["coders-c"],
+        "a pool nobody shares is a one-slot box"
+    );
+}
+
+#[test]
+fn siblings_of_a_pool_the_map_does_not_name_is_empty() {
+    assert_eq!(siblings(&parse_box_health(ONE_BOX), "coders-z"), Vec::<String>::new());
+    assert_eq!(siblings(&parse_box_health(""), "coders-a"), Vec::<String>::new());
+}
+
+#[test]
+fn siblings_compare_the_urls_as_parsed_so_trailing_space_still_shares_a_box() {
+    let map = parse_box_health(" coders-a = http://h/health , coders-b=http://h/health ");
+    assert_eq!(siblings(&map, "coders-a"), ["coders-a", "coders-b"]);
+}
+
 #[test]
 fn confirmed_idle_needs_the_last_two_reads() {
     assert!(!confirmed_idle(&[]));
@@ -207,19 +237,61 @@ fn claim_filter_keeps_background_runs_on_the_box_and_never_its_own() {
     )
     .expect("runs json");
 
+    let one_slot = pools(&["coders-a"]);
+    assert_eq!(lane_runs_on(&runs, "background", &one_slot, None), ["bg-a", "bg-other"]);
     assert_eq!(
-        lane_runs_on(&runs, "background", "coders-a", None),
-        vec!["bg-a".to_string(), "bg-other".to_string()]
-    );
-    assert_eq!(
-        lane_runs_on(&runs, "background", "coders-a", Some("bg-a")),
-        vec!["bg-other".to_string()],
+        lane_runs_on(&runs, "background", &one_slot, Some("bg-a")),
+        ["bg-other"],
         "the run's own id is never cancelled"
     );
+    assert_eq!(lane_runs_on(&runs, "coder", &one_slot, None), ["coder-a"]);
+}
+
+#[test]
+fn a_two_slot_box_judges_runs_labelled_with_either_sibling() {
+    let runs: Vec<serde_json::Value> = serde_json::from_str(
+        r#"[
+          {"id":"bg-a","labels":{"lane":"background","box":"coders-a"}},
+          {"id":"bg-b","labels":{"lane":"background","box":"coders-b"}},
+          {"id":"bg-d","labels":{"lane":"background","box":"coders-d"}},
+          {"id":"coder-b","labels":{"lane":"coder","box":"coders-b"}}
+        ]"#,
+    )
+    .expect("runs json");
+    let map = parse_box_health(ONE_BOX);
+
+    // A background run dispatched under coders-b is found by a claim from coders-a (D2).
+    let box_1 = siblings(&map, "coders-a");
+    assert_eq!(box_1, ["coders-a", "coders-b"]);
+    assert_eq!(lane_runs_on(&runs, "background", &box_1, None), ["bg-a", "bg-b"]);
+    assert_eq!(lane_runs_on(&runs, "coder", &box_1, None), ["coder-b"]);
     assert_eq!(
-        lane_runs_on(&runs, "coder", "coders-a", None),
-        vec!["coder-a".to_string()]
+        lane_runs_on(&runs, "background", &siblings(&map, "coders-d"), None),
+        Vec::<String>::new(),
+        "a pool on another box matches nothing"
     );
+}
+
+#[test]
+fn a_claim_waits_only_when_it_cancelled_something_and_no_sibling_is_boxed() {
+    // D4's four cases.
+    assert!(!should_wait(0, false), "nothing cancelled: nothing of ours is on the box");
+    assert!(!should_wait(0, true), "nothing cancelled, and a sibling would keep it busy");
+    assert!(should_wait(1, false), "ours is on the box and the box can go idle");
+    assert!(should_wait(3, false), "as above, for more than one cancelled run");
+    assert!(!should_wait(2, true), "a sibling's box stage reads busy for the whole deadline");
+}
+
+#[test]
+fn idle_verdicts_render_as_the_contract_token() {
+    assert_eq!(Idle::from(true).as_str(), "true");
+    assert_eq!(Idle::from(false).as_str(), "false");
+    assert_eq!(Idle::Skip.as_str(), "skip");
+}
+
+/// A sibling set, spelled the short way in these tests.
+fn pools(list: &[&str]) -> Vec<String> {
+    list.iter().map(|pool| (*pool).to_string()).collect()
 }
 
 #[test]
@@ -495,6 +567,142 @@ fn claim_accepts_409_on_a_cancel() {
     );
 }
 
+// --- the two-slot box ---------------------------------------------------------------
+
+/// Both pools of box 1 on the one `/health` the new strix-infer build answers (F4), which
+/// is what makes them one box (D1).
+fn one_box(stub: &Stub) -> String {
+    format!("coders-a={}/health,coders-b={}/health", stub.url, stub.url)
+}
+
+/// The environment of a claim from `coders-a` on box 1.
+fn claim_on_box_1<'a>(stub: &Stub, sandbox: &'a Sandbox) -> &'a Sandbox {
+    sandbox
+        .manifest(&manifest_with("coder", r#"{"box":true}"#, r#"{"backlog":{"coder":true}}"#))
+        .set("FABRO_NODE_ID", "coder")
+        .set("FABRO_WORKFLOW", "backlog")
+        .set("FABRO_BOX_HEALTH", &one_box(stub))
+        .set("FABRO_API_URL", &stub.url)
+        .set("FABRO_RUN_ID", "own")
+        .box_file("coders-a")
+}
+
+fn health_reads(stub: &Stub) -> usize {
+    stub.requests()
+        .iter()
+        .filter(|(_, path)| path == "/health")
+        .count()
+}
+
+#[test]
+fn a_claim_cancels_a_background_run_labelled_with_the_sibling_pool() {
+    let stub = Stub::start(vec![
+        Route::get("/health", Reply::Json(200, IDLE.to_string())),
+        Route::get(
+            "/runs?",
+            runs_body(r#"{"id":"bg1","labels":{"lane":"background","box":"coders-b"}}"#),
+        ),
+        Route::post("/runs/bg1/cancel", Reply::Status(202)),
+    ]);
+    let sandbox = Sandbox::new("claim-sibling-bg");
+    claim_on_box_1(&stub, &sandbox);
+
+    assert_eq!(boxclaim::run_claim(), ExitCode::SUCCESS);
+    assert!(
+        stub.requests()
+            .contains(&("POST".to_string(), "/runs/bg1/cancel".to_string())),
+        "a run dispatched under coders-b is cancelled by a claim from coders-a: {:?}",
+        stub.requests()
+    );
+    assert_eq!(
+        health_reads(&stub),
+        2,
+        "it cancelled something, so it still confirms the box idle"
+    );
+}
+
+#[test]
+fn a_claim_that_cancels_nothing_never_reads_health() {
+    let stub = Stub::start(vec![
+        Route::get("/health", Reply::Json(200, IDLE.to_string())),
+        Route::get("/runs?", runs_body("")),
+    ]);
+    let sandbox = Sandbox::new("claim-skip");
+    claim_on_box_1(&stub, &sandbox);
+
+    assert_eq!(boxclaim::run_claim(), ExitCode::SUCCESS);
+    assert_eq!(
+        health_reads(&stub),
+        0,
+        "with nothing cancelled the claim logs idle=skip instead of waiting (D4)"
+    );
+}
+
+#[test]
+fn a_claim_does_not_wait_while_a_sibling_loop_is_in_a_box_stage() {
+    let stub = Stub::start(vec![
+        Route::get("/health", Reply::Json(200, IDLE.to_string())),
+        Route::get(
+            "/runs?",
+            runs_body(
+                concat!(
+                    r#"{"id":"bg1","labels":{"lane":"background","box":"coders-a"}},"#,
+                    r#"{"id":"c1","labels":{"lane":"coder","box":"coders-b","workflow":"backlog","issue":"2"}}"#
+                ),
+            ),
+        ),
+        Route::post("/runs/bg1/cancel", Reply::Status(202)),
+        Route::get(
+            "/runs/c1/stages",
+            runs_body(r#"{"node_id":"coder","status":"running"}"#),
+        ),
+    ]);
+    let sandbox = Sandbox::new("claim-sibling-boxed");
+    claim_on_box_1(&stub, &sandbox);
+
+    assert_eq!(boxclaim::run_claim(), ExitCode::SUCCESS);
+    assert!(
+        stub.requests()
+            .contains(&("POST".to_string(), "/runs/bg1/cancel".to_string())),
+        "the background run is still cancelled whatever the sibling is doing"
+    );
+    assert_eq!(
+        health_reads(&stub),
+        0,
+        "a sibling's box stage keeps the box-wide /health busy for the whole deadline (D4)"
+    );
+}
+
+#[test]
+fn a_sibling_loop_in_a_hosted_stage_does_not_stop_the_wait() {
+    let stub = Stub::start(vec![
+        Route::get("/health", Reply::Json(200, IDLE.to_string())),
+        Route::get(
+            "/runs?",
+            runs_body(
+                concat!(
+                    r#"{"id":"bg1","labels":{"lane":"background","box":"coders-b"}},"#,
+                    r#"{"id":"c1","labels":{"lane":"coder","box":"coders-b","workflow":"backlog","issue":"2"}}"#
+                ),
+            ),
+        ),
+        Route::post("/runs/bg1/cancel", Reply::Status(202)),
+        Route::get(
+            "/runs/c1/stages",
+            runs_body(r#"{"node_id":"review","status":"running"}"#),
+        ),
+    ]);
+    let sandbox = Sandbox::new("claim-sibling-hosted");
+    claim_on_box_1(&stub, &sandbox);
+
+    assert_eq!(boxclaim::run_claim(), ExitCode::SUCCESS);
+    assert_eq!(
+        health_reads(&stub),
+        2,
+        "a hosted sibling stage leaves the box free, so the claim confirms idle as before"
+    );
+}
+
 #[test]
 fn claim_exits_zero_after_one_call_times_out_and_stops_there() {
     let stub = Stub::start(vec![Route::get("/runs?", Reply::Hang)]);
@@ -568,6 +776,37 @@ fn guard_cancels_its_own_run_when_the_loop_is_in_a_box_stage() {
         stub.requests()
             .contains(&("POST".to_string(), "/runs/own/cancel".to_string())),
         "the guard cancels its own run: {:?}",
+        stub.requests()
+    );
+}
+
+#[test]
+fn guard_yields_to_a_coder_loop_on_the_sibling_pool() {
+    // The box reads idle: it is the sibling's box stage, not the health, that blocks (D5).
+    let stub = Stub::start(vec![
+        Route::get("/health", Reply::Json(200, IDLE.to_string())),
+        Route::get(
+            "/runs?",
+            runs_body(
+                r#"{"id":"c1","labels":{"lane":"coder","box":"coders-b","workflow":"backlog","issue":"2"}}"#,
+            ),
+        ),
+        Route::get(
+            "/runs/c1/stages",
+            runs_body(r#"{"node_id":"coder","status":"running"}"#),
+        ),
+        Route::post("/runs/own/cancel", Reply::Status(202)),
+    ]);
+    let sandbox = Sandbox::new("guard-sibling-boxed");
+    guard_sandbox(&stub, &sandbox)
+        .set("FABRO_BOX_HEALTH", &one_box(&stub))
+        .set("FABRO_RUN_ID", "own");
+
+    assert_eq!(boxclaim::run_guard(), ExitCode::SUCCESS);
+    assert!(
+        stub.requests()
+            .contains(&("POST".to_string(), "/runs/own/cancel".to_string())),
+        "a loop on either slot of the box evicts the background run: {:?}",
         stub.requests()
     );
 }
