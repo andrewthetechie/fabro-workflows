@@ -154,6 +154,7 @@
   <thead class="bg-slate-900/60 text-slate-400">
     <tr>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Coder instance</th>
+      <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide" title="The local inference host this pool runs on (SCHEDULER_BOX_HEALTH); two slots of one box share a host">Box</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Status</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide">Issue</th>
       <th class="whitespace-nowrap px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide" title="Sub-tasks completed / decomposed total">Sub Tasks</th>
@@ -167,6 +168,7 @@
     {% for pool in pools %}
     <tr class="hover:bg-slate-800/60">
       <td class="whitespace-nowrap px-4 py-3 align-top font-medium text-slate-200">{{ pool.coder_pool }}</td>
+      <td class="whitespace-nowrap px-4 py-3 align-top font-mono text-xs text-slate-400">{{ box_hosts.get(pool.coder_pool) or "—" }}</td>
       <td class="whitespace-nowrap px-4 py-3 align-top">
         <span class="block">{%- if pool.drained -%}<span class="text-amber-400">drained</span>{%- else -%}<span class="text-emerald-400">accepting</span>{%- endif -%}</span>
         <span class="block">{%- if pool.lease -%}<span class="text-amber-400">leased</span>{%- else -%}<span class="text-slate-500">idle</span>{%- endif -%}</span>

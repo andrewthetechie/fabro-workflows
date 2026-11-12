@@ -1315,8 +1315,10 @@ curl -fsS http://10.10.0.56:8000/slots | jq '[.[].is_processing] | any'
 **boolean**, never the token. `/api/repos` is the freshness view: `items`, `stale`, and the
 ETag per repo. `/api/queue` is the ranked queue, in the order the dispatch loop reads it,
 including each item's `override_rank` (null unless the operator bumped it). `/api/pools` is
-the per-box view: `drained` and the lease, or `null`. Open `http://10.10.0.32:32280/` for
-the page itself: the coder instances with their Drain/Undrain and Cancel-run buttons, the
+the per-pool view: `drained`, the lease or `null`, and `box_host`, the local inference host
+the pool runs on (from `SCHEDULER_BOX_HEALTH`, `null` outside it). Open
+`http://10.10.0.32:32280/` for the page itself: the coder instances with their *Box* host
+column and Drain/Undrain and Cancel-run buttons, the
 queue with a **Next** button on every row, and a per-repo freshness strip.
 
 The last check is the one that proves the conditional-request path is live: with the page

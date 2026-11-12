@@ -65,6 +65,7 @@ from .background import BackgroundLane
 from .config import (
     ConfigError,
     SchedulerConfig,
+    box_host,
     load_config,
 )
 from .dispatch import DispatchLoop
@@ -546,7 +547,10 @@ def build_app(
         and an idle box would otherwise be the same answer, and only one of them is
         a problem.
         """
-        return [_pool_payload(state) for state in pool_states()]
+        return [
+            {**_pool_payload(state), "box_host": box_host(config.box_health, state.coder_pool)}
+            for state in pool_states()
+        ]
 
     @app.get("/api/background")
     def api_background() -> dict[str, object]:
@@ -1126,6 +1130,11 @@ def build_app(
                 # Rich `PoolState`s, not the pool names: the page needs the drain
                 # flag and the lease to draw both the status and the controls.
                 "pools": pool_states(),
+                # Which local inference host each pool runs on, from SCHEDULER_BOX_HEALTH:
+                # two slots of one box show the same host (two-slot boxes D1).
+                "box_hosts": {
+                    pool: box_host(config.box_health, pool) for pool in config.coder_pools
+                },
                 "now": now,
                 "ceiling": config.starvation_ceiling,
                 "poll_seconds": config.github_poll_seconds,

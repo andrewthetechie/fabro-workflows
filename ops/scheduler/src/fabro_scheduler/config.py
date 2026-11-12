@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .disk import (
     DEFAULT_DISPATCH_DISK_HYSTERESIS_GB,
@@ -342,6 +343,19 @@ def box_siblings(box_health: Mapping[str, str], pool: str) -> list[str]:
     if url is None:
         return []
     return sorted(other for other, other_url in box_health.items() if other_url == url)
+
+
+def box_host(box_health: Mapping[str, str], pool: str) -> str | None:
+    """The host of the local inference box `pool` runs on, from its health URL, or None.
+
+    For the queue page's *Box* column: `coders-a` and `coders-b` both read `10.10.0.29` once
+    they share a URL (two-slot boxes D1). A pool outside `SCHEDULER_BOX_HEALTH` has no box the
+    scheduler knows of, so None (rendered "—").
+    """
+    url = box_health.get(pool)
+    if url is None:
+        return None
+    return urlsplit(url).hostname or None
 
 
 def boxes(box_health: Mapping[str, str]) -> list[tuple[str, list[str]]]:

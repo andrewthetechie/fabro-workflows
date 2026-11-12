@@ -1511,3 +1511,21 @@ def test_the_removed_doctor_has_no_endpoint(client, store):
     )
     assert gone.status_code in (404, 405)
     assert store.background_job_exists("pr-doctor", "andrewthetechie/jelly-swipe", "7") is False
+
+
+def test_the_pool_table_shows_each_pools_inference_host(store):
+    config = load_config(
+        TRACKED_REPOS,
+        env={
+            "SCHEDULER_BOX_HEALTH": "coders-a=http://10.10.0.29:5300/health,"
+            "coders-b=http://10.10.0.29:5300/health,coders-c=http://10.10.0.56:5300/health"
+        },
+    )
+    client = TestClient(build_app(config, store, github_token="ghp_test"))
+    html = client.get("/").text
+    assert ">Box</th>" in html
+    assert html.count("10.10.0.29</td>") == 2, "two slots of one box share its host"
+    assert "10.10.0.56</td>" in html
+    pools = {row["coder_pool"]: row["box_host"] for row in client.get("/api/pools").json()}
+    assert pools["coders-b"] == "10.10.0.29"
+    assert pools["coders-d"] is None, "a pool outside SCHEDULER_BOX_HEALTH has no host"

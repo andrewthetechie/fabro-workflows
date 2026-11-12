@@ -612,3 +612,18 @@ def test_the_gap_table_predicts_a_gap_and_zero_for_an_unknown_key(tmp_path):
            "review_merge.refute_fix", "review_merge.resolve_base",
            "iterate_t1", "learn", "resolve_base"}
     assert not [key for key in BACKGROUND_GAP_MINUTES if key[1] in box]
+
+
+def test_box_host_is_the_health_urls_host_and_none_outside_the_map():
+    from fabro_scheduler.config import box_host, parse_box_health
+
+    layout = parse_box_health(
+        "coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.29:5300/health,"
+        "coders-c=http://10.10.0.56:5300/health"
+    )
+    assert [box_host(layout, p) for p in ("coders-a", "coders-b", "coders-c")] == [
+        "10.10.0.29",
+        "10.10.0.29",
+        "10.10.0.56",
+    ]
+    assert box_host(layout, "coders-d") is None
