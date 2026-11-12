@@ -34,6 +34,15 @@
 #                       this is the resurrection leak on its first instance, not on the
 #                       third day when the disk is full. Skipped with C4 when the API is
 #                       unreachable (it needs C4's live-run snapshot).
+#   C10 background-starved the lane is on, nothing is running on any box, and the
+#                       oldest queued background job is older than BG_STARVE_HOURS 🟠 24h
+#                       A queued background job has no run, so C4 cannot see it, and the
+#                       coder pools are busy, so C8 stays quiet: every "why has nothing
+#                       started" is silent by construction. On 2026-11-12 the lane stood
+#                       still for two hours with 18 jobs queued, because one drained slot
+#                       of each box read as "the box is gone", and nothing said a word.
+#                       The message carries each box's `blocked_by`, which is the
+#                       diagnosis. Skipped when C7 fires (lane unreadable by construction).
 #
 # C1 suppresses C2's connection failures (report the cause, not the symptom)
 # but never its 401 — a rejected token is its own problem. When the container
@@ -133,6 +142,9 @@
 #                                 this. C4's live-run snapshot is taken before the
 #                                 `docker ps` below, so a run dispatched in between would
 #                                 otherwise read as a leak. 0 fires on the first sample.
+#   BG_STARVE_HOURS=6             C10: fire when the lane is on, nothing is running,
+#                                 and the oldest queued background job is older than
+#                                 this. A healthy lane leaves no job queued for hours.
 #   FABRO_MONITOR_REPOS="a/b c/d"  space-separated; an EMPTY value falls back
 #                                 to the four factory repos (`:-`), so pass a
 #                                 real value to narrow a run
@@ -155,6 +167,7 @@ CONTAINER="${FABRO_CONTAINER:-fabro-fabro-1}"
 SCHEDULER_URL="${SCHEDULER_URL:-http://127.0.0.1:32280}"
 WEDGE_MINUTES="${WEDGE_MINUTES:-20}"
 LEAK_GRACE_MINUTES="${LEAK_GRACE_MINUTES:-5}"
+BG_STARVE_HOURS="${BG_STARVE_HOURS:-6}"
 REPOS="${FABRO_MONITOR_REPOS:-andrewthetechie/jelly-swipe andrewthetechie/womens-fantasy-sports andrewthetechie/lawncare-saas andrewthetechie/writers-app andrewthetechie/flakeradar}"
 STATE_FILE="${FABRO_MONITOR_STATE:-$HOME/.local/state/fabro-monitor.state}"
 API="http://$FABRO_HOST:$FABRO_PORT/api/v1"
@@ -163,6 +176,7 @@ API="http://$FABRO_HOST:$FABRO_PORT/api/v1"
 ALERT_SECONDS="${FABRO_MONITOR_RE_ALERT_SECONDS:-14400}"            # 4h — C1..C4
 STARVE_SECONDS="${FABRO_MONITOR_STARVE_RE_ALERT_SECONDS:-604800}"   # 7d — C5
 DISK_RE_SECONDS="${FABRO_MONITOR_DISK_RE_ALERT_SECONDS:-86400}"     # 24h — C6
+BG_STARVE_RE_SECONDS="${FABRO_MONITOR_BG_STARVE_RE_ALERT_SECONDS:-86400}"  # 24h — C10
 
 # Lifecycle.status.kind values that mean "this run is done". Anything else —
 # running, submitted, queued, a missing kind — is non-terminal for C4.
@@ -193,6 +207,7 @@ cond_name() {
     C7) printf '%s' "scheduler-down" ;;
     C8) printf '%s' "scheduler-wedged" ;;
     C9) printf '%s' "leaked-sandbox" ;;
+    C10) printf '%s' "background-starved" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -741,6 +756,57 @@ else
   fi
 fi
 
+# -------------------------------------------- C10 background-starved --------
+# The lane is on, nothing is running on any box, and the oldest queued job is older
+# than BG_STARVE_HOURS. A queued background job has no run, so C4 cannot see it; the
+# coder pools are busy, so C8 stays quiet; and the producers keep queueing — every one
+# of the lane's "nothing has started" reasons is silent by construction. On
+# 2026-11-12 it went unanswered for two hours and 18 jobs (a drained second slot of each
+# box read as "the box is gone"), which is why this exists. The window is the job's own
+# age rather than a sample count, so a fresh burst cannot fire it and no extra
+# `<cond>_since` key is needed. 🟠, not 🔴: a factory that is genuinely slammed starves
+# the lane for a while and recovers by itself. C7 suppresses C10 exactly as it
+# suppresses C8 — an unreachable scheduler makes the question unanswerable, and the
+# stamp is carried over rather than resolved.
+
+if [ "$c7_firing" = 1 ]; then
+  printf 'skip  C10 background-starved: C7 scheduler-down is firing (lane unreadable by construction)\n'
+else
+  bhttp="$(curl -sS -o "$tmp/background.json" -w '%{http_code}' -m 5 \
+    "$SCHEDULER_URL/api/background" 2>/dev/null)" || bhttp=000
+  if [ "$bhttp" != 200 ] \
+    || ! jq -e '.switch and (.queue | type == "object")' "$tmp/background.json" >/dev/null 2>&1; then
+    # Readable-but-unanswered is not a definitive "the lane is well": C10 is NOT marked
+    # evaluated, so an existing stamp is neither resolved nor dropped.
+    printf 'skip  C10 background-starved: /api/background unreadable (HTTP %s)\n' "$bhttp"
+  else
+    mark_evaluated C10
+    bswitch="$(jq -r '.switch' "$tmp/background.json" 2>/dev/null)"
+    bqueued="$(jq '.queue.queued | length' "$tmp/background.json" 2>/dev/null)"
+    brunning="$(jq '.queue.running | length' "$tmp/background.json" 2>/dev/null)"
+    boldest="$(jq -r '[.queue.queued[].created_at] | min // empty' "$tmp/background.json" 2>/dev/null)"
+    # The diagnosis, in the one line the operator reads first: why each box is not filling.
+    bblocked="$(jq -r '[.boxes[] | "\(.box)=\(.blocked_by // "running")"] | join(", ")' \
+      "$tmp/background.json" 2>/dev/null)"
+    boldest_s="$(date -d "$boldest" +%s 2>/dev/null)" || boldest_s=""
+    if [ "$bswitch" != "on" ]; then
+      # Off is the operator's choice (C7's switch is documented in ops/README.md), and it
+      # is the one state in which queued jobs are supposed to wait.
+      printf 'ok    C10 background-starved: lane is off (%s queued)\n' "${bqueued:-?}"
+    elif [ "$bqueued" = 0 ]; then
+      printf 'ok    C10 background-starved: nothing queued\n'
+    elif [ "$brunning" != 0 ]; then
+      printf 'ok    C10 background-starved: %s running, %s queued\n' "$brunning" "$bqueued"
+    elif printf '%s' "$boldest_s" | grep -Eq '^[0-9]+$' \
+      && [ $(( now - boldest_s )) -ge $(( BG_STARVE_HOURS * 3600 )) ]; then
+      fire C10 "$BG_STARVE_RE_SECONDS" "🟠" \
+        "background-starved — oldest of $bqueued queued background job(s) is $(( (now - boldest_s) / 3600 ))h old (limit ${BG_STARVE_HOURS}h) and nothing is running; boxes: $bblocked"
+    else
+      printf 'ok    C10 background-starved: %s queued, oldest %s\n' "${bqueued:-?}" "${boldest:-unknown}"
+    fi
+  fi
+fi
+
 # ------------------------------------------------------------- dispatch ----
 # A firing condition with no stamp alerts; with a stamp older than its re-alert
 # interval it re-alerts; otherwise it stays quiet and keeps its stamp. A stamp
@@ -773,7 +839,7 @@ while IFS="$TAB" read -r cond interval emoji detail; do
 done < "$tmp/firing"
 
 if [ -f "$STATE_FILE" ]; then
-  for cond in C1 C2 C3 C4 C5 C6 C7 C8 C9; do
+  for cond in C1 C2 C3 C4 C5 C6 C7 C8 C9 C10; do
     s="$(stamp_of "$cond")"
     [ -n "$s" ] || continue
     case "$firing_ids" in *" $cond "*) continue ;; esac

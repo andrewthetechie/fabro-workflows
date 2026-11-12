@@ -18,7 +18,7 @@ locations instead.
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). 0.362 no longer creates `fabro/meta/*`; it still sweeps the ones earlier versions left. Deterministic; see its header comments. |
 | `fabro-run-prune.sh` | Archives every `succeeded` `merge-queue` run, then deletes `merge-queue` runs older than 7 days with `fabro system prune --workflow merge-queue` (daily cron; ADR 0024 D8). The merge queue makes 288 runs a day and nothing else deletes them; archiving keeps them out of the run listing the fabro UI pages through. Dry run unless `DRY_RUN=0`. |
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (hourly cron): the normal rule is a grace, and disk pressure overrides it, reaping oldest first until the root filesystem drops below a target (issue #50). A RUNNING one is left alone unless it is older than `MAX_RUNNING_HOURS` (36) — past that it is a sandbox fabro restarted for a file read and nobody stopped again, so it is stopped, removed, and `WARN`ed about. Deterministic; see its header comments. |
-| `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure, and a running sandbox whose run already ended (C9 — fabro starts a stopped sandbox to serve a file read) — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
+| `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure, a running sandbox whose run already ended (C9 — fabro starts a stopped sandbox to serve a file read), and a background lane that has stood still with work queued (C10) — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
 | `fabro-retro.sh` | The weekly **retro** (Monday 12:00 UTC cron, issue #33 / ADR 0026): runs `python -m fabro_scheduler retro --last-week` in the scheduler container over the previous ISO week of `backlog` runs, files at most 3 issues a week in `andrewthetechie/fabro-workflows` for new **failure classes**, comments on known ones, and posts the scorecard summary plus the class totals to Discord. `DRY_RUN=1` by default: a dry run reads GitHub and posts the message but writes no issue, which is how the operator reviews it before going live. Contract: `../docs/factory-retro/00-overview-and-contracts.md`, `../docs/adr/0026-weekly-retro-files-issues.md`. |
 | `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
 | `fabro-export-runs.sh` | Mac tool (not deployed; `make deploy` does not copy it). Lists the `backlog` runs created in a window (`--since`, `--until`, `--workflow`, `--status`), pages `GET /runs` on the host, and exports each run's `fabro events <id> --json` to `OUTDIR/<id>.jsonl`, with `index.tsv` (run, created, workflow, repo, status, issue, workflow_sha). A failed run leaves `<id>.err` and the rest go on. Reads the token on the host. Refuses an `OUTDIR` inside a git work tree, because event files hold issue text. Tests: `tests/test_fabro_export_runs.py`. |
@@ -734,7 +734,7 @@ whole factory in one place and a host rebuild brings it back with everything els
 | `scheduler/src/fabro_scheduler/dispatch.py` | The **5-second dispatch loop**. `choose_next` is pure — it takes the already-ranked queue and skips any repo with a run in flight rather than idling the box — and `DispatchLoop.tick` performs the side effects for every free box it can fill. Before the receipt it samples the disk gate; when gated, it starts no coder or background run and returns an empty pass. Order: labels, create, start, lease; a failure before the run exists rolls the labels back (any `Exception`, not only fabro's, since the 2026-10-19 `OSError` escaped and orphaned six issues), and a failed repo is backed off for the rest of that tick. It owns the two `agent-in-progress` writes and the `issue_number`/`coder_pool` inputs, excludes a drained box via `pool_state`, and clears an operator override once the lease is recorded. Every dispatch also sends `lane=coder` and `box=<pool>` — the run's own pool, which the claim hook and the lane's eviction expand to the box's sibling pools (two-slot boxes D2). `tick` runs the background lane last — evict, then fill — so no coder dispatch ever waits on it. |
 | `scheduler/src/fabro_scheduler/disk.py` | The **dispatch disk gate** (issue #51, ADR 0032): `DiskGate.sample()` reads `os.statvfs` on `/fabro-storage` and `/tmp`, takes the least free, and pauses new dispatch below `SCHEDULER_DISPATCH_MIN_FREE_GB` (50), resuming only above that plus `SCHEDULER_DISPATCH_DISK_HYSTERESIS_GB` (10). A transition logs once. `state()` is the document on `/health` and the page; it never samples. |
 | `scheduler/src/fabro_scheduler/peak.py` | z.ai's peak hours: parses `SCHEDULER_PEAK_HOURS` and answers whether an instant is inside a dispatch block (the window minus the lead) and when it ends. Pure; `DispatchLoop.tick` and `/api/peak` call it. |
-| `scheduler/src/fabro_scheduler/background.py` | The **background lane** (more-local-inference C7, ADR 0031): `BackgroundLane` evicts, fills and finishes box-only jobs, and `BoxHealth` reads strix-infer's `/health`. Every decision is pure over state the caller hands in, so a test drives a tick by hand. `evict` cancels a background run whose box's coder loop has reached a box stage, on either of the box's slots; `fill` starts one job per box only when all six conditions hold (switch on, no slot of the box drained and no background job running on any of them, a loop outside a box stage read **fresh** from fabro on either slot, the box's `/health` idle for `SCHEDULER_BG_GAP_S`, `SCHEDULER_BG_SLOT_RESERVE` run slots free, and a job that fits the shortest predicted gap of the two loops); `sync` finishes, requeues or fails a running job from its fabro status; `make_room` cancels the youngest background run when a coder-loop dispatch needs the last slot. `box_views`/`state` are what the page's **Background** strip and `/api/background` render; `state`'s `queue` (running, then queued in the order `fill` tries them, then the last ten that ended) is the page's **Background jobs** table. Every `JOB_WORKFLOWS` value must also be in `workflow_version.ENTRYPOINTS`, or `dispatch_job` raises and the lane's tick fails (a test checks it). The gap table is `config.BACKGROUND_GAP_MINUTES`, **measured** on 2026-10-28 (task 12 Phase 0 step 2) from every non-box visit of the 170 `backlog`/`ralph` runs released since 10-21: the median minutes from a visit's end to the next box-stage start (or the run's end), per node; any node not in it, and any other workflow, predicts 0. Re-measure when the graphs change: the method is in the table's comment. |
+| `scheduler/src/fabro_scheduler/background.py` | The **background lane** (more-local-inference C7, ADR 0031): `BackgroundLane` evicts, fills and finishes box-only jobs, and `BoxHealth` reads strix-infer's `/health`. Every decision is pure over state the caller hands in, so a test drives a tick by hand. `evict` cancels a background run whose box's coder loop has reached a box stage, on either of the box's slots; `fill` starts one job per box only when all six conditions hold (switch on, not **every** slot of the box drained and no background job running on any of them, a loop outside a box stage read **fresh** from fabro on either slot, the box's `/health` idle for `SCHEDULER_BG_GAP_S`, `SCHEDULER_BG_SLOT_RESERVE` run slots free, and a job that fits the shortest predicted gap of the two loops); `sync` finishes, requeues or fails a running job from its fabro status; `make_room` cancels the youngest background run when a coder-loop dispatch needs the last slot. `box_views`/`state` are what the page's **Background** strip and `/api/background` render; `state`'s `queue` (running, then queued in the order `fill` tries them, then the last ten that ended) is the page's **Background jobs** table. Every `JOB_WORKFLOWS` value must also be in `workflow_version.ENTRYPOINTS`, or `dispatch_job` raises and the lane's tick fails (a test checks it). The gap table is `config.BACKGROUND_GAP_MINUTES`, **measured** on 2026-10-28 (task 12 Phase 0 step 2) from every non-box visit of the 170 `backlog`/`ralph` runs released since 10-21: the median minutes from a visit's end to the next box-stage start (or the run's end), per node; any node not in it, and any other workflow, predicts 0. Re-measure when the graphs change: the method is in the table's comment. |
 | `scheduler/src/fabro_scheduler/measure.py` | Task 12's Phase 3 and Phase 4 exit numbers as one pure document (`GET /api/background/measure`): box use, endings against the baseline window, tokens and credits per planner visit, the holds, the pre-review by arm, the orientation and the flaky diagnoses. `Store.measure_rows` is the one snapshot it reads. |
 | `scheduler/src/fabro_scheduler/precheck.py` | The **issue precheck**'s scheduler half (more-local-inference 07, shadow mode): `PrecheckProducer` queues one `issue-precheck` job per issue for the next `SCHEDULER_PRECHECK_PER_REPO` issues of each repository in dispatch order (`next_per_repo`) and skips one whose issue left the queue; `read_marker`/`outcome_for` turn a finished run's marker into the job's `verdict=<v>` outcome. It holds and labels nothing. |
 | `scheduler/src/fabro_scheduler/precheck.py` | The issue precheck's scheduler half: `PrecheckProducer`, the C6 marker reader and its outcome, and D20's holds — `hold_label`/`holding_labels`, and `release_blocked`, the inventory pass that drops `precheck-blocked` when the marker's blocker closes. |
@@ -888,7 +888,7 @@ of:
 | `blocked_by` | What to do about it |
 |---|---|
 | `switch off` | `SCHEDULER_BACKGROUND=on`, as above. |
-| `drained` | A slot of the box is drained on purpose (`POST /api/pools/<pool>/undrain` when it is not); one drained pool keeps the whole box out of the lane. |
+| `every slot drained` | Every pool of the box is drained on purpose (`POST /api/pools/<pool>/undrain` when it is not), so the operator has taken the whole box outside fabro. **One** drained slot does not stop the lane: `pool_state` is the coder-dispatch switch, and a background run resolves to the box's `-bg` row, which no drain touches. |
 | `loop in a box stage` | Working as intended: a coder loop is on the box — on either of its two slots. |
 | `loop between stages` | Also intended, for a moment: the lane starts nothing until a stage is running, because the gap after it has not started yet. A box stuck here for minutes is a stale read — check `fabro events <run> -p`. |
 | `loop stages unknown` | The lease has no `box_stages`, so the lane fails closed. Usually a lease adopted from an older scheduler; the next dispatch replaces it. |
@@ -1609,7 +1609,8 @@ Every 15 minutes at offset 7 — it never shares a minute with a backlog fire
 `fabro-monitor.sh` is the third member of the sweeper pattern and the only
 thing on the host that watches the *gaps between runs*: a dead container, a
 dead API, a dead scheduler, a scheduler that answers but never dispatches, a run
-wedged non-terminal, an empty `agent` queue across the four repos, a full disk. It
+wedged non-terminal, an empty `agent` queue across the four repos, a full disk, a
+background lane that has not started anything while jobs wait. It
 never alerts on a failed run — that stays with the hooks (`discord-notify.sh`),
 which see the run context it cannot (ADR 0004,
 `../docs/adr/0004-monitoring-is-out-of-band.md`).
@@ -1618,14 +1619,16 @@ which see the run context it cannot (ADR 0004,
   condition per run; a silent log means a dead monitor, not a healthy host.
   Rotate by hand when it grows.
 - **State:** `~/.local/state/fabro-monitor.state` — one `C<n>=<epoch>` line
-  per firing condition (dedup: re-alert 4h, starvation 7d, disk 24h). C8 also
+  per firing condition (dedup: re-alert 4h, starvation 7d, disk and
+  background-starved 24h). C8 also
   keeps a `C8_since=<epoch>` line: the first qualifying sample of the current
   wedge window, cleared the moment a sample stops qualifying. Absent or empty
   when nothing is firing; a clean tick writes no file at all.
 - **Knobs** (force a condition without breaking anything real):
   `DISK_PCT=1` fires C6, `FABRO_PORT=1` fires C2, `IDLE_HOURS=0` fires C3
   once a schedule is enabled and some undrained coder pool is idle, `SCHEDULER_URL=http://127.0.0.1:1` fires C7, and
-  `WEDGE_MINUTES=0` fires C8 on the first qualifying sample. `DRY_RUN=1` (the
+  `WEDGE_MINUTES=0` fires C8 on the first qualifying sample, and
+  `BG_STARVE_HOURS=0` fires C10. `DRY_RUN=1` (the
   default) prints the alerts it would send and writes nothing.
 - **Drained coder pools are normal** (2026-10-20): the operator drains pools to use
   those boxes outside fabro. C3 stays quiet while every undrained pool's lease names
@@ -1634,10 +1637,19 @@ which see the run context it cannot (ADR 0004,
   that has ended does not count as busy. C8 counts only undrained pools, so two idle
   pools with two drained is a wedge. Every pool drained fires neither. C3 and C8 read
   one `/api/pools` sample; when it is unreadable, C3 judges by run age alone and C8 skips.
-- **C7 suppresses C8**, exactly as C1 suppresses C2's connection failures: an
-  unreachable scheduler cannot answer "queued work, idle boxes", so C7 reports
-  the cause and C8 is skipped, not evaluated. C7 and C8 are evaluated even when
-  C1 is firing or the fabro API is unreachable.
+- **C7 suppresses C8 and C10**, exactly as C1 suppresses C2's connection failures: an
+  unreachable scheduler cannot answer "queued work, idle boxes" or "what has the lane
+  started", so C7 reports the cause and both are skipped, not evaluated. C7, C8 and C10
+  are evaluated even when C1 is firing or the fabro API is unreachable.
+- **C10 background-starved** (2026-11-12): the lane is on, nothing is running on any box,
+  and the oldest queued job is older than `BG_STARVE_HOURS` (6). Every *other* alarm is
+  blind to this state — a queued background job has no run for C4, C8 is quiet because the
+  coder pools are busy, and the producers keep queueing — which is how the lane sat still
+  for two hours with 18 jobs queued after the two-slot cutover, when a drained second slot
+  of each box read as "the box is gone" (`blocked_by: drained`). The message carries each
+  box's `blocked_by`, which is the diagnosis. 🟠, not 🔴: a genuinely slammed factory
+  starves the lane for a while and recovers by itself. The window is the job's own age, so
+  a fresh burst of queued work cannot fire it.
 - The condition table, thresholds, and message contract:
   `../docs/turn-it-on/00-overview-and-contracts.md`. An optional dead-man's
   heartbeat (`FABRO_HEARTBEAT_URL`) is supported by the script but **not

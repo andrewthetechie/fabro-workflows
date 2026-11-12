@@ -285,11 +285,15 @@ def test_a_lease_with_no_known_box_stages_blocks_the_start(store, leases):
 
 
 def test_a_drained_box_is_never_filled(store, leases):
+    """One pool on its own URL is a one-slot box, so draining it drains every slot."""
     store.set_drained("coders-a", True)
     fabro = FakeFabro()
     enqueue(store)
     lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
     assert lane_.fill(NOW) == []
+    # `blocked_by` answers under the first pool's name; the drain gate is read before `/health`,
+    # so it holds with no reading cached.
+    assert lane_.box_views(NOW)[0].blocked_by == "every slot drained"
 
 
 def test_a_busy_or_shortly_idle_box_is_not_filled(store, leases):
@@ -826,8 +830,28 @@ def test_one_background_run_per_box_even_with_two_slots(store, leases):
     assert len(fabro.dispatched) == 1
 
 
-def test_a_drained_sibling_keeps_the_whole_box_out_of_the_lane(store, leases):
-    """C7 never fills a drained box, and the slots are one box: draining either stops the lane."""
+def test_a_drained_sibling_leaves_the_box_in_the_lane(store, leases):
+    """One drained slot is routine, and it says nothing about the box's inference: the run
+    the lane starts resolves to the box's `-bg` row, which no drain touches.
+
+    2026-11-12, after the two-slot cutover: reading `any(pool in drained)` as "the box is
+    gone" silenced both boxes for two hours with 18 jobs queued, because the operator's
+    console layout drains the second slot of each box.
+    """
+    store.set_drained("coders-b", True)
+    enqueue(store, typical=5)
+    fabro = FakeFabro()
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}),
+                  config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+
+    assert [start.box for start in lane_.fill(NOW)] == ["coders-a"]
+    assert fabro.dispatched[0]["coder_pool"] == "coders-a-bg"
+
+
+def test_a_box_whose_every_slot_is_drained_stays_out_of_the_lane(store, leases):
+    """Every slot drained is the operator using the whole box outside fabro, which is the
+    case the drain gate exists for. Before two-slot boxes one pool *was* every pool."""
+    store.set_drained("coders-a", True)
     store.set_drained("coders-b", True)
     enqueue(store, typical=5)
     fabro = FakeFabro()
@@ -835,7 +859,35 @@ def test_a_drained_sibling_keeps_the_whole_box_out_of_the_lane(store, leases):
                   config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
 
     assert lane_.fill(NOW) == []
-    assert [view.blocked_by for view in lane_.box_views(NOW)] == ["drained"]
+    assert [view.blocked_by for view in lane_.box_views(NOW)] == ["every slot drained"]
+
+
+def test_a_drained_sibling_does_not_excuse_a_loop_in_a_box_stage(store, leases):
+    """The drain rule is the only condition relaxed: a loop on the box still keeps the box
+    out, so an undrained slot is not a licence to fill beside a box stage."""
+    store.set_drained("coders-b", True)
+    held_lease(leases, run_id="coderun")
+    fabro = FakeFabro(stages={"coderun": [{"node_id": "coder", "status": "running"}]})
+    enqueue(store, typical=5)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}),
+                  config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+
+    assert lane_.fill(NOW) == []
+    assert [view.blocked_by for view in lane_.box_views(NOW)] == ["loop in a box stage"]
+
+
+def test_a_drained_slots_own_loop_still_bounds_the_gap(store, leases):
+    """Draining a pool never releases its lease (draft 15 decision 15), so the loop still
+    running there is still a slot of the box: its gap is the box's."""
+    store.set_drained("coders-b", True)
+    held_sibling(leases)
+    fabro = FakeFabro(stages={"sibling": [{"node_id": "next_task", "status": "running"}]})
+    enqueue(store, typical=10)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}),
+                  config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+
+    assert lane_.fill(NOW) == [], "the drained slot's 6-minute gap is the box's"
+    assert [view.blocked_by for view in lane_.box_views(NOW)] == ["no job fits"]
 
 
 def test_the_lane_reads_one_health_url_per_box_per_tick(store, leases):

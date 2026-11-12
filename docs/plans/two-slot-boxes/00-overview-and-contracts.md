@@ -73,6 +73,15 @@ coder pools. The spark box keeps serving `long-context`, and nothing else change
   *Why not one per slot:* `/health` is box-wide (F4). The lane cannot tell a free slot from a
   busy one. One background run per box is the conservative reading of ADR 0031's "the coder
   loop always wins".
+  *Amended 2026-11-12:* "no sibling pool is drained" is read as "not **every** sibling pool is
+  drained" (`BackgroundLane._every_slot_drained`). `pool_state` is the coder-dispatch switch,
+  and a background run resolves to the box's `-bg` model row, which no drain touches — so one
+  drained slot says nothing about the box's inference. Read the old way, it took the lane off
+  both boxes for two hours after the cutover, because the console's one-slot-per-box layout
+  leaves the second slot of each box drained, and 18 jobs queued with no alert. Every slot
+  drained is still a stand-down: that is the operator using the whole box outside fabro.
+  The other conditions, including "no coder loop on any sibling pool is in a box stage", are
+  unchanged.
 - **D4. `box-claim` waits for idle only when waiting can help.** It cancels background runs on
   every sibling pool, as today. It then waits for idle **only if** it cancelled at least one run
   **and** no other sibling coder loop is in a box stage. Otherwise it returns immediately with

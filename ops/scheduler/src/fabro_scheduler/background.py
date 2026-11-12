@@ -498,7 +498,13 @@ class BackgroundLane:
 
         One pass per **box**, not per pool (D3): the box's `/health` cannot tell a free slot
         from a busy one, so the lane takes the conservative reading and fills a box only when
-        no sibling slot is drained, running a background job, or in a box stage.
+        no background job is running on it and no sibling loop is in a box stage.
+
+        A **drained** sibling does not keep the box out of the lane on its own: `pool_state`
+        is the coder-dispatch switch, and the run the lane starts resolves to the box's `-bg`
+        row, which no drain touches. Only a box with **every** pool drained is skipped — the
+        operator has taken the whole box outside fabro, which is the case the drain gate was
+        for. Before two-slot boxes, one pool was every pool, so that is the same rule.
         """
         now = now or self._clock()
         if not self._config.background:
@@ -510,8 +516,7 @@ class BackgroundLane:
         for box, pools in boxes(self._config.box_health):
             if free_slots < self._config.bg_slot_reserve:
                 return starts
-            drained = self._store.drained_pools()
-            if any(pool in drained for pool in pools):
+            if self._every_slot_drained(pools):
                 continue
             running = self._store.running_background_jobs()
             if any(self._box_of(str(job["box"])) == box for job in running):
@@ -533,6 +538,19 @@ class BackgroundLane:
                 starts.append(started)
                 free_slots -= 1
         return starts
+
+    def _every_slot_drained(self, pools: list[str]) -> bool:
+        """Whether the operator has drained **every** slot of this box.
+
+        One drained pool is routine — it is how a pool is taken out of coder dispatch, and
+        the console's *one slot per box* layout drains the second slot of each box for days.
+        The lane must not read that as "the box is unavailable": that reading silenced both
+        boxes for two hours after the 2026-11-12 cutover, with 18 jobs queued. A box with
+        every slot drained is the operator using the whole box outside fabro, and only then
+        does the lane stand down.
+        """
+        drained = self._store.drained_pools()
+        return bool(pools) and all(pool in drained for pool in pools)
 
     def _free_slots(self) -> int:
         """fabro's free run slots: `max_concurrent_runs` minus every active run (C7.5).
@@ -1001,15 +1019,15 @@ class BackgroundLane:
     ) -> str:
         """The first C7 condition that stops this box, as a stable machine token.
 
-        `pools` is the box's sibling set: a drained slot keeps the whole box out of the lane
-        (C7 never runs on a drained box), and a loop on either slot holds the box's one
-        `/health` (D3).
+        `pools` is the box's sibling set: a box with **every** slot drained is out of the
+        lane (C7 never runs on a box the operator has taken wholly outside fabro), while one
+        drained slot is not (`_every_slot_drained`), and a loop on either slot holds the
+        box's one `/health` (D3).
         """
         if not self._config.background:
             return "switch off"
-        drained = self._store.drained_pools()
-        if any(pool in drained for pool in pools):
-            return "drained"
+        if self._every_slot_drained(pools):
+            return "every slot drained"
         loops = self._loops_on(pools)
         if any(loop.on_box for loop in loops):
             return "loop in a box stage"
