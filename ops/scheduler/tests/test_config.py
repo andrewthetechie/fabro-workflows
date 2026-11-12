@@ -416,7 +416,9 @@ def test_the_tracked_repos_toml_parses(tmp_path):
         ("andrewthetechie/lawncare-saas", "python-node"),
         ("andrewthetechie/womens-fantasy-sports", "ts"),
         ("andrewthetechie/writers-app", "rust-node"),
-        ("andrewthetechie/flakeradar", "python-node"),
+        # 403b68c: flakeradar's setup.sh runs cargo since #135, so it is on rust-node;
+        # python-node has no toolchain and its `prep` failed with exit 127.
+        ("andrewthetechie/flakeradar", "rust-node"),
     }
     assert all(r.enabled for r in cfg.repos)
 
