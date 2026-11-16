@@ -3470,11 +3470,20 @@ jq -nc --arg l \"$LEARN\" '{context_updates:{learn:$l}}'"]
     // attempt and nothing else -- a retry would hold a leased box for ten more minutes to
     // produce a comment a human may not read.
     //
-    // timeout="10m" is O25's bound, not a measurement: the input is one file of a few
-    // hundred lines and the output is at most five rules. Nothing here reads the checkout
-    // beyond what the input quotes.
-    // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
-    learn [label="Propose learnings", class="learn", timeout="20m", max_retries=0, prompt="@prompts/learn.md.j2"]
+    // timeout="15m" is derived from a measurement (issue #79, 172 `learn` stages in the runs
+    // dispatched 2026-11-02..11-16, events streamed per run on the host):
+    //   * completed attempts (154): p50 4.5m, p90 8.1m, p95 10.9m, p99 17.5m, max 17.8m;
+    //     only 9 ran past 10m and only 2 past 15m.
+    //   * 18 timed out (10.5%), 16 of them at the old 10m bound and 2 at 20m (63 runs since
+    //     da81455 doubled it: 3%). A timed-out attempt makes a median of 39 tool calls against
+    //     23 for a completed one: it is the step-4 verification wandering through the checkout,
+    //     not a hang, so the prompt now carries a tool-call budget.
+    //   * yield: about one learnings comment per completed attempt, three to five rules each, so
+    //     gating `learn` on a miss or a ladder rung would drop most of a stage that works, and is
+    //     not done. The queue-aware skip needs the scheduler, not this graph.
+    // 15m is the p98.7 of completed attempts; the two it would cut ran 17.5m and 17.8m. Re-time
+    // from `ops/fabro-scorecard.sh` (*Timeouts by node*) after the prompt budget has run two weeks.
+    learn [label="Propose learnings", class="learn", timeout="15m", max_retries=0, prompt="@prompts/learn.md.j2"]
 
     // ---- Post the learnings (O26, C9) ----
     // Nothing here may change the run's ending, so every path exits 0: no result file, no

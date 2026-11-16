@@ -27,7 +27,9 @@ answer when the run hit no wall worth a rule.
     by following this one sentence.
 
 4. **Verify against the checkout.** The repository is in the current directory. Open every
-    `path:N` you cite and confirm the line exists and supports the rule. Read `AGENTS.md` and
+    `path:N` you cite and confirm the line exists and supports the rule. Budget: about 25 tool
+    calls for the whole run. Past 20, stop verifying and `submit` what you have; a rule you
+    could not verify is dropped, not chased. Read `AGENTS.md` and
     `CLAUDE.md`, and drop any candidate they already state; the next run reads those.
 
 5. **Submit.** Keep at most five entries; three strong ones beat five weak ones. Call
