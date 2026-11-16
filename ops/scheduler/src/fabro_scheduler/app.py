@@ -1094,6 +1094,19 @@ def build_app(
         peak = peak_state(now)
         # A held issue is in the cache and out of `items`, so the list and the reason come from
         # the same rows the queue read (D20).
+        def sharpening_view(at: datetime) -> dict[str, object]:
+            ordered = [row for row, _ in sharpen.queued_in_order(store, config, at, only_due=False)]
+            ordered_ids = {int(row["id"]) for row in ordered}
+            live = store.sharpen_live_rows()
+            return {
+                "running": [row for row in live if row["state"] == "running"],
+                "queued": ordered + [
+                    row for row in live
+                    if row["state"] == "queued" and int(row["id"]) not in ordered_ids
+                ],
+                "recent": store.sharpen_recent(10),
+            }
+
         held_issues = lambda: [
             {
                 "issue": issue,
@@ -1170,6 +1183,9 @@ def build_app(
                 # holds each. Read from the cache, so this is the same list the queue skipped.
                 "held": held_issues(),
                 "hold_switch": "on" if config.precheck_holds else "off",
+                # ADR 0033: the sharpening run, the rows waiting in dispatch order, and the last
+                # ten that finished.
+                "sharpening": sharpening_view(now),
                 # The provider's peak-hours block and the override button.
                 "peak": peak,
                 "peak_status": config.peak_hours.status(now),
@@ -1522,8 +1538,9 @@ def _pool_payload(state: PoolState) -> dict[str, object]:
                 "issue_number": lease.issue_number,
                 "run_id": lease.run_id,
                 "dispatched_at": lease.dispatched_at.isoformat(),
-                # 'issue' | 'pr': the page links a PR lease to /pull/, never /issues/
-                # (more-local-inference 06).
+                # 'issue' | 'sharpen' | 'pr': the page links a PR lease to /pull/, never
+                # /issues/ (more-local-inference 06), and a 'sharpen' lease is the factory
+                # rewriting that issue's criteria, not an issue run (ADR 0033).
                 "target_kind": lease.target_kind,
             }
         ),

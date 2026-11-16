@@ -430,6 +430,14 @@ class BackgroundLane:
         siblings = box_siblings(self._config.box_health, pool)
         return siblings[0] if siblings else pool
 
+    def model_pool(self, pool: str) -> str:
+        """The `-bg` model row of the box `pool` belongs to: `coders-b` -> `coders-a-bg` (C12).
+
+        The row is named by the box's **first** pool, the one the overlay carries it under, so a
+        leased run on either slot of a two-slot box asks the same one.
+        """
+        return f"{self._box_of(pool)}-bg"
+
     def _reading(self, box: str) -> Health | None:
         """The box's `/health`, from the last tick's cache or read now.
 

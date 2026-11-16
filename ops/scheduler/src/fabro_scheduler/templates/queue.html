@@ -177,7 +177,7 @@
         {% set prog = run_progress[pool.lease.run_id] %}
         <td class="px-4 py-3 align-top">
           <span class="block whitespace-nowrap"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}">{{ pool.lease.repo }}</a></span>
-          <span class="block whitespace-nowrap text-xs text-slate-500"><a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}/{% if pool.lease.target_kind == 'pr' %}pull{% else %}issues{% endif %}/{{ pool.lease.issue_number }}">#{{ pool.lease.issue_number }}</a> <span class="text-slate-600">{{ pool.lease.workflow }}</span></span>
+          <span class="block whitespace-nowrap text-xs text-slate-500">{% if pool.lease.target_kind == 'sharpen' %}<span class="text-amber-300">sharpen</span> {% endif %}<a class="text-sky-400 hover:underline" href="https://github.com/{{ pool.lease.repo }}/{% if pool.lease.target_kind == 'pr' %}pull{% else %}issues{% endif %}/{{ pool.lease.issue_number }}">#{{ pool.lease.issue_number }}</a> <span class="text-slate-600">{{ pool.lease.workflow }}</span></span>
         </td>
         <td class="whitespace-nowrap px-4 py-3 text-right align-top tabular-nums">{%- if prog and prog.tasks_total is not none -%}{{ prog.tasks_completed or 0 }}/{{ prog.tasks_total }}{%- else -%}<span class="text-slate-500">&mdash;</span>{%- endif -%}</td>
         <td class="px-4 py-3 align-top">
@@ -203,7 +203,7 @@
         <form class="control inline" method="post"
               action="/api/pools/{{ pool.coder_pool }}/cancel"
               {% if pool.lease %}
-              data-confirm="Cancel run {{ pool.lease.run_id }} on {{ pool.coder_pool }}? The run is killed and {{ pool.lease.repo }}#{{ pool.lease.issue_number }} goes back to the agent queue."
+              data-confirm="Cancel run {{ pool.lease.run_id }} on {{ pool.coder_pool }}? The run is killed and {{ pool.lease.repo }}#{{ pool.lease.issue_number }} goes back to the {% if pool.lease.target_kind == 'sharpen' %}sharpen queue{% else %}agent queue{% endif %}."
               {% endif %}>
           <button type="submit" {% if not pool.lease %}disabled{% endif %} class="ml-1 rounded border border-red-900/70 bg-slate-800 px-2.5 py-1 text-xs font-medium text-red-400 hover:bg-red-950 {% if not pool.lease %}cursor-not-allowed opacity-50{% endif %}">
             Cancel run
@@ -346,6 +346,47 @@
       <tr><td colspan="7" class="px-2 py-2 text-slate-500">No background job has been queued yet.</td></tr>
       {% elif not (bgq.running or bgq.queued) %}
       <tr><td colspan="7" class="px-2 py-2 text-slate-500">Nothing queued or running; the last ten that ended are shown.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{# ADR 0033: the factory rewriting an unverifiable issue's criteria. One run at a time, ahead of
+   every issue run; the rows waiting are in the coder queue's order. #}
+<h2 class="mb-3 mt-10 text-xs font-semibold uppercase tracking-wider text-slate-500">Sharpening</h2>
+<div class="mb-4 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 shadow-sm">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-900/60 text-slate-400">
+      <tr>
+        <th class="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide">Issue</th>
+        <th class="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide">State</th>
+        <th class="whitespace-nowrap px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide">Detail</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800">
+      {% for row in sharpening.running %}
+      <tr>
+        <td class="px-2 py-2 align-top"><a class="text-sky-400 hover:underline" href="https://github.com/{{ row.repo }}/issues/{{ row.issue_number }}">#{{ row.issue_number }}</a> <span class="text-slate-500">{{ row.repo.split('/')[-1] }}</span></td>
+        <td class="whitespace-nowrap px-2 py-2 align-top text-emerald-400">running (attempt {{ row.attempts }})</td>
+        <td class="px-2 py-2 align-top font-mono text-xs text-slate-500">{% if row.run_id %}<a class="text-sky-400 hover:underline" href="{{ fabro_ui_url }}/runs/{{ row.run_id }}">{{ row.run_id }}</a>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      {% for row in sharpening.queued %}
+      <tr>
+        <td class="px-2 py-2 align-top"><a class="text-sky-400 hover:underline" href="https://github.com/{{ row.repo }}/issues/{{ row.issue_number }}">#{{ row.issue_number }}</a> <span class="text-slate-500">{{ row.repo.split('/')[-1] }}</span></td>
+        <td class="whitespace-nowrap px-2 py-2 align-top text-slate-300">queued{% if row.attempts %} (attempt {{ row.attempts }} failed){% endif %}</td>
+        <td class="px-2 py-2 align-top text-xs text-slate-500">{% if row.next_eligible_at %}not before {{ row.next_eligible_at|compact_ts }}{% endif %}{% if row.rule %} {{ row.rule }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+      {% for row in sharpening.recent %}
+      <tr>
+        <td class="px-2 py-2 align-top"><a class="text-sky-400 hover:underline" href="https://github.com/{{ row.repo }}/issues/{{ row.issue_number }}">#{{ row.issue_number }}</a> <span class="text-slate-500">{{ row.repo.split('/')[-1] }}</span></td>
+        <td class="whitespace-nowrap px-2 py-2 align-top {% if row.state == 'applied' %}text-emerald-400{% else %}text-slate-400{% endif %}">{{ row.state }}</td>
+        <td class="px-2 py-2 align-top text-xs text-slate-500">{{ row.finished_at|compact_ts }}{% if row.round %}, round {{ row.round }}{% endif %}{% if row.recheck %}, recheck {{ row.recheck }}{% endif %}{% if row.rule %} &mdash; {{ row.rule }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+      {% if not sharpening.running and not sharpening.queued and not sharpening.recent %}
+      <tr><td colspan="3" class="px-2 py-2 text-slate-500">No issue has been sharpened yet.</td></tr>
       {% endif %}
     </tbody>
   </table>

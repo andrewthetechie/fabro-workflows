@@ -265,8 +265,10 @@ BACKGROUND_GAP_MINUTES_DEFAULT = 0
 BACKGROUND_GAP_WORKFLOWS = ("backlog", "ralph")
 
 # The workflows whose box stages a background run must never overlap (D1). A coder loop
-# with no current box stage leaves its whole remaining gap to the lane.
-CODER_LOOP_WORKFLOWS = ("backlog", "ralph", "pr-review")
+# with no current box stage leaves its whole remaining gap to the lane. `issue-sharpen` is a
+# leased run, not a loop (issue-sharpening, ADR 0033), and it holds its box the same way: it has
+# no row in the gap table, so its gaps predict 0 and the lane fills nothing while it runs.
+CODER_LOOP_WORKFLOWS = ("backlog", "ralph", "pr-review", "issue-sharpen")
 
 # The run probe's beat: how often the background thread refreshes the cached
 # per-lease task count and current stage that the page renders. Stages last tens

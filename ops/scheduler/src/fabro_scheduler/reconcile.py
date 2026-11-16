@@ -78,6 +78,7 @@ from .github import (
     fetch_pull_for_branch,
     remove_label,
 )
+from . import sharpen
 from .lease import Lease, LeaseStore
 from .store import RunOutcome, Store
 from .usage import split_by_model
@@ -410,6 +411,9 @@ def reconcile_leases(
         try:
             run = fabro_client.get_run(lease.run_id)
         except FabroError as exc:
+            if lease.target_kind == "sharpen" and exc.status_code == 404:
+                actions.append(_settle_sharpen(store, leases, lease, None, fabro_client, github_token))
+                continue
             if exc.status_code == 404:
                 # No run projection exists -- fabro has no such run -- so the row
                 # is built from the lease alone. `finished_at` is left to the
@@ -447,6 +451,13 @@ def reconcile_leases(
                     lease, "adopted", f"run {status_kind(run) or 'unknown'}, not terminal"
                 )
             )
+            continue
+
+        if lease.target_kind == "sharpen":
+            # A sharpening has no issue to requeue and no receipt to repair (ADR 0033): its own
+            # row says what happens next, and the issue keeps its `precheck-unverifiable` hold
+            # until the row is over.
+            actions.append(_settle_sharpen(store, leases, lease, run, fabro_client, github_token))
             continue
 
         # Terminal. Decide requeue, fetching the failure category from the events
@@ -534,6 +545,65 @@ def reconcile_leases(
                 lease.repo, lease.issue_number, lease.run_id, _classify(run),
             )
     return actions
+
+
+def _settle_sharpen(
+    store: Store,
+    leases: LeaseStore,
+    lease: Lease,
+    run: dict | None,
+    fabro_client: FabroClient,
+    github_token: str,
+) -> ReleaseAction:
+    """Release a `sharpen` lease: read the run's record, settle its row, archive the run.
+
+    `run` is `None` when fabro has lost the run. A succeeded run's record is read from its own
+    events (C11); a read that fails keeps the lease and is tried again at the next poll. Nothing
+    here writes `agent`, `agent-in-progress` or a receipt, and nothing requeues the issue: the
+    issue was never taken out of the queue, only held (`sharpen.py`).
+    """
+    now = datetime.now(UTC)
+    row = store.sharpen_by_run(lease.run_id)
+    kind, reason = LOST_KIND, LOST_REASON
+    recorded = None
+    if run is not None:
+        if not is_terminal(run):
+            return ReleaseAction(lease, "adopted", f"run {status_kind(run) or 'unknown'}, not terminal")
+        status = (run.get("lifecycle") or {}).get("status") if isinstance(run.get("lifecycle"), Mapping) else None
+        status = status if isinstance(status, Mapping) else {}
+        kind, reason = str(status.get("kind") or "unknown"), status.get("reason")
+        if kind == "succeeded":
+            try:
+                recorded = sharpen.read_record(fabro_client.iter_events(lease.run_id))
+            except FabroError as exc:
+                log.error("reconcile: sharpen %s#%s run %s: could not read its record, keeping "
+                          "lease: %s", lease.repo, lease.issue_number, lease.run_id, exc)
+                return ReleaseAction(lease, "failed", str(exc))
+    finished = _completed_at(run) if run is not None else None
+    minutes = ((finished or now) - lease.dispatched_at).total_seconds() / 60
+    state = "none"
+    attempts = 0
+    if row is not None:
+        attempts = int(row["attempts"] or 0)
+        state = sharpen.settle(
+            store, row, kind=kind, reason=reason if isinstance(reason, str) else None,
+            recorded=recorded,
+            remove_label=lambda repo, number, label: _remove_label(repo, number, label, github_token),
+            now=now, box_minutes=round(minutes, 1),
+        )
+    else:
+        log.warning("reconcile: sharpen %s#%s run %s has no running row; releasing the lease only",
+                    lease.repo, lease.issue_number, lease.run_id)
+    usage = _usage_fields(lease, fabro_client) if run is not None else _unknown_usage()
+    outcome = (
+        _outcome_from_run(run, requeue_attempt=attempts, **usage) if run is not None
+        else RunOutcome(kind=LOST_KIND, reason=LOST_REASON, requeue_attempt=attempts)
+    )
+    leases.archive_and_release(lease.run_id, outcome)
+    log.info("reconcile: sharpen %s#%s run %s ended %s%s; the row is now %s",
+             lease.repo, lease.issue_number, lease.run_id, kind,
+             f"/{reason}" if reason else "", state)
+    return ReleaseAction(lease, "released", f"sharpen {kind}: row {state}")
 
 
 def _with_category(

@@ -77,6 +77,7 @@ from .pack import PackProducer
 from .precheck import PrecheckProducer
 from .queue import QueueItem, build_queue
 from .store import Store
+from . import sharpen
 from .workflow_version import WorkflowVersionError
 
 log = logging.getLogger(__name__)
@@ -326,11 +327,16 @@ class DispatchLoop:
         if self._peak_pause(now):
             # Background runs ignore the peak-hours pause (D7): they spend no hosted
             # credits, and a gap is a gap whatever the hour. The pause is when boxes are
-            # most often free, so the prechecks are kept queued through it too.
-            return self._paused(now, allow_background_starts=True)
+            # most often free, so the prechecks are kept queued through it too. A sharpening
+            # spends none either (ADR 0033 D4), so it dispatches through the pause as well.
+            sharpened = self._dispatch_sharpen(now)
+            self._paused(now, allow_background_starts=True)
+            return sharpened
         ranked = self._ranked(now)
 
-        attempts: list[DispatchAttempt] = []
+        # A sharpening goes first (D3): it takes a free pool before any issue run does, so the
+        # next free pool is the issue's. At most one is ever active across the fleet.
+        attempts: list[DispatchAttempt] = self._dispatch_sharpen(now)
         backed_off: set[str] = set()
         while True:
             free = self._leases.free_pools(self._pools, self._drained_pools())
@@ -377,6 +383,95 @@ class DispatchLoop:
         self._produce(now)
         self._lane.tick(now)
         return attempts
+
+    def _dispatch_sharpen(self, now: datetime) -> list[DispatchAttempt]:
+        """Start the one sharpening run, when none is active and a row is due (D2, D3).
+
+        The issue runs' labels are never touched: a sharpening has no receipt, no `agent` swap and
+        no requeue, because the issue stays in the queue under its `precheck-unverifiable` hold
+        and keeps no lease of its own. The lease is `target_kind='sharpen'` on the next free
+        undrained pool, and the run is created with `dispatch_job` on the box's `-bg` model row.
+        A dispatch that produces no run leaves the row queued, five minutes on.
+        """
+        active = self._leases.active()
+        if any(held.target_kind == "sharpen" for held in active):
+            return []
+        free = self._leases.free_pools(self._pools, self._drained_pools())
+        if not free:
+            return []
+        due = sharpen.queued_in_order(self._store, self._config, now)
+        if not due:
+            return []
+        row, repo_row = due[0]
+        repo, number = str(row["repo"]), int(row["issue_number"])
+        preferred = self._leases.last_pool_for_repo(repo)
+        pool = preferred if preferred in free else free[0]
+
+        def attempt(**fields: object) -> DispatchAttempt:
+            return DispatchAttempt(repo=repo, issue_number=number, coder_pool=pool,
+                                   **fields)  # type: ignore[arg-type]
+
+        if self._config.box_health:
+            evicted = self._lane.make_room(now)
+            if evicted is not None:
+                log.info("dispatch: cancelled background run %s on %s to free a slot",
+                         evicted.run_id, evicted.box)
+        try:
+            result = self._fabro.dispatch_job(
+                repo=repo,
+                environment_id=repo_row.environment_id,
+                inputs={"issue_number": number, "model_pool": self._lane.model_pool(pool)},
+                labels={
+                    "lane": "coder",
+                    "box": pool,
+                    "workflow": "issue-sharpen",
+                    "issue": str(number),
+                },
+                coder_pool=pool,
+                workflow="issue-sharpen",
+            )
+        except RunNotStarted as exc:
+            # The run exists and will never execute. It counts as an attempt (D12), and the box
+            # stays free: nothing leased it.
+            log.error("dispatch: sharpen %s#%s: run %s was created but could not be started: %s",
+                      repo, number, exc.run_id, exc)
+            self._store.sharpen_claim(int(row["id"]), exc.run_id, now)
+            fresh = self._store.sharpen_row(int(row["id"]))
+            sharpen.settle(self._store, fresh, kind="failed", reason="not started", recorded=None,
+                           remove_label=self._sharpen_unhold, now=now)
+            self._store.sharpen_defer(int(row["id"]), now + sharpen.DISPATCH_RETRY)
+            return [attempt(run_id=exc.run_id, failed_stage=STAGE_START, error=str(exc))]
+        except Exception as exc:  # noqa: BLE001 - any pre-run failure leaves the row queued
+            log.warning("dispatch: sharpen %s#%s: fabro refused the run: %s", repo, number, exc)
+            self._store.sharpen_defer(int(row["id"]), now + sharpen.DISPATCH_RETRY)
+            return [attempt(failed_stage=STAGE_CREATE, error=str(exc))]
+
+        lease = Lease(
+            coder_pool=pool,
+            repo=repo,
+            issue_number=number,
+            run_id=result.run_id,
+            box_stages=self._fabro.box_stages(result.commit_sha, "issue-sharpen"),
+            dispatched_at=datetime.now(UTC),
+            workflow="issue-sharpen",
+            target_kind="sharpen",
+        )
+        try:
+            self._leases.acquire(lease)
+        except LeaseConflict as exc:
+            log.error("dispatch: sharpen %s#%s: run %s was started but its lease was refused: %s",
+                      repo, number, result.run_id, exc)
+            self._store.sharpen_defer(int(row["id"]), now + sharpen.DISPATCH_RETRY)
+            return [attempt(run_id=result.run_id, failed_stage=STAGE_LEASE, error=str(exc))]
+        if not self._store.sharpen_claim(int(row["id"]), result.run_id, now):
+            log.warning("dispatch: sharpen %s#%s: the row left the queue during the dispatch; "
+                        "run %s will end as not needed", repo, number, result.run_id)
+        log.info("dispatch: sharpen %s#%s -> run %s on %s (issue-sharpen, model %s)",
+                 repo, number, result.run_id, pool, self._lane.model_pool(pool))
+        return [attempt(run_id=result.run_id)]
+
+    def _sharpen_unhold(self, repo: str, number: int, label: str) -> None:
+        remove_label(repo, number, label, self._github_token, client=self._http)
 
     def _paused(self, now: datetime, *, allow_background_starts: bool) -> list[DispatchAttempt]:
         """A pass with no coder dispatch: keep the producers and the lane moving.

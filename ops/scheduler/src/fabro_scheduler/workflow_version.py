@@ -74,11 +74,14 @@ PRECHECK_CALIBRATION_ENTRYPOINT = "workflows/precheck-calibration/workflow.fabro
 # Task 10's two background packages.
 FLAKY_INVESTIGATION_ENTRYPOINT = "workflows/flaky-investigation/workflow.fabro"
 REPO_ORIENTATION_ENTRYPOINT = "workflows/repo-orientation/workflow.fabro"
+# issue-sharpening: the leased run that rewrites an unverifiable issue's criteria (ADR 0033).
+ISSUE_SHARPEN_ENTRYPOINT = "workflows/issue-sharpen/workflow.fabro"
 ENTRYPOINTS = {
     "backlog": BACKLOG_ENTRYPOINT,
     "ralph": RALPH_ENTRYPOINT,
     "box-noop": BOX_NOOP_ENTRYPOINT,
     "issue-precheck": ISSUE_PRECHECK_ENTRYPOINT,
+    "issue-sharpen": ISSUE_SHARPEN_ENTRYPOINT,
     "context-pack": CONTEXT_PACK_ENTRYPOINT,
     "precheck-calibration": PRECHECK_CALIBRATION_ENTRYPOINT,
     "flaky-investigation": FLAKY_INVESTIGATION_ENTRYPOINT,

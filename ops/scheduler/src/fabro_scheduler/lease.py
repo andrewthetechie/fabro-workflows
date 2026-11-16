@@ -73,8 +73,9 @@ class Lease:
     # "plan-arm"}`. Empty when the manifest could not be read, which the lane reads as
     # "no box stage known" rather than as "nothing is on the box".
     box_stages: Mapping[str, str] = field(default_factory=dict)
-    # Always 'issue' since the PR doctor's follow-up reviews were removed (2026-10-31); 'pr' was
-    # their target kind. Kept as a column so existing rows and readers need no migration.
+    # 'issue' for an issue run, 'sharpen' for the issue-sharpen lease (ADR 0033, whose
+    # `issue_number` is the issue being sharpened). 'pr' was the retired PR doctor's follow-up
+    # review (2026-10-31); a row that still says so reads back as it was written.
     target_kind: str = "issue"
 
 
@@ -231,7 +232,7 @@ def _lease_from_row(row) -> Lease:
 
 def _target_kind(raw: object) -> str:
     """The lease's `target_kind` column. A missing or unknown value is an issue lease."""
-    return "pr" if raw == "pr" else "issue"
+    return raw if raw in ("pr", "sharpen") else "issue"
 
 
 def _box_stages(raw: object) -> Mapping[str, str]:

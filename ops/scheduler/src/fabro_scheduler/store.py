@@ -2271,6 +2271,39 @@ class Store:
                 (next_eligible_at.isoformat(), rule, row_id),
             )
 
+    def sharpen_defer(self, row_id: int, until: datetime) -> None:
+        """A `queued` row that could not be dispatched: not eligible again before `until`."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE sharpen SET next_eligible_at = ? WHERE id = ? AND state = 'queued'",
+                (until.isoformat(), row_id),
+            )
+
+    def sharpen_requeue(self, row_id: int) -> None:
+        """`running` -> `queued` without counting the attempt (a fabro restart, an operator's
+        cancel). The attempt `sharpen_claim` counted is given back."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE sharpen SET state = 'queued', run_id = NULL, next_eligible_at = NULL, "
+                "  attempts = MAX(attempts - 1, 0) WHERE id = ? AND state = 'running'",
+                (row_id,),
+            )
+
+    def sharpen_by_run(self, run_id: str) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM sharpen WHERE run_id = ? AND state = 'running'", (run_id,)
+            ).fetchone()
+
+    def sharpen_recent(self, limit: int = 10) -> list[sqlite3.Row]:
+        """The last `limit` finished rows, newest first: the queue page's *Sharpening* strip."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM sharpen WHERE state NOT IN ('queued', 'running') "
+                "ORDER BY finished_at DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
     def sharpen_supersede(self, row_id: int, now: datetime) -> bool:
         """A `queued` row whose issue's text changed: it ends `superseded`. A `running` row is
         left to its run (`apply`'s stale check handles it)."""

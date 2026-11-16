@@ -30,17 +30,33 @@ inventory poll, as the remainder and release passes are.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
-from datetime import UTC, datetime
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+from .config import SchedulerConfig
 from .github import GitHubError
 from .precheck import hold_label
+from .queue import QueueItem, rank
 from .store import SHARPEN_TERMINAL_STATES, Store
 
 log = logging.getLogger(__name__)
 
 # `precheck-unverifiable`: the verdict with `_` written as `-`, like every other hold label.
 LABEL = hold_label("unverifiable")
+
+# D12: a run that fails, times out or is lost is retried up to two more times, at least 30 minutes
+# apart, so three attempts in all. A model's own refusal (`cannot_sharpen`, `capped`, `churn`) is
+# an ending, never a fault, and is never retried.
+MAX_ATTEMPTS = 3
+RETRY_SPACING = timedelta(minutes=30)
+# A dispatch that never produced a run (fabro refused it, or the version could not be built).
+DISPATCH_RETRY = timedelta(minutes=5)
+
+# The outcomes a succeeded run's `record` can carry that end the row (C11). `failed` is not one:
+# it makes the run end failed, which is a fault to retry.
+RECORDED_ENDINGS = ("applied", "capped", "churn", "stale", "cannot_sharpen", "not_needed")
 
 # What a label write is: `(repo, issue number, label)`. The inventory binds the token and client.
 LabelWrite = Callable[[str, int, str], object]
@@ -147,3 +163,131 @@ def _write(write: LabelWrite, repo: str, number: int, what: str) -> bool:
         log.warning("sharpen: %s#%s: could not %s %s (%s)", repo, number, what, LABEL, exc)
         return False
     return True
+
+
+@dataclass(frozen=True)
+class Recorded:
+    """The `record` stage's context updates (C11): how a sharpening run ended."""
+
+    outcome: str
+    rule: str = ""
+    round: int = 0
+    body_hash: str = ""
+    applied_hash: str = ""
+    recheck: str = ""
+    changes: int = 0
+    transformations: str = ""
+
+
+def read_record(events: Iterable[Mapping[str, Any]]) -> Recorded | None:
+    """The last `record` stage's context updates, or `None` when the run has none.
+
+    The same shape as `calibration.read_record`: `record` is the package's last node, so its
+    `stage.completed` is the last word. Consumed once and never held.
+    """
+    found: Recorded | None = None
+    for event in events:
+        if (event.get("event") or event.get("type")) != "stage.completed":
+            continue
+        props = event.get("properties")
+        if not isinstance(props, Mapping) or event.get("node_id") != "record":
+            continue
+        updates = props.get("context_updates")
+        if not isinstance(updates, Mapping):
+            continue
+        outcome = updates.get("sharpen_outcome")
+        if not isinstance(outcome, str) or not outcome:
+            continue
+        found = Recorded(
+            outcome=outcome,
+            rule=str(updates.get("sharpen_rule") or ""),
+            round=_int(updates.get("round")),
+            body_hash=str(updates.get("body_hash") or ""),
+            applied_hash=str(updates.get("applied_hash") or ""),
+            recheck=str(updates.get("recheck") or ""),
+            changes=_int(updates.get("changes")),
+            transformations=str(updates.get("transformations") or ""),
+        )
+    return found
+
+
+def _int(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 0
+
+
+def settle(
+    store: Store,
+    row,
+    *,
+    kind: str,
+    reason: str | None,
+    recorded: Recorded | None,
+    remove_label: LabelWrite,
+    now: datetime,
+    box_minutes: float | None = None,
+) -> str:
+    """Write what a finished run did to its `sharpen` row and the hold. Returns the new state.
+
+    `kind` and `reason` are the run's fabro status (`succeeded`, `failed`/`terminated`, ...), or
+    `lost` when fabro no longer has it. Succeeded with an ending in the record: the row ends there.
+    A fabro restart or an operator's cancel puts the row back without counting the attempt. Every
+    other failure counts, and the third ends the row `failed` (D12). The label comes off on every
+    terminal state, and a failed write is the inventory pass's to retry.
+    """
+    repo, number = str(row["repo"]), int(row["issue_number"])
+    if kind == "succeeded" and recorded is not None and recorded.outcome in RECORDED_ENDINGS:
+        store.sharpen_finish(
+            int(row["id"]), state=recorded.outcome, now=now,
+            applied_hash=recorded.applied_hash, recheck=recorded.recheck, round_=recorded.round,
+            rule=recorded.rule, transformations=recorded.transformations, box_minutes=box_minutes,
+        )
+        _write(remove_label, repo, number, "remove")
+        return recorded.outcome
+    if reason in ("terminated", "cancelled"):
+        store.sharpen_requeue(int(row["id"]))
+        return "queued"
+    why = (
+        f"{kind}/{reason}" if reason else kind
+    ) + ("" if recorded is None else f" (record: {recorded.outcome})")
+    if int(row["attempts"] or 0) >= MAX_ATTEMPTS:
+        store.sharpen_finish(
+            int(row["id"]), state="failed", now=now, rule=why, box_minutes=box_minutes
+        )
+        _write(remove_label, repo, number, "remove")
+        return "failed"
+    store.sharpen_retry(int(row["id"]), next_eligible_at=now + RETRY_SPACING, rule=why)
+    return "queued"
+
+
+def queued_in_order(
+    store: Store, config: SchedulerConfig, now: datetime, *, only_due: bool = True
+) -> list[tuple[Any, Any]]:
+    """The `queued` rows in dispatch order, as `(row, repo config)`.
+
+    The order is the coder queue's own (`queue.rank`: repo priority, then issue number, so the
+    issue that would be worked next is sharpened first, D3), over the issues the rows name. A
+    row whose issue left the cache, or whose repo is no longer schedulable, is left out: nothing
+    can run it. `only_due` leaves out a row still waiting for its `next_eligible_at` (D12).
+    """
+    items: list[QueueItem] = []
+    found: dict[tuple[str, int], tuple[Any, Any]] = {}
+    for row in store.sharpen_live_rows():
+        if row["state"] != "queued":
+            continue
+        due = row["next_eligible_at"]
+        if only_due and due and datetime.fromisoformat(due) > now:
+            continue
+        issue = store.get_issue(str(row["repo"]), int(row["issue_number"]))
+        repo_row = config.repo_named(str(row["repo"]))
+        if issue is None or repo_row is None or not repo_row.enabled:
+            continue
+        found[(issue.repo, issue.number)] = (row, repo_row)
+        items.append(QueueItem(
+            issue=issue, repo_priority=repo_row.priority, override_rank=None,
+            waited=now - issue.first_seen,
+        ))
+    return [found[(item.issue.repo, item.issue.number)]
+            for item in rank(items, config.starvation_ceiling)]
