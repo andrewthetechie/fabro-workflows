@@ -46,6 +46,10 @@ log = logging.getLogger(__name__)
 # `precheck-unverifiable`: the verdict with `_` written as `-`, like every other hold label.
 LABEL = hold_label("unverifiable")
 
+# The terminal states that released an issue without applying a rewrite: the do-nothing comparison
+# the measure section and the scorecard both draw (D6). `superseded` and `not_needed` are neither.
+UNAPPLIED_STATES = ("capped", "churn", "cannot_sharpen", "failed", "stale")
+
 # D12: a run that fails, times out or is lost is retried up to two more times, at least 30 minutes
 # apart, so three attempts in all. A model's own refusal (`cannot_sharpen`, `capped`, `churn`) is
 # an ending, never a fault, and is never retried.

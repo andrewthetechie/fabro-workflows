@@ -42,6 +42,25 @@ operator commit, and box-hours per merged PR, each per repo × pool. A merge rat
 because `ralph` ran on the faster box would be an artefact, and the strata table is what
 shows it.
 
+## The sharpening row (ADR 0033, issue-sharpening 06)
+
+The factory rewrites an `unverifiable` issue's acceptance criteria itself, with no human approval,
+so the scorecard carries one row for it:
+
+| Metric | Value |
+|---|---|
+| Sharpened | applied A, released unapplied U; applied issues' PRs merged M of P |
+
+`A` is the sharpenings that ended `applied` in the window, and `U` those released without an apply
+(`capped`, `churn`, `cannot_sharpen`, `failed`, `stale`): the issue then ran as written. `P` counts
+the PRs opened by issue runs dispatched **after** an applied sharpening ended, for that same issue,
+and `M` how many of them the workflow merged (the first card's definition of merged). The row is
+the short form. `GET :32280/api/background/measure` has the `sharpening` section: rows by state,
+rounds, transformations, `recheck` verdicts, box minutes, hold-to-release times, each stage's
+duration, and that merge rate beside the calibration report's `unverifiable` and `ready` rates and
+the do-nothing rate of the unapplied rows. The retro files `sharpen:<state>` classes from the same
+rows when one crosses its thresholds.
+
 ## How the numbers are collected
 
 ```

@@ -11,7 +11,7 @@ Pure, like `scorecard.py`: rows in, dataclasses out, no file, network, clock or
 environment. The dates, the GitHub issues and the CLI all live elsewhere (`app.py`'s
 `_retro`); ADR 0026 is the design.
 
-A class has one of four **kinds**, each keyed only from enumerable values so next
+A class has one of five **kinds**, each keyed only from enumerable values so next
 week's class matches this week's (`docs/factory-retro/00-overview-and-contracts.md`,
 C1):
 
@@ -21,6 +21,9 @@ C1):
 * `failover:<from_model>:<error_kind>` -- provider failovers, every stage together:
   one model refusing is one cause wherever it was called (the stages are kept on
   the class as `stages`, not in the key).
+* `sharpen:<state>` -- issue sharpenings that ended without applying a rewrite
+  (`capped`, `churn`, `cannot_sharpen`, `failed`, `stale`), counted in rows and box
+  time (ADR 0033). `applied` and `not_needed` are not failures.
 
 A run in several classes counts in each; box-hours are counted per class and are
 never added across them (ADR 0026 D12).
@@ -38,9 +41,10 @@ from datetime import date, timedelta
 from . import scorecard
 from .github import TrackedIssue
 from .scorecard import Scorecard
+from .sharpen import UNAPPLIED_STATES
 from .store import ScorecardRows
 
-KINDS = ("ending", "held", "timeout", "failover")
+KINDS = ("ending", "held", "timeout", "failover", "sharpen")
 
 # Runs that stopped at these nodes are deliberate non-shipping decisions -- the
 # issue was already fixed or is no longer worth doing -- not failures. Counting
@@ -87,7 +91,7 @@ _GITHUB_URL = re.compile(r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", re.
 # The key grammar (C1): the kind, then one or more slug parts. The marker regex in
 # the filed issue has to read every key this module produces back, so the two
 # charsets are the same one.
-KEY_PATTERN = re.compile(r"^(ending|held|timeout|failover)(:[a-z0-9_./-]+)+$")
+KEY_PATTERN = re.compile(r"^(ending|held|timeout|failover|sharpen)(:[a-z0-9_./-]+)+$")
 
 _SLUG_REPLACE = re.compile(r"[^a-z0-9_./-]+")
 
@@ -145,7 +149,7 @@ class ClassStat:
         over often still ends in a PR, so for those it is only the runs that ended
         without one: a 15-hour run that timed out once and opened a PR cost little.
         """
-        if self.kind in ("ending", "held"):
+        if self.kind in ("ending", "held", "sharpen"):
             return self.box_hours
         return sum(run.lease_ms for run in self.runs if run.ending != "PR opened") / 3_600_000
 
@@ -291,6 +295,24 @@ def classify(rows: ScorecardRows) -> Classified:
         key = f"failover:{slug(row['from_model'])}:{slug(row['error_kind'])}"
         add(key, "failover", [ref(history_row)], int(row["count"]))
         stages_of[key][row["node_id"]] += int(row["count"])
+
+    # --- sharpenings that did not apply (ADR 0033) ----------------------------------
+    # One row is one issue's attempt, so the class counts rows (`events`) and the box time of
+    # the run that ended it. A row that never reached a run has none to name and is not filed.
+    for row in rows.sharpen:
+        state = str(row["state"])
+        if state not in UNAPPLIED_STATES or not row["run_id"]:
+            continue
+        add(
+            f"sharpen:{slug(state)}",
+            "sharpen",
+            [RunRef(
+                run_id=str(row["run_id"]),
+                ending=f"sharpen {state}",
+                lease_ms=int(float(row["box_minutes"] or 0) * 60_000),
+            )],
+            1,
+        )
 
     classes = {
         key: ClassStat(
@@ -844,6 +866,13 @@ def _sentence(stat: ClassStat) -> str:
         return (
             f"PRs the workflow did not merge, held for the reason bucket `{parts[1]}`"
             " (`scorecard.REASON_BUCKETS`)."
+        )
+    if kind == "sharpen":
+        return (
+            f"Issues the factory tried to sharpen that ended `{parts[1]}`, so the rewrite was not"
+            " applied and the issue ran as written (ADR 0033). The numbers behind it, per state and"
+            " per stage, are in the `sharpening` section of"
+            " `GET :32280/api/background/measure`; the run ids are below."
         )
     if kind == "timeout":
         return (

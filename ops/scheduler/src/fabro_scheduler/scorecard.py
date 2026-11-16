@@ -34,6 +34,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from .sharpen import UNAPPLIED_STATES
 from .store import ScorecardRows
 from .usage import LOCAL_PROVIDERS
 
@@ -236,6 +237,12 @@ class Scorecard:
     # How many of the window's runs each workflow ran (ADR 0029 C12, O21). One entry
     # for a window before the trial, so nothing else changes shape.
     workflow_runs: dict[str, int] = field(default_factory=dict)
+    # Issue sharpening (ADR 0033): rows that ended applied, rows released without an apply, and
+    # how the applied issues' PRs ended. Zero before the first one.
+    sharpen_applied: int = 0
+    sharpen_unapplied: int = 0
+    sharpen_prs: int = 0
+    sharpen_merged: int = 0
 
     @property
     def merge_rate(self) -> float | None:
@@ -399,6 +406,22 @@ def compute(
 
     task_validation, final_validation = _task_validation(rows.stages, summaries)
 
+    # --- sharpening: did the rewritten issues' PRs merge (ADR 0033) ----------------
+    applied_rows = [row for row in rows.sharpen if row["state"] == "applied"]
+    sharpen_pr_keys = {
+        key
+        for key, runs in pr_runs.items()
+        if any(
+            run["repo"] == row["repo"] and run["issue_number"] == row["issue_number"]
+            and str(run["dispatched_at"]) >= str(row["finished_at"])
+            for row in applied_rows
+            for run in runs
+        )
+    }
+    sharpen_merged = sum(
+        1 for key in sharpen_pr_keys if merged_by_workflow(pr_runs[key], facts.get(key))
+    )
+
     return Scorecard(
         start=start,
         end=end,
@@ -439,6 +462,10 @@ def compute(
                 Counter(row["workflow"] or "backlog" for row in history).items()
             )
         ),
+        sharpen_applied=len(applied_rows),
+        sharpen_unapplied=sum(1 for row in rows.sharpen if row["state"] in UNAPPLIED_STATES),
+        sharpen_prs=len(sharpen_pr_keys),
+        sharpen_merged=sharpen_merged,
     )
 
 
@@ -452,6 +479,7 @@ def _filter_repo(rows: ScorecardRows, repo: str) -> ScorecardRows:
         failovers=[row for row in rows.failovers if row["run_id"] in run_ids],
         prs=[row for row in rows.prs if row["repo"] == repo],
         models=[row for row in rows.models if row["run_id"] in run_ids],
+        sharpen=[row for row in rows.sharpen if row["repo"] == repo],
     )
 
 
@@ -707,6 +735,8 @@ def to_markdown(card: Scorecard) -> str:
         f" {card.refute.first_fail_not_met} / {card.refute.first_fail_defects} / {card.refute.first_fail_unverifiable_only} /"
         f" {card.refute.first_fail_other_unknown + card.refute.first_fail_unknown} / {card.refute.first_invalid};"
         f" fix turns {card.refute.fix_turns}, cleared {card.refute.fix_cleared} |",
+        f"| Sharpened | applied {card.sharpen_applied}, released unapplied {card.sharpen_unapplied};"
+        f" applied issues' PRs merged {card.sharpen_merged} of {card.sharpen_prs} |",
         f"| Refuter CI-credited criteria (first verdicts) | {card.refute.first_ci_credited} over"
         f" {card.refute.first_ci_credited_runs} runs |",
         "| Open to merge, p50 / p90 hours: architecture / other | "

@@ -571,6 +571,9 @@ class ScorecardRows:
     failovers: list[sqlite3.Row]
     prs: list[sqlite3.Row]
     models: list[sqlite3.Row] = field(default_factory=list)  # run_model_usage
+    # `sharpen` rows that ended in the window (issue-sharpening 06): the scorecard's *Sharpened*
+    # row and the retro's `sharpen:<state>` classes read them. Empty before the first one.
+    sharpen: list[sqlite3.Row] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -2066,7 +2069,12 @@ class Store:
             models = self._conn.execute(
                 f"SELECT * FROM run_model_usage WHERE run_id IN ({in_window})", bounds
             ).fetchall()
-        return ScorecardRows(history, summaries, stages, failovers, prs, models)
+            sharpen = self._conn.execute(
+                "SELECT * FROM sharpen WHERE finished_at >= ? AND finished_at < ? "
+                "ORDER BY finished_at, id",
+                bounds,
+            ).fetchall()
+        return ScorecardRows(history, summaries, stages, failovers, prs, models, sharpen)
 
     def measure_rows(self, *, since: datetime, baseline_since: datetime) -> dict[str, list]:
         """The rows `measure.report` computes task 12's Phase 3 and Phase 4 numbers from.
@@ -2109,6 +2117,36 @@ class Store:
                 (since.isoformat(), bounds[0]),
             ).fetchall()
             cache = self._conn.execute("SELECT * FROM issue_cache").fetchall()
+            sharpen = self._conn.execute(
+                "SELECT * FROM sharpen WHERE state IN ('queued', 'running') OR finished_at >= ?"
+                " ORDER BY id",
+                (since.isoformat(),),
+            ).fetchall()
+            sharpen_history = self._conn.execute(
+                "SELECT * FROM run_history WHERE target_kind = 'sharpen' AND dispatched_at >= ?"
+                " ORDER BY dispatched_at",
+                (since.isoformat(),),
+            ).fetchall()
+            sharpen_runs = [row["run_id"] for row in sharpen_history]
+            sharpen_stages = (
+                self._conn.execute(
+                    "SELECT * FROM run_stage_stats WHERE run_id IN ("
+                    + ",".join("?" * len(sharpen_runs)) + ")",
+                    sharpen_runs,
+                ).fetchall()
+                if sharpen_runs else []
+            )
+            calibration = self._conn.execute(
+                "SELECT j.job_id, j.repo, j.target AS run_id, j.state, j.outcome,"
+                "       j.last_finished_at, h.issue_number, h.merged, h.pr_number,"
+                "       s.terminal_node, f.reason AS pr_reason, s.refute"
+                "  FROM background_jobs j"
+                "  LEFT JOIN run_history h ON h.run_id = j.target"
+                "  LEFT JOIN run_summary s ON s.run_id = j.target"
+                "  LEFT JOIN pr_facts f ON f.repo = h.repo AND f.pr_number = h.pr_number"
+                " WHERE j.kind = 'precheck-calibration' AND j.last_finished_at >= ?",
+                (since.isoformat(),),
+            ).fetchall()
             prechecks = self._conn.execute(
                 "SELECT * FROM background_jobs WHERE kind = 'issue-precheck'"
                 " AND state = 'done'"
@@ -2120,6 +2158,10 @@ class Store:
             "jobs": jobs,
             "cache": cache,
             "prechecks": prechecks,
+            "sharpen": sharpen,
+            "sharpen_history": sharpen_history,
+            "sharpen_stages": sharpen_stages,
+            "calibration": calibration,
         }
 
     def first_dispatch(self) -> datetime | None:

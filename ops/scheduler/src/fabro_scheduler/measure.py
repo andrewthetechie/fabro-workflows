@@ -29,9 +29,11 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from .sharpen import UNAPPLIED_STATES
 
 # --- the constants every number is measured against ---------------------------------
 
@@ -124,6 +126,12 @@ class Rows:
     jobs: list[Any]  # background_jobs finished in the window, or still running
     cache: list[Any]  # issue_cache, for the held issues
     prechecks: list[Any]  # done issue-precheck jobs with a verdict, any date
+    # Issue sharpening (issue-sharpening 06): the `sharpen` rows live or ended in the window, the
+    # sharpen runs' `run_history` and stage rows, and the calibration jobs that ended in it.
+    sharpen: list[Any] = field(default_factory=list)
+    sharpen_history: list[Any] = field(default_factory=list)
+    sharpen_stages: list[Any] = field(default_factory=list)
+    calibration: list[Any] = field(default_factory=list)
 
 
 def _per_100(count: int, total: int) -> float | None:
@@ -494,6 +502,124 @@ def flaky(
     }
 
 
+SHARPEN_HOLD_LABEL = "precheck-unverifiable"
+
+
+def _quantile(values: Sequence[float], q: float) -> float | None:
+    """The nearest-rank quantile of `values`, or `None` when there are none."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[max(0, min(len(ordered) - 1, int(-(-q * len(ordered) // 1)) - 1))]
+
+
+def _spread(values: Sequence[float], *, digits: int = 1) -> dict[str, object]:
+    def one(q: float) -> float | None:
+        value = _quantile(values, q)
+        return None if value is None else round(value, digits)
+
+    return {"n": len(values), "p50": one(0.5), "p90": one(0.9),
+            "max": None if not values else round(max(values), digits)}
+
+
+def _minutes_between(start: object, end: object) -> float | None:
+    try:
+        return (datetime.fromisoformat(str(end)) - datetime.fromisoformat(str(start))).total_seconds() / 60
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_after(issue_runs: Sequence[Any], rows: Sequence[Any]) -> dict[str, object]:
+    """Issue runs dispatched after each row ended, for the row's own issue, and how many merged.
+
+    "Merged" is `run_history.merged`, the merge phase's own (the scorecard's `merged_by_workflow`
+    first branch): the merge that is the factory's, not an operator's.
+    """
+    runs = merged = 0
+    for row in rows:
+        for run in issue_runs:
+            if (run["repo"] == row["repo"] and run["issue_number"] == row["issue_number"]
+                    and str(run["dispatched_at"]) >= str(row["finished_at"])):
+                runs += 1
+                merged += 1 if run["merged"] == 1 else 0
+    return {"issues": len(rows), "runs": runs, "merged": merged,
+            "merged_per_100": _per_100(merged, runs)}
+
+
+def _calibration_rates(rows: Sequence[Any]) -> dict[str, object]:
+    """The `unverifiable` and `ready` merge rates of the calibration report, same window."""
+    from . import calibration
+
+    counts: dict[str, list[int]] = {"unverifiable": [0, 0], "ready": [0, 0]}
+    for row in rows:
+        fields = calibration.parse_outcome(None if row["outcome"] is None else str(row["outcome"]))
+        if fields is None or fields["verdict"] not in counts:
+            continue
+        counts[fields["verdict"]][0] += 1
+        counts[fields["verdict"]][1] += 1 if row["merged"] == 1 else 0
+    return {verdict: {"runs": runs, "merged": merged, "merged_per_100": _per_100(merged, runs)}
+            for verdict, (runs, merged) in counts.items()}
+
+
+def sharpening(rows: Rows, *, days: int, now: datetime) -> dict[str, object]:
+    """The dark loop's numbers (issue-sharpening 06, ADR 0033): does it raise merges, what does
+    it cost, and when does it go wrong. No human watches each proposal, so these are the check.
+
+    The merge comparison is the point: the rate of the PRs that followed an `applied` sharpening,
+    against the `unverifiable` and `ready` rates of the calibration report over the same window
+    (#68's ceiling: if a sharpened issue merged at the `ready` rate, about 5 points overall), and
+    against the issues released without an apply, which is what doing nothing would have been.
+    """
+    start = now - timedelta(days=days)
+    finished = [row for row in rows.sharpen if row["finished_at"] and str(row["finished_at"]) >= start.isoformat()]
+    by_state = Counter(str(row["state"]) for row in finished)
+    live = Counter(str(row["state"]) for row in rows.sharpen if row["state"] in ("queued", "running"))
+    held_now = sum(
+        1 for row in rows.cache
+        if SHARPEN_HOLD_LABEL in (json.loads(row["labels"]) if row["labels"] else [])
+    )
+    transformations: Counter[str] = Counter()
+    for row in finished:
+        for part in str(row["transformations"] or "").split(","):
+            name, _, count = part.partition("=")
+            if name and count.isdigit():
+                transformations[name] += int(count)
+    applied = [row for row in finished if row["state"] == "applied"]
+    unapplied = [row for row in finished if row["state"] in UNAPPLIED_STATES]
+    minutes = [float(row["box_minutes"]) for row in finished if row["box_minutes"] is not None]
+    to_release = [m for m in (_minutes_between(row["created_at"], row["finished_at"]) for row in finished)
+                  if m is not None]
+    sharpen_runs = {row["run_id"] for row in rows.sharpen_history}
+    per_node: dict[str, list[float]] = defaultdict(list)
+    for stage in rows.sharpen_stages:
+        if stage["run_id"] in sharpen_runs and stage["visits"]:
+            per_node[str(stage["node_id"])].append(stage["wall_ms"] / stage["visits"] / 1000.0)
+    in_window = [r for r in rows.calibration if str(r["last_finished_at"] or "") >= start.isoformat()]
+    return {
+        "held_now": held_now,
+        "live": dict(sorted(live.items())),
+        "finished": len(finished),
+        "by_state": dict(sorted(by_state.items())),
+        "rounds": dict(sorted(Counter(str(row["round"]) for row in finished if row["round"]).items())),
+        "transformations": dict(sorted(transformations.items())),
+        "recheck_after_applied": dict(sorted(Counter(str(row["recheck"] or "none") for row in applied).items())),
+        "box_minutes": {**_spread(minutes), "total": round(sum(minutes), 1)},
+        "hold_to_release_minutes": _spread(to_release),
+        "merge": {
+            "applied": _merge_after(rows.history, applied),
+            "released_unapplied": _merge_after(rows.history, unapplied),
+            "calibration": _calibration_rates(in_window),
+        },
+        "stage_seconds": {node: _spread(values) for node, values in sorted(per_node.items())},
+        "note": (
+            "box minutes are the run's lease, dispatch to release; stage seconds are wall time per "
+            "visit from the collector's summary of each sharpen run, which is what D21's timeouts "
+            "are re-derived from. The merge rates are issue runs dispatched after the row ended; "
+            "an issue with no run yet adds none."
+        ),
+    }
+
+
 def report(
     rows: Rows,
     *,
@@ -542,6 +668,7 @@ def report(
                 rows.cache, rows.prechecks, holds_on=holds_on, hold_verdicts=hold_verdicts
             ),
         },
+        "sharpening": sharpening(rows, days=days, now=now),
         "phase_4": {
             "pre_review": pre_review(
                 in_window, window_summaries, window_stages, since=pre_review_since
@@ -558,6 +685,58 @@ def _cell(value: object) -> str:
     if isinstance(value, float):
         return f"{value:g}"
     return str(value)
+
+
+def _sharpening_markdown(section: Mapping[str, Any]) -> list[str]:
+    if not section:
+        return []
+    merge = section.get("merge") or {}
+    box = section.get("box_minutes") or {}
+    release = section.get("hold_to_release_minutes") or {}
+    lines = [
+        "",
+        "## Issue sharpening",
+        "",
+        f"Held now as `{SHARPEN_HOLD_LABEL}`: **{_cell(section.get('held_now'))}**. "
+        f"Live rows: {_cell(section.get('live'))}. Finished in the window: "
+        f"{_cell(section.get('finished'))} ({_cell(section.get('by_state'))}).",
+        "",
+        f"Rounds per row: {_cell(section.get('rounds'))}. Transformations: "
+        f"{_cell(section.get('transformations'))}. Recheck after apply: "
+        f"{_cell(section.get('recheck_after_applied'))}.",
+        "",
+        "| | n | p50 | p90 | max / total |",
+        "|---|---|---|---|---|",
+        f"| box minutes per row | {_cell(box.get('n'))} | {_cell(box.get('p50'))} "
+        f"| {_cell(box.get('p90'))} | {_cell(box.get('total'))} total |",
+        f"| hold to release, minutes | {_cell(release.get('n'))} | {_cell(release.get('p50'))} "
+        f"| {_cell(release.get('p90'))} | {_cell(release.get('max'))} |",
+    ]
+    for node, values in (section.get("stage_seconds") or {}).items():
+        lines.append(
+            f"| `{node}` stage, seconds | {_cell(values['n'])} | {_cell(values['p50'])} "
+            f"| {_cell(values['p90'])} | {_cell(values['max'])} |"
+        )
+    lines += [
+        "",
+        "### Merge rate after sharpening",
+        "",
+        "| group | issues | runs after | merged | per 100 |",
+        "|---|---|---|---|---|",
+    ]
+    for name in ("applied", "released_unapplied"):
+        row = merge.get(name) or {}
+        lines.append(
+            f"| {name} | {_cell(row.get('issues'))} | {_cell(row.get('runs'))} "
+            f"| {_cell(row.get('merged'))} | {_cell(row.get('merged_per_100'))} |"
+        )
+    for verdict, row in ((merge.get("calibration") or {}).items()):
+        lines.append(
+            f"| precheck `{verdict}` (calibration) | - | {_cell(row.get('runs'))} "
+            f"| {_cell(row.get('merged'))} | {_cell(row.get('merged_per_100'))} |"
+        )
+    lines += ["", f"_{section.get('note')}_"]
+    return lines
 
 
 def as_markdown(document: Mapping[str, Any]) -> str:
@@ -668,6 +847,7 @@ def as_markdown(document: Mapping[str, Any]) -> str:
             f"| {_cell(tokens['cache_read'])} | {_cell(tokens['output'])} |"
         )
     flaky_ = document.get("phase_4", {}).get("flaky", {})
+    lines += _sharpening_markdown(document.get("sharpening") or {})
     lines += [
         "",
         "### Flaky investigations",
