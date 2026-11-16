@@ -22,6 +22,8 @@ Every rule here passes `fabro validate` and fails at runtime, usually silently. 
 
 | The server variable `FABRO_BOX_HEALTH` exists before any `workflow.toml` reads `{{ vars.FABRO_BOX_HEALTH }}` | `backlog`, `ralph` and `pr-review` read it in `[run.environment.env]`, and every background package's `box-guard` does too. An unset `{{ vars.X }}` fails the RunIntent at compile time, so **no run of that workflow is created at all** — not a degraded run, no run. `ops/provision-server-state.sh` creates it (create-if-absent, `pool=url` pairs, where pools sharing a URL are one box), and task 12 runs the provisioning before the push that first names it. Empty is legal and means "no box in the lane"; absent is fatal. |
 
+| The sharpen run's models are the `-bg` rows too: `{{ inputs.model_pool \| default('coders-?-bg') }}` in every stylesheet rule, a `model_pool` input the scheduler sets to the box's first pool with `-bg`, and no `[run.model.fallbacks]` table at all (R17, ADR 0033 D1) | The run edits an issue's body with no human approval. A hosted model or a fallback would spend the credits it exists to save, and a failed box stage must fail the run so the scheduler retries it instead of finishing on another model. The lease's own pool (`coder_pool`) feeds only the box claim; a `-bg` row on the wrong provider fails at the first node like any other |
+
 ## Server settings
 
 | Rule | What happens otherwise |

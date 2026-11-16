@@ -741,12 +741,62 @@ whole factory in one place and a host rebuild brings it back with everything els
 | `scheduler/src/fabro_scheduler/flaky.py` | The **flaky investigation**'s producer (task 10): one `flaky-investigation` job per queued issue labelled `flaky-test`, and the marker reader that turns a finished run into `flaky cause=<c> run=<id>`. |
 | `scheduler/src/fabro_scheduler/orientation.py` | The **repository orientation**'s producer (task 10): one `repo-orientation` job per repository per day, and the reader that turns a finished run into `orientation main=<sha12> chars=<n>` or `orientation unchanged`. |
 | `scheduler/src/fabro_scheduler/calibration.py` | The **precheck calibration**'s scheduler half (pre-review-and-calibration, Part A): `CalibrationProducer` queues one `precheck-calibration` job per issue for the issue's first finished run since `SCHEDULER_CALIBRATION_SINCE`, newest first, capped at `SCHEDULER_CALIBRATION_QUEUED`; `read_record`/`outcome_for` read a finished run's verdict from its own `record` node (the package posts nothing), and `report` turns `Store.calibration_rows` into the verdict-against-outcome document behind `GET /api/background/calibration`. |
+| `scheduler/src/fabro_scheduler/sharpen.py` | The **sharpen queue** (issue-sharpening 04-05, ADR 0033): `reconcile_repo` is the inventory's per-poll pass that holds an issue the precheck rated `unverifiable` (label first, then a `sharpen` row), supersedes a queued row whose text changed, releases a hold whose row is over and runs the start-up back-fill; `read_record`/`settle` turn a finished `issue-sharpen` run's `record` stage into its row's terminal state, a retry 30 minutes on (three attempts), or a requeue that is not counted (a fabro restart, an operator's cancel); `queued_in_order` is the one definition of the dispatch order the loop and the page share. |
 | `scheduler/src/fabro_scheduler/pack.py` | The **context pack**'s scheduler half (more-local-inference 08): `PackProducer` queues one `context-pack` job per issue the precheck passed (`verdict=ready`), in the same window; `read_marker`/`outcome_for` record a finished run as `pack run=<id>`, which `Store.archive_and_release_lease` reads into `run_history.had_pack`. |
 | `scheduler/src/fabro_scheduler/templates/queue.html` | The page: the **coder instances** (state, lease, ETA, and the Drain/Undrain and Cancel-run controls), the queue with per-row up/down/to-top controls and drag-and-drop reordering, and a per-repo freshness strip. Inline CSS and a few lines of inline JS, no external assets, refreshes itself on the same 60s beat. Each control is a real `<form method="post">`, so the buttons work with scripting off (the response is raw JSON); with scripting on the submit is intercepted, the page reloads on success and shows the error otherwise. |
 | `scheduler/src/fabro_scheduler/app.py` | `/`, `/api/queue`, `/api/repos`, `/api/pools`, `/api/background`, `POST /api/background/box-noop`, `/health`, `POST /api/dispatch-once`, the reorder routes `POST /api/queue/{repo}/{issue}/top|up|down` and `POST /api/queue/reorder` (the old `/bump` is kept), and `POST /api/pools/{pool}/drain`, `/undrain` and `/cancel`. Supports the ETA column (`estimate_remaining`) and the history token columns. `main` starts the inventory poller, the dispatch loop **and** the 15s release poll; every one is off in any other construction, so a test drives a tick by hand. Besides serving, `main` dispatches two offline subcommands: `resummarize` and `retro` (the weekly retro, `docs/factory-retro/`). `dispatch-once` takes `repo`, `issue_number` and `coder_pool`, refuses a pool already leased with a `409`, records the lease on the way out, and answers `503` with no `FABRO_API_TOKEN`. Every mutating route is `POST` and every one logs what it changed, because there is no auth to attribute it to. |
 | `scheduler/src/fabro_scheduler/reconcile.py` | Draft 09's release/requeue/recovery, plus draft 11's one change to it: a cancel requeues. `should_requeue` keys on the failure **reason** for the two failures whose category cannot decide — `terminated` (a fabro restart, category `deterministic`) and `cancelled` (the operator's cancel, category `canceled`, one L). Both are in the run projection, so neither costs the extra events call. The `transient_infra` category path had never fired once: `last_failure_category` filtered on `event["type"] == "run.failed"` and the deployed server sends `event`, `stage.failed` and `failure.category` — three mismatches, fixed 2026-09-19, live-verified returning `deterministic`/`transient_infra` on real runs. Repairing it armed a loop, so `MAX_REQUEUES = 3` now bounds it: a requeue restores the issue at the FRONT of the queue (original `first_seen`), and fabro classifies a flaky unit test as `transient_infra`, so a recurring failure would otherwise hold a coder box forever. Past the budget the issue is released without a requeue and waits for a human. Two cadences share one thread: the fabro pass every **15s** (one cheap `GET /runs/{id}` per held lease) and the GitHub receipt scan every **10 minutes** (four uncached requests, 24/hour against 5,000). The receipt scan used to run only at startup, on the premise that only a restart could orphan a receipt; 2026-09-19 disproved that, so it repeats — and because `_dispatch` writes the receipt seconds before the run exists, a receipt must look orphaned in **two consecutive scans** before anything is written. |
 | `scheduler/tests/` | `uv run pytest` from `ops/scheduler/`. GitHub and fabro faked with `respx`, SQLite in `tmp_path`, the `.fabro` tree a fixture — no network, no container, no host. The clone path is exercised against a local git repository. `test_dispatch.py` asserts the *order* of the label and run calls, not just their effect, and covers the failures that must leave nothing behind. `test_overrides.py` covers bump/drain/cancel, including that a bump beats both the ceiling and repo priority, that drain leaves a held lease alone, and that cancel never releases one itself. |
 | `scheduler/Dockerfile` | Two stages. Runs as uid 1000, bakes `repos.toml` in, creates `/data` for the SQLite file, and installs `git` (draft 07 fetches `.fabro/` with a shallow clone). |
+
+### Issue sharpening (ADR 0033)
+
+The precheck rates some issues `unverifiable`: a criterion names a command `.fabro/ci.sh` does not
+run, asks for PR-description text, says "must not drop", or asks for a check only a human can make.
+Their PRs merge 11-14% of the time against 41% for `ready`. The scheduler now sharpens them itself,
+with no human approval. **It is always on from the deploy**; the off path is a revert and
+`make deploy-scheduler`.
+
+- **The hold.** When an issue's newest `done` precheck says `unverifiable` for its *current* body
+  hash, and no `sharpen` row of the issue names that hash as `body_hash` or `applied_hash`, the
+  inventory pass (`sharpen.reconcile_repo`, once a minute per repository) adds
+  `precheck-unverifiable` and then inserts a `sharpen` row `queued`. The label goes first, so a pass
+  that stops halfway leaves the issue held, never queued with a stale verdict. It reads neither
+  `SCHEDULER_PRECHECK_HOLDS` nor `SCHEDULER_PRECHECK_HOLD_VERDICTS`, and `unverifiable` is a
+  `ConfigError` in the second. The queue page lists the issue under *Held by the precheck* as
+  "being sharpened (queued|running)".
+- **The back-fill.** At the first pass after each scheduler start, every queued issue whose newest
+  `done` precheck said `unverifiable` (any hash, or none) and that has no `sharpen` row at all is
+  held. The run's `claim` decides whether the verdict still applies to the issue's text now. A second
+  start finds the rows and does nothing.
+- **The `sharpen` table.** One row per attempt: `state` (`queued`, `running`, then `applied`,
+  `capped`, `churn`, `stale`, `cannot_sharpen`, `not_needed`, `failed` or `superseded`), `attempts`,
+  `next_eligible_at`, `run_id`, `applied_hash`, `recheck`, `round`, `rule`, `transformations`,
+  `box_minutes`. At most one `queued`/`running` row per issue (a partial unique index).
+- **The lease.** Before any issue run in a tick, `DispatchLoop._dispatch_sharpen` takes the first
+  `queued` row (the coder queue's order: repo priority, then issue number) whose `next_eligible_at`
+  has passed, and starts one `issue-sharpen` run on a free undrained pool, with a `target_kind =
+  'sharpen'` lease. At most one is active across the fleet. It runs through the peak-hours block, and
+  not under the disk gate. It writes no `agent`, `agent-in-progress` or receipt label. The model is
+  the box's `-bg` row (`coders-b` runs on `coders-a-bg`), with no hosted fallback.
+- **The release.** The 15-second release poll reads the run's `record` stage. A succeeded run ends
+  its row in the recorded state and removes the label. A failed, timed-out or lost run is
+  retried 30 minutes later, up to three attempts, then the row ends `failed` and the label comes off.
+  A fabro restart (`terminated`) or an operator's cancel requeues the row without counting an
+  attempt. Nothing requeues the issue: it never left the queue's cache.
+- **Cancelling one.** The pool's **Cancel run** button on the queue page (or `POST
+  /api/pools/{pool}/cancel`) cancels the run; the row goes back to `queued`.
+- **Releasing a stuck hold by hand.** Remove `precheck-unverifiable` from the issue on GitHub and
+  set the row `superseded`:
+  `docker compose exec -T scheduler python -c "import sqlite3; c = sqlite3.connect('/data/scheduler.db'); c.execute(\"UPDATE sharpen SET state='superseded' WHERE id=?\", (ID,)); c.commit()"`.
+  Then the next pass holds the issue again only if its newest precheck still says `unverifiable` for a
+  text no row names.
+- **Reading it.** `GET :32280/api/background/measure` (`&format=md`) has a `sharpening` section:
+  rows by state, rounds, transformations, `recheck` verdicts, box minutes, hold-to-release times,
+  each stage's duration, and the merge rate of applied issues beside the calibration report's
+  `unverifiable` and `ready` rates and the unapplied rows' rate. The queue page's *Sharpening* strip
+  lists the running row, the queued rows in dispatch order and the last ten finished; the scorecard's
+  *Sharpened* row and the retro's `sharpen:<state>` classes read the same rows.
 
 ### Deploying it
 

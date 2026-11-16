@@ -89,6 +89,13 @@ A change to a file under `.github/workflows/` cannot be the agent's work at all:
 its token cannot push one, so the run stops before opening a PR. Make that edit
 yourself.
 
+You do not have to rewrite these by hand when you miss one. An issue the precheck rates
+`unverifiable` is rewritten by the factory itself, before it is worked: it moves a criterion that
+cannot be verified to `## Post-deploy checks`, and changes nothing else in the issue. The original
+body is kept in a `fabro:sharpen-original` comment, and the change table is in the `fabro:sharpen`
+comment. Never add `<!-- fabro:sharpen` text by hand: the factory reads those markers to tell an
+issue it has already sharpened.
+
 Once work is moving, the labels mean:
 
 | Label | Meaning |
