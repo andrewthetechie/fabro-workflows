@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharpen-draft",
+  "title": "sharpen-draft \u2014 the draft of a sharpened issue body (issue-sharpening 01)",
+  "description": "The Elephant's proposal for one issue: the complete proposed body, the criteria it moved to Post-deploy checks, one change row per criterion it touched, and the actions only a human can take. `draft_gate` checks the Input receipt and refuses a draft that changes, byte for byte, anything outside its change rows. _io is stamped by the server and is not part of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status"
+  ],
+  "properties": {
+    "status": {
+      "enum": [
+        "proposed",
+        "cannot_sharpen"
+      ],
+      "description": "proposed: the draft is complete. cannot_sharpen: no change from the closed list makes every criterion verifiable without weakening a requirement or resolving one against a non-goal."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "description": "Required when cannot_sharpen: why, in one to three sentences."
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The complete proposed body, WITHOUT a `## Post-deploy checks` section; the gate assembles that section."
+    },
+    "post_deploy_checks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 600,
+        "pattern": "^[^\\n]*$"
+      },
+      "description": "One line each, no newline; [] when none."
+    },
+    "changes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "criterion_ref",
+          "original",
+          "proposed",
+          "transformation",
+          "evidence"
+        ],
+        "properties": {
+          "criterion_ref": {
+            "type": "string",
+            "pattern": "^AC[0-9]+$",
+            "description": "`AC<n>`: the 1-based index of the bullet under `## Acceptance criteria` in the ORIGINAL body, as criteria.md numbers it."
+          },
+          "original": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The bullet's text, exactly as in the original body, without its leading `- ` or `- [ ] `."
+          },
+          "proposed": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The new bullet text, without its leading `- ` or `- [ ] `, or null when the criterion moved to post_deploy_checks."
+          },
+          "transformation": {
+            "enum": [
+              "pr_text_to_code",
+              "command_to_ci",
+              "command_to_behaviour",
+              "no_drop_to_threshold",
+              "to_post_deploy"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "where",
+                "says"
+              ],
+              "properties": {
+                "where": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "description": "path:line, `.fabro/ci.sh:N`, or `issue body`."
+                },
+                "says": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "What is there, quoted or in one sentence."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "human_actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      },
+      "description": "Actions only a human can take; they go in the comment, never the body. [] when none."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "cannot_sharpen"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "reason"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "proposed"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "body",
+          "post_deploy_checks",
+          "changes",
+          "human_actions"
+        ]
+      }
+    }
+  ]
+}

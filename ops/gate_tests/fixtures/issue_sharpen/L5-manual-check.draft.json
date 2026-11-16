@@ -1,0 +1,44 @@
+{
+  "status": "proposed",
+  "body": "The editor shows no spelling feedback.\n\n## Context\n\n- `src/editor/decorations.ts:10` is where inline decorations are added.\n\n## Requirements\n\n1. Misspelled words are underlined; names from the project glossary are not.\n\n## Acceptance criteria\n\n- [ ] The decoration function in `src/editor/decorations.ts` returns one range for a misspelled word and none for a glossary name.\n\n## Non-goals\n\n- Grammar checking.\n\n## Test expectations\n\n- vitest: the decoration function returns one range for `teh` and none for a glossary name.\n",
+  "post_deploy_checks": [],
+  "changes": [
+    {
+      "criterion_ref": "AC1",
+      "original": "Misspellings are underlined in all three editors on macOS and Linux; glossary names are not.",
+      "proposed": "The decoration function in `src/editor/decorations.ts` returns one range for a misspelled word and none for a glossary name.",
+      "transformation": "command_to_behaviour",
+      "evidence": [
+        {
+          "where": "src/editor/decorations.ts:10",
+          "says": "where inline decorations are added"
+        }
+      ]
+    },
+    {
+      "criterion_ref": "AC2",
+      "original": "Manual check: typing in a long scene stays responsive.",
+      "proposed": null,
+      "transformation": "to_post_deploy",
+      "evidence": [
+        {
+          "where": "issue body",
+          "says": "the criterion as written"
+        }
+      ]
+    },
+    {
+      "criterion_ref": "AC3",
+      "original": "A screenshot of the underline is attached.",
+      "proposed": null,
+      "transformation": "to_post_deploy",
+      "evidence": [
+        {
+          "where": "issue body",
+          "says": "the criterion as written"
+        }
+      ]
+    }
+  ],
+  "human_actions": []
+}

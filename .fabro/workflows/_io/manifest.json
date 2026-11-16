@@ -1336,6 +1336,71 @@
         }
       }
     },
+    "issue-sharpen": {
+      "stages": {
+        "draft": {
+          "live": true,
+          "prompt": ".fabro/workflows/issue-sharpen/prompts/draft.md.j2",
+          "inputs": [
+            {
+              "name": "issue.md",
+              "path": "/tmp/fabro/sharpen/issue.md",
+              "required": true,
+              "about": "the issue: its title, labels, body, and its last ten comments that are not fabro markers"
+            },
+            {
+              "name": "criteria.md",
+              "path": "/tmp/fabro/sharpen/criteria.md",
+              "required": true,
+              "about": "the original acceptance criteria, numbered AC1..ACn; the change rows cite these numbers"
+            },
+            {
+              "name": "ci.md",
+              "path": "/tmp/fabro/sharpen/ci.md",
+              "required": true,
+              "about": ".fabro/ci.sh verbatim, then each script, package.json script and Makefile target it calls (one level deep)"
+            },
+            {
+              "name": "rules.md",
+              "path": "/tmp/fabro/sharpen/rules.md",
+              "required": true,
+              "about": "what a verifiable criterion is, and the closed list of five transformations with the evidence each needs"
+            },
+            {
+              "name": "precheck.md",
+              "path": "/tmp/fabro/sharpen/precheck.md",
+              "required": true,
+              "about": "the newest precheck comment: why the issue was judged unverifiable"
+            },
+            {
+              "name": "orientation.md",
+              "path": "/tmp/fabro/sharpen/orientation.md",
+              "required": false,
+              "about": "a map of the repository, kept in its pinned orientation issue"
+            },
+            {
+              "name": "pack.md",
+              "path": "/tmp/fabro/sharpen/pack.md",
+              "required": false,
+              "about": "the code map of this issue, from its newest context-pack comment"
+            },
+            {
+              "name": "findings.md",
+              "path": "/tmp/fabro/sharpen/findings.md",
+              "required": false,
+              "about": "from round 2: the open findings of the last audit and the finding history"
+            }
+          ],
+          "sealed": [],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/sharpen/draft.json",
+            "schema": "sharpen-draft"
+          },
+          "box": true
+        }
+      }
+    },
     "context-pack": {
       "stages": {
         "gather": {

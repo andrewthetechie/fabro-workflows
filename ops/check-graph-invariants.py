@@ -6,7 +6,7 @@ Usage:
   check-graph-invariants.py --dump FILE.fabro   print the reader's statements in fabro parse's shape
   check-graph-invariants.py --normalize         normalize a `fabro parse` JSON read from stdin
 
-A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R16;
+A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R17;
 every `_shared/*/*.fabro` phase gets the file rules (the reader, R6, R8, R9 and R12). Each violation prints as
 `<package> <rule> <node or hook> <why>`, then `VIOLATIONS: N`. Exit status is min(N, 125).
 
@@ -713,7 +713,7 @@ def resolve_models(attrs: dict[str, str],
 
 def is_coder_pool(model: str) -> bool:
     """Does this model value come from the run's `coder_pool` input?"""
-    return "inputs.coder_pool" in model
+    return "inputs.coder_pool" in model or "inputs.model_pool" in model
 
 
 def box_mode(resolved: list[tuple[dict[str, bool], str]]) -> tuple[str | None, str | None]:
@@ -835,6 +835,11 @@ def is_agent_stage(attrs: dict[str, str]) -> bool:
 # (more-local-inference D1, C4).
 CODER_LOOP_PACKAGES = ["backlog", "ralph", "pr-review"]
 
+# The leased box packages (issue-sharpening C9, ADR 0033): a run the scheduler leases a coder
+# pool, like an issue run, that is not a coder loop and not a background run. R15 leaves them to
+# R17, which holds the claim hook exactly and every other rule a leased box run needs.
+LEASED_BOX_PACKAGES = ["issue-sharpen"]
+
 # C4's hook, field by field. `timeout` is 60 s against a 45 s command deadline, inside the
 # root graphs' `stall_timeout` of 60m.
 CLAIM_HOOK_SCRIPT = "fabro-io box-claim; exit 0"
@@ -851,6 +856,8 @@ def r15_claim_hooks(package: str, root: Graph | None, hooks: list[dict]) -> list
     """
     out: list[tuple] = []
     claim_hooks = [h for h in hooks if "fabro-io box-claim" in (h.get("script") or "")]
+    if package in LEASED_BOX_PACKAGES:
+        return out
     if package not in CODER_LOOP_PACKAGES:
         if claim_hooks:
             out.append(("R15", claim_hooks[0].get("id") or "hook",
@@ -875,6 +882,72 @@ def r15_claim_hooks(package: str, root: Graph | None, hooks: list[dict]) -> list
         out.append(("R15", "box-claim", f"has {len(claim_hooks)} hooks that run `fabro-io box-claim`; a coder loop has one"))
     if root is not None and "/tmp/fabro/box" not in (root.nodes.get("claim") or {}).get("script", ""):
         out.append(("R15", "claim", "does not write /tmp/fabro/box, so the claim cannot know which box to free"))
+    return out
+
+
+# The only model a leased box package may name: the run's `model_pool`, the `-bg` row of the
+# lease's box (C1, C9). A leased run takes the lease's own pool for its claim and `model_pool`
+# for its model, so the two inputs differ by the `-bg` suffix.
+LEASED_MODEL = re.compile(r"inputs\.model_pool\s*\|\s*default\('coders-[a-z0-9-]+-bg'\)")
+
+
+def r17_leased_box_packages(package: str, root: Graph | None, nodes: dict[str, dict[str, str]],
+                            hooks: list[dict], toml: dict | None, manifest: dict | None) -> list[tuple]:
+    """R17: a leased box package runs only on its lease's box, claims it, and falls back nowhere
+    (issue-sharpening C9, ADR 0033, D1).
+
+    Every model it names is the run's `-bg` `model_pool`, every agent node has a class the
+    stylesheet defines, and it carries exactly `ralph`'s `box-claim` hook and no `box-guard`
+    (a leased run holds its box and a guard would cancel the run that owns it). It has no
+    `[run.model.fallbacks]` table at all, never pushes a run branch, writes `/tmp/fabro/box` in
+    `claim`, and every one of its agent stages is a box stage in the Stage manifest, so a
+    background run on the same box yields to it.
+    """
+    if package not in LEASED_BOX_PACKAGES:
+        return []
+    out: list[tuple] = []
+    run = ((toml or {}).get("run") or {})
+    if "fallbacks" in (run.get("model") or {}):
+        out.append(("R17", "fallbacks", "a leased box package has no [run.model.fallbacks] table: "
+                                        "a failed stage must fail, never reach another model"))
+    if (run.get("run_branch") or {}).get("enabled") is not False:
+        out.append(("R17", "run_branch", "must set [run.run_branch] enabled = false"))
+    exact = [h for h in hooks if h.get("id") == "box-claim"
+             and h.get("event") == "stage_start" and h.get("matcher") == "^agent$"
+             and h.get("blocking") is True and h.get("sandbox") is True
+             and h.get("timeout") == "60s" and h.get("script") == CLAIM_HOOK_SCRIPT]
+    claims = [h for h in hooks if "fabro-io box-claim" in (h.get("script") or "")]
+    if len(exact) != 1 or len(claims) != 1:
+        out.append(("R17", "box-claim",
+                    "must carry exactly one hook that runs `fabro-io box-claim`, and it must be "
+                    "ralph's: id box-claim, stage_start on ^agent$, blocking, sandbox, timeout "
+                    f"60s, script {CLAIM_HOOK_SCRIPT!r}"))
+    if any("fabro-io box-guard" in (h.get("script") or "") or h.get("id") == "box-guard" for h in hooks):
+        out.append(("R17", "box-guard", "a leased run holds its box: a guard would cancel the run "
+                                        "that owns it"))
+    if root is None:
+        return out
+    variants = [(holds, style_rules(text)) for holds, text in
+                stylesheet_variants(root.graph_attrs.get("model_stylesheet", ""))]
+    for _, rules in variants:
+        for selector, model in rules.items():
+            if not LEASED_MODEL.search(model):
+                out.append(("R17", "*" if selector == "*" else f".{selector}",
+                            f"resolves to {model!r}; every model in a leased box package is the "
+                            "run's -bg model_pool"))
+    defined = {selector for _, rules in variants for selector in rules}
+    expected = manifest_boxes(package, manifest, {}) if manifest is not None else {}
+    for nid, attrs in nodes.items():
+        if not is_agent_stage(attrs):
+            continue
+        classes = [c.strip().lstrip(".") for c in (attrs.get("class") or "").split(",") if c.strip()]
+        if not classes or any(c not in defined for c in classes):
+            out.append(("R17", nid, "an agent node needs a class the stylesheet defines"))
+        if manifest is not None and expected.get(nid, MISSING_BOX) is not True:
+            out.append(("R17", nid, "is not box: true in the Stage manifest, so a background "
+                                    "run on its box would not yield to it"))
+    if "/tmp/fabro/box" not in (root.nodes.get("claim") or {}).get("script", ""):
+        out.append(("R17", "claim", "does not write /tmp/fabro/box, so the claim cannot know which box to free"))
     return out
 
 
@@ -1380,6 +1453,7 @@ def package_violations(pkg_dir: Path, workflows: Path) -> tuple[list[tuple], int
     out += [(package, *v) for v in r14_background_fallbacks(package, t)]
     out += [(package, *v) for v in r15_claim_hooks(package, root if root is not None else None, hooks)]
     out += [(package, *v) for v in r16_background_packages(package, root, nodes, hooks, t)]
+    out += [(package, *v) for v in r17_leased_box_packages(package, root, nodes, hooks, t, manifest)]
     out += [(package, *v) for v in r8_routing(root.nodes)]
     out += [(package, *v) for v in r9_needs_human_reason(root)]
     out += [(package, *v) for v in r12_fallback_edge(root)]

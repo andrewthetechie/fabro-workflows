@@ -1,0 +1,20 @@
+{
+  "status": "proposed",
+  "body": "Release tags build no macOS artifacts.\n\n## Context\n\n- The release build runs only on Linux.\n\n## Requirements\n\n1. A tag build produces the macOS artifacts.\n\n## Acceptance criteria\n\n\n## Non-goals\n\n- Signing.\n\n## Test expectations\n\n- None; the workflow runs on the next tag.\n\n## Expected files\n\n- `.github/workflows/release.yml`\n",
+  "post_deploy_checks": [],
+  "changes": [
+    {
+      "criterion_ref": "AC1",
+      "original": "`.github/workflows/release.yml` has a `macos` job that builds on tags.",
+      "proposed": null,
+      "transformation": "to_post_deploy",
+      "evidence": [
+        {
+          "where": "issue body",
+          "says": "the criterion as written"
+        }
+      ]
+    }
+  ],
+  "human_actions": []
+}

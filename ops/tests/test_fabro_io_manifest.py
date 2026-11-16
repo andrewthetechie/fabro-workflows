@@ -131,6 +131,10 @@ class Box(unittest.TestCase):
                 "plan_review": True,
                 "resolve_base": True,
             },
+            # A leased run holds its box (ADR 0033): its stages block a background fill.
+            "issue-sharpen": {
+                "draft": True,
+            },
         })
 
     def test_coder_box_stages_omits_a_hosted_stage(self):

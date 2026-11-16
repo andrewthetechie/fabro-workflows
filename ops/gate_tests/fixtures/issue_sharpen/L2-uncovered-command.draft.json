@@ -1,0 +1,32 @@
+{
+  "status": "proposed",
+  "body": "The dashboard components were committed without formatting.\n\n## Context\n\n- `frontend/src/dashboard/` holds the components.\n\n## Requirements\n\n1. The components are formatted with the repository's Prettier settings.\n\n## Acceptance criteria\n\n- [ ] `npm run lint` passes.\n- [ ] `frontend/src/dashboard/types.ts` declares no `any` type.\n\n## Non-goals\n\n- Any behaviour change.\n\n## Test expectations\n\n- None beyond the existing suite.\n",
+  "post_deploy_checks": [],
+  "changes": [
+    {
+      "criterion_ref": "AC1",
+      "original": "`npm run format:check` passes.",
+      "proposed": "`npm run lint` passes.",
+      "transformation": "command_to_ci",
+      "evidence": [
+        {
+          "where": ".fabro/ci.sh:12",
+          "says": "runs npm run lint in frontend"
+        }
+      ]
+    },
+    {
+      "criterion_ref": "AC2",
+      "original": "`bunx tsc --noEmit` passes.",
+      "proposed": "`frontend/src/dashboard/types.ts` declares no `any` type.",
+      "transformation": "command_to_behaviour",
+      "evidence": [
+        {
+          "where": "frontend/src/dashboard/types.ts:1",
+          "says": "the dashboard types live here"
+        }
+      ]
+    }
+  ],
+  "human_actions": []
+}

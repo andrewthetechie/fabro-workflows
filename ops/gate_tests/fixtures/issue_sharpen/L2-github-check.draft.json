@@ -1,0 +1,20 @@
+{
+  "status": "proposed",
+  "body": "The end-to-end login test fails after the session cookie rename.\n\n## Context\n\n- `e2e/login.spec.ts:12` still reads the old cookie name.\n\n## Requirements\n\n1. The spec reads the new cookie name.\n\n## Acceptance criteria\n\n- [ ] `e2e/login.spec.ts` reads the renamed session cookie.\n\n## Non-goals\n\n- Rewriting the spec.\n\n## Test expectations\n\n- The existing spec.\n",
+  "post_deploy_checks": [],
+  "changes": [
+    {
+      "criterion_ref": "AC1",
+      "original": "The `UI end-to-end` CI job passes on the PR.",
+      "proposed": "`e2e/login.spec.ts` reads the renamed session cookie.",
+      "transformation": "command_to_behaviour",
+      "evidence": [
+        {
+          "where": "e2e/login.spec.ts:12",
+          "says": "still reads the old cookie name"
+        }
+      ]
+    }
+  ],
+  "human_actions": []
+}

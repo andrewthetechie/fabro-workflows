@@ -514,7 +514,7 @@ SELECTORS = (
 )
 
 
-# Every file allowed to name the label: the package, the reader in `prep` (both graphs), and
+# Every file allowed to name the label: the package, the reader in `prep` (the three graphs), and
 # the output schema's description. Anything else naming it is a selector, and D22 says there
 # must be none.
 ALLOWED = {
@@ -522,6 +522,7 @@ ALLOWED = {
     ".fabro/workflows/repo-orientation/workflow.toml",
     ".fabro/workflows/backlog/workflow.fabro",
     ".fabro/workflows/ralph/workflow.fabro",
+    ".fabro/workflows/issue-sharpen/workflow.fabro",
     ".fabro/workflows/_io/schemas/repo_orientation.schema.json",
 }
 

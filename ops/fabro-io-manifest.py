@@ -36,11 +36,12 @@ SOURCE = IO / "manifest.json"
 # Deterministic emit order.
 # merge-queue and scout are deliberately absent: neither has an agent stage, so neither has a
 # Stage I/O manifest block.
-WF_ORDER = ["backlog", "pr-review", "arch-review", "issue-triage", "dependabot", "ralph", "box-noop", "issue-precheck", "context-pack", "precheck-calibration", "flaky-investigation", "repo-orientation"]
+WF_ORDER = ["backlog", "pr-review", "arch-review", "issue-triage", "dependabot", "ralph", "box-noop", "issue-precheck", "issue-sharpen", "context-pack", "precheck-calibration", "flaky-investigation", "repo-orientation"]
 
 # The coder loops: the packages that hold a box's primary lease and whose box stages a
-# background run must never overlap (more-local-inference D1, C1).
-CODER_LOOP_WORKFLOWS = ["backlog", "ralph", "pr-review"]
+# background run must never overlap (more-local-inference D1, C1). `issue-sharpen` is a leased
+# run, not a loop, but it holds a box the same way (ADR 0033), so its box stages join them.
+CODER_LOOP_WORKFLOWS = ["backlog", "ralph", "pr-review", "issue-sharpen"]
 
 # The box-only packages. Their generated manifests carry `coder_box_stages`, which
 # `fabro-io box-guard` reads to judge *another* run's current stage (C1, C10). The coder

@@ -435,6 +435,126 @@ class BackgroundPackages(unittest.TestCase):
         self.assertEqual([v for v in found if v[1] == "R16"], [])
 
 
+class LeasedBoxPackages(unittest.TestCase):
+    """R17: a leased box package (issue-sharpening C9, ADR 0033): every model is the run's -bg
+    `model_pool`, every agent node has a class, `ralph`'s claim hook and no guard, no fallbacks,
+    no run branch, a claim that writes the box file, and every agent stage a box stage."""
+
+    STYLESHEET = ("*        { model: {{ inputs.model_pool | default('coders-a-bg') }}; }\n"
+                  ".sharpen { model: {{ inputs.model_pool | default('coders-a-bg') }}; }")
+    CLAIM = ('\n[[run.hooks]]\nid = "box-claim"\nevent = "stage_start"\nmatcher = "^agent$"\n'
+             'blocking = true\nsandbox = true\ntimeout = "60s"\nscript = "fabro-io box-claim; exit 0"\n')
+    GUARD = ('\n[[run.hooks]]\nid = "box-guard"\nevent = "stage_start"\nmatcher = "^agent$"\n'
+             'blocking = true\nsandbox = true\ntimeout = "30s"\n'
+             'script = "fabro-io box-guard; [ $? -eq 2 ] && exit 2; exit 0"\n')
+
+    def root(self, tmp: str, *, stylesheet: str | None = None, hooks: str | None = None,
+             fallbacks: bool = False, run_branch: str | None = "enabled = false",
+             box_write: bool = True, node_class: str | None = "sharpen", box: object = True) -> Path:
+        root = Path(tmp) / "r"
+        pkg = root / ".fabro/workflows/leased"
+        pkg.mkdir(parents=True)
+        cls = f', class="{node_class}"' if node_class else ""
+        write = "echo x > /tmp/fabro/box" if box_write else "true"
+        (pkg / "workflow.fabro").write_text(
+            'digraph L {\n  graph [stall_timeout="30m", default_fidelity="truncate", model_stylesheet="'
+            + (stylesheet or self.STYLESHEET) + '"]\n'
+            '  start [shape=Mdiamond]\n  exit [shape=Msquare]\n'
+            f'  claim [shape=parallelogram, timeout="5m", script="{write}"]\n'
+            f'  work [label="Work", prompt="Do it"{cls}]\n'
+            '  start -> claim\n  claim -> work\n  work -> exit\n}\n')
+        toml = '_version = 1\n[workflow]\ngraph = "workflow.fabro"\n'
+        if run_branch is not None:
+            toml += f"[run.run_branch]\n{run_branch}\n"
+        toml += self.CLAIM if hooks is None else hooks
+        if fallbacks:
+            toml += '[run.model.fallbacks]\n"glm-5.3" = ["glm-5.3-flash"]\n'
+        (pkg / "workflow.toml").write_text(toml)
+        io = root / ".fabro/workflows/_io"
+        io.mkdir()
+        stage = {"box": box} if box is not None else {}
+        (io / "manifest.json").write_text(json.dumps({"workflows": {"leased": {"stages": {"work": stage}}}, "phases": {}}))
+        return root
+
+    def run_r17(self, root: Path) -> list[tuple[str, str]]:
+        saved = cgi.LEASED_BOX_PACKAGES
+        cgi.LEASED_BOX_PACKAGES = ["leased"]
+        try:
+            return [(rule, node) for _, rule, node, _ in cgi.run(root) if rule == "R17"]
+        finally:
+            cgi.LEASED_BOX_PACKAGES = saved
+
+    def violations(self, root: Path) -> list[tuple]:
+        saved = cgi.LEASED_BOX_PACKAGES
+        cgi.LEASED_BOX_PACKAGES = ["leased"]
+        try:
+            return cgi.run(root)
+        finally:
+            cgi.LEASED_BOX_PACKAGES = saved
+
+    def test_a_leased_package_that_obeys_every_clause_passes_every_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.violations(self.root(tmp)), [])
+
+    def test_a_hosted_model_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hosted = "* { model: glm-5.3; }\n.sharpen { model: {{ inputs.model_pool | default('coders-a-bg') }}; }"
+            self.assertEqual(self.run_r17(self.root(tmp, stylesheet=hosted)), [("R17", "*")])
+
+    def test_a_model_that_is_not_a_bg_row_or_not_the_model_pool_is_reported(self):
+        for bad in ("{{ inputs.model_pool | default('coders-a') }}",
+                    "{{ inputs.coder_pool | default('coders-a-bg') }}"):
+            with self.subTest(model=bad), tempfile.TemporaryDirectory() as tmp:
+                sheet = f"* {{ model: {bad}; }}\n.sharpen {{ model: {bad}; }}"
+                self.assertEqual(self.run_r17(self.root(tmp, stylesheet=sheet)), [("R17", "*"), ("R17", ".sharpen")])
+
+    def test_an_agent_node_with_no_class_or_an_undefined_class_is_reported(self):
+        for cls in (None, "ghost"):
+            with self.subTest(node_class=cls), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(self.run_r17(self.root(tmp, node_class=cls)), [("R17", "work")])
+
+    def test_a_missing_or_altered_claim_hook_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.run_r17(self.root(tmp, hooks="")), [("R17", "box-claim")])
+        with tempfile.TemporaryDirectory() as tmp:
+            slow = self.CLAIM.replace('timeout = "60s"', 'timeout = "10s"')
+            self.assertEqual(self.run_r17(self.root(tmp, hooks=slow)), [("R17", "box-claim")])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.run_r17(self.root(tmp, hooks=self.CLAIM + self.CLAIM)), [("R17", "box-claim")])
+
+    def test_a_guard_hook_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.run_r17(self.root(tmp, hooks=self.CLAIM + self.GUARD)), [("R17", "box-guard")])
+
+    def test_a_fallbacks_table_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.run_r17(self.root(tmp, fallbacks=True)), [("R17", "fallbacks")])
+
+    def test_a_run_branch_that_may_push_is_reported(self):
+        for branch in (None, "enabled = true", "push = false"):
+            with self.subTest(branch=branch), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(self.run_r17(self.root(tmp, run_branch=branch)), [("R17", "run_branch")])
+
+    def test_a_claim_that_writes_no_box_file_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.run_r17(self.root(tmp, box_write=False)), [("R17", "claim")])
+
+    def test_an_agent_stage_that_is_not_a_box_stage_is_reported(self):
+        for box in (False, None):
+            with self.subTest(box=box), tempfile.TemporaryDirectory() as tmp:
+                self.assertIn(("R17", "work"), self.run_r17(self.root(tmp, box=box)))
+
+    def test_r15_leaves_a_leased_package_to_r17(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([v for v in self.violations(self.root(tmp)) if v[1] == "R15"], [])
+
+    def test_the_real_issue_sharpen_package_obeys_every_clause(self):
+        pkg = REAL / ".fabro/workflows/issue-sharpen"
+        found = cgi.package_violations(pkg, REAL / ".fabro/workflows")[0]
+        self.assertEqual(found, [])
+        self.assertEqual(cgi.LEASED_BOX_PACKAGES, ["issue-sharpen"])
+
+
 class Counts(unittest.TestCase):
     def test_spliced_counts_match_the_agents_baselines(self):
         self.assertEqual(cgi.spliced_counts(REAL), {
@@ -465,6 +585,9 @@ class Counts(unittest.TestCase):
             # issue-precheck (more-local-inference task 07): start, exit, claim, stop, prep,
             # check, gate, post -- 8 nodes, 11 edges.
             "issue-precheck": (8, 11),
+            # issue-sharpen (issue-sharpening 01): start, exit, claim, prep, draft, draft_gate,
+            # record -- 7 nodes, 10 edges. Tasks 02 and 03 add the lenses, the loop and the apply.
+            "issue-sharpen": (7, 10),
             # context-pack (more-local-inference task 08): the same shape -- claim, stop, prep,
             # gather, gate, post.
             "context-pack": (8, 11),

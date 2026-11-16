@@ -1,0 +1,32 @@
+{
+  "status": "proposed",
+  "body": "The report renderer's branch coverage is below the rest of the package.\n\n## Context\n\n- `src/reports/render.py` has uncovered branches at lines 40-44 and 91-94.\n\n## Requirements\n\n1. Tests cover the listed branches.\n\n## Acceptance criteria\n\n- [ ] Every line and branch listed above is covered, or a code comment at the branch says why it was left (unreachable).\n\n## Non-goals\n\n- Changing the renderer's behaviour.\n\n## Test expectations\n\n- pytest, one test per listed branch.\n",
+  "post_deploy_checks": [],
+  "changes": [
+    {
+      "criterion_ref": "AC1",
+      "original": "Every line and branch listed above is covered, or the PR explains why it was left (unreachable).",
+      "proposed": "Every line and branch listed above is covered, or a code comment at the branch says why it was left (unreachable).",
+      "transformation": "pr_text_to_code",
+      "evidence": [
+        {
+          "where": "issue body",
+          "says": "the criterion as written"
+        }
+      ]
+    },
+    {
+      "criterion_ref": "AC2",
+      "original": "The PR description lists before/after statement and branch % for each file this issue names.",
+      "proposed": null,
+      "transformation": "to_post_deploy",
+      "evidence": [
+        {
+          "where": "issue body",
+          "says": "the criterion as written"
+        }
+      ]
+    }
+  ],
+  "human_actions": []
+}

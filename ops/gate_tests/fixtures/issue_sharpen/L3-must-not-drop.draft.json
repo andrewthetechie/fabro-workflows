@@ -1,0 +1,32 @@
+{
+  "status": "proposed",
+  "body": "Exact title matches appear below partial matches.\n\n## Context\n\n- `src/search/rank.py:20` scores title and body matches the same.\n\n## Requirements\n\n1. An exact title match scores above any partial match.\n\n## Acceptance criteria\n\n- [ ] A search for `Mowing` returns the invoice titled `Mowing` first.\n- [ ] `min_hit_at_5` in `tests/gold/thresholds.toml` is raised to the new Hit@5, rounded down.\n- [ ] `fail_under` in `pyproject.toml` is raised to the new coverage total, rounded down.\n\n## Non-goals\n\n- A new ranking model.\n\n## Test expectations\n\n- pytest: a three-document index, query `Mowing`, the exact match is first.\n",
+  "post_deploy_checks": [],
+  "changes": [
+    {
+      "criterion_ref": "AC2",
+      "original": "Gold-set Hit@5 does not drop.",
+      "proposed": "`min_hit_at_5` in `tests/gold/thresholds.toml` is raised to the new Hit@5, rounded down.",
+      "transformation": "no_drop_to_threshold",
+      "evidence": [
+        {
+          "where": "tests/gold/thresholds.toml:3",
+          "says": "the Hit@5 threshold key"
+        }
+      ]
+    },
+    {
+      "criterion_ref": "AC3",
+      "original": "Line coverage must not drop below the current value.",
+      "proposed": "`fail_under` in `pyproject.toml` is raised to the new coverage total, rounded down.",
+      "transformation": "no_drop_to_threshold",
+      "evidence": [
+        {
+          "where": "pyproject.toml:12",
+          "says": "the coverage threshold key"
+        }
+      ]
+    }
+  ],
+  "human_actions": []
+}

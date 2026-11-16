@@ -1,0 +1,398 @@
+// issue-sharpen (issue-sharpening, ADR 0033): a local model rewrites the acceptance criteria of
+// one `unverifiable` issue so the Refuter can mark each one, and the factory applies the rewrite
+// with no human approval. The safety is three things instead of a person: a closed list of
+// transformations, a mechanical preservation gate (`draft_gate`), and a fresh three-lens audit
+// that must come back clean before anything is written to the issue.
+//
+// It is a **leased run**, not a background run. The scheduler gives it a coder pool the way an
+// issue run gets one (`target_kind = 'sharpen'`), so it carries `box-claim` like `ralph` and
+// no `box-guard`, and every agent stage runs on the lease's box through its `-bg` model row
+// (`model_pool`, D1). There is no hosted model and no fallback (R17).
+//
+// **Nothing writes to GitHub before `apply`** (task 03). A run that stops anywhere earlier, or
+// that ends `capped`, `churn` or `cannot_sharpen`, leaves the issue as it was, and the issue
+// runs as written.
+//
+// A failed node takes its unconditional edge to `record`, which records `outcome=failed` and
+// always exits 0. The scheduler reads the record from the run's own events (C11).
+digraph IssueSharpen {
+    graph [
+        goal="Rewrite the acceptance criteria of one unverifiable issue so the Refuter can mark each one, using only a closed list of transformations and changing nothing else",
+        // Above every node timeout below, `recheck`'s 40m included (R2): the watchdog must never
+        // fire before a node's own timeout does, and `box-claim`'s wait counts toward it.
+        stall_timeout="60m",
+        // Bound the preamble: every prompt names its inputs by path (invariants-graph, the
+        // `default_fidelity` row).
+        default_fidelity="truncate",
+        // Every model here is the run's `-bg` row (`model_pool`, R17): the `*` rule and the
+        // two classes name the same pool, so an agent node that lost its class would still run
+        // on the box and never reach a hosted model. `.preserve` runs at `high` because a miss
+        // there is a weakened requirement (D22).
+        model_stylesheet="
+            *         { model: {{ inputs.model_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+            .sharpen  { model: {{ inputs.model_pool | default('coders-a-bg') }}; reasoning_effort: medium; }
+            .preserve { model: {{ inputs.model_pool | default('coders-a-bg') }}; reasoning_effort: high; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // ---- Read the issue and decide whether to sharpen it ----
+    //
+    // `issue_number` and `coder_pool` arrive from the scheduler's lease. `issue_number` is
+    // interpolated exactly once, in single quotes, so a non-numeric value reaches the `case`
+    // guard as data rather than as shell syntax. `coder_pool` is the lease's pool as it is
+    // (`coders-b`, never `-bg`), and `/tmp/fabro/box` is `box-claim`'s way to learn which box
+    // this run holds (R15's half of the contract, R17).
+    //
+    // `body_hash` is the precheck's: the first 12 hex characters of the SHA-256 of the title, a
+    // newline and the body. The run goes on only when the newest precheck marker says
+    // `unverifiable` for exactly this text, and no `fabro:sharpen` marker names this text as the
+    // original (`body=`) or as a result (`applied=`): one sharpening per original body (D15).
+    // Any other state is a quiet stop with outcome `not_needed`, which the scheduler records.
+    claim [label="Read the issue", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="set -e
+S=/tmp/fabro/sharpen
+POOL='{{ inputs.coder_pool }}'
+echo \"$POOL\" > /tmp/fabro/box || true
+N='{{ inputs.issue_number }}'
+case \"$N\" in '' | *[!0-9]*) echo 'issue_number must be a positive integer' >&2; exit 1;; esac
+if [ \"$N\" -lt 1 ]; then echo 'issue_number must be a positive integer' >&2; exit 1; fi
+rm -rf $S
+mkdir -p $S
+echo \"$N\" > $S/issue_number
+if ! gh issue view \"$N\" --json number,title,body,state,url,labels > $S/issue.json; then
+  echo 'Could not read issue '$N' from GitHub.' >&2
+  exit 1
+fi
+R=$(jq -r '(.url // \"\") | split(\"/\") | .[3] + \"/\" + .[4]' $S/issue.json)
+echo \"$R\" > $S/repo
+if ! gh api \"repos/$R/issues/$N/comments?per_page=100\" --paginate > $S/comments.raw; then
+  echo 'Could not read the comments on issue '$N'.' >&2
+  exit 1
+fi
+jq -s 'add // []' $S/comments.raw > $S/comments.json
+if command -v sha256sum >/dev/null; then SUM=sha256sum; else SUM='shasum -a 256'; fi
+{ jq -j '.title // \"\"' $S/issue.json; echo; jq -j '.body // \"\"' $S/issue.json; } | $SUM | cut -c1-12 > $S/body_hash
+HASH=$(cat $S/body_hash)
+GO=true
+WHY=eligible
+ST=$(jq -r .state $S/issue.json)
+if [ \"$ST\" != OPEN ]; then GO=false; WHY='the issue is '$ST', not OPEN'
+elif ! jq -e 'any((.labels // [])[]; .name == \"agent\")' $S/issue.json >/dev/null; then GO=false; WHY='the issue does not carry the agent label'
+elif jq -e 'any((.labels // [])[]; .name == \"agent-in-progress\")' $S/issue.json >/dev/null; then GO=false; WHY='the issue carries agent-in-progress: a run has it'
+elif ! jq -e --arg h \"<!-- fabro:precheck verdict=unverifiable body=$HASH \" '[.[] | (.body // \"\") | select(startswith(\"<!-- fabro:precheck \"))] | (last // \"\") | startswith($h)' $S/comments.json >/dev/null; then GO=false; WHY='the newest precheck is not unverifiable for this text of the issue (body='$HASH')'
+elif jq -e --arg a \"body=$HASH \" --arg b \"applied=$HASH \" 'any(.[]; ((.body // \"\") | startswith(\"<!-- fabro:sharpen \")) and (((.body // \"\") | split([10] | implode) | .[0]) as $m | ($m | contains($a)) or ($m | contains($b))))' $S/comments.json >/dev/null; then GO=false; WHY='this text of the issue was already sharpened or is the result of a sharpening (body='$HASH')'
+fi
+if [ \"$GO\" != true ]; then
+  echo 'issue-sharpen: not sharpening issue '$N': '$WHY >&2
+  echo not_needed > $S/outcome
+  printf '%s' \"$WHY\" > $S/rule
+  echo '{\"context_updates\":{\"sharpen_go\":false}}'
+  exit 0
+fi
+echo '{\"context_updates\":{\"sharpen_go\":true}}'"]
+
+    // ---- Stage the inputs ----
+    //
+    // `criteria.md` numbers the original `## Acceptance criteria` bullets AC1..ACn, which is how
+    // the draft's change rows and the gate name a criterion. An issue with no such heading, no
+    // bullets or no `.fabro/ci.sh` is a quiet stop: the closed list has nothing to act on.
+    // The code index and the agent guide are installed exactly as `issue-precheck`'s `prep`
+    // does it (this is not an R10 copy: the staging paths differ), and the one file the
+    // draft reads that is not the issue's own, `rules.md`, is the USER-GUIDE's rules
+    // written out from `prompts/rules.md` (a gate test keeps the two equal).
+    prep [label="Stage the draft's inputs", shape=parallelogram, output_schema="routing", timeout="15m",
+        script="set -e
+S=/tmp/fabro/sharpen
+cat > $S/lib.jq <<'JQ'
+def nl: [10] | implode;
+def clean: sub(\"[[:space:]]+$\"; \"\");
+def blines: (. // \"\") | split(nl) | map(clean);
+def trimblank: reverse | until(length == 0 or .[0] != \"\"; .[1:]) | reverse;
+def sections: reduce .[] as $x ([{h: \"\", l: []}]; if ($x | test(\"^## \")) then . + [{h: $x, l: []}] else .[-1].l += [$x] end) | map(.l |= trimblank);
+def parse_ac: reduce .[] as $x ({b: [], o: [], bul: false}; if ($x | test(\"^[-*] \")) then .b += [[$x]] | .bul = true elif .bul and ($x | test(\"^[[:space:]]+[^[:space:]]\")) then .b[-1] += [$x] elif $x == \"\" then .bul = false else .o += [$x] | .bul = false end);
+def btext: (.[0] | sub(\"^[-*] ([[][ xX][]] )?\"; \"\")) as $f | ([$f] + .[1:]) | join(nl);
+def ac_of: ([.[] | select(.h == \"## Acceptance criteria\")] | first) as $s | if $s == null then null else ($s.l | parse_ac) end;
+JQ
+stop() {
+  echo not_needed > $S/outcome
+  printf '%s' \"$1\" > $S/rule
+  echo 'issue-sharpen: not sharpening: '\"$1\" >&2
+  echo '{\"context_updates\":{\"prep_ok\":false}}'
+  exit 0
+}
+if [ ! -f .fabro/ci.sh ]; then stop 'no .fabro/ci.sh'; fi
+CNT=$(jq -L $S 'include \"lib\"; (.body | blines | sections | ac_of) | if . == null then -1 else (.b | length) end' $S/issue.json)
+if [ \"$CNT\" -lt 0 ]; then stop 'no acceptance criteria heading'; fi
+if [ \"$CNT\" -eq 0 ]; then stop 'no acceptance criteria bullets'; fi
+jq -r -L $S 'include \"lib\"; (.body | blines | sections | ac_of).b | to_entries[] | \"AC\" + ((.key + 1) | tostring) + \". \" + (.value | btext)' $S/issue.json > $S/criteria.md
+N=$(cat $S/issue_number)
+{
+  echo '# #'$N': '\"$(jq -r '.title // \"\"' $S/issue.json)\"
+  echo
+  echo 'Labels: '\"$(jq -r '[(.labels // [])[].name] | join(\", \")' $S/issue.json)\"
+  echo
+  jq -r '.body // \"\"' $S/issue.json
+  echo
+  echo '## Comments, oldest first (the last ten; fabro marker comments left out)'
+  echo
+  jq -r '[.[] | select((.body // \"\") | startswith(\"<!-- fabro:\") | not)] | .[-10:] | .[] | (\"### \" + (.user.login // \"?\") + \" at \" + (.created_at // \"?\")), \"\", ((.body // \"\") | .[0:2000]), \"\"' $S/comments.json
+} > $S/issue.md
+jq -r '[.[] | (.body // \"\") | select(startswith(\"<!-- fabro:precheck \"))] | last // \"\"' $S/comments.json > $S/precheck.md
+cut -c3- > $S/rules.md <<'RULES'
+> ### Writing criteria the factory can verify
+> 
+> A PR merges on its own only when the Refuter can mark every acceptance criterion
+> `met` from the code, the diff and `.fabro/ci.sh`'s run. A criterion it cannot check
+> holds the PR for you however good the code is: in the two weeks to 2026-11-01, 70
+> of the 85 agent PRs with an unmet criterion were held by one of the first two
+> cases below (#57). Skipping triage means nothing rewrites these for you, so apply
+> the rules yourself (the precheck's `unverifiable` comment flags a miss before the
+> run):
+> 
+> 1. **No criterion needs text in the PR description.** No stage after `open_pr`
+>    writes the PR body, and the Refuter often runs before the PR exists.
+>    - \"The PR explains why X is unreachable\" → \"a code comment at the line says
+>      why X is unreachable\".
+>    - \"The uncovered remainder is listed in the PR\" → the same code-comment form,
+>      or drop it.
+>    - \"The PR lists before/after coverage\" → drop it. Keep the before numbers in
+>      the issue as context; the after numbers are in GitHub CI's coverage summary.
+> 2. **A command criterion names only a command `.fabro/ci.sh` runs.** Read the
+>    repository's `ci.sh` first. Otherwise name a state the Refuter can read from
+>    the diff.
+> 3. **\"Coverage must not drop\" becomes a raised threshold:** \"`coverage.thresholds`
+>    in `<config>` (or `fail_under`) is raised to the new totals, rounded down\".
+>    `ci.sh` enforces the threshold, and the Refuter verifies the raise in the diff.
+>    It also ratchets coverage, which is what the criterion was for.
+> 4. **A check only a human can make after merge goes under `## Post-deploy
+>    checks`.** The pipeline cuts that heading from the Refuter's input and lists
+>    it in the PR body for you.
+> 
+> A change to a file under `.github/workflows/` cannot be the agent's work at all:
+> its token cannot push one, so the run stops before opening a PR. Make that edit
+> yourself.
+> 
+> ### The closed list of transformations
+> 
+> A change row names exactly one of these. Nothing else is allowed, and nothing is ever deleted:
+> a criterion that none of the first four can make verifiable takes `to_post_deploy`.
+> 
+> | Transformation | From | To | Required evidence |
+> |---|---|---|---|
+> | `pr_text_to_code` | a criterion that needs PR-description text | the same content as a code comment, a docs file, or a repository file the diff adds | none beyond the original quote |
+> | `command_to_ci` | a command `.fabro/ci.sh` does not run | the `ci.sh` command that covers the same files | the `.fabro/ci.sh:N` line (or the script line it calls) |
+> | `command_to_behaviour` | a command `ci.sh` does not run, with no `ci.sh` equivalent | a behaviour the Refuter can read from the diff (a test that asserts X exists) | `path:line` where the behaviour lives or will live |
+> | `no_drop_to_threshold` | \"coverage must not drop\" and the like | \"`<config key>` in `<file>` is raised to the new totals, rounded down\" | the `path:line` of the threshold key |
+> | `to_post_deploy` | a human-only check, a screenshot, a manual or staging check, a `.github/workflows/` change, or anything else the agent cannot do or the Refuter cannot verify | moved to `post_deploy_checks`, verbatim or lightly reworded | none |
+RULES
+{ echo '## .fabro/ci.sh'; echo; cat .fabro/ci.sh; } > $S/ci.md
+: > $S/ci.seen
+section() {
+  if grep -qxF \"$1\" $S/ci.seen; then return 0; fi
+  echo \"$1\" >> $S/ci.seen
+  { echo; echo \"## $1\"; echo; cat; } >> $S/ci.md
+}
+grep -oE '(bash|sh|source) +[A-Za-z0-9_./-]+[.]sh|[.]/[A-Za-z0-9_./-]+[.]sh|uv run +[A-Za-z0-9_./-]+[.]py' .fabro/ci.sh | awk '{print $NF}' | sed 's|^[.]/||' | while read -r P; do
+  if [ -f \"$P\" ]; then section \"$P\" < \"$P\"; elif [ -f \".fabro/$P\" ]; then section \".fabro/$P\" < \".fabro/$P\"; fi
+done
+grep -oE '(npm|bun) run +[A-Za-z0-9_:.-]+' .fabro/ci.sh | awk '{print $NF}' | while read -r K; do
+  for PJ in package.json $(find . -maxdepth 3 -name package.json -not -path '*/node_modules/*' | sed 's|^[.]/||' | sort); do
+    if [ -f \"$PJ\" ] && jq -e --arg k \"$K\" '(.scripts // {}) | has($k)' \"$PJ\" >/dev/null 2>&1; then
+      jq -r --arg k \"$K\" '$k + \": \" + (.scripts[$k] | tojson)' \"$PJ\" | section \"$PJ script $K\"
+      break
+    fi
+  done
+done
+grep -oE 'make +[A-Za-z0-9_.-]+' .fabro/ci.sh | awk '{print $2}' | while read -r T; do
+  for MF in Makefile makefile GNUmakefile; do
+    if [ -f \"$MF\" ] && grep -qE \"^$T:\" \"$MF\"; then
+      awk -v t=\"$T\" 'BEGIN { tab = sprintf(\"%c\", 9) } index($0, t \":\") == 1 { p = 1; print; next } p && $0 != \"\" && substr($0, 1, 1) != \" \" && substr($0, 1, 1) != tab { p = 0 } p { print }' \"$MF\" | section \"$MF target $T\"
+      break
+    fi
+  done
+done
+if [ \"$(wc -c < $S/ci.md)\" -gt 40000 ]; then
+  { head -c 40000 $S/ci.md | sed '$d'; echo '- (cut to fit)'; } > $S/ci.cut
+  mv $S/ci.cut $S/ci.md
+fi
+git rev-parse HEAD > $S/main_sha
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index >/dev/null 2>&1 || echo 'prep: fabro-code index failed; the lenses run without the index' >&2; fabro-code map >/dev/null 2>&1 || true; else echo 'prep: fabro-code is not in the image' >&2; fi
+if [ -z \"$FABRO_AGENT_GUIDE\" ]; then echo 'agent guide: FABRO_AGENT_GUIDE is empty, nothing installed' >&2
+elif git ls-files --error-unmatch .codex/instructions.md >/dev/null 2>&1; then echo 'agent guide: the repository tracks .codex/instructions.md, left alone' >&2
+elif mkdir -p .codex && printf '%s' \"$FABRO_AGENT_GUIDE\" > .codex/instructions.md; then grep -qx '.codex/instructions.md' .git/info/exclude 2>/dev/null || echo '.codex/instructions.md' >> .git/info/exclude
+else echo 'agent guide: could not write .codex/instructions.md' >&2; fi
+rm -f $S/orientation.md
+if gh issue list --label fabro-orientation --state open --json number,body --limit 5 > $S/orientation.raw 2>/dev/null; then
+  jq -r '[.[] | (.body // \"\") | select(startswith(\"<!-- fabro:orientation \"))] | last // \"\"' $S/orientation.raw | sed 1d | jq -Rrs 'if length > 6000 then .[0:6000] + \" [cut to 6000 characters]\" else . end' > $S/orientation.md 2>/dev/null || true
+fi
+if ! grep -q '[^[:space:]]' $S/orientation.md 2>/dev/null; then rm -f $S/orientation.md; fi
+jq -r '[.[] | (.body // \"\") | select(startswith(\"<!-- fabro:context-pack \"))] | last // \"\"' $S/comments.json | sed 1d | jq -Rrs 'if length > 8000 then .[0:8000] + \" [cut to 8000 characters]\" else . end' > $S/pack.md 2>/dev/null || true
+if ! grep -q '[^[:space:]]' $S/pack.md 2>/dev/null; then rm -f $S/pack.md; fi
+rm -f $S/orientation.raw
+echo '{\"context_updates\":{\"prep_ok\":true}}'"]
+
+    // The Elephant. Bounded at 20m (D21: a bound, not a measurement; task 08 re-derives it).
+    draft [label="Draft the sharpened criteria", class="sharpen", timeout="20m", prompt="@prompts/draft.md.j2"]
+
+    // ---- The preservation gate (D10, C4) ----
+    //
+    // The first refusal writes `outcome=cannot_sharpen` and a one-line `rule`, and routes to
+    // `record`: a refusal is a model mistake, not a fault, and is never retried. On success it
+    // writes the sealed audit directory the lenses read, and emits `round`. Task 02 re-points
+    // its success edge at the first lens; until then it goes to `record`.
+    draft_gate [label="Check the draft changes nothing it did not declare", shape=parallelogram, output_schema="routing", timeout="2m",
+        script="S=/tmp/fabro/sharpen
+F=$S/draft.json
+R=0
+[ -f $S/round ] && R=$(cat $S/round)
+R=$((R+1))
+echo $R > $S/round
+refuse() {
+  printf '%s' \"$1\" > $S/rule
+  echo cannot_sharpen > $S/outcome
+  echo 'draft_gate: refused: '\"$1\" >&2
+  echo '{\"context_updates\":{\"draft_ok\":false}}'
+  exit 0
+}
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then refuse 'draft.json has no valid Input receipt, so the draft did not finish'; fi
+cat > $S/lib.jq <<'JQ'
+def nl: [10] | implode;
+def clean: sub(\"[[:space:]]+$\"; \"\");
+def blines: (. // \"\") | split(nl) | map(clean);
+def trimblank: reverse | until(length == 0 or .[0] != \"\"; .[1:]) | reverse;
+def sections: reduce .[] as $x ([{h: \"\", l: []}]; if ($x | test(\"^## \")) then . + [{h: $x, l: []}] else .[-1].l += [$x] end) | map(.l |= trimblank);
+def parse_ac: reduce .[] as $x ({b: [], o: [], bul: false}; if ($x | test(\"^[-*] \")) then .b += [[$x]] | .bul = true elif .bul and ($x | test(\"^[[:space:]]+[^[:space:]]\")) then .b[-1] += [$x] elif $x == \"\" then .bul = false else .o += [$x] | .bul = false end);
+def btext: (.[0] | sub(\"^[-*] ([[][ xX][]] )?\"; \"\")) as $f | ([$f] + .[1:]) | join(nl);
+def ac_of: ([.[] | select(.h == \"## Acceptance criteria\")] | first) as $s | if $s == null then null else ($s.l | parse_ac) end;
+JQ
+cat > $S/gate.jq <<'JQ'
+include \"lib\";
+def okrow:
+  if (type != \"object\") then \"a change row is not an object\"
+  elif ((keys - [\"criterion_ref\", \"original\", \"proposed\", \"transformation\", \"evidence\"]) | length) > 0 or (([\"criterion_ref\", \"original\", \"proposed\", \"transformation\", \"evidence\"] - keys) | length) > 0 then \"a change row has missing or unknown keys\"
+  elif ((.criterion_ref | type) != \"string\" or (.criterion_ref | test(\"^AC[0-9]+$\") | not)) then \"a criterion_ref is not ACn\"
+  elif ((.original | type) != \"string\" or (.original | length) == 0) then \"a row has no original\"
+  elif (.proposed != null and ((.proposed | type) != \"string\" or (.proposed | length) == 0)) then \"a row proposed is not text or null\"
+  elif ([.transformation] | inside([\"pr_text_to_code\", \"command_to_ci\", \"command_to_behaviour\", \"no_drop_to_threshold\", \"to_post_deploy\"]) | not) then \"a row names a transformation outside the closed list: \" + (.transformation | tostring)
+  elif ((.proposed == null) != (.transformation == \"to_post_deploy\")) then (.criterion_ref + \": proposed is null if and only if the transformation is to_post_deploy\")
+  elif ((.evidence | type) != \"array\" or (.evidence | length) < 1 or (.evidence | length) > 6) then (.criterion_ref + \" has no evidence\")
+  elif (all(.evidence[]; type == \"object\" and ((keys - [\"where\", \"says\"]) | length) == 0 and ((.where | type) == \"string\") and ((.says | type) == \"string\") and (.where | length) > 0 and (.where | length) <= 200 and (.says | length) > 0 and (.says | length) <= 300) | not) then (.criterion_ref + \" has malformed evidence\")
+  elif (.transformation == \"command_to_ci\" and (any(.evidence[]; .where | contains(\"ci.sh\")) | not)) then (.criterion_ref + \": command_to_ci needs evidence from .fabro/ci.sh\")
+  elif ((.transformation == \"command_to_behaviour\" or .transformation == \"no_drop_to_threshold\") and (any(.evidence[]; .where | test(\":[0-9]+\")) | not)) then (.criterion_ref + \": \" + .transformation + \" needs path:line evidence\")
+  else \"\" end;
+def schema_rule:
+  if (type != \"object\") then \"the draft is not an object\"
+  elif ((keys - [\"_io\", \"status\", \"reason\", \"body\", \"post_deploy_checks\", \"changes\", \"human_actions\"]) | length) > 0 then \"the draft has an unknown key\"
+  elif (.status != \"proposed\" and .status != \"cannot_sharpen\") then \"the draft has no known status\"
+  elif .status == \"cannot_sharpen\" then (if ((.reason | type) == \"string\" and (.reason | length) >= 1 and (.reason | length) <= 600) then \"\" else \"cannot_sharpen carries no reason of 600 characters or fewer\" end)
+  elif ((.body | type) != \"string\" or (.body | length) == 0) then \"the draft has no body\"
+  elif ((.post_deploy_checks | type) != \"array\" or (all(.post_deploy_checks[]; type == \"string\" and length > 0 and length <= 600 and ((explode | any(. == 10)) | not)) | not)) then \"post_deploy_checks is not a list of one-line strings\"
+  elif ((.human_actions | type) != \"array\" or (all(.human_actions[]; type == \"string\" and length > 0 and length <= 300) | not)) then \"human_actions is not a list of strings of 300 characters or fewer\"
+  elif ((.changes | type) != \"array\" or (.changes | length) < 1 or (.changes | length) > 20) then \"changes has no rows, or more than 20\"
+  else ([.changes[] | okrow | select(. != \"\")] | first // \"\") end;
+def bullet_rows($oa; $rows):
+  [range(0; ($oa.b | length)) as $i | ([$rows[] | select((.criterion_ref[2:] | tonumber) == ($i + 1))] | first) as $r | if $r == null then {raw: $oa.b[$i]} elif $r.proposed != null then {t: $r.proposed} else empty end];
+def preserve($orig; $d):
+  ($orig | blines) as $ol
+  | ($d.body | blines) as $pl
+  | ($ol | sections) as $osall
+  | ($osall | map(select(.h != \"## Post-deploy checks\"))) as $os
+  | ($pl | sections) as $ps
+  | ($os | ac_of) as $oa
+  | ($ps | ac_of) as $pa
+  | ($d.changes | map(.criterion_ref[2:] | tonumber)) as $ns
+  | if $oa == null then \"the original body has no acceptance criteria heading\"
+    elif any($ps[]; .h == \"## Post-deploy checks\") then \"the body writes a Post-deploy checks section; the gate assembles it\"
+    elif ([range(0; ($ol | length)) | select(($ol[.] | startswith(\"<!-- fabro:\")) and $pl[.] != $ol[.])] | length) > 0 then (\"the marker on line \" + ([range(0; ($ol | length)) | select(($ol[.] | startswith(\"<!-- fabro:\")) and $pl[.] != $ol[.])] | first + 1 | tostring) + \" was changed or moved\")
+    elif ($os | map(.h)) != ($ps | map(.h)) then \"a section heading was added, removed, renamed or moved\"
+    elif ([range(0; ($os | length)) | select($os[.].h != \"## Acceptance criteria\" and $os[.].l != $ps[.].l)] | length) > 0 then (\"the section \" + ([range(0; ($os | length)) | select($os[.].h != \"## Acceptance criteria\" and $os[.].l != $ps[.].l)] | first | $os[.].h | if . == \"\" then \"before the first heading\" else . end) + \" changed\")
+    elif ($pa == null) then \"the proposal has no acceptance criteria section\"
+    elif $oa.o != $pa.o then \"text between the acceptance criteria bullets changed\"
+    elif (($ns | length) != ($ns | unique | length)) then \"two change rows name the same criterion\"
+    elif (any($ns[]; . < 1 or . > ($oa.b | length))) then \"a change row names a criterion that is not in the original\"
+    elif (any($d.changes[]; (.original != ($oa.b[(.criterion_ref[2:] | tonumber) - 1] | btext)))) then (\"the original text of \" + ([$d.changes[] | select(.original != ($oa.b[(.criterion_ref[2:] | tonumber) - 1] | btext))] | first | .criterion_ref) + \" is not the bullet in the original body\")
+    elif (any($d.changes[]; .proposed != null and .proposed == .original)) then \"a change row proposes the text it already has\"
+    else
+      bullet_rows($oa; $d.changes) as $want
+      | if ($want | length) != ($pa.b | length) then \"the acceptance criteria hold a bullet that no change row accounts for, or lack one that a row keeps\"
+        elif ([range(0; ($want | length)) | select(if ($want[.] | has(\"raw\")) then $want[.].raw != $pa.b[.] else $want[.].t != ($pa.b[.] | btext) end)] | length) > 0 then (\"acceptance criteria bullet \" + ([range(0; ($want | length)) | select(if ($want[.] | has(\"raw\")) then $want[.].raw != $pa.b[.] else $want[.].t != ($pa.b[.] | btext) end)] | first + 1 | tostring) + \" is not the original bullet or its change row's proposal, in order\")
+        else \"\" end
+    end;
+def assemble($orig; $d):
+  ($orig | blines | sections | map(select(.h == \"## Post-deploy checks\")) | map(.l) | add // []) as $opd
+  | ($opd | parse_ac) as $pdp
+  | ($pdp.b | map(btext | gsub(\"[[:space:]]+\"; \" \"))) as $have
+  | ([$d.post_deploy_checks[], ($d.changes[] | select(.transformation == \"to_post_deploy\") | .original | gsub(\"[[:space:]]+\"; \" \"))] | reduce .[] as $x ([]; if (. | index($x)) == null and ($have | index($x)) == null then . + [$x] else . end)) as $new
+  | ($d.body | split(nl) | reverse | until(length == 0 or (.[0] | clean) != \"\"; .[1:]) | reverse) as $bl
+  | if ($opd | length) == 0 and ($new | length) == 0 then $bl
+    else $bl + [\"\", \"## Post-deploy checks\", \"\"] + $opd + ($new | map(\"- [ ] \" + .)) end
+  | join(nl) + nl;
+def table($d):
+  def cell: if . == null then \"(moved to Post-deploy checks)\" else (gsub(\"[|]\"; \"/\") | gsub(\"[[:space:]]+\"; \" \")) end;
+  [\"| Criterion | Original | Proposed | Transformation | Evidence |\", \"|---|---|---|---|---|\"]
+  + [$d.changes[] | \"| \" + .criterion_ref + \" | \" + (.original | cell) + \" | \" + (.proposed | cell) + \" | \" + .transformation + \" | \" + ([.evidence[] | .where + \": \" + .says] | join(\"; \") | cell) + \" |\"]
+  | join(nl) + nl;
+. as $d
+| ($d | schema_rule) as $s
+| if $s != \"\" then {rule: $s}
+  elif $d.status == \"cannot_sharpen\" then {rule: (\"model:\" + $d.reason), model: true}
+  else
+    preserve($orig; $d) as $p
+    | if $p != \"\" then {rule: $p}
+      else {rule: \"\", proposed: assemble($orig; $d), changes: table($d)} end
+  end
+JQ
+jq -j '.body // \"\"' $S/issue.json > $S/orig.md
+if ! jq -L $S --rawfile orig $S/orig.md -f $S/gate.jq $F > $S/gate.json 2>$S/gate.err; then
+  refuse 'the gate could not read the draft: '\"$(head -c 200 $S/gate.err)\"
+fi
+RULE=$(jq -r '.rule' $S/gate.json)
+if [ -n \"$RULE\" ]; then refuse \"$RULE\"; fi
+rm -rf $S/audit
+mkdir -p $S/audit
+jq -r '.proposed' $S/gate.json > $S/audit/proposed.md
+jq -r '.changes' $S/gate.json > $S/audit/changes.md
+cp $S/criteria.md $S/audit/original_criteria.md
+cp $S/ci.md $S/audit/ci.md
+echo 'draft_gate: round '$R' draft accepted' >&2
+jq -nc --arg r \"$R\" '{context_updates:{draft_ok:true, round:$r}}'"]
+
+    // ---- The run's record (C11) ----
+    //
+    // Always exits 0, and every ending reaches it (R12). It emits the outcome through
+    // `context_updates` on its own `stage.completed`, which is where the scheduler reads it.
+    // An outcome file nobody wrote means a node failed: the record says `failed`.
+    record [label="Record the outcome", shape=parallelogram, output_schema="routing", timeout="1m",
+        script="S=/tmp/fabro/sharpen
+rd() { cat \"$S/$1\" 2>/dev/null || true; }
+OUT=$(rd outcome)
+[ -n \"$OUT\" ] || OUT=failed
+RND=$(rd round)
+[ -n \"$RND\" ] || RND=0
+CH=0
+TR=''
+if jq -e . $S/draft.json >/dev/null 2>&1; then
+  CH=$(jq '(.changes // []) | length' $S/draft.json 2>/dev/null || echo 0)
+  TR=$(jq -r '[(.changes // [])[].transformation] | group_by(.) | map(.[0] + \"=\" + (length | tostring)) | join(\",\")' $S/draft.json 2>/dev/null || true)
+fi
+jq -nc --arg o \"$OUT\" --arg r \"$(rd rule)\" --arg n \"$RND\" --arg b \"$(rd body_hash)\" --arg a \"$(rd applied_hash)\" --arg c \"$(rd recheck)\" --arg ch \"$CH\" --arg t \"$TR\" '{context_updates:{sharpen_outcome:$o, sharpen_rule:$r, round:($n | tonumber? // 0), body_hash:$b, applied_hash:$a, recheck:$c, changes:($ch | tonumber? // 0), transformations:$t}}' || echo '{\"context_updates\":{\"sharpen_outcome\":\"failed\"}}'
+exit 0"]
+
+    start -> claim
+    claim -> prep [condition="outcome=succeeded && context.sharpen_go=true"]
+    claim -> record [condition="outcome=succeeded && context.sharpen_go=false"]
+    claim -> record
+    prep -> draft [condition="outcome=succeeded && context.prep_ok=true"]
+    prep -> record
+    draft -> draft_gate [condition="outcome=succeeded"]
+    draft -> record
+    draft_gate -> record
+    record -> exit
+}
