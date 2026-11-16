@@ -1056,6 +1056,18 @@ def test_the_page_renders_a_held_issue(config, store, client):
     assert "precheck-blocked" in response.text
 
 
+def test_the_page_says_a_sharpen_held_issue_is_being_sharpened(config, store, client):
+    # issue-sharpening 04: `precheck-unverifiable` is not a switch's hold; the reason is that the
+    # factory is rewriting the criteria, and the page links the issue like any other held one.
+    writers = "andrewthetechie/writers-app"
+    store.upsert_issue(issue(writers, 8, labels=("agent", "precheck-unverifiable")))
+    store.sharpen_enqueue(writers, 8, "abc", datetime(2026, 11, 16, tzinfo=UTC))
+    text = client.get("/").text
+    assert "precheck-unverifiable" in text
+    assert "being sharpened (queued)" in text
+    assert "https://github.com/andrewthetechie/writers-app/issues/8" in text
+
+
 def test_history_page_is_empty_and_friendly(client):
     response = client.get("/history")
     assert response.status_code == 200

@@ -42,6 +42,7 @@ path.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -140,6 +141,9 @@ class Issue:
     title: str
     labels: frozenset[str]
     first_seen: datetime
+    # The precheck's body hash (`body_hash`): which text of the issue a verdict is about.
+    # "" when the cache row predates the column and no poll has refilled it yet.
+    body_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -1103,6 +1107,18 @@ def _tracked_issue(payload: Mapping[str, Any]) -> TrackedIssue:
     )
 
 
+def body_hash(title: object, body: object) -> str:
+    """The text of an issue the precheck judged: the first 12 hex of SHA-256 of
+    `title + "\\n" + body`.
+
+    Byte for byte what `issue-precheck`'s `claim` computes in shell
+    (`{ jq -j .title; echo; jq -j .body; } | sha256sum | cut -c1-12`): a null or absent title or
+    body is the empty string, as `jq -j '.title // ""'` makes it.
+    """
+    text = (title if isinstance(title, str) else "") + "\n" + (body if isinstance(body, str) else "")
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
 def _to_issue(repo: str, payload: Mapping[str, Any], seen_at: datetime) -> Issue:
     number = payload.get("number")
     if not isinstance(number, int) or isinstance(number, bool):
@@ -1114,6 +1130,7 @@ def _to_issue(repo: str, payload: Mapping[str, Any], seen_at: datetime) -> Issue
         title=title if isinstance(title, str) else "",
         labels=_label_names(payload),
         first_seen=seen_at,
+        body_hash=body_hash(title, payload.get("body")),
     )
 
 

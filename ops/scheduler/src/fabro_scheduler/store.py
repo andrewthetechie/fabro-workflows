@@ -376,7 +376,42 @@ CREATE TABLE IF NOT EXISTS pr_facts (
   doctor_marker    TEXT,
   PRIMARY KEY (repo, pr_number)
 );
+
+-- The sharpening queue (issue-sharpening C7, C11, C12; ADR 0033): one row per attempt to
+-- rewrite one issue's acceptance criteria. `body_hash` is the text the row was queued for and
+-- `applied_hash` the text the run left behind, so the hold rule can tell an issue that was
+-- already sharpened (either hash) from one that was not. `state` is `queued` or `running`
+-- until a run's record arrives, then one of `applied`, `capped`, `churn`, `stale`,
+-- `cannot_sharpen`, `not_needed`, `failed` or `superseded`. `attempts` counts dispatches and
+-- `next_eligible_at` spaces the retries of a faulted run (D12). The partial unique index is the
+-- database refusing a second non-terminal row for one issue.
+CREATE TABLE IF NOT EXISTS sharpen (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo             TEXT    NOT NULL,
+  issue_number     INTEGER NOT NULL,
+  body_hash        TEXT    NOT NULL,
+  state            TEXT    NOT NULL,
+  attempts         INTEGER NOT NULL DEFAULT 0,
+  next_eligible_at TEXT,           -- ISO-8601 UTC; NULL: eligible now
+  run_id           TEXT,
+  applied_hash     TEXT,
+  recheck          TEXT,
+  round            INTEGER,
+  rule             TEXT,
+  transformations  TEXT,
+  created_at       TEXT    NOT NULL,
+  finished_at      TEXT,
+  box_minutes      REAL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS sharpen_one_open
+  ON sharpen (repo, issue_number) WHERE state IN ('queued', 'running');
 """
+
+# The states a `sharpen` row ends in (C11). `queued` and `running` are the two live ones.
+SHARPEN_TERMINAL_STATES = (
+    "applied", "capped", "churn", "stale", "cannot_sharpen", "not_needed", "failed", "superseded",
+)
 
 # Columns added to `run_history` after the table already exists. `CREATE TABLE IF
 # NOT EXISTS` will not add a column, and the table ships on the host's volume, so
@@ -416,6 +451,10 @@ RUN_HISTORY_COLUMNS = {
 # scorecard reads as "not measured", never as zero.
 ADDED_COLUMNS = {
     "run_history": RUN_HISTORY_COLUMNS,
+    # issue-sharpening 04: the text of the issue the cached row describes, and the text a
+    # precheck job was queued for. NULL on a row written before them: the cache's is refilled by
+    # the next poll, and a precheck job with none matches no hash.
+    "issue_cache": {"body_hash": "body_hash TEXT"},
     # The lease carries the arm from dispatch to release, so `run_history` can copy
     # it there without asking fabro about a run it no longer has.
     "leases": {
@@ -444,6 +483,7 @@ ADDED_COLUMNS = {
         "doctor_marker": "doctor_marker TEXT",
     },
     "background_jobs": {
+        "target_hash": "target_hash TEXT",
         "review_run_id": "review_run_id TEXT",
         "review_dispatched_at": "review_dispatched_at TEXT",
         # NOT NULL with a DEFAULT is the one form ALTER TABLE accepts on a populated table.
@@ -652,7 +692,7 @@ class Store:
     def get_issue(self, repo: str, number: int) -> Issue | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT repo, number, title, labels, first_seen "
+                "SELECT repo, number, title, labels, first_seen, body_hash "
                 "FROM issue_cache WHERE repo = ? AND number = ?",
                 (repo, number),
             ).fetchone()
@@ -667,7 +707,7 @@ class Store:
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT repo, number, title, labels, first_seen FROM issue_cache "
+                "SELECT repo, number, title, labels, first_seen, body_hash FROM issue_cache "
                 "ORDER BY repo, number"
             ).fetchall()
         return [_row_to_issue(row) for row in rows]
@@ -1169,7 +1209,12 @@ class Store:
                 "ORDER BY last_finished_at DESC, job_id DESC LIMIT 1",
                 (kind, repo, target, prefix + "%", dispatched_at),
             ).fetchone()
-            found[kind] = None if hit is None else str(hit["outcome"])[len(prefix):]
+            # A precheck outcome is `verdict=<v> body=<hash>` since issue-sharpening 04: the
+            # verdict is the first word.
+            found[kind] = (
+                None if hit is None
+                else str(hit["outcome"])[len(prefix):].split(" body=")[0]
+            )
         pack_run = found["context-pack"]
         # The orientation is about the repository, not the issue: its job's target is empty, so
         # it is matched by repository and kind alone. `had_orientation` is 0 or 1 on every issue
@@ -1326,8 +1371,12 @@ class Store:
         priority: int,
         typical_box_minutes: int,
         now: datetime,
+        target_hash: str | None = None,
     ) -> int | None:
         """Insert one job, unless an identical one is already `queued` or `running`.
+
+        `target_hash` is the text of the issue a precheck was queued for (D13): the producer
+        asks `background_job_exists_for_hash` before it queues one.
 
         Idempotent on `(kind, repo, target)` in those two states, which is what lets a
         producer run on every tick: a job whose marker is still fresh is simply not
@@ -1346,8 +1395,8 @@ class Store:
             cursor = self._conn.execute(
                 "INSERT INTO background_jobs "
                 "(kind, repo, target, inputs_json, priority, typical_box_minutes, "
-                " created_at, state) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')",
+                " created_at, state, target_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
                 (
                     kind,
                     repo,
@@ -1356,6 +1405,7 @@ class Store:
                     priority,
                     typical_box_minutes,
                     now.isoformat(),
+                    target_hash,
                 ),
             )
             return int(cursor.lastrowid or 0)
@@ -1597,6 +1647,37 @@ class Store:
                 (kind, repo, target),
             ).fetchone()
         return row is not None
+
+    def background_job_exists_for_hash(
+        self, kind: str, repo: str, target: str, target_hash: str
+    ) -> bool:
+        """Whether a job of this kind was ever queued for this exact text of `(repo, target)`.
+
+        The precheck's one-job-per-text rule (D13). A job from before the column has no hash
+        and matches nothing, so each queued issue is checked once more after the deploy: the
+        package stops on a marker that already carries the hash, which costs about a minute.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM background_jobs "
+                "WHERE kind = ? AND repo = ? AND target = ? AND target_hash = ? LIMIT 1",
+                (kind, repo, target, target_hash),
+            ).fetchone()
+        return row is not None
+
+    def newest_done_precheck(self, repo: str, number: int) -> sqlite3.Row | None:
+        """The newest `done` precheck job of an issue that recorded a verdict, or `None`.
+
+        Its `outcome` is `verdict=<v> body=<hash>` (the hash is absent from a job recorded
+        before issue-sharpening 04).
+        """
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM background_jobs WHERE kind = 'issue-precheck' AND repo = ? "
+                "AND target = ? AND state = 'done' AND outcome LIKE 'verdict=%' "
+                "ORDER BY last_finished_at DESC, job_id DESC LIMIT 1",
+                (repo, str(number)),
+            ).fetchone()
 
     def set_background_outcome(
         self, job_id: int, *, outcome: str, now: datetime
@@ -2062,14 +2143,170 @@ class Store:
             (repo, number, override_rank, stamp),
         )
 
+    # --- the sharpening queue (issue-sharpening C7, C11, C12) ---------------------------
+
+    def sharpen_enqueue(
+        self, repo: str, number: int, body_hash: str, now: datetime
+    ) -> int | None:
+        """Queue one sharpening of `(repo, number)` for the text `body_hash`.
+
+        `None` when the issue already has a `queued` or `running` row: the partial unique
+        index refuses the second, and a producer that runs every pass relies on that.
+        """
+        with self._lock, self._conn:
+            try:
+                cursor = self._conn.execute(
+                    "INSERT INTO sharpen (repo, issue_number, body_hash, state, created_at) "
+                    "VALUES (?, ?, ?, 'queued', ?)",
+                    (repo, number, body_hash, now.isoformat()),
+                )
+            except sqlite3.IntegrityError:
+                return None
+            return int(cursor.lastrowid or 0)
+
+    def sharpen_row(self, row_id: int) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM sharpen WHERE id = ?", (row_id,)).fetchone()
+
+    def sharpen_rows(self, repo: str, number: int) -> list[sqlite3.Row]:
+        """Every row of one issue, newest first."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM sharpen WHERE repo = ? AND issue_number = ? ORDER BY id DESC",
+                (repo, number),
+            ).fetchall()
+
+    def sharpen_live_row(self, repo: str, number: int) -> sqlite3.Row | None:
+        """The issue's `queued` or `running` row, if it has one."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM sharpen WHERE repo = ? AND issue_number = ? "
+                "AND state IN ('queued', 'running')",
+                (repo, number),
+            ).fetchone()
+
+    def sharpen_live_rows(self) -> list[sqlite3.Row]:
+        """Every `queued` or `running` row, oldest first."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM sharpen WHERE state IN ('queued', 'running') ORDER BY id"
+            ).fetchall()
+
+    def sharpen_names_hash(self, repo: str, number: int, body_hash: str) -> bool:
+        """Whether any row of the issue names `body_hash` as its `body_hash` or `applied_hash`.
+
+        C7's rule 2 (D15): one sharpening per original body, and a body a sharpening produced
+        is never sharpened again.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM sharpen WHERE repo = ? AND issue_number = ? "
+                "AND (body_hash = ? OR applied_hash = ?) LIMIT 1",
+                (repo, number, body_hash, body_hash),
+            ).fetchone()
+        return row is not None
+
+    def sharpen_has_any_row(self, repo: str, number: int) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM sharpen WHERE repo = ? AND issue_number = ? LIMIT 1",
+                (repo, number),
+            ).fetchone()
+        return row is not None
+
+    def sharpen_rechecked(self, repo: str, number: int, body_hash: str) -> bool:
+        """Whether a sharpening of this issue left `body_hash` and judged it already (D14).
+
+        The precheck producer skips such a text: `recheck` posted its precheck marker.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM sharpen WHERE repo = ? AND issue_number = ? AND applied_hash = ? "
+                "AND recheck IS NOT NULL AND recheck != '' LIMIT 1",
+                (repo, number, body_hash),
+            ).fetchone()
+        return row is not None
+
+    def sharpen_claim(self, row_id: int, run_id: str, now: datetime) -> bool:
+        """`queued` -> `running` for a dispatched run: counts the attempt. `False` if the row
+        was no longer queued (superseded in the meantime)."""
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE sharpen SET state = 'running', run_id = ?, attempts = attempts + 1, "
+                "  next_eligible_at = NULL WHERE id = ? AND state = 'queued'",
+                (run_id, row_id),
+            )
+            return cursor.rowcount == 1
+
+    def sharpen_finish(
+        self,
+        row_id: int,
+        *,
+        state: str,
+        now: datetime,
+        applied_hash: str | None = None,
+        recheck: str | None = None,
+        round_: int | None = None,
+        rule: str | None = None,
+        transformations: str | None = None,
+        box_minutes: float | None = None,
+    ) -> None:
+        """End a row in a terminal `state` with what the run's record said (C11)."""
+        if state not in SHARPEN_TERMINAL_STATES:
+            raise ValueError(f"{state!r} is not a terminal sharpen state")
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE sharpen SET state = ?, finished_at = ?, applied_hash = ?, recheck = ?, "
+                "  round = ?, rule = ?, transformations = ?, box_minutes = ? WHERE id = ?",
+                (state, now.isoformat(), applied_hash or None, recheck or None, round_,
+                 rule or None, transformations or None, box_minutes, row_id),
+            )
+
+    def sharpen_retry(self, row_id: int, *, next_eligible_at: datetime, rule: str | None = None) -> None:
+        """`running` -> `queued` after a fault, not eligible again before `next_eligible_at` (D12)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE sharpen SET state = 'queued', run_id = NULL, next_eligible_at = ?, "
+                "  rule = COALESCE(?, rule) WHERE id = ? AND state = 'running'",
+                (next_eligible_at.isoformat(), rule, row_id),
+            )
+
+    def sharpen_supersede(self, row_id: int, now: datetime) -> bool:
+        """A `queued` row whose issue's text changed: it ends `superseded`. A `running` row is
+        left to its run (`apply`'s stale check handles it)."""
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE sharpen SET state = 'superseded', finished_at = ? "
+                "WHERE id = ? AND state = 'queued'",
+                (now.isoformat(), row_id),
+            )
+            return cursor.rowcount == 1
+
+    def add_cached_label(self, repo: str, number: int, label: str) -> None:
+        """Add `label` to a cached issue's labels, so a hold the scheduler just wrote reaches the
+        queue before the next poll does. The poll replaces the row's labels with GitHub's."""
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT labels FROM issue_cache WHERE repo = ? AND number = ?", (repo, number)
+            ).fetchone()
+            if row is None:
+                return
+            labels = sorted(set(json.loads(row["labels"])) | {label})
+            self._conn.execute(
+                "UPDATE issue_cache SET labels = ? WHERE repo = ? AND number = ?",
+                (json.dumps(labels), repo, number),
+            )
+
     def _upsert_issue(self, issue: Issue) -> None:
         self._conn.execute(
-            "INSERT INTO issue_cache (repo, number, title, labels, first_seen, last_seen) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "INSERT INTO issue_cache "
+            "(repo, number, title, labels, first_seen, last_seen, body_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(repo, number) DO UPDATE SET "
             "  title = excluded.title, "
             "  labels = excluded.labels, "
-            "  last_seen = excluded.last_seen",
+            "  last_seen = excluded.last_seen, "
+            "  body_hash = excluded.body_hash",
             (
                 issue.repo,
                 issue.number,
@@ -2080,6 +2317,7 @@ class Store:
                 # for a fresh sighting this is "when we last saw it". The conflict
                 # clause above is what keeps the *stored* `first_seen` intact.
                 issue.first_seen.isoformat(),
+                issue.body_hash or None,
             ),
         )
 
@@ -2091,6 +2329,7 @@ def _row_to_issue(row: sqlite3.Row) -> Issue:
         title=row["title"],
         labels=frozenset(json.loads(row["labels"])),
         first_seen=datetime.fromisoformat(row["first_seen"]),
+        body_hash=row["body_hash"] or "",
     )
 
 

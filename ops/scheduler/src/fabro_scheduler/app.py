@@ -59,7 +59,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, calibration, charts, github, measure, retro, scorecard
+from . import __version__, calibration, charts, github, measure, retro, scorecard, sharpen
 from .collector import ScorecardCollector
 from .background import BackgroundLane
 from .config import (
@@ -1095,7 +1095,12 @@ def build_app(
         # A held issue is in the cache and out of `items`, so the list and the reason come from
         # the same rows the queue read (D20).
         held_issues = lambda: [
-            {"issue": issue, "why": ", ".join(holding_labels(issue))}
+            {
+                "issue": issue,
+                "why": ", ".join(holding_labels(issue)),
+                # The reason behind `precheck-unverifiable`: its sharpening is queued or running.
+                "note": sharpen.hold_reason(store, issue.repo, issue.number),
+            }
             for issue in store.held_issues()
         ]
 

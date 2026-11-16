@@ -163,7 +163,7 @@ def test_the_marker_parses_from_the_first_line_only():
 
 def test_the_outcome_is_the_verdict_only_for_the_runs_own_marker():
     marker = parse_marker(MARKER_LINE)
-    assert outcome_for(marker, "01RUN") == "verdict=already_done"
+    assert outcome_for(marker, "01RUN") == "verdict=already_done body=abcdef012345"
     assert outcome_for(marker, "02OTHER") == "succeeded (no new verdict)"
     assert outcome_for(None, "01RUN") == "succeeded (no marker)"
 
@@ -173,7 +173,7 @@ def test_a_marker_an_earlier_attempt_posted_after_queueing_is_the_jobs_verdict()
     # up, and the retry stopped on that marker. The verdict is still this job's.
     marker = parse_marker(MARKER_LINE)  # at=2026-10-30T20:00:00Z
     assert outcome_for(marker, "02RETRY", "2026-10-30T19:33:08.026397+00:00") == (
-        "verdict=already_done"
+        "verdict=already_done body=abcdef012345"
     )
     assert outcome_for(marker, "02RETRY", "2026-10-30T20:30:00+00:00") == (
         "succeeded (no new verdict)"
@@ -206,9 +206,9 @@ def test_a_succeeded_precheck_records_its_verdict(store):
     lane_._read_precheck = reader
     ends = lane_.sync(NOW)
     assert asked == [(JELLY, 3)]
-    assert [(end.state, end.outcome) for end in ends] == [("done", "verdict=already_done")]
+    assert [(end.state, end.outcome) for end in ends] == [("done", "verdict=already_done body=abcdef012345")]
     row = store.background_job(job_id)
-    assert (row["state"], row["outcome"]) == ("done", "verdict=already_done")
+    assert (row["state"], row["outcome"]) == ("done", "verdict=already_done body=abcdef012345")
 
 
 def test_an_unreadable_verdict_leaves_the_plain_success(store):

@@ -217,6 +217,10 @@ def test_every_fixed_label_the_factory_uses_is_in_the_catalog() -> None:
     precheck = (FACTORY / "ops/scheduler/src/fabro_scheduler/precheck.py").read_text()
     verdicts = re.search(r"HOLD_VERDICTS = \(([^)]+)\)", precheck).group(1)
     used |= {f"precheck-{v.replace('_', '-')}" for v in re.findall(r'"(\w+)"', verdicts)}
+    # The sharpen queue's hold (ADR 0033) is its own code path, not a `HOLD_VERDICTS` member.
+    sharpen = (FACTORY / "ops/scheduler/src/fabro_scheduler/sharpen.py").read_text()
+    used |= {f"precheck-{v.replace('_', '-')}" for v in re.findall(r'^LABEL = hold_label\("(\w+)"\)', sharpen, re.M)}
+    assert "precheck-unverifiable" in used
     assert sorted(used - names) == []
 
 

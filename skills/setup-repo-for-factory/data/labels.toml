@@ -90,6 +90,13 @@ name = "precheck-blocked"
 color = "EDEDED"
 description = "Held by the precheck: waiting on another issue"
 
+# Not a switch's hold: the scheduler adds it while the factory sharpens the issue's acceptance
+# criteria (ADR 0033, ops/scheduler/src/fabro_scheduler/sharpen.py), and removes it when done.
+[[label]]
+name = "precheck-unverifiable"
+color = "EDEDED"
+description = "Held while the factory sharpens its acceptance criteria"
+
 # Pull requests
 [[label]]
 name = "agent-authored"

@@ -388,6 +388,7 @@
           {% for name in row.why.split(', ') %}
           <span class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs text-amber-300">{{ name }}</span>
           {% endfor %}
+          {% if row.note %}<div class="text-xs text-slate-400">{{ row.note }}</div>{% endif %}
         </td>
         <td class="whitespace-nowrap px-2 py-2 align-top tabular-nums text-slate-400">{{ row.issue.first_seen|compact_ts }}</td>
       </tr>

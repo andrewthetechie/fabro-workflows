@@ -144,15 +144,17 @@ DEFAULT_PRECHECK_PER_REPO = 3
 # good work out of the queue, which is worse than a run that was not worth starting.
 DEFAULT_PRECHECK_HOLDS = False
 
-# The verdicts whose hold is applied when the switch is on. `unverifiable` is accepted and not
-# in the default: a criterion the pipeline cannot check is a question for the merge phase, not a
-# reason to keep the work from starting.
+# The verdicts whose hold is applied when the switch is on.
 DEFAULT_PRECHECK_HOLD_VERDICTS = ("already_done", "contradiction", "unclear", "blocked")
 
 # What `SCHEDULER_PRECHECK_HOLD_VERDICTS` may name. `ready` is **refused**, not ignored: it is
 # the absence of a hold, and a list that named it would take the whole queue out at once — the
 # one setting here that could stop all work with no error anywhere.
-PRECHECK_HOLDABLE = ("already_done", "blocked", "contradiction", "unclear", "unverifiable")
+#
+# `unverifiable` is **not** here (issue-sharpening 04, ADR 0033): it is held by its own code path,
+# `sharpen.reconcile_repo`, which the factory always runs. It is not a verdict an operator
+# chooses to hold on, so naming it is an error instead of a switch that does nothing.
+PRECHECK_HOLDABLE = ("already_done", "blocked", "contradiction", "unclear")
 
 # The label prefix a held issue carries: `precheck-already-done`, `precheck-blocked`, and so on
 # (C6). Any label with this prefix keeps an issue out of the queue **whatever the switch says**,
@@ -772,6 +774,12 @@ def _env_verdicts(environ: Mapping[str, str]) -> tuple[str, ...]:
     if not raw:
         return DEFAULT_PRECHECK_HOLD_VERDICTS
     verdicts = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if "unverifiable" in verdicts:
+        raise ConfigError(
+            f"{key}: 'unverifiable' can no longer be named here: an unverifiable issue is held "
+            "while the factory sharpens its criteria, whatever this setting says "
+            "(ADR 0033, docs/adr/0033-autonomous-issue-sharpening.md)"
+        )
     unknown = [verdict for verdict in verdicts if verdict not in PRECHECK_HOLDABLE]
     if unknown:
         raise ConfigError(

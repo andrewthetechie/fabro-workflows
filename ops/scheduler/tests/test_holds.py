@@ -68,10 +68,10 @@ def test_holding_labels_finds_every_precheck_label_and_nothing_else():
 
 def test_the_default_hold_set_is_the_four_that_keep_an_issue_out():
     assert set(HOLD_VERDICTS) == {"already_done", "contradiction", "unclear", "blocked"}
-    assert "unverifiable" in cfg(
-        SCHEDULER_PRECHECK_HOLD_VERDICTS="unverifiable"
-    ).precheck_hold_verdicts, "accepted"
-    assert "unverifiable" not in cfg().precheck_hold_verdicts, "but not in the default"
+    assert "unverifiable" not in cfg().precheck_hold_verdicts, "not in the default"
+    with pytest.raises(ConfigError) as unverifiable:
+        cfg(SCHEDULER_PRECHECK_HOLD_VERDICTS="unverifiable")
+    assert "ADR 0033" in str(unverifiable.value), "it has its own hold now, and the error says so"
     assert "ready" not in cfg().precheck_hold_verdicts, "ready is the absence of a hold"
     with pytest.raises(ConfigError) as exc:
         cfg(SCHEDULER_PRECHECK_HOLD_VERDICTS="ready")
@@ -149,9 +149,8 @@ def test_a_verdict_outside_the_set_writes_no_label(store):
 
 
 def test_every_verdict_in_the_set_is_applied_and_ready_never_is(store):
-    """All five holdable verdicts, with `unverifiable` named explicitly: it is accepted but not
-    in the default set, which is the operator's choice to make."""
-    for verdict in ("already_done", "contradiction", "unclear", "blocked", "unverifiable"):
+    """All four holdable verdicts. `unverifiable` is not one: it has its own hold (ADR 0033)."""
+    for verdict in ("already_done", "contradiction", "unclear", "blocked"):
         s = Store(":memory:")
         try:
             _precheck_job(s)
@@ -159,8 +158,7 @@ def test_every_verdict_in_the_set_is_applied_and_ready_never_is(store):
             lane = _lane(
                 s,
                 cfg(SCHEDULER_PRECHECK_HOLDS="on",
-                    SCHEDULER_PRECHECK_HOLD_VERDICTS="already_done,contradiction,unclear,"
-                                                    "blocked,unverifiable"),
+                    SCHEDULER_PRECHECK_HOLD_VERDICTS="already_done,contradiction,unclear,blocked"),
                 writes,
             )
             lane._read_precheck = lambda repo, number, v=verdict: Marker(
@@ -188,7 +186,7 @@ def test_a_failed_write_does_not_fail_the_tick(store):
     )
     ended = lane.sync(NOW)
     assert ended[0].state == "done"
-    assert ended[0].outcome == "verdict=blocked"
+    assert ended[0].outcome == "verdict=blocked body=abcdef012345"
 
 
 # --- honouring a hold ---------------------------------------------------------------

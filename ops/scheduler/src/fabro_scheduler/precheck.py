@@ -13,10 +13,13 @@ credits on it, and posts a verdict as the issue's one precheck marker comment
 - **The verdict** is read back from the issue's marker when the run ends, and recorded as the
   job's outcome (`verdict=<v>`), so it can be compared with how the issue's run ended.
 
-**Shadow mode (operator decision, 2026-10-30):** nothing here holds, labels or reorders an
-issue. Task 07's holds (D20) come only after the verdicts have been measured against real
-outcomes. One precheck per issue for now: a body edited after its precheck is not re-checked
-by the producer (the package itself would re-check a changed text if one were queued).
+**Holds (D20).** Nothing here holds, labels or reorders an issue; the lane's `_apply_hold` does,
+per verdict, when the operator turns the switch on. `unverifiable` is not one of those verdicts:
+it has its own code path in `sharpen.py` (ADR 0033).
+
+**One precheck per text of the issue** (issue-sharpening D13): the producer queues a job for each
+body hash it has not queued one for, so an edited body is judged again, and a body a sharpening
+left behind is judged once, inside that run (`recheck`), never by the lane.
 """
 
 from __future__ import annotations
@@ -128,7 +131,7 @@ def read_marker(
 def outcome_for(marker: Marker | None, run_id: str, queued_at: str | None = None) -> str:
     """The job outcome a finished, succeeded precheck run earned.
 
-    `verdict=<v>` when the marker is this job's: this run's own, or one posted after the job
+    `verdict=<v> body=<hash>` when the marker is this job's: this run's own, or one posted after the job
     was queued (`queued_at`) by an earlier attempt. That happens: the lane can cancel a run in
     `post`, after the comment went up (job 144, 2026-10-30), and the retry then stops on the
     marker it finds. A run that stopped on an older marker, or posted nothing, earned no
@@ -138,7 +141,9 @@ def outcome_for(marker: Marker | None, run_id: str, queued_at: str | None = None
         return "succeeded (no marker)"
     if marker.run != run_id and not posted_since(marker.at, queued_at):
         return "succeeded (no new verdict)"
-    return f"verdict={marker.verdict}"
+    # `body=` is the text the verdict is about (issue-sharpening 04, D13). It comes after the
+    # verdict so every reader of `verdict=<v>` keeps working.
+    return f"verdict={marker.verdict} body={marker.body}"
 
 
 def posted_since(at: str, queued_at: str | None) -> bool:
@@ -207,7 +212,16 @@ class PrecheckProducer:
         created: list[int] = []
         for item in next_per_repo(ranked, running, self._config.precheck_per_repo):
             repo, number = item.issue.repo, item.issue.number
-            if self._store.background_job_exists(KIND, repo, str(number)):
+            text = item.issue.body_hash
+            if text:
+                # One precheck per text of the issue, not one per issue (D13): a hand edit gets a
+                # fresh verdict, and so does a body a sharpening produced, unless that run's own
+                # `recheck` already judged it.
+                if self._store.background_job_exists_for_hash(KIND, repo, str(number), text):
+                    continue
+                if self._store.sharpen_rechecked(repo, number, text):
+                    continue
+            elif self._store.background_job_exists(KIND, repo, str(number)):
                 continue
             job_id = self._store.enqueue_background_job(
                 kind=KIND,
@@ -217,6 +231,7 @@ class PrecheckProducer:
                 priority=BACKGROUND_JOB_PRIORITY[KIND],
                 typical_box_minutes=PRECHECK_TYPICAL_MINUTES,
                 now=now,
+                target_hash=text or None,
             )
             if job_id is not None:
                 created.append(job_id)

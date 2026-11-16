@@ -25,9 +25,10 @@ from datetime import UTC, datetime
 import httpx
 
 from .config import RepoConfig
-from .github import REQUEST_TIMEOUT_SECONDS, GitHubError, fetch_issues
+from .github import REQUEST_TIMEOUT_SECONDS, GitHubError, add_label, fetch_issues, remove_label
 from .precheck import release_blocked
 from .remainder import promote_remainders
+from .sharpen import reconcile_repo
 from .split import close_parents, promote_held
 from .store import Store
 
@@ -59,6 +60,9 @@ class InventoryPoller:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._client: httpx.Client | None = None
+        # The repositories whose start-up back-fill (D17) has run: once per start, after the
+        # first poll.
+        self._backfilled: set[str] = set()
 
     @property
     def repos(self) -> tuple[RepoConfig, ...]:
@@ -115,8 +119,8 @@ class InventoryPoller:
         """Promote held work, close finished parents and release spent holds (ADR 0011 D6,
         ADR 0015 C5, D20).
 
-        Runs four independent passes -- remainder promotion, held-child promotion,
-        split-parent closing and the precheck's `blocked` release -- each in its own `try`, so
+        Runs five independent passes -- remainder promotion, held-child promotion,
+        split-parent closing, the precheck's `blocked` release and the sharpen queue -- each in its own `try`, so
         one failure never stops the others. **Never raises.** Deliberately outside `_poll`'s error
         handling: a promotion failure is logged, and it must not mark the repo's
         inventory stale, because the inventory itself is fine. Each pass is
@@ -152,6 +156,22 @@ class InventoryPoller:
                 log.info("inventory: %s#%s precheck hold %s", repo.name, number, action)
         except Exception:  # noqa: BLE001 - see the docstring
             log.exception("inventory: %s: precheck hold release failed", repo.name)
+        # Issue sharpening (ADR 0033): hold what the precheck found unverifiable, supersede a
+        # queued sharpening whose text changed, release a hold whose sharpening is over. The
+        # first pass of a start is the back-fill (D17).
+        try:
+            backfill = repo.name not in self._backfilled
+            for number, action in reconcile_repo(
+                repo.name,
+                self._store,
+                lambda r, n, label: add_label(r, n, label, self._token, client=self._client),
+                lambda r, n, label: remove_label(r, n, label, self._token, client=self._client),
+                backfill=backfill,
+            ):
+                log.info("inventory: %s#%s sharpen %s", repo.name, number, action)
+            self._backfilled.add(repo.name)
+        except Exception:  # noqa: BLE001 - see the docstring
+            log.exception("inventory: %s: sharpen reconcile failed", repo.name)
 
     def _poll(self, repo: RepoConfig) -> None:
         state = self._store.fetch_state(repo.name)
