@@ -160,7 +160,11 @@ class InventoryPoller:
         # queued sharpening whose text changed, release a hold whose sharpening is over. The
         # first pass of a start is the back-fill (D17).
         try:
+            # The back-fill counts as done only once every cached issue of the repo has a hash:
+            # an issue with none is skipped, and would otherwise miss the back-fill until the
+            # next start.
             backfill = repo.name not in self._backfilled
+            hashed = not self._unhashed(repo.name)
             for number, action in reconcile_repo(
                 repo.name,
                 self._store,
@@ -169,13 +173,19 @@ class InventoryPoller:
                 backfill=backfill,
             ):
                 log.info("inventory: %s#%s sharpen %s", repo.name, number, action)
-            self._backfilled.add(repo.name)
+            if hashed:
+                self._backfilled.add(repo.name)
         except Exception:  # noqa: BLE001 - see the docstring
             log.exception("inventory: %s: sharpen reconcile failed", repo.name)
 
     def _poll(self, repo: RepoConfig) -> None:
         state = self._store.fetch_state(repo.name)
         etag = state.etag if state is not None else None
+        if etag and self._unhashed(repo.name):
+            # A cache row written before issue-sharpening 04 has no body hash, and a `304` would
+            # keep it that way until the repo's list happens to change, holding nothing and
+            # back-filling nothing (D17). One full read fills every hash.
+            etag = None
 
         try:
             issues, new_etag, changed = fetch_issues(
@@ -200,6 +210,10 @@ class InventoryPoller:
             # The 200/304 line itself is logged by `fetch_issues`, next to the
             # response headers that justify it.
             self._store.note_not_modified(repo.name, new_etag, now)
+
+    def _unhashed(self, repo: str) -> bool:
+        """Whether a cached issue of `repo` has no body hash yet."""
+        return any(issue.repo == repo and not issue.body_hash for issue in self._store.issues())
 
     def _note_failure(self, repo: str, error: str) -> None:
         """Record a failure, and never let the recording be what stops the loop."""

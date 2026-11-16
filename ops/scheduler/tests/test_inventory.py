@@ -57,6 +57,41 @@ def test_a_304_keeps_the_cached_items_and_their_first_seen(store):
 
 
 @respx.mock
+def test_a_cache_row_with_no_body_hash_is_read_again_in_full(store):
+    # Rows written before issue-sharpening 04 carry no hash. A conditional request would
+    # answer 304 and keep them hashless, so the sharpen hold and its back-fill saw nothing
+    # (the 2026-11-16 deploy). The poll drops the ETag until every row has a hash.
+    store.sync_repo("o/a", [issue(1)], '"e1"', NOW)
+    route = respx.get(ISSUES_URL).mock(return_value=httpx.Response(
+        200, json=[{"number": 1, "title": "issue 1", "body": "b", "state": "open",
+                    "labels": [{"name": "agent"}]}], headers={"etag": '"e2"'}))
+    p = poller(store)
+
+    def inventory_reads():
+        return [c.request for c in route.calls if "labels=agent&" in str(c.request.url)]
+
+    p.poll_repo(REPO)
+
+    assert "if-none-match" not in inventory_reads()[-1].headers
+    assert [i.body_hash for i in store.issues()] != [""]
+    assert "o/a" in p._backfilled, "the back-fill ran once every row had a hash"
+
+    p.poll_repo(REPO)
+    assert inventory_reads()[-1].headers.get("if-none-match") == '"e2"'
+
+
+@respx.mock
+def test_the_back_fill_waits_while_a_row_has_no_hash(store):
+    store.sync_repo("o/a", [issue(1)], None, NOW)
+    respx.get(ISSUES_URL).mock(return_value=httpx.Response(304))
+    p = poller(store)
+
+    p.poll_repo(REPO)
+
+    assert "o/a" not in p._backfilled, "a hashless issue would miss the back-fill"
+
+
+@respx.mock
 def test_a_200_replaces_the_cache_and_a_vanished_issue_leaves_it(store):
     store.sync_repo("o/a", [issue(1), issue(2)], '"e1"', NOW)
     respx.get(ISSUES_URL).mock(
