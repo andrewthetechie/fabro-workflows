@@ -256,6 +256,12 @@ verify_image() {
             "cargo-nextest ${NEXTEST_VERSION}"|"cargo-nextest ${NEXTEST_VERSION} "*) echo "nextest ${NEXTEST_VERSION}" ;;
             *) echo "nextest: ${got:-<nothing>} (want cargo-nextest ${NEXTEST_VERSION})"; exit 1 ;;
           esac
+          # The tts crate (writers-app#1417) builds speech-dispatcher-sys: it links
+          # libspeechd and runs bindgen, which loads libclang.
+          pkg-config --exists speech-dispatcher || { echo "no libspeechd-dev"; exit 1; }
+          echo "speech-dispatcher $(pkg-config --modversion speech-dispatcher)"
+          ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1 || { echo "no libclang"; exit 1; }
+          echo "libclang ok"
         fi
       ' >"$WORK/verify-tools-$repo.log" 2>&1; then
     log "verify $tag: tools OK ($(tr '\n' ' ' <"$WORK/verify-tools-$repo.log"))"
