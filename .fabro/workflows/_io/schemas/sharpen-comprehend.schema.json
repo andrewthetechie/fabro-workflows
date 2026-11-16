@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sharpen-comprehend",
+  "title": "sharpen-comprehend \u2014 the Comprehension lens (issue-sharpening 02)",
+  "description": "One fresh reviewer's reading of a proposed issue body as a context-free implementer would read it, beside how the code works today. `audit_gate` checks the Input receipt and judges the round. _io is stamped by the server and is not part of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "proposed_paraphrase",
+    "existing_system_paraphrase",
+    "findings"
+  ],
+  "properties": {
+    "proposed_paraphrase": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1200,
+      "description": "What the proposed issue now asks for, in your own words, as an implementer who has seen nothing else would read it."
+    },
+    "existing_system_paraphrase": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1200,
+      "description": "How the code at main works today in the area the issue touches, from the checkout."
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "What is wrong with the proposal. [] when nothing is.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "criterion_ref",
+          "message",
+          "evidence"
+        ],
+        "properties": {
+          "severity": {
+            "enum": [
+              "blocker",
+              "major",
+              "nit"
+            ],
+            "description": "blocker: the proposal must not be applied as it is. major: a real problem that must be fixed first. nit: worth saying, never blocks."
+          },
+          "criterion_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^AC[0-9]+$",
+            "description": "`AC<n>` of the original criterion the finding is about, or null when it is about the whole proposal."
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "evidence": {
+            "type": "array",
+            "maxItems": 6,
+            "description": "Where the finding comes from: path:line in the checkout, `proposed.md`, `changes.md`, `original_criteria.md` or `ci.md`.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "where",
+                "says"
+              ],
+              "properties": {
+                "where": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "says": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "What is there, quoted or in one sentence."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

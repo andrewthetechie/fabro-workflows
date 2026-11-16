@@ -133,7 +133,10 @@ class Box(unittest.TestCase):
             },
             # A leased run holds its box (ADR 0033): its stages block a background fill.
             "issue-sharpen": {
+                "comprehend": True,
                 "draft": True,
+                "preserve": True,
+                "verify": True,
             },
         })
 

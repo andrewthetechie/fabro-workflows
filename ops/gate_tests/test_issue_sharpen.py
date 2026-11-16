@@ -110,7 +110,7 @@ def precheck(verdict: str, issue: dict = ISSUE) -> str:
 class Sharpen:
     """A scratch checkout with a stub `gh` and a per-test `/tmp/fabro`."""
 
-    NODES = ("claim", "prep", "draft_gate", "record")
+    NODES = ("claim", "prep", "draft_gate", "audit_gate", "record")
 
     def __init__(self, ck, tmp_path, name: str):
         self.T = tmp_path / name
@@ -182,7 +182,19 @@ def test_the_graph_routes_every_ending_to_record(ck):
         "prep->record ",
         "draft->draft_gate outcome=succeeded",
         "draft->record ",
+        "draft_gate->comprehend outcome=succeeded && context.draft_ok=true",
         "draft_gate->record ",
+        "comprehend->verify outcome=succeeded",
+        "verify->preserve outcome=succeeded",
+        "preserve->audit_gate outcome=succeeded",
+        "audit_gate->record outcome=succeeded && context.sharpen_result=converged",
+        "audit_gate->draft outcome=succeeded && context.sharpen_result=open",
+        "audit_gate->record outcome=succeeded && context.sharpen_result=capped",
+        "audit_gate->record outcome=succeeded && context.sharpen_result=churn",
+        "audit_gate->record ",
+        "comprehend->record ",
+        "verify->record ",
+        "preserve->record ",
         "record->exit ",
     ):
         ck(f"edge {want!r}", "1", count(f"^{want}$", found))
@@ -655,6 +667,194 @@ def test_a_bad_draft_for_each_fixture_is_refused(ck, tmp_path):
         refused(ck, tmp_path, f"corpus-{stem}-edited", edited, "## Non-goals changed", issue=issue)
         moved = {**draft, "body": draft["body"].replace("<!-- fabro:split-child parent=1 -->\n\n", "", 1).replace("\n\n## Context", "\n\n<!-- fabro:split-child parent=1 -->\n\n## Context", 1)}
         refused(ck, tmp_path, f"corpus-{stem}-moved", moved, "marker on line 1", issue=issue)
+
+
+# --- the audit (task 02) -----------------------------------------------------------------
+
+LENSES = ("comprehend", "verify", "preserve")
+
+
+def finding(severity: str, message: str, ref: str | None = "AC1") -> dict:
+    return {"severity": severity, "criterion_ref": ref, "message": message,
+            "evidence": [{"where": "proposed.md", "says": "the line"}]}
+
+
+def lens_result(name: str, findings=(), **over) -> dict:
+    """A lens's result for GOOD_BODY's proposal: two bullets, two change rows."""
+    base = {
+        "comprehend": {"proposed_paraphrase": "Cover the branches.", "existing_system_paraphrase": "The renderer has two."},
+        "verify": {"criteria": [
+            {"text": "Every branch is covered, or a code comment says why.", "verdict": "checkable_from_diff", "why": "the tests"},
+            {"text": "`npm run format:check` passes on the whole tree.", "verdict": "checkable_by_ci", "why": "ci.md line 3"}]},
+        "preserve": {"pairs": [
+            {"criterion_ref": "AC1", "verdict": "same", "why": "same ask"},
+            {"criterion_ref": "AC2", "verdict": "same", "why": "moved, same words"}]},
+    }[name]
+    return {**base, "findings": list(findings), **over, "_io": {"stage": name, "visit": "v-" + name}}
+
+
+def play(P: Sharpen, draft: dict | None = None, results: dict | None = None, *, missing=(), receipt=()):
+    """One round: the draft's gate, the lenses' files, then the audit gate."""
+    P.draft(draft or good())
+    r = P.run("draft_gate")
+    assert routed(r, "draft_ok") == "true", cat(P.S / "rule")
+    for lens in LENSES:
+        if lens in missing:
+            continue
+        payload = (results or {}).get(lens) or lens_result(lens)
+        if lens in receipt:
+            payload = {k: v for k, v in payload.items() if k != "_io"}
+        write(P.S / "lens" / f"{lens}.json", json.dumps(payload))
+    return P.run("audit_gate")
+
+
+def audit_pad(ck, tmp_path, name: str) -> Sharpen:
+    P = Sharpen(ck, tmp_path, name)
+    P.stage(ISSUE, criteria="AC1. a\n")
+    return P
+
+
+def variant(text: str) -> dict:
+    return good(body=GOOD_BODY.replace("Every branch is covered, or a code comment says why.", text),
+                changes=[row("AC1", AC1, text, "pr_text_to_code"), GOOD_ROWS[1]])
+
+
+def test_audit_gate_converges_on_a_clean_round(ck, tmp_path):
+    P = audit_pad(ck, tmp_path, "audit-clean")
+    r = play(P)
+    ck("audit: converged", "converged", routed(r, "sharpen_result"))
+    ck("audit: the round", "1", routed(r, "round"))
+    ck("audit: no outcome is written (apply decides)", "absent", present(P.S / "outcome"))
+    ck("audit: the history is empty", "0", jq("length", file=P.S / "history.json"))
+    ck("audit: the paraphrase is kept for post", "1", count("^\\*\\*What the issue now asks for", cat(P.S / "paraphrase.md")))
+    ck("audit: round 1's changes are kept for the churn check", "true",
+       jq("has(\"AC1\") and has(\"AC2\")", file=P.S / "rounds/1.json"))
+    ck("audit: draft_gate made the lens directory", "present", present(P.S / "lens"))
+    ck("audit: and the lenses' files are in it", "comprehend.json,preserve.json,verify.json",
+       ",".join(sorted(p.name for p in (P.S / "lens").iterdir())))
+
+
+def test_a_lens_that_did_not_run_leaves_the_round_open(ck, tmp_path):
+    for lens in LENSES:
+        P = audit_pad(ck, tmp_path, f"audit-missing-{lens}")
+        r = play(P, missing=(lens,))
+        ck(f"audit {lens} missing: open", "open", routed(r, "sharpen_result"))
+        P = audit_pad(ck, tmp_path, f"audit-noreceipt-{lens}")
+        r = play(P, receipt=(lens,))
+        ck(f"audit {lens} without a receipt: open", "open", routed(r, "sharpen_result"))
+        P = audit_pad(ck, tmp_path, f"audit-wrongstage-{lens}")
+        bad = lens_result(lens)
+        bad["_io"]["stage"] = "someone_else"
+        ck(f"audit {lens} with another stage's receipt: open", "open",
+           routed(play(P, results={lens: bad}), "sharpen_result"))
+        P = audit_pad(ck, tmp_path, f"audit-shape-{lens}")
+        ck(f"audit {lens} with a result of the wrong shape: open", "open",
+           routed(play(P, results={lens: {**lens_result(lens), "findings": "none"}}), "sharpen_result"))
+    P = audit_pad(ck, tmp_path, "audit-missing-note")
+    play(P, missing=("verify",))
+    ck("audit: the findings file says a lens did not run", "1", count("did not run", cat(P.S / "findings.md")))
+
+
+def test_only_a_blocker_or_a_major_keeps_the_round_open(ck, tmp_path):
+    for sev, want in (("blocker", "open"), ("major", "open"), ("nit", "converged")):
+        P = audit_pad(ck, tmp_path, f"audit-sev-{sev}")
+        r = play(P, results={"comprehend": lens_result("comprehend", [finding(sev, "a problem")])})
+        ck(f"audit: a {sev} alone gives {want}", want, routed(r, "sharpen_result"))
+    P = audit_pad(ck, tmp_path, "audit-nit-kept")
+    play(P, results={"verify": lens_result("verify", [finding("nit", "wording")])})
+    ck("audit: a nit is kept for post, with its lens", "verify", jq(".[0].lens", file=P.S / "open_findings.json"))
+    ck("audit: a nit is not in the finding history", "0", jq("length", file=P.S / "history.json"))
+
+
+def test_a_verdict_alone_can_block_the_round(ck, tmp_path):
+    def unverifiable(d):
+        d["criteria"][0]["verdict"] = "unverifiable"
+        return d
+    cases = {
+        "an-unverifiable-criterion": {"verify": unverifiable(lens_result("verify"))},
+        "a-bullet-with-no-verdict": {"verify": lens_result("verify", criteria=lens_result("verify")["criteria"][:1])},
+        "a-substitution": {"preserve": lens_result("preserve", pairs=[
+            {"criterion_ref": "AC1", "verdict": "substitution", "why": "narrower"},
+            {"criterion_ref": "AC2", "verdict": "same", "why": "w"}])},
+        "a-contradiction-resolved": {"preserve": lens_result("preserve", pairs=[
+            {"criterion_ref": "AC1", "verdict": "same", "why": "w"},
+            {"criterion_ref": "AC2", "verdict": "contradiction_resolved", "why": "picked a side"}])},
+        "a-change-row-with-no-pair": {"preserve": lens_result("preserve", pairs=[
+            {"criterion_ref": "AC1", "verdict": "same", "why": "w"}])},
+    }
+    for name, results in cases.items():
+        P = audit_pad(ck, tmp_path, f"audit-{name}")
+        r = play(P, results=results)
+        ck(f"audit {name}: open", "open", routed(r, "sharpen_result"))
+        ck(f"audit {name}: it became a blocker in the history", "blocker", jq(".[0].severity", file=P.S / "history.json"))
+        ck(f"audit {name}: the next draft is told", "1", count("^- \\[blocker\\]", cat(P.S / "findings.md")))
+
+
+def test_the_third_round_that_is_not_clean_is_capped(ck, tmp_path):
+    P = audit_pad(ck, tmp_path, "audit-capped")
+    results = [{"comprehend": lens_result("comprehend", [finding("major", f"problem number {n}")])} for n in (1, 2, 3)]
+    got = [routed(play(P, variant(f"A criterion, round {n}."), results[n - 1]), "sharpen_result") for n in (1, 2, 3)]
+    ck("audit: open, open, capped", "open,open,capped", ",".join(got))
+    ck("audit: capped writes the outcome", "capped", cat(P.S / "outcome"))
+    ck("audit: and a one-line rule", "1", count("round 3 was not clean: 1 open finding$", cat(P.S / "rule")))
+
+
+def test_a_finding_that_comes_back_is_churn(ck, tmp_path):
+    P = audit_pad(ck, tmp_path, "audit-recurrence")
+    same = {"comprehend": lens_result("comprehend", [finding("blocker", "The criterion names a file that does not exist.")])}
+    other = {"comprehend": lens_result("comprehend", [finding("blocker", "A different problem.")])}
+    a = routed(play(P, variant("A one."), same), "sharpen_result")
+    b = routed(play(P, variant("A two."), other), "sharpen_result")
+    ck("audit: the first finding is fixed in round 2", "fixed", jq('map(select(.message | startswith("The criterion"))) | .[0].state', file=P.S / "history.json"))
+    c = routed(play(P, variant("A three."), same), "sharpen_result")
+    ck("audit: open, open, churn", "open,open,churn", ",".join((a, b, c)))
+    ck("audit: the recurrence re-opened the entry", "open", jq('map(select(.message | startswith("The criterion"))) | .[0].state', file=P.S / "history.json"))
+    ck("audit: churn writes its outcome", "churn", cat(P.S / "outcome"))
+    ck("audit: and says a fixed finding came back", "1", count("a fixed finding came back", cat(P.S / "rule")))
+
+
+def test_a_criterion_whose_text_alternates_is_churn(ck, tmp_path):
+    P = audit_pad(ck, tmp_path, "audit-alternates")
+    got = []
+    for n, text in ((1, "Text A."), (2, "Text B."), (3, "Text A.")):
+        results = {"comprehend": lens_result("comprehend", [finding("major", f"problem number {n}")])}
+        got.append(routed(play(P, variant(text), results), "sharpen_result"))
+    ck("audit: open, open, churn rather than capped", "open,open,churn", ",".join(got))
+    ck("audit: the rule says the text alternated", "1", count("a criterion's text alternated", cat(P.S / "rule")))
+
+
+def test_the_same_words_under_another_criterion_are_a_new_finding(ck, tmp_path):
+    P = audit_pad(ck, tmp_path, "audit-new-ref")
+    play(P, variant("A one."), {"comprehend": lens_result("comprehend", [finding("major", "Too vague.", "AC1")])})
+    r = play(P, variant("A two."), {"comprehend": lens_result("comprehend", [finding("major", "Too vague.", "AC2")])})
+    ck("audit: open, not churn", "open", routed(r, "sharpen_result"))
+    ck("audit: two history entries", "2", jq("length", file=P.S / "history.json"))
+    ck("audit: the first is fixed, the second open", "fixed,open", jq("map(.state) | join(\",\")", file=P.S / "history.json"))
+
+
+def test_findings_md_lists_the_open_findings_before_the_history(ck, tmp_path):
+    P = audit_pad(ck, tmp_path, "audit-findings-md")
+    play(P, variant("A one."), {"comprehend": lens_result("comprehend", [finding("major", "Old problem.")])})
+    play(P, variant("A two."), {"verify": lens_result("verify", [finding("blocker", "New problem.", None)])})
+    md = cat(P.S / "findings.md").split("\n")
+    at = {h: i for i, h in enumerate(md) if h.startswith("## ")}
+    ck("findings.md: open findings come first", "True", str(at["## Open findings"] < at["## History"]))
+    ck("findings.md: the open one is listed under Open findings", "1",
+       count("^- \\[blocker\\] verify: New problem.$", "\n".join(md[at["## Open findings"]:at["## History"]])))
+    ck("findings.md: the fixed one is in the history", "1",
+       count("^- fixed (opened in round 1, fixed in round 2) comprehend AC1: Old problem.$", "\n".join(md[at["## History"]:])))
+    ck("findings.md: its evidence is listed", "1", count("^    - `proposed.md`: the line$", "\n".join(md)))
+
+
+def test_draft_gate_clears_the_lens_directory_each_round(ck, tmp_path):
+    P = audit_pad(ck, tmp_path, "audit-lens-dir")
+    play(P, results={"comprehend": lens_result("comprehend", [finding("major", "x")])})
+    ck("audit: round 1 left a lens file", "present", present(P.S / "lens/comprehend.json"))
+    P.draft(good())
+    P.run("draft_gate")
+    ck("audit: the next draft_gate removed it", "absent", present(P.S / "lens/comprehend.json"))
+    r = P.run("audit_gate")
+    ck("audit: a round with no lens files cannot be clean", "open", routed(r, "sharpen_result"))
 
 
 # --- record ------------------------------------------------------------------------------

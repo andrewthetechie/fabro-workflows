@@ -21,6 +21,11 @@ digraph IssueSharpen {
         // Above every node timeout below, `recheck`'s 40m included (R2): the watchdog must never
         // fire before a node's own timeout does, and `box-claim`'s wait counts toward it.
         stall_timeout="60m",
+        // A round loops through command nodes (`draft_gate`, `audit_gate`), so R1 wants the
+        // breaker at its floor or above. 20 is the floor: the loop runs at most three rounds
+        // (D8), each a handful of stages, so 20 repeats of one failure signature cannot be
+        // reached by a healthy run, and the breaker still stops a run that loops on a fault.
+        loop_restart_signature_limit=20,
         // Bound the preamble: every prompt names its inputs by path (invariants-graph, the
         // `default_fidelity` row).
         default_fidelity="truncate",
@@ -243,8 +248,8 @@ echo '{\"context_updates\":{\"prep_ok\":true}}'"]
     //
     // The first refusal writes `outcome=cannot_sharpen` and a one-line `rule`, and routes to
     // `record`: a refusal is a model mistake, not a fault, and is never retried. On success it
-    // writes the sealed audit directory the lenses read, and emits `round`. Task 02 re-points
-    // its success edge at the first lens; until then it goes to `record`.
+    // writes the sealed audit directory the lenses read, clears the lens directory so a result
+    // from an earlier round can never count, and emits `round`.
     draft_gate [label="Check the draft changes nothing it did not declare", shape=parallelogram, output_schema="routing", timeout="2m",
         script="S=/tmp/fabro/sharpen
 F=$S/draft.json
@@ -355,14 +360,145 @@ if ! jq -L $S --rawfile orig $S/orig.md -f $S/gate.jq $F > $S/gate.json 2>$S/gat
 fi
 RULE=$(jq -r '.rule' $S/gate.json)
 if [ -n \"$RULE\" ]; then refuse \"$RULE\"; fi
-rm -rf $S/audit
-mkdir -p $S/audit
+rm -rf $S/audit $S/lens
+mkdir -p $S/audit $S/lens
 jq -r '.proposed' $S/gate.json > $S/audit/proposed.md
 jq -r '.changes' $S/gate.json > $S/audit/changes.md
 cp $S/criteria.md $S/audit/original_criteria.md
 cp $S/ci.md $S/audit/ci.md
 echo 'draft_gate: round '$R' draft accepted' >&2
 jq -nc --arg r \"$R\" '{context_updates:{draft_ok:true, round:$r}}'"]
+
+    // ---- The audit: three fresh lenses, then a command node that decides (D7, D8, C5, C6) ----
+    //
+    // Each lens is its own agent node, so each is a fresh session, and `default_fidelity="truncate"`
+    // (set above) puts no recap of an earlier stage in a lens's prompt: the draft's transcript
+    // and notes cannot reach it. Its manifest inputs are exactly the four files `draft_gate`
+    // copies into `/tmp/fabro/sharpen/audit/`, and its Sealed paths (guarded by `io-guard`) name
+    // every other file this run keeps, the draft's own result among them. Reasoning effort is
+    // `high` for `preserve` only: a miss there is a weakened requirement (D22). The timeouts
+    // are bounds, not measurements (D21).
+    comprehend [label="Comprehension lens", class="sharpen", timeout="15m", prompt="@prompts/comprehend.md.j2"]
+    verify [label="Verifiability lens", class="sharpen", timeout="15m", prompt="@prompts/verify.md.j2"]
+    preserve [label="Preservation lens", class="preserve", timeout="15m", prompt="@prompts/preserve.md.j2"]
+
+    // A command node, not a model, decides whether the round is clean, whether to loop and
+    // when to stop. It keeps the finding history, so a finding that was fixed and came back, or
+    // a criterion whose proposed text alternates, ends the loop as `churn`. Round 3 not clean is
+    // `capped`. On `capped` and `churn` it writes the outcome and the rule for `record`.
+    // A converged round goes to `apply` and `capped` or `churn` to `post` in task 03; until
+    // then both go to `record`.
+    audit_gate [label="Judge the round", shape=parallelogram, output_schema="routing", timeout="2m",
+        script="S=/tmp/fabro/sharpen
+L=$S/lens
+R=$(cat $S/round 2>/dev/null || echo 1)
+mkdir -p $S/rounds
+cat > $S/lib.jq <<'JQ'
+def nl: [10] | implode;
+def clean: sub(\"[[:space:]]+$\"; \"\");
+def blines: (. // \"\") | split(nl) | map(clean);
+def trimblank: reverse | until(length == 0 or .[0] != \"\"; .[1:]) | reverse;
+def sections: reduce .[] as $x ([{h: \"\", l: []}]; if ($x | test(\"^## \")) then . + [{h: $x, l: []}] else .[-1].l += [$x] end) | map(.l |= trimblank);
+def parse_ac: reduce .[] as $x ({b: [], o: [], bul: false}; if ($x | test(\"^[-*] \")) then .b += [[$x]] | .bul = true elif .bul and ($x | test(\"^[[:space:]]+[^[:space:]]\")) then .b[-1] += [$x] elif $x == \"\" then .bul = false else .o += [$x] | .bul = false end);
+def btext: (.[0] | sub(\"^[-*] ([[][ xX][]] )?\"; \"\")) as $f | ([$f] + .[1:]) | join(nl);
+def ac_of: ([.[] | select(.h == \"## Acceptance criteria\")] | first) as $s | if $s == null then null else ($s.l | parse_ac) end;
+JQ
+cat > $S/audit1.jq <<'JQ'
+include \"lib\";
+def isfind: type == \"object\" and (.severity | IN(\"blocker\", \"major\", \"nit\")) and ((.message | type) == \"string\") and (.criterion_ref == null or ((.criterion_ref | type) == \"string\" and (.criterion_ref | test(\"^AC[0-9]+$\")))) and (((.evidence // []) | type) == \"array\");
+def lens_ok($x; $o):
+  $o != null and ($o | type) == \"object\" and ($o._io.stage == $x) and (($o._io.visit // \"\") != \"\") and (($o.findings | type) == \"array\") and all($o.findings[]; isfind)
+  and (if $x == \"comprehend\" then (($o.proposed_paraphrase | type) == \"string\" and ($o.existing_system_paraphrase | type) == \"string\")
+       elif $x == \"verify\" then (($o.criteria | type) == \"array\" and all($o.criteria[]; type == \"object\" and (.verdict | IN(\"checkable_from_diff\", \"checkable_by_ci\", \"unverifiable\")) and ((.text | type) == \"string\")))
+       else (($o.pairs | type) == \"array\" and all($o.pairs[]; type == \"object\" and (.verdict | IN(\"same\", \"substitution\", \"contradiction_resolved\")) and ((.criterion_ref | type) == \"string\"))) end);
+def own($x; $o): if lens_ok($x; $o) then [$o.findings[] | {lens: $x, severity, criterion_ref, message, evidence: (.evidence // [])}] else [] end;
+def key: .lens + \"|\" + (.criterion_ref // \"-\") + \"|\" + (.message | ascii_downcase | gsub(\"[[:space:]]+\"; \" \") | sub(\"^ \"; \"\") | sub(\" $\"; \"\"));
+$c[0] as $co | $v[0] as $vo | $p[0] as $po | $d[0] as $dr
+| ((($prop | blines | sections | ac_of) // {b: []}) | .b | length) as $nb
+| {comprehend: lens_ok(\"comprehend\"; $co), verify: lens_ok(\"verify\"; $vo), preserve: lens_ok(\"preserve\"; $po)} as $valid
+| (if $valid.verify then [$vo.criteria[] | select(.verdict == \"unverifiable\") | {lens: \"verify\", severity: \"blocker\", criterion_ref: null, message: (\"The proposed criterion `\" + (.text | .[0:160]) + \"` is unverifiable: \" + (.why // \"no reason given\")), evidence: []}] else [] end) as $unver
+| (if $valid.verify and ($vo.criteria | length) < $nb then [{lens: \"verify\", severity: \"blocker\", criterion_ref: null, message: (\"The proposal has \" + ($nb | tostring) + \" acceptance criteria and the verifiability lens gave \" + ($vo.criteria | length | tostring) + \" verdicts, so a criterion has none.\"), evidence: []}] else [] end) as $short
+| (if $valid.preserve then [$po.pairs[] | select(.verdict != \"same\") | {lens: \"preserve\", severity: \"blocker\", criterion_ref: .criterion_ref, message: (\"The change to \" + .criterion_ref + \" is a \" + .verdict + \": \" + (.why // \"no reason given\")), evidence: []}] else [] end) as $subst
+| (if $valid.preserve then [$dr.changes[] | .criterion_ref as $r | select(([$po.pairs[] | .criterion_ref] | index($r)) == null) | {lens: \"preserve\", severity: \"blocker\", criterion_ref: $r, message: (\"The change to \" + $r + \" has no verdict from the preservation lens.\"), evidence: []}] else [] end) as $nopair
+| (own(\"comprehend\"; $co) + own(\"verify\"; $vo) + own(\"preserve\"; $po) + $unver + $short + $subst + $nopair) as $all
+| {
+    valid: $valid,
+    findings: $all,
+    hard: [$all[] | select(.severity != \"nit\")],
+    keys: [$all[] | select(.severity != \"nit\") | key],
+    paraphrase: (if $valid.comprehend then (\"**What the issue now asks for.** \" + $co.proposed_paraphrase + nl + nl + \"**How the code works today.** \" + $co.existing_system_paraphrase) else \"\" end),
+    changes_map: ([$dr.changes[] | {key: .criterion_ref, value: {p: .proposed}}] | from_entries)
+  }
+JQ
+cat > $S/audit2.jq <<'JQ'
+include \"lib\";
+def line: \"- [\" + .severity + \"] \" + .lens + (if .criterion_ref == null then \"\" else \" \" + .criterion_ref end) + \": \" + .message;
+def evlines: [(.evidence // [])[] | \"    - `\" + .where + \"`: \" + .says];
+$p1[0] as $a
+| ($fps | split(nl) | map(select(. != \"\"))) as $fp
+| ($a.hard | to_entries | map(.value + {fp: $fp[.key]}) | unique_by(.fp)) as $cur
+| $h[0] as $hist
+| ($hist | map(.fp)) as $hfp
+| ($hist | map(. as $e | ($cur | map(select(.fp == $e.fp)) | first) as $c
+    | if $c != null then (if $e.state == \"open\" then $e + {recur: false} else $e + {state: \"open\", round_fixed: null, recur: true} end)
+      elif $e.state == \"open\" then $e + {state: \"fixed\", round_fixed: $round, recur: false}
+      else $e + {recur: false} end)) as $upd
+| ($cur | map(select(.fp as $f | ($hfp | index($f)) == null) | {fp, lens, criterion_ref, message, severity, round_opened: $round, state: \"open\", round_fixed: null, recur: false})) as $new
+| ($upd + $new) as $all
+| ($all | any(.[]; .recur)) as $recurrence
+| $a.changes_map as $cm
+| ($r1[0]) as $m1
+| ($r2[0]) as $m2
+| (($m1 != null) and ($m2 != null) and any(($cm | keys)[]; . as $k | ($m2[$k] != null) and ($m2[$k] == $cm[$k]) and ($m1[$k] != $cm[$k]))) as $alternates
+| (($a.valid.comprehend and $a.valid.verify and $a.valid.preserve) and (($a.hard | length) == 0)) as $clean
+| (if $clean then \"converged\" elif ($recurrence or $alternates) then \"churn\" elif $round >= 3 then \"capped\" else \"open\" end) as $result
+| (($a.valid | to_entries | map(select(.value | not) | .key)) as $notrun
+   | (\"round \" + ($round | tostring) + \" was not clean: \" + ($a.hard | length | tostring) + \" open finding\" + (if ($a.hard | length) == 1 then \"\" else \"s\" end) + (if ($notrun | length) > 0 then \", and the \" + ($notrun | join(\", \")) + \" lens did not run\" else \"\" end) + (if $result == \"churn\" then \"; the loop was going in circles (\" + (if $recurrence then \"a fixed finding came back\" else \"a criterion's text alternated\" end) + \")\" else \"\" end))) as $rule
+| ($all | map(select(.state == \"open\"))) as $open
+| ([$a.findings[] | select(.severity == \"nit\")]) as $nits
+| (\"# What the audit found in round \" + ($round | tostring) + nl + nl
+   + \"Fix every open finding, and change nothing a finding does not ask about.\" + nl + nl
+   + \"## Open findings\" + nl + nl
+   + (if ($a.hard | length) == 0 then \"None.\" else ([$a.hard[] | (line, evlines[])] | join(nl)) end) + nl
+   + (if ($a.valid | all) then \"\" else nl + \"A lens did not run, so the round could not be clean. Draft again with the findings above.\" + nl end)
+   + (if ($nits | length) > 0 then nl + \"## Nits (never block)\" + nl + nl + ([$nits[] | line] | join(nl)) + nl else \"\" end)
+   + nl + \"## History\" + nl + nl
+   + (if ($all | length) == 0 then \"None.\" else ([$all[] | \"- \" + .state + \" (opened in round \" + (.round_opened | tostring) + (if .state == \"fixed\" then \", fixed in round \" + (.round_fixed | tostring) else \"\" end) + \") \" + .lens + (if .criterion_ref == null then \"\" else \" \" + .criterion_ref end) + \": \" + .message] | join(nl)) end) + nl) as $md
+| {result: $result, rule: $rule, history: ($all | map(del(.recur))), open: ($a.findings), md: $md, paraphrase: $a.paraphrase, changes_map: $cm}
+JQ
+[ -f $S/history.json ] || echo '[]' > $S/history.json
+for X in comprehend verify preserve; do
+  if jq -e . $L/$X.json >/dev/null 2>&1; then cp $L/$X.json $S/cur.$X.json; else echo null > $S/cur.$X.json; fi
+done
+for K in 1 2; do
+  M=$((R-K))
+  if [ \"$M\" -ge 1 ] && jq -e . $S/rounds/$M.json >/dev/null 2>&1; then cp $S/rounds/$M.json $S/prev$K.json; else echo null > $S/prev$K.json; fi
+done
+if ! jq -n -L $S --slurpfile c $S/cur.comprehend.json --slurpfile v $S/cur.verify.json --slurpfile p $S/cur.preserve.json --slurpfile d $S/draft.json --rawfile prop $S/audit/proposed.md -f $S/audit1.jq > $S/audit1.json; then
+  echo 'audit_gate: could not read the lens results' >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null; then SUM=sha256sum; else SUM='shasum -a 256'; fi
+: > $S/fps.txt
+jq -r '.keys[]' $S/audit1.json | while IFS= read -r K; do printf '%s' \"$K\" | $SUM | cut -d' ' -f1 >> $S/fps.txt; done
+if ! jq -n -L $S --slurpfile p1 $S/audit1.json --rawfile fps $S/fps.txt --slurpfile h $S/history.json --argjson round \"$R\" --slurpfile r1 $S/prev1.json --slurpfile r2 $S/prev2.json -f $S/audit2.jq > $S/audit2.json; then
+  echo 'audit_gate: could not judge the round' >&2
+  exit 1
+fi
+RES=$(jq -r '.result' $S/audit2.json)
+jq '.history' $S/audit2.json > $S/history.next && mv $S/history.next $S/history.json
+jq '.changes_map' $S/audit2.json > $S/rounds/$R.json
+jq '.open' $S/audit2.json > $S/open_findings.json
+jq -r '.paraphrase' $S/audit2.json > $S/paraphrase.md
+jq -r '.md' $S/audit2.json > $S/findings.md
+case \"$RES\" in
+  capped | churn)
+    echo \"$RES\" > $S/outcome
+    jq -j '.rule' $S/audit2.json > $S/rule ;;
+esac
+rm -f $S/cur.comprehend.json $S/cur.verify.json $S/cur.preserve.json $S/prev1.json $S/prev2.json
+echo 'audit_gate: round '$R' is '$RES >&2
+jq -nc --arg s \"$RES\" --arg r \"$R\" '{context_updates:{sharpen_result:$s, round:$r}}'"]
 
     // ---- The run's record (C11) ----
     //
@@ -393,6 +529,18 @@ exit 0"]
     prep -> record
     draft -> draft_gate [condition="outcome=succeeded"]
     draft -> record
+    draft_gate -> comprehend [condition="outcome=succeeded && context.draft_ok=true"]
     draft_gate -> record
+    comprehend -> verify [condition="outcome=succeeded"]
+    comprehend -> record
+    verify -> preserve [condition="outcome=succeeded"]
+    verify -> record
+    preserve -> audit_gate [condition="outcome=succeeded"]
+    preserve -> record
+    audit_gate -> record [condition="outcome=succeeded && context.sharpen_result=converged"]
+    audit_gate -> draft [condition="outcome=succeeded && context.sharpen_result=open"]
+    audit_gate -> record [condition="outcome=succeeded && context.sharpen_result=capped"]
+    audit_gate -> record [condition="outcome=succeeded && context.sharpen_result=churn"]
+    audit_gate -> record
     record -> exit
 }

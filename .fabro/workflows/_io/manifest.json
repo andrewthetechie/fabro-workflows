@@ -1398,6 +1398,180 @@
             "schema": "sharpen-draft"
           },
           "box": true
+        },
+        "comprehend": {
+          "live": true,
+          "prompt": ".fabro/workflows/issue-sharpen/prompts/comprehend.md.j2",
+          "inputs": [
+            {
+              "name": "proposed.md",
+              "path": "/tmp/fabro/sharpen/audit/proposed.md",
+              "required": true,
+              "about": "the proposed issue body, exactly what would be written to the issue"
+            },
+            {
+              "name": "changes.md",
+              "path": "/tmp/fabro/sharpen/audit/changes.md",
+              "required": true,
+              "about": "one row per changed criterion: original, proposed, transformation and evidence"
+            },
+            {
+              "name": "original_criteria.md",
+              "path": "/tmp/fabro/sharpen/audit/original_criteria.md",
+              "required": true,
+              "about": "the acceptance criteria before the rewrite, numbered AC1..ACn"
+            },
+            {
+              "name": "ci.md",
+              "path": "/tmp/fabro/sharpen/audit/ci.md",
+              "required": true,
+              "about": ".fabro/ci.sh verbatim, then each script, package.json script and Makefile target it calls"
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/sharpen/draft.json",
+            "/tmp/fabro/sharpen/issue.json",
+            "/tmp/fabro/sharpen/issue.md",
+            "/tmp/fabro/sharpen/comments.json",
+            "/tmp/fabro/sharpen/comments.raw",
+            "/tmp/fabro/sharpen/criteria.md",
+            "/tmp/fabro/sharpen/precheck.md",
+            "/tmp/fabro/sharpen/rules.md",
+            "/tmp/fabro/sharpen/orientation.md",
+            "/tmp/fabro/sharpen/pack.md",
+            "/tmp/fabro/sharpen/findings.md",
+            "/tmp/fabro/sharpen/history.json",
+            "/tmp/fabro/sharpen/open_findings.json",
+            "/tmp/fabro/sharpen/paraphrase.md",
+            "/tmp/fabro/sharpen/gate.json",
+            "/tmp/fabro/sharpen/gate.err",
+            "/tmp/fabro/sharpen/orig.md",
+            "/tmp/fabro/sharpen/rounds/",
+            "/tmp/fabro/sharpen/lens/verify.json",
+            "/tmp/fabro/sharpen/lens/preserve.json"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/sharpen/lens/comprehend.json",
+            "schema": "sharpen-comprehend"
+          },
+          "box": true
+        },
+        "verify": {
+          "live": true,
+          "prompt": ".fabro/workflows/issue-sharpen/prompts/verify.md.j2",
+          "inputs": [
+            {
+              "name": "proposed.md",
+              "path": "/tmp/fabro/sharpen/audit/proposed.md",
+              "required": true,
+              "about": "the proposed issue body, exactly what would be written to the issue"
+            },
+            {
+              "name": "changes.md",
+              "path": "/tmp/fabro/sharpen/audit/changes.md",
+              "required": true,
+              "about": "one row per changed criterion: original, proposed, transformation and evidence"
+            },
+            {
+              "name": "original_criteria.md",
+              "path": "/tmp/fabro/sharpen/audit/original_criteria.md",
+              "required": true,
+              "about": "the acceptance criteria before the rewrite, numbered AC1..ACn"
+            },
+            {
+              "name": "ci.md",
+              "path": "/tmp/fabro/sharpen/audit/ci.md",
+              "required": true,
+              "about": ".fabro/ci.sh verbatim, then each script, package.json script and Makefile target it calls"
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/sharpen/draft.json",
+            "/tmp/fabro/sharpen/issue.json",
+            "/tmp/fabro/sharpen/issue.md",
+            "/tmp/fabro/sharpen/comments.json",
+            "/tmp/fabro/sharpen/comments.raw",
+            "/tmp/fabro/sharpen/criteria.md",
+            "/tmp/fabro/sharpen/precheck.md",
+            "/tmp/fabro/sharpen/rules.md",
+            "/tmp/fabro/sharpen/orientation.md",
+            "/tmp/fabro/sharpen/pack.md",
+            "/tmp/fabro/sharpen/findings.md",
+            "/tmp/fabro/sharpen/history.json",
+            "/tmp/fabro/sharpen/open_findings.json",
+            "/tmp/fabro/sharpen/paraphrase.md",
+            "/tmp/fabro/sharpen/gate.json",
+            "/tmp/fabro/sharpen/gate.err",
+            "/tmp/fabro/sharpen/orig.md",
+            "/tmp/fabro/sharpen/rounds/",
+            "/tmp/fabro/sharpen/lens/comprehend.json",
+            "/tmp/fabro/sharpen/lens/preserve.json"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/sharpen/lens/verify.json",
+            "schema": "sharpen-verify"
+          },
+          "box": true
+        },
+        "preserve": {
+          "live": true,
+          "prompt": ".fabro/workflows/issue-sharpen/prompts/preserve.md.j2",
+          "inputs": [
+            {
+              "name": "proposed.md",
+              "path": "/tmp/fabro/sharpen/audit/proposed.md",
+              "required": true,
+              "about": "the proposed issue body, exactly what would be written to the issue"
+            },
+            {
+              "name": "changes.md",
+              "path": "/tmp/fabro/sharpen/audit/changes.md",
+              "required": true,
+              "about": "one row per changed criterion: original, proposed, transformation and evidence"
+            },
+            {
+              "name": "original_criteria.md",
+              "path": "/tmp/fabro/sharpen/audit/original_criteria.md",
+              "required": true,
+              "about": "the acceptance criteria before the rewrite, numbered AC1..ACn"
+            },
+            {
+              "name": "ci.md",
+              "path": "/tmp/fabro/sharpen/audit/ci.md",
+              "required": true,
+              "about": ".fabro/ci.sh verbatim, then each script, package.json script and Makefile target it calls"
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/sharpen/draft.json",
+            "/tmp/fabro/sharpen/issue.json",
+            "/tmp/fabro/sharpen/issue.md",
+            "/tmp/fabro/sharpen/comments.json",
+            "/tmp/fabro/sharpen/comments.raw",
+            "/tmp/fabro/sharpen/criteria.md",
+            "/tmp/fabro/sharpen/precheck.md",
+            "/tmp/fabro/sharpen/rules.md",
+            "/tmp/fabro/sharpen/orientation.md",
+            "/tmp/fabro/sharpen/pack.md",
+            "/tmp/fabro/sharpen/findings.md",
+            "/tmp/fabro/sharpen/history.json",
+            "/tmp/fabro/sharpen/open_findings.json",
+            "/tmp/fabro/sharpen/paraphrase.md",
+            "/tmp/fabro/sharpen/gate.json",
+            "/tmp/fabro/sharpen/gate.err",
+            "/tmp/fabro/sharpen/orig.md",
+            "/tmp/fabro/sharpen/rounds/",
+            "/tmp/fabro/sharpen/lens/comprehend.json",
+            "/tmp/fabro/sharpen/lens/verify.json"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/sharpen/lens/preserve.json",
+            "schema": "sharpen-preserve"
+          },
+          "box": true
         }
       }
     },

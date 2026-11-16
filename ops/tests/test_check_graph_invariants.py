@@ -586,8 +586,9 @@ class Counts(unittest.TestCase):
             # check, gate, post -- 8 nodes, 11 edges.
             "issue-precheck": (8, 11),
             # issue-sharpen (issue-sharpening 01): start, exit, claim, prep, draft, draft_gate,
-            # record -- 7 nodes, 10 edges. Tasks 02 and 03 add the lenses, the loop and the apply.
-            "issue-sharpen": (7, 10),
+            # record, plus (task 02) comprehend, verify, preserve and audit_gate -- 11 nodes, 22
+            # edges. Task 03 adds apply, recheck_prep, recheck, recheck_gate and post.
+            "issue-sharpen": (11, 22),
             # context-pack (more-local-inference task 08): the same shape -- claim, stop, prep,
             # gather, gate, post.
             "context-pack": (8, 11),
