@@ -45,11 +45,7 @@ starts.
 | 05 | `learn` timeouts: derive its timeout, or run it less often | #79 | `ralph/workflow.fabro` (`learn`), maybe `learn_prep` | workflow only, live on push | host | — | todo |
 | **Phase 2: the two biggest levers** | | | | | | | |
 | 06 | Background lane on two-slot boxes, **option (b) only**: measure `pr-review` gaps; a sibling between stages is gap 0, not a block | #78 | `ops/scheduler/.../config.py` (`BACKGROUND_GAP_*`), `background.py` (`_gap_minutes`) | `make deploy-scheduler` | host (to measure gaps) | — | todo |
-| 07a | Sharpening: the `issue-sharpen-draft` package (Elephant) with `draft_gate`, its Stage manifest entries and gate tests | #68 | `.fabro/workflows/issue-sharpen-draft/`, `_io/`, `ops/gate_tests/` | none (no kind turns itself on) | — | — | todo |
-| 07b | Sharpening: the `issue-sharpen-audit` package (Goldfish): three lenses plus `audit_gate`, with the finding lifecycle and gate tests | #68 | `.fabro/workflows/issue-sharpen-audit/`, `_io/`, `ops/gate_tests/` | none | — | 07a (shares the proposal contract) | todo |
-| 07c | Sharpening in the scheduler: `SharpenProducer`; the `unverifiable` hold, gated on the kinds; approve, reject and stale apply; a fresh precheck on a new body hash; onboarding labels | #68 | `ops/scheduler/`, `skills/setup-repo-for-factory/` | `make deploy-scheduler` (kinds stay off) | — | 07a, 07b | todo |
-| 07d | Sharpening calibration: the `sharpen-calibration` kind, `GET /api/background/sharpen-calibration`, the measure section | #68 | `ops/scheduler/` | `make deploy-scheduler` | — | 07c | todo |
-| 07e | **Operator.** Turn on `sharpen-calibration`; read the report and a hand sample. Go live only if untouched-criterion preservation is 100% and no Substitutions turn up | #68 | `SCHEDULER_BG_KINDS` | env change | host | 06, 07d | todo |
+| 07 | Issue sharpening, **redesigned 2026-11-16**: one leased `issue-sharpen` run per `unverifiable` issue, ahead of issue runs, local boxes only, auto-applied when the audit converges, no human approval, always on. Work `docs/plans/issue-sharpening/` tasks 01–07 in one go (that series' own rules: local commits, no push), then the reviewer's task 08 | #68 | see the series | see the series' task 08 | 08 only | — | todo |
 | **Phase 3: clear held PRs without the operator** | | | | | | | |
 | 08a | `pr-shepherd` phase 1, **dry-run**: select mechanical holds (CI-unsettled handoffs, merge-phase timeouts, rejected force-push, CI-fix failures FlakeRadar rates flaky); at most 2 retries per PR, counted in a marker | #31 | new `.fabro/workflows/pr-shepherd/` (or a scheduler job; decide in the task), fixture tests, automation rows | per the chosen home | host (dry-run output) | 01 | todo |
 | 08b | **Operator.** Review each repository's dry-run list, then switch to live | #31 | — | — | host | 08a | todo |
@@ -70,10 +66,9 @@ them up after task 11's numbers.
 
 - **Phase 1** first: each task is small and gives back box hours or a correct number at once.
   01 also names the class that 08a selects.
-- **06 before 07e:** sharpening jobs run in the background lane, and on two-slot boxes the lane
-  rarely gets a gap without 06.
-- **07a–07d** can ship ahead of 06, because nothing runs until the operator adds the kinds.
-- **The scheduler tasks (01, 06, 07c, 07d, 10, 13) all edit `ops/scheduler/`.** Run them one at a
+- **07 does not wait for 06.** Sharpening was redesigned on 2026-11-16 as a coder lease, not a
+  background-lane kind (ADR 0033), so it needs no lane gap.
+- **The scheduler tasks (01, 06, 07, 10, 13) all edit `ops/scheduler/`.** Run them one at a
   time and pull before each, so that no two in-flight branches touch it.
 - **09a ships before 09c**, because the prompt rule names the guard's refusal.
 
@@ -84,7 +79,7 @@ them up after task 11's numbers.
 | ~2026-11-17 | The two-week re-count of `ci.sh`-gap and PR-description holds after the five `ci.sh` PRs (merged 11-03) | #57 |
 | Now overdue | The 11-09 retro read: close `held:refuter`, `held:unfixed-findings` and `held:review-needs-human`, or name what is left | #62 |
 | ~2026-11-26 | `iterate_t1` on writers-app, from runs dispatched since 11-12, comparing durations (window restarted for the 120m timeout) | #63 |
-| ~2 weeks after 07e | Merge rate of sharpened issues against 14% (`unverifiable`) and 41% (`ready`) | #68 |
+| ~2 weeks after 07's deploy | Merge rate of sharpened issues against 14% (`unverifiable`) and 41% (`ready`) | #68 |
 | ~2 weeks after 08b | Held PRs with mechanical reasons, resolved without the operator | #31 |
 
 ## Dispatching a task
