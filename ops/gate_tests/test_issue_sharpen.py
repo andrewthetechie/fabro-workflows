@@ -627,7 +627,39 @@ def test_draft_gate_tolerates_only_trailing_whitespace_and_the_final_newline(ck,
     ck("gate: an original written with CRLF line ends compares equal", "true", routed(r, "draft_ok"))
 
 
-# --- the #67 corpus (D23) ----------------------------------------------------------------
+def test_draft_gate_reads_the_criteria_forms_real_issues_use(ck, tmp_path):
+    """`## Acceptance Criteria` (wfs#2342), numbered items (lawncare#3065) and a suffixed heading."""
+    for name, old, new in (
+        ("capital", "## Acceptance criteria", "## Acceptance Criteria"),
+        ("suffix", "## Acceptance criteria", "## Acceptance criteria (in addition to the list above)"),
+    ):
+        issue = {**ISSUE, "body": BODY.replace(old, new)}
+        P, r = gate(ck, tmp_path, f"gate-heading-{name}", good(body=GOOD_BODY.replace(old, new)), issue=issue)
+        ck(f"gate: the {name} heading is the criteria section", "true", routed(r, "draft_ok"))
+    numbered = BODY.replace("- [ ] Every branch", "1. Every branch").replace(
+        "- [ ] The PR description", "2. The PR description").replace("- [x] `npm run", "3. `npm run")
+    body = numbered.replace("1. Every branch is covered, or the PR explains why.\n",
+                            "1. Every branch is covered, or a code comment says why.\n").replace(
+        "2. The PR description lists before/after coverage.\n", "").replace(
+        "\n## Post-deploy checks\n\n- [ ] The numbers look right in the dashboard.\n", "")
+    P, r = gate(ck, tmp_path, "gate-numbered", good(body=body), issue={**ISSUE, "body": numbered})
+    ck("gate: numbered criteria are criteria", "true", routed(r, "draft_ok"))
+    ck("gate: the numbered item kept its number", "1", count("^1[.] Every branch is covered, or a code comment", cat(P.S / "audit/proposed.md")))
+
+
+def test_draft_gate_guards_a_second_criteria_section_byte_for_byte(ck, tmp_path):
+    """Only the first `Acceptance criteria` section is the one the change rows act on."""
+    extra = "## Acceptance criteria (in addition)\n\n- The report renders.\n\n## Non-goals"
+    issue = {**ISSUE, "body": BODY.replace("## Non-goals", extra, 1)}
+    kept = GOOD_BODY.replace("## Non-goals", extra, 1)
+    P, r = gate(ck, tmp_path, "gate-second-section-kept", good(body=kept), issue=issue)
+    ck("gate: an untouched second section passes", "true", routed(r, "draft_ok"))
+    refused(ck, tmp_path, "gate-second-section-edited",
+            good(body=kept.replace("- The report renders.", "- The report renders quickly.")),
+            "(in addition) changed", issue=issue)
+
+
+# --- the #67 corpus (D23)----------------------------------------------------------------
 
 
 def lint_rules(title: str, body: str) -> set[str]:
@@ -664,13 +696,16 @@ def test_every_sharpenable_fixture_has_a_valid_draft_that_passes_and_lints_clean
         stem = name.removesuffix(".md")
         issue, draft = fixture_issue(name)
         before = lint_rules(issue["title"], issue["body"])
+        if name.startswith("L4"):
+            # Its one criterion is a `.github/workflows/` change, so the only honest draft moves it
+            # to Post-deploy checks and leaves no criterion behind. The gate refuses that: the
+            # issue runs as written rather than with nothing for the Refuter to check.
+            ck(f"corpus {stem}: the original raises L4", "True", str("L4" in before))
+            refused(ck, tmp_path, f"corpus-{stem}", draft, "Refuter would have nothing to check", issue=issue)
+            continue
         P, r = gate(ck, tmp_path, f"corpus-{stem}", draft, issue=issue)
         ck(f"corpus {stem}: the draft passes draft_gate", "true", routed(r, "draft_ok"))
         proposed = cat(P.S / "audit/proposed.md") + "\n"
-        if name.startswith("L4"):
-            # `## Expected files` still names the workflow file. It is outside the criteria, so
-            # the preservation gate forbids touching it; the criterion itself is what moved.
-            proposed = proposed.split("## Expected files")[0]
         after = lint_rules(issue["title"], proposed)
         wanted = set(CORPUS_EXPECTED[name]["errors"]) & {"L1", "L2", "L3", "L4", "L5"}
         ck(f"corpus {stem}: the original raises its rule", "True", str(wanted <= before))
@@ -679,6 +714,8 @@ def test_every_sharpenable_fixture_has_a_valid_draft_that_passes_and_lints_clean
 
 def test_a_bad_draft_for_each_fixture_is_refused(ck, tmp_path):
     for name in SHARPENABLE:
+        if name.startswith("L4"):
+            continue  # its good draft is itself refused (the test above)
         stem = name.removesuffix(".md")
         issue, draft = fixture_issue(name, marker=True)
         P, r = gate(ck, tmp_path, f"corpus-{stem}-marked", draft, issue=issue)

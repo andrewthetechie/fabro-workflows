@@ -60,14 +60,14 @@
           "original": {
             "type": "string",
             "minLength": 1,
-            "description": "The bullet's text, exactly as in the original body, without its leading `- ` or `- [ ] `."
+            "description": "The bullet's text, exactly as in the original body, without its list marker (`- `, `- [ ] ` or `1.`)."
           },
           "proposed": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The new bullet text, without its leading `- ` or `- [ ] `, or null when the criterion moved to post_deploy_checks."
+            "description": "The new bullet text, without its list marker (`- `, `- [ ] ` or `1.`), or null when the criterion moved to post_deploy_checks."
           },
           "transformation": {
             "enum": [

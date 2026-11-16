@@ -34,7 +34,8 @@ yourself.
 ### The closed list of transformations
 
 A change row names exactly one of these. Nothing else is allowed, and nothing is ever deleted:
-a criterion that none of the first four can make verifiable takes `to_post_deploy`.
+a criterion that none of the first four can make verifiable takes `to_post_deploy`. Where a rule
+above says to drop a criterion, that criterion takes `to_post_deploy` too.
 
 | Transformation | From | To | Required evidence |
 |---|---|---|---|

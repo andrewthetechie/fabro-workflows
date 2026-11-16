@@ -57,6 +57,9 @@ declare -A BASELINE=(
     # The repository orientation (task 10): the same shape -- claim, stop, prep, map, gate,
     # post -- with no issue number: the subject is the run's own repository.
     [repo-orientation]="8 nodes, 11 edges"
+    # Issue sharpening (ADR 0033), a leased box package: claim, prep, draft, draft_gate, the
+    # three lenses, audit_gate, apply, the four recheck nodes, post, record and fail.
+    [issue-sharpen]="18 nodes, 35 edges"
 )
 
 say "rsync .fabro/ to $HOST:/tmp/check/"
@@ -77,6 +80,7 @@ for f in workflows/backlog/workflow.fabro workflows/pr-review/workflow.fabro \
          workflows/precheck-calibration/workflow.fabro \
          workflows/flaky-investigation/workflow.fabro \
          workflows/repo-orientation/workflow.fabro \
+         workflows/issue-sharpen/workflow.fabro \
          workflows/_shared/review-merge/review-merge.fabro workflows/_shared/triage/triage.fabro; do
     # Both sides are normalized on the host: fabro's {"Str": v} wrappers, and the reader's plain strings.
     if ssh "$HOST" "cd ~/fabro && docker compose exec -T fabro fabro parse /tmp/check/$f </dev/null \
@@ -96,7 +100,7 @@ if [ "$PARITY_BAD" -ne 0 ]; then
 fi
 
 say "fabro validate on all fifteen packages (node/edge vs AGENTS.md baselines)"
-for w in backlog pr-review issue-triage arch-review dependabot merge-queue scout ralph box-noop issue-precheck context-pack precheck-calibration flaky-investigation repo-orientation; do
+for w in backlog pr-review issue-triage arch-review dependabot merge-queue scout ralph box-noop issue-precheck context-pack precheck-calibration flaky-investigation repo-orientation issue-sharpen; do
     OUT=$(ssh "$HOST" "cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/$w/workflow.toml" 2>&1)
     LINE=$(printf '%s\n' "$OUT" | grep -E '^Workflow: ' | head -1)
     echo "  $LINE"

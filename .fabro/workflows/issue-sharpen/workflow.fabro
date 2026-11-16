@@ -118,9 +118,9 @@ def clean: sub(\"[[:space:]]+$\"; \"\");
 def blines: (. // \"\") | split(nl) | map(clean);
 def trimblank: reverse | until(length == 0 or .[0] != \"\"; .[1:]) | reverse;
 def sections: reduce .[] as $x ([{h: \"\", l: []}]; if ($x | test(\"^## \")) then . + [{h: $x, l: []}] else .[-1].l += [$x] end) | map(.l |= trimblank);
-def parse_ac: reduce .[] as $x ({b: [], o: [], bul: false}; if ($x | test(\"^[-*] \")) then .b += [[$x]] | .bul = true elif .bul and ($x | test(\"^[[:space:]]+[^[:space:]]\")) then .b[-1] += [$x] elif $x == \"\" then .bul = false else .o += [$x] | .bul = false end);
-def btext: (.[0] | sub(\"^[-*] ([[][ xX][]] )?\"; \"\")) as $f | ([$f] + .[1:]) | join(nl);
-def ac_of: ([.[] | select(.h == \"## Acceptance criteria\")] | first) as $s | if $s == null then null else ($s.l | parse_ac) end;
+def parse_ac: reduce .[] as $x ({b: [], o: [], bul: false}; if ($x | test(\"^([-*]|[0-9]+[.)]) \")) then .b += [[$x]] | .bul = true elif .bul and ($x | test(\"^[[:space:]]+[^[:space:]]\")) then .b[-1] += [$x] elif $x == \"\" then .bul = false else .o += [$x] | .bul = false end);
+def btext: (.[0] | sub(\"^([-*]|[0-9]+[.)]) ([[][ xX][]] )?\"; \"\")) as $f | ([$f] + .[1:]) | join(nl);
+def ac_of: ([.[] | select(.h | test(\"^## acceptance criteria\"; \"i\"))] | first) as $s | if $s == null then null else ($s.l | parse_ac) end;
 JQ
 stop() {
   echo not_needed > $S/outcome
@@ -184,7 +184,8 @@ cut -c3- > $S/rules.md <<'RULES'
 > ### The closed list of transformations
 > 
 > A change row names exactly one of these. Nothing else is allowed, and nothing is ever deleted:
-> a criterion that none of the first four can make verifiable takes `to_post_deploy`.
+> a criterion that none of the first four can make verifiable takes `to_post_deploy`. Where a rule
+> above says to drop a criterion, that criterion takes `to_post_deploy` too.
 > 
 > | Transformation | From | To | Required evidence |
 > |---|---|---|---|
@@ -247,7 +248,9 @@ echo '{\"context_updates\":{\"prep_ok\":true}}'"]
     // ---- The preservation gate (D10, C4) ----
     //
     // The first refusal writes `outcome=cannot_sharpen` and a one-line `rule`, and routes to
-    // `record`: a refusal is a model mistake, not a fault, and is never retried. On success it
+    // `record`: a refusal is a model mistake, not a fault, and is never retried. A proposal
+    // that leaves `## Acceptance criteria` with no bullet is refused too: an issue the Refuter
+    // has nothing to check in is worse than one that runs as written (task 08 review). On success it
     // writes the sealed audit directory the lenses read, clears the lens directory so a result
     // from an earlier round can never count, and emits `round`.
     draft_gate [label="Check the draft changes nothing it did not declare", shape=parallelogram, output_schema="routing", timeout="2m",
@@ -273,9 +276,9 @@ def clean: sub(\"[[:space:]]+$\"; \"\");
 def blines: (. // \"\") | split(nl) | map(clean);
 def trimblank: reverse | until(length == 0 or .[0] != \"\"; .[1:]) | reverse;
 def sections: reduce .[] as $x ([{h: \"\", l: []}]; if ($x | test(\"^## \")) then . + [{h: $x, l: []}] else .[-1].l += [$x] end) | map(.l |= trimblank);
-def parse_ac: reduce .[] as $x ({b: [], o: [], bul: false}; if ($x | test(\"^[-*] \")) then .b += [[$x]] | .bul = true elif .bul and ($x | test(\"^[[:space:]]+[^[:space:]]\")) then .b[-1] += [$x] elif $x == \"\" then .bul = false else .o += [$x] | .bul = false end);
-def btext: (.[0] | sub(\"^[-*] ([[][ xX][]] )?\"; \"\")) as $f | ([$f] + .[1:]) | join(nl);
-def ac_of: ([.[] | select(.h == \"## Acceptance criteria\")] | first) as $s | if $s == null then null else ($s.l | parse_ac) end;
+def parse_ac: reduce .[] as $x ({b: [], o: [], bul: false}; if ($x | test(\"^([-*]|[0-9]+[.)]) \")) then .b += [[$x]] | .bul = true elif .bul and ($x | test(\"^[[:space:]]+[^[:space:]]\")) then .b[-1] += [$x] elif $x == \"\" then .bul = false else .o += [$x] | .bul = false end);
+def btext: (.[0] | sub(\"^([-*]|[0-9]+[.)]) ([[][ xX][]] )?\"; \"\")) as $f | ([$f] + .[1:]) | join(nl);
+def ac_of: ([.[] | select(.h | test(\"^## acceptance criteria\"; \"i\"))] | first) as $s | if $s == null then null else ($s.l | parse_ac) end;
 JQ
 cat > $S/gate.jq <<'JQ'
 include \"lib\";
@@ -313,11 +316,12 @@ def preserve($orig; $d):
   | ($os | ac_of) as $oa
   | ($ps | ac_of) as $pa
   | ($d.changes | map(.criterion_ref[2:] | tonumber)) as $ns
+  | ([range(0; ($os | length)) | select($os[.].h | test(\"^## acceptance criteria\"; \"i\"))] | first) as $ai
   | if $oa == null then \"the original body has no acceptance criteria heading\"
     elif any($ps[]; .h == \"## Post-deploy checks\") then \"the body writes a Post-deploy checks section; the gate assembles it\"
     elif ([range(0; ($ol | length)) | select(($ol[.] | startswith(\"<!-- fabro:\")) and $pl[.] != $ol[.])] | length) > 0 then (\"the marker on line \" + ([range(0; ($ol | length)) | select(($ol[.] | startswith(\"<!-- fabro:\")) and $pl[.] != $ol[.])] | first + 1 | tostring) + \" was changed or moved\")
     elif ($os | map(.h)) != ($ps | map(.h)) then \"a section heading was added, removed, renamed or moved\"
-    elif ([range(0; ($os | length)) | select($os[.].h != \"## Acceptance criteria\" and $os[.].l != $ps[.].l)] | length) > 0 then (\"the section \" + ([range(0; ($os | length)) | select($os[.].h != \"## Acceptance criteria\" and $os[.].l != $ps[.].l)] | first | $os[.].h | if . == \"\" then \"before the first heading\" else . end) + \" changed\")
+    elif ([range(0; ($os | length)) | select(. != $ai and $os[.].l != $ps[.].l)] | length) > 0 then (\"the section \" + ([range(0; ($os | length)) | select(. != $ai and $os[.].l != $ps[.].l)] | first | $os[.].h | if . == \"\" then \"before the first heading\" else . end) + \" changed\")
     elif ($pa == null) then \"the proposal has no acceptance criteria section\"
     elif $oa.o != $pa.o then \"text between the acceptance criteria bullets changed\"
     elif (($ns | length) != ($ns | unique | length)) then \"two change rows name the same criterion\"
@@ -328,6 +332,7 @@ def preserve($orig; $d):
       bullet_rows($oa; $d.changes) as $want
       | if ($want | length) != ($pa.b | length) then \"the acceptance criteria hold a bullet that no change row accounts for, or lack one that a row keeps\"
         elif ([range(0; ($want | length)) | select(if ($want[.] | has(\"raw\")) then $want[.].raw != $pa.b[.] else $want[.].t != ($pa.b[.] | btext) end)] | length) > 0 then (\"acceptance criteria bullet \" + ([range(0; ($want | length)) | select(if ($want[.] | has(\"raw\")) then $want[.].raw != $pa.b[.] else $want[.].t != ($pa.b[.] | btext) end)] | first + 1 | tostring) + \" is not the original bullet or its change row's proposal, in order\")
+        elif ($pa.b | length) == 0 then \"every criterion moved to Post-deploy checks, so the Refuter would have nothing to check\"
         else \"\" end
     end;
 def assemble($orig; $d):
@@ -397,9 +402,9 @@ def clean: sub(\"[[:space:]]+$\"; \"\");
 def blines: (. // \"\") | split(nl) | map(clean);
 def trimblank: reverse | until(length == 0 or .[0] != \"\"; .[1:]) | reverse;
 def sections: reduce .[] as $x ([{h: \"\", l: []}]; if ($x | test(\"^## \")) then . + [{h: $x, l: []}] else .[-1].l += [$x] end) | map(.l |= trimblank);
-def parse_ac: reduce .[] as $x ({b: [], o: [], bul: false}; if ($x | test(\"^[-*] \")) then .b += [[$x]] | .bul = true elif .bul and ($x | test(\"^[[:space:]]+[^[:space:]]\")) then .b[-1] += [$x] elif $x == \"\" then .bul = false else .o += [$x] | .bul = false end);
-def btext: (.[0] | sub(\"^[-*] ([[][ xX][]] )?\"; \"\")) as $f | ([$f] + .[1:]) | join(nl);
-def ac_of: ([.[] | select(.h == \"## Acceptance criteria\")] | first) as $s | if $s == null then null else ($s.l | parse_ac) end;
+def parse_ac: reduce .[] as $x ({b: [], o: [], bul: false}; if ($x | test(\"^([-*]|[0-9]+[.)]) \")) then .b += [[$x]] | .bul = true elif .bul and ($x | test(\"^[[:space:]]+[^[:space:]]\")) then .b[-1] += [$x] elif $x == \"\" then .bul = false else .o += [$x] | .bul = false end);
+def btext: (.[0] | sub(\"^([-*]|[0-9]+[.)]) ([[][ xX][]] )?\"; \"\")) as $f | ([$f] + .[1:]) | join(nl);
+def ac_of: ([.[] | select(.h | test(\"^## acceptance criteria\"; \"i\"))] | first) as $s | if $s == null then null else ($s.l | parse_ac) end;
 JQ
 cat > $S/audit1.jq <<'JQ'
 include \"lib\";

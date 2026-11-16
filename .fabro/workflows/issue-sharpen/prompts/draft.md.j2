@@ -93,7 +93,7 @@ Record the draft by calling the `mcp__io__submit` tool, which writes
 - `post_deploy_checks`: one line each; `[]` when none.
 - `changes`: one to twenty rows, each `{criterion_ref, original, proposed, transformation,
   evidence}`. `criterion_ref` is `AC<n>`. `original` is the criterion's text exactly as in
-  `criteria.md`, without its `ACn.` prefix, its `- ` and its checkbox. `proposed` is the new
+  `criteria.md`, without its `ACn.` prefix, its list marker (`- ` or `1.`) and its checkbox. `proposed` is the new
   text in the same form, or `null`. `evidence` rows are `{where, says}` with `where` set to
   `path:line`, `.fabro/ci.sh:N` or `issue body`.
 - `human_actions`: one line each; `[]` when none.
