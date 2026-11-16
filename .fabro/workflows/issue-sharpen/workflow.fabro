@@ -386,8 +386,6 @@ jq -nc --arg r \"$R\" '{context_updates:{draft_ok:true, round:$r}}'"]
     // when to stop. It keeps the finding history, so a finding that was fixed and came back, or
     // a criterion whose proposed text alternates, ends the loop as `churn`. Round 3 not clean is
     // `capped`. On `capped` and `churn` it writes the outcome and the rule for `record`.
-    // A converged round goes to `apply` and `capped` or `churn` to `post` in task 03; until
-    // then both go to `record`.
     audit_gate [label="Judge the round", shape=parallelogram, output_schema="routing", timeout="2m",
         script="S=/tmp/fabro/sharpen
 L=$S/lens
@@ -500,6 +498,270 @@ rm -f $S/cur.comprehend.json $S/cur.verify.json $S/cur.preserve.json $S/prev1.js
 echo 'audit_gate: round '$R' is '$RES >&2
 jq -nc --arg s \"$RES\" --arg r \"$R\" '{context_updates:{sharpen_result:$s, round:$r}}'"]
 
+    // ---- Write the proposal, then judge it at once (D6, D11, D14, D15; C8, C10) ----
+    //
+    // `apply` is the only node that edits the issue. It re-reads the issue and stops with
+    // outcome `stale` when the text is no longer the one `claim` hashed. It posts the original
+    // body in a `fabro:sharpen-original` comment before the edit, so a failure of either step
+    // leaves the issue as it was or as it should be, and the scheduler retries a failed run
+    // (D12). The applied hash is the one the precheck will compute from the issue as GitHub
+    // now stores it.
+    apply [label="Write the sharpened body", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="S=/tmp/fabro/sharpen
+N=$(cat $S/issue_number)
+HASH=$(cat $S/body_hash)
+RUN=$(cat $S/run_id 2>/dev/null || true)
+[ -n \"$RUN\" ] || RUN=unknown
+if command -v sha256sum >/dev/null; then SUM=sha256sum; else SUM='shasum -a 256'; fi
+if ! gh issue view \"$N\" --json title,body > $S/issue.now.json; then
+  echo 'apply: could not re-read issue '$N'; nothing was edited' >&2
+  exit 1
+fi
+NOW=$({ jq -j '.title // \"\"' $S/issue.now.json; echo; jq -j '.body // \"\"' $S/issue.now.json; } | $SUM | cut -c1-12)
+if [ \"$NOW\" != \"$HASH\" ]; then
+  echo stale > $S/outcome
+  printf '%s' 'the issue was edited while it was being sharpened (body '$HASH' became '$NOW')' > $S/rule
+  echo 'apply: the issue changed since claim; nothing was edited' >&2
+  echo '{\"context_updates\":{\"apply_result\":\"stale\"}}'
+  exit 0
+fi
+{ echo \"<!-- fabro:sharpen-original body=$HASH run=$RUN -->\"; echo; jq -j '.body // \"\"' $S/issue.json; } > $S/original.md
+if ! gh issue comment \"$N\" --body-file $S/original.md >/dev/null; then
+  echo 'apply: could not post the original body; nothing was edited' >&2
+  exit 1
+fi
+if ! gh issue edit \"$N\" --body-file $S/audit/proposed.md >/dev/null; then
+  echo 'apply: could not edit the issue body' >&2
+  exit 1
+fi
+if gh issue view \"$N\" --json title,body > $S/issue.after.json 2>/dev/null; then
+  AFTER=$({ jq -j '.title // \"\"' $S/issue.after.json; echo; jq -j '.body // \"\"' $S/issue.after.json; } | $SUM | cut -c1-12)
+else
+  AFTER=$({ jq -j '.title // \"\"' $S/issue.json; echo; cat $S/audit/proposed.md; } | $SUM | cut -c1-12)
+fi
+echo \"$AFTER\" > $S/applied_hash
+echo applied > $S/outcome
+echo 'apply: issue '$N' body '$HASH' became '$AFTER >&2
+echo '{\"context_updates\":{\"apply_result\":\"applied\"}}'"]
+
+    // The new body is judged inside this run with the precheck's own check, so a sharpened
+    // issue never waits on the background lane (D14). `recheck_prep` stages that judgment's
+    // two files for the applied body; `recheck` is a copy of `issue-precheck`'s `check` prompt,
+    // `recheck_gate` of its `gate` and `recheck_post` of its `post`, with the staging path
+    // remapped (R10 keeps all three exact). Only `recheck_post` writes: the precheck's marker
+    // for the applied body, so the scheduler's per-body-hash producer finds it.
+    //
+    // None of the four may fail the run. The body is already applied, so a failure takes its
+    // unconditional edge to `post` with `recheck` unset, and the scheduler's per-hash producer
+    // queues an ordinary precheck for the new text (D13). `recheck` runs as long as the
+    // precheck's `check` (D21).
+    recheck_prep [label="Stage the recheck", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="S=/tmp/fabro/sharpen
+P=$S/recheck
+N=$(cat $S/issue_number)
+rm -rf $P
+mkdir -p $P
+echo \"$N\" > $P/issue_number
+cp $S/repo $P/repo
+cp $S/applied_hash $P/body_hash
+cp $S/run_id $P/run_id 2>/dev/null || true
+git rev-parse HEAD > $P/main_sha
+if ! gh issue view \"$N\" --json number,title,body,state,url,labels > $P/issue.json; then
+  echo 'recheck_prep: could not read issue '$N >&2
+  exit 1
+fi
+R=$(cat $S/repo)
+if ! gh api \"repos/$R/issues/$N/comments?per_page=100\" --paginate > $P/comments.raw; then
+  echo 'recheck_prep: could not read the comments on issue '$N >&2
+  exit 1
+fi
+jq -s 'add // []' $P/comments.raw > $P/comments.json
+if ! gh issue list --state open --limit 300 --json number,title > $P/open_issues.json; then
+  echo 'recheck_prep: could not list the open issues' >&2
+  exit 1
+fi
+{
+  echo '# #'$N': '\"$(jq -r '.title // \"\"' $P/issue.json)\"
+  echo
+  echo 'Labels: '\"$(jq -r '[(.labels // [])[].name] | join(\", \")' $P/issue.json)\"
+  echo
+  jq -r '.body // \"\"' $P/issue.json
+  echo
+  echo '## Comments, oldest first (the last ten; fabro marker comments left out)'
+  echo
+  jq -r '[.[] | select((.body // \"\") | startswith(\"<!-- fabro:\") | not)] | .[-10:] | .[] | (\"### \" + (.user.login // \"?\") + \" at \" + (.created_at // \"?\")), \"\", ((.body // \"\") | .[0:2000]), \"\"' $P/comments.json
+} > $P/issue.md
+jq -r --argjson n \"$N\" '.[] | select(.number != $n) | \"#\" + (.number | tostring) + \" \" + (.title // \"\")' $P/open_issues.json > $P/open_issues.md
+echo '{\"context_updates\":{\"recheck_ready\":true}}'"]
+    recheck [label="Recheck the applied body", class="sharpen", timeout="40m", prompt="@prompts/recheck.md.j2"]
+    recheck_gate [label="Check the recheck verdict", shape=parallelogram, output_schema="routing", timeout="2m",
+        script="F=/tmp/fabro/sharpen/recheck.json
+P=/tmp/fabro/sharpen/recheck
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
+  echo 'precheck.json has no valid Input receipt, so the check did not finish; nothing is posted' >&2
+  exit 1
+fi
+RAW=$(jq -r '.verdict // empty' $F)
+case \"$RAW\" in ready | already_done | blocked | contradiction | unclear | unverifiable) ;; *) echo 'precheck.json carries no known verdict' >&2; exit 1;; esac
+VERDICT=$RAW
+RULE=''
+if [ \"$VERDICT\" != ready ] && [ \"$(jq '(.evidence // []) | length' $F)\" -eq 0 ]; then
+  VERDICT=ready
+  RULE='it cited no evidence'
+fi
+if [ \"$VERDICT\" = blocked ]; then
+  B=$(jq -r '.blocker // empty' $F)
+  N=$(cat $P/issue_number)
+  case \"$B\" in '' | *[!0-9]*) B=0 ;; esac
+  if [ \"$B\" = \"$N\" ] || ! jq -e --argjson b \"$B\" 'any(.[]; .number == $b)' $P/open_issues.json >/dev/null 2>&1; then
+    VERDICT=ready
+    RULE='its blocker #'$B' is not another open issue in this repository'
+  fi
+fi
+if [ \"$VERDICT\" = unverifiable ] && ! jq -e 'any((.evidence // [])[]; (.where // \"\") == \"issue body\")' $F >/dev/null; then
+  VERDICT=ready
+  RULE='it quoted no criterion from the issue body'
+fi
+echo \"$RAW\" > $P/raw_verdict
+echo \"$VERDICT\" > $P/verdict
+printf '%s' \"$RULE\" > $P/rule
+echo 'gate: verdict '$VERDICT
+echo '{\"context_updates\":{\"verdict\":\"'$VERDICT'\"}}'"]
+    recheck_post [label="Post the precheck marker", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="exec 3>&1 >>/tmp/fabro/sharpen/recheck/post.log 2>&1
+P=/tmp/fabro/sharpen/recheck
+N=$(cat $P/issue_number)
+R=$(cat $P/repo)
+V=$(cat $P/verdict)
+RAW=$(cat $P/raw_verdict)
+RULE=$(cat $P/rule 2>/dev/null || true)
+HASH=$(cat $P/body_hash)
+MAIN=$(cat $P/main_sha 2>/dev/null || true)
+[ -n \"$MAIN\" ] || MAIN=unknown
+AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+RUN=$(cat $P/run_id 2>/dev/null || true)
+[ -n \"$RUN\" ] || RUN=unknown
+BODY=$P/comment.md
+EXTRA=''
+if [ \"$V\" = blocked ]; then
+  B=$(jq -r '.blocker // empty' /tmp/fabro/sharpen/recheck.json 2>/dev/null || true)
+  case \"$B\" in '' | *[!0-9]*) ;; *) EXTRA=' blocker='$B ;; esac
+fi
+echo \"<!-- fabro:precheck verdict=$V body=$HASH main=$MAIN at=$AT run=$RUN$EXTRA -->\" > $P/comment.head
+{
+  echo
+  case \"$V\" in
+    ready) echo '**Precheck: ready.** A local model read this issue and the code at `main` and found nothing against running it.' ;;
+    already_done) echo '**Precheck: already done?** A local model read this issue and the code at `main`, and thinks the code already does what it asks.' ;;
+    blocked) echo '**Precheck: blocked?** A local model read this issue and thinks it needs #'\"$(jq -r '.blocker // \"?\"' /tmp/fabro/sharpen/recheck.json)\"' first.' ;;
+    contradiction) echo '**Precheck: contradiction?** A local model read this issue and thinks an acceptance criterion needs something a non-goal excludes.' ;;
+    unclear) echo '**Precheck: unclear?** A local model read this issue and could not find an acceptance criterion it could check.' ;;
+    unverifiable) echo '**Precheck: unverifiable?** A local model read this issue and thinks an acceptance criterion is one the factory cannot check or meet on its own, so the pull request would wait for a human.' ;;
+  esac
+  echo
+  jq -r '.summary // \"\"' /tmp/fabro/sharpen/recheck.json
+  if [ \"$(jq '(.evidence // []) | length' /tmp/fabro/sharpen/recheck.json)\" -gt 0 ]; then
+    echo
+    jq -r '.evidence[] | \"- `\" + .where + \"`: \" + .says' /tmp/fabro/sharpen/recheck.json
+  fi
+  if [ -n \"$RULE\" ]; then
+    echo
+    echo 'The model said `'$RAW'`, but '\"$RULE\"', so this counts as `ready`.'
+  fi
+} | awk -v t1=\"${FABRO_API_TOKEN:-}\" -v t2=\"${GITHUB_TOKEN:-}\" -v t3=\"${GH_TOKEN:-}\" 'function scrub(line, t,  out, i) { if (length(t) < 8) return line; out = \"\"; while ((i = index(line, t)) > 0) { out = out substr(line, 1, i - 1) \"[redacted]\"; line = substr(line, i + length(t)) } return out line } { $0 = scrub($0, t1); $0 = scrub($0, t2); $0 = scrub($0, t3); print }' > $P/comment.tail
+FOOT='_Shadow mode: this note does not change the queue. The factory is measuring how often these verdicts are right before it acts on them._'
+LIMIT=$((1500 - $(wc -c < $P/comment.head) - ${#FOOT} - 20))
+TAIL=$(($(wc -c < $P/comment.tail)))
+if [ \"$TAIL\" -gt \"$LIMIT\" ]; then
+  { head -c \"$LIMIT\" $P/comment.tail | sed '$d'; echo '- (cut to fit)'; } > $P/comment.cut
+else
+  cp $P/comment.tail $P/comment.cut
+fi
+{ cat $P/comment.head $P/comment.cut; echo; echo \"$FOOT\"; } > $BODY
+if [ ! -s $BODY ]; then echo 'could not build the marker comment' >&2; exit 1; fi
+ID=$(gh api \"repos/$R/issues/$N/comments?per_page=100\" --paginate 2>/dev/null | jq -s 'add // []' | jq -r '[(.[] | select((.body // \"\") | startswith(\"<!-- fabro:precheck \"))) | .id] | last // \"\"')
+if [ -n \"$ID\" ]; then
+  if ! jq -n --rawfile b $BODY '{body: $b}' | gh api -X PATCH \"repos/$R/issues/comments/$ID\" --input - >/dev/null; then
+    echo 'could not edit the existing precheck comment' >&2
+    exit 1
+  fi
+else
+  if ! gh issue comment \"$N\" --body-file $BODY >/dev/null; then
+    echo 'could not post the precheck comment' >&2
+    exit 1
+  fi
+fi
+echo 'post: verdict '$V' on issue '$N
+echo '{\"context_updates\":{\"posted\":true}}' >&3
+exit 0"]
+
+    // The one `fabro:sharpen` comment (C8): written for `applied`, `capped`, `churn` and
+    // `stale`, edited in place when one exists. A failed write is one stderr line and does not
+    // fail the run: the body is already applied, and `record` carries the outcome. It cuts the
+    // comment at 60,000 characters, dropping the proposed body first and then the paraphrase,
+    // and never the marker or the change table. `cannot_sharpen` and `not_needed` post nothing.
+    post [label="Post the sharpen comment", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="exec 3>&1 >>/tmp/fabro/sharpen/post.log 2>&1
+S=/tmp/fabro/sharpen
+N=$(cat $S/issue_number)
+R=$(cat $S/repo)
+STATE=$(cat $S/outcome 2>/dev/null || echo failed)
+HASH=$(cat $S/body_hash)
+APPLIED=$(cat $S/applied_hash 2>/dev/null || true)
+[ -n \"$APPLIED\" ] && [ \"$STATE\" = applied ] || APPLIED=-
+RC=-
+if [ \"$STATE\" = applied ] && [ -s $S/recheck/verdict ]; then RC=$(cat $S/recheck/verdict); fi
+RND=$(cat $S/round 2>/dev/null || echo 0)
+RUN=$(cat $S/run_id 2>/dev/null || true)
+[ -n \"$RUN\" ] || RUN=unknown
+{
+  case \"$STATE\" in
+    applied) echo 'The factory rewrote this issue'\"'\"'s acceptance criteria so the pipeline can verify each one. The original body is in the `fabro:sharpen-original` comment above this one, and every criterion is still here: one that cannot be verified moved to `## Post-deploy checks`.' ;;
+    capped) echo 'The factory tried to sharpen this issue'\"'\"'s acceptance criteria, and a fresh audit still found problems after '\"$RND\"' rounds, so the issue was left as written.' ;;
+    churn) echo 'The factory tried to sharpen this issue'\"'\"'s acceptance criteria, and the proposal kept changing instead of settling, so the issue was left as written.' ;;
+    *) echo 'The issue was edited while the factory was sharpening it, so nothing was applied.' ;;
+  esac
+  echo
+  cat $S/audit/changes.md 2>/dev/null || true
+  if [ \"$(jq '(.human_actions // []) | length' $S/draft.json 2>/dev/null || echo 0)\" -gt 0 ]; then
+    echo
+    echo '### Human actions (not part of the issue)'
+    echo
+    jq -r '.human_actions[] | \"- \" + .' $S/draft.json
+  fi
+} > $S/comment.core
+if [ \"$STATE\" != applied ] && [ -s $S/open_findings.json ] && [ \"$(jq 'length' $S/open_findings.json 2>/dev/null || echo 0)\" -gt 0 ]; then
+  { echo; echo '### Open findings'; echo; jq -r 'group_by(.lens)[] | \"**\" + .[0].lens + \"**\", \"\", (.[] | \"- [\" + .severity + \"] \" + (if .criterion_ref == null then \"\" else .criterion_ref + \": \" end) + .message), \"\"' $S/open_findings.json; } > $S/comment.findings
+else
+  : > $S/comment.findings
+fi
+if grep -q '[^[:space:]]' $S/paraphrase.md 2>/dev/null; then
+  { echo; echo '### What an implementer reads'; echo; cat $S/paraphrase.md; } > $S/comment.paraphrase
+else
+  : > $S/comment.paraphrase
+fi
+{ echo; echo '<details><summary>The proposed body</summary>'; echo; echo '~~~~~~markdown'; cat $S/audit/proposed.md 2>/dev/null || true; echo '~~~~~~'; echo; echo '</details>'; } > $S/comment.details
+echo \"<!-- fabro:sharpen state=$STATE round=$RND body=$HASH applied=$APPLIED recheck=$RC run=$RUN -->\" > $S/comment.head
+BODY=$S/comment.md
+cat $S/comment.head $S/comment.core $S/comment.findings $S/comment.paraphrase $S/comment.details > $BODY
+if [ \"$(wc -c < $BODY)\" -gt 60000 ]; then cat $S/comment.head $S/comment.core $S/comment.findings $S/comment.paraphrase > $BODY; fi
+if [ \"$(wc -c < $BODY)\" -gt 60000 ]; then cat $S/comment.head $S/comment.core $S/comment.findings > $BODY; fi
+if [ \"$(wc -c < $BODY)\" -gt 60000 ]; then cat $S/comment.head $S/comment.core > $BODY; fi
+awk -v t1=\"${FABRO_API_TOKEN:-}\" -v t2=\"${GITHUB_TOKEN:-}\" -v t3=\"${GH_TOKEN:-}\" 'function scrub(line, t,  out, i) { if (length(t) < 8) return line; out = \"\"; while ((i = index(line, t)) > 0) { out = out substr(line, 1, i - 1) \"[redacted]\"; line = substr(line, i + length(t)) } return out line } { $0 = scrub($0, t1); $0 = scrub($0, t2); $0 = scrub($0, t3); print }' $BODY > $BODY.scrubbed && mv $BODY.scrubbed $BODY
+if [ ! -s $BODY ]; then echo 'post: could not build the sharpen comment' >&2; echo '{\"context_updates\":{\"posted\":false}}' >&3; exit 0; fi
+ID=$(gh api \"repos/$R/issues/$N/comments?per_page=100\" --paginate 2>/dev/null | jq -s 'add // []' | jq -r '[(.[] | select((.body // \"\") | startswith(\"<!-- fabro:sharpen \"))) | .id] | last // \"\"')
+OK=false
+if [ -n \"$ID\" ]; then
+  if jq -n --rawfile b $BODY '{body: $b}' | gh api -X PATCH \"repos/$R/issues/comments/$ID\" --input - >/dev/null; then OK=true; else echo 'post: could not edit the existing sharpen comment' >&2; fi
+else
+  if gh issue comment \"$N\" --body-file $BODY >/dev/null; then OK=true; else echo 'post: could not post the sharpen comment' >&2; fi
+fi
+echo 'post: '$STATE' on issue '$N' (comment written: '$OK')' >&2
+echo '{\"context_updates\":{\"posted\":'$OK'}}' >&3
+exit 0"]
+
     // ---- The run's record (C11) ----
     //
     // Always exits 0, and every ending reaches it (R12). It emits the outcome through
@@ -509,7 +771,7 @@ jq -nc --arg s \"$RES\" --arg r \"$R\" '{context_updates:{sharpen_result:$s, rou
         script="S=/tmp/fabro/sharpen
 rd() { cat \"$S/$1\" 2>/dev/null || true; }
 OUT=$(rd outcome)
-[ -n \"$OUT\" ] || OUT=failed
+case \"$OUT\" in applied | capped | churn | stale | cannot_sharpen | not_needed) ;; *) OUT=failed ;; esac
 RND=$(rd round)
 [ -n \"$RND\" ] || RND=0
 CH=0
@@ -518,8 +780,21 @@ if jq -e . $S/draft.json >/dev/null 2>&1; then
   CH=$(jq '(.changes // []) | length' $S/draft.json 2>/dev/null || echo 0)
   TR=$(jq -r '[(.changes // [])[].transformation] | group_by(.) | map(.[0] + \"=\" + (length | tostring)) | join(\",\")' $S/draft.json 2>/dev/null || true)
 fi
-jq -nc --arg o \"$OUT\" --arg r \"$(rd rule)\" --arg n \"$RND\" --arg b \"$(rd body_hash)\" --arg a \"$(rd applied_hash)\" --arg c \"$(rd recheck)\" --arg ch \"$CH\" --arg t \"$TR\" '{context_updates:{sharpen_outcome:$o, sharpen_rule:$r, round:($n | tonumber? // 0), body_hash:$b, applied_hash:$a, recheck:$c, changes:($ch | tonumber? // 0), transformations:$t}}' || echo '{\"context_updates\":{\"sharpen_outcome\":\"failed\"}}'
+RC=''
+if [ \"$OUT\" = applied ] && [ -s $S/recheck/verdict ]; then RC=$(cat $S/recheck/verdict); fi
+AH=''
+if [ \"$OUT\" = applied ]; then AH=$(rd applied_hash); fi
+jq -nc --arg o \"$OUT\" --arg r \"$(rd rule)\" --arg n \"$RND\" --arg b \"$(rd body_hash)\" --arg a \"$AH\" --arg c \"$RC\" --arg ch \"$CH\" --arg t \"$TR\" '{context_updates:{sharpen_outcome:$o, sharpen_rule:$r, round:($n | tonumber? // 0), body_hash:$b, applied_hash:$a, recheck:$c, changes:($ch | tonumber? // 0), transformations:$t}}' || echo '{\"context_updates\":{\"sharpen_outcome\":\"failed\"}}'
 exit 0"]
+
+    // A run whose outcome is `failed` must END failed, so the lease's release sees a failure
+    // and retries it (D12). `record` always succeeds, so this node does the failing: a command
+    // that exits 1, taken only when `sharpen_outcome=failed`. Every other outcome, `cannot_sharpen`
+    // and `not_needed` included, ends the run succeeded. Its own unconditional edge leads to
+    // `exit`, which is how a failed node ends a run failed in this repository (R12).
+    fail [label="End the run failed", shape=parallelogram, timeout="1m",
+        script="echo 'issue-sharpen: the run failed; the scheduler retries it up to twice more (D12)' >&2
+exit 1"]
 
     start -> claim
     claim -> prep [condition="outcome=succeeded && context.sharpen_go=true"]
@@ -537,10 +812,23 @@ exit 0"]
     verify -> record
     preserve -> audit_gate [condition="outcome=succeeded"]
     preserve -> record
-    audit_gate -> record [condition="outcome=succeeded && context.sharpen_result=converged"]
+    audit_gate -> apply [condition="outcome=succeeded && context.sharpen_result=converged"]
     audit_gate -> draft [condition="outcome=succeeded && context.sharpen_result=open"]
-    audit_gate -> record [condition="outcome=succeeded && context.sharpen_result=capped"]
-    audit_gate -> record [condition="outcome=succeeded && context.sharpen_result=churn"]
+    audit_gate -> post [condition="outcome=succeeded && context.sharpen_result=capped"]
+    audit_gate -> post [condition="outcome=succeeded && context.sharpen_result=churn"]
     audit_gate -> record
+    apply -> recheck_prep [condition="outcome=succeeded && context.apply_result=applied"]
+    apply -> post [condition="outcome=succeeded && context.apply_result=stale"]
+    apply -> record
+    recheck_prep -> recheck [condition="outcome=succeeded && context.recheck_ready=true"]
+    recheck_prep -> post
+    recheck -> recheck_gate [condition="outcome=succeeded"]
+    recheck -> post
+    recheck_gate -> recheck_post [condition="outcome=succeeded"]
+    recheck_gate -> post
+    recheck_post -> post
+    post -> record
+    record -> fail [condition="context.sharpen_outcome=failed"]
     record -> exit
+    fail -> exit
 }

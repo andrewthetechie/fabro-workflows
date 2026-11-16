@@ -136,6 +136,7 @@ class Box(unittest.TestCase):
                 "comprehend": True,
                 "draft": True,
                 "preserve": True,
+                "recheck": True,
                 "verify": True,
             },
         })

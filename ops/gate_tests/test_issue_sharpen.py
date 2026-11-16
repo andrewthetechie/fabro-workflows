@@ -36,12 +36,22 @@ DRAFTS = REPO_ROOT / "ops" / "gate_tests" / "fixtures" / "issue_sharpen"
 GH_STUB = """#!/bin/sh
 log="${SH_GH_LOG:?}"
 printf '%s\\n' "$*" >> "$log"
+d="${SH_STATE:?}"
 case "$1 $2" in
-  "issue view") cat "${SH_ISSUE_JSON:-/dev/null}" ;;
-  "issue list") cat "${SH_ORIENT_JSON:-/dev/null}" ;;
+  "issue view")
+    if [ -f "$d/edited" ] && [ -f "${SH_ISSUE_AFTER_JSON:-/nonexistent}" ]; then cat "$SH_ISSUE_AFTER_JSON"; else cat "${SH_ISSUE_JSON:-/dev/null}"; fi ;;
+  "issue list")
+    case "$*" in *fabro-orientation*) cat "${SH_ORIENT_JSON:-/dev/null}" ;; *) cat "${SH_OPEN_JSON:-/dev/null}" ;; esac ;;
+  "issue comment")
+    if [ "$SH_FAIL" = comment ]; then exit 1; fi
+    n=$(ls "$d" | grep -c '^posted-'); cat "$5" > "$d/posted-$n.md"; echo comment ;;
+  "issue edit")
+    if [ "$SH_FAIL" = edit ]; then exit 1; fi
+    cat "$5" > "$d/edit-body.md"; : > "$d/edited" ;;
 esac
 if [ "$1" = api ]; then
   case "$*" in
+    *"-X PATCH"*) cat > "$d/patched.md" ;;
     *"comments?per_page="*) cat "${SH_COMMENTS_JSON:-/dev/null}" ;;
   esac
 fi
@@ -110,7 +120,8 @@ def precheck(verdict: str, issue: dict = ISSUE) -> str:
 class Sharpen:
     """A scratch checkout with a stub `gh` and a per-test `/tmp/fabro`."""
 
-    NODES = ("claim", "prep", "draft_gate", "audit_gate", "record")
+    NODES = ("claim", "prep", "draft_gate", "audit_gate", "apply", "recheck_prep", "recheck_gate",
+             "recheck_post", "post", "record", "fail")
 
     def __init__(self, ck, tmp_path, name: str):
         self.T = tmp_path / name
@@ -123,6 +134,9 @@ class Sharpen:
         stub(self.bin, "gh", GH_STUB)
         self.log = self.T / "gh.log"
         write(self.log, "")
+        self.state = self.T / "gh-state"
+        self.state.mkdir(exist_ok=True)
+        write(self.T / "open.json", json.dumps([{"number": 42, "title": "x"}, {"number": 40, "title": "Another issue"}]))
         self.nodes = {}
         for node in self.NODES:
             script = extract(GRAPH, node)
@@ -140,6 +154,8 @@ class Sharpen:
 
     def run(self, node: str, **env: str):
         base = {
+            "SH_STATE": str(self.state),
+            "SH_OPEN_JSON": str(self.T / "open.json"),
             "SH_GH_LOG": str(self.log),
             "SH_ISSUE_JSON": str(self.T / "issue.json"),
             "SH_COMMENTS_JSON": str(self.T / "comments.json"),
@@ -187,15 +203,28 @@ def test_the_graph_routes_every_ending_to_record(ck):
         "comprehend->verify outcome=succeeded",
         "verify->preserve outcome=succeeded",
         "preserve->audit_gate outcome=succeeded",
-        "audit_gate->record outcome=succeeded && context.sharpen_result=converged",
+        "audit_gate->apply outcome=succeeded && context.sharpen_result=converged",
         "audit_gate->draft outcome=succeeded && context.sharpen_result=open",
-        "audit_gate->record outcome=succeeded && context.sharpen_result=capped",
-        "audit_gate->record outcome=succeeded && context.sharpen_result=churn",
+        "audit_gate->post outcome=succeeded && context.sharpen_result=capped",
+        "audit_gate->post outcome=succeeded && context.sharpen_result=churn",
         "audit_gate->record ",
+        "apply->recheck_prep outcome=succeeded && context.apply_result=applied",
+        "apply->post outcome=succeeded && context.apply_result=stale",
+        "apply->record ",
+        "recheck_prep->recheck outcome=succeeded && context.recheck_ready=true",
+        "recheck_prep->post ",
+        "recheck->recheck_gate outcome=succeeded",
+        "recheck->post ",
+        "recheck_gate->recheck_post outcome=succeeded",
+        "recheck_gate->post ",
+        "recheck_post->post ",
+        "post->record ",
+        "record->fail context.sharpen_outcome=failed",
+        "record->exit ",
+        "fail->exit ",
         "comprehend->record ",
         "verify->record ",
         "preserve->record ",
-        "record->exit ",
     ):
         ck(f"edge {want!r}", "1", count(f"^{want}$", found))
 
@@ -855,6 +884,268 @@ def test_draft_gate_clears_the_lens_directory_each_round(ck, tmp_path):
     ck("audit: the next draft_gate removed it", "absent", present(P.S / "lens/comprehend.json"))
     r = P.run("audit_gate")
     ck("audit: a round with no lens files cannot be clean", "open", routed(r, "sharpen_result"))
+
+
+# --- apply, the recheck, post and record (task 03) -----------------------------------------
+
+AFTER_BODY_NOTE = "after the edit GitHub stores the body as written"
+
+
+def applied_pad(ck, tmp_path, name: str, *, after: bool = True) -> Sharpen:
+    """The state a converged round leaves: a real `draft_gate` run, plus what `claim` kept."""
+    P, r = gate(ck, tmp_path, name, good())
+    assert routed(r, "draft_ok") == "true"
+    write(P.S / "body_hash", body_hash(ISSUE["title"], ISSUE["body"]) + "\n")
+    write(P.S / "issue_number", "42\n")
+    write(P.S / "repo", "o/r\n")
+    write(P.S / "run_id", "RUNID")
+    write(P.S / "round", "2\n")
+    proposed = (P.S / "audit/proposed.md").read_text()
+    if after:
+        write(P.T / "issue.after.json", json.dumps({**ISSUE, "body": proposed}))
+    P.env_extra = {"SH_ISSUE_AFTER_JSON": str(P.T / "issue.after.json")}
+    return P
+
+
+def run_with(P: Sharpen, node: str, **env):
+    return P.run(node, **{**getattr(P, "env_extra", {}), **env})
+
+
+def posted(P: Sharpen, n: int = 0) -> str:
+    return (P.state / f"posted-{n}.md").read_text() if (P.state / f"posted-{n}.md").exists() else ""
+
+
+def test_apply_posts_the_original_then_edits_with_the_proposal_byte_for_byte(ck, tmp_path):
+    P = applied_pad(ck, tmp_path, "apply-ok")
+    r = run_with(P, "apply")
+    h = body_hash(ISSUE["title"], ISSUE["body"])
+    proposed = (P.S / "audit/proposed.md").read_text()
+    ck("apply: routes to the recheck", "applied", routed(r, "apply_result"))
+    ck("apply: the outcome is applied", "applied", cat(P.S / "outcome"))
+    ck("apply: the original comes first", "<!-- fabro:sharpen-original body=" + h + " run=RUNID -->",
+       posted(P).split("\n")[0])
+    ck("apply: a blank line follows the marker", "", posted(P).split("\n")[1])
+    ck("apply: the original body follows verbatim", "True", str(posted(P).split("\n", 2)[2] == ISSUE["body"]))
+    ck("apply: the edit is audit/proposed.md byte for byte", "True",
+       str((P.state / "edit-body.md").read_bytes() == (P.S / "audit/proposed.md").read_bytes()))
+    ck("apply: the original comment was posted before the edit", "comment,edit",
+       ",".join(w for w in (line.split()[1] for line in P.gh().split("\n") if line.startswith("issue ")) if w in ("comment", "edit")))
+    ck("apply: the applied hash is the precheck's hash of the stored body",
+       body_hash(ISSUE["title"], proposed), cat(P.S / "applied_hash"))
+
+
+def test_apply_stops_stale_when_the_issue_changed_and_edits_nothing(ck, tmp_path):
+    P = applied_pad(ck, tmp_path, "apply-stale")
+    write(P.T / "issue.json", json.dumps({**ISSUE, "body": ISSUE["body"] + "\nA human added a line.\n"}))
+    r = run_with(P, "apply")
+    ck("apply stale: routes to post", "stale", routed(r, "apply_result"))
+    ck("apply stale: the outcome", "stale", cat(P.S / "outcome"))
+    ck("apply stale: the rule says why", "1", count("edited while it was being sharpened", cat(P.S / "rule")))
+    ck("apply stale: no comment and no edit", "0", count("issue comment|issue edit", P.gh(), flags="E"))
+    ck("apply stale: the node succeeds", "0", str(r.rc))
+
+
+def test_apply_fails_the_node_when_the_original_comment_cannot_be_posted(ck, tmp_path):
+    P = applied_pad(ck, tmp_path, "apply-no-original")
+    r = run_with(P, "apply", SH_FAIL="comment")
+    ck("apply: a failed original comment fails the node", "1", str(r.rc))
+    ck("apply: no edit was attempted", "0", count("issue edit", P.gh()))
+    ck("apply: no outcome was written", "absent", present(P.S / "outcome"))
+
+
+def test_apply_fails_the_node_when_the_edit_fails_after_the_original_was_posted(ck, tmp_path):
+    P = applied_pad(ck, tmp_path, "apply-no-edit")
+    r = run_with(P, "apply", SH_FAIL="edit")
+    ck("apply: a failed edit fails the node", "1", str(r.rc))
+    ck("apply: the original comment is on the issue", "1", count("^<!-- fabro:sharpen-original", posted(P)))
+    ck("apply: no outcome was written", "absent", present(P.S / "outcome"))
+    ck("apply: no applied hash", "absent", present(P.S / "applied_hash"))
+
+
+def recheck_pad(ck, tmp_path, name: str) -> Sharpen:
+    P = applied_pad(ck, tmp_path, name)
+    run_with(P, "apply")
+    git("init", "-q", "-b", "main", P.repo)
+    write(P.repo / "a.txt", "one\n")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "add", ".", cwd=P.repo)
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base", cwd=P.repo)
+    write(P.T / "issue.json", json.dumps({**ISSUE, "body": (P.S / "audit/proposed.md").read_text()}))
+    write(P.T / "comments.json", comments(
+        "A human note.", f"<!-- fabro:sharpen-original body=x run=R -->\n\nold body",
+        precheck("unverifiable")))
+    return P
+
+
+def test_recheck_prep_stages_the_applied_body_in_the_precheck_format(ck, tmp_path):
+    P = recheck_pad(ck, tmp_path, "recheck-prep")
+    r = run_with(P, "recheck_prep")
+    D = P.S / "recheck"
+    ck("recheck_prep: ready", "true", routed(r, "recheck_ready"))
+    md = cat(D / "issue.md")
+    ck("recheck_prep: issue.md opens with the title", "# #42: " + ISSUE["title"], md.split("\n")[0])
+    ck("recheck_prep: and the labels", "Labels: agent", md.split("\n")[2])
+    ck("recheck_prep: and the applied body", "1", count("^- \\[ \\] Every branch is covered, or a code comment says why.$", md))
+    ck("recheck_prep: a human comment is kept", "1", count("A human note.", md))
+    ck("recheck_prep: fabro markers are left out", "0", count("fabro:sharpen-original|fabro:precheck", md, flags="E"))
+    ck("recheck_prep: open_issues.md leaves the issue itself out", "#40 Another issue", cat(D / "open_issues.md"))
+    ck("recheck_prep: the body hash is the applied hash", cat(P.S / "applied_hash"), cat(D / "body_hash"))
+    ck("recheck_prep: main_sha is HEAD", git("rev-parse", "HEAD", cwd=P.repo), cat(D / "main_sha"))
+    ck("recheck_prep: the run id is copied for the marker", "RUNID", cat(D / "run_id"))
+    ck("recheck_prep: the issue number and repository", "42,o/r", cat(D / "issue_number") + "," + cat(D / "repo"))
+
+
+def recheck_verdict(P: Sharpen, verdict: str = "ready", *, receipt: bool = True) -> None:
+    payload = {"verdict": verdict, "summary": "Nothing against it.", "evidence": []}
+    if receipt:
+        payload["_io"] = {"visit": "v1"}
+    write(P.fabro / "sharpen/recheck.json", json.dumps(payload))
+
+
+def test_recheck_gate_and_post_are_the_prechecks_own_nodes_on_the_recheck_paths(ck, tmp_path):
+    P = recheck_pad(ck, tmp_path, "recheck-gate")
+    run_with(P, "recheck_prep")
+    recheck_verdict(P, receipt=False)
+    r = run_with(P, "recheck_gate")
+    ck("recheck_gate: no receipt fails the node", "1", str(r.rc))
+    ck("recheck_gate: and records no verdict", "absent", present(P.S / "recheck/verdict"))
+    recheck_verdict(P, "unverifiable")
+    r = run_with(P, "recheck_gate")
+    ck("recheck_gate: a verdict with no evidence counts as ready", "ready", cat(P.S / "recheck/verdict"))
+    ck("recheck_gate: and keeps what the model said", "unverifiable", cat(P.S / "recheck/raw_verdict"))
+    recheck_verdict(P, "ready")
+    run_with(P, "recheck_gate")
+    write(P.T / "comments.json", comments("<!-- fabro:precheck verdict=unverifiable body=old main=a at=x run=R -->\nold"))
+    r = run_with(P, "recheck_post")
+    ck("recheck_post: edits the existing precheck comment in place", "1", count("-X PATCH", P.gh()))
+    marker = json.loads(cat(P.state / "patched.md"))["body"].split("\n")[0]
+    ck("recheck_post: the marker is the precheck's, for the applied body", "True", str(marker.startswith(
+        f"<!-- fabro:precheck verdict=ready body={cat(P.S / 'applied_hash')} main={git('rev-parse', 'HEAD', cwd=P.repo)} at=")))
+    ck("recheck_post: and carries this run", "1", count(" run=RUNID -->$", marker))
+    ck("recheck_post: nothing else was written (apply's original comment is the only one)", "1",
+       count("issue comment", P.gh()))
+
+
+def post_pad(ck, tmp_path, name: str, state: str, **kw) -> Sharpen:
+    P = applied_pad(ck, tmp_path, name)
+    write(P.S / "outcome", state + "\n")
+    if state == "applied":
+        write(P.S / "applied_hash", "bbbbbbbbbbbb\n")
+    write(P.S / "paraphrase.md", "**What the issue now asks for.** Cover the branches.\n")
+    write(P.S / "open_findings.json", json.dumps([
+        {"lens": "preserve", "severity": "blocker", "criterion_ref": "AC2", "message": "AC2 is a substitution.", "evidence": []},
+        {"lens": "verify", "severity": "nit", "criterion_ref": None, "message": "Wording.", "evidence": []}]))
+    return P
+
+
+def test_post_writes_one_marker_per_state_with_the_change_table(ck, tmp_path):
+    h = body_hash(ISSUE["title"], ISSUE["body"])
+    for state, applied, recheck, sentence in (
+        ("applied", "bbbbbbbbbbbb", "ready", "rewrote this issue"),
+        ("capped", "-", "-", "after 2 rounds"),
+        ("churn", "-", "-", "kept changing"),
+        ("stale", "-", "-", "edited while the factory was sharpening"),
+    ):
+        P = post_pad(ck, tmp_path, f"post-{state}", state)
+        if state == "applied":
+            write(P.S / "recheck/verdict", "ready\n")
+        r = run_with(P, "post")
+        text = posted(P)
+        ck(f"post {state}: the marker is the first line",
+           f"<!-- fabro:sharpen state={state} round=2 body={h} applied={applied} recheck={recheck} run=RUNID -->",
+           text.split("\n")[0])
+        ck(f"post {state}: one sentence says what happened", "1", count(sentence, text))
+        ck(f"post {state}: the change table", "1", count("^| AC1 | ", text))
+        ck(f"post {state}: the paraphrase", "1", count("^\\*\\*What the issue now asks for", text))
+        ck(f"post {state}: the proposed body in a details block", "1", count("^<details><summary>The proposed body", text))
+        ck(f"post {state}: open findings only when not applied",
+           "0" if state == "applied" else "1", count("^- \\[blocker\\] AC2: AC2 is a substitution.$", text))
+        ck(f"post {state}: no precheck marker", "0", count("fabro:precheck", text))
+        ck(f"post {state}: the node succeeds and says it posted", "true", routed(r, "posted"))
+
+
+def test_post_edits_its_comment_in_place_and_ignores_the_original_comment(ck, tmp_path):
+    P = post_pad(ck, tmp_path, "post-inplace", "capped")
+    write(P.T / "comments.json", json.dumps([
+        {"id": 7, "body": "<!-- fabro:sharpen state=capped round=3 body=x applied=- recheck=- run=R -->\nold"},
+        {"id": 8, "body": "<!-- fabro:sharpen-original body=x run=R -->\n\nbody"}]))
+    run_with(P, "post")
+    ck("post: patches the sharpen comment", "1", count("repos/o/r/issues/comments/7 ", P.gh()))
+    ck("post: and posts no new one", "0", count("issue comment", P.gh()))
+    ck("post: the patched body starts with the marker", "1",
+       count("^<!-- fabro:sharpen state=capped", json.loads(cat(P.state / "patched.md"))["body"]))
+
+
+def test_post_keeps_human_actions_in_the_comment_and_out_of_the_body(ck, tmp_path):
+    P = post_pad(ck, tmp_path, "post-human", "applied")
+    d = json.loads((P.S / "draft.json").read_text())
+    d["human_actions"] = ["Rotate the staging key."]
+    write(P.S / "draft.json", json.dumps(d))
+    run_with(P, "post")
+    text = posted(P)
+    ck("post: the heading says it is not part of the issue", "1", count("^### Human actions (not part of the issue)$", text))
+    ck("post: the action is listed", "1", count("^- Rotate the staging key.$", text))
+    ck("post: the issue body never carries it", "0", count("Rotate the staging key", (P.S / "audit/proposed.md").read_text()))
+
+
+def test_post_cuts_the_details_then_the_paraphrase_and_never_the_marker_or_table(ck, tmp_path):
+    P = post_pad(ck, tmp_path, "post-cut", "applied")
+    big = (P.S / "audit/proposed.md").read_text() + "\n" + ("filler line of body text\n" * 3000)
+    write(P.S / "audit/proposed.md", big)
+    run_with(P, "post")
+    text = posted(P)
+    ck("post cut: under 60,000 characters", "True", str(len(text.encode()) <= 60000))
+    ck("post cut: the details block went first", "0", count("<details>", text))
+    ck("post cut: the paraphrase survived", "1", count("What the issue now asks for", text))
+    ck("post cut: the marker survived", "1", count("^<!-- fabro:sharpen state=applied", text))
+    ck("post cut: the table survived", "1", count("^| AC1 | ", text))
+    P = post_pad(ck, tmp_path, "post-cut-more", "applied")
+    write(P.S / "audit/proposed.md", big)
+    write(P.S / "paraphrase.md", "**What the issue now asks for.** " + "long " * 14000 + "\n")
+    run_with(P, "post")
+    text = posted(P)
+    ck("post cut more: the paraphrase went second", "0", count("What the issue now asks for", text))
+    ck("post cut more: the marker remains", "1", count("^<!-- fabro:sharpen state=applied", text))
+    ck("post cut more: and the table", "1", count("^| AC1 | ", text))
+
+
+def test_post_redacts_tokens_and_survives_a_failed_write(ck, tmp_path):
+    P = post_pad(ck, tmp_path, "post-redact", "capped")
+    write(P.S / "paraphrase.md", "The token is sk-secret-token-1234567890 here.\n")
+    run_with(P, "post", FABRO_API_TOKEN="sk-secret-token-1234567890")
+    ck("post: the token is redacted", "1", count("The token is \\[redacted\\] here.", posted(P)))
+    ck("post: and appears nowhere", "0", count("sk-secret-token", posted(P)))
+    P = post_pad(ck, tmp_path, "post-write-fails", "applied")
+    r = run_with(P, "post", SH_FAIL="comment")
+    ck("post: a failed comment write does not fail the node", "0", str(r.rc))
+    ck("post: and says it did not post", "false", routed(r, "posted"))
+    ck("post: leaves the outcome alone", "applied", cat(P.S / "outcome"))
+
+
+def test_record_says_failed_when_the_outcome_is_not_one_it_knows(ck, tmp_path):
+    for outcome, want in (("applied", "applied"), ("capped", "capped"), ("churn", "churn"), ("stale", "stale"),
+                          ("cannot_sharpen", "cannot_sharpen"), ("not_needed", "not_needed"),
+                          ("nonsense", "failed"), ("", "failed")):
+        P = Sharpen(ck, tmp_path, f"record-{outcome or 'empty'}")
+        write(P.S / "outcome", outcome + "\n")
+        if outcome == "applied":
+            write(P.S / "applied_hash", "bbbbbbbbbbbb\n")
+            write(P.S / "recheck/verdict", "unverifiable\n")
+        r = P.run("record")
+        ck(f"record {outcome or 'empty'}: exits 0", "0", str(r.rc))
+        ck(f"record {outcome or 'empty'}: the outcome", want, routed(r, "sharpen_outcome"))
+        if outcome == "applied":
+            ck("record applied: carries the applied hash and the recheck verdict", "bbbbbbbbbbbb,unverifiable",
+               routed(r, "applied_hash") + "," + routed(r, "recheck"))
+    P = Sharpen(ck, tmp_path, "record-capped-no-applied")
+    write(P.S / "outcome", "capped\n")
+    write(P.S / "applied_hash", "cccccccccccc\n")
+    ck("record: an applied hash is reported for an applied run only", "", routed(P.run("record"), "applied_hash"))
+
+
+def test_the_fail_node_exits_one(ck, tmp_path):
+    P = Sharpen(ck, tmp_path, "fail-node")
+    r = P.run("fail")
+    ck("fail: exits 1 so the run ends failed", "1", str(r.rc))
 
 
 # --- record ------------------------------------------------------------------------------

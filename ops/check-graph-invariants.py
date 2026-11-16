@@ -1239,6 +1239,19 @@ R10_CALIBRATION_COPIES: dict[
             ("the check runs without the index", "investigate runs without the index"),
         ),
     ),
+    # issue-sharpening C10: the in-run recheck judges the applied body with the precheck's own
+    # check, gate and post (a node id `copy:original` names a copy under another id). The
+    # package stages the recheck's files under /tmp/fabro/sharpen/recheck/, so the one path
+    # prefix is remapped wherever it appears, `.json` first.
+    "issue-sharpen": (
+        ".fabro/workflows/issue-precheck/workflow.fabro",
+        ("recheck_gate:gate", "recheck_post:post"),
+        "recheck:check",
+        (
+            ("/tmp/fabro/precheck.json", "/tmp/fabro/sharpen/recheck.json", None),
+            ("/tmp/fabro/precheck", "/tmp/fabro/sharpen/recheck", None),
+        ),
+    ),
 }
 
 
@@ -1260,10 +1273,19 @@ def _prompt_of(path: Path, node: str) -> Path | None:
 
 
 def _apply(text: str, repls) -> tuple[str | None, str | None]:
-    """The original with its replacements applied, or (None, why) when one does not fit."""
-    for old, new in repls:
+    """The original with its replacements applied, or (None, why) when one does not fit.
+
+    A replacement is `(old, new)`, which must occur exactly once, or `(old, new, None)`, which
+    replaces every occurrence and must occur at least once: a path prefix that a copy remaps
+    wherever it appears (issue-sharpen's `recheck_post`, which names it a dozen times).
+    """
+    for repl in repls:
+        old, new = repl[0], repl[1]
         n = text.count(old)
-        if n != 1:
+        if len(repl) > 2 and repl[2] is None:
+            if n < 1:
+                return None, f"replacement occurs 0 times in the original: {old[:60]!r}"
+        elif n != 1:
             return None, f"replacement occurs {n} times in the original: {old[:60]!r}"
         text = text.replace(old, new)
     return text, None
@@ -1307,10 +1329,12 @@ def r10_calibration_copies(root: Path) -> list[tuple]:
         graph = root / ".fabro" / "workflows" / package / "workflow.fabro"
         if not graph.exists():
             continue
-        for node in node_ids:
-            original = _script_of(root / src, node)
+        for entry in node_ids:
+            node, _, source_node = entry.partition(":")
+            source_node = source_node or node
+            original = _script_of(root / src, source_node)
             if original is None:
-                out.append((package, "R10", node, f"original node {node} is missing from {src}"))
+                out.append((package, "R10", node, f"original node {source_node} is missing from {src}"))
                 continue
             expected, why = _apply(original, repls)
             if expected is None:
@@ -1321,11 +1345,14 @@ def r10_calibration_copies(root: Path) -> list[tuple]:
                 out.append((package, "R10", node, "the copy is missing its script"))
             elif copy != expected:
                 out.append((package, "R10", node,
-                            f"drifted from {src} {node}; the package must run the same node, "
+                            f"drifted from {src} {source_node}; the package must run the same node, "
                             "not a lookalike"))
         if not prompt_node:
             continue
-        original_p = _prompt_of(root / src, prompt_node)
+        copy_node, _, source_prompt = prompt_node.partition(":")
+        source_prompt = source_prompt or copy_node
+        prompt_node = copy_node
+        original_p = _prompt_of(root / src, source_prompt)
         copy_p = _prompt_of(graph, prompt_node)
         if original_p is None or copy_p is None:
             out.append((package, "R10", prompt_node, "a prompt file is missing"))
@@ -1333,7 +1360,7 @@ def r10_calibration_copies(root: Path) -> list[tuple]:
             out.append((package, "R10", prompt_node, "a prompt file does not exist"))
         elif original_p.read_text() != copy_p.read_text():
             out.append((package, "R10", prompt_node,
-                        f"the prompt drifted from {src} {prompt_node}"))
+                        f"the prompt drifted from {src} {source_prompt}"))
     return out
 
 

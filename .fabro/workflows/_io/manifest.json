@@ -1572,6 +1572,29 @@
             "schema": "sharpen-preserve"
           },
           "box": true
+        },
+        "recheck": {
+          "live": true,
+          "prompt": ".fabro/workflows/issue-sharpen/prompts/recheck.md.j2",
+          "inputs": [
+            {
+              "name": "issue.md",
+              "path": "/tmp/fabro/sharpen/recheck/issue.md",
+              "required": true,
+              "about": "the issue: its title, labels, body, and its last ten comments that are not fabro markers"
+            },
+            {
+              "name": "open_issues.md",
+              "path": "/tmp/fabro/sharpen/recheck/open_issues.md",
+              "required": true,
+              "about": "the repository's other open issues, one per line as `#N title`; a `blocked` verdict's blocker must be one of them"
+            }
+          ],
+          "output": {
+            "path": "/tmp/fabro/sharpen/recheck.json",
+            "schema": "precheck"
+          },
+          "box": true
         }
       }
     },
