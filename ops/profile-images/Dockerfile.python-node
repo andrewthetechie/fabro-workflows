@@ -1,5 +1,7 @@
 # fabro-python-node:local -- sandbox profile image for the `python-node`
-# environment (the three lawncare-saas automations).
+# environment (the three lawncare-saas automations). Also carries a Rust toolchain
+# for lawncare-saas's Rust strangler port (ADR 0029): its `.fabro/ci.sh` runs cargo
+# fmt, clippy, nextest and audit once a Cargo.toml exists.
 #
 #   built by build-images.sh; see Dockerfile.python for why the context matters
 
@@ -21,6 +23,9 @@ ARG GH_VERSION=2.100.0
 # .github/workflows/test.yml runs a `postgres:17` service.
 ARG PYTHON_VERSION=3.13
 ARG PG_MAJOR=17
+# lawncare-saas's rust-toolchain.toml pins the same channel flakeradar and writers-app
+# use; a mismatch makes clippy diverge from CI (see Dockerfile.rust-node).
+ARG RUST_VERSION=1.99.0
 
 # ---------------------------------------------------------------------------
 # Toolchain
@@ -30,6 +35,7 @@ ARG PG_MAJOR=17
 # ripgrep: see Dockerfile.ts (pebble's prompt prefers `rg`; without it those calls exit 127).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git jq curl ca-certificates gnupg sqlite3 ripgrep \
+      build-essential pkg-config libssl-dev \
   && curl -LsSf https://astral.sh/uv/install.sh | sh \
   && curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
   && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
@@ -84,11 +90,44 @@ RUN mkdir -p "$PGDATA" && chown postgres:postgres "$PGDATA" && chmod 0700 "$PGDA
   && echo "postgres ${PG_MAJOR} cluster initialised at $PGDATA"
 
 # ---------------------------------------------------------------------------
+# Rust -- toolchain, cargo-nextest, cargo-audit (lawncare-saas ADR 0029)
+# ---------------------------------------------------------------------------
+# rustup into fixed, world-readable homes (not /root) so a non-root sandbox user finds
+# them. `.fabro/ci.sh` runs fmt, clippy, `cargo nextest run --profile ci`, doctests and
+# `cargo audit` once the repository has a Cargo.toml; the commands exist in the image
+# before that, so main stays green on both sides of the port.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal \
+      --default-toolchain "${RUST_VERSION}" -c rustfmt -c clippy \
+  && chmod -R a+rX /usr/local/rustup /usr/local/cargo \
+  && cargo -V && rustc -V
+
+# Pinned by version and sha256 from the prebuilt tarball, never `cargo install` and never
+# "latest". Same pair as Dockerfile.rust-node; bump them together.
+ARG NEXTEST_VERSION=0.9.151
+ARG NEXTEST_SHA256=1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+RUN curl -fsSL -o /tmp/nextest.tgz "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+ && echo "${NEXTEST_SHA256}  /tmp/nextest.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/nextest.tgz -C /usr/local/bin cargo-nextest \
+ && rm /tmp/nextest.tgz \
+ && cargo nextest --version
+
+# The version .github/workflows/test.yml and .fabro/setup.sh pin. Compiled once here so
+# a run does not pay for it; `setup.sh`'s `which cargo-audit ||` then finds it.
+ARG CARGO_AUDIT_VERSION=0.22.2
+RUN cargo install cargo-audit --version "${CARGO_AUDIT_VERSION}" --locked \
+ && chmod -R a+rX /usr/local/cargo \
+ && rm -rf /usr/local/cargo/registry \
+ && cargo audit --version
+
+# ---------------------------------------------------------------------------
 # Cache layout -- see common.env.md
 # ---------------------------------------------------------------------------
 # The astral installer puts uv in /root/.local/bin, which is not on the base PATH,
 # and fabro evaluates commands in a NON-LOGIN shell, so nothing else will add it.
-ENV PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin \
+ENV PATH=/usr/local/cargo/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin \
     UV_PYTHON_DOWNLOADS=true \
     UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     UV_CACHE_DIR=/opt/cache/uv \

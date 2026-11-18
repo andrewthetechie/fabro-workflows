@@ -66,6 +66,11 @@ SCHEMAS=$(cd "$HERE/.." && pwd)/fabro-io-schemas
 # `cargo nextest`, so a missing or mismatched binary fails every run of that
 # repository at validate -- issue #57).
 NEXTEST_VERSION=$(sed -n 's/^ARG NEXTEST_VERSION=//p' "$HERE/Dockerfile.rust-node")
+# fabro-python-node carries the same nextest pair for lawncare-saas (ADR 0029); the check
+# below compares both images' pins so one Dockerfile cannot drift from the other.
+NEXTEST_VERSION_PYNODE=$(sed -n 's/^ARG NEXTEST_VERSION=//p' "$HERE/Dockerfile.python-node")
+[ "$NEXTEST_VERSION" = "$NEXTEST_VERSION_PYNODE" ] \
+  || { echo "ERROR: NEXTEST_VERSION differs between Dockerfile.rust-node ($NEXTEST_VERSION) and Dockerfile.python-node ($NEXTEST_VERSION_PYNODE)" >&2; exit 1; }
 
 # To stderr, not stdout: sync_repo and assemble_context are read with $(...)
 # and anything they print on stdout becomes part of the sha or the context path.
@@ -262,6 +267,18 @@ verify_image() {
           echo "speech-dispatcher $(pkg-config --modversion speech-dispatcher)"
           ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1 || { echo "no libclang"; exit 1; }
           echo "libclang ok"
+        fi
+        if [ "'"$repo"'" = lawncare-saas ]; then
+          # ADR 0029: the repository'"'"'s .fabro/ci.sh calls these once Cargo.toml exists.
+          got=$(cargo nextest --version 2>&1 | head -1)
+          case "$got" in
+            "cargo-nextest ${NEXTEST_VERSION}"|"cargo-nextest ${NEXTEST_VERSION} "*) echo "nextest ${NEXTEST_VERSION}" ;;
+            *) echo "nextest: ${got:-<nothing>} (want cargo-nextest ${NEXTEST_VERSION})"; exit 1 ;;
+          esac
+          cargo audit --version
+          cargo fmt --version
+          cargo clippy --version
+          echo "rustc $(rustc --version)"
         fi
       ' >"$WORK/verify-tools-$repo.log" 2>&1; then
     log "verify $tag: tools OK ($(tr '\n' ' ' <"$WORK/verify-tools-$repo.log"))"
