@@ -320,6 +320,39 @@ def test_a_box_with_no_fabro_reads_its_loop_as_unreadable(store, leases):
     assert views["coders-a"].blocked_by == "loop stages unreadable"
 
 
+def test_an_issue_sharpen_sibling_pins_the_box_at_zero(store, leases):
+    """The one unmeasured workflow that does lease a slot (ADR 0033): a sharpen run's
+    gaps predict 0 on purpose — it holds its box the way a coder loop does and the
+    lane fills nothing beside it. Pinned as deliberate (issue #78 review): this is not
+    the `pr-review` pin the issue chased, and unmeasuring it is a decision, not a fix."""
+    held_lease(leases, workflow="issue-sharpen")
+    fabro = FakeFabro(stages={"coderun": [{"node_id": "review", "status": "running"}]})
+    enqueue(store, typical=5)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
+    assert lane_.fill(NOW) == [], "a sharpen sibling's unmeasured gap is a 0, all run"
+    views = {view.box: view for view in lane_.box_views(NOW)}
+    assert views["coders-a"].blocked_by == "no job fits"
+
+
+def test_every_job_kind_needs_at_least_one_minute():
+    """A between-stages sibling predicts 0 (issue #78), and `_pick` admits a job into a
+    0-minute gap only if its own typical length is 0 — which would start a run beside a
+    transitioning loop, the one outcome the lane exists to prevent. Every kind's
+    constant says at least one minute, so none can ever fit."""
+    from fabro_scheduler import calibration, flaky, orientation, pack, precheck
+    from fabro_scheduler.background import BOX_NOOP_TYPICAL_MINUTES
+
+    minutes = {
+        "box-noop": BOX_NOOP_TYPICAL_MINUTES,
+        "issue-precheck": precheck.PRECHECK_TYPICAL_MINUTES,
+        "context-pack": pack.PACK_TYPICAL_MINUTES,
+        "precheck-calibration": calibration.CALIBRATION_TYPICAL_MINUTES,
+        "flaky-investigation": flaky.FLAKY_TYPICAL_MINUTES,
+        "repo-orientation": orientation.ORIENTATION_TYPICAL_MINUTES,
+    }
+    assert minutes and all(v >= 1 for v in minutes.values()), minutes
+
+
 def test_a_lease_with_no_known_box_stages_blocks_the_start(store, leases):
     """Fail closed: with the manifest unread, no stage can be shown *not* to be a box
     stage, and a background run inside one is what the lane exists to prevent."""
