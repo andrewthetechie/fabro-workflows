@@ -947,6 +947,7 @@ of:
 | `slots` | fabro has fewer than `SCHEDULER_BG_SLOT_RESERVE` free run slots. Normal when the factory is busy. |
 | `no job queued` | The lane has nothing to run. `POST /api/background/box-noop` to measure it. |
 | `no job fits` | A job is queued whose expected whole-run time is longer than the predicted gap — also the answer while a sibling loop is between stages, whose gap predicts 0 (#78). That is the gap table in `config.py`, not a fault. |
+| `no gap` | A drift backstop, not an operator action: `_blocked_by` and `_gap_minutes` have disagreed, which is a scheduler bug — nothing here causes it. Capture `GET /api/background` and the scheduler log and file it. |
 | `ready` | Everything holds; the next tick starts a job. |
 
 One scheduler log line is worth knowing
