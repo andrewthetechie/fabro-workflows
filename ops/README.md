@@ -940,13 +940,14 @@ of:
 | `switch off` | `SCHEDULER_BACKGROUND=on`, as above. |
 | `every slot drained` | Every pool of the box is drained on purpose (`POST /api/pools/<pool>/undrain` when it is not), so the operator has taken the whole box outside fabro. **One** drained slot does not stop the lane: `pool_state` is the coder-dispatch switch, and a background run resolves to the box's `-bg` row, which no drain touches. |
 | `loop in a box stage` | Working as intended: a coder loop is on the box — on either of its two slots. |
-| `loop between stages` | Also intended, for a moment: the lane starts nothing until a stage is running, because the gap after it has not started yet. A box stuck here for minutes is a stale read — check `fabro events <run> -p`. |
+| `loop stages unreadable` | The lane could not read the loop's stages from fabro this tick, and an unknown state may be a box stage, so it fails closed (issue #78 split this from between-stages, which now reads as `no job fits`). Usually momentary; a box stuck here for minutes is a fabro or scheduler problem — check the scheduler log (`background: cannot read <run>'s stages`) and `fabro events <run> -p`. |
 | `loop stages unknown` | The lease has no `box_stages`, so the lane fails closed. Usually a lease adopted from an older scheduler; the next dispatch replaces it. |
 | `box health unknown` | `/health` did not answer. `curl http://10.10.0.29:5300/health` from the host; a box that is down reads as busy, never as idle. |
 | `box busy` / `box not idle long enough` | The box is still working, or has not been quiet for `SCHEDULER_BG_GAP_S`. |
 | `slots` | fabro has fewer than `SCHEDULER_BG_SLOT_RESERVE` free run slots. Normal when the factory is busy. |
 | `no job queued` | The lane has nothing to run. `POST /api/background/box-noop` to measure it. |
-| `no job fits` | A job is queued whose expected whole-run time is longer than the predicted gap. That is the gap table in `config.py`, not a fault. |
+| `no job fits` | A job is queued whose expected whole-run time is longer than the predicted gap — also the answer while a sibling loop is between stages, whose gap predicts 0 (#78). That is the gap table in `config.py`, not a fault. |
+| `no gap` | A drift backstop, not an operator action: `_blocked_by` and `_gap_minutes` have disagreed, which is a scheduler bug — nothing here causes it. Capture `GET /api/background` and the scheduler log and file it. |
 | `ready` | Everything holds; the next tick starts a job. |
 
 One scheduler log line is worth knowing

@@ -200,11 +200,16 @@ class Loop:
 
     A two-slot box has one `Loop` per leased slot (D3), and every question the lane asks is
     asked of the list: "is any loop on a box stage", "what is the shortest gap".
+
+    `read_failed` marks a loop whose stages fabro would not report this tick: the loop's
+    state is unknown, so it is judged fail-closed (D7) rather than read as between
+    stages — which is what `node is None` alone means since #78.
     """
 
     lease: Lease
     node: str | None
     on_box: bool
+    read_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -579,16 +584,20 @@ class BackgroundLane:
 
         `gap` is `None` when no sibling has a coder loop at all: the whole box is free. A
         sibling with no lease adds no bound, so the estimate is the **minimum** over the
-        loops that do exist (D3). `blocked` means the box does not qualify this tick — some
-        loop is between stages, is in a box stage, or has unknown box stages. A loop with no
-        stage in `running` does not qualify (D7), because the gap after it has not started
-        yet, and a loop whose stage read failed is judged the same way.
+        loops that do exist (D3). `blocked` means the box does not qualify this tick —
+        some loop is in a box stage, has unknown box stages, or its stage read failed.
+
+        A loop **between stages** (no stage running, and the read succeeded) does not
+        block (D7, amended by #78): the gap it is about to enter has not started, so the
+        loop has nothing to lend and contributes 0 to the minimum. The box's gap becomes
+        0, no job fits it, and the page names the gap table rather than the loop — a
+        one-tick state no longer stands between a twelve-minute gap and the lane.
         """
         if not loops:
             return False, None
         gaps: list[float] = []
         for loop in loops:
-            if loop.node is None:
+            if loop.read_failed:
                 return True, None
             if loop.on_box:
                 return True, None
@@ -597,6 +606,12 @@ class BackgroundLane:
                 # *not* to be a box stage. Fail closed: a background run inside a coder box
                 # stage is the one outcome the lane exists to prevent.
                 return True, None
+            if loop.node is None:
+                # Between stages (D7, amended by #78): the next gap has not started, so
+                # the loop predicts 0 and `_pick` refuses every job. Whether the box is
+                # blocked is the gap table's verdict, not this loop's one-tick state.
+                gaps.append(0.0)
+                continue
             gaps.append(predicted_gap_minutes(loop.lease.workflow, loop.node))
         return False, min(gaps)
 
@@ -955,13 +970,13 @@ class BackgroundLane:
             if lease is None:
                 continue
             if self._fabro is None:
-                loops.append(Loop(lease=lease, node=None, on_box=False))
+                loops.append(Loop(lease=lease, node=None, on_box=False, read_failed=True))
                 continue
             try:
                 stages = self._fabro.get_stages(lease.run_id)
             except FabroError as exc:
                 log.info("background: cannot read %s's stages (%s)", lease.run_id, exc)
-                loops.append(Loop(lease=lease, node=None, on_box=False))
+                loops.append(Loop(lease=lease, node=None, on_box=False, read_failed=True))
                 continue
             node = running_node(stages)
             loops.append(
@@ -1039,8 +1054,8 @@ class BackgroundLane:
         loops = self._loops_on(pools)
         if any(loop.on_box for loop in loops):
             return "loop in a box stage"
-        if any(loop.node is None for loop in loops):
-            return "loop between stages"
+        if any(loop.read_failed for loop in loops):
+            return "loop stages unreadable"
         if any(not loop.lease.box_stages for loop in loops):
             return "loop stages unknown"
         if health is None:
@@ -1055,6 +1070,11 @@ class BackgroundLane:
             return "no job queued"
         blocked, gap = self._gap_minutes(loops)
         if blocked:
+            # A drift backstop, not an operator diagnosis: every blocked condition of
+            # `_gap_minutes` is token-checked above, so this is unreachable while the two
+            # lists agree. If they ever drift, the page must say "no gap" rather than
+            # promise "ready" while `fill` refuses the box (issue #78 review). The
+            # README's row says the same thing for the operator.
             return "no gap"
         if self._pick(gap) is None:
             return "no job fits"

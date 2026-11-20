@@ -82,6 +82,11 @@ coder pools. The spark box keeps serving `long-context`, and nothing else change
   drained is still a stand-down: that is the operator using the whole box outside fabro.
   The other conditions, including "no coder loop on any sibling pool is in a box stage", are
   unchanged.
+  *Amended 2026-11-20 (issue #78):* a sibling loop **between stages** contributes 0 to the
+  minimum gap instead of blocking the box (more-local-inference D7 as amended there): the
+  gap it is about to enter has not started, so it lends the box nothing. A sibling whose
+  stage read **failed** still keeps the box out of the lane (`loop stages unreadable`),
+  fail closed as always.
 - **D4. `box-claim` waits for idle only when waiting can help.** It cancels background runs on
   every sibling pool, as today. It then waits for idle **only if** it cancelled at least one run
   **and** no other sibling coder loop is in a box stage. Otherwise it returns immediately with
