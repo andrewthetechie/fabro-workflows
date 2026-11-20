@@ -59,7 +59,7 @@ class FakeFabro:
     """The three fabro calls the lane makes, plus a record of what it was asked."""
 
     stages: dict[str, list[dict]] = field(default_factory=dict)
-    stages_raise: Exception | None = None
+    fail_stages: set[str] = field(default_factory=set)
     runs: dict[str, dict] = field(default_factory=dict)
     active: list[dict] = field(default_factory=list)
     cancelled: list[str] = field(default_factory=list)
@@ -69,8 +69,8 @@ class FakeFabro:
     next_run: int = 256
 
     def get_stages(self, run_id: str) -> list[dict]:
-        if self.stages_raise is not None:
-            raise self.stages_raise
+        if run_id in self.fail_stages:
+            raise FabroError("connection reset")
         return self.stages.get(run_id, [])
 
     def active_runs(self) -> list[dict]:
@@ -286,10 +286,36 @@ def test_a_failed_stage_read_blocks_the_start(store, leases):
     a box stage — so it still blocks the start. #78 splits it from between-stages:
     the page says the stages were unreadable instead of blaming the loop's timing."""
     held_lease(leases)
-    fabro = FakeFabro(stages_raise=FabroError("connection reset"))
+    fabro = FakeFabro(fail_stages={"coderun"})
     enqueue(store)
     lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
     assert lane_.fill(NOW) == []
+    views = {view.box: view for view in lane_.box_views(NOW)}
+    assert views["coders-a"].blocked_by == "loop stages unreadable"
+
+
+def test_an_unreadable_loop_wins_over_a_between_stages_sibling(store, leases):
+    """Fail closed first: one sibling's stages cannot be read, the other is between
+    stages. The box's reason is the unreadable loop — the one state that could be in
+    a box stage — not the harmless 0 the between-stages sibling predicts."""
+    held_lease(leases, run_id="coderun")
+    held_sibling(leases, run_id="sibling")
+    fabro = FakeFabro(
+        fail_stages={"coderun"},
+        stages={"sibling": [{"node_id": "review", "status": "succeeded"}]},
+    )
+    enqueue(store)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}),
+                  config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+    assert lane_.fill(NOW) == []
+    assert [view.blocked_by for view in lane_.box_views(NOW)] == ["loop stages unreadable"]
+
+
+def test_a_box_with_no_fabro_reads_its_loop_as_unreadable(store, leases):
+    """`fill` needs fabro and returns early, but the page still renders: a loop whose
+    stages cannot be read at all is the failed-read case, not between stages."""
+    held_lease(leases)
+    lane_ = lane(config(), store, leases, None, FakeHealth({"coders-a": IDLE}))
     views = {view.box: view for view in lane_.box_views(NOW)}
     assert views["coders-a"].blocked_by == "loop stages unreadable"
 

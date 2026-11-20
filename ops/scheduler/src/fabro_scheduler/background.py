@@ -1070,6 +1070,11 @@ class BackgroundLane:
             return "no job queued"
         blocked, gap = self._gap_minutes(loops)
         if blocked:
+            # A drift backstop, not an operator diagnosis (deliberately no row in the
+            # README's table): every blocked condition of `_gap_minutes` is token-checked
+            # above, so this is unreachable while the two lists agree. If they ever
+            # drift, the page must say "no gap" rather than promise "ready" while `fill`
+            # refuses the box (issue #78 review).
             return "no gap"
         if self._pick(gap) is None:
             return "no job fits"
