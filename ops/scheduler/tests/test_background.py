@@ -28,7 +28,7 @@ from fabro_scheduler.background import (
     running_node,
 )
 from fabro_scheduler.config import ConfigError, load_config
-from fabro_scheduler.fabro import DispatchResult, build_job_intent, status_reason
+from fabro_scheduler.fabro import DispatchResult, FabroError, build_job_intent, status_reason
 from fabro_scheduler.lease import Lease, LeaseStore
 from fabro_scheduler.store import Store
 
@@ -59,6 +59,7 @@ class FakeFabro:
     """The three fabro calls the lane makes, plus a record of what it was asked."""
 
     stages: dict[str, list[dict]] = field(default_factory=dict)
+    stages_raise: Exception | None = None
     runs: dict[str, dict] = field(default_factory=dict)
     active: list[dict] = field(default_factory=list)
     cancelled: list[str] = field(default_factory=list)
@@ -68,6 +69,8 @@ class FakeFabro:
     next_run: int = 256
 
     def get_stages(self, run_id: str) -> list[dict]:
+        if self.stages_raise is not None:
+            raise self.stages_raise
         return self.stages.get(run_id, [])
 
     def active_runs(self) -> list[dict]:
@@ -264,14 +267,31 @@ def test_a_coder_loop_in_a_box_stage_blocks_the_start(store, leases):
     assert fabro.dispatched == []
 
 
-def test_a_coder_loop_between_stages_blocks_the_start(store, leases):
-    """D7: a loop with no stage in `running` does not qualify this tick. The gap it is
-    about to enter has not started yet, and a job picked now could land in the next one."""
+def test_a_coder_loop_between_stages_predicts_zero(store, leases):
+    """D7, amended by #78: a loop with no stage running no longer blocks the box. The
+    gap it is about to enter has not started yet, so the loop has nothing to lend and
+    contributes 0 to the box's minimum — nothing fits, and the page names the gap
+    table rather than the loop."""
     held_lease(leases)
     fabro = FakeFabro(stages={"coderun": [{"node_id": "review", "status": "succeeded"}]})
     enqueue(store)
     lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
     assert lane_.fill(NOW) == []
+    views = {view.box: view for view in lane_.box_views(NOW)}
+    assert views["coders-a"].blocked_by == "no job fits"
+
+
+def test_a_failed_stage_read_blocks_the_start(store, leases):
+    """Fail closed: a stage read that failed is an unknown state — the loop may be in
+    a box stage — so it still blocks the start. #78 splits it from between-stages:
+    the page says the stages were unreadable instead of blaming the loop's timing."""
+    held_lease(leases)
+    fabro = FakeFabro(stages_raise=FabroError("connection reset"))
+    enqueue(store)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
+    assert lane_.fill(NOW) == []
+    views = {view.box: view for view in lane_.box_views(NOW)}
+    assert views["coders-a"].blocked_by == "loop stages unreadable"
 
 
 def test_a_lease_with_no_known_box_stages_blocks_the_start(store, leases):
@@ -860,6 +880,31 @@ def test_a_box_whose_every_slot_is_drained_stays_out_of_the_lane(store, leases):
 
     assert lane_.fill(NOW) == []
     assert [view.blocked_by for view in lane_.box_views(NOW)] == ["every slot drained"]
+
+
+def test_a_between_stages_sibling_predicts_zero_into_the_minimum(store, leases):
+    """#78's scenario: one sibling reviews (a 12-minute gap), the other is between
+    stages. Before the amendment the between-stages sibling blocked the whole box;
+    now it contributes 0 to the minimum, the box's gap is 0, and the box reads as
+    `no job fits` until a stage runs again."""
+    held_lease(leases, run_id="coderun")
+    held_sibling(leases, run_id="sibling")
+    fabro = FakeFabro(stages={
+        "coderun": [{"node_id": "review", "status": "running"}],
+        "sibling": [{"node_id": "review", "status": "succeeded"}],
+    })
+    enqueue(store, typical=10)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}),
+                  config(SCHEDULER_BOX_HEALTH=TWO_SLOTS))
+
+    assert lane_.fill(NOW) == [], "the box's gap is the between-stages sibling's 0"
+    assert [view.blocked_by for view in lane_.box_views(NOW)] == ["no job fits"]
+
+    leases.release("sibling")
+    started = lane_.fill(NOW)
+    assert [start.gap_minutes for start in started] == [12], (
+        "with the between-stages sibling released, the reviewer's 12 is the box's"
+    )
 
 
 def test_a_drained_sibling_does_not_excuse_a_loop_in_a_box_stage(store, leases):
