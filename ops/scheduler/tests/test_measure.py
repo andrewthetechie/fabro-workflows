@@ -394,7 +394,10 @@ def test_the_measure_endpoint_serves_the_document_and_its_markdown(store):
     from fabro_scheduler.app import build_app
     from test_precheck import config
 
-    run(store, run_id="R1", at=datetime(2026, 11, 10, 12, 0, tzinfo=UTC))
+    # One day before the endpoint's real clock, not a fixed date: the endpoint windows on
+    # `datetime.now(UTC)` (app.py), so a run stamped 2026-11-10 fell out of the 7-day
+    # window on 2026-11-17 and the test has been red since, whatever the code did.
+    run(store, run_id="R1", at=datetime.now(UTC) - timedelta(days=1))
     summary(store, run_id="R1", terminal="close_noop", arm="on", verdict="kept",
             task_sources={"plan": 1})
     stage(store, run_id="R1", node="coder", box_ms=60_000)
