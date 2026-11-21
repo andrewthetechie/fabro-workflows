@@ -46,7 +46,7 @@ MANIFESTS='(^|/)(pyproject\.toml|uv\.lock|\.python-version|package\.json|package
 # and 19 more like it, and a stubbed tree is a losing game against 20 declared
 # targets. The Dockerfiles that use warm/src/ do so in a BUILDER stage and copy
 # only the warmed registry forward, so no source reaches the shipped image.
-NEEDS_SOURCE='rust-node rust-game'
+NEEDS_SOURCE='python-node rust-node rust-game'
 
 # fabro-io (ADR 0016, docs/stage-io): built ONCE in a container from the crate at
 # ../fabro-io, then copied to every context root beside fabro-code. The binary is
