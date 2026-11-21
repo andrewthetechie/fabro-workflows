@@ -102,7 +102,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git jq curl rip
 # Pinned by version and sha256, identical to Dockerfile.rust-node's; see the
 # commentary there. A bump of either file should bump both.
 ARG CODEGRAPH_VERSION=1.6.0
-ARG CODEGRAPH_SHA256=de3391f79ed42622d937e6cd5b7642a7ea8bb7d1473607e807879ba73ef2164
+ARG CODEGRAPH_SHA256=de3391f79ed42622d937e6cd5b7642a7ea8bb7d1473607e80b879ba73ef216b0
 ENV CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1 CODEGRAPH_NO_UPDATE_CHECK=1
 RUN curl -fsSL -o /tmp/cg.tgz "https://github.com/colbymchenry/codegraph/releases/download/v${CODEGRAPH_VERSION}/codegraph-linux-x64.tar.gz" \
  && echo "${CODEGRAPH_SHA256}  /tmp/cg.tgz" | sha256sum -c - \
