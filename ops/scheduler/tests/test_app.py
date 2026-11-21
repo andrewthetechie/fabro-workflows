@@ -81,6 +81,7 @@ def test_health_is_ok_and_lists_the_five_repos_in_scheduling_order(client):
         "andrewthetechie/writers-app",
         "andrewthetechie/lawncare-saas",
         "andrewthetechie/flakeradar",
+        "andrewthetechie/space-game",
         "andrewthetechie/jelly-swipe",
     ]
 

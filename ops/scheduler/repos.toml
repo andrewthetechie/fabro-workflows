@@ -55,3 +55,9 @@ name           = "andrewthetechie/flakeradar"
 priority       = 40
 environment_id = "rust-node"
 enabled        = true
+
+[[repo]]
+name           = "andrewthetechie/space-game"
+priority       = 45
+environment_id = "rust-game"
+enabled        = true

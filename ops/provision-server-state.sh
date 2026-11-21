@@ -343,6 +343,7 @@ provision_automation pr-review-lawncare-saas python-node andrewthetechie/lawncar
 provision_automation pr-review-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports pr-review "" "" true || FAILED=$((FAILED+1))
 provision_automation pr-review-writers-app rust-node andrewthetechie/writers-app pr-review "" "" true || FAILED=$((FAILED+1))
 provision_automation pr-review-flakeradar rust-node andrewthetechie/flakeradar pr-review "" "" true || FAILED=$((FAILED+1))
+provision_automation pr-review-space-game rust-game andrewthetechie/space-game pr-review "" "" true || FAILED=$((FAILED+1))
 
 echo "Provisioning backlog automations..."
 provision_automation backlog-jelly-swipe python andrewthetechie/jelly-swipe backlog every-15m "2-59/15 * * * *" || FAILED=$((FAILED+1))
@@ -350,6 +351,7 @@ provision_automation backlog-lawncare-saas python-node andrewthetechie/lawncare-
 provision_automation backlog-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports backlog every-15m "8-59/15 * * * *" || FAILED=$((FAILED+1))
 provision_automation backlog-writers-app rust-node andrewthetechie/writers-app backlog every-15m "11-59/15 * * * *" || FAILED=$((FAILED+1))
 provision_automation backlog-flakeradar rust-node andrewthetechie/flakeradar backlog every-15m "14-59/15 * * * *" || FAILED=$((FAILED+1))
+provision_automation backlog-space-game rust-game andrewthetechie/space-game backlog every-15m "3-59/15 * * * *" || FAILED=$((FAILED+1))
 
 echo "Provisioning issue-triage automations..."
 provision_automation issue-triage-jelly-swipe python andrewthetechie/jelly-swipe issue-triage hourly "30 * * * *" || FAILED=$((FAILED+1))
@@ -357,6 +359,7 @@ provision_automation issue-triage-lawncare-saas python-node andrewthetechie/lawn
 provision_automation issue-triage-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports issue-triage hourly "40 * * * *" || FAILED=$((FAILED+1))
 provision_automation issue-triage-writers-app rust-node andrewthetechie/writers-app issue-triage hourly "45 * * * *" || FAILED=$((FAILED+1))
 provision_automation issue-triage-flakeradar rust-node andrewthetechie/flakeradar issue-triage hourly "50 * * * *" || FAILED=$((FAILED+1))
+provision_automation issue-triage-space-game rust-game andrewthetechie/space-game issue-triage hourly "55 * * * *" || FAILED=$((FAILED+1))
 
 # arch-review (ADR 0012 D7): created with the schedule ENABLED, the only rows that are.
 # Two fixed weekdays per repo, 3 or 4 days apart, and never two repos in the same hour
@@ -367,6 +370,7 @@ provision_automation arch-review-lawncare-saas python-node andrewthetechie/lawnc
 provision_automation arch-review-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports arch-review twice-weekly "0 4 * * 3,6" true true || FAILED=$((FAILED+1))
 provision_automation arch-review-writers-app rust-node andrewthetechie/writers-app arch-review twice-weekly "0 5 * * 0,3" true true || FAILED=$((FAILED+1))
 provision_automation arch-review-flakeradar rust-node andrewthetechie/flakeradar arch-review twice-weekly "0 5 * * 1,4" true true || FAILED=$((FAILED+1))
+provision_automation arch-review-space-game rust-game andrewthetechie/space-game arch-review twice-weekly "0 5 * * 2,5" true true || FAILED=$((FAILED+1))
 
 # dependabot (ADR 0022 D8, D10): one daily run per repository, created with the schedule ENABLED, at
 # staggered host times. Each row's auto_merge token is the per-repository switch; the host switch is
@@ -377,6 +381,7 @@ provision_automation dependabot-lawncare-saas python-node andrewthetechie/lawnca
 provision_automation dependabot-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports dependabot daily "40 5 * * *" true true || FAILED=$((FAILED+1))
 provision_automation dependabot-writers-app rust-node andrewthetechie/writers-app dependabot daily "0 6 * * *" true true || FAILED=$((FAILED+1))
 provision_automation dependabot-flakeradar rust-node andrewthetechie/flakeradar dependabot daily "20 6 * * *" true true || FAILED=$((FAILED+1))
+provision_automation dependabot-space-game rust-game andrewthetechie/space-game dependabot daily "40 6 * * *" true true || FAILED=$((FAILED+1))
 
 # merge-queue (ADR 0024 D1, P4): one sweep per repository every 20 minutes (10 until 2026-10-15),
 # staggered by 2-3 minutes.
@@ -390,6 +395,7 @@ provision_automation merge-queue-lawncare-saas python-node andrewthetechie/lawnc
 provision_automation merge-queue-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports merge-queue sweep "5-59/20 * * * *" true || FAILED=$((FAILED+1))
 provision_automation merge-queue-writers-app rust-node andrewthetechie/writers-app merge-queue sweep "7-59/20 * * * *" true || FAILED=$((FAILED+1))
 provision_automation merge-queue-flakeradar rust-node andrewthetechie/flakeradar merge-queue sweep "9-59/20 * * * *" true || FAILED=$((FAILED+1))
+provision_automation merge-queue-space-game rust-game andrewthetechie/space-game merge-queue sweep "11-59/20 * * * *" true || FAILED=$((FAILED+1))
 
 # scout (ADR 0027 D16): one run per repository a day, at 02:00 UTC plus 15 minutes per repo, so
 # scout runs before arch-review (04:00) and dependabot (05:00).
@@ -403,6 +409,7 @@ provision_automation scout-lawncare-saas python-node andrewthetechie/lawncare-sa
 provision_automation scout-womens-fantasy-sports ts andrewthetechie/womens-fantasy-sports scout daily "30 2 * * *" || FAILED=$((FAILED+1))
 provision_automation scout-writers-app rust-node andrewthetechie/writers-app scout daily "45 2 * * *" || FAILED=$((FAILED+1))
 provision_automation scout-flakeradar rust-node andrewthetechie/flakeradar scout daily "0 3 * * *" || FAILED=$((FAILED+1))
+provision_automation scout-space-game rust-game andrewthetechie/space-game scout daily "15 3 * * *" || FAILED=$((FAILED+1))
 
 if [ "$FAILED" -ne 0 ]; then
   echo "$FAILED automation(s) could not be created; see the errors above." >&2

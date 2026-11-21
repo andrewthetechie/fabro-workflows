@@ -38,7 +38,7 @@ from fabro_scheduler.store import Store
 TRACKED_REPOS = Path(__file__).resolve().parents[1] / "repos.toml"
 FF = "andrewthetechie/jelly-swipe"
 # Every other repo in repos.toml: polled by the receipt scan, never carrying work here.
-IDLE_SLUGS = ("lawncare-saas", "womens-fantasy-sports", "writers-app", "flakeradar")
+IDLE_SLUGS = ("lawncare-saas", "womens-fantasy-sports", "writers-app", "flakeradar", "space-game")
 
 FABRO_API = "http://10.10.0.32:32276/api/v1"
 GITHUB_API = "https://api.github.com"

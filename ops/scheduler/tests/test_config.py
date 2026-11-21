@@ -412,6 +412,7 @@ def test_the_tracked_repos_toml_parses(tmp_path):
         "andrewthetechie/writers-app",  # priority 20
         "andrewthetechie/lawncare-saas",  # priority 30
         "andrewthetechie/flakeradar",  # priority 40
+        "andrewthetechie/space-game",  # priority 45
         "andrewthetechie/jelly-swipe",  # priority 99
     ]
     assert {(r.name, r.environment_id) for r in cfg.repos} == {
@@ -422,6 +423,7 @@ def test_the_tracked_repos_toml_parses(tmp_path):
         # 403b68c: flakeradar's setup.sh runs cargo since #135, so it is on rust-node;
         # python-node has no toolchain and its `prep` failed with exit 127.
         ("andrewthetechie/flakeradar", "rust-node"),
+        ("andrewthetechie/space-game", "rust-game"),
     }
     assert all(r.enabled for r in cfg.repos)
 

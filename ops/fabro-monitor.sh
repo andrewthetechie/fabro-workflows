@@ -168,7 +168,7 @@ SCHEDULER_URL="${SCHEDULER_URL:-http://127.0.0.1:32280}"
 WEDGE_MINUTES="${WEDGE_MINUTES:-20}"
 LEAK_GRACE_MINUTES="${LEAK_GRACE_MINUTES:-5}"
 BG_STARVE_HOURS="${BG_STARVE_HOURS:-6}"
-REPOS="${FABRO_MONITOR_REPOS:-andrewthetechie/jelly-swipe andrewthetechie/womens-fantasy-sports andrewthetechie/lawncare-saas andrewthetechie/writers-app andrewthetechie/flakeradar}"
+REPOS="${FABRO_MONITOR_REPOS:-andrewthetechie/jelly-swipe andrewthetechie/womens-fantasy-sports andrewthetechie/lawncare-saas andrewthetechie/writers-app andrewthetechie/flakeradar andrewthetechie/space-game}"
 STATE_FILE="${FABRO_MONITOR_STATE:-$HOME/.local/state/fabro-monitor.state}"
 API="http://$FABRO_HOST:$FABRO_PORT/api/v1"
 
