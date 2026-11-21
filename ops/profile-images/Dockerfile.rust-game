@@ -1,0 +1,155 @@
+# fabro-rust-game:local -- sandbox profile image for the `rust-game` environment
+# (andrewthetechie/space-game, Fleet Survivors: Bevy app plus an engine-free
+# deterministic sim crate).
+#
+#   built by build-images.sh; see Dockerfile.python for why the context matters
+
+# ---------------------------------------------------------------------------
+# Builder stage: warm $CARGO_HOME/registry against the real source
+# ---------------------------------------------------------------------------
+# `cargo fetch` parses every [[test]] target's default path, so it needs the
+# repository's tracked source (NEEDS_SOURCE in build-images.sh), the same lesson
+# Dockerfile.rust-node records. Only the registry is copied forward, so no
+# source reaches a layer of the shipped image.
+FROM rust:1.99.1-trixie AS cargo-warm
+COPY warm/src/ /src/
+RUN cd /src && cargo fetch --locked && du -sh /usr/local/cargo/registry
+
+# ---------------------------------------------------------------------------
+# The base tag carries the exact pin: rust-toolchain.toml says 1.99.1 with
+# rustfmt and clippy, and rust:1.99.1-trixie (published 2026-11-06) ships both,
+# so this image needs no rustup-over-base step -- Dockerfile.rust-node needed
+# one only because its tag did not exist yet when it was written. rustc, cargo,
+# rustfmt and clippy all come from the base; the ARG exists so the checks below
+# and build-images.sh's tools check can assert the version instead of trusting
+# the tag.
+ARG RUST_VERSION=1.99.1
+
+FROM rust:1.99.1-trixie
+
+# ---------------------------------------------------------------------------
+# Locale -- see common.env.md (every image, including the ones with no
+# PostgreSQL: the verify step asserts the variable, not the server).
+# ---------------------------------------------------------------------------
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PGCLIENTENCODING=UTF8
+
+ARG GH_VERSION=2.100.0
+
+# The tools space-game's ci.yml installs through taiki-e/install-action or its
+# own pinned download script, pinned here so a run never re-downloads them and
+# the gate does not depend on a network fetch: the repository's .fabro/setup.sh
+# shrinks to version echoes. Versions track the pins this onboarding wrote into
+# .fabro/setup.sh, which in turn track the repository's CI.
+ARG JUST_VERSION=1.59.0
+ARG TAPLO_VERSION=0.10.0
+ARG TYPOS_VERSION=1.52.2
+ARG ACTIONLINT_VERSION=1.7.11
+ARG DENY_VERSION=0.22.0
+
+# ---------------------------------------------------------------------------
+# Toolchain and system libraries
+# ---------------------------------------------------------------------------
+# Bevy's link-time system dependencies are exactly space-game's CI
+# APT_PACKAGES set (ci.yml): libudev-dev (gilrs gamepads), libwayland-dev and
+# libxkbcommon-dev (winit), libasound2-dev (bevy_audio via the app's `e2e`
+# feature), and Mesa's software Vulkan driver (lavapipe) plus libvulkan1 so
+# offscreen capture has a wgpu adapter on a GPU-less sandbox -- the same
+# runtime e2e-driver needs for gates 15 and 19. This is the whole reason the
+# rust-game environment exists: fabro-rust-node (writers-app) carries none of
+# udev/ALSA/Mesa, so the app crate cannot even link there.
+#
+# The wasm32 target is the portability gate's compile-time proof that `sim`
+# stays engine-free; `just setup` installs it on a dev machine and CI's lint
+# job does the same, so the image bakes it.
+RUN apt-get update && apt-get install -y --no-install-recommends git jq curl ripgrep \
+    build-essential pkg-config \
+    libudev-dev libwayland-dev libxkbcommon-dev libasound2-dev \
+    mesa-vulkan-drivers libvulkan1 \
+  && rm -rf /var/lib/apt/lists/* \
+  && rustup component add rustfmt clippy \
+  && rustup target add wasm32-unknown-unknown \
+  && curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+  && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 && rm /tmp/gh.tgz \
+  # just: the repository's own instructions say `just check` before every
+  # commit, so an agent in a sandbox must be able to run the recipes.
+  && curl -fsSL -o /tmp/just.tgz "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+  && tar -xzf /tmp/just.tgz -C /usr/local/bin just && rm /tmp/just.tgz \
+  # taplo ships a single gzipped binary.
+  && curl -fsSL -o /tmp/taplo.gz "https://github.com/tamasfe/taplo/releases/download/${TAPLO_VERSION}/taplo-linux-x86_64.gz" \
+  && gunzip -c /tmp/taplo.gz > /usr/local/bin/taplo && chmod +x /usr/local/bin/taplo && rm /tmp/taplo.gz \
+  # typos names the archive member ./typos, so the member pattern needs the ./.
+  && curl -fsSL -o /tmp/typos.tgz "https://github.com/crate-ci/typos/releases/download/v${TYPOS_VERSION}/typos-v${TYPOS_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+  && tar -xzf /tmp/typos.tgz -C /usr/local/bin ./typos && rm /tmp/typos.tgz \
+  # actionlint: the same version the repository's ci.yml pins.
+  && curl -fsSL -o /tmp/actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+  && tar -xzf /tmp/actionlint.tgz -C /usr/local/bin actionlint && rm /tmp/actionlint.tgz \
+  # cargo-deny nests the binary one directory deep.
+  && curl -fsSL -o /tmp/deny.tgz "https://github.com/EmbarkStudios/cargo-deny/releases/download/${DENY_VERSION}/cargo-deny-${DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+  && tar -xzf /tmp/deny.tgz -C /usr/local/bin --strip-components=1 "cargo-deny-${DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny" \
+  && rm /tmp/deny.tgz \
+  && gh --version && just --version && taplo --version && typos --version \
+  && actionlint --version && cargo deny --version \
+  && rustc --version && cargo fmt --version && cargo clippy --version \
+  && rustup target list --installed | grep -q wasm32-unknown-unknown \
+  && pkg-config --exists libudev wayland-client xkbcommon alsa \
+  && ls /usr/share/vulkan/icd.d/ | grep -q lvp
+
+# ---------------------------------------------------------------------------
+# Codegraph -- the code index backend (ADR 0014 / docs/code-context C5)
+# ---------------------------------------------------------------------------
+# Pinned by version and sha256, identical to Dockerfile.rust-node's; see the
+# commentary there. A bump of either file should bump both.
+ARG CODEGRAPH_VERSION=1.6.0
+ARG CODEGRAPH_SHA256=de3391f79ed42622d937e6cd5b7642a7ea8bb7d1473607e807879ba73ef2164
+ENV CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1 CODEGRAPH_NO_UPDATE_CHECK=1
+RUN curl -fsSL -o /tmp/cg.tgz "https://github.com/colbymchenry/codegraph/releases/download/v${CODEGRAPH_VERSION}/codegraph-linux-x64.tar.gz" \
+ && echo "${CODEGRAPH_SHA256}  /tmp/cg.tgz" | sha256sum -c - \
+ && mkdir -p /opt/codegraph && tar -xzf /tmp/cg.tgz -C /opt/codegraph --strip-components=1 \
+ && rm /tmp/cg.tgz && ln -s /opt/codegraph/bin/codegraph /usr/local/bin/codegraph \
+ && codegraph --version
+
+# ---------------------------------------------------------------------------
+# Cache layout -- see common.env.md
+# ---------------------------------------------------------------------------
+# CARGO_HOME is NOT relocated: the rust base puts cargo's own binaries and the
+# rustup shims under it, so moving it would move the toolchain. The registry
+# cache inside it is warmed in place by the builder stage below.
+# No npm/bun/uv caches: this repository has none of those graphs.
+
+# ---------------------------------------------------------------------------
+# Warm the cargo registry from the repository's own lockfile
+# ---------------------------------------------------------------------------
+# Bevy's dependency tree is the reason this image exists as its own profile:
+# the warmed registry is what keeps a cold run's download cost near zero (the
+# compile still happens; the registry only removes the network from it).
+# Layer order matters the same way as in Dockerfile.rust-node: the pinned
+# cargo-nextest layer below sits after this one, so a pin bump re-runs that
+# layer alone and never re-copies the ~gigabyte registry.
+COPY --from=cargo-warm /usr/local/cargo/registry /usr/local/cargo/registry
+RUN du -sh /usr/local/cargo/registry
+
+# ---------------------------------------------------------------------------
+# cargo-nextest -- the test runner space-game's whole suite runs under
+# ---------------------------------------------------------------------------
+# Same pin discipline as Dockerfile.rust-node (see its commentary); space-game's
+# ci.yml runs `cargo nextest run --workspace --locked --profile ci`, so the
+# binary must be on PATH or every validate fails on a fault no code change can
+# fix. build-images.sh reads this pin back and asserts the installed version,
+# and its drift check compares it with the other rust images'.
+ARG NEXTEST_VERSION=0.9.151
+ARG NEXTEST_SHA256=1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+RUN curl -fsSL -o /tmp/nextest.tgz "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+ && echo "${NEXTEST_SHA256}  /tmp/nextest.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/nextest.tgz -C /usr/local/bin cargo-nextest \
+ && rm /tmp/nextest.tgz \
+ && cargo nextest --version
+
+# The wrapper agents call instead of codegraph directly (docs/code-context C2).
+COPY fabro-code /usr/local/bin/fabro-code
+RUN chmod +x /usr/local/bin/fabro-code
+COPY fabro-test /usr/local/bin/fabro-test
+RUN chmod +x /usr/local/bin/fabro-test
+COPY fabro-io /usr/local/bin/fabro-io
+RUN chmod +x /usr/local/bin/fabro-io

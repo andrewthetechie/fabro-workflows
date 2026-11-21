@@ -4,7 +4,7 @@ Read `00-overview-and-contracts.md` first. The contract for this task is C5.
 
 ## Change
 
-In each of `ops/profile-images/Dockerfile.{python,python-node,ts,rust-node}`:
+In each of `ops/profile-images/Dockerfile.{python,python-node,ts,rust-node,rust-game}`:
 
 1. Add `sqlite3` to the existing `apt-get install` line.
 2. Add a pinned install. The digest is the one that the v1.6.0 release publishes for this

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Build all four sandbox profile images, with their dependency caches warmed
-# from each target repository's real lockfiles.
+# Build every sandbox profile image, with its dependency cache warmed
+# from its target repository's real lockfiles.
 #
 # Run it on the fabro host (10.10.0.32). The images are referenced by tag from
 # the server-managed environment records and are never pushed to a registry:
@@ -31,6 +31,7 @@ python:jelly-swipe:fabro-python:local
 python-node:lawncare-saas:fabro-python-node:local
 ts:womens-fantasy-sports:fabro-ts:local
 rust-node:writers-app:fabro-rust-node:local
+rust-game:space-game:fabro-rust-game:local
 "
 
 # Every manifest and lock file a warm step can need, matched against the
@@ -45,7 +46,7 @@ MANIFESTS='(^|/)(pyproject\.toml|uv\.lock|\.python-version|package\.json|package
 # and 19 more like it, and a stubbed tree is a losing game against 20 declared
 # targets. The Dockerfiles that use warm/src/ do so in a BUILDER stage and copy
 # only the warmed registry forward, so no source reaches the shipped image.
-NEEDS_SOURCE='rust-node'
+NEEDS_SOURCE='rust-node rust-game'
 
 # fabro-io (ADR 0016, docs/stage-io): built ONCE in a container from the crate at
 # ../fabro-io, then copied to every context root beside fabro-code. The binary is
@@ -60,17 +61,22 @@ FABRO_IO_BIN="$WORK/fabro-io-bin"
 SCHEMAS=$(cd "$HERE/.." && pwd)/fabro-io-schemas
 [ -d "$SCHEMAS" ] || SCHEMAS=$(cd "$HERE/../.." && pwd)/.fabro/workflows/_io/schemas
 
-# cargo-nextest is installed only in Dockerfile.rust-node, and only that image's tools
-# check looks for it. The pin lives there, in one place; read it back so the verify
-# step cannot claim a version the image was not built with (writers-app's ci.sh runs
-# `cargo nextest`, so a missing or mismatched binary fails every run of that
-# repository at validate -- issue #57).
+# cargo-nextest is installed in the rust images, and only those images' tools
+# checks look for it. The pin lives in each Dockerfile, in one place; read it
+# back so the verify step cannot claim a version the image was not built with
+# (writers-app's ci.sh runs `cargo nextest`, so a missing or mismatched binary
+# fails every run of that repository at validate -- issue #57; space-game's
+# runs its whole suite under nextest the same way).
 NEXTEST_VERSION=$(sed -n 's/^ARG NEXTEST_VERSION=//p' "$HERE/Dockerfile.rust-node")
-# fabro-python-node carries the same nextest pair for lawncare-saas (ADR 0029); the check
-# below compares both images' pins so one Dockerfile cannot drift from the other.
+# fabro-python-node carries the same nextest pair for lawncare-saas (ADR 0029), and
+# fabro-rust-game for space-game; the checks below compare every rust/cargo image's
+# pins so no Dockerfile can drift from the others.
 NEXTEST_VERSION_PYNODE=$(sed -n 's/^ARG NEXTEST_VERSION=//p' "$HERE/Dockerfile.python-node")
+NEXTEST_VERSION_RUSTGAME=$(sed -n 's/^ARG NEXTEST_VERSION=//p' "$HERE/Dockerfile.rust-game")
 [ "$NEXTEST_VERSION" = "$NEXTEST_VERSION_PYNODE" ] \
   || { echo "ERROR: NEXTEST_VERSION differs between Dockerfile.rust-node ($NEXTEST_VERSION) and Dockerfile.python-node ($NEXTEST_VERSION_PYNODE)" >&2; exit 1; }
+[ "$NEXTEST_VERSION" = "$NEXTEST_VERSION_RUSTGAME" ] \
+  || { echo "ERROR: NEXTEST_VERSION differs between Dockerfile.rust-node ($NEXTEST_VERSION) and Dockerfile.rust-game ($NEXTEST_VERSION_RUSTGAME)" >&2; exit 1; }
 
 # To stderr, not stdout: sync_repo and assemble_context are read with $(...)
 # and anything they print on stdout becomes part of the sha or the context path.
@@ -248,6 +254,32 @@ verify_image() {
         if command -v node >/dev/null; then
           node -e "process.exit(process.versions.bun ? 1 : 0)" || { echo "node is a bun shim"; exit 1; }
           echo "node $(node -v)"
+        fi
+        if [ "'"$repo"'" = space-game ]; then
+          # Keyed on the repository, not the tag, so a tag rename cannot skip
+          # the check. The suite runs under nextest, and the gate calls the
+          # tools ci.yml installs through taiki-e/install-action directly.
+          got=$(cargo nextest --version 2>&1 | head -1)
+          case "$got" in
+            "cargo-nextest ${NEXTEST_VERSION}"|"cargo-nextest ${NEXTEST_VERSION} "*) echo "nextest ${NEXTEST_VERSION}" ;;
+            *) echo "nextest: ${got:-<nothing>} (want cargo-nextest ${NEXTEST_VERSION})"; exit 1 ;;
+          esac
+          just --version && taplo --version && typos --version && actionlint --version \
+            && cargo deny --version >/dev/null
+          # The Bevy link-time system libraries plus lavapipe: without these the
+          # app crate cannot build, which is the reason this image exists.
+          pkg-config --exists libudev wayland-client xkbcommon alsa \
+            || { echo "missing a Bevy system library"; exit 1; }
+          ls /usr/share/vulkan/icd.d/ | grep -q lvp \
+            || { echo "no lavapipe Vulkan ICD"; exit 1; }
+          # The pinned toolchain with both components, and the wasm target the
+          # portability check builds for.
+          rustc --version | grep -q "${RUSTC_WANT:-1.99.1}" \
+            || { echo "rustc is $(rustc --version), want 1.99.1"; exit 1; }
+          cargo fmt --version >/dev/null && cargo clippy --version >/dev/null
+          rustup target list --installed | grep -q wasm32-unknown-unknown \
+            || { echo "no wasm32-unknown-unknown target"; exit 1; }
+          echo "space-game tools ok"
         fi
         if [ "'"$repo"'" = writers-app ]; then
           # Keyed on the repository, not the tag: a tag rename would otherwise

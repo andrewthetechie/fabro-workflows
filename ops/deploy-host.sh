@@ -191,7 +191,7 @@ step_images() {
     echo "    unchanged since the last successful build; not rebuilt (FORCE=1 to rebuild)"
     return
   fi
-  echo "    building; this clones four repositories and takes a while"
+  echo "    building; this clones five repositories and takes a while"
   remote 'cd ~/profile-images-build && ./build-images.sh'
   stamp_set images "$want"
 }

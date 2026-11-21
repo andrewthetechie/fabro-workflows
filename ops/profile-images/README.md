@@ -11,6 +11,7 @@ dependency caches, and — where its tests need one — a PostgreSQL server.
 | `python-node` | lawncare-saas | `fabro-python-node:local` | `node:22.23.2-bookworm-slim` | node 22.23.2, uv + **baked CPython 3.13**, **rust 1.99.0**, cargo-nextest 0.9.151, cargo-audit 0.22.2 (ADR 0029 port) | **PostgreSQL 17** |
 | `ts` | womens-fantasy-sports | `fabro-ts:local` | `oven/bun:1.4.2` | bun 1.4.2, **uv + baked CPython 3.14** | **PostgreSQL 18** |
 | `rust-node` | writers-app | `fabro-rust-node:local` | `rust:1.98.1-trixie` | rust 1.99.0 (rustup over base), **node 22.23.2**, cargo-nextest 0.9.151 | — |
+| `rust-game` | space-game | `fabro-rust-game:local` | `rust:1.99.1-trixie` | rust 1.99.1 (base tag carries the pin), wasm32 target, cargo-nextest 0.9.151, just 1.59.0, taplo 0.10.0, typos 1.52.2, actionlint 1.7.11, cargo-deny 0.22.0, **Bevy system libs (udev, Wayland, xkbcommon, ALSA) + Mesa lavapipe** | — |
 
 Every image contains `git`, `jq`, `gh` (v2.100.0), `bash`, `rg`, `fabro-code` and `fabro-io`:
 the clone stage needs `git`, the gates need `jq`, the acquire/claim/validate/open_pr stages need `gh`,
@@ -40,7 +41,7 @@ version to the `NEXTEST_VERSION` in `Dockerfile.rust-node`.
 ## Building
 
 ```sh
-./build-images.sh                 # all four
+./build-images.sh                 # all five
 ./build-images.sh python ts       # a subset
 DRY_RUN=1 ./build-images.sh       # assemble contexts, build nothing
 ```

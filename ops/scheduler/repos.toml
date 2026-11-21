@@ -10,6 +10,7 @@
 #   python-node  fabro-python-node:local   cpu=2 mem=4GB   repo=lawncare-saas
 #   ts           fabro-ts:local            cpu=2 mem=4GB   repo=womens-fantasy-sports
 #   rust-node    fabro-rust-node:local     cpu=4 mem=8GB   repo=writers-app
+#   rust-game    fabro-rust-game:local     cpu=8 mem=12GB  repo=space-game
 # It is not validated against that list here: environments are server state and
 # can change without a commit, so a name this file rejects could be correct on
 # the host. A wrong one fails at run admission, where the error names the row.

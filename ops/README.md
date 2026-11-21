@@ -195,6 +195,7 @@ settings.toml only *selects* one; it does not define any.
 | `python-node` | `fabro-python-node:local` | 2 | 4GB | lawncare-saas |
 | `ts` | `fabro-ts:local` | 2 | 4GB | womens-fantasy-sports |
 | `rust-node` | `fabro-rust-node:local` | 4 | 8GB | writers-app, flakeradar |
+| `rust-game` | `fabro-rust-game:local` | 8 | 12GB | space-game |
 
 The images are rebuilt nightly rather than being static artefacts, because their
 value is a dependency cache warmed from each repository's current lockfiles. Add
