@@ -19,6 +19,7 @@ pub mod scout;
 pub mod serve;
 pub mod served;
 pub mod stage;
+pub mod stageend;
 pub mod submit;
 pub mod taskcheck;
 pub mod taskplan;

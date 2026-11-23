@@ -6,7 +6,7 @@ Usage:
   check-graph-invariants.py --dump FILE.fabro   print the reader's statements in fabro parse's shape
   check-graph-invariants.py --normalize         normalize a `fabro parse` JSON read from stdin
 
-A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R17;
+A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R18;
 every `_shared/*/*.fabro` phase gets the file rules (the reader, R6, R8, R9 and R12). Each violation prints as
 `<package> <rule> <node or hook> <why>`, then `VIOLATIONS: N`. Exit status is min(N, 125).
 
@@ -831,6 +831,69 @@ def is_agent_stage(attrs: dict[str, str]) -> bool:
     return "prompt" in attrs and attrs.get("shape", "") in ("", "box")
 
 
+# Box stages with an output contract that `stage-end` must not run again: a missing result is
+# normal there, or the stage cannot start from what a lost session leaves. Each names its reason.
+STAGE_END_EXEMPT = {
+    ("backlog", "coder"): "submits only a block (coder.md.j2); the diff is its result",
+    ("backlog", "rework_t1"): "submits only a block (rework.md.j2); the diff is its result",
+    ("pr-review", "rebase_agent_t1"): "starts only from a clean tree with no rebase in progress; "
+                                      "rebase_gate resets what a lost session leaves, and tier 2 runs",
+}
+
+
+def must_submit(package: str, manifest: dict | None, import_ids: dict[str, str]) -> list[str]:
+    """The box stages of `package` that `stage-end` runs again without a result, sorted by id."""
+    if manifest is None:
+        return []
+    specs = dict(((manifest.get("workflows") or {}).get(package) or {}).get("stages", {}))
+    for import_id, phase in import_ids.items():
+        for sid, spec in ((manifest.get("phases") or {}).get(phase) or {}).items():
+            specs[f"{import_id}.{sid}"] = spec
+    boxes = manifest_boxes(package, manifest, import_ids)
+    return sorted(sid for sid, spec in specs.items()
+                  if boxes.get(sid) in (True, "plan-arm") and spec.get("output")
+                  and (package, sid) not in STAGE_END_EXEMPT)
+
+
+def stage_end_hooks(stages: list[str]) -> list[dict]:
+    """The two hooks R18 wants for these stages, as `[[run.hooks]]` tables."""
+    matcher = "^(" + "|".join(s.replace(".", "[.]") for s in stages) + ")$"
+    script = f"fabro-io stage-end {' '.join(stages)}; exit 0"
+    return [
+        {"id": "io-stage-complete", "event": "stage_complete", "matcher": matcher,
+         "blocking": False, "sandbox": True, "timeout": "30s", "script": script},
+        {"id": "io-stage-end", "event": "edge_selected", "matcher": matcher,
+         "blocking": True, "sandbox": True, "timeout": "30s", "script": script},
+    ]
+
+
+def r18_stage_end_hooks(package: str, hooks: list[dict], import_ids: dict[str, str],
+                        manifest: dict | None) -> list[tuple]:
+    """R18: a package with box stages that must submit carries exactly the two `stage-end` hooks
+    for exactly those stages, and no other package runs `fabro-io stage-end`
+    (invariants-graph.md, the stage-end rows; #93).
+
+    The box model sometimes ends a session on a malformed tool call printed as text, which fabro
+    takes as the answer. `stage_complete` marks the visit and `edge_selected` sends a marked
+    visit with no result back to the same node. `blocking` differs on purpose: fabro awaits both,
+    ignores the first one's decision, and reads an override only from a blocking hook.
+    """
+    stages = must_submit(package, manifest, import_ids)
+    want = stage_end_hooks(stages) if stages else []
+    have = [h for h in hooks if "fabro-io stage-end" in (h.get("script") or "")]
+    out: list[tuple] = []
+    for hook in want:
+        if hook not in have:
+            out.append(("R18", hook["id"], f"missing or not exactly the hook for {' '.join(stages)}"))
+    for hook in have:
+        if hook not in want and hook.get("id") not in {h["id"] for h in want}:
+            out.append(("R18", hook.get("id") or "hook",
+                        "runs `fabro-io stage-end`, but is not one of the two hooks R18 allows"))
+    if len(have) > len(want) and not out:
+        out.append(("R18", "io-stage-end", "a stage-end hook appears more than once"))
+    return out
+
+
 # The coder loops: the packages whose box stages a `box-claim` hook must precede
 # (more-local-inference D1, C4).
 CODER_LOOP_PACKAGES = ["backlog", "ralph", "pr-review"]
@@ -1481,6 +1544,7 @@ def package_violations(pkg_dir: Path, workflows: Path) -> tuple[list[tuple], int
     out += [(package, *v) for v in r15_claim_hooks(package, root if root is not None else None, hooks)]
     out += [(package, *v) for v in r16_background_packages(package, root, nodes, hooks, t)]
     out += [(package, *v) for v in r17_leased_box_packages(package, root, nodes, hooks, t, manifest)]
+    out += [(package, *v) for v in r18_stage_end_hooks(package, hooks, import_ids, manifest)]
     out += [(package, *v) for v in r8_routing(root.nodes)]
     out += [(package, *v) for v in r9_needs_human_reason(root)]
     out += [(package, *v) for v in r12_fallback_edge(root)]

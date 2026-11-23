@@ -197,6 +197,29 @@ sandbox = true
 timeout = "10s"
 script = "fabro-io stage"
 
+# stage-end (#93): a stage that ended `succeeded` without submitting a result for its visit runs
+# again, at most twice, and then its gate decides. The box model sometimes ends a session on a
+# malformed tool call printed as text, which fabro takes as the answer. `stage_complete` marks
+# the visit; `edge_selected` is blocking because fabro reads its override only then. `exit 0`
+# covers an image with no `stage-end`. The stages and both hooks are R18's: do not edit by hand.
+[[run.hooks]]
+id = "io-stage-complete"
+event = "stage_complete"
+matcher = "^(extra_decompose|plan|pre_review|review_merge[.]refute_fix)$"
+blocking = false
+sandbox = true
+timeout = "30s"
+script = "fabro-io stage-end extra_decompose plan pre_review review_merge.refute_fix; exit 0"
+
+[[run.hooks]]
+id = "io-stage-end"
+event = "edge_selected"
+matcher = "^(extra_decompose|plan|pre_review|review_merge[.]refute_fix)$"
+blocking = true
+sandbox = true
+timeout = "30s"
+script = "fabro-io stage-end extra_decompose plan pre_review review_merge.refute_fix; exit 0"
+
 # box-claim (more-local-inference C3, C4): before every agent stage, give the box back to
 # this run. It cancels the background run the scheduler put on the box, then waits for
 # strix-infer to report the box idle, on two consecutive reads. blocking = true, because a

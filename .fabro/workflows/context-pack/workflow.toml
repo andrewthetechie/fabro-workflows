@@ -103,6 +103,29 @@ sandbox = true
 timeout = "10s"
 script = "fabro-io stage"
 
+# stage-end (#93): a stage that ended `succeeded` without submitting a result for its visit runs
+# again, at most twice, and then its gate decides. The box model sometimes ends a session on a
+# malformed tool call printed as text, which fabro takes as the answer. `stage_complete` marks
+# the visit; `edge_selected` is blocking because fabro reads its override only then. `exit 0`
+# covers an image with no `stage-end`. The stages and both hooks are R18's: do not edit by hand.
+[[run.hooks]]
+id = "io-stage-complete"
+event = "stage_complete"
+matcher = "^(gather)$"
+blocking = false
+sandbox = true
+timeout = "30s"
+script = "fabro-io stage-end gather; exit 0"
+
+[[run.hooks]]
+id = "io-stage-end"
+event = "edge_selected"
+matcher = "^(gather)$"
+blocking = true
+sandbox = true
+timeout = "30s"
+script = "fabro-io stage-end gather; exit 0"
+
 # The marker comment carries `run=<run_id>` (C6), and a command node cannot see the run id:
 # `FABRO_RUN_ID` and the hook context are set for hooks only (invariants-graph, *Agents and
 # hooks*). A `stage_start` hook can, so this one writes it to a file for `post`, which is a

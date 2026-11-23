@@ -1603,8 +1603,8 @@ def test_ralph_plan_review_edges(ck):
         ("pr edges: prep escapes to stop_reason", "plan_review_prep->stop_reason "),
         ("pr edges: a good review goes to the gate", "plan_review->plan_review_gate outcome=succeeded"),
         ("pr edges: a failed review goes to the gate too, which fails closed", "plan_review->plan_review_gate "),
-        ("pr edges: repair returns to the planner", "plan_review_gate->plan context.plan_review_route=repair"),
-        ("pr edges: pass goes to pick", "plan_review_gate->pick context.plan_review_route=pass"),
+        ("pr edges: repair returns to the planner", "plan_review_gate->plan outcome=succeeded && context.plan_review_route=repair"),
+        ("pr edges: pass goes to pick", "plan_review_gate->pick outcome=succeeded && context.plan_review_route=pass"),
         ("pr edges: the gate escapes to stop_reason", "plan_review_gate->stop_reason "),
     ):
         ck(name, "1", count(edge, e, flags="xF"))
@@ -1717,17 +1717,23 @@ def test_ralph_local_review_gate(ck, tmp_path):
     go()
     ck("lr gate needs_human_review: ignored, the review may only help", "pass", route())
 
-    # Missing or unreceipted results drop the round and still exit 0.
-    for name, kw in (("wrong stage", {"stage_spec": "spec"}), ("no receipt", {"stage_std": None})):
-        setup(std=[f("STD-001", "error")], tasks=existing, **kw); go()
+    # A reviewer with no valid result counts as no findings; the other one's still stand (#93).
+    for name, kw, kept in (
+        ("spec wrong stage", {"stage_spec": "spec"}, "lrs1"),
+        ("standards no receipt", {"stage_std": None}, "lrp1"),
+    ):
+        setup(std=[f("STD-001", "error")], spec=[f("SPEC-001", "error")], tasks=existing, **kw); go()
         ck(f"lr gate {name}: exits 0", "0", st["rc"])
-        ck(f"lr gate {name}: passes", "pass", route())
-        ck(f"lr gate {name}: adds nothing", "1", ntasks())
-    setup(std=[f("STD-001", "error")], tasks=existing); rm(L / "spec.json"); go()
-    ck("lr gate missing result: exits 0", "0", st["rc"])
-    ck("lr gate missing result: passes", "pass", route())
-    setup(std=[f("STD-001", "error")], tasks=existing); write(L / "spec.json", "{garbage"); go()
-    ck("lr gate garbage result: passes", "pass", route())
+        ck(f"lr gate {name}: the other reviewer's findings become Tasks", "tasks", route())
+        ck(f"lr gate {name}: and only those", f"t1|{kept}", jq("[.[].id] | join(\"|\")", file=T / "tasks.json"))
+        ck(f"lr gate {name}: one routing object", "1", count("context_updates", st["out"]))
+    for name, brk in (("missing", lambda: rm(L / "spec.json")), ("garbage", lambda: write(L / "spec.json", "{garbage"))):
+        setup(std=[f("STD-001", "error")], tasks=existing); brk(); go()
+        ck(f"lr gate {name} spec: exits 0, standards count", "0|tasks|2", f"{st['rc']}|{route()}|{ntasks()}")
+        setup(std=[f("STD-001", "warning")], tasks=existing); brk(); go()
+        ck(f"lr gate {name} spec, nothing blocking: passes", "pass|1", f"{route()}|{ntasks()}")
+    setup(tasks=existing); rm(L / "standards.json"); rm(L / "spec.json"); go()
+    ck("lr gate both missing: drops the round and exits 0", "0|pass|1", f"{st['rc']}|{route()}|{ntasks()}")
     setup(std=[f("STD-001", "error")], tasks="not json"); go()
     ck("lr gate broken tasks.json: exits 0 and passes", "0|pass", f"{st['rc']}|{route()}")
 

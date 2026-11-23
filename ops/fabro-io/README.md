@@ -15,6 +15,7 @@ from the **Stage manifest** (C2), generated into each `workflow.toml` as the
 | Command | What it does (exit codes) |
 |---|---|
 | `stage` | The `io-stage` hook: writes `.io/stage.json` with a fresh 128-bit visit; `mkdir -p /tmp/fabro/.io` (0, or 2 if the binary is older than the manifest's `min_binary` or the manifest is invalid JSON). |
+| `stage-end NODE...` | The `io-stage-complete` and `io-stage-end` hooks (#93): marks a listed stage's visit that ended `succeeded`, then, on the edge out of it, prints an override back to the same node when the stage wrote no result for that visit, at most twice. Always 0: any other code from a blocking `edge_selected` hook ends the run. |
 | `inputs [<name> [--part N]]` | Returns the stage's inputs, paged at 49152 bytes, and records what was served in `.io/served.json` (0, or 3 when a required input is missing). |
 | `submit --file <path>` | Validates the output against the stage's schema, refuses until every required input was read in full, stamps `_io` and writes the contract atomically (0, 3 on "call inputs first"/incomplete, 4 on a schema violation). |
 | `guard` | The `io-guard` pre-tool-use hook: blocks a Sealed path or a path a Sealed glob matches (2), proceeds (0) otherwise, and proceeds with a warning on its own errors (D8). |

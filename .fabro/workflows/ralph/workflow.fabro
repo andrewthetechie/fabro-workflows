@@ -382,7 +382,10 @@ jq -nc --arg s \"$S\" --arg q \"$QT\" '{context_updates:{plan_status:$s,triage_q
     // sends that to `return_to_triage` as it always has.
     //
     // It fails CLOSED. A missing, unreceipted or malformed result writes `stuck_reason.md` and
-    // exits 1 to `stop_reason`: a plan nobody could review is not waved through, which is the
+    // exits 1 to `stop_reason`, after `stage-end` has run the reviewer again (#93). The gate's
+    // routed edges carry `outcome=succeeded` because `plan_review_route` outlives the visit that
+    // set it: a gate that failed on the re-review used to follow the first visit's `repair`
+    // instead of stopping. A plan nobody could review is not waved through, which is the
     // opposite of the local review of the code below.
     //
     // The reviewer reads the Task list as the coder will (`plan_review/plan.json`: id, title,
@@ -1494,8 +1497,9 @@ jq -nc --arg r \"$ROUTE\" --argjson le \"$LE\" '{context_updates:{review_route:$
     //
     // It may only help. Every failure routes on to `refute_prep`: a prep that could not take the
     // diff, an agent stage that failed or timed out (each agent edge has an unconditional twin),
-    // and a gate that finds a missing or unreceipted result, which drops the whole local round
-    // with a stderr note. None reaches `stop_reason`. A `needs_human_review` decision from a
+    // and a gate that finds a missing or unreceipted result. `stage-end` has run that reviewer
+    // again by then (#93), so the gate counts it as no findings, and the other reviewer's still
+    // stand. None reaches `stop_reason`. A `needs_human_review` decision from a
     // local reviewer is ignored for the same reason: only `error` findings count here.
     //
     // Tasks. Each `error` becomes a Task with id `lrs<N>` (standards) or `lrp<N>` (spec),
@@ -1555,14 +1559,18 @@ echo '{\"context_updates\":{\"local_review_go\":true}}'"]
     local_review_gate [label="Decide the local review", shape=parallelogram, timeout="1m", output_schema="routing",
         script="F=/tmp/fabro
 L=$F/local_review
-OK=yes
+GOOD=0
 for X in standards spec; do
+  OK=yes
   if [ ! -s $L/$X.json ]; then OK=no; fi
   if [ \"$(jq -r '._io.stage // empty' $L/$X.json 2>/dev/null)\" != \"local_$X\" ]; then OK=no; fi
   if [ -z \"$(jq -r '._io.visit // empty' $L/$X.json 2>/dev/null)\" ]; then OK=no; fi
+  if [ \"$OK\" = yes ]; then GOOD=$((GOOD + 1)); continue; fi
+  echo 'local_review: local_'$X' wrote no valid result; it counts as no findings' >&2
+  echo '{\"decision\":\"none\",\"findings\":[]}' > $L/$X.json
 done
-if [ \"$OK\" != yes ]; then
-  echo 'local_review: a local reviewer wrote no valid result, so the local review is dropped and the hosted reviews go on' >&2
+if [ $GOOD = 0 ]; then
+  echo 'local_review: neither local reviewer wrote a valid result, so the local review is dropped and the hosted reviews go on' >&2
   echo '{\"context_updates\":{\"local_review_route\":\"pass\"}}'
   exit 0
 fi
@@ -3802,8 +3810,8 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     plan_review_prep -> stop_reason
     plan_review -> plan_review_gate           [condition="outcome=succeeded"]
     plan_review -> plan_review_gate
-    plan_review_gate -> plan                  [condition="context.plan_review_route=repair"]
-    plan_review_gate -> pick                  [condition="context.plan_review_route=pass"]
+    plan_review_gate -> plan                  [condition="outcome=succeeded && context.plan_review_route=repair"]
+    plan_review_gate -> pick                  [condition="outcome=succeeded && context.plan_review_route=pass"]
     plan_review_gate -> stop_reason
     plan_gate -> return_to_triage             [condition="context.plan_status=contradiction"]
     plan_gate -> close_noop                   [condition="context.plan_status=redundant"]

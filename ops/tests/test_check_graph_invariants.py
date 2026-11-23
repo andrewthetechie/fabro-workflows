@@ -175,6 +175,66 @@ class BoxStages(unittest.TestCase):
             self.assertEqual(found, [("R13", "phase.work")], found)
             self.assertIn("no `box`", dict((n, w) for _, _, n, w in cgi.run(root))["phase.work"])
 
+    def _r18(self, tmp: str, *, hooks: list[dict] | None, output: bool = True, box: object = True,
+             stylesheet: str | None = None, exempt: bool = False) -> list[tuple[str, str]]:
+        """R18's findings for the fixture whose only agent stage is `phase.work`."""
+        root = self.root(tmp, stylesheet=stylesheet or self.BOX_EVERYWHERE, box=box)
+        io = root / ".fabro/workflows/_io/manifest.json"
+        manifest = json.loads(io.read_text())
+        if output:
+            manifest["phases"]["phase"]["work"]["output"] = {"path": "/tmp/fabro/w.json", "schema": "w"}
+        io.write_text(json.dumps(manifest))
+        toml = root / ".fabro/workflows/ok/workflow.toml"
+        toml.write_text(toml.read_text() + "".join(
+            "\n[[run.hooks]]\n" + "".join(f"{k} = {json.dumps(v)}\n" for k, v in h.items())
+            for h in hooks or []))
+        if exempt:
+            cgi.STAGE_END_EXEMPT[("ok", "phase.work")] = "a test"
+        try:
+            return [(rule, node) for _, rule, node, _ in cgi.run(root)]
+        finally:
+            cgi.STAGE_END_EXEMPT.pop(("ok", "phase.work"), None)
+
+    BOTH = [("R18", "io-stage-complete"), ("R18", "io-stage-end")]
+
+    def test_r18_the_two_hooks_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._r18(tmp, hooks=cgi.stage_end_hooks(["phase.work"])), [])
+
+    def test_r18_a_box_stage_with_no_hooks_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._r18(tmp, hooks=None), self.BOTH)
+
+    def test_r18_covers_a_plan_arm_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._r18(tmp, hooks=None, box="plan-arm", stylesheet=self.PLAN_ARM), self.BOTH)
+
+    def test_r18_any_changed_field_is_reported(self):
+        # `blocking = false` on the edge hook is the silent one: fabro ignores its override.
+        for field, value in (("blocking", False), ("sandbox", False), ("event", "checkpoint_saved"),
+                             ("script", "fabro-io stage-end phase.work"), ("matcher", "^phase[.]work$")):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                complete, end = cgi.stage_end_hooks(["phase.work"])
+                self.assertEqual(self._r18(tmp, hooks=[complete, {**end, field: value}]),
+                                 [("R18", "io-stage-end")])
+
+    def test_r18_needs_no_hook_without_a_result_to_submit(self):
+        cases = {"no output": {"output": False},
+                 "hosted": {"box": False, "stylesheet": "* { model: glm-5.3; }\n.work { model: glm-5.3; }"},
+                 "exempt": {"exempt": True}}
+        for name, kw in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(self._r18(tmp, hooks=None, **kw), [])
+            with self.subTest(name=name + ", with hooks"), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(self._r18(tmp, hooks=cgi.stage_end_hooks(["phase.work"]), **kw), self.BOTH)
+
+    def test_r18_a_stage_end_hook_under_another_id_or_twice_is_reported(self):
+        want = cgi.stage_end_hooks(["phase.work"])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._r18(tmp, hooks=[*want, {**want[1], "id": "extra"}]), [("R18", "extra")])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._r18(tmp, hooks=[*want, want[1]]), [("R18", "io-stage-end")])
+
     def test_a_box_for_a_node_that_does_not_exist_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self.root(tmp, stylesheet=self.BOX_EVERYWHERE, extra={"ghost": {"box": False}})
