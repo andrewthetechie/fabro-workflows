@@ -183,6 +183,66 @@ def test_hygiene_counters(ck, tmp_path):
     lines_to(wt / "tests/test_math.py", "def test_a():", "    assert True", "    assert add(1, 2) == 3", "    assert add(0, 0) == 0", "    assert x == x"); commit(); hy_run()
     ck("tautologies_added: four", "4", hy(".tamper.tautologies_added"))
 
+    # 9a. #92: a method call `.expect(N)` is not a tautology. wiremock's mock builder sets its
+    #     expected call count with it: flakeradar#212 was held on 26, each `.expect(1)` or
+    #     `.expect(0)` on its own line after `.respond_with(...)`. The same call on the
+    #     chain's own line, and in a #[test] module beside the code, is not one either.
+    hy_repo()
+    lines_to(wt / "tests/summary_action.rs",
+             "async fn comments_are_posted_once() {",
+             "    let server = MockServer::start().await;",
+             '    Mock::given(method("GET"))',
+             '        .and(path("/repos/acme/app/issues/12/comments"))',
+             "        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))",
+             "        .expect(1)",
+             "        .mount(&server)",
+             "        .await;",
+             '    Mock::given(method("POST")).and(path("/repos/acme/app/issues/12/comments")).respond_with(ResponseTemplate::new(201)).expect(2).mount(&server).await;',
+             "}")
+    lines_to(wt / "src/lib.rs", "fn f() -> u8 { 1 }", "", "#[cfg(test)]", "mod tests {",
+             "    use super::*;", "", "    #[tokio::test]", "    async fn posted_once() {",
+             "        let server = MockServer::start().await;",
+             '        Mock::given(method("POST"))',
+             "            .respond_with(ResponseTemplate::new(201))",
+             "            .expect(3)",
+             "            .mount(&server)",
+             "            .await;", "    }", "}")
+    commit(); hy_run()
+    ck("#92 wiremock .expect(N): not a tautology", "0", hy(".tamper.tautologies_added"))
+    ck("#92 wiremock .expect(N): nothing blocks", "0", hy(".blocking | length"))
+
+    # 9b. #92: supertest's `.expect(200)` is the same kind of call, on the response: on the
+    #     request's own line, or at the start of a line of its own.
+    hy_repo()
+    lines_to(wt / "web/api.test.ts",
+             'it("GET /x returns 200", async () => {',
+             '  await request(app).get("/x").expect(200);',
+             "});",
+             'it("POST /y returns 201", async () => {',
+             "  await request(app)",
+             '    .post("/y")',
+             "    .expect(201);",
+             "});")
+    commit(); hy_run()
+    ck("#92 supertest .expect(200): not a tautology", "0", hy(".tamper.tautologies_added"))
+    ck("#92 supertest .expect(200): nothing blocks", "0", hy(".blocking | length"))
+
+    # 9c. #92: the fix hides nothing. `expect(true)`, a bare `expect(1)` at the start of a
+    #     line and `assert!(true)` in a Rust file each still count, and still block.
+    hy_repo()
+    lines_to(wt / "web/c.test.ts", "expect(true)", "expect(1)")
+    lines_to(wt / "tests/t.rs", "#[test]", "fn t() {", "    assert!(true)", "}")
+    commit(); hy_run()
+    ck("#92 expect(true), expect(1), assert!(true): three", "3", hy(".tamper.tautologies_added"))
+    ck("#92 the three still block", "tautologies_added", hy('.blocking | join(",")'))
+
+    # 9d. #92: ...and a bare `expect(1)` still counts after a space or a bracket: `expect` must
+    #     begin the line or follow a character that is not a dot and not a word character.
+    hy_repo()
+    lines_to(wt / "web/d.test.ts", 'it("a", () => { expect(1) })', 'it("b", () => (expect(1)))', "const seen = [expect(1)]")
+    commit(); hy_run()
+    ck("#92 expect(1) after a space or a bracket: three", "3", hy(".tamper.tautologies_added"))
+
     # 10. Erosion counters report, and do not block, in the default report mode.
     hy_repo()
     lines_to(wt / "src/math.py", "def add(a, b):", "    try:", "        return a + b", "    except Exception:", "        return 0  # type: ignore", "    # TODO fix this", "    # TODO(#12) linked"); commit(); hy_run()
