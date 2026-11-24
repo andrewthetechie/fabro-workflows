@@ -1826,7 +1826,7 @@ def test_ralph_plan_review_gate(ck, tmp_path):
         return {"id": i, "severity": sev, "lens": "readiness", "requirement": "r", "message": f"msg {i}", "files": ["a.py"], "evidence": "a.py:1"}
 
     def setup(findings, visits="1", decision=None, stage="plan_review", visit="v1", stage_visit="v1"):
-        for p in (R, T / "task_list.json", T / "stuck_reason.md", T / "plan_review/findings.md", T / "plan_review/previous_task_list.json"):
+        for p in (R, T / "task_list.json", T / "stuck_reason.md", T / "plan_review/findings.md", T / "plan_review/previous_task_list.json", T / ".io/stage-end/plan_review.succeeded"):
             rm(p)
         errs = [f for f in findings if f["severity"] == "error"]
         dec = decision or ("repair" if errs else "pass")
@@ -1881,6 +1881,16 @@ def test_ralph_plan_review_gate(ck, tmp_path):
         ck(f"pr gate {name}: names why", "1", count("plan reviewer wrote no valid result", cat(T / "stuck_reason.md"), flags="F"))
     setup([]); rm(R); go()
     ck("pr gate missing result: fails the node", "1", st["rc"])
+    # A missing result has two causes, and the operator reads the reason to tell them apart (#94).
+    # `stage-end`'s `stage_complete` hook leaves `.io/stage-end/plan_review.succeeded` holding the
+    # visit of a session that ended well; a timeout or a failure leaves none.
+    ck("pr gate timed out: says it did not finish", "1", count("plan reviewer timed out or failed before it submitted", cat(T / "stuck_reason.md"), flags="F"))
+    ck("pr gate timed out: not the wrong cause", "0", count("ended without submitting", cat(T / "stuck_reason.md"), flags="F"))
+    setup([]); rm(R); write(T / ".io/stage-end/plan_review.succeeded", "v1"); go()
+    ck("pr gate ended without a result: fails the node", "1", st["rc"])
+    ck("pr gate ended without a result: says so", "1", count("plan reviewer ended without submitting a result", cat(T / "stuck_reason.md"), flags="F"))
+    setup([]); rm(R); write(T / ".io/stage-end/plan_review.succeeded", "v0"); go()
+    ck("pr gate an earlier visit's mark does not count", "1", count("plan reviewer timed out or failed before it submitted", cat(T / "stuck_reason.md"), flags="F"))
     setup([]); write(R, "{not json"); go()
     ck("pr gate garbage result: fails the node", "1", st["rc"])
     setup([], decision="maybe"); go()

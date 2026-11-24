@@ -91,6 +91,21 @@ Everything else is a `warning`: a preference, an alternative, a naming point, ex
 that harms nothing. Each `error` makes the planner spend a repair turn and the box spend
 minutes, so report one only when you can show it. When the evidence is thin, drop the finding.
 
+## Budget
+
+You have a hard time limit, and everything you have found is lost if `submit` has not been
+called when it ends: a finding exists only in your `submit` call. A review that submits
+uses about 30 tool calls and a short thought per call; the reviews that ran out of time spent
+seven times as much thinking and had still not decided.
+
+- About 45 tool calls is plenty. Past 35, open no new file, and write the review from what you
+  have read.
+- Open each cited path once. A path you have confirmed stays confirmed.
+- Decide each candidate finding once. Grade it against the Severity list, then write it or drop
+  it. Do not weigh it again, and do not reopen a call you have made.
+- Finish by calling `submit`, whether or not you found an error. Do not start another search
+  to be surer.
+
 ## Output
 
 Call `submit` with `decision`, `paraphrase` and `findings`. It checks the shape and tells you

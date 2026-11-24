@@ -82,6 +82,13 @@ Categories, named in each finding's `message`:
 - `scope_creep`: changed behaviour is materially outside scope or violates a stated
   non-goal.
 
+## Budget
+
+You have a hard time limit, and your findings are lost if `submit` has not been called when
+it ends. About 40 tool calls is plenty for a review. Past 35, open no new file and write the
+review from what you have read. Trace each checklist item once, and decide each candidate
+finding once: write it or drop it, and do not weigh it again.
+
 ## Output
 
 **Every finding is published verbatim in the pull request body, and every `error`

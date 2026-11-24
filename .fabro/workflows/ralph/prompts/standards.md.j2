@@ -82,6 +82,13 @@
   When the fix needs broad work or a human architecture decision, state the outcome the
   code must reach. Leave the architecture for achieving it to the coder loop.
 
+  ## Budget
+
+  You have a hard time limit, and your findings are lost if `submit` has not been called when
+  it ends. About 60 tool calls is plenty for a review. Past 50, open no new file and write
+  the review from what you have read. Open each file once, and decide each candidate finding
+  once: write it or drop it, and do not weigh it again.
+
   ## Fowler smell baseline
 
   - `Mysterious Name`: a changed name hides the value or behaviour it represents.

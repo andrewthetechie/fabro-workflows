@@ -415,9 +415,11 @@ done
 echo 'plan_review_prep: visit '$V', '\"$(jq '.tasks | length' $P/plan.json)\"' Task(s) to review' >&2
 echo '{\"context_updates\":{\"plan_review_go\":true,\"plan_review_visit\":'$V'}}'"]
 
-    // 2026-11-12: NEW stage, timeout unmeasured. 40m is the hosted `standards` 20m doubled for
-    // the slower two-slot box (the convention of the nodes above), and a plan review reads the
-    // whole Task list plus the code it cites. Re-time it from the first runs' visits.
+    // 2026-11-12: NEW stage; 40m is the hosted `standards` 20m doubled for the slower two-slot
+    // box. Measured 2026-11-24 (#94, 216 attempts since 11-12): 196 finished (p50 9m, p95 25m, max
+    // 40m) and 20 timed out (9%) at a median 105k reasoning tokens against 14k for a finished one,
+    // so a longer timeout buys little: the prompt's `## Budget` bounds the stage instead. The gate
+    // says whether a missing result was a timeout or a session that ended without submitting.
     plan_review [label="Review the plan", class="plan-review", timeout="40m", max_retries=1, prompt="@prompts/plan_review.md.j2"]
 
     plan_review_gate [label="Decide the plan review", shape=parallelogram, timeout="1m", output_schema="routing",
@@ -431,7 +433,14 @@ RV=$(jq -r '._io.visit // empty' $R 2>/dev/null)
 RS=$(jq -r '._io.stage // empty' $R 2>/dev/null)
 DEC=$(jq -r '.decision // empty' $R 2>/dev/null)
 if [ ! -s $R ] || [ \"$RS\" != plan_review ] || [ -z \"$RV\" ] || [ \"$RV\" != \"$SV\" ] || { [ \"$DEC\" != pass ] && [ \"$DEC\" != repair ]; }; then
-  echo 'The plan reviewer wrote no valid result, so the Task list was not reviewed and the run stops before any code is written.' > $F/stuck_reason.md
+  if [ -s $R ]; then
+    WHY='The plan reviewer wrote no valid result'
+  elif [ -n \"$SV\" ] && [ \"$(cat $F/.io/stage-end/plan_review.succeeded 2>/dev/null)\" = \"$SV\" ]; then
+    WHY='The plan reviewer ended without submitting a result'
+  else
+    WHY='The plan reviewer timed out or failed before it submitted a result'
+  fi
+  echo \"$WHY, so the Task list was not reviewed and the run stops before any code is written.\" > $F/stuck_reason.md
   exit 1
 fi
 NERR=$(jq '[.findings[]? | select(.severity == \"error\")] | length' $R 2>/dev/null || echo 0)
