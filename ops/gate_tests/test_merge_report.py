@@ -342,6 +342,107 @@ def test_render(ck, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# #92: the Diff hygiene section lists every ruling of review/hygiene_rulings.json, and the
+# axis row says how many hits a ruling cleared. A missing, malformed or empty rulings file
+# renders exactly as before.
+# ---------------------------------------------------------------------------
+RULINGS = ('[{"counter":"tests_deleted","file":"tests/test_old.py","ruling":"legitimate","basis":"requirement",'
+           '"evidence":"Delete tests/test_old.py, the old parser is gone","scenario":"","reason":"quote found in issue #12","texts":["file deleted"]},'
+           '{"counter":"asserts_removed","file":"tests/test_math.py","ruling":"unsure","basis":"replacement",'
+           '"evidence":"tests/new_test.py:40","scenario":"","reason":"tests/new_test.py is not a file this pull request changes","texts":["assert add(1, 1) == 2"]}]\n')
+HYG_CLEARED = ('{"version":1,"config":"default","tamper":{"tests_deleted":1,"asserts_removed":0},"erosion":{},"erosion_mode":"report",'
+               '"blocking":[],"cleared":[{"counter":"tests_deleted","file":"tests/test_old.py","count":1}],"samples":[]}\n')
+HYG_BLOCKED = ('{"version":1,"config":"default","tamper":{"tests_deleted":1,"asserts_removed":1},"erosion":{},"erosion_mode":"report",'
+               '"blocking":["asserts_removed"],"cleared":[{"counter":"tests_deleted","file":"tests/test_old.py","count":1}],'
+               '"samples":[{"counter":"asserts_removed","file":"tests/test_math.py","line":3,"text":"-    assert add(1, 1) == 2"}]}\n')
+
+
+def rulings_render_env(T, script_of):
+    """rm_setup (or ralph's merge_prep) staged into T; returns render(kind) and section(text)."""
+    (T / "review").mkdir(parents=True)
+    rm_setup = write(T / "rm_setup.sh", rebase(script_of, T))
+    write(T / "pr_number", "5\n")
+    for f in ("base_ref", "head_ref", "run_base_sha"):
+        write(T / f, "x\n")
+    write(T / "pr.json", '{"url":"https://github.com/o/r/pull/5"}\n')
+    write(T / "linked_issues.json", "[]\n")
+    sh(rm_setup, env={"FABRO_AUTO_MERGE": "1"})
+    render = lambda kind: sh(T / "render_comment.sh", kind, cwd=T).out
+    section = lambda c: run(["awk", "/^### Diff hygiene$/{s=1; next} s && /^### /{s=0} s"], stdin=c + "\n").out
+    return render, section
+
+
+def check_rulings_render(ck, T, render, section, who):
+    rl = T / "review/hygiene_rulings.json"
+
+    # What the report says with no rulings file is the baseline every malformed file must match.
+    write(T / "review/hygiene.json", HYG_BLOCKED)
+    rm(rl)
+    base_blocked = render("blocked")
+    write(T / "review/hygiene.json", HYG_CLEARED)
+    base_cleared = render("merged")
+
+    write(rl, RULINGS)
+    write(T / "review/hygiene.json", HYG_CLEARED)
+    c = render("merged")
+    s = section(c)
+    ck(f"{who}: everything cleared: row says 1 ruled", "1", count("^| Diff hygiene | clear (1 ruled) |$", c))
+    ck(f"{who}: lists the legitimate ruling", "1",
+       count('^- \\*\\*legitimate\\*\\* - tests_deleted in tests/test_old.py - requirement "Delete tests/test_old.py, the old parser is gone" - quote found in issue #12$', s))
+    ck(f"{who}: lists the unsure ruling", "1",
+       count("^- \\*\\*unsure\\*\\* - asserts_removed in tests/test_math.py - replacement tests/new_test.py:40 - tests/new_test.py is not a file this pull request changes$", s))
+    ck(f"{who}: rulings in the file's order", "yes",
+       "yes" if s.find("tests_deleted in tests/test_old.py") < s.find("asserts_removed in tests/test_math.py") else "no")
+    ck(f"{who}: rulings follow a heading line", "1", count("^Refuter rulings on the hits:$", s))
+    ck(f"{who}: the counters line stays", "1", count("^Counters: tests_deleted 1[.] Erosion mode: report[.]", s))
+
+    write(T / "review/hygiene.json", HYG_BLOCKED)
+    c = render("blocked")
+    ck(f"{who}: one hit uncleared: row is blocked as before", "1", count("^| Diff hygiene | blocked: asserts_removed |$", c))
+    ck(f"{who}: one hit uncleared: no ruled count", "0", count("ruled)", c, flags="F"))
+    ck(f"{who}: one hit uncleared: both rulings listed", "2", count("^- \\*\\*(legitimate|unsure)\\*\\* - ", section(c), flags="E"))
+
+    # A tampering ruling shows its scenario.
+    write(rl, '[{"counter":"asserts_removed","file":"tests/test_math.py","ruling":"tampering","basis":"none","evidence":"",'
+              '"scenario":"add() now overflows on 2**63 and the removed assert was the one that caught it",'
+              '"reason":"the refuter judged the change hides a failure","texts":["assert add(1, 1) == 2"]}]\n')
+    write(T / "review/refute.json", '{"criteria":[{"criterion":"c","status":"met","evidence":"a.py:1"}],"defects":[]}\n')
+    c = render("blocked")
+    s = section(c)
+    refuter = run(["awk", "/^### Refuter$/{s=1; next} s && /^### /{s=0} s"], stdin=c + "\n").out
+    ck(f"{who}: tampering is a defect in the Refuter section", "1",
+       count("^- [*][*]defect[*][*] - tests/test_math.py - add[(][)] now overflows .* [(]ruled tampering[)]$", refuter, flags="E"))
+    rm(T / "review/refute.json")
+    ck(f"{who}: tampering shows its scenario", "1",
+       count("^- \\*\\*tampering\\*\\* - asserts_removed in tests/test_math.py - none - the refuter judged the change hides a failure - scenario: add[(][)] now overflows on 2[*][*]63 and the removed assert was the one that caught it$", s, flags="E"))
+
+    # Missing, malformed or empty: exactly today's report.
+    for label, body in (("empty array", "[]\n"), ("an object", '{"counter":"tests_deleted"}\n'),
+                        ("not JSON", "[{\n"), ("two arrays", "[]\n[]\n"), ("zero bytes", "")):
+        write(rl, body)
+        write(T / "review/hygiene.json", HYG_BLOCKED)
+        ck(f"{who}: rulings file {label}: blocked report unchanged", "same", "same" if render("blocked") == base_blocked else "differs")
+        write(T / "review/hygiene.json", HYG_CLEARED)
+        ck(f"{who}: rulings file {label}: cleared report unchanged", "same", "same" if render("merged") == base_cleared else "differs")
+    ck(f"{who}: no rulings: no heading line", "0", count("^Refuter rulings on the hits:$", base_blocked))
+
+    # cleared empty, blocking non-empty: as today.
+    rm(rl)
+    write(T / "review/hygiene.json", '{"tamper":{"skips_added":1},"erosion":{},"erosion_mode":"report","blocking":["skips_added"],"cleared":[],"samples":[]}\n')
+    ck(f"{who}: nothing cleared, blocked: row as today", "1", count("^| Diff hygiene | blocked: skips_added |$", render("blocked")))
+    write(T / "review/hygiene.json", '{"tamper":{},"erosion":{},"erosion_mode":"report","blocking":[],"cleared":[],"samples":[]}\n')
+    ck(f"{who}: nothing cleared, clear: row as today", "1", count("^| Diff hygiene | clear |$", render("merged")))
+    write(T / "review/hygiene.json", '{"tamper":{},"erosion":{},"erosion_mode":"report","blocking":[],"samples":[]}\n')
+    ck(f"{who}: no cleared key: row as today", "1", count("^| Diff hygiene | clear |$", render("merged")))
+
+
+def test_render_rulings(ck, tmp_path):
+    T = tmp_path / "render_rulings"
+    render, section = rulings_render_env(T, extract(SHARED, "rm_setup"))
+    check_rulings_render(ck, T, render, section, "render")
+
+
+# ---------------------------------------------------------------------------
 # the report's commit list (real git): only the review's own commits. pr-review's
 # rebase_check moved run_base_sha past the rebase, and the render excludes origin/<base>, so
 # neither a rebase nor resolve_base's merge (#37) lists base commits.

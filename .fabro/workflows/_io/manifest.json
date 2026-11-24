@@ -48,7 +48,9 @@
           "path": "/tmp/fabro/review/standards.json",
           "schema": "standards"
         },
-        "sealed": [],
+        "sealed": [
+          "/tmp/fabro/review/hygiene_rulings.json"
+        ],
         "also": [],
         "box": false
       },
@@ -97,7 +99,9 @@
           "path": "/tmp/fabro/review/spec.json",
           "schema": "spec"
         },
-        "sealed": [],
+        "sealed": [
+          "/tmp/fabro/review/hygiene_rulings.json"
+        ],
         "also": [],
         "box": false
       },
@@ -168,7 +172,9 @@
             "absent": "no previous fix attempt"
           }
         ],
-        "sealed": [],
+        "sealed": [
+          "/tmp/fabro/review/hygiene_rulings.json"
+        ],
         "also": [],
         "output": {
           "path": "/tmp/fabro/review/fix_result.json",
@@ -208,7 +214,7 @@
             "name": "hygiene",
             "path": "/tmp/fabro/review/hygiene.json",
             "required": true,
-            "about": "the diff-hygiene counters; samples lists where each fired"
+            "about": "the diff-hygiene counters; hits lists, for each tamper counter and file, the net count and every line it could not account for with its full text, test_paths is how a test file is known, and cleared lists the hits a ruling cleared"
           },
           {
             "name": "validation",
@@ -228,7 +234,8 @@
           "/tmp/fabro/review/ci_fix_result.json",
           "/tmp/fabro/feedback/**",
           "/tmp/fabro/review/refute_fix.json",
-          "/tmp/fabro/review/refute_findings.json"
+          "/tmp/fabro/review/refute_findings.json",
+          "/tmp/fabro/review/hygiene_rulings.json"
         ],
         "also": [],
         "box": false
@@ -277,7 +284,8 @@
           "/tmp/fabro/review/refute.json",
           "/tmp/fabro/review/refute_verdict",
           "/tmp/fabro/review/refute_reason.txt",
-          "/tmp/fabro/review/hygiene.json"
+          "/tmp/fabro/review/hygiene.json",
+          "/tmp/fabro/review/hygiene_rulings.json"
         ],
         "also": [],
         "box": {
@@ -323,7 +331,9 @@
             "absent": "the linked issues are missing; use the PR description for intent"
           }
         ],
-        "sealed": [],
+        "sealed": [
+          "/tmp/fabro/review/hygiene_rulings.json"
+        ],
         "also": [],
         "box": {
           "backlog": true,
@@ -372,7 +382,9 @@
             "about": "PR number, title, body, refs and labels"
           }
         ],
-        "sealed": [],
+        "sealed": [
+          "/tmp/fabro/review/hygiene_rulings.json"
+        ],
         "also": [],
         "output": {
           "path": "/tmp/fabro/review/ci_fix_result.json",
@@ -421,7 +433,9 @@
             "about": "PR number, title, body, refs and labels"
           }
         ],
-        "sealed": [],
+        "sealed": [
+          "/tmp/fabro/review/hygiene_rulings.json"
+        ],
         "also": [],
         "output": {
           "path": "/tmp/fabro/review/ci_fix_result.json",
@@ -1773,7 +1787,9 @@
               "absent": "no code was copied for this task; read the dossier's ranges with code_show or read_file"
             }
           ],
-          "sealed": [],
+          "sealed": [
+            "/tmp/fabro/review/hygiene_rulings.json"
+          ],
           "also": [],
           "output": {
             "path": "/tmp/fabro/iteration.json",
@@ -1819,7 +1835,9 @@
               "absent": "no code was copied for this task; read the dossier's ranges with code_show or read_file"
             }
           ],
-          "sealed": [],
+          "sealed": [
+            "/tmp/fabro/review/hygiene_rulings.json"
+          ],
           "also": [],
           "output": {
             "path": "/tmp/fabro/iteration.json",
@@ -1865,7 +1883,9 @@
               "absent": "no code was copied for this task; read the dossier's ranges with code_show or read_file"
             }
           ],
-          "sealed": [],
+          "sealed": [
+            "/tmp/fabro/review/hygiene_rulings.json"
+          ],
           "also": [],
           "output": {
             "path": "/tmp/fabro/iteration.json",
@@ -1911,7 +1931,9 @@
               "absent": "no code was copied for this task; read the dossier's ranges with code_show or read_file"
             }
           ],
-          "sealed": [],
+          "sealed": [
+            "/tmp/fabro/review/hygiene_rulings.json"
+          ],
           "also": [],
           "output": {
             "path": "/tmp/fabro/iteration.json",
@@ -1945,7 +1967,7 @@
               "name": "hygiene",
               "path": "/tmp/fabro/review/hygiene.json",
               "required": true,
-              "about": "the diff-hygiene counters; samples lists where each fired"
+              "about": "the diff-hygiene counters; hits lists, for each tamper counter and file, the net count and every line it could not account for with its full text, test_paths is how a test file is known, and cleared lists the hits a ruling cleared"
             },
             {
               "name": "validation",
@@ -1977,7 +1999,8 @@
             "/tmp/fabro/task-code.md",
             "/tmp/fabro/task_list.json",
             "/tmp/fabro/feedback/",
-            "/tmp/fabro/local_review/"
+            "/tmp/fabro/local_review/",
+            "/tmp/fabro/review/hygiene_rulings.json"
           ],
           "also": [],
           "output": {
@@ -2036,6 +2059,7 @@
             "/tmp/fabro/review/refute_dropped.json",
             "/tmp/fabro/review/refute_survivors.json",
             "/tmp/fabro/review/refute_reason.txt",
+            "/tmp/fabro/review/hygiene_rulings.json",
             "/tmp/fabro/local_review/"
           ],
           "also": [],
@@ -2095,6 +2119,7 @@
             "/tmp/fabro/review/refute_dropped.json",
             "/tmp/fabro/review/refute_survivors.json",
             "/tmp/fabro/review/refute_reason.txt",
+            "/tmp/fabro/review/hygiene_rulings.json",
             "/tmp/fabro/local_review/"
           ],
           "also": [],
@@ -2128,7 +2153,9 @@
               "about": "the parent issue the accumulated work belongs to, supplemental"
             }
           ],
-          "sealed": [],
+          "sealed": [
+            "/tmp/fabro/review/hygiene_rulings.json"
+          ],
           "also": [],
           "box": false
         },
@@ -2169,7 +2196,9 @@
               "absent": "the linked issues are missing; use the PR description for intent"
             }
           ],
-          "sealed": [],
+          "sealed": [
+            "/tmp/fabro/review/hygiene_rulings.json"
+          ],
           "also": [],
           "box": true
         },
@@ -2184,7 +2213,9 @@
               "about": "this run's own record: the progress log, the Refute rounds, a table of every Task with its Iterations and misses, and how the run ended"
             }
           ],
-          "sealed": [],
+          "sealed": [
+            "/tmp/fabro/review/hygiene_rulings.json"
+          ],
           "also": [],
           "output": {
             "path": "/tmp/fabro/learnings.json",
@@ -2245,7 +2276,8 @@
             "/tmp/fabro/review/refute_history.md",
             "/tmp/fabro/review/refute_dropped.json",
             "/tmp/fabro/review/refute_survivors.json",
-            "/tmp/fabro/review/refute_reason.txt"
+            "/tmp/fabro/review/refute_reason.txt",
+            "/tmp/fabro/review/hygiene_rulings.json"
           ],
           "also": [],
           "output": {
@@ -2307,7 +2339,8 @@
             "/tmp/fabro/review/refute_history.md",
             "/tmp/fabro/review/refute_dropped.json",
             "/tmp/fabro/review/refute_survivors.json",
-            "/tmp/fabro/review/refute_reason.txt"
+            "/tmp/fabro/review/refute_reason.txt",
+            "/tmp/fabro/review/hygiene_rulings.json"
           ],
           "also": [],
           "output": {

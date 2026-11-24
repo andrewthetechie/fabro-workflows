@@ -6,56 +6,141 @@ import shutil
 
 import pytest
 
-from harness import (ARCH, GRAPH, ORIG_PATH, PR, SHARED, SHARED_TRIAGE, WF, cat, count, extract,
-                     git, jq, jq_n, lastjson, rebase, rm, run, sh, stage, write)
+from harness import (ARCH, GRAPH, ORIG_PATH, PR, REPO_ROOT, SHARED, SHARED_TRIAGE, WF, cat, count, extract,
+                     git, jq, jq_n, lastjson, present, rebase, rm, run, sh, stage, write)
 
 FV = "fac3fac3fac3fac3fac3fac3fac3fac3"
 STALE = "ffffffffffffffffffffffffffffffff"
+FIX_DIR = REPO_ROOT / "ops/fabro-io/tests/fixtures"
 
 
 # ---------------------------------------------------------------------------
-# improve end to end — the REAL fabro-io `submit`, under backlog's GENERATED manifest, then
-# the REAL improve_gate. The flat `ready` shape (task_title, task_body, ...) must survive the
-# schema and the receipt, and the gate must build current_task.json from it. Needs fabro-io
-# on PATH; skipped otherwise.
+# improve end to end — DELETED 2026-11-23. Its subject left the repository: ADR 0030
+# removed backlog's `improve` stage (and with it `improve_gate` and the `improve`
+# manifest stage) on 2026-10-21, and the test then silently skipped everywhere it ran,
+# because no `fabro-io` is on this Mac's PATH (`make check` never saw it). Building the
+# binary for #92 put it on PATH and the test failed on the manifest's answer, "no stage
+# 'improve'". What it still proved is proved for a live stage by
+# `test_refute_hygiene_end_to_end` below: the REAL `fabro-io submit` under backlog's
+# GENERATED manifest, a refusal, an acceptance and the receipt.
 # ---------------------------------------------------------------------------
-def test_improve_end_to_end(ck, tmp_path):
+
+# ---------------------------------------------------------------------------
+# refute end to end — the REAL fabro-io `submit`, under backlog's GENERATED manifest (stage
+# `review_merge.refute`), on the diff-hygiene rulings (#92, plan decision 9). `hygiene` is a
+# required array and may be `[]`: a result that leaves it out is refused in the Refuter's own
+# session, so a hit is never unruled by accident. `submit` also refuses a ruling on a counter
+# nobody may rule on, and a `tampering` with no scenario. It accepts a `legitimate` ruling
+# whatever its basis: whether the evidence holds is the gate's check, which makes a failed one
+# `unsure`. The two refute fixtures the gate tests call valid pass the same schema. Needs
+# fabro-io on PATH; skipped otherwise.
+# ---------------------------------------------------------------------------
+def test_refute_hygiene_end_to_end(ck, tmp_path):
     if not shutil.which("fabro-io", path=ORIG_PATH):
         pytest.skip("no fabro-io on PATH; present in profile images")
-    T = tmp_path / "ie2e"
+    T = tmp_path / "rhe2e"
     T.mkdir()
-    # The generated line is `FABRO_IO_MANIFEST = '''<json>'''`: keep from the first `{` to
-    # the last `}`, then point the absolute sandbox paths at the scratch root.
     manifest = ""
     for line in (WF / "backlog/workflow.toml").read_text().split("\n"):
         if line.startswith("FABRO_IO_MANIFEST"):
             manifest = rebase(line[line.index("{"):line.rindex("}") + 1], T)
             break
-    ck("improve e2e: manifest extracted", "1", "1" if manifest else "0")
+    ck("refute hygiene e2e: manifest extracted", "1", "1" if manifest else "0")
     env = {"FABRO_IO_ROOT": T, "FABRO_IO_MANIFEST": manifest}
-    gate = write(T / "improve_gate.sh", rebase(extract(GRAPH, "improve_gate"), T))
-    write(T / "current_task.json", '{"id":"big","title":"Big","body":"b","files":["f.py"],"covers":["c1","c2"],"priority":"high","source":"decompose"}')
-    write(T / "tasks.json", '[{"id":"big","title":"Big","body":"b","files":[],"covers":["c1"],"source":"decompose"}]')
-    write(T / "issue.json", '{"number":1,"title":"t","body":"b","comments":[],"labels":[]}')
-    write(T / "task_index", "1\n")
-    run(["fabro-io", "stage"], env={**env, "FABRO_WORKFLOW": "backlog", "FABRO_NODE_ID": "improve"})
+    # the stage's six required inputs, each one page
+    write(T / "review/refute_issues.json", '[{"number":31,"title":"cap the fee","body":"cap the fee at five percent"}]\n')
+    write(T / "pr.json", '{"number":12,"title":"cap the fee","body":"closes #31"}\n')
+    write(T / "review/refute_diff.patch", "--- a/tests/test_calc.py\n+++ b/tests/test_calc.py\n-    assert net(50, 0) == 50\n")
+    write(T / "review/refute_omitted.txt", "")
+    write(T / "review/hygiene.json", '{"hits":[],"cleared":[]}\n')
+    write(T / "review/refute_validation.md", "final passed on this tree\n")
+    run(["fabro-io", "stage"], env={**env, "FABRO_WORKFLOW": "backlog", "FABRO_NODE_ID": "review_merge.refute"})
     run(["fabro-io", "inputs"], env=env)
-    # the nested shape is refused by submit, with the schema's own message
-    write(T / "nested.json", '{"disposition":"ready","reason":"r","task":{"id":"big","title":"S","body":"nb"}}')
-    ck("improve e2e: nested task refused by submit", "4", run(["fabro-io", "submit", "--file", T / "nested.json"], env=env).rc)
-    # the flat shape is written with a receipt, and the gate builds the task from it
-    write(T / "flat.json", '{"disposition":"ready","reason":"r","task_title":"Sharpened","task_body":"new body","task_covers":["c1"]}')
-    ck("improve e2e: flat ready accepted by submit", "0", run(["fabro-io", "submit", "--file", T / "flat.json"], env=env).rc)
-    r = sh(gate, cwd=T, env=env, stderr="drop")
-    cur = T / "current_task.json"
-    ck("improve e2e: gate exits 0", "0", r.rc)
-    ck("improve e2e: gate routes ready", "ready", jq(".context_updates.task_disposition", lastjson(r.out)))
-    ck("improve e2e: title", "Sharpened", jq(".title", file=cur))
-    ck("improve e2e: body", "new body", jq(".body", file=cur))
-    ck("improve e2e: id kept", "big", jq(".id", file=cur))
-    ck("improve e2e: covers overridden", "c1", jq('.covers|join(" ")', file=cur))
-    ck("improve e2e: files defaulted", "f.py", jq('.files|join(" ")', file=cur))
-    ck("improve e2e: priority defaulted", "high", jq(".priority", file=cur))
+    out = T / "review/refute.json"
+
+    def rule(counter, ruling, basis, scenario):
+        # one ruling, as compact JSON
+        return jq_n('{counter:$c, file:"a/tests/test_phone.py", ruling:$r, basis:$b, evidence:"", scenario:$s}',
+                    "--arg", "c", counter, "--arg", "r", ruling, "--arg", "b", basis, "--arg", "s", scenario)
+
+    def result(hygiene=None):
+        # a passing result, with the given `hygiene` array (JSON text) or without the key
+        doc = ('{summary:"s", criteria:[{criterion:"login with valid credentials succeeds", status:"met", '
+               'evidence:"auth.py:12"}], defects:[]')
+        return jq_n(doc + (", hygiene:$h}" if hygiene is not None else "}"),
+                    *(["--argjson", "h", hygiene] if hygiene is not None else []))
+
+    def submit(doc):
+        write(T / "result.json", doc + "\n")
+        return run(["fabro-io", "submit", "--file", T / "result.json"], env=env)
+
+    # 1. No `hygiene` at all: refused, and the message says what is missing. (`submit` names a
+    #    missing root property in its message and a field inside the list by its pointer.)
+    r = submit(result())
+    ck("refute hygiene e2e: no hygiene is refused with exit 4", "4", r.rc)
+    ck("refute hygiene e2e: the refusal names hygiene", "1", count('"hygiene" is a required property', r.out))
+    # 2. `tampering` with an empty scenario: refused, the message names the field.
+    r = submit(result("[" + rule("asserts_removed", "tampering", "none", "") + "]"))
+    ck("refute hygiene e2e: tampering with no scenario refused", "4", r.rc)
+    ck("refute hygiene e2e: the refusal points at the scenario", "1", count("^/hygiene/0/scenario: ", r.out))
+    # 3. A ruling on a counter nobody may rule on: refused, the message names the counter.
+    r = submit(result("[" + rule("skips_added", "legitimate", "requirement", "") + "]"))
+    ck("refute hygiene e2e: a skips_added ruling refused", "4", r.rc)
+    ck("refute hygiene e2e: the refusal points at the counter", "1", count("^/hygiene/0/counter: ", r.out))
+    # A refused result leaves no file, so the gate sees that the Refuter submitted nothing.
+    ck("refute hygiene e2e: a refused result writes nothing", "absent", present(out))
+    # 4. `legitimate` with basis `none`: the schema passes it; the gate's check makes it `unsure`.
+    r = submit(result("[" + rule("tests_deleted", "legitimate", "none", "") + "]"))
+    ck("refute hygiene e2e: legitimate with basis none accepted", "0", r.rc)
+    # 5. An empty list is a valid result, written with its receipt.
+    r = submit(result("[]"))
+    ck("refute hygiene e2e: empty hygiene accepted", "0", r.rc)
+    ck("refute hygiene e2e: written", "written: " + str(out), r.out)
+    ck("refute hygiene e2e: receipt stage", "review_merge.refute", jq("._io.stage", file=out))
+    ck("refute hygiene e2e: receipt visit", jq(".visit", file=T / ".io/stage.json"), jq("._io.visit", file=out))
+    ck("refute hygiene e2e: receipt hashes every input", "diff hygiene issues omitted pr validation",
+       jq("._io.inputs | keys | join(\" \")", file=out))
+    ck("refute hygiene e2e: hygiene written as an empty list", "true", jq(".hygiene == []", file=out))
+    # 6. The two refute fixtures `test_refute_gate` calls valid pass the same schema. `_io` is
+    #    the server's stamp, so it is cut before submit sees them, as it is for a model's call.
+    for name in ("refute-pass.json", "refute-fail.json"):
+        ck(f"refute hygiene e2e: {name} passes the schema", "0",
+           submit(jq("del(._io)", file=FIX_DIR / name, raw=False)).rc)
+
+
+# ---------------------------------------------------------------------------
+# the rulings file is Sealed (#92): `refute_gate` writes /tmp/fabro/review/hygiene_rulings.json
+# after the Refuter's visit, so the Refuter never sees an earlier round's rulings, and neither
+# the fix turn nor ralph's reviewers do. The REAL `fabro-io guard` under each GENERATED
+# manifest, with the committed `/tmp/fabro` paths, because the hook compares the tool's path
+# with the sealed entry. Needs fabro-io on PATH; skipped otherwise.
+# ---------------------------------------------------------------------------
+def test_hygiene_rulings_sealed(ck, tmp_path):
+    if not shutil.which("fabro-io", path=ORIG_PATH):
+        pytest.skip("no fabro-io on PATH; present in profile images")
+    T = tmp_path / "hrsealed"
+    (T / ".io").mkdir(parents=True)
+
+    def guard(workflow, node, path):
+        manifest = next(line[line.index("{"):line.rindex("}") + 1]
+                        for line in (WF / workflow / "workflow.toml").read_text().split("\n")
+                        if line.startswith("FABRO_IO_MANIFEST"))
+        write(T / ".io/stage.json", f'{{"workflow":"{workflow}","node":"{node}","visit":"{FV}"}}')
+        e = {"FABRO_IO_ROOT": T, "FABRO_IO_MANIFEST": manifest,
+             "FABRO_HOOK_CONTEXT": f'{{"tool_input":{{"path":"{path}"}}}}'}
+        return run(["fabro-io", "guard"], env=e)
+
+    rulings = "/tmp/fabro/review/hygiene_rulings.json"
+    sealed = (("backlog", "review_merge.refute"), ("backlog", "review_merge.refute_fix"),
+              ("ralph", "refute"), ("ralph", "standards"), ("ralph", "spec"),
+              ("ralph", "local_standards"), ("ralph", "local_spec"))
+    for workflow, node in sealed:
+        r = guard(workflow, node, rulings)
+        ck(f"rulings sealed: {workflow} {node} blocks the read", "2", r.rc)
+        ck(f"rulings sealed: {workflow} {node} says why", "1", count("is sealed for this stage", r.out))
+    # The Refuter still reads its counters and writes its own result.
+    ck("rulings sealed: refute reads the counters", "0", guard("backlog", "review_merge.refute", "/tmp/fabro/review/hygiene.json").rc)
+    ck("rulings sealed: refute writes its result", "0", guard("backlog", "review_merge.refute", "/tmp/fabro/review/refute.json").rc)
 
 
 # ---------------------------------------------------------------------------

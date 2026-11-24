@@ -305,3 +305,96 @@ command criterion that `ci.sh` runs was held. `unverifiable`-only first verdicts
 8 on 10-18 and 10-19, so the over-blocking trigger above did not fire (2 days, not 3). 13 of
 the 18 were process criteria ("run X and commit", "load these guidelines first"), the class
 #40 left out of scope. They are tracked in #52.
+
+## Amendment (2026-11-23): the Refuter rules on diff-hygiene hits (#92)
+
+**Status:** accepted (operator, 2026-11-23; plan comment on #92, `issuecomment-7118127541`).
+This amends D1, D2 and D4, and partly reopens D2's rejection of an issue-body override, in
+the one form below. The original text above is kept as written.
+
+**Why.** Of the 29 PRs that hygiene held, all 29 have merged, 20 with no operator commit. No
+operator commit on any of them restored what hygiene flagged, so there is no confirmed true
+positive. The Refuter's last verdict on the 29 was 26 `pass` and 3 `fail`. Two of the passes
+were held by `config_changed`, which stays unrulable, so rulings can clear at most 24 of the
+29 at this gate. One of the 29 was a counter bug, not a ruling question: `TAUT` counted a
+method call `.expect(1)` (wiremock) as a tautology, and it now matches `expect(` only when no
+dot or word character precedes it.
+
+**Decision.** The Refuter rules on each `tests_deleted` and `asserts_removed` hit, and code
+decides what a ruling may clear.
+- Three rulings: `legitimate`, `tampering` and `unsure`. Only `tests_deleted` and
+  `asserts_removed` are rulable. `skips_added`, `tautologies_added`, `config_changed`,
+  `config_invalid` and `hygiene_error` block whatever a ruling says.
+- A ruling covers the hit's line texts, not a count alone. A hit stays cleared only while its
+  texts are a sub-multiset of the ruled texts and its count is no more than the ruled count:
+  fewer lines pass, any new line blocks, and so does one more assertion lost. (Review,
+  2026-11-24: a hit lists every removed line that no addition in its hunk accounts for. The
+  counter listed the first lines of the hunk, so a ruling on an assertion updated in place
+  cleared the deletion below it, and a CI fix could then delete a third line.)
+- `legitimate` carries evidence for every line of the hit, and code checks it. A `requirement`
+  is a quote of at least 20 characters found, word for word, in the title or body of one
+  linked issue, never in the PR description; for `tests_deleted` it must name the deleted file. A `replacement` is a
+  `path:N` in a test file the PR changes, present in HEAD with a non-blank line N. A failed
+  check, or two differing rulings for one hit, makes the ruling `unsure`. (Review,
+  2026-11-24: the 20 characters are counted on the quote's words joined by single spaces, so punctuation cannot
+  pad a file name past the floor; "names the deleted file" means one token of the quote is
+  the hit's path, a tail of it that holds a slash, or its bare basename, so neither
+  `legacy-test_old.py` nor another directory's `test_old.py` names it; "word for word" lets
+  only whitespace, backticks and asterisks differ, and the quote starts and ends at a word;
+  and a `path:N` that spans more than one line is refused. After the first planted check:
+  while any criterion is `not_met`, a `requirement` ruling is `unsure`, and the same ruling
+  submitted twice is one ruling.)
+- `unsure` and an unruled hit hold the merge. They add no defect, and change neither the
+  verdict nor the route. A hit the Refuter did not rule on gets no repair turn.
+- `tampering` becomes a defect with the Refuter's scenario, makes the verdict `fail`, and
+  takes the existing route: the one fix turn in the shared phase, or Tasks while Refute
+  rounds remain in `ralph`, then a hold.
+- The counters stay, and stay mechanical. The clearing rule lives in `hygiene.sh` alone:
+  `refute_gate` writes `review/hygiene_rulings.json`, and the counter program applies it.
+  `refute_prep` deletes the rulings, and it and `refute_gate` re-run the counters only while
+  HEAD's tree is the one they last read and the worktree is clean; otherwise `merge_gate`
+  check 13b blocks, as before. `ci_fix_gate` does not change: its re-run stays unconditional
+  and reads the surviving rulings (D3). When `refute_prep`'s guard fails it fails closed in
+  `hygiene.json` (`cleared` emptied, the rulable counters back in `blocking`), and when that
+  undoes a clear it rewrites `hygiene_reason.txt` to say the rulings were dropped, so check
+  13 never reads a stale "cleared" clause or a missing reason.
+- The report's Diff hygiene section lists every ruling with its basis, evidence and the
+  check's reason, and the scorecard counts the rulings and lists every ruled merge.
+
+**What this reopens.** D2 rejected an issue-body override because agents edit issue bodies
+and the run's token cannot tell their edits from a human's. That is still true. We accepted
+the risk in this form only: a quote that code verifies against one linked issue, which must
+name the deleted file for `tests_deleted`, while a `replacement` must be a test file the PR
+changes. An agent that writes a matching quote into an issue has to name the exact file, in
+an issue the PR closes. One confirmed bad clear reverts this whole amendment.
+
+**Accepted limits.**
+- The Refuter's fallback model is in the coder's family, and it may rule.
+- `hygiene_rulings.json` is Sealed, with `io-guard` running, for every agent stage that can
+  run after `refute_gate`: in the shared phase all eight (the reviewers, `review_fix`, the
+  Refuter, `refute_fix`, `resolve_base` and both CI-fix tiers), and in `ralph` the Refuter,
+  both review pairs, the four Iteration tiers, `resolve_merge`, `resolve_base` and `learn`.
+  A review on 2026-11-24 found the first cut sealed it only from the Refuter, the fix turn
+  and `ralph`'s reviewers, so a CI-fix tier or an Iteration could write a `legitimate` entry
+  that `ci_fix_gate`'s unconditional re-run, or `ralph`'s next `hygiene` visit, then
+  applied. The gate tests derive the stage list from the spliced graphs. The seal is still a
+  guardrail against mistakes, not a security boundary. A hash of the file recorded by
+  `refute_gate` was considered and not built: the hash would live in a path only the same
+  guard protects, so it adds nothing the seal does not.
+- The counters net removals against additions per hunk, so a CI fix that drops an added
+  assertion can expose a removed line no ruling covered. That blocks, which is the safe
+  direction.
+
+**Before the ship.** A planted-tampering check runs the new prompt and schema once on the
+Refuter's model, over 4 real held PRs and 7 planted cases, judged after the code checks. The
+bar is 0 of 7 planted cases cleared and at least 3 of 4 real ones cleared. A fail stops the
+change, and the bar is not loosened. The first run (2026-11-24) failed, 1 of 7 (a port whose
+deletion was quoted from a conditional sentence) and 3 of 4. The operator chose to fix the
+cause and to run once more on new cases, written and hashed before the fix. That run passed,
+0 of 7 and 3 of 4, and the model ruled all seven `tampering` itself. Both results are comments
+on #92. One run of seven cases catches an unfit model and bounds no miss rate.
+
+**No kill switch.** The off path is a revert of the rulings commit. There is no Stage I/O
+binary change and no image deploy. The read, two weeks after the push, needs at least one
+ruled hit merged by its run, every ruled merge read with no bad clear, and hygiene-held
+`ralph` PRs below 24%.

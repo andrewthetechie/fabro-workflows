@@ -6,9 +6,10 @@ rather than the text, because a wrong route is invisible to `fabro validate`."""
 import json
 import time
 
-from harness import (ORIG_PATH, RAPH, WF, cat, count, edges, extract, git,
-                     grep, head1, jq, jq_n, lastjson, mkreadok, present, rebase, rm, run, sh,
-                     rm_glob, stage, stub, syntax_ok, which, write)
+from harness import (ORIG_PATH, RAPH, SHARED, WF, cat, count, edges, extract, git,
+                     grep, head1, jq, jq_n, lastjson, mkreadok, present, rebase, rm,
+                     routing_check, run, run_files, sh, rm_glob, stage, stub, syntax_ok, which,
+                     write)
 
 ENTRY_GH = """#!/bin/sh
 case "$1 $2" in
@@ -418,6 +419,115 @@ def test_ralph_record(ck, tmp_path):
     ck("pick: resolve_merge is gated on a rebase", "1", count("pick->resolve_merge context.rebase_failed=true", rp, flags="xF"))
 
 
+# ---------------------------------------------------------------------------
+# ralph's refute_prep and refute_gate -- the rulings (#92), real git, the REAL node order:
+# ralph's hygiene (an R10 copy of the shared one), refute_prep, a fixture refute.json
+# carrying `hygiene`, refute_gate. ralph's two refuter nodes are not R10 copies, so the
+# shared phase's tests do not cover them. The run branch deletes one test file, removes one
+# assertion, adds a new test file and a Rust line, so the counters see one tests_deleted and
+# one asserts_removed hit, and the base is origin/main through base_ref (final_check writes
+# `main`).
+# ---------------------------------------------------------------------------
+RFV = "ra1fra1fra1fra1fra1fra1fra1fra1f"
+R_TITLE = "Port the parser and delete tests/test_old.py"
+R_BODY = "The old parser is gone, so delete\n  tests/test_old.py as part\nof this change."
+R_SCN = "the deleted tests/test_old.py covered the parser error path and nothing replaced it"
+
+
+def rh(counter, file, ruling="legitimate", basis="requirement",
+       evidence="delete tests/test_old.py as part of this change", scenario=""):
+    """One entry of refute.json's `hygiene`, as the Refuter submits it."""
+    return {"counter": counter, "file": file, "ruling": ruling, "basis": basis,
+            "evidence": evidence, "scenario": scenario}
+
+
+R_REQ = rh("tests_deleted", "tests/test_old.py")
+R_RS = rh("asserts_removed", "tests/test_math.py", basis="replacement", evidence="src/lib.rs:2")
+R_TAMPER = rh("tests_deleted", "tests/test_old.py", ruling="tampering", basis="none", evidence="", scenario=R_SCN)
+
+
+class RalphRefute:
+    """One throwaway repository and ralph's hygiene, refute_prep and refute_gate."""
+    STAGED = ("hygiene_node.sh", "refute_prep.sh", "refute_gate.sh")
+
+    def __init__(self, ck, tmp_path, name):
+        self.T = T = tmp_path / name
+        self.hygiene = stage(ck, "hygiene", T, graph=RAPH, name="hygiene_node", label="hygiene (ralph)")
+        self.prep = stage_r(ck, "refute_prep", T)
+        self.gate = stage_r(ck, "refute_gate", T)
+
+    @staticmethod
+    def lines(*ls):
+        return "".join(l + "\n" for l in ls)
+
+    def fresh(self):
+        T = self.T
+        for p in list(T.iterdir()):
+            if p.name not in self.STAGED:
+                rm(p)
+        self.wt = wt = T / "repo"
+        bare_and_repo(T / "origin.git", wt, {
+            "tests/test_old.py": self.lines("def test_old():", "    assert parse_a() == 1"),
+            "tests/test_math.py": self.lines("def test_a():", "    assert add(1, 2) == 3", "    assert add(0, 0) == 0"),
+            "src/math.py": self.lines("def add(a, b):", "    return a + b"),
+            "src/lib.rs": self.lines("fn f() -> u8 { 1 }"),
+            ".fabro/ci.sh": self.lines("#!/bin/sh", "exit 0"),
+        })
+        git("-C", wt, "checkout", "-qb", "fabro/run/01TEST")
+        git("-C", wt, "rm", "-q", "tests/test_old.py")
+        write(wt / "tests/test_math.py", self.lines("def test_a():", "    assert add(1, 2) == 3"))
+        write(wt / "tests/test_new.py", self.lines("def test_new():", "", "    assert add(0, 0) == 0 and add(0, 1) == 1"))
+        write(wt / "src/lib.rs", self.lines("fn f() -> u8 { 1 }", "fn g() -> u8 { 2 }"))
+        self.commit()
+        write(T / "base_ref", "main\n")
+        write(T / "issue.json", json.dumps({"number": 12, "title": R_TITLE, "body": R_BODY, "labels": [], "comments": []}) + "\n")
+        write(T / "tasks.json", "[]")
+        mkreadok(T, RFV)
+
+    def commit(self):
+        git("-C", self.wt, "add", "-A"); git("-C", self.wt, "commit", "-qm", "change")
+
+    def hyg(self):
+        sh(self.hygiene, cwd=self.wt)
+
+    def run_prep(self):
+        return sh(self.prep, cwd=self.wt, stderr="keep")
+
+    def result(self, hygiene, criteria=None, defects=None, receipt=True):
+        doc = {"summary": "checked", "criteria": criteria or [{"criterion": "the work is done", "status": "met", "evidence": "src/math.py:2"}],
+               "defects": defects or [], "hygiene": hygiene}
+        if receipt:
+            doc = {"_io": {"visit": RFV, "binary": "0.1.0", "stage": "ralph.refute"}, **doc}
+        write(self.T / "review/refute.json", json.dumps(doc) + "\n")
+
+    def run_gate(self):
+        return sh(self.gate, cwd=self.wt, stderr="keep")
+
+    def chain(self, hygiene, visits=None, exhausted=False, **kw):
+        """hygiene, refute_prep, a fixture refute.json, refute_gate: one Refute round."""
+        self.hyg(); self.run_prep()
+        if visits:
+            write(self.T / "refute_visits", visits + "\n")
+        if exhausted:
+            write(self.T / "loop_exhausted", "true\n")
+        self.result(hygiene, **kw)
+        return self.run_gate()
+
+    def files(self, label):
+        """The gate's run into label.out/.err/.rc, for routing_check."""
+        run_files(["sh", self.gate], self.T / label, cwd=self.wt)
+        return self.T / label
+
+    def hy(self, filt):
+        return jq(filt, file=self.T / "review/hygiene.json")
+
+    def rulings(self, filt):
+        return jq(filt, file=self.T / "review/hygiene_rulings.json")
+
+    def tasks(self, filt):
+        return jq(filt, file=self.T / "tasks.json")
+
+
 def test_ralph_refute_gate(ck, tmp_path):
     RG = tmp_path / "ralph-refute-gate"
     T = RG / "sb"
@@ -520,6 +630,151 @@ def test_ralph_refute_gate(ck, tmp_path):
     ck("rg exhausted no receipt: hold", "hold", val("refute_route"))
     ck("rg exhausted no receipt: not mergeable", "needs_human", jq(".outcome", file=T / "review/fix_result.json"))
 
+    # ---- #92: the hygiene rulings, over a real branch and the real node order ----
+    X = RalphRefute(ck, tmp_path, "ralph-rulings")
+    W = lambda k, r: ctx(lastjson(r.out), k)
+    surv = lambda f: jq(f, file=X.T / "review/refute_survivors.json")
+    dropped = lambda f: jq(f, file=X.T / "review/refute_dropped.json")
+
+    # H1. tampering on a test file the branch DELETED: the defect is appended after the
+    #     existence filter, so it survives, fails the verdict and becomes Task r1d1.
+    X.fresh(); r = X.chain([R_TAMPER])
+    ck("rr tampering: exit 0", "0", r.rc)
+    ck("rr tampering: verdict fail", "fail", W("refute_verdict", r))
+    ck("rr tampering: routes tasks", "tasks", W("refute_route", r))
+    ck("rr tampering: tampering 1", "1", W("hygiene_tampering", r))
+    ck("rr tampering: cleared 0", "0", W("hygiene_cleared", r))
+    ck("rr tampering: unsure 0", "0", W("hygiene_unsure", r))
+    ck("rr tampering: one Task", "1", X.tasks("length"))
+    ck("rr tampering: the Task id", "r1d1", X.tasks(".[0].id"))
+    ck("rr tampering: the title names the file", "Fix: tests/test_old.py", X.tasks(".[0].title"))
+    ck("rr tampering: the body is the scenario", R_SCN, X.tasks(".[0].body"))
+    ck("rr tampering: files holds it", "tests/test_old.py", X.tasks(".[0].files[0]"))
+    ck("rr tampering: source refute", "refute", X.tasks(".[0].source"))
+    ck("rr tampering: the defect survives", "tests/test_old.py", surv(".defects[0].file"))
+    ck("rr tampering: line null", "null", surv(".defects[0].line"))
+    ck("rr tampering: not dropped", "0", dropped("length"))
+    ck("rr tampering: the ruling is written", "tampering", X.rulings(".[0].ruling"))
+    ck("rr tampering: texts copied from the hit", '["file deleted"]', X.rulings(".[0].texts | tojson"))
+    ck("rr tampering: the hit is not cleared", "0", X.hy(".cleared | length"))
+    ck("rr tampering: tests_deleted still blocks", "1", X.hy('[.blocking[] | select(. == "tests_deleted")] | length'))
+
+    # H2. The same at the third round: hold, no Task, the reason names the defect.
+    X.fresh(); r = X.chain([R_TAMPER], visits="3")
+    ck("rr tampering round 3: hold", "hold", W("refute_route", r))
+    ck("rr tampering round 3: verdict fail", "fail", W("refute_verdict", r))
+    ck("rr tampering round 3: no Task", "0", X.tasks("length"))
+    ck("rr tampering round 3: the reason names it", "1", count("defect at tests/test_old.py: " + R_SCN, file=X.T / "review/refute_reason.txt", flags="F"))
+    X.fresh(); r = X.chain([R_TAMPER], exhausted=True)
+    ck("rr tampering exhausted: hold", "hold", W("refute_route", r))
+    ck("rr tampering exhausted: no Task", "0", X.tasks("length"))
+    ck("rr tampering exhausted: not mergeable", "needs_human", jq(".outcome", file=X.T / "review/fix_result.json"))
+    ck("rr tampering exhausted: tampering 1", "1", W("hygiene_tampering", r))
+
+    # H3. unsure, and a legitimate ruling whose evidence fails R or P: the verdict, the
+    #     route and the Tasks are unchanged, and the hit is not cleared.
+    for label, entry, why in [
+        ("unsure", rh("tests_deleted", "tests/test_old.py", ruling="unsure", basis="none", evidence=""), "not certain"),
+        ("failed R1", rh("tests_deleted", "tests/test_old.py", evidence="delete test_old.py"), "R1"),
+        ("failed R3", rh("tests_deleted", "tests/test_old.py", evidence="delete tests/test_old.py because the issue says so here"), "R3"),
+        ("failed P2", rh("asserts_removed", "tests/test_math.py", basis="replacement", evidence="src/math.py:1"), "P2"),
+        ("failed R1, padded", rh("tests_deleted", "tests/test_old.py", evidence="tests/test_old.py !!!!!!"), "R1"),
+        ("failed R2, a look-alike", rh("tests_deleted", "tests/test_old.py", evidence="Remove legacy_test_old.py from the fixtures directory"), "R2"),
+        ("failed P1, a newline", rh("asserts_removed", "tests/test_math.py", basis="replacement", evidence="src/x\nsrc/lib.rs:2"), "P1"),
+    ]:
+        X.fresh()
+        if "look-alike" in label:
+            write(X.T / "issue.json", json.dumps({"number": 12, "title": R_TITLE, "labels": [], "comments": [],
+                                                  "body": R_BODY + "\nRemove legacy_test_old.py from the fixtures directory now."}) + "\n")
+        r = X.chain([entry])
+        ck(f"rr {label}: verdict pass", "pass", W("refute_verdict", r))
+        ck(f"rr {label}: routes pass", "pass", W("refute_route", r))
+        ck(f"rr {label}: unsure 1", "1", W("hygiene_unsure", r))
+        ck(f"rr {label}: cleared 0", "0", W("hygiene_cleared", r))
+        ck(f"rr {label}: written unsure", "unsure", X.rulings(".[0].ruling"))
+        ck(f"rr {label}: the reason names it", "1", count(why, X.rulings(".[0].reason")))
+        ck(f"rr {label}: no Task", "0", X.tasks("length"))
+        ck(f"rr {label}: no defect", "0", surv(".defects | length"))
+        ck(f"rr {label}: the hit is not cleared", "0", X.hy(".cleared | length"))
+
+    # H4. Legitimate rulings that pass: a quote in the issue and a .rs replacement the
+    #     branch changes. The guarded re-run clears both hits; the route is unchanged.
+    X.fresh(); r = X.chain([R_REQ, R_RS])
+    ck("rr legitimate: verdict pass", "pass", W("refute_verdict", r))
+    ck("rr legitimate: routes pass", "pass", W("refute_route", r))
+    ck("rr legitimate: cleared 2", "2", W("hygiene_cleared", r))
+    ck("rr legitimate: unsure 0", "0", W("hygiene_unsure", r))
+    ck("rr legitimate: the quote's reason", "quote found in issue #12", X.rulings(".[0].reason"))
+    ck("rr legitimate: the replacement's reason", "src/lib.rs:2 is a test file this pull request changes", X.rulings(".[1].reason"))
+    ck("rr legitimate: hygiene cleared both", "2", X.hy(".cleared | length"))
+    ck("rr legitimate: nothing blocks", "0", X.hy(".blocking | length"))
+    ck("rr legitimate: no Task", "0", X.tasks("length"))
+    X.fresh(); r = X.chain([R_REQ], criteria=[{"criterion": "The parser rejects a bad token", "status": "not_met", "evidence": "src/math.py:2 has no check"}])
+    ck("rr legitimate with a finding: the route is the finding's", "tasks", W("refute_route", r))
+    ck("rr legitimate with a finding: one Task, the criterion", "r1c1", X.tasks(".[0].id"))
+    ck("rr legitimate with a not_met: cleared 0", "0", W("hygiene_cleared", r))
+    ck("rr legitimate with a not_met: unsure 1, and no second Task", "1 1", f'{W("hygiene_unsure", r)} {X.tasks("length")}')
+
+    # H5. Two rulings for one hit are unsure; a ruling for a file that is not a hit is
+    #     ignored: not in the file, counted nowhere, no Task.
+    X.fresh(); r = X.chain([R_REQ, {**R_REQ, "basis": "none", "ruling": "unsure"}, rh("asserts_removed", "tests/nope.py", ruling="tampering", basis="none", evidence="", scenario="x")])
+    ck("rr two rulings: one entry", "1", X.rulings("length"))
+    ck("rr two rulings: unsure", "unsure", X.rulings(".[0].ruling"))
+    ck("rr two rulings: reason", "1", count("two rulings", X.rulings(".[0].reason")))
+    ck("rr two rulings: unsure 1", "1", W("hygiene_unsure", r))
+    ck("rr ignored: one stderr line", "1", count("no such hit", r.err))
+    ck("rr ignored: not in the file", "0", X.rulings('[.[] | select(.file == "tests/nope.py")] | length'))
+    ck("rr ignored: tampering 0", "0", W("hygiene_tampering", r))
+    ck("rr ignored: no Task", "0", X.tasks("length"))
+    ck("rr ignored: verdict pass", "pass", W("refute_verdict", r))
+
+    X.fresh(); r = X.chain([R_REQ, R_REQ])
+    ck("rr identical rulings: legitimate", "legitimate", X.rulings('map(.ruling) | join(",")'))
+
+    # While a criterion is not_met, a `requirement` ruling is unsure. The agent's own list
+    # decides, so a not_met that the evidence rule drops (no path, no command) counts too.
+    for label, evidence in (("kept", "src/math.py:2 does not do it"), ("dropped by the evidence rule", "I could not find it")):
+        X.fresh(); r = X.chain([R_REQ], criteria=[{"criterion": "every case is ported", "status": "not_met", "evidence": evidence}])
+        ck(f"rr not_met ({label}): unsure", "unsure", X.rulings(".[0].ruling"))
+        ck(f"rr not_met ({label}): reason names R4", "1", count("R4", X.rulings(".[0].reason")))
+
+    # H6. The invalid path: 0, 0, 0 and no rulings file, a stale one included.
+    X.fresh(); X.hyg(); X.run_prep(); X.result([R_TAMPER], receipt=False)
+    write(X.T / "review/hygiene_rulings.json", "[]\n")
+    r = X.run_gate()
+    ck("rr invalid: invalid", "invalid", W("refute_verdict", r))
+    ck("rr invalid: cleared 0", "0", W("hygiene_cleared", r))
+    ck("rr invalid: unsure 0", "0", W("hygiene_unsure", r))
+    ck("rr invalid: tampering 0", "0", W("hygiene_tampering", r))
+    ck("rr invalid: no rulings file", "absent", present(X.T / "review/hygiene_rulings.json"))
+
+    # H7. The routing contract on every path: pass, tasks, hold, invalid.
+    X.fresh(); X.hyg(); X.run_prep(); X.result([R_REQ, R_RS])
+    ck("rr routing: pass", "pass", routing_check(ck, "rr routing pass", X.files("rgpass"), ".context_updates.refute_route"))
+    X.fresh(); X.hyg(); X.run_prep(); X.result([R_TAMPER, rh("asserts_removed", "tests/nope.py")])
+    ck("rr routing: tasks", "tasks", routing_check(ck, "rr routing tasks", X.files("rgtasks"), ".context_updates.refute_route"))
+    X.fresh(); X.hyg(); X.run_prep(); write(X.T / "refute_visits", "3\n"); X.result([R_TAMPER])
+    ck("rr routing: hold", "hold", routing_check(ck, "rr routing hold", X.files("rghold"), ".context_updates.refute_route"))
+    X.fresh(); X.hyg(); X.run_prep(); X.result([], receipt=False)
+    ck("rr routing: invalid", "0", routing_check(ck, "rr routing invalid", X.files("rginvalid"), ".context_updates.hygiene_cleared"))
+
+
+def test_ralph_rulings_blocks_are_the_shared_ones(ck):
+    """#92: ralph's refute_prep and refute_gate carry the shared nodes' rulings code verbatim.
+    The nodes are not R10 copies, so nothing else compares them."""
+    def block(graph, node, first, last):
+        s = extract(graph, node)
+        i = s.index(first)
+        return s[i:s.index(last, i) + len(last)]
+    for node, label, first, last in [
+        ("refute_gate", "the rulings, judge_quote and judge_replace included",
+         "rm -rf /tmp/fabro/_refute && mkdir", "HT=$(jq '[.[] | select(.ruling == \"tampering\")] | length' $R/hygiene_rulings.json)\n"),
+        ("refute_gate", "the guarded re-run", "if [ -f /tmp/fabro/hygiene.sh ]", "\nfi\n"),
+        ("refute_prep", "the guarded re-run and its fail-closed branch", "if [ -f /tmp/fabro/hygiene.sh ]", "\nfi\n"),
+    ]:
+        ck(f"{node}: {label} are the shared node's, byte for byte", "True",
+           str(block(SHARED, node, first, last) == block(RAPH, node, first, last)))
+
 
 def test_ralph_refute_prep(ck, tmp_path):
     RQ = tmp_path / "ralph-refute-prep"
@@ -612,6 +867,53 @@ def test_ralph_refute_prep(ck, tmp_path):
     ck("rp extra: skips", "true", ctx(lastjson(r.out), "refute_skip"))
     ck("rp extra: no visit counted", "3", cat(T / "refute_visits"))
     ck("rp extra: the verdict file is kept", "pass", cat(T / "review/refute_verdict"))
+
+    # ---- #92: the rulings ----
+    X = RalphRefute(ck, tmp_path, "ralph-prep-rulings")
+    rulings = X.T / "review/hygiene_rulings.json"
+    judged = X.T / "review/refute_judged.json"
+
+    # The extra review pass returns before the delete and the re-run: the last round's
+    # rulings and what they cleared survive, for the next hygiene visit to re-apply.
+    X.fresh(); X.chain([R_REQ, R_RS])
+    ck("rp rulings: cleared before", "2", X.hy(".cleared | length"))
+    before_r, before_h = cat(rulings), cat(X.T / "review/hygiene.json")
+    write(X.T / "review_extra", "pending\n")
+    run_files(["sh", X.prep], X.T / "rpskip", cwd=X.wt)
+    ck("rp rulings skip: skips", "true", routing_check(ck, "rp rulings skip", X.T / "rpskip", ".context_updates.refute_skip"))
+    ck("rp rulings skip: the rulings file is kept", before_r, cat(rulings))
+    ck("rp rulings skip: hygiene.json is untouched", before_h, cat(X.T / "review/hygiene.json"))
+    ck("rp rulings skip: cleared kept", "2", X.hy(".cleared | length"))
+    rm(X.T / "review_extra")
+
+    # The normal path deletes the rulings and the derived file and, on a clean tree at the
+    # recorded head, re-runs the counters, so nothing stays cleared.
+    write(judged, "{}\n")
+    run_files(["sh", X.prep], X.T / "rpnormal", cwd=X.wt)
+    ck("rp rulings normal: no skip", "false", routing_check(ck, "rp rulings normal", X.T / "rpnormal", ".context_updates.refute_skip"))
+    ck("rp rulings normal: the rulings file is deleted", "absent", present(rulings))
+    ck("rp rulings normal: the derived file is deleted", "absent", present(judged))
+    ck("rp rulings normal: cleared is empty", "[]", X.hy(".cleared | tojson"))
+    ck("rp rulings normal: the hits block again", "tests_deleted,asserts_removed", X.hy('.blocking | join(",")'))
+    ck("rp rulings normal: the head is HEAD", git("-C", X.wt, "rev-parse", "HEAD"), X.hy(".head"))
+
+    # A moved tree fails the guard: hygiene.json keeps its head and counts, cleared is
+    # emptied, and the rulable counters return to blocking.
+    X.fresh(); X.chain([R_REQ, R_RS])
+    ck("rp rulings moved: cleared before", "2", X.hy(".cleared | length"))
+    h0 = X.hy(".head")
+    write(X.wt / "src/math.py", "def add(a, b):\n    return a + b + 1\n"); X.commit()
+    X.run_prep()
+    ck("rp rulings moved: the rulings file is deleted", "absent", present(rulings))
+    ck("rp rulings moved: cleared emptied", "[]", X.hy(".cleared | tojson"))
+    ck("rp rulings moved: blocking restored", "tests_deleted,asserts_removed", X.hy('.blocking | join(",")'))
+    ck("rp rulings moved: the old head is kept", h0, X.hy(".head"))
+    ck("rp rulings moved: the hits are kept", "2", X.hy(".hits | length"))
+    hreason = X.T / "review/hygiene_reason.txt"
+    ck("rp rulings moved: a reason is written", "present", present(hreason))
+    ck("rp rulings moved: the reason names the counters", "1", count("tests_deleted=1, asserts_removed=1", file=hreason))
+    ck("rp rulings moved: the reason says the rulings were dropped", "1", count("rulings were dropped", file=hreason))
+    ck("rp rulings moved: no stale cleared clause", "0", count("cleared by refuter rulings", file=hreason))
 
 
 def test_ralph_review_gate(ck, tmp_path):
@@ -1225,6 +1527,15 @@ def test_ralph_merge_prep(ck, tmp_path):
     go("1", "0")
     ck("merge_prep: host switch off: auto_merge 0", "0", cat(T / "auto_merge"))
     ck("merge_prep: host switch off: says so", "1", count("switched off host-wide", file=T / "auto_merge_off_reason"))
+
+
+def test_ralph_merge_prep_rulings(ck, tmp_path):
+    # #92: ralph's report_merged, report_blocked and mark_needs_human render with the
+    # renderer merge_prep writes, so its report lists the Refuter's hygiene rulings too.
+    from test_merge_report import check_rulings_render, rulings_render_env
+    T = tmp_path / "ralph_rulings"
+    render, section = rulings_render_env(T, extract(RAPH, "merge_prep"))
+    check_rulings_render(ck, T, render, section, "merge_prep render")
 
 
 def test_ralph_watch_checks(ck, tmp_path):

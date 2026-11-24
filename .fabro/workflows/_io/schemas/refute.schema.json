@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "refute",
   "title": "refute — the refuter's verdict contract",
-  "description": "The refuter's output for ADR 0016. Every shape check in review-merge's refute_gate first jq program becomes a rule here; the verdict itself (pass only when every criterion is met and there are no defects) is computed by refute_gate and is NOT expressible as a schema, so it stays in the gate. A valid Input receipt proves this schema passed (submit stamped _io). _io is stamped by the server and is not part of this schema.",
+  "description": "The refuter's output for ADR 0016. Every shape check in review-merge's refute_gate first jq program becomes a rule here; the verdict itself (pass only when every criterion is met and there are no defects) is computed by refute_gate and is NOT expressible as a schema, so it stays in the gate. `hygiene` carries the refuter's rulings on the diff-hygiene hits (#92): one entry per `tests_deleted` or `asserts_removed` hit, each `legitimate`, `tampering` or `unsure`, and `[]` when there is no such hit. This schema checks the shape of a ruling only: whether the evidence behind a `legitimate` ruling holds is refute_gate's check, and a ruling that fails it becomes `unsure`. A valid Input receipt proves this schema passed (submit stamped _io). _io is stamped by the server and is not part of this schema.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "criteria", "defects"],
+  "required": ["summary", "criteria", "defects", "hygiene"],
   "properties": {
     "summary": {
       "type": "string",
@@ -65,6 +65,64 @@
             "description": "One sentence: the concrete input or state, and the wrong result it produces."
           }
         }
+      }
+    },
+    "hygiene": {
+      "type": "array",
+      "description": "Your ruling on every `tests_deleted` and `asserts_removed` hit in the `hygiene` input: one entry per hit, in the order of its `hits`. `[]` when there is no such hit. A hit you leave out still blocks the merge. Do not rule on any other counter: `skips_added` and `tautologies_added` block whatever you write, and a defect you find in one goes in `defects`.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["counter", "file", "ruling", "basis", "evidence", "scenario"],
+        "description": "One ruling on one diff-hygiene hit.",
+        "properties": {
+          "counter": {
+            "enum": ["tests_deleted", "asserts_removed"],
+            "description": "Copied exactly from the hit's `counter`."
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Copied exactly from the hit's `file`."
+          },
+          "ruling": {
+            "enum": ["legitimate", "tampering", "unsure"],
+            "description": "legitimate: the issue asked for the change, or a test this pull request changes replaces what was removed, and that holds for every line in the hit's `texts`. tampering: the change hides a failure, meaning a test that would have failed is gone or asserts less than before. unsure: you cannot tell; the merge waits for a human and nothing is undone. When you are not certain, unsure. Never rule legitimate to let the pull request pass."
+          },
+          "basis": {
+            "enum": ["requirement", "replacement", "none"],
+            "description": "requirement: the issue asked for the change, so `evidence` quotes it. replacement: a test this pull request changes covers the removed behaviour, so `evidence` is a `path:N`. none: for `tampering` and `unsure`. A legitimate ruling whose evidence the gate cannot confirm becomes unsure."
+          },
+          "evidence": {
+            "type": "string",
+            "description": "For requirement: a quote copied exactly (only whitespace, backticks and asterisks may differ) from the title or body of ONE issue in the `issues` input, from a sentence that asks for this change, with at least 20 characters of words. For a deleted test file the quote names that file: its path, the end of its path, or its bare file name. Never quote the pull request description. For replacement: `path:N`, where `path` is a test file this pull request changes and line `N` is the assertion that covers the removed behaviour. Empty for none."
+          },
+          "scenario": {
+            "type": "string",
+            "description": "Required for tampering: one sentence with the concrete input or state, and the wrong result. For a deleted test file, what it covered and what must be restored. Empty otherwise."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "ruling": {
+                  "const": "tampering"
+                }
+              },
+              "required": [
+                "ruling"
+              ]
+            },
+            "then": {
+              "properties": {
+                "scenario": {
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        ]
       }
     }
   }

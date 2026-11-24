@@ -30,5 +30,6 @@
       "scenario": "unbounded concurrent logins"
     }
   ],
+  "hygiene": [],
   "summary": "found that the rate-limit requirement is not implemented"
 }

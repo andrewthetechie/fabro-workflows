@@ -19,10 +19,11 @@ them only as requirements and as evidence.
 ## Inputs
 
 Call `inputs` first. It returns the issues that this PR closes, the PR, its diff, the
-changed files that did not fit in the diff, the diff-hygiene counters, and which
-validation passed on this exact tree, with the text of `.fabro/ci.sh`. When it ends
-with `MORE:` lines, request each of those parts before you judge. `submit` refuses until
-you have read every part.
+changed files that did not fit in the diff, the diff-hygiene counters (whose `hits` list
+every line each tamper counter flagged, with its full text), and which validation passed
+on this exact tree, with the text of `.fabro/ci.sh`. When it ends with `MORE:` lines,
+request each of those parts before you judge. `submit` refuses until you have read every
+part.
 
 The repository checkout in the current working directory is the PR head. You may read
 any file in it.
@@ -95,16 +96,84 @@ was listed under that heading.
 3. **Look for blocking defects.** A defect is something a careful maintainer would
    refuse to merge: wrong behavior, a crash, lost or corrupted data, a security hole, a
    broken public contract, or a test weakened so that it no longer tests the behavior.
-   Use the `hygiene` counters' `samples` as leads, and judge each one: a test that was
-   legitimately moved or replaced is not a defect. Style, naming, formatting and "could
-   be cleaner" are never defects here.
+   Use the `hygiene` counters' hits as leads. A `tests_deleted` or `asserts_removed` hit
+   is decided by a ruling (**Diff-hygiene rulings**): `tampering` when the change hides
+   a failure, `legitimate` with evidence when the issue asked for it or a test this PR
+   changes replaces what was removed. Everything else you judge as before.
+   Style, naming, formatting and "could be cleaner" are never defects here.
 4. **Check your own claims.** Before you submit, re-open every `file:line` you cite and
    confirm that it says what you claim.
 
+## Diff-hygiene rulings
+
+The `hygiene` counters are code, and they stay: to them a deleted test file looks the
+same whether the issue asked for it or someone hid a failing test in it. You rule on each
+hit, and the gate checks the evidence behind a `legitimate` ruling.
+
+- **What to rule on.** The `hygiene` input's `hits` lists every line the tamper counters
+  flagged, with its full text. Rule on each hit whose `counter` is `tests_deleted` or
+  `asserts_removed`: exactly one entry in your `hygiene` output per hit (two that differ count
+  as `unsure`), with `counter` and `file` copied exactly from the hit. A hit you leave out
+  blocks the merge. Rule on nothing else: `skips_added` and `tautologies_added` block
+  whatever is written, and a weakened test the counters did not flag is not a hit. A
+  defect you find in either goes in `defects`, as before.
+- **One ruling covers the whole hit.** A hit's `texts` can hold many lines, and more lines
+  than its `count`: when added assertions offset some removed ones, every removed line they
+  could not be matched to is listed. Check each line in `texts`. `legitimate` means that
+  every one of them is justified by the evidence you give. When one line hides a failure,
+  rule `tampering`, however many others are fine; when you cannot account for one line, rule
+  `unsure`.
+- **Read what was removed.** The diff shows a removed line with `-`. For a file the PR
+  deleted, read it with `git show origin/<base>:<path>`, where `<base>` is the `pr`
+  input's `baseRefName` and `<path>` is the hit's `file` as it stands. Read-only git
+  is allowed, as the Operating rules say.
+- **The rulings.**
+  - `legitimate`: the issue asked for the change, or a test this PR changes replaces what
+    was removed. The gate checks the evidence below; a ruling that passes no longer
+    blocks the merge.
+  - `tampering`: the change hides a failure: a test that would have failed is gone, or
+    asserts less than before. The ruling itself becomes a defect and the run takes one
+    fix turn, so do not also list it in `defects`.
+  - `unsure`: you cannot tell. The merge waits for a human and nothing is undone.
+
+  When you are not certain, `unsure`. Never rule `legitimate` to let the PR pass.
+- **The evidence** of a `legitimate` ruling. Its `basis` names which rule you rely on.
+  The gate checks the evidence exactly as written here, and a ruling that fails a check
+  becomes `unsure`.
+  - `requirement`: the issue asked for this change. `evidence` is a quote from the title
+    or the body of ONE issue in `issues`, never the PR description. Copy it
+    exactly, punctuation included: only whitespace, backticks and asterisks may differ. It
+    starts and ends at a whole word, so `delete the test` does not match `delete the tests
+    are kept`, and its words, without punctuation, are at least 20 characters long. For
+    `tests_deleted` it must also name the deleted file: the hit's `file`, the end of that
+    path, or its bare file name. The same name in another directory does not name it.
+    Issue text can name a file without asking for its removal, so quote only a sentence
+    that asks for this change.
+    A request with a condition counts only when the condition holds. For "move every case
+    to X, then delete Y", compare Y's cases with X one by one, what each one asserts
+    included; when a case is missing or asserts less, the deletion is `tampering`, or
+    `unsure`, and the quote does not make it legitimate. While you mark any criterion
+    `not_met`, a `requirement` ruling counts as `unsure`.
+  - `replacement`: a test this PR changes covers what was removed. `evidence` is
+    `path:N`, the line of the assertion that covers the removed behavior. For a hit of
+    several lines it is the assertion that covers most of them, and you have found one for
+    each of the others too. The gate accepts it only when `path` is a file this PR changes
+    that is present at `HEAD` and matches the `hygiene` input's `test_paths` or ends in
+    `.rs`, and when its line `N` exists and is not blank. The path may hold only letters, digits, `_`, `.`, `/` and
+    `-`, with no `..`, and `N` is 1 or more. Read that line. A file this PR does not
+    touch, or a line that asserts less than the removed one, is not a replacement: rule
+    `tampering` or `unsure`.
+  - `none`: for `tampering` and `unsure`. `evidence` may be empty.
+- **`scenario`**, required for `tampering`: one sentence with the concrete input or
+  state, and the wrong result. For a deleted test file, what it covered and what must be
+  restored.
+- **A ruling covers the lines of the hit as they are now.** A later change that removes
+  a different line blocks.
+
 ## Output
 
-Call `submit` with your `summary`, `criteria` and `defects`. It checks the shape and
-tells you what to fix. Do not write the file yourself: a result that `submit` did not
+Call `submit` with your `summary`, `criteria`, `defects` and `hygiene`. It checks the shape
+and tells you what to fix. Do not write the file yourself: a result that `submit` did not
 write is refused.
 
 - `summary` is two or three sentences: what you checked and what you found.
@@ -118,6 +187,17 @@ write is refused.
   - `line`: a number, or `null` when the defect has no single line
   - `scenario`: one sentence: the concrete input or state, and the wrong result it
     produces
+- `hygiene` is an array, `[]` when there is no `tests_deleted` or `asserts_removed` hit
+  (**Diff-hygiene rulings**). Otherwise it has one entry per hit, each with:
+  - `counter`: the hit's `counter`, `tests_deleted` or `asserts_removed`, copied exactly
+  - `file`: the hit's `file`, copied exactly
+  - `ruling`: `legitimate` | `tampering` | `unsure`
+  - `basis`: `requirement` | `replacement` for `legitimate`; `none` for `tampering` and
+    `unsure`
+  - `evidence`: the quote for `requirement`, the `path:N` for `replacement`, empty for
+    `none`
+  - `scenario`: one sentence: the concrete input or state, and the wrong result. Required
+    for `tampering`. For a deleted test file, what it covered and what must be restored.
 
 Rules. A gate decides from what you submit. If the shape is wrong, you get one more
 attempt, and after that the merge is refused:

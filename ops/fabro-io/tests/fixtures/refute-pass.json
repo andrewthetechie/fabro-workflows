@@ -24,5 +24,6 @@
     }
   ],
   "defects": [],
+  "hygiene": [],
   "summary": "checked the auth flow against the diff; nothing contradicts the requirement"
 }
