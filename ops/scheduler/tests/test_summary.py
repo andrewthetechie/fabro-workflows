@@ -189,6 +189,28 @@ def test_refute_verdict_reads_the_new_field_keys():
     ]
 
 
+def test_refute_verdict_reads_the_hygiene_rulings():
+    # #92: with every verdict `refute_gate` publishes how many diff-hygiene hits ended in each
+    # ruling. An int or a digit string is read; an absent key stays None, never 0, and so does
+    # anything that is not a count. A verdict from a run before the change is as it was.
+    def completed(updates):
+        return {"event": "stage.completed", "node_id": "review_merge.refute_gate",
+                "properties": {"context_updates": updates}}
+
+    evs = [
+        completed({"refute_verdict": "pass", "refute_not_met": False,
+                   "hygiene_cleared": 2, "hygiene_unsure": "1", "hygiene_tampering": 0}),
+        completed({"refute_verdict": "fail", "refute_not_met": True,
+                   "hygiene_cleared": "many", "hygiene_unsure": 1.5, "hygiene_tampering": True}),
+        completed({"refute_verdict": "fail", "refute_not_met": True}),
+    ]
+    assert summarize("R1", [], evs).refute == [
+        RefuteVerdict("pass", False, None, None, 2, 1, 0),
+        RefuteVerdict("fail", True),
+        RefuteVerdict("fail", True),
+    ]
+
+
 def test_counts_every_event_and_survives_an_empty_log():
     assert summarize("R1", STAGES, events()).events == 28
     empty = summarize("R1", [], [])

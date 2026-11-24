@@ -17,6 +17,9 @@ Definitions, each the one the 2026-10-11 retro used:
 * **Held**: every PR not merged by the workflow, by the reason in its last
   merge-phase report.
 * **Operator commits**: commits whose author is not the automation.
+* **Ruled merge** (#92): a PR the workflow merged that a run of it cleared a diff-hygiene
+  hit for, with a refuter ruling the code checked. The scorecard counts them and lists
+  every one, because one confirmed bad clear reverts the rulings.
 * **Box-hours**: lease time, dispatch to release. One lease is one coder box.
 * **Lease share**: of the leased time of summarized runs, how much a stage spent on
   the run's coder pool (writing code, or `improve`), and where the rest went while
@@ -30,7 +33,7 @@ import json
 import re
 import sqlite3
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -94,6 +97,11 @@ LEASE_CATEGORIES = BOX_CATEGORIES + IDLE_CATEGORIES
 # this order, so the table reads the same week to week regardless of insertion order.
 TASK_VALIDATION_MODES = ("scoped", "full", "legacy", "timeout")
 
+# The counts `refute_gate` publishes with each verdict for the refuter's rulings on
+# diff-hygiene hits (#92): hits whose final ruling is `legitimate`, `unsure` or `tampering`.
+# A verdict from a run whose gate published none has none of the three keys.
+HYGIENE_RULINGS = ("hygiene_cleared", "hygiene_unsure", "hygiene_tampering")
+
 
 @dataclass(frozen=True)
 class Percentiles:
@@ -150,6 +158,25 @@ class NoPrLine:
 
 
 @dataclass(frozen=True)
+class RuledMergeRun:
+    """One run that cleared a diff-hygiene hit on a PR the workflow merged (#92).
+
+    `cleared` is summed over the run's verdicts that carry the count, as the window's
+    totals are. The list is one line per run, so a PR two runs ruled on is found twice,
+    each with the run whose report holds its rulings.
+    """
+
+    repo: str
+    pr_number: int
+    run_id: str
+    cleared: int
+
+    @property
+    def url(self) -> str:
+        return f"https://github.com/{self.repo}/pull/{self.pr_number}"
+
+
+@dataclass(frozen=True)
 class RefuteLine:
     """The refuter's verdicts over the window's runs (gate relief, task 07)."""
 
@@ -165,6 +192,16 @@ class RefuteLine:
     fix_cleared: int = 0  # ... whose second verdict was pass
     first_ci_credited: int = 0  # met criteria citing ci.sh, over first verdicts
     first_ci_credited_runs: int = 0  # runs whose first verdict carried a ci_credited count
+    # The rulings on diff-hygiene hits (#92), summed over every verdict that carries them.
+    # `hygiene_runs` counts the runs that carry the counts at all: a run whose gate
+    # published them, which no run from before the rulings does, re-summarized or not.
+    hygiene_cleared: int = 0  # hits whose final ruling was `legitimate`
+    hygiene_unsure: int = 0  # ... `unsure`
+    hygiene_tampering: int = 0  # ... `tampering`
+    hygiene_runs: int = 0
+    # PRs the workflow merged that a run cleared a hit for, and each of those runs.
+    ruled_merges: int = 0
+    ruled_merge_runs: list[RuledMergeRun] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -387,7 +424,12 @@ def compute(
     )
 
     # --- the refuter --------------------------------------------------------------
-    refute = _refute_line(summary["refute"] for summary in summaries.values())
+    ruled = _ruled_merge_runs(pr_runs, facts, summaries)
+    refute = _refute_line(
+        (summary["refute"] for summary in summaries.values()),
+        ruled_merges=len({(merge.repo, merge.pr_number) for merge in ruled}),
+        ruled_merge_runs=ruled,
+    )
 
     # --- per repo -------------------------------------------------------------------
     repo_runs: Counter[str] = Counter(row["repo"] for row in history)
@@ -688,6 +730,10 @@ def to_json(card: Scorecard) -> dict[str, object]:
     out["architecture_merge_rate"] = card.architecture_merge_rate
     out["operator_commit_rate"] = card.operator_commit_rate
     out["lease_share"] = card.lease_share()
+    # A listed ruled merge carries its PR link (#92), as the table and the page do.
+    out["refute"]["ruled_merge_runs"] = [
+        {**asdict(merge), "url": merge.url} for merge in card.refute.ruled_merge_runs
+    ]
     return out
 
 
@@ -739,6 +785,13 @@ def to_markdown(card: Scorecard) -> str:
         f" applied issues' PRs merged {card.sharpen_merged} of {card.sharpen_prs} |",
         f"| Refuter CI-credited criteria (first verdicts) | {card.refute.first_ci_credited} over"
         f" {card.refute.first_ci_credited_runs} runs |",
+        "| Refuter hygiene rulings: hits cleared / unsure / tampering |"
+        f" {card.refute.hygiene_cleared} / {card.refute.hygiene_unsure} /"
+        f" {card.refute.hygiene_tampering} over {card.refute.hygiene_runs} runs that carry them"
+        + ("" if card.refute.hygiene_runs else "; no run in this window publishes them")
+        + " |",
+        f"| Ruled merges | {card.refute.ruled_merges} PR(s) the workflow merged on a cleared hit"
+        f" ({len(card.refute.ruled_merge_runs)} run(s)) |",
         "| Open to merge, p50 / p90 hours: architecture / other | "
         + " / ".join(
             f"{_num(p.p50)} / {_num(p.p90)} (n={p.count})"
@@ -747,6 +800,7 @@ def to_markdown(card: Scorecard) -> str:
         + " |",
     ]
     lines.extend(_task_validation_rows(card))
+    lines.extend(_ruled_merge_table(card))
     lines.extend(["", *_model_table(card)])
     if card.unknown:
         lines.append("")
@@ -821,6 +875,25 @@ def _model_table(card: Scorecard) -> list[str]:
     return lines
 
 
+def _ruled_merge_table(card: Scorecard) -> list[str]:
+    """The ruled merges (#92): every run that cleared a diff-hygiene hit on a merged PR.
+
+    Each line carries the PR link and the run id, so every merge that relied on a ruling can
+    be opened and read. Nothing is printed when there is none.
+    """
+    merges = card.refute.ruled_merge_runs
+    if not merges:
+        return []
+    return [
+        "",
+        f"Ruled merges ({card.refute.ruled_merges} PR(s)): open each PR and read its report",
+        "",
+        "| Repository | PR | Run | Hits cleared |",
+        "|---|---|---|---|",
+        *(f"| {m.repo} | [#{m.pr_number}]({m.url}) | `{m.run_id}` | {m.cleared} |" for m in merges),
+    ]
+
+
 def tokens(count: int) -> str:
     """A token count as the page shows it: 950, 12.3k, 4.56M, 1.20B."""
     for size, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "k")):
@@ -834,10 +907,15 @@ def _usd(value: float | None) -> str:
     return "n/a" if value is None else f"${value:.2f}"
 
 
-def _refute_line(raw: Iterable[str | None]) -> RefuteLine:
+def _refute_line(
+    raw: Iterable[str | None],
+    *,
+    ruled_merges: int = 0,
+    ruled_merge_runs: Sequence[RuledMergeRun] = (),
+) -> RefuteLine:
     counts: Counter[str] = Counter()
     for text in raw:
-        verdicts = json.loads(text) if text else []
+        verdicts = _verdicts(text)
         if not verdicts:
             continue
         counts["runs"] += 1
@@ -868,7 +946,58 @@ def _refute_line(raw: Iterable[str | None]) -> RefuteLine:
             counts["fix_turns"] += 1
             if verdicts[-1]["verdict"] == "pass":
                 counts["fix_cleared"] += 1
-    return RefuteLine(**counts)
+        # The rulings on diff-hygiene hits (#92) are summed over every verdict that carries
+        # them, not the first only: in `ralph` a later round rules again. A verdict whose
+        # gate published none adds nothing, and its run is not one of the carrying runs.
+        carries = False
+        for verdict in verdicts:
+            for key in HYGIENE_RULINGS:
+                count = _ruling_count(verdict.get(key))
+                if count is not None:
+                    counts[key] += count
+                    carries = True
+        if carries:
+            counts["hygiene_runs"] += 1
+    return RefuteLine(**counts, ruled_merges=ruled_merges, ruled_merge_runs=list(ruled_merge_runs))
+
+
+def _ruled_merge_runs(
+    pr_runs: Mapping[tuple[str, int], Sequence[sqlite3.Row]],
+    facts: Mapping[tuple[str, int], sqlite3.Row],
+    summaries: Mapping[str, sqlite3.Row],
+) -> list[RuledMergeRun]:
+    """Every run that cleared a diff-hygiene hit on a PR the workflow merged (#92).
+
+    One line per run, in `(repo, PR, run)` order: a PR two runs ruled on is one ruled merge
+    and two lines, so each run's report can be found. A run without the counts, or whose
+    hits were all `unsure` or `tampering`, cleared nothing and is not listed.
+    """
+    lines = []
+    for (repo, number), runs in pr_runs.items():
+        if not merged_by_workflow(runs, facts.get((repo, number))):
+            continue
+        for run in runs:
+            summary = summaries.get(run["run_id"])
+            if summary is None:
+                continue
+            cleared = 0
+            for verdict in _verdicts(summary["refute"]):
+                count = _ruling_count(verdict.get("hygiene_cleared"))
+                if count is not None:
+                    cleared += count
+            if cleared > 0:
+                lines.append(RuledMergeRun(repo, number, run["run_id"], cleared))
+    return sorted(lines, key=lambda line: (line.repo, line.pr_number, line.run_id))
+
+
+def _verdicts(text: str | None) -> list[dict[str, object]]:
+    """A stored `run_summary.refute` row: its verdicts in order, none for an empty row."""
+    return json.loads(text) if text else []
+
+
+def _ruling_count(value: object) -> int | None:
+    """A stored ruling count: an int, or None when the gate published none (never read as 0)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _lease_ms(row: sqlite3.Row) -> int:

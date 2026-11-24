@@ -281,6 +281,118 @@ def test_refuter_line_ci_credited_sums():
     assert line.first_ci_credited_runs == 2
 
 
+def test_refuter_line_sums_the_hygiene_rulings_over_every_verdict(store):
+    """#92: the three ruling counts are summed over ALL of a run's verdicts, because in `ralph`
+    a later round rules again. A run that carries the counts on any verdict is a carrying run;
+    a run from before the rulings adds nothing to any count."""
+    verdicts = {
+        "R1": [RefuteVerdict("pass", False, None, None, 2, 1, 0),
+               RefuteVerdict("fail", True, None, None, 0, 2, 0)],
+        "R2": [RefuteVerdict("pass", False, None, None, 0, 0, 1)],
+        "R3": [RefuteVerdict("pass", False)],  # summarized before the rulings
+        "R4": [RefuteVerdict("fail", True)],
+    }
+    for run_id, refute in verdicts.items():
+        run(store, run_id)
+        store.save_run_summary(summary(run_id, [], refute=refute))
+    refute = compute(store).refute
+    assert (refute.hygiene_cleared, refute.hygiene_unsure, refute.hygiene_tampering) == (2, 3, 1)
+    assert refute.hygiene_runs == 2
+    assert refute.ruled_merges == 0 and refute.ruled_merge_runs == []
+
+
+def test_a_ruled_merge_is_counted_and_listed_with_its_link_and_run_id(store):
+    """#92: a PR the workflow merged whose run cleared a hygiene hit is a ruled merge, and is
+    listed with its repository, PR number, PR link, run id and cleared count in the markdown
+    and the JSON."""
+    run(store, "R1", pr=1, merged=True)
+    store.save_pr_facts(REPO, 1, facts(state="merged", merged_at="2026-10-05T05:00:00Z"))
+    store.save_run_summary(summary("R1", [], refute=[
+        RefuteVerdict("fail", True, None, None, 2, 1, 0),  # round 1 cleared two, one unsure
+        RefuteVerdict("pass", False, None, None, 1, 0, 0),  # round 2 cleared one more
+    ]))
+    card = compute(store)
+    assert card.refute.ruled_merges == 1
+    assert card.refute.ruled_merge_runs == [scorecard.RuledMergeRun(REPO, 1, "R1", 3)]
+
+    text = scorecard.to_markdown(card)
+    assert (f"| {REPO} | [#1](https://github.com/{REPO}/pull/1) | `R1` | 3 |" in text)
+    assert "| Ruled merges | 1 PR(s) the workflow merged on a cleared hit (1 run(s)) |" in text
+
+    out = scorecard.to_json(card)
+    assert out["refute"]["ruled_merges"] == 1
+    assert out["refute"]["ruled_merge_runs"] == [{
+        "repo": REPO, "pr_number": 1, "run_id": "R1", "cleared": 3,
+        "url": f"https://github.com/{REPO}/pull/1",
+    }]
+
+
+def test_a_ruled_pr_the_operator_merged_is_not_a_ruled_merge(store):
+    """#92: the clear still counts as a cleared hit, but a PR the operator merged by hand is
+    not a merge that relied on a ruling, so it is neither counted nor listed."""
+    run(store, "R1", pr=1, merged=False)
+    store.save_pr_facts(
+        REPO, 1, facts(state="merged", reason="Diff hygiene blocked: tests_deleted",
+                       merged_at="2026-10-05T05:00:00Z"),
+    )
+    store.save_run_summary(summary("R1", [], refute=[RefuteVerdict("pass", False, None, None, 1, 0, 0)]))
+    card = compute(store)
+    assert card.refute.hygiene_cleared == 1
+    assert card.refute.ruled_merges == 0 and card.refute.ruled_merge_runs == []
+    assert "pull/1" not in scorecard.to_markdown(card)
+
+
+def test_a_ruled_merge_needs_a_cleared_hit_on_a_summarized_run_of_the_pr(store):
+    """#92: an open PR with a cleared hit, a merged PR whose hits were all `unsure` or
+    `tampering`, and a merged PR from before the rulings are none of them ruled merges."""
+    run(store, "R1", pr=1)  # still open
+    run(store, "R2", pr=2, merged=True)  # nothing cleared
+    run(store, "R3", pr=3, merged=True)  # before the rulings
+    for run_id, verdict in (
+        ("R1", RefuteVerdict("pass", False, None, None, 1, 0, 0)),
+        ("R2", RefuteVerdict("pass", False, None, None, 0, 1, 1)),
+        ("R3", RefuteVerdict("pass", False)),
+    ):
+        store.save_run_summary(summary(run_id, [], refute=[verdict]))
+    card = compute(store)
+    assert card.refute.ruled_merges == 0 and card.refute.ruled_merge_runs == []
+
+
+def test_a_pr_two_runs_ruled_on_is_one_ruled_merge_and_two_lines(store):
+    """#92: the count is PRs, the list is runs, so a second run on the same PR is found too.
+    The list is ordered by repository, PR and run, not by when the runs were dispatched."""
+    run(store, "R3", repo=OTHER, pr=9, merged=True, at=T0 + timedelta(minutes=30))
+    run(store, "R1", pr=5, merged=False, at=T0 + timedelta(hours=1))
+    run(store, "R2", pr=5, merged=True, at=T0 + timedelta(hours=5))  # the run that merged it
+    store.save_run_summary(summary("R1", [], refute=[RefuteVerdict("fail", True, None, None, 1, 0, 0)]))
+    store.save_run_summary(summary("R2", [], refute=[RefuteVerdict("pass", False, None, None, 2, 0, 0)]))
+    store.save_run_summary(summary("R3", [], refute=[RefuteVerdict("pass", False, None, None, 4, 0, 0)]))
+    card = compute(store)
+    assert card.refute.ruled_merges == 2
+    assert card.refute.ruled_merge_runs == [
+        scorecard.RuledMergeRun(REPO, 5, "R1", 1),
+        scorecard.RuledMergeRun(REPO, 5, "R2", 2),
+        scorecard.RuledMergeRun(OTHER, 9, "R3", 4),
+    ]
+    assert "| Ruled merges | 2 PR(s) the workflow merged on a cleared hit (3 run(s)) |" in (
+        scorecard.to_markdown(card)
+    )
+
+
+def test_a_window_with_no_carrying_run_shows_zero_rulings_and_no_list(store):
+    run(store, "R1", pr=1, merged=True)
+    store.save_run_summary(summary("R1", [], refute=[RefuteVerdict("pass", False)]))
+    card = compute(store)
+    assert (card.refute.hygiene_cleared, card.refute.hygiene_unsure, card.refute.hygiene_tampering) == (0, 0, 0)
+    assert card.refute.hygiene_runs == 0
+    assert card.refute.ruled_merges == 0 and card.refute.ruled_merge_runs == []
+    text = scorecard.to_markdown(card)
+    assert ("| Refuter hygiene rulings: hits cleared / unsure / tampering | 0 / 0 / 0 over 0 runs"
+            " that carry them; no run in this window publishes them |") in text
+    assert "| Ruled merges | 0 PR(s) the workflow merged on a cleared hit (0 run(s)) |" in text
+    assert "Ruled merges (" not in text and "| Hits cleared |" not in text
+
+
 def test_window_is_by_dispatch_time_and_repos_are_listed(store):
     run(store, "IN", at=T0 + timedelta(days=1), repo=OTHER, hours=4.0, pr=3, merged=True)
     run(store, "IN2", at=T0 + timedelta(days=2), hours=1.0)
@@ -318,6 +430,8 @@ def test_markdown_carries_every_metric_row(store):
         "Provider failovers by node and reason",
         "Runs with no PR, by terminal node",
         "Refuter first verdicts",
+        "Refuter hygiene rulings",
+        "Ruled merges",
         "Open to merge",
     ):
         assert f"| {heading}" in text

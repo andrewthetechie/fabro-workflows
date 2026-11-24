@@ -405,10 +405,65 @@ def test_refute_row_round_trips_the_new_field_keys(tmp_path):
         raw = store._conn.execute(
             "SELECT refute FROM run_summary WHERE run_id = ?", ("RX",)
         ).fetchone()["refute"]
+        # #92 added the three hygiene-ruling counts to every stored pass; this pass has none.
         assert raw == ('[{"verdict": "fail", "not_met": false, '
-                       '"unverifiable_only": true, "ci_credited": 3}]')
+                       '"unverifiable_only": true, "ci_credited": 3, '
+                       '"hygiene_cleared": null, "hygiene_unsure": null, '
+                       '"hygiene_tampering": null}]')
     finally:
         store.close()
+
+
+def test_refute_row_round_trips_the_hygiene_rulings_and_an_old_row_still_loads(store):
+    """#92: a stored pass carries `hygiene_cleared`, `hygiene_unsure` and `hygiene_tampering`
+    beside the #40 keys, NULL on a pass whose gate published none. The column stays TEXT, so
+    there is no migration: a row written before the change has none of the three keys, and it
+    reads back exactly as it was written."""
+    import json
+    from collections import Counter
+
+    from fabro_scheduler.summary import RefuteVerdict, RunSummary
+
+    for run_id in ("NEW", "OLD"):
+        _acquire(store, run_id=run_id)
+        store.archive_and_release_lease(
+            run_id, RunOutcome(kind="succeeded", finished_at=FINISHED)
+        )
+    store.save_run_summary(
+        RunSummary(
+            run_id="NEW", stages={}, failovers=Counter(), path=[], terminal_node="x",
+            refute=[
+                RefuteVerdict("pass", False, False, None, 2, 0, 1),
+                RefuteVerdict("fail", True),
+            ],
+            events=1,
+        )
+    )
+    # What the collector wrote before #92: the four keys and no others.
+    store._conn.execute(
+        "INSERT INTO run_summary (run_id, status, summarized_at, terminal_node, refute)"
+        " VALUES ('OLD', 'ok', ?, 'x', ?)",
+        (FINISHED.isoformat(),
+         '[{"verdict": "fail", "not_met": false, "unverifiable_only": true,'
+         ' "ci_credited": 3}]'),
+    )
+    store._conn.commit()
+
+    rows = {
+        row["run_id"]: json.loads(row["refute"])
+        for row in store.scorecard_rows(DISPATCHED, FINISHED + timedelta(seconds=1)).summaries
+    }
+    assert rows["NEW"] == [
+        {"verdict": "pass", "not_met": False, "unverifiable_only": False,
+         "ci_credited": None, "hygiene_cleared": 2, "hygiene_unsure": 0,
+         "hygiene_tampering": 1},
+        {"verdict": "fail", "not_met": True, "unverifiable_only": None,
+         "ci_credited": None, "hygiene_cleared": None, "hygiene_unsure": None,
+         "hygiene_tampering": None},
+    ]
+    assert rows["OLD"] == [
+        {"verdict": "fail", "not_met": False, "unverifiable_only": True, "ci_credited": 3}
+    ]
 
 
 def test_the_migration_adds_the_workflow_column_to_leases_and_history(tmp_path):

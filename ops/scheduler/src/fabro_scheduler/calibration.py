@@ -291,8 +291,10 @@ def outcome_class(*, merged: object, terminal_node: object, pr_number: object,
 def _refuter_unverifiable(refute: object) -> bool:
     """Whether any Refuter pass called its only unmet criteria unverifiable.
 
-    `run_summary.refute` is a JSON array of `{verdict, not_met, unverifiable_only, ci_credited}`
-    in order (`summary.RefuteVerdict`). `unverifiable_only` is the field that says a pass found
+    `run_summary.refute` is a JSON array of
+    `{verdict, not_met, unverifiable_only, ci_credited, hygiene_cleared, hygiene_unsure,
+    hygiene_tampering}` in order (`summary.RefuteVerdict`; the last three, #92, are absent on an
+    entry written before them). `unverifiable_only` is the field that says a pass found
     nothing it could check, so it is what an `unverifiable` precheck verdict is compared with.
     """
     if not isinstance(refute, str) or not refute:

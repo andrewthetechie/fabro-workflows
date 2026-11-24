@@ -281,7 +281,9 @@ CREATE TABLE IF NOT EXISTS run_summary (
   summarized_at TEXT    NOT NULL,  -- ISO-8601 UTC
   terminal_node TEXT,              -- the last node the run started, other than exit
   path          TEXT,              -- JSON array of "from>to": the run's last edges
-  refute        TEXT,              -- JSON array of {verdict, not_met, unverifiable_only, ci_credited}, in order
+  refute        TEXT,              -- JSON array, in order, of {verdict, not_met, unverifiable_only,
+                                       -- ci_credited, hygiene_cleared, hygiene_unsure, hygiene_tampering}.
+                                       -- The last three are NULL on a pass from before #92's rulings
   events        INTEGER,
   error         TEXT,
   first_edit_ms TEXT,              -- JSON array: per coder attempt, ms to its first edit
@@ -1783,6 +1785,11 @@ class Store:
                 "not_met": verdict.not_met,
                 "unverifiable_only": verdict.unverifiable_only,
                 "ci_credited": verdict.ci_credited,
+                # #92: the refuter's rulings on diff-hygiene hits. NULL on a pass whose gate
+                # published none, which the scorecard never reads as 0.
+                "hygiene_cleared": verdict.hygiene_cleared,
+                "hygiene_unsure": verdict.hygiene_unsure,
+                "hygiene_tampering": verdict.hygiene_tampering,
             }
             for verdict in summary.refute
         ]

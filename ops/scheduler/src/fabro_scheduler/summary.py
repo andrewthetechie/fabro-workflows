@@ -53,6 +53,11 @@ the baseline would count only green visits. `task_validation_unchecked` and
 Each `open_pr_prep` visit appends its `final_route` to `RunSummary.final_routes`, in
 order.
 
+Diff-hygiene rulings (#92) added three counts to each refuter verdict: `hygiene_cleared`,
+`hygiene_unsure` and `hygiene_tampering`, the hits whose final ruling is `legitimate`, `unsure`
+or `tampering`. `refute_gate` publishes them with its verdict in both graphs; a pass from a
+run whose gate published none has `None` for each, which is never read as 0.
+
 Pure: no I/O, so the parsing is tested with fixture event lines.
 """
 
@@ -173,12 +178,19 @@ class StageStat:
 
 @dataclass(frozen=True)
 class RefuteVerdict:
-    """One pass of `refute_gate`, in order. `not_met` is None before gate relief."""
+    """One pass of `refute_gate`, in order. `not_met` is None before gate relief.
+
+    The three `hygiene_*` counts (#92) are None on a pass whose gate published none, which
+    is every pass of a run summarized from events written before the rulings shipped.
+    """
 
     verdict: str
     not_met: bool | None
     unverifiable_only: bool | None = None
     ci_credited: int | None = None
+    hygiene_cleared: int | None = None
+    hygiene_unsure: int | None = None
+    hygiene_tampering: int | None = None
 
 
 @dataclass
@@ -431,6 +443,9 @@ def summarize(
                             not_met if isinstance(not_met, bool) else _bool_text(not_met),
                             unverifiable_only if isinstance(unverifiable_only, bool) else _bool_text(unverifiable_only),
                             ci_credited if isinstance(ci_credited, int) else _int_or_none(ci_credited),
+                            _int_or_none(updates.get("hygiene_cleared")),
+                            _int_or_none(updates.get("hygiene_unsure")),
+                            _int_or_none(updates.get("hygiene_tampering")),
                         )
                     )
 

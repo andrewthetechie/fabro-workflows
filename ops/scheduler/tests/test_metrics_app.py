@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -123,6 +124,52 @@ def test_metrics_page_shows_tokens_by_model(client, store):
     assert 'data-value="1500000"' in html  # raw counts to sort by, not "1.50M"
     assert 'data-value=""' in html  # the unpriced box sorts last on Cost
     assert client.get("/api/scorecard").json()["models"][0]["model_id"] == "deepseek"
+
+
+def test_metrics_page_shows_the_hygiene_rulings_and_lists_the_ruled_merges(client, store):
+    """#92: the refuter table carries the three ruling counts, the runs that carry them and
+    the ruled-merge count; each ruled merge is listed with its repository, a link to the PR,
+    the run id and the cleared count, so it can be opened and read. A window with none says
+    so."""
+    from collections import Counter
+
+    from fabro_scheduler.summary import RefuteVerdict, RunSummary
+
+    seed(store, "R1", datetime(2026, 10, 6, 9, tzinfo=UTC), pr=5, merged=True)
+    store.save_run_summary(RunSummary(
+        "R1", {}, Counter(), [], None,
+        [RefuteVerdict("fail", True, None, None, 2, 1, 0),
+         RefuteVerdict("pass", False, None, None, 1, 0, 0)],
+        1,
+    ))
+
+    labels = (
+        "Hygiene hits cleared by a ruling", "Hygiene hits ruled unsure",
+        "Hygiene hits ruled tampering", "Runs that carry the ruling counts", "Ruled merges (PRs)",
+    )
+
+    def rendered(label: str, value: int) -> str:
+        return (f'<td class="py-1.5 text-slate-400">{label}</td>'
+                f'<td class="py-1.5 text-right text-slate-200">{value}</td></tr>')
+
+    html = client.get("/metrics?from=2026-10-06&to=2026-10-06&weeks=2").text
+    for label, value in zip(labels, (3, 1, 0, 1, 1)):  # cleared: 2 in round 1 and 1 in round 2
+        assert rendered(label, value) in html, label
+    # One row: the repository, a link to the PR, the run that ruled, and the hits it cleared.
+    link = '<td class="whitespace-nowrap px-4 py-3"><a class="text-sky-400 hover:underline"'
+    cells = (
+        f'<tr>{link} href="https://github.com/{REPO}">{REPO}</a></td>',
+        f'{link} href="https://github.com/{REPO}/pull/5">#5</a></td>',
+        '<td class="whitespace-nowrap px-4 py-3 font-mono text-[0.85em]">R1</td>',
+        '<td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">3</td></tr>',
+    )
+    assert re.search(r"\s*".join(re.escape(cell) for cell in cells), html)
+
+    empty = client.get("/metrics?from=2020-01-01&to=2020-01-07&weeks=2").text
+    for label in labels:
+        assert rendered(label, 0) in empty, label
+    assert "No merge in this window relied on a hygiene ruling." in empty
+    assert "/pull/5" not in empty
 
 
 def test_api_scorecard_repo_filter(client, store):
