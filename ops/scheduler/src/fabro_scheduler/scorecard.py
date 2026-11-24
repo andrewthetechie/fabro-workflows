@@ -55,7 +55,18 @@ ARCHITECTURE_LABEL = "architecture"
 # that reason may name (`refuter`, `unfixed findings`) and before `CI`, whose `checks?`
 # would claim prose. `stage failed` is `mark_needs_human`'s "<stage> failed (<category>)"
 # without "timed out", which `timeout` claims first.
+#
+# The counters' own two openings come first, anchored (#92): since the Refuter rules on hits
+# their reason can end "(2 hit(s) cleared by refuter rulings)", and it quotes flagged code, so
+# any bucket below could claim it. The unanchored `diff hygiene` below keeps the older texts.
 REASON_BUCKETS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "diff hygiene",
+        re.compile(
+            r"^(Diff hygiene blocks the merge|"
+            r"The CI fix was not pushed: after it, the diff-hygiene counters block)"
+        ),
+    ),
     ("architecture", re.compile(r"Architecture issue|label architecture", re.I)),
     ("do-not-merge", re.compile(r"do-not-merge", re.I)),
     ("refuter", re.compile(r"refuter", re.I)),

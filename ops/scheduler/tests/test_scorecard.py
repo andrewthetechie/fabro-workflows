@@ -149,6 +149,27 @@ def test_merge_attribution_and_held_reasons(store):
         ("The merge was blocked, but no reason was recorded.", "unspecified"),
         ("unspecified", "unspecified"),
         ("Something new entirely", "other"),
+        # #92: the counters' reason can end with what the Refuter's rulings cleared, and
+        # refute_prep's says they were dropped. Both are hygiene holds.
+        (
+            "Diff hygiene blocks the merge: asserts_removed=1. Samples: tests/test_a.py:2"
+            " asserts_removed `assert f()` (2 hit(s) cleared by refuter rulings)",
+            "diff hygiene",
+        ),
+        (
+            "Diff hygiene blocks the merge: tests_deleted=1. The refuter rulings were dropped,"
+            " because the checkout changed after the counters ran, so no hit is cleared.",
+            "diff hygiene",
+        ),
+        (
+            "The CI fix was not pushed: after it, the diff-hygiene counters block the merge. Diff"
+            " hygiene blocks the merge: asserts_removed=1 (1 hit(s) cleared by refuter rulings)",
+            "diff hygiene",
+        ),
+        (
+            "The refuter could not confirm the work is done: not_met: the diff hygiene note is kept.",
+            "refuter",
+        ),
     ],
 )
 def test_reason_buckets(store, reason, bucket):
