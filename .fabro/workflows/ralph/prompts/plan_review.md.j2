@@ -93,18 +93,18 @@ minutes, so report one only when you can show it. When the evidence is thin, dro
 
 ## Budget
 
-You have a hard time limit, and everything you have found is lost if `submit` has not been
-called when it ends: a finding exists only in your `submit` call. A review that submits
-uses about 30 tool calls and a short thought per call; the reviews that ran out of time spent
-seven times as much thinking and had still not decided.
+The stage has a time limit, and a finding exists only once `submit` has written it: a review
+that runs out of time reports nothing and stops the run. Where this section and a "Done when"
+line disagree, this section wins.
 
-- About 45 tool calls is plenty. Past 35, open no new file, and write the review from what you
-  have read.
-- Open each cited path once. A path you have confirmed stays confirmed.
-- Decide each candidate finding once. Grade it against the Severity list, then write it or drop
-  it. Do not weigh it again, and do not reopen a call you have made.
-- Finish by calling `submit`, whether or not you found an error. Do not start another search
-  to be surer.
+- About 60 tool calls for the whole review. At 60, stop checking and call `submit` with what
+  you have. Check the acceptance criteria first, then the paths and symbols the plan edits,
+  then the other citations.
+- What you did not get to check is not a finding.
+- Read each cited range once. What you have confirmed stays confirmed.
+- Settle each candidate finding when you meet it, and do not reopen it. You have shown it and
+  the Severity list names it: `error`. You have shown it and the list does not name it:
+  `warning`. You could not show it with one check: drop it.
 
 ## Output
 

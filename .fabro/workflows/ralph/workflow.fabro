@@ -415,11 +415,12 @@ done
 echo 'plan_review_prep: visit '$V', '\"$(jq '.tasks | length' $P/plan.json)\"' Task(s) to review' >&2
 echo '{\"context_updates\":{\"plan_review_go\":true,\"plan_review_visit\":'$V'}}'"]
 
-    // 2026-11-12: NEW stage; 40m is the hosted `standards` 20m doubled for the slower two-slot
-    // box. Measured 2026-11-24 (#94, 216 attempts since 11-12): 196 finished (p50 9m, p95 25m, max
-    // 40m) and 20 timed out (9%) at a median 105k reasoning tokens against 14k for a finished one,
-    // so a longer timeout buys little: the prompt's `## Budget` bounds the stage instead. The gate
-    // says whether a missing result was a timeout or a session that ended without submitting.
+    // 40m was the hosted `standards` timeout doubled for the slower two-slot box. Measured
+    // 2026-11-24 (#94), box-served attempts from 11-17, after the box outage: 120 of 143 submitted
+    // (p50 9.6m, p95 27.7m, max 39.9m; tool calls p50 41, p90 66) and 17 timed out (12%), each past
+    // 85k reasoning tokens against a p50 of 16k. They are sessions that keep re-weighing findings,
+    // on a box generating at its normal speed, so the prompt's `## Budget` is the bound and a
+    // longer timeout is not: `local_standards` times out the same way at 60m.
     plan_review [label="Review the plan", class="plan-review", timeout="40m", max_retries=1, prompt="@prompts/plan_review.md.j2"]
 
     plan_review_gate [label="Decide the plan review", shape=parallelogram, timeout="1m", output_schema="routing",

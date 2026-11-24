@@ -1891,6 +1891,8 @@ def test_ralph_plan_review_gate(ck, tmp_path):
     ck("pr gate ended without a result: says so", "1", count("plan reviewer ended without submitting a result", cat(T / "stuck_reason.md"), flags="F"))
     setup([]); rm(R); write(T / ".io/stage-end/plan_review.succeeded", "v0"); go()
     ck("pr gate an earlier visit's mark does not count", "1", count("plan reviewer timed out or failed before it submitted", cat(T / "stuck_reason.md"), flags="F"))
+    setup([]); rm(R, T / ".io/stage.json"); go()
+    ck("pr gate no stage identity: an empty visit matches no mark", "1", count("plan reviewer timed out or failed before it submitted", cat(T / "stuck_reason.md"), flags="F"))
     setup([]); write(R, "{not json"); go()
     ck("pr gate garbage result: fails the node", "1", st["rc"])
     setup([], decision="maybe"); go()

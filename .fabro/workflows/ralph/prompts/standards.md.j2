@@ -84,10 +84,14 @@
 
   ## Budget
 
-  You have a hard time limit, and your findings are lost if `submit` has not been called when
-  it ends. About 60 tool calls is plenty for a review. Past 50, open no new file and write
-  the review from what you have read. Open each file once, and decide each candidate finding
-  once: write it or drop it, and do not weigh it again.
+  The stage has a time limit, and a finding exists only once `submit` has written it. Where
+  this section and a "Done when" line disagree, this section wins.
+
+  - About 60 tool calls for the whole review. At 60, stop checking and call `submit` with
+    what you have. Check the documented rules before the smells.
+  - What you did not get to check is not a finding, and it is not a reason for
+    `needs_human_review`. Name it in `summary`.
+  - Step 5 is one pass: recheck each finding once, then keep it or drop it for good.
 
   ## Fowler smell baseline
 
