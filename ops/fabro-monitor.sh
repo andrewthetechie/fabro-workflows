@@ -46,7 +46,7 @@
 #                       diagnosis. Skipped when C7 fires (lane unreadable by construction).
 #   C11 box-degraded    more than 5% of 20 or more box-stage visits failed over, more
 #                       than 2% of 20 or more Task reviews were missed by both
-#                       reviewers, or a box stage ever fell over to
+#                       reviewers, or a stage ever fell over to
 #                       openai/gpt-5.6-terra, the chain's last rung          🟠 24h
 #                       Read from GET /api/box-health. Skipped when C7 fires.
 #
@@ -826,8 +826,9 @@ fi
 # continues on a hosted model, so nothing in-band reports it. Every box failover of the
 # month before 2026-11-24 happened on 11-13..11-16, minutes apart, and no alert mentioned
 # it. `/api/box-health` (`measure.box_health`) counts them: the share of box-stage visits
-# that failed over, the Task-review miss rate, and whether a box stage ever fell over to
-# openai/gpt-5.6-terra, the chain's last rung. 🟠 and 24h, because a fallback costs money
+# that failed over, the Task-review miss rate, and whether any stage fell over to
+# openai/gpt-5.6-terra, the chain's last rung (a hosted `glm-5.3` review arrives there too,
+# so it is counted from every source). 🟠 and 24h, because a fallback costs money
 # rather than breaking a run. The message names each condition that held, with its
 # numbers; a null count is not a held condition (task 11 fills `reviews`/`miss_rate`, so
 # they read null until then). C7 suppresses C11 exactly as it suppresses C8 and C10, and an
@@ -865,7 +866,7 @@ else
       degraded="$degraded; $h_miss of $h_reviews Task reviews missed"
     fi
     if printf '%s' "$h_terra" | grep -Eq '^[0-9]+$' && [ "$h_terra" -gt 0 ]; then
-      degraded="$degraded; $h_terra box stage(s) fell over to openai/gpt-5.6-terra"
+      degraded="$degraded; $h_terra stage(s) fell over to openai/gpt-5.6-terra"
     fi
     if [ -n "$degraded" ]; then
       fire C11 "$BOX_HEALTH_RE_SECONDS" "🟠" \

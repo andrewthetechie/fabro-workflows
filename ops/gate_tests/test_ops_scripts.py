@@ -364,6 +364,18 @@ def test_fabro_sandbox_sweep_stale_running(ck, tmp_path):
     ck("sweep rule 2 under pressure: reaching the target still exits 0", "0", r.rc)
     ck("sweep rule 2 under pressure: the note says pressure came off", "1", count("pressure off", r.out))
 
+    # The pressure limit has a floor too. 30h is past the old 24h limit and inside the 36h
+    # one: even on a hot disk that sandbox can be a long ralph-v2 run, so it is kept.
+    young = _run_name("J")
+    s = Sweep(tmp_path / "stale-pressure-young",
+              [(young, "true", _iso_ago(30 * 3600), 40 * gb, _iso_ago(30 * 3600))],
+              pct=80, steps=(55,), total_kb=100000000)
+    r = s.run()
+    ck("sweep rule 2 under pressure: a 30h sandbox is inside the 36h limit and is kept", "0",
+       count(f"^{young}$", file=s.rm))
+    ck("sweep rule 2 under pressure: it is reported as still running", "1",
+       count(f"^keep  {young} (still running since", r.out))
+
     # A dry run reports it and touches nothing.
     s = Sweep(tmp_path / "stale-dry", [(ancient, "true", _iso_ago(50 * 3600), 4 * gb, _iso_ago(50 * 3600))],
               pct=50)
@@ -660,9 +672,9 @@ def test_fabro_monitor_c11_box_degraded(ck, tmp_path):
     ck("monitor C11: null counts fire nothing", "0", count("box-degraded — ", file=out))
 
     out = _box_health(m, {**quiet, "terra": 2})
-    ck("monitor C11: one box stage on the last rung fires", "1", count("box-degraded — ", file=out))
+    ck("monitor C11: an arrival at the last rung fires", "1", count("box-degraded — ", file=out))
     ck("monitor C11: the message names terra and its count", "1",
-       count(r"2 box stage\(s\) fell over to openai/gpt-5\.6-terra", file=out, flags="E"))
+       count(r"2 stage\(s\) fell over to openai/gpt-5\.6-terra", file=out, flags="E"))
     ck("monitor C11: terra alone names no other condition", "0",
        count("box-stage visits failed over|Task reviews missed", file=out, flags="E"))
 
@@ -670,7 +682,7 @@ def test_fabro_monitor_c11_box_degraded(ck, tmp_path):
     out = _box_health(m, {**quiet, "failovers": 4, "failover_rate": 0.1, "terra": 1})
     ck("monitor C11: both held conditions are named", "1|1",
        count("0.1 of 40 box-stage visits failed over", file=out) + "|"
-       + count("1 box stage(s) fell over", file=out))
+       + count("1 stage(s) fell over", file=out))
 
     # Below 20 the rates say nothing, however high they are.
     out = _box_health(m, {**quiet, "visits": 19, "failovers": 9, "failover_rate": 0.5,
@@ -686,13 +698,42 @@ def test_fabro_monitor_c11_box_degraded(ck, tmp_path):
     out = _box_health(m, "not json")
     ck("monitor C11: an unparseable body is unevaluable too", "1",
        count(r"skip  C11 box-degraded: /api/box-health unreadable \(HTTP 200\)", file=out, flags="E"))
+    out = _box_health(m, {"status": "ok"})
+    ck("monitor C11: a JSON object without the counts is unevaluable too", "1",
+       count(r"skip  C11 box-degraded: /api/box-health unreadable \(HTTP 200\)", file=out, flags="E"))
 
-    # C7 firing skips C11, exactly as it skips C8 and C10.
+    # The stamp. C11 re-alerts every 24h, and only an evaluated sample moves its stamp: a
+    # quiet one resolves it by name, an unreadable one leaves it alone. DRY_RUN writes no
+    # state, so each tick starts from the stamp the test wrote.
+    firing = {**quiet, "failovers": 4, "failover_rate": 0.1}
+
+    def stamp(hours_ago):
+        write(m.MM / "state", f"C11={int(time.time()) - hours_ago * 3600}\n")
+
+    stamp(25)
+    out = _box_health(m, firing)
+    ck("monitor C11: a 25h stamp re-alerts in orange as still firing", "1",
+       count(r"^DRY   would send: 🟠 fabro monitor: box-degraded — .* \(still firing\)$", file=out, flags="E"))
+    stamp(5)
+    out = _box_health(m, firing)
+    ck("monitor C11: a 5h stamp stays quiet inside the 24h interval", "0", count("box-degraded — ", file=out))
+    stamp(5)
+    out = _box_health(m, quiet)
+    ck("monitor C11: an evaluated quiet sample resolves the stamp by name", "1",
+       count(r"^DRY   would send: ✅ fabro monitor: box-degraded resolved$", file=out, flags="E"))
+    stamp(5)
+    out = _box_health(m, "not json")
+    ck("monitor C11: an unevaluable sample leaves the stamp alone", "0",
+       count("DRY.*box-degraded", file=out))
+
+    # C7 firing skips C11, exactly as it skips C8 and C10, stamp included.
+    stamp(5)
     (m.MM / "pools.json").unlink()
     out = m.run()
     ck("monitor C11: C7 firing skips it", "1",
        count("skip  C11 box-degraded: C7 scheduler-down is firing", file=out))
     ck("monitor C11: C7 firing fires nothing", "0", count("box-degraded — ", file=out))
+    ck("monitor C11: C7 firing leaves the stamp alone", "0", count("DRY.*box-degraded", file=out))
 
 
 # ---------------------------------------------------------------------------

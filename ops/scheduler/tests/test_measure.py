@@ -176,9 +176,9 @@ def test_box_health_counts_the_hops_out_of_the_box_over_its_own_visits(store):
     summary(store, run_id="R1")
     stage(store, run_id="R1", node="iterate_t1", visits=10, box_ms=600_000)
     stage(store, run_id="R1", node="standards", visits=5, box_ms=0)  # hosted, not a box visit
-    failover(store, run_id="R1", node="iterate_t1", from_model="box-a/qwen3.8-flash-next",
+    failover(store, run_id="R1", node="iterate_t1", from_model="box-a/coders-a",
              to_model="zai/glm-5.3-flash", count=2)
-    failover(store, run_id="R1", node="iterate_t1", from_model="box-b/qwen3.8-flash-next",
+    failover(store, run_id="R1", node="iterate_t1", from_model="box-b/coders-c",
              to_model=measure.TERRA_MODEL, count=1)
     failover(store, run_id="R1", node="standards", from_model="zai/glm-5.3",
              to_model=measure.TERRA_MODEL, count=1)
@@ -194,18 +194,24 @@ def test_box_health_leaves_out_a_run_with_no_ok_summary(store):
     inside = NOW - timedelta(hours=1)
     run(store, run_id="NOSUM", at=inside)
     stage(store, run_id="NOSUM", node="iterate_t1", visits=20, box_ms=600_000)
-    failover(store, run_id="NOSUM", node="iterate_t1", from_model="box-a/qwen3.8-flash-next",
+    failover(store, run_id="NOSUM", node="iterate_t1", from_model="box-a/coders-a",
              to_model="zai/glm-5.3-flash", count=4)
     # A summary that failed to collect is no better: its stage rows are absent or stale.
     run(store, run_id="ERR", at=inside)
     summary(store, run_id="ERR", status="error")
     stage(store, run_id="ERR", node="iterate_t1", visits=50, box_ms=600_000)
+    # Issue runs only: a `pr` row would count a pull request as an issue run.
+    run(store, run_id="PR", at=inside, target_kind="pr")
+    summary(store, run_id="PR")
+    stage(store, run_id="PR", node="spec", visits=30, box_ms=600_000)
+    failover(store, run_id="PR", node="spec", from_model="box-a/coders-a",
+             to_model="zai/glm-5.3-flash", count=5)
     run(store, run_id="OK", at=inside)
     summary(store, run_id="OK")
     stage(store, run_id="OK", node="iterate_t1", visits=10, box_ms=600_000)
     document = box_health(store)
     assert document["runs"] == 1, "a run with no ok summary is not part of the rate"
-    assert document["visits"] == 10
+    assert document["visits"] == 10, "nor is a run that is not an issue run"
     assert document["failovers"] == 0
     assert document["failover_rate"] == 0.0
 

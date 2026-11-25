@@ -203,7 +203,8 @@ def box_use(
 
 # A failover *from* one of these providers is a box failover: `box-a` and `box-b`, the two
 # two-slot boxes. Matched on the provider half of `run_failovers.from_model`
-# (`box-a/qwen3.8-flash-next`), not on the model name.
+# (`box-a/coders-a`: a route is `provider/<catalog model id>`, the same `coders-*` name
+# `summary.CODER_MODEL_PREFIX` reads off the stage list), not on the model name.
 BOX_PROVIDER_PREFIX = "box-"
 
 # The last rung of the hosted `glm-5.3` chain in `ralph-v2` (`glm-5.3` ->

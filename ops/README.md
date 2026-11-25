@@ -1675,8 +1675,8 @@ which see the run context it cannot (ADR 0004,
   condition per run; a silent log means a dead monitor, not a healthy host.
   Rotate by hand when it grows.
 - **State:** `~/.local/state/fabro-monitor.state` — one `C<n>=<epoch>` line
-  per firing condition (dedup: re-alert 4h, starvation 7d, disk and
-  background-starved 24h). C8 also
+  per firing condition (dedup: re-alert 4h, starvation 7d, disk,
+  background-starved and box-degraded 24h). C8 also
   keeps a `C8_since=<epoch>` line: the first qualifying sample of the current
   wedge window, cleared the moment a sample stops qualifying. Absent or empty
   when nothing is firing; a clean tick writes no file at all.
