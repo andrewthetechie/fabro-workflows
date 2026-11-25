@@ -911,6 +911,24 @@ class R10V2Copies(unittest.TestCase):
         # so no row above can compare them. Task 08 adds the nodes it rewrites too.
         self.assertEqual(cgi.R10_V2_OWN, {"pick", "record"})
 
+    def test_each_copy_carries_the_one_comment_line(self):
+        """P14 (docs/plans/ralph-v2/00): a copied node carries `// copy: ralph.<node>` and no
+        other prose, so the new graph does not grow v1's comments back. `resolve_merge` may
+        keep the second line task 05 asked for: that its 60m is unmeasured."""
+        lines = (REAL / cgi.RALPH_V2_GRAPH).read_text().split("\n")
+        keeps_its_reason = {"resolve_merge"}
+        prose = []
+        for node, _ in cgi.R10_V2_COPIES:
+            start = next(i for i, line in enumerate(lines) if line.startswith(f"    {node} ["))
+            block, i = [], start - 1
+            while i >= 0 and lines[i].startswith("    //"):
+                block.insert(0, lines[i].strip())
+                i -= 1
+            first = [f"// copy: ralph.{node}"]
+            if block != first and not (node in keeps_its_reason and block[:1] == first):
+                prose.append((node, block))
+        self.assertEqual(prose, [])
+
 
 class RealTree(unittest.TestCase):
     def test_real_tree_is_clean(self):

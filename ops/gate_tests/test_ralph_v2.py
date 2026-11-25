@@ -225,6 +225,12 @@ def one_task(**over) -> dict:
     return t
 
 
+# What C1 asks each node to print on every path: `pick` its six keys (its step 6), `record`
+# its two (its step 6). An edge reads a key a path did not print from an earlier visit's context.
+PICK_KEYS = "loop,loop_exhausted,phase,rebase_failed,rung,task_step"
+RECORD_KEYS = "iteration_passed,review_due"
+
+
 def test_task_plan_gate(ck, tmp_path):
     """C2 step 1: every rule, alone, is a retry with its own sentence; and a second
     rejection is the fallback plan, one goal per acceptance statement."""
@@ -350,6 +356,16 @@ def test_task_plan_gate(ck, tmp_path):
     put(plan(bug_class="any handler that trusts its argument"))
     ck("a fix Task with a bug_class goes on", "go", go()["task_plan_route"])
 
+    # A rejected plan, then a good one: the reason goes with the rejection (C2 step 2), so no
+    # later planner is handed a stale `error.txt`.
+    setup()
+    put(plan(context="x" * 14001))
+    ck("a plan over the size is rejected first", "retry", go()["task_plan_route"])
+    ck("and its reason is on disk", "present", present(T / "task_plan_error.txt"))
+    put(plan())
+    ck("the next plan goes on", "go", go()["task_plan_route"])
+    ck("a valid plan deletes the rejection's reason", "absent", present(T / "task_plan_error.txt"))
+
     # The second rejection: the fallback plan, for 1, 3, 4 and 6 acceptance statements.
     for n, covers, goals in ((1, "[[1]]", 1), (3, "[[1],[2],[3]]", 3),
                              (4, "[[1],[2],[3],[4]]", 4), (6, "[[1],[2],[3],[4,5,6]]", 4)):
@@ -392,7 +408,9 @@ def test_pick_task_step(ck, tmp_path):
         r = sh(pick, cwd=repo)
         ck("pick: exits 0", "0", r.rc)
         no_braces(ck, "pick", r.out)
-        return json.loads(lastjson(r.out))["context_updates"]
+        pub = json.loads(lastjson(r.out))["context_updates"]
+        ck("pick: the six keys on every path", PICK_KEYS, ",".join(sorted(pub)))
+        return pub
 
     def tasks(t):
         write(T / "tasks.json", t)
@@ -488,6 +506,35 @@ def test_the_task_dossier_render(ck, tmp_path):
     ck("render: a missed plan carries the last attempt", "1", count("^## Last attempt$", file=D))
     ck("render: the last attempt is quoted", "1", count("THE CHECK FAILED", file=D))
 
+    # `## Review findings`: what the last round left, for the rework Iteration (C1 `pick` step
+    # 5), after v1's `## Last attempt`: a heading per finding, its line only when it has one,
+    # and its class only when it is set.
+    write(T / "tasks.json", task_list(one_task(misses=1, reviews=1)))
+    write(T / "task_review/state/findings/t1.json", json.dumps([
+        {"id": "t1v1f1", "severity": "error", "kind": "defect", "file": "src/a.txt", "line": 3,
+         "message": "An empty input reaches the handler", "evidence": "`make check` fails",
+         "class": "a handler that trusts its argument", "source": "refuter", "repeat_of": None},
+        {"id": "t1v1s1", "severity": "warning", "kind": "spec", "file": "src/b.txt", "line": None,
+         "message": "No test names the empty case", "evidence": "test/a.txt:2",
+         "class": "", "source": "review", "repeat_of": None},
+    ]) + "\n")
+    sh(pick, cwd=repo)
+    ck("render: the findings are their own section", "1", count("^## Review findings$", file=D))
+    ck("render: the header names the attempt", "1",
+       count(r"^Two reviewers found these after attempt 1\. Answer every id in `fixed` or `disputes`\.$",
+             file=D))
+    ck("render: a finding is a heading with its severity, kind, file and line", "1",
+       count(r"^### t1v1f1: error, defect, src/a\.txt:3$", file=D))
+    ck("render: a finding without a line has none", "1",
+       count(r"^### t1v1s1: warning, spec, src/b\.txt$", file=D))
+    ck("render: every finding shows its evidence", "2", count("^Evidence: ", file=D))
+    ck("render: a finding's message is quoted", "1",
+       count("^An empty input reaches the handler$", file=D))
+    ck("render: a class is shown only when set", "1",
+       count("^Class: a handler that trusts its argument$", file=D))
+    ck("render: the findings come after the last attempt", "true",
+       str(D.read_text().index("## Last attempt") < D.read_text().index("## Review findings")).lower())
+
     def render_program(node):
         for line in extract(RAPH2, node).split("\n"):
             if line.startswith("RENDER='") and line.endswith("'"):
@@ -512,7 +559,12 @@ def test_pick_rungs_and_the_cap(ck, tmp_path):
     def go(t, iterations="0"):
         write(T / "tasks.json", t)
         write(T / "iterations", iterations + "\n")
-        return json.loads(lastjson(sh(pick, cwd=repo).out))["context_updates"]
+        r = sh(pick, cwd=repo)
+        ck("pick: exits 0 (rungs)", "0", r.rc)
+        no_braces(ck, "pick (rungs)", r.out)
+        pub = json.loads(lastjson(r.out))["context_updates"]
+        ck("pick: the six keys on every path (rungs and cap)", PICK_KEYS, ",".join(sorted(pub)))
+        return pub
 
     for misses, rung in ((0, "1"), (1, "1"), (2, "2"), (3, "2"), (4, "3"), (5, "3")):
         ck("%d misses is rung %s" % (misses, rung), rung, go(task_list(one_task(misses=misses)))["rung"])
@@ -565,7 +617,9 @@ def test_record_writes_the_patches(ck, tmp_path):
         r = sh(rec, cwd=repo)
         ck("record: exits 0", "0", r.rc)
         no_braces(ck, "record", r.out)
-        return json.loads(lastjson(r.out))["context_updates"]
+        pub = json.loads(lastjson(r.out))["context_updates"]
+        ck("record: the two keys on every path (patches)", RECORD_KEYS, ",".join(sorted(pub)))
+        return pub
 
     def patches():
         return len(sorted(P1.glob("*.patch"))) if P1.is_dir() else 0
@@ -619,6 +673,28 @@ def test_record_writes_the_patches(ck, tmp_path):
     go()
     ck("a post Iteration writes no patch", "0", str(patches()))
 
+    # `PRE` is the phase and the Task's source (C1 step 1): a `ci` or `final_fix` Task leaves
+    # no patch in phase `pre` either, and its Iteration still counts against the cap (step 4).
+    for source in ("ci", "final_fix"):
+        rm(P1)
+        setup(task=one_task(source=source), iteration=done)
+        commit_all(repo, {"src/a.txt": "a %s fix\n" % source}, source)
+        ck("a %s Task passes" % source, "True", str(go()["iteration_passed"]))
+        ck("a %s Task in phase pre writes no patch" % source, "0", str(patches()))
+        ck("a %s Task in phase pre counts against the cap" % source, "1", cat(T / "iterations"))
+
+    # C5 step 8 leaves `reviewed` beside a Task's patches. The count is of patches (C1 step 2),
+    # so the rework Iteration's patch follows the last patch, not the last file.
+    rm(P1)
+    setup(iteration=done)
+    write(T / "task_review/state/patches/t1/001.patch", "one\n")
+    write(T / "task_review/state/patches/t1/002.patch", "two\n")
+    write(T / "task_review/state/patches/t1/reviewed", "2\n")
+    commit_all(repo, {"src/a.txt": "one two three four five six\n"}, "rework")
+    go()
+    ck("the next patch is numbered past the patches, not past the files", "001.patch,002.patch,003.patch",
+       ",".join(p.name for p in sorted(P1.glob("*.patch"))))
+
 
 def test_record_counts_and_answers(ck, tmp_path):
     """C1 `record` steps 4-6: the counter a rework Iteration goes to, `goals_done`, the
@@ -650,12 +726,17 @@ def test_record_counts_and_answers(ck, tmp_path):
 
     def go():
         r = sh(rec, cwd=repo)
+        ck("record: exits 0 (counts)", "0", r.rc)
         no_braces(ck, "record", r.out)
-        return json.loads(lastjson(r.out))["context_updates"]
+        pub = json.loads(lastjson(r.out))["context_updates"]
+        ck("record: the two keys on every path (counts)", RECORD_KEYS, ",".join(sorted(pub)))
+        return pub
 
     done = {"status": "done", "summary": "did it", "learnings": []}
 
-    setup(one_task(), dict(done, goals_done=["g2"]))
+    # An unreviewed Task that answers findings anyway: the answers wait for a review (step 5).
+    setup(one_task(), dict(done, goals_done=["g2"], fixed=["t1v1f1"], disputes=[
+        {"finding_id": "t1v1s1", "reason": "the check covers it", "evidence": "test/a.txt:2"}]))
     pub = go()
     ck("record: iteration_passed on every path", "True", str(pub["iteration_passed"]))
     ck("record: no review is due in task 07", "False", str(pub["review_due"]))
@@ -666,6 +747,18 @@ def test_record_counts_and_answers(ck, tmp_path):
     ck("goals_done is unioned into the plan", '["g1","g2"]',
        jq1("[.goals_done[]]", T / "task_plans/t1.json"))
     ck("no review means no answers file", "absent", present(A))
+    # The union is a set: the same goal reported again is still one entry.
+    go()
+    ck("a goal reported twice is done once", '["g1","g2"]',
+       jq1("[.goals_done[]]", T / "task_plans/t1.json"))
+
+    # Nothing is taken from a result without a valid receipt (C1 step 5), reviewed or not.
+    setup(one_task(reviews=1), dict(done, goals_done=["g2"], fixed=["t1v1f1"]))
+    set_visit(T / "iteration.json", "v0")
+    go()
+    ck("a stale receipt copies no goals_done", '["g1"]',
+       jq1("[.goals_done[]]", T / "task_plans/t1.json"))
+    ck("a stale receipt writes no answers", "absent", present(A))
 
     setup(one_task(reviews=1), dict(done, goals_done=["g2"]))
     go()
@@ -723,7 +816,12 @@ def test_the_task_loop_in_order(ck, tmp_path):
         r = sh(nodes[node], cwd=cwd)
         ck(node + ": exits 0", "0", r.rc)
         no_braces(ck, node, r.out)
-        return json.loads(lastjson(r.out))["context_updates"]
+        pub = json.loads(lastjson(r.out))["context_updates"]
+        if node == "pick":
+            ck("pick: the six keys on every path (in order)", PICK_KEYS, ",".join(sorted(pub)))
+        elif node == "record":
+            ck("record: the two keys on every path (in order)", RECORD_KEYS, ",".join(sorted(pub)))
+        return pub
 
     pub = run_node("pick", repo)
     ck("the loop plans first", "plan", pub["task_step"])
@@ -746,15 +844,23 @@ def test_the_task_loop_in_order(ck, tmp_path):
     ck("no result is no block", "none", run_node("task_block_gate", repo)["task_block"])
 
     commit_all(repo, {"src/a.txt": "one two\n"}, "t1 work")
-    write(T / "iteration.json",
-          json.dumps({"status": "done", "summary": "did it", "learnings": [],
-                      "goals_done": ["g1", "g2"]}) + "\n")
+    # The Iteration's io-stage writes `.io/stage.json` again, at its own visit: the planner's
+    # `v1` is over. `record` compares `iteration.json` to the visit that is current after the
+    # Iteration, so a result still stamped with the planner's visit is no pass, and the same
+    # result at the Iteration's own visit is.
+    mkreadok(T, "v2")
+    result = {"status": "done", "summary": "did it", "learnings": [], "goals_done": ["g1", "g2"]}
+    write(T / "iteration.json", json.dumps(result) + "\n")
     set_visit(T / "iteration.json", "v1")
     write(T / "check_ok", "1\n")
+    ck("a result at the planner's visit is not passed", "False",
+       str(run_node("record", repo)["iteration_passed"]))
+    write(T / "iteration.json", json.dumps(result) + "\n")
+    set_visit(T / "iteration.json", "v2")
     pub = run_node("record", repo)
     ck("the Task passes", "True", str(pub["iteration_passed"]))
     ck("the Task is passed in the list", "passed", jq(".[0].status", file=T / "tasks.json"))
-    ck("its work is one patch", "001.patch",
+    ck("each of its two Iterations left a patch", "001.patch,002.patch",
        ",".join(p.name for p in sorted((T / "task_review/state/patches/t1").glob("*.patch"))))
     ck("every goal it reported is done", '["g1","g2"]',
        jq1("[.goals_done[]]", T / "task_plans/t1.json"))

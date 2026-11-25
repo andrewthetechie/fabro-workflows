@@ -113,10 +113,7 @@ else
 fi
 rm -f /tmp/fabro/background.raw"]
 
-    // copy: ralph.prep, plus the Task loop's directories, its plan files and the rework
-    // counter (C1): `task_plans/` holds each Task's stored plan, `task_review/` its patches,
-    // its answers and its findings, and `rework_iterations` counts the Iterations a review
-    // asked for, which the Iteration cap does not (P9). All of them are re-created empty.
+    // copy: ralph.prep
     prep [label="Prep workspace and install deps", shape=parallelogram, timeout="20m", max_retries=1,
         script="set -e
 mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra
@@ -770,7 +767,7 @@ if [ \"$PH\" = pre ] && [ \"$SRC\" != ci ] && [ \"$SRC\" != final_fix ]; then PR
 if [ \"$PRE\" = true ] && [ -n \"$ID\" ]; then
   PD=/tmp/fabro/task_review/state/patches/$ID
   mkdir -p $PD
-  PN=$(ls $PD 2>/dev/null | wc -l | tr -d ' ')
+  PN=$(ls $PD/*.patch 2>/dev/null | wc -l | tr -d ' ')
   case \"$PN\" in '' | *[!0-9]*) PN=0 ;; esac
   PN=$((PN + 1))
   PT=/tmp/fabro/task_review/state/patch.tmp

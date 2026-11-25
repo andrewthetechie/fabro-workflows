@@ -110,8 +110,9 @@ def test_refute_hygiene_end_to_end(ck, tmp_path):
 
 # ---------------------------------------------------------------------------
 # ralph-v2's Task I/O is Sealed where task 06 says (docs/plans/ralph-v2 C3): an Iteration must
-# not read the review state written after it, and the Refuter must not read the hosted
-# reviewers' results, which are fresh when it runs in v2. The REAL `fabro-io guard` under
+# not read the review state written after it, the Refuter must not read the hosted reviewers'
+# results, which are fresh when it runs in v2, and the per-Task planner (task 07) reads
+# neither the Task list nor the review state. The REAL `fabro-io guard` under
 # ralph-v2's GENERATED manifest, with the committed `/tmp/fabro` paths, because the hook
 # compares the tool's path with the sealed entry. Needs fabro-io on PATH; skipped otherwise.
 # ---------------------------------------------------------------------------
@@ -133,15 +134,23 @@ def test_ralph_v2_task_io_sealed(ck, tmp_path):
     for node, path in (("iterate_t1", "/tmp/fabro/task_review/state/findings/t1.json"),
                        ("iterate_t1", "/tmp/fabro/task_plans/t1.json"),
                        ("refute", "/tmp/fabro/review/standards.json"),
-                       ("refute", "/tmp/fabro/task_plan.json")):
+                       ("refute", "/tmp/fabro/task_plan.json"),
+                       ("task_plan", "/tmp/fabro/tasks.json"),
+                       ("task_plan", "/tmp/fabro/task_plans/t1.json"),
+                       ("task_plan", "/tmp/fabro/task_review/state/findings/t1.json"),
+                       ("task_plan", "/tmp/fabro/feedback/rework.md")):
         r = guard(node, path)
         ck(f"v2 sealed: {node} blocks {path}", "2", r.rc)
         ck(f"v2 sealed: {node} says why", "1", count("is sealed for this stage", r.out))
-    # The Iteration still reads its own Task and writes its own result, and the Refuter still
-    # reads its counters: a guard that blocked those would stop every visit.
+    # The Iteration still reads its own Task and writes its own result, the Refuter still
+    # reads its counters, and the planner reads its Task and its dossier and writes its plan:
+    # a guard that blocked those would stop every visit.
     for node, path in (("iterate_t1", "/tmp/fabro/current_task.json"),
                        ("iterate_t1", "/tmp/fabro/iteration.json"),
-                       ("refute", "/tmp/fabro/review/hygiene.json")):
+                       ("refute", "/tmp/fabro/review/hygiene.json"),
+                       ("task_plan", "/tmp/fabro/current_task.json"),
+                       ("task_plan", "/tmp/fabro/task-context.md"),
+                       ("task_plan", "/tmp/fabro/task_plan.json")):
         ck(f"v2 sealed: {node} still reads {path}", "0", guard(node, path).rc)
 
 
