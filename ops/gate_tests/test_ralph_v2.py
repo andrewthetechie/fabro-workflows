@@ -299,18 +299,39 @@ def test_task_plan_gate(ck, tmp_path):
 
     reject(plan(context="x" * 14001 + "\n- src/a.txt:1\n"),
            "context is 14016 bytes and the stage accepts at most 14000")
+    # The limit is bytes (C2), where the schema's `maxLength` counts characters.
+    reject(plan(context="é" * 7001), "context is 14002 bytes and the stage accepts at most 14000")
+    setup()
+    put(plan(context="é" * 7000))
+    ck("14000 bytes is the limit, in bytes", "go", go()["task_plan_route"])
     reject(plan(goals=[{"id": "g1", "goal": "a", "covers": [1], "check": "`x`", "files": []},
                        {"id": "g2", "goal": "b", "covers": [2], "check": "`x`", "files": []}]),
            "the goals do not cover exactly the acceptance numbers 1 to 3")
     reject(plan(goals=[{"id": "g1", "goal": "a", "covers": [1, 2, 3], "check": "`x`", "files": []},
                        {"id": "g1", "goal": "b", "covers": [1], "check": "`x`", "files": []}]),
            "two goals share an id")
+    # No index above `n`, and no gap: the right count is not the right set.
+    reject(plan(goals=[{"id": "g1", "goal": "a", "covers": [1, 2, 4], "check": "`x`", "files": []}]),
+           "the goals do not cover exactly the acceptance numbers 1 to 3")
+    reject(plan(goals=[{"id": "g1", "goal": "a", "covers": [1, 2, 3, 4], "check": "`x`", "files": []}]),
+           "the goals do not cover exactly the acceptance numbers 1 to 3")
     reject(plan(goals=[{"id": "g1", "goal": "a", "covers": [1, 2, 3],
                         "check": "see the docs", "files": []}]),
+           "goal g1 has no command in backticks")
+    # The other half of that rule: a `path:N` the checkout does not have.
+    reject(plan(goals=[{"id": "g1", "goal": "a", "covers": [1, 2, 3],
+                        "check": "src/gone.txt:3", "files": []}]),
+           "goal g1 has no command in backticks")
+    # A backticked span holds something: an empty pair is no command.
+    reject(plan(goals=[{"id": "g1", "goal": "a", "covers": [1, 2, 3],
+                        "check": "run `` first", "files": []}]),
            "goal g1 has no command in backticks")
     reject(plan(context="## Files and symbols\n\n- src/gone.txt:3\n"),
            "context cites src/gone.txt, which is not a file in this checkout")
     reject(plan(context="## Files and symbols\n\n- test/a.txt:9\n"),
+           "context cites test/a.txt:9, and test/a.txt has only 2 lines")
+    # A range is held to its last line.
+    reject(plan(context="## Files and symbols\n\n- test/a.txt:1-9\n"),
            "context cites test/a.txt:9, and test/a.txt has only 2 lines")
     reject(plan(edge_cases=[{"id": "e%d" % i, "case": "c", "expected": "e", "covers": 1}
                             for i in range(1, 8)]),
@@ -345,14 +366,16 @@ def test_task_plan_gate(ck, tmp_path):
     ck("the fallback plan covers a Task it never read", "[[1],[2],[3]]",
        jq1("[.goals[].covers]", T / "task_plans/t1.json"))
 
-    # A Task that fixes a finding must name the class of the bug.
+    # A Task that fixes a finding must name the class of the bug, whoever's finding it is.
+    for source in ("refute", "review", "local_review"):
+        setup()
+        write(T / "current_task.json", json.dumps(dict(task, source=source)) + "\n")
+        put(plan())
+        ck("a %s fix Task without a bug_class is a retry" % source, "retry", go()["task_plan_route"])
+        ck("a %s fix Task has its own sentence" % source, "1",
+           count("^this Task fixes a %s finding, so bug_class" % source, file=T / "task_plan_error.txt"))
     setup()
     write(T / "current_task.json", json.dumps(dict(task, source="refute")) + "\n")
-    put(plan())
-    ck("a fix Task without a bug_class is a retry", "retry", go()["task_plan_route"])
-    ck("the bug class has its own sentence", "1",
-       count("^this Task fixes a refute finding", file=T / "task_plan_error.txt"))
-    setup()
     put(plan(bug_class="any handler that trusts its argument"))
     ck("a fix Task with a bug_class goes on", "go", go()["task_plan_route"])
 
@@ -366,7 +389,10 @@ def test_task_plan_gate(ck, tmp_path):
     ck("the next plan goes on", "go", go()["task_plan_route"])
     ck("a valid plan deletes the rejection's reason", "absent", present(T / "task_plan_error.txt"))
 
-    # The second rejection: the fallback plan, for 1, 3, 4 and 6 acceptance statements.
+    # The second rejection: the fallback plan, for 1, 3, 4 and 6 acceptance statements: one
+    # goal a statement up to three, the fourth holding every one after it, joined by `; `.
+    texts = {1: '["a1"]', 3: '["a1","a2","a3"]', 4: '["a1","a2","a3","a4"]',
+             6: '["a1","a2","a3","a4; a5; a6"]'}
     for n, covers, goals in ((1, "[[1]]", 1), (3, "[[1],[2],[3]]", 3),
                              (4, "[[1],[2],[3],[4]]", 4), (6, "[[1],[2],[3],[4,5,6]]", 4)):
         setup()
@@ -384,6 +410,13 @@ def test_task_plan_gate(ck, tmp_path):
            jq(".goals | length", file=T / "task_plans/t1.json"))
         ck("the fallback names no edge case (%d statements)" % n, "0",
            jq(".edge_cases | length", file=T / "task_plans/t1.json"))
+        ck("the fallback quotes each statement (%d statements)" % n, texts[n],
+           jq1("[.goals[].goal]", T / "task_plans/t1.json"))
+        ck("each fallback goal checks nothing and touches the Task's files (%d statements)" % n,
+           "true", jq('[.goals[] | (.check == "(none: fallback plan)" and .files == ["src/a.txt"])] | all',
+                       file=T / "task_plans/t1.json"))
+        ck("the fallback carries no bug class and no risk (%d statements)" % n, "true",
+           jq('.bug_class == "" and .risks == [] and .goals_done == []', file=T / "task_plans/t1.json"))
         ck("the fallback dossier is the Task's own (%d statements)" % n, "1",
            count("Do the thing", file=T / "task-context.md"))
         ck("the Task is marked a fallback plan (%d statements)" % n, "fallback",
@@ -433,7 +466,9 @@ def test_pick_task_step(ck, tmp_path):
     rm(T / "task_plans/t1.json")
     write(T / "phase", "post\n")
     write(T / "post_iterations", "0\n")
-    tasks(task_list(one_task(source="ci")))
+    # A Task of the planned kind, picked in phase `post`: the phase alone keeps it from planning
+    # (its `ci` and `final_fix` siblings are kept out by their source above).
+    tasks(task_list(one_task()))
     ck("a post Task never plans", "work", go()["task_step"])
 
     write(T / "phase", "pre\n")
@@ -508,8 +543,9 @@ def test_the_task_dossier_render(ck, tmp_path):
 
     # `## Review findings`: what the last round left, for the rework Iteration (C1 `pick` step
     # 5), after v1's `## Last attempt`: a heading per finding, its line only when it has one,
-    # and its class only when it is set.
-    write(T / "tasks.json", task_list(one_task(misses=1, reviews=1)))
+    # and its class only when it is set. The Task has missed twice and been reviewed once, so
+    # the header's number is the reviews, not the misses.
+    write(T / "tasks.json", task_list(one_task(misses=2, reviews=1)))
     write(T / "task_review/state/findings/t1.json", json.dumps([
         {"id": "t1v1f1", "severity": "error", "kind": "defect", "file": "src/a.txt", "line": 3,
          "message": "An empty input reaches the handler", "evidence": "`make check` fails",
@@ -655,6 +691,19 @@ def test_record_writes_the_patches(ck, tmp_path):
     go()
     ck("an empty diff writes no patch", "0", str(patches()))
 
+    # A failed diff (no base to diff against) writes no file and one stderr line, and the
+    # Iteration is still recorded.
+    rm(P1)
+    setup(iteration=done)
+    rm(T / "task_base_sha")
+    r = sh(rec, cwd=repo)
+    no_braces(ck, "record (failed diff)", r.out)
+    ck("a failed diff writes no patch", "0", str(patches()))
+    ck("a failed diff says so once", "1",
+       count("record: no diff against the task base", r.out, flags="F"))
+    ck("a failed diff still routes with both keys", "true",
+       jq(".context_updates | has(\"iteration_passed\") and has(\"review_due\")", lastjson(r.out)))
+
     # A scope block is a pre-PR Iteration too.
     rm(P1)
     setup(iteration=done)
@@ -673,6 +722,17 @@ def test_record_writes_the_patches(ck, tmp_path):
     go()
     ck("a post Iteration writes no patch", "0", str(patches()))
 
+    # `--no-renames` (C1 step 2): a file the Iteration moved reaches the reviewers as a
+    # deletion and an addition, both bodies whole, never as one rename line.
+    rm(P1)
+    setup(iteration=done)
+    git("-C", repo, "mv", "src/a.txt", "src/moved.txt")
+    git("-C", repo, "commit", "-qm", "moved")
+    go()
+    ck("a moved file is no rename line", "0", count("rename from", file=P1 / "001.patch", flags="F"))
+    ck("a moved file is a deletion and an addition", "2",
+       count("^(deleted|new) file mode", file=P1 / "001.patch", flags="E"))
+
     # `PRE` is the phase and the Task's source (C1 step 1): a `ci` or `final_fix` Task leaves
     # no patch in phase `pre` either, and its Iteration still counts against the cap (step 4).
     for source in ("ci", "final_fix"):
@@ -682,6 +742,17 @@ def test_record_writes_the_patches(ck, tmp_path):
         ck("a %s Task passes" % source, "True", str(go()["iteration_passed"]))
         ck("a %s Task in phase pre writes no patch" % source, "0", str(patches()))
         ck("a %s Task in phase pre counts against the cap" % source, "1", cat(T / "iterations"))
+
+    # Step 5 opens on the same `PRE`: an Iteration that is not a Task's pre-PR work copies no
+    # `goals_done` into a stored plan.
+    rm(P1)
+    setup(task=one_task(source="ci"),
+           iteration=json.dumps({"status": "done", "summary": "did it", "learnings": [],
+                                 "goals_done": ["g2"]}))
+    write(T / "task_plans/t1.json",
+          json.dumps(dict(PLAN, goals_done=[], plan_type="planned")) + "\n")
+    go()
+    ck("a ci Task's Iteration copies no goals_done", "[]", jq1(".goals_done", T / "task_plans/t1.json"))
 
     # C5 step 8 leaves `reviewed` beside a Task's patches. The count is of patches (C1 step 2),
     # so the rework Iteration's patch follows the last patch, not the last file.
@@ -769,6 +840,9 @@ def test_record_counts_and_answers(ck, tmp_path):
         {"finding_id": "t1v1s1", "reason": "the check covers it", "evidence": "test/a.txt:2"},
         {"finding_id": "t1v1s2", "reason": "wrong", "evidence": "i looked at it"},
         {"finding_id": "t1v1f2", "reason": "it is not a defect", "evidence": "`make check`"},
+        # C5's evidence rule is a non-empty span in backticks: an empty pair is no evidence.
+        {"finding_id": "t1v1s3", "reason": "it passes", "evidence": "``"},
+        {"finding_id": "t1v1s4", "reason": "it passes", "evidence": "run `` first"},
     ])
     setup(one_task(reviews=1), answers)
     go()
@@ -776,6 +850,8 @@ def test_record_counts_and_answers(ck, tmp_path):
     ck("a dispute with a path is answered", "disputed", jq(".[\"t1v1s1\"].answer", file=A))
     ck("the dispute keeps its evidence", "test/a.txt:2", jq(".[\"t1v1s1\"].evidence", file=A))
     ck("a dispute without evidence is not written", "null", jq(".[\"t1v1s2\"]", file=A))
+    ck("a dispute with only empty backticks is not written", "null", jq(".[\"t1v1s3\"]", file=A))
+    ck("a dispute whose only span is empty is not written", "null", jq(".[\"t1v1s4\"]", file=A))
     ck("an id in both lists is disputed", "disputed", jq(".[\"t1v1f2\"].answer", file=A))
 
     # A second round merges over what is there rather than replacing it.
@@ -865,6 +941,9 @@ def test_the_task_loop_in_order(ck, tmp_path):
     ck("every goal it reported is done", '["g1","g2"]',
        jq1("[.goals_done[]]", T / "task_plans/t1.json"))
 
+    # The plan contract files are cleared for the next Task, a rejection's reason with them:
+    # a gate that crashed after writing it must not hand the next planner another Task's error.
+    write(T / "task_plan_error.txt", "the plan carries no valid Input receipt, so submit it rather than write it")
     pub = run_node("pick", repo)
     ck("the loop takes the next unplanned Task", "plan", pub["task_step"])
     ck("the loop took task two", "t2", jq(".id", file=T / "current_task.json"))
@@ -872,6 +951,7 @@ def test_the_task_loop_in_order(ck, tmp_path):
        str(int((T / "task_plans/t1.json").is_file())))
     ck("the plan contract files are cleared for the next Task", "absent",
        present(T / "task_plan.json"))
+    ck("the rejection's reason is cleared with them", "absent", present(T / "task_plan_error.txt"))
     ck("the tries counter is cleared", "absent", present(T / "task_plan_tries"))
 
 

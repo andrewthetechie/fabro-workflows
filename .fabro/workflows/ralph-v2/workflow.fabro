@@ -405,8 +405,8 @@ jq -nc --arg l \"$LOOP\" --argjson r \"${RUNG:-0}\" --arg p \"$PH\" --argjson rb
 
     // C2's gate: everything the schema cannot say. The receipt; the dossier at most 14,000
     // bytes; the goals' `covers` exactly the Task's acceptance statements; at most six edge
-    // cases, each naming one; every goal's `check` a command in backticks or a path that
-    // exists; every `path:N` or `path:N-M` in the dossier a file with that many lines; and
+    // cases, each naming one; every goal's `check` a non-empty span in backticks or a path
+    // that exists; every `path:N` or `path:N-M` in the dossier a file with that many lines; and
     // `bug_class` set when the Task came from a finding. It never fails the run: the first
     // rejection deletes the plan, writes the reason to `task_plan_error.txt` and routes
     // `retry`; the second writes the fallback plan (one goal per acceptance statement, the
@@ -454,7 +454,7 @@ if [ -z \"$WHY\" ]; then
     GID=$(jq -r --argjson i $I '.goals[$i].id | if type == \"string\" then . else \"\" end' $J 2>/dev/null)
     CHK=$(jq -r --argjson i $I '.goals[$i].check | if type == \"string\" then . else \"\" end' $J 2>/dev/null)
     OKC=false
-    if printf '%s' \"$CHK\" | grep -q '`[^`]*`'; then OKC=true; else
+    if printf '%s' \"$CHK\" | grep -qE '`[^`]+`'; then OKC=true; else
       for REF in $(printf '%s' \"$CHK\" | grep -oE '[A-Za-z0-9_./-]+:[0-9]+(-[0-9]+)?'); do
         if [ -f \"${REF%:*}\" ]; then OKC=true; break; fi
       done
@@ -730,10 +730,11 @@ jq -nc --argjson ok $OK --arg mode \"$MODE\" --arg reason \"$REASON\" --argjson 
     // Iteration of a Task writes the diff it made since `task_base_sha` to
     // `task_review/state/patches/<id>/<NNN>.patch`; a Task that has been reviewed writes
     // `state/answers/<id>.json` from the Iteration's `fixed` and `disputes`, a dispute only
-    // with evidence (C5), and an id in both lists is a dispute; `goals_done` is unioned into
-    // the stored plan; and a rework Iteration counts against `rework_iterations` rather than
-    // the cap (P9). Its pass still sets `passed`: task 08 makes it `reviewing` and reports
-    // `review_due`.
+    // with evidence (C5: a `path:N` of a file in the checkout, or a non-empty span in
+    // backticks, so an empty pair is none), and an id in both lists is a dispute;
+    // `goals_done` is unioned into the stored plan; and a rework Iteration counts against
+    // `rework_iterations` rather than the cap (P9). Its pass still sets `passed`: task 08
+    // makes it `reviewing` and reports `review_due`.
     record [label="Record the Iteration", shape=parallelogram, timeout="1m", output_schema="routing",
         script="F=/tmp/fabro/iteration.json
 PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
@@ -818,7 +819,7 @@ if [ \"$RECEIPT\" = true ] && [ \"$PRE\" = true ] && [ -n \"$ID\" ]; then
       FID=$(jq -r --argjson i $I '.disputes[$i].finding_id | if type == \"string\" then . else \"\" end' $F 2>/dev/null)
       EVD=$(jq -r --argjson i $I '.disputes[$i].evidence | if type == \"string\" then . else \"\" end' $F 2>/dev/null)
       AOK=false
-      if printf '%s' \"$EVD\" | grep -q '`[^`]*`'; then AOK=true; else
+      if printf '%s' \"$EVD\" | grep -qE '`[^`]+`'; then AOK=true; else
         for REF in $(printf '%s' \"$EVD\" | grep -oE '[A-Za-z0-9_./-]+:[0-9]+'); do
           if [ -f \"${REF%:*}\" ]; then AOK=true; break; fi
         done
