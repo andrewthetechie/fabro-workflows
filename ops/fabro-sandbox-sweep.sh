@@ -50,10 +50,12 @@
 #
 # Both limits sit above the longest run ever measured here (17.2 h, a `ralph` run, from
 # 800 recent runs; p99 14.5 h; `backlog` peaks at 6.2 h), so a real run is never cut
-# off. They are deliberately blunt — an age, not a run lookup — because the script
-# still reads nothing from the fabro API and needs no token. The authoritative check
-# ("this run is terminal, so its live container is garbage") is the obvious upgrade and
-# is noted in ops/README.md.
+# off. `ralph-v2` adds about 3 h to that average, which is why the limit is 48 h rather
+# than 36: a v2 run must not be mistaken for the resurrection this rule reaps (see
+# docs/plans/ralph-v2/00-overview-and-contracts.md). They are deliberately blunt — an
+# age, not a run lookup — because the script still reads nothing from the fabro API and
+# needs no token. The authoritative check ("this run is terminal, so its live container is
+# garbage") is the obvious upgrade and is noted in ops/README.md.
 #
 # Deterministic: every skip is a mechanical test, there is no judgment and no model
 # involved. It reads nothing from the fabro API and needs no token — an exited
@@ -65,14 +67,14 @@
 #   1. the name is not exactly fabro-run-<26-char ULID>  -> never touch
 #      This is what keeps `fabro-fabro-1` and the unrelated `sandcastle-*` containers
 #      on this host out of reach. A substring filter would not.
-#   2. the container is RUNNING and started within MAX_RUNNING_HOURS (24 under
+#   2. the container is RUNNING and started within MAX_RUNNING_HOURS (36 under
 #      pressure: PRESSURE_RUNNING_HOURS)  -> never touch, report it
 #      It is either an in-flight run or a sandbox someone deliberately restarted to
 #      look inside. Killing the second one silently is worse than leaving it, so this
 #      reports and moves on, the same report-do-not-correct discipline
 #      provision-server-state.sh uses for drift. Past the limit it cannot be a run —
-#      the longest run ever measured here is 17.2h — so it is the leak below, and it is
-#      stopped, removed and `WARN`ed about.
+#      the longest run ever measured here is 17.2h, before ralph-v2's extra hours — so
+#      it is the leak below, and it is stopped, removed and `WARN`ed about.
 #   3. it never ran (zero FinishedAt)                    -> not a finished sandbox
 #   4. it stopped more recently than MIN_GRACE_MINUTES   -> not yet, even under pressure
 #   5. normal mode: stopped more recently than its grace -> not yet
@@ -88,9 +90,10 @@
 #   PRESSURE_PCT=70      df use at or above this starts pressure mode
 #   TARGET_PCT=60        pressure mode removes until df use is below this
 #   MIN_GRACE_MINUTES=30 never remove one stopped more recently than this, even hot
-#   MAX_RUNNING_HOURS=36 never remove one RUNNING for less than this: the longest run
-#                        ever measured here is 17.2h, so this cannot cut one off
-#   PRESSURE_RUNNING_HOURS=24 the same limit while the disk is in pressure mode
+#   MAX_RUNNING_HOURS=48 never remove one RUNNING for less than this: the longest run
+#                        ever measured here is 17.2h, and a ralph-v2 run adds about 3h
+#                        to the average, so this cannot cut one off
+#   PRESSURE_RUNNING_HOURS=36 the same limit while the disk is in pressure mode
 #   STOP_TIMEOUT_SECONDS=5 docker stop's grace before it kills, on a stale sandbox
 #
 # `fabro-monitor.sh` alerts (C6) at DISK_PCT=85, deliberately higher than the
@@ -106,8 +109,8 @@ BIG_GRACE_HOURS="${BIG_GRACE_HOURS:-2}"
 PRESSURE_PCT="${PRESSURE_PCT:-70}"
 TARGET_PCT="${TARGET_PCT:-60}"
 MIN_GRACE_MINUTES="${MIN_GRACE_MINUTES:-30}"
-MAX_RUNNING_HOURS="${MAX_RUNNING_HOURS:-36}"
-PRESSURE_RUNNING_HOURS="${PRESSURE_RUNNING_HOURS:-24}"
+MAX_RUNNING_HOURS="${MAX_RUNNING_HOURS:-48}"
+PRESSURE_RUNNING_HOURS="${PRESSURE_RUNNING_HOURS:-36}"
 STOP_TIMEOUT_SECONDS="${STOP_TIMEOUT_SECONDS:-5}"
 
 command -v docker >/dev/null 2>&1 || { echo "docker is required but not on PATH" >&2; exit 1; }
@@ -313,7 +316,7 @@ while read -r name; do
   if [ "$running" = "true" ]; then
     # Still running past the limit is the resurrection this script exists to reap: the
     # run reached a terminal state, fabro stopped the sandbox, and a later file read
-    # started it again with no worker left to stop it. Under 36h it could be a real run
+    # started it again with no worker left to stop it. Under 48h it could be a real run
     # or a human looking inside a sandbox, and either way this leaves it alone.
     started_ts=""
     case "$started" in
@@ -352,8 +355,8 @@ tab=$(printf '\t')
 # A stale running sandbox is both the largest thing here (it is a whole run's scratch,
 # kept alive for days) and the one that never stops growing, so it goes first: under
 # pressure, `df` is re-read after each removal exactly as the exited pass does.
-# Pressure mode is the one set when this list was built, so a container between 24h and
-# 36h old is a candidate only on a hot disk.
+# Pressure mode is the one set when this list was built, so a container between 36h and
+# 48h old is a candidate only on a hot disk.
 if [ "$stale_found" -gt 0 ]; then
   sort -k1,1n -o "$stale" "$stale"
   echo "WARN  $stale_found running sandbox(es) older than ${MAX_RUNNING_HOURS}h: a run has not lasted this long since 2026-11-11, so something is restarting stopped sandboxes"

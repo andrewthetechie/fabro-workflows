@@ -20,6 +20,7 @@
 #   C4 stuck-run        non-terminal run older than STUCK_HOURS             🔴 4h
 #                       (MQ_STUCK_MINUTES for a merge-queue run)
 #                       (ARCH_STUCK_HOURS for an arch-review run)
+#                       (RALPH_V2_STUCK_HOURS for a ralph-v2 run)
 #   C5 starvation       zero open agent-labeled issues across the repos     🟡 7d
 #   C6 disk-pressure    df / use >= DISK_PCT                                🟠 24h
 #   C7 scheduler-down   GET SCHEDULER_URL/health does not answer 200 in 5s   🔴 4h
@@ -43,6 +44,11 @@
 #                       of each box read as "the box is gone", and nothing said a word.
 #                       The message carries each box's `blocked_by`, which is the
 #                       diagnosis. Skipped when C7 fires (lane unreadable by construction).
+#   C11 box-degraded    more than 5% of 20 or more box-stage visits failed over, more
+#                       than 2% of 20 or more Task reviews were missed by both
+#                       reviewers, or a box stage ever fell over to
+#                       openai/gpt-5.6-terra, the chain's last rung          🟠 24h
+#                       Read from GET /api/box-health. Skipped when C7 fires.
 #
 # C1 suppresses C2's connection failures (report the cause, not the symptom)
 # but never its 401 — a rejected token is its own problem. When the container
@@ -51,9 +57,10 @@
 # gates on "any automation has an enabled schedule", read live, so the alarm
 # exists the moment task 06 turns schedules on, with no config change here.
 #
-# C7 suppresses C8 — an unreachable scheduler cannot answer "queued work, idle
-# boxes", so C8's stamp is left untouched and the cause (C7) is reported alone.
-# Both are independent of C1: the scheduler is a SEPARATE container, so a fabro
+# C7 suppresses C8, C10 and C11 — an unreachable scheduler cannot answer "queued work,
+# idle boxes", "what has the lane started" or "how often did a box stage fail over", so
+# their stamps are left untouched and the cause (C7) is reported alone. C7 and C8 are
+# independent of C1: the scheduler is a SEPARATE container, so a fabro
 # outage does not clear a wedged scheduler and a scheduler outage does not clear
 # a dead fabro. They are evaluated even while C1 fires or the fabro API is
 # unreachable. C8 is the post-cutover dead-scheduler alarm: once draft 13
@@ -125,6 +132,9 @@
 #   ARCH_STUCK_HOURS=9            C4: the same limit for an arch-review run, which
 #                                 triages up to 18 issues and stops starting new
 #                                 ones at 6h (ADR 0012)
+#   RALPH_V2_STUCK_HOURS=24       C4: the same limit for a ralph-v2 run, which plans and
+#                                 reviews every Task on the box: about 7 lease-hours a run
+#                                 against ralph's 4.17 (ADR 0034)
 #   DISK_PCT=85                   C6: df / use at or above this. Deliberately above
 #                                 the sandbox sweep's PRESSURE_PCT (70): that is where
 #                                 the sweep acts, so this alert is for when it could not
@@ -159,6 +169,7 @@ DRY_RUN="${DRY_RUN:-1}"
 IDLE_HOURS="${IDLE_HOURS:-2}"
 STUCK_HOURS="${STUCK_HOURS:-3}"
 ARCH_STUCK_HOURS="${ARCH_STUCK_HOURS:-9}"
+RALPH_V2_STUCK_HOURS="${RALPH_V2_STUCK_HOURS:-24}"
 MQ_STUCK_MINUTES="${MQ_STUCK_MINUTES:-30}"
 DISK_PCT="${DISK_PCT:-85}"
 FABRO_HOST="${FABRO_HOST:-10.10.0.32}"
@@ -177,6 +188,7 @@ ALERT_SECONDS="${FABRO_MONITOR_RE_ALERT_SECONDS:-14400}"            # 4h — C1.
 STARVE_SECONDS="${FABRO_MONITOR_STARVE_RE_ALERT_SECONDS:-604800}"   # 7d — C5
 DISK_RE_SECONDS="${FABRO_MONITOR_DISK_RE_ALERT_SECONDS:-86400}"     # 24h — C6
 BG_STARVE_RE_SECONDS="${FABRO_MONITOR_BG_STARVE_RE_ALERT_SECONDS:-86400}"  # 24h — C10
+BOX_HEALTH_RE_SECONDS="${FABRO_MONITOR_BOX_HEALTH_RE_ALERT_SECONDS:-86400}"  # 24h — C11
 
 # Lifecycle.status.kind values that mean "this run is done". Anything else —
 # running, submitted, queued, a missing kind — is non-terminal for C4.
@@ -208,6 +220,7 @@ cond_name() {
     C8) printf '%s' "scheduler-wedged" ;;
     C9) printf '%s' "leaked-sandbox" ;;
     C10) printf '%s' "background-starved" ;;
+    C11) printf '%s' "box-degraded" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -540,6 +553,7 @@ if [ "$api_ok" = 1 ]; then
       age=$(( now - e ))
       lim_s=$(( STUCK_HOURS * 3600 ))
       [ "$slug" = arch-review ] && lim_s=$(( ARCH_STUCK_HOURS * 3600 ))
+      [ "$slug" = ralph-v2 ] && lim_s=$(( RALPH_V2_STUCK_HOURS * 3600 ))
       [ "$slug" = merge-queue ] && lim_s=$(( MQ_STUCK_MINUTES * 60 ))
       if [ "$age" -gt "$lim_s" ]; then
         stuck_n=$(( stuck_n + 1 ))
@@ -807,6 +821,62 @@ else
   fi
 fi
 
+# ------------------------------------------------ C11 box-degraded --------
+# E17: the box should rarely or never fall back, and a fallback is not an error — the run
+# continues on a hosted model, so nothing in-band reports it. Every box failover of the
+# month before 2026-11-24 happened on 11-13..11-16, minutes apart, and no alert mentioned
+# it. `/api/box-health` (`measure.box_health`) counts them: the share of box-stage visits
+# that failed over, the Task-review miss rate, and whether a box stage ever fell over to
+# openai/gpt-5.6-terra, the chain's last rung. 🟠 and 24h, because a fallback costs money
+# rather than breaking a run. The message names each condition that held, with its
+# numbers; a null count is not a held condition (task 11 fills `reviews`/`miss_rate`, so
+# they read null until then). C7 suppresses C11 exactly as it suppresses C8 and C10, and an
+# unreadable body leaves the stamp alone rather than resolving it.
+
+if [ "$c7_firing" = 1 ]; then
+  printf 'skip  C11 box-degraded: C7 scheduler-down is firing (box health unreadable by construction)\n'
+else
+  hhttp="$(curl -sS -o "$tmp/boxhealth.json" -w '%{http_code}' -m 5 \
+    "$SCHEDULER_URL/api/box-health" 2>/dev/null)" || hhttp=000
+  if [ "$hhttp" != 200 ] \
+    || ! jq -e 'type == "object" and has("visits") and has("failover_rate")' \
+      "$tmp/boxhealth.json" >/dev/null 2>&1; then
+    # Not a definitive "the box is healthy": C11 is NOT marked evaluated, so an existing
+    # stamp is neither resolved nor dropped.
+    printf 'skip  C11 box-degraded: /api/box-health unreadable (HTTP %s)\n' "$hhttp"
+  else
+    mark_evaluated C11
+    h_visits="$(jq -r '.visits // ""' "$tmp/boxhealth.json" 2>/dev/null)"
+    h_rate="$(jq -r '.failover_rate // ""' "$tmp/boxhealth.json" 2>/dev/null)"
+    h_reviews="$(jq -r '.reviews // ""' "$tmp/boxhealth.json" 2>/dev/null)"
+    h_miss="$(jq -r '.miss_rate // ""' "$tmp/boxhealth.json" 2>/dev/null)"
+    h_terra="$(jq -r '.terra // ""' "$tmp/boxhealth.json" 2>/dev/null)"
+    # Each guard is a numeric test on the API's own value, so a missing or null count
+    # reads as "condition not held" rather than as a shell error.
+    degraded=""
+    if printf '%s' "$h_visits" | grep -Eq '^[0-9]+$' && [ "$h_visits" -ge 20 ] \
+      && printf '%s' "$h_rate" | grep -Eq '^[0-9]+([.][0-9]+)?$' \
+      && awk -v r="$h_rate" 'BEGIN { exit !(r > 0.05) }'; then
+      degraded="$degraded; $h_rate of $h_visits box-stage visits failed over"
+    fi
+    if printf '%s' "$h_reviews" | grep -Eq '^[0-9]+$' && [ "$h_reviews" -ge 20 ] \
+      && printf '%s' "$h_miss" | grep -Eq '^[0-9]+([.][0-9]+)?$' \
+      && awk -v r="$h_miss" 'BEGIN { exit !(r > 0.02) }'; then
+      degraded="$degraded; $h_miss of $h_reviews Task reviews missed"
+    fi
+    if printf '%s' "$h_terra" | grep -Eq '^[0-9]+$' && [ "$h_terra" -gt 0 ]; then
+      degraded="$degraded; $h_terra box stage(s) fell over to openai/gpt-5.6-terra"
+    fi
+    if [ -n "$degraded" ]; then
+      fire C11 "$BOX_HEALTH_RE_SECONDS" "🟠" \
+        "box-degraded — in the last 24h: ${degraded#; }"
+    else
+      printf 'ok    C11 box-degraded: %s box-stage visit(s), failover rate %s, terra %s (24h)\n' \
+        "${h_visits:-?}" "${h_rate:-none}" "${h_terra:-?}"
+    fi
+  fi
+fi
+
 # ------------------------------------------------------------- dispatch ----
 # A firing condition with no stamp alerts; with a stamp older than its re-alert
 # interval it re-alerts; otherwise it stays quiet and keeps its stamp. A stamp
@@ -839,7 +909,7 @@ while IFS="$TAB" read -r cond interval emoji detail; do
 done < "$tmp/firing"
 
 if [ -f "$STATE_FILE" ]; then
-  for cond in C1 C2 C3 C4 C5 C6 C7 C8 C9 C10; do
+  for cond in C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11; do
     s="$(stamp_of "$cond")"
     [ -n "$s" ] || continue
     case "$firing_ids" in *" $cond "*) continue ;; esac

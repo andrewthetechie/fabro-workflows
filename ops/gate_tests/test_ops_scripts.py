@@ -1,8 +1,9 @@
 """The host scripts the automations lean on: the scout-summary Discord kind,
-fabro-run-prune.sh, fabro-sandbox-sweep.sh, fabro-monitor.sh's C3/C4/C8 checks, and the
+fabro-run-prune.sh, fabro-sandbox-sweep.sh, fabro-monitor.sh's C3/C4/C8/C11 checks, and the
 three fire scripts' version payload."""
 
 import datetime
+import json
 import time
 
 from harness import (ORIG_PATH, REPO_ROOT, WF, cat, count, grep, jq, jq_n, jq_ok, run, run_files, sh,
@@ -329,22 +330,22 @@ def test_fabro_sandbox_sweep_pressure(ck, tmp_path):
 def test_fabro_sandbox_sweep_stale_running(ck, tmp_path):
     gb = 1024 ** 3
     ancient, recent, nosource = _run_name("C"), _run_name("D"), _run_name("E")
-    between = _run_name("F")  # 30h: past the pressure limit, inside the normal one
+    between = _run_name("F")  # 40h: past the pressure limit, inside the normal one
     s = Sweep(tmp_path / "stale", [
-        (ancient, "true", _iso_ago(40 * 3600), 4 * gb, _iso_ago(40 * 3600)),
+        (ancient, "true", _iso_ago(50 * 3600), 4 * gb, _iso_ago(50 * 3600)),
         (recent, "true", _iso_ago(2 * 3600), gb, _iso_ago(2 * 3600)),
-        (nosource, "true", _iso_ago(40 * 3600), gb, ""),
-        (between, "true", _iso_ago(30 * 3600), gb, _iso_ago(30 * 3600)),
+        (nosource, "true", _iso_ago(50 * 3600), gb, ""),
+        (between, "true", _iso_ago(40 * 3600), gb, _iso_ago(40 * 3600)),
         ("fabro-fabro-1", "true", _iso_ago(90 * 86400), gb, _iso_ago(90 * 86400)),
     ], pct=50)
     r = s.run()
 
-    ck("sweep rule 2: a running sandbox 40h old is removed as stale-running", "1",
+    ck("sweep rule 2: a running sandbox 50h old is removed as stale-running", "1",
        count(f"^{ancient}$", file=s.rm))
     ck("sweep rule 2: it is stopped before it is removed", "1", count(f"^{ancient}$", file=s.stop))
     ck("sweep rule 2: a 2h running sandbox is a live run and is kept", "0", count(f"^{recent}$", file=s.rm))
     ck("sweep rule 2: a running sandbox with no StartedAt is left alone", "0", count(f"^{nosource}$", file=s.rm))
-    ck("sweep rule 2: 30h is inside the 36h limit when the disk is not in pressure", "0",
+    ck("sweep rule 2: 40h is inside the 48h limit when the disk is not in pressure", "0",
        count(f"^{between}$", file=s.rm))
     ck("sweep rule 2: fabro-fabro-1 is never touched even running for 90 days", "0",
        count("fabro-fabro-1", file=s.rm))
@@ -353,18 +354,18 @@ def test_fabro_sandbox_sweep_stale_running(ck, tmp_path):
     ck("sweep rule 2: the summary counts the stale removals", "1", count("stale 1)", r.out))
     ck("sweep rule 2: a stale removal says which rule took it", "1", count("(stale-running)", r.out))
 
-    # The same container at 26h is garbage once the disk is hot, and the removal is what
+    # The same container at 38h is garbage once the disk is hot, and the removal is what
     # brings the disk back under the target.
     hot = _run_name("G")
-    s = Sweep(tmp_path / "stale-pressure", [(hot, "true", _iso_ago(26 * 3600), 40 * gb, _iso_ago(26 * 3600))],
+    s = Sweep(tmp_path / "stale-pressure", [(hot, "true", _iso_ago(38 * 3600), 40 * gb, _iso_ago(38 * 3600))],
               pct=80, steps=(55,), total_kb=100000000)
     r = s.run()
-    ck("sweep rule 2 under pressure: the tighter limit reaps a 26h sandbox", "1", count(f"^{hot}$", file=s.rm))
+    ck("sweep rule 2 under pressure: the tighter limit reaps a 38h sandbox", "1", count(f"^{hot}$", file=s.rm))
     ck("sweep rule 2 under pressure: reaching the target still exits 0", "0", r.rc)
     ck("sweep rule 2 under pressure: the note says pressure came off", "1", count("pressure off", r.out))
 
     # A dry run reports it and touches nothing.
-    s = Sweep(tmp_path / "stale-dry", [(ancient, "true", _iso_ago(40 * 3600), 4 * gb, _iso_ago(40 * 3600))],
+    s = Sweep(tmp_path / "stale-dry", [(ancient, "true", _iso_ago(50 * 3600), 4 * gb, _iso_ago(50 * 3600))],
               pct=50)
     r = s.run(DRY_RUN="1")
     ck("sweep rule 2 dry run: nothing is removed", "0", count(f"^{ancient}$", file=s.rm))
@@ -421,6 +422,11 @@ case "$url" in
   */health) [ -f "$MM_POOLS" ] || { printf '000'; exit 7; }; if [ -f "$MM_DISK" ]; then body=$(cat "$MM_DISK"); else body='{"status":"ok"}'; fi ;;
   */api/pools) [ -f "$MM_POOLS" ] || { printf '000'; exit 7; }; body=$(cat "$MM_POOLS") ;;
   */api/queue) [ -f "$MM_POOLS" ] || { printf '000'; exit 7; }; body=$(cat "$MM_QUEUE") ;;
+  */api/box-health)
+    [ -f "$MM_BOX" ] || { printf '000'; exit 7; }
+    # A test says "HTTP 500" in the file itself when the body is not the point.
+    if [ "$(cat "$MM_BOX")" = "HTTP500" ]; then printf '500'; exit 0; fi
+    body=$(cat "$MM_BOX") ;;
   *) printf '000'; exit 22 ;;
 esac
 [ -n "$out" ] && printf '%s' "$body" > "$out" || printf '%s' "$body"
@@ -481,7 +487,7 @@ class Monitor:
         run_files(["sh", REPO_ROOT / "ops/fabro-monitor.sh"], MM / "mon", path=f"{MM / 'bin'}:{ORIG_PATH}",
                   env={"MM_AUTOS": MM / "autos.json", "MM_ACTIVE": MM / "active.json", "MM_NEWEST": MM / "newest.json",
                        "MM_POOLS": MM / "pools.json", "MM_QUEUE": MM / "queue.json", "WEDGE_MINUTES": wedge,
-                       "MM_DISK": MM / "disk.json", "MM_PS": MM / "ps",
+                       "MM_DISK": MM / "disk.json", "MM_PS": MM / "ps", "MM_BOX": MM / "box-health.json",
                        "DRY_RUN": "1", "FABRO_MONITOR_STATE": MM / "state", "FABRO_MONITOR_REPOS": "",
                        "SCHEDULER_URL": "http://127.0.0.1:1"})
         return MM / "mon.out"
@@ -583,6 +589,110 @@ def test_fabro_monitor_disk_gate(ck, tmp_path):
           '{"status":"ok","disk":{"gated":false,"free_gb":100.0,"min_free_gb":50,"hysteresis_gb":10}}')
     out = m.run(wedge="0")
     ck("monitor C8: an open disk gate restores the wedge alert", "1", count("DRY.*scheduler-wedged", file=out))
+
+
+# ---------------------------------------------------------------------------
+# fabro-monitor.sh C4's ralph-v2 limit (ralph-v2 02): a ralph-v2 run plans and reviews
+# every Task on the box, so about 7 lease-hours where ralph takes 4.17 (ADR 0034). 24h is
+# its STUCK_HOURS; ralph keeps the 3h default. A 23h v2 run is working, a 25h one is stuck.
+# ---------------------------------------------------------------------------
+def test_fabro_monitor_ralph_v2_stuck_limit(ck, tmp_path):
+    m = Monitor(tmp_path)
+    m.page("newest.json", [m.row("V2", "ralph-v2", "running", m.ago(23 * 3600))])
+    m.page("active.json", [m.row("V2", "ralph-v2", "running", m.ago(23 * 3600))])
+    out = m.run()
+    ck("monitor C4: a 23h ralph-v2 run is inside its 24h limit", "0", count("stuck-run — ", file=out))
+    m.page("active.json", [m.row("V2", "ralph-v2", "running", m.ago(25 * 3600))])
+    out = m.run()
+    ck("monitor C4: a 25h ralph-v2 run is stuck", "1", count("stuck-run — run V2 ", file=out))
+    # The other arm keeps STUCK_HOURS: 4h in ralph is stuck, as it always was.
+    m.page("active.json", [m.row("R1", "ralph", "running", m.ago(4 * 3600))])
+    out = m.run()
+    ck("monitor C4: ralph keeps the 3h STUCK_HOURS limit", "1", count("stuck-run — run R1 ", file=out))
+
+
+# ---------------------------------------------------------------------------
+# fabro-monitor.sh C11 box-degraded (ralph-v2 02, E17): a provider fallback is not an
+# error, so no in-run hook reports one and the box can slide onto hosted models silently.
+# The condition reads the scheduler's `/api/box-health` and fires on the failover rate over
+# 5% of 20+ box visits, the Task-review miss rate over 2% of 20+, or any arrival at
+# openai/gpt-5.6-terra (the chain's last rung). Each condition is tested alone: a check
+# that only ever sets two at once cannot tell which one fired.
+# ---------------------------------------------------------------------------
+def _box_health(m, payload):
+    """Answer `/api/box-health` with `payload`; a string is written verbatim (e.g. HTTP500)."""
+    write(m.MM / "box-health.json", payload if isinstance(payload, str) else json.dumps(payload))
+    return m.run()
+
+
+def test_fabro_monitor_c11_box_degraded(ck, tmp_path):
+    m = Monitor(tmp_path)
+    m.page("active.json", [])
+    m.page("newest.json", [m.row("BL1", "backlog", "succeeded", m.ago(600))])
+    write(m.MM / "pools.json", '[{"coder_pool":"coders-a","drained":false,"lease":null}]')
+    write(m.MM / "queue.json", "[]")
+    quiet = {"visits": 40, "failovers": 0, "failover_rate": 0.0, "terra": 0,
+             "reviews": None, "miss_rate": None}
+
+    out = _box_health(m, quiet)
+    ck("monitor C11: a quiet box is ok", "0", count("box-degraded — ", file=out))
+    ck("monitor C11: the ok line prints the sample it read", "1",
+       count("ok    C11 box-degraded: 40 box-stage visit", file=out))
+
+    out = _box_health(m, {**quiet, "failovers": 4, "failover_rate": 0.1})
+    ck("monitor C11: a failover rate over 5% of 20+ visits fires", "1",
+       count("box-degraded — ", file=out))
+    ck("monitor C11: the message names the rate and its n", "1",
+       count(r"0\.1 of 40 box-stage visits failed over", file=out, flags="E"))
+    ck("monitor C11: the failover rate alone names no other condition", "0",
+       count("Task reviews missed|gpt-5.6-terra", file=out, flags="E"))
+
+    out = _box_health(m, {**quiet, "reviews": 40, "miss_rate": 0.05})
+    ck("monitor C11: a review miss rate over 2% of 20+ reviews fires", "1",
+       count("box-degraded — ", file=out))
+    ck("monitor C11: the message names the miss rate and its n", "1",
+       count(r"0\.05 of 40 Task reviews missed", file=out, flags="E"))
+    ck("monitor C11: the miss rate alone names no other condition", "0",
+       count("box-stage visits failed over|gpt-5.6-terra", file=out, flags="E"))
+
+    # A null count is not a held condition: this is the shape task 11 fills in.
+    out = _box_health(m, {**quiet, "visits": 0, "failover_rate": None})
+    ck("monitor C11: null counts fire nothing", "0", count("box-degraded — ", file=out))
+
+    out = _box_health(m, {**quiet, "terra": 2})
+    ck("monitor C11: one box stage on the last rung fires", "1", count("box-degraded — ", file=out))
+    ck("monitor C11: the message names terra and its count", "1",
+       count(r"2 box stage\(s\) fell over to openai/gpt-5\.6-terra", file=out, flags="E"))
+    ck("monitor C11: terra alone names no other condition", "0",
+       count("box-stage visits failed over|Task reviews missed", file=out, flags="E"))
+
+    # Two conditions at once are both named, so the message is the diagnosis.
+    out = _box_health(m, {**quiet, "failovers": 4, "failover_rate": 0.1, "terra": 1})
+    ck("monitor C11: both held conditions are named", "1|1",
+       count("0.1 of 40 box-stage visits failed over", file=out) + "|"
+       + count("1 box stage(s) fell over", file=out))
+
+    # Below 20 the rates say nothing, however high they are.
+    out = _box_health(m, {**quiet, "visits": 19, "failovers": 9, "failover_rate": 0.5,
+                          "reviews": 19, "miss_rate": 0.5})
+    ck("monitor C11: under 20 visits and 20 reviews neither rate fires", "0",
+       count("box-degraded — ", file=out))
+
+    out = _box_health(m, "HTTP500")
+    ck("monitor C11: an HTTP error is unevaluable, not a verdict", "1",
+       count(r"skip  C11 box-degraded: /api/box-health unreadable \(HTTP 500\)", file=out, flags="E"))
+    ck("monitor C11: an HTTP error fires nothing", "0", count("box-degraded — ", file=out))
+    # A 200 whose body is not the document is no more of a verdict.
+    out = _box_health(m, "not json")
+    ck("monitor C11: an unparseable body is unevaluable too", "1",
+       count(r"skip  C11 box-degraded: /api/box-health unreadable \(HTTP 200\)", file=out, flags="E"))
+
+    # C7 firing skips C11, exactly as it skips C8 and C10.
+    (m.MM / "pools.json").unlink()
+    out = m.run()
+    ck("monitor C11: C7 firing skips it", "1",
+       count("skip  C11 box-degraded: C7 scheduler-down is firing", file=out))
+    ck("monitor C11: C7 firing fires nothing", "0", count("box-degraded — ", file=out))
 
 
 # ---------------------------------------------------------------------------

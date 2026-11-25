@@ -201,6 +201,76 @@ def box_use(
     }
 
 
+# A failover *from* one of these providers is a box failover: `box-a` and `box-b`, the two
+# two-slot boxes. Matched on the provider half of `run_failovers.from_model`
+# (`box-a/qwen3.8-flash-next`), not on the model name.
+BOX_PROVIDER_PREFIX = "box-"
+
+# The last rung of the hosted `glm-5.3` chain in `ralph-v2` (`glm-5.3` ->
+# `orfallback:hy4-preview` -> `openai:gpt-5.6-terra`, `00-overview-and-contracts.md`,
+# *Models*): an arrival here means every rung above it failed, so it is counted on its own
+# rather than as one more fallback — there is nothing left in the chain behind it.
+TERRA_MODEL = "openai/gpt-5.6-terra"
+
+
+def box_health(
+    history: Sequence[Any],
+    stages: Sequence[Any],
+    failovers: Sequence[Any],
+    *,
+    hours: int,
+    now: datetime,
+) -> dict[str, object]:
+    """E17's number: how often the box's own stages failed over, and to where.
+
+    `GET /api/box-health` serves this and `fabro-monitor.sh`'s C11 alerts on it. A fallback
+    is not an error — the session continues on the next model in the chain — so nothing
+    in-band reports one, which is why the factory has to ask.
+
+    `history` is the issue runs whose summary is `ok` (`Store.box_health_rows`):
+    `visits` sums `run_stage_stats.visits` over the rows that actually ran on the box
+    (`box_ms > 0`), and `failovers` sums the chain hops out of it, so `failover_rate` is
+    one numerator over one denominator. `terra` counts arrivals at the last rung. A window
+    with no box visits has no rate, and says `null` rather than `0.0` — the difference
+    between "never failed over" and "nothing ran".
+
+    `reviews`, `reviews_missed` and `miss_rate` are the Task-review misses C11's second
+    condition reads; they stay `null` until the `ralph-v2` task review loop records them
+    (ralph-v2 task 11).
+    """
+    run_ids = {row["run_id"] for row in history}
+    visits = sum(
+        int(row["visits"] or 0)
+        for row in stages
+        if row["run_id"] in run_ids and int(row["box_ms"] or 0) > 0
+    )
+    box_failovers = 0
+    terra = 0
+    for row in failovers:
+        if row["run_id"] not in run_ids:
+            continue
+        count = int(row["count"] or 0)
+        if str(row["from_model"]).startswith(BOX_PROVIDER_PREFIX):
+            box_failovers += count
+        if str(row["to_model"]) == TERRA_MODEL:
+            terra += count
+    return {
+        "window": {
+            "hours": hours,
+            "from": (now - timedelta(hours=hours)).isoformat(),
+            "to": now.isoformat(),
+        },
+        "runs": len(run_ids),
+        "visits": visits,
+        "failovers": box_failovers,
+        "failover_rate": None if visits == 0 else round(box_failovers / visits, 4),
+        "terra": terra,
+        "reviews": None,
+        "reviews_missed": None,
+        "miss_rate": None,
+    }
+
+
 def endings(history: Sequence[Any], summaries: Sequence[Any]) -> dict[str, object]:
     """Per 100 issue runs: `close_noop`, `return_to_triage`, `mark_stuck`.
 

@@ -57,12 +57,12 @@ def run(store: Store, *, run_id: str, at: datetime, pool: str = "coders-a", issu
 
 def summary(store: Store, *, run_id: str, terminal: str | None = "open_pr",
             arm: str | None = None, verdict: str | None = None,
-            task_sources: dict | None = None) -> None:
+            task_sources: dict | None = None, status: str = "ok") -> None:
     with store._lock, store._conn:
         store._conn.execute(
             "INSERT INTO run_summary (run_id, status, attempts, summarized_at, terminal_node,"
-            " pre_review_arm, pre_review_verdict, task_sources) VALUES (?, 'ok', 1, ?, ?, ?, ?, ?)",
-            (run_id, NOW.isoformat(), terminal, arm, verdict,
+            " pre_review_arm, pre_review_verdict, task_sources) VALUES (?, ?, 1, ?, ?, ?, ?, ?)",
+            (run_id, status, NOW.isoformat(), terminal, arm, verdict,
              json.dumps(task_sources or {})),
         )
 
@@ -131,6 +131,94 @@ def test_box_use_ignores_a_run_outside_the_window_and_a_job_with_no_span(store):
     stage(store, run_id="OLD", node="coder", box_ms=6 * 60_000)
     job(store, kind="box-noop", started=None, finished=None, state="done")
     assert measure.report(rows(store), days=14, now=NOW)["phase_3"]["box_use"]["boxes"] == {}
+
+
+# --- box health (C11) ---------------------------------------------------------------
+
+
+def box_health(store: Store, *, hours: int = 24) -> dict[str, object]:
+    gathered = store.box_health_rows(since=NOW - timedelta(hours=hours))
+    return measure.box_health(
+        gathered["history"], gathered["stages"], gathered["failovers"], hours=hours, now=NOW
+    )
+
+
+def failover(store: Store, *, run_id: str, node: str, from_model: str, to_model: str,
+             count: int = 1) -> None:
+    with store._lock, store._conn:
+        store._conn.execute(
+            "INSERT INTO run_failovers (run_id, node_id, from_model, to_model, error_kind, count)"
+            " VALUES (?, ?, ?, ?, 'provider_error', ?)",
+            (run_id, node, from_model, to_model, count),
+        )
+
+
+def test_box_health_on_an_empty_store_has_no_rate_rather_than_zero(store):
+    document = box_health(store)
+    assert document["runs"] == 0
+    assert document["visits"] == 0
+    assert document["failovers"] == 0
+    assert document["failover_rate"] is None, "nothing ran, so there is no rate to report"
+    assert document["terra"] == 0
+    assert document["reviews"] is None, "the Task review loop fills these (ralph-v2 11)"
+    assert document["reviews_missed"] is None
+    assert document["miss_rate"] is None
+    assert document["window"] == {
+        "hours": 24,
+        "from": (NOW - timedelta(hours=24)).isoformat(),
+        "to": NOW.isoformat(),
+    }
+
+
+def test_box_health_counts_the_hops_out_of_the_box_over_its_own_visits(store):
+    inside = NOW - timedelta(hours=1)
+    run(store, run_id="R1", at=inside)
+    summary(store, run_id="R1")
+    stage(store, run_id="R1", node="iterate_t1", visits=10, box_ms=600_000)
+    stage(store, run_id="R1", node="standards", visits=5, box_ms=0)  # hosted, not a box visit
+    failover(store, run_id="R1", node="iterate_t1", from_model="box-a/qwen3.8-flash-next",
+             to_model="zai/glm-5.3-flash", count=2)
+    failover(store, run_id="R1", node="iterate_t1", from_model="box-b/qwen3.8-flash-next",
+             to_model=measure.TERRA_MODEL, count=1)
+    failover(store, run_id="R1", node="standards", from_model="zai/glm-5.3",
+             to_model=measure.TERRA_MODEL, count=1)
+    document = box_health(store)
+    assert document["runs"] == 1
+    assert document["visits"] == 10, "only the stages that ran on the box are a box visit"
+    assert document["failovers"] == 3, "a hosted stage failing over is not the box degrading"
+    assert document["failover_rate"] == 0.3
+    assert document["terra"] == 2, "the box's own hop to the last rung counts too"
+
+
+def test_box_health_leaves_out_a_run_with_no_ok_summary(store):
+    inside = NOW - timedelta(hours=1)
+    run(store, run_id="NOSUM", at=inside)
+    stage(store, run_id="NOSUM", node="iterate_t1", visits=20, box_ms=600_000)
+    failover(store, run_id="NOSUM", node="iterate_t1", from_model="box-a/qwen3.8-flash-next",
+             to_model="zai/glm-5.3-flash", count=4)
+    # A summary that failed to collect is no better: its stage rows are absent or stale.
+    run(store, run_id="ERR", at=inside)
+    summary(store, run_id="ERR", status="error")
+    stage(store, run_id="ERR", node="iterate_t1", visits=50, box_ms=600_000)
+    run(store, run_id="OK", at=inside)
+    summary(store, run_id="OK")
+    stage(store, run_id="OK", node="iterate_t1", visits=10, box_ms=600_000)
+    document = box_health(store)
+    assert document["runs"] == 1, "a run with no ok summary is not part of the rate"
+    assert document["visits"] == 10
+    assert document["failovers"] == 0
+    assert document["failover_rate"] == 0.0
+
+
+def test_box_health_windows_on_the_hours_it_is_asked_for(store):
+    run(store, run_id="RECENT", at=NOW - timedelta(hours=2))
+    summary(store, run_id="RECENT")
+    stage(store, run_id="RECENT", node="iterate_t1", visits=10, box_ms=600_000)
+    run(store, run_id="OLD", at=NOW - timedelta(hours=30))
+    summary(store, run_id="OLD")
+    stage(store, run_id="OLD", node="iterate_t1", visits=90, box_ms=600_000)
+    assert box_health(store, hours=24)["visits"] == 10
+    assert box_health(store, hours=48)["visits"] == 100
 
 
 # --- endings -----------------------------------------------------------------------
@@ -415,6 +503,28 @@ def test_the_measure_endpoint_serves_the_document_and_its_markdown(store):
         assert client.get(f"/api/background/measure?days={bad}").status_code == 400, bad
     # A non-integer is FastAPI's own 422, which names the parameter.
     assert client.get("/api/background/measure?days=seven").status_code == 422
+
+
+def test_the_box_health_endpoint_windows_on_hours_and_refuses_0_and_169(store):
+    from fastapi.testclient import TestClient
+
+    from fabro_scheduler.app import build_app
+    from test_precheck import config
+
+    # The endpoint windows on the real clock, so the run is stamped relative to it.
+    run(store, run_id="R1", at=datetime.now(UTC) - timedelta(hours=1))
+    summary(store, run_id="R1")
+    stage(store, run_id="R1", node="iterate_t1", visits=4, box_ms=60_000)
+    client = TestClient(build_app(config(), store))
+    body = client.get("/api/box-health").json()
+    assert body["window"]["hours"] == 24, "C11 reads the default window"
+    assert body["visits"] == 4
+    assert body["failover_rate"] == 0.0
+    assert client.get("/api/box-health?hours=168").status_code == 200
+    for bad in ("0", "169"):
+        assert client.get(f"/api/box-health?hours={bad}").status_code == 400, bad
+    # A non-integer is FastAPI's own 422, which names the parameter.
+    assert client.get("/api/box-health?hours=day").status_code == 422
 
 
 def test_the_queue_page_links_the_measurement(store):

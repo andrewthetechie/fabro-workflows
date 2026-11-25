@@ -2171,6 +2171,39 @@ class Store:
             "calibration": calibration,
         }
 
+    def box_health_rows(self, *, since: datetime) -> dict[str, list]:
+        """The rows `measure.box_health` reads for `GET /api/box-health` (C11).
+
+        Issue runs released at or after `since` whose `run_summary` is `ok`: an
+        unsummarized run has no `run_stage_stats` and no `run_failovers` of its own, so
+        counting it in `runs` would divide a failover count by visits it did not have.
+        The two derived tables are fetched for exactly those runs, so `failover_rate`
+        is one numerator and one denominator over one set of runs.
+        """
+        with self._lock:
+            history = self._conn.execute(
+                "SELECT h.* FROM run_history h JOIN run_summary s ON s.run_id = h.run_id"
+                " WHERE h.target_kind = 'issue' AND h.finished_at >= ? AND s.status = 'ok'"
+                " ORDER BY h.finished_at",
+                (since.isoformat(),),
+            ).fetchall()
+            run_ids = [row["run_id"] for row in history]
+            placeholders = ",".join("?" * len(run_ids)) or "''"
+            stages = (
+                self._conn.execute(
+                    f"SELECT * FROM run_stage_stats WHERE run_id IN ({placeholders})",
+                    run_ids,
+                ).fetchall()
+                if run_ids else []
+            )
+            failovers = (
+                self._conn.execute(
+                    f"SELECT * FROM run_failovers WHERE run_id IN ({placeholders})", run_ids
+                ).fetchall()
+                if run_ids else []
+            )
+        return {"history": history, "stages": stages, "failovers": failovers}
+
     def first_dispatch(self) -> datetime | None:
         """When the oldest `run_history` row was dispatched, or None if there is none."""
         with self._lock:

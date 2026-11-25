@@ -552,6 +552,24 @@ def build_app(
             for state in pool_states()
         ]
 
+    @app.get("/api/box-health")
+    def api_box_health(hours: int = 24) -> dict[str, object]:
+        """How often the box's own stages failed over (E17), which `fabro-monitor.sh` C11 alarms on.
+
+        A provider fallback is not an error: the session continues on the next model in
+        `[run.model.fallbacks]`, so nothing in-band reports one. `measure.box_health` counts
+        the hops out of the box over the box-stage visits that ran on it, plus arrivals at
+        `openai/gpt-5.6-terra`, the chain's last rung. `hours` is the window (24 by default,
+        which is what C11 reads); a review's miss rate joins it in ralph-v2 task 11.
+        """
+        if not 1 <= hours <= 168:
+            raise HTTPException(status_code=400, detail="hours must be between 1 and 168")
+        now = datetime.now(UTC)
+        rows = store.box_health_rows(since=now - timedelta(hours=hours))
+        return measure.box_health(
+            rows["history"], rows["stages"], rows["failovers"], hours=hours, now=now
+        )
+
     @app.get("/api/background")
     def api_background() -> dict[str, object]:
         """The background lane: the switch, each box's state, and the jobs (C7 step 14).
