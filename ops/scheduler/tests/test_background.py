@@ -276,7 +276,11 @@ def test_a_coder_loop_in_a_box_stage_blocks_the_start(store, leases):
 def test_a_ralph_v2_lease_in_task_refute_blocks_its_box(store, leases):
     """The trial's package is a coder loop the lane must not start inside (task 10), and
     the manifest says so: its first task reviewer is a box stage, read from the real
-    generated block rather than a list this test made up."""
+    generated block rather than a list this test made up.
+
+    The reason is asserted, not only the empty result: `task_refute` has no gap row, so a
+    manifest that made the stage hosted would leave the same two assertions true with the
+    box reading `no job fits` (a zero gap) instead of `loop in a box stage`."""
     held_lease(leases, workflow="ralph-v2", box_stages=RALPH_V2_STAGES)
     fabro = FakeFabro(
         stages={"coderun": [{"node_id": "task_refute", "status": "running"}]}
@@ -285,6 +289,8 @@ def test_a_ralph_v2_lease_in_task_refute_blocks_its_box(store, leases):
     lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
     assert lane_.fill(NOW) == []
     assert fabro.dispatched == []
+    views = {view.box: view for view in lane_.box_views(NOW)}
+    assert views["coders-a"].blocked_by == "loop in a box stage"
 
 
 def test_a_ralph_v2_lease_in_check_predicts_the_copied_gap(store, leases):

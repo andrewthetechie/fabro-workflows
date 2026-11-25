@@ -718,7 +718,7 @@ def _env_str(environ: Mapping[str, str], key: str, default: str) -> str:
 def _env_share(environ: Mapping[str, str], key: str, default: int) -> int:
     """A share of the queue: 0 (the default, and the kill switch), 50 or 100.
 
-    Anything else — `25`, `yes`, `-1`, an empty-but-present value — is a
+    An unset or blank value is the default. Anything else — `25`, `yes`, `-1` — is a
     `ConfigError` naming the key: nothing in a run's history says which share
     produced it, so the arm must follow from the issue alone.
     """

@@ -42,7 +42,7 @@ SHARED = "workflows/_shared/review-merge/review-merge.fabro"
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# The parity numbers `choose_workflow` splits on, and the shares it accepts.
+# An `Issue.first_seen`, which the rule never reads: it reads the number and the labels.
 NOW = datetime(2026, 11, 24, 12, 0, tzinfo=UTC)
 
 # `ops/check-payload.py`'s budget: the headroom a package keeps under the server's 2 MiB

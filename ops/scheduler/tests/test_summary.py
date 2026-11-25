@@ -7,8 +7,9 @@ Each fixture line is the shape `GET /runs/{id}/events` returned on fabro 0.362 o
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
-from fabro_scheduler.summary import PATH_TAIL, RefuteVerdict, summarize
+from fabro_scheduler.summary import NODES, PATH_TAIL, RefuteVerdict, summarize
 
 STAGES = [
     {"node_id": "start", "handler": "start", "status": "succeeded", "visit": 1, "wall_time_ms": 0},
@@ -490,6 +491,21 @@ def test_a_ralph_v2_summary_reads_ralphs_ids_without_the_fourth_rung():
 
     assert summary.first_edit_ms == [30_000], "iterate_t3 counts, iterate_t4 does not"
     assert [v.verdict for v in summary.refute] == ["pass"]
+
+
+def test_the_ralph_v2_row_is_ralphs_row_without_the_fourth_rung():
+    """ralph-v2 10, step 5, as a diff against the original: `NODES["ralph-v2"]` is
+    `ralph`'s row with one difference, `coder_nodes`.
+
+    The test above drives `refute_gate` and the rungs through events. The other three
+    fields are pinned by nothing else, and `backlog`'s ids for `validate` or
+    `final_validation` would record no Task validation and no final route for every v2
+    run, and read as a run that simply had none.
+    """
+    assert NODES["ralph-v2"] == replace(
+        NODES["ralph"],
+        coder_nodes=frozenset({"iterate_t1", "iterate_t2", "iterate_t3"}),
+    )
 
 
 def test_the_pre_reviews_arm_and_verdict_come_from_their_two_nodes():
