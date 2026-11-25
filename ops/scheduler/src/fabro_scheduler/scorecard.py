@@ -1176,8 +1176,10 @@ class TrialLine:
     2-standard-error rule gives it. `guardrail` is v2's lease-hours per zero-touch merge over
     v1's, against the trial's +50%. The three stop rules are the weekly checks: v2's guardrail
     above 2 after 40 v2 runs, its merge measure 15 points below after 60, and misses above 10%
-    of the window's Task reviews. Each is False until its own threshold holds, and the numeric
-    fields are None below 2 runs in either arm, where there is nothing to compare.
+    of the window's Task review**ers**, two to a round -- the rate `measure.box_health`
+    reports, so this rule and C11 read one run the same way. Each is False until its own
+    threshold holds, and the numeric fields are None below 2 runs in either arm, where there is
+    nothing to compare.
     """
 
     merge_diff: float | None = None
@@ -1442,9 +1444,11 @@ def _arm_line(
 
 def _trial_line(v1: ArmLine, v2: ArmLine, reviews: TaskReviewLine) -> TrialLine:
     """v2 - v1 on both co-primary measures, the guardrail and the stop rules."""
-    line = TrialLine(
-        miss_stop=reviews.reviews > 0 and reviews.misses / reviews.reviews > MISS_STOP_RATE
-    )
+    # A review is one reviewer, two to a round (ralph-v2 11 step 4): the population
+    # `measure.box_health` divides the same misses by, so this rule and C11 read one run at
+    # one rate. `TaskReviewLine.reviews` counts rounds, because rows are what the store holds.
+    reviewers = 2 * reviews.reviews
+    line = TrialLine(miss_stop=reviewers > 0 and reviews.misses / reviewers > MISS_STOP_RATE)
     if v1.runs < 2 or v2.runs < 2:
         return line  # nothing to compare on one run, and the stop rules above still stand
     if v1.merge_rate is not None and v2.merge_rate is not None:

@@ -6,9 +6,11 @@ Each fixture is one run's stream, cut to the events the summary reads and in the
 `GET /runs/{id}/events` returns on fabro 0.362 (2026-11-24).
 
 The nine streams the task names are: a clean v2 run, a reworked Task, a blocked Task, a run
-whose Refuter missed, a run whose Refuter fell back, a mid-session failover, a run that
-stopped before any review, a v1 run, and a v1 run from before `first_round` and `task_plans`
-existed.
+with one reviewer missed, a fallback (E13: a reviewer's three box tries came back empty, so
+its hosted `_fb` stage answered), a mid-session failover (E17: a provider failover inside a
+reviewer's session), a run that stopped before any review, a v1 run, and a v1 run from before
+`first_round` and `task_plans` existed. `nine_streams()` is the one table of the eight that
+have events.
 """
 
 from __future__ import annotations
@@ -16,11 +18,12 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from fabro_scheduler import scorecard
+from fabro_scheduler import measure, scorecard
 from fabro_scheduler.prfacts import PrFacts
 from fabro_scheduler.store import RunOutcome, Store
 from fabro_scheduler.summary import FirstRound, RunSummary, StageStat, TaskPlans, TaskReview, summarize
@@ -60,6 +63,18 @@ def completed(node: str, updates: dict | None = None, *, ms: int = 0) -> dict:
 
 def started(node: str) -> dict:
     return {"event": "stage.started", "node_id": node, "properties": {}}
+
+
+def failed(node: str, *, ms: int = 0) -> dict:
+    """A stage visit that ended `stage.failed`: here a timeout, the visit a check node counts.
+    It carries the attempt's timing, like `stage.completed` does."""
+    props: dict = {
+        "status": "failed",
+        "failure": {"category": "timeout", "system_actor": "timeout"},
+    }
+    if ms:
+        props["timing"] = {"wall_time_ms": ms}
+    return {"event": "stage.failed", "node_id": node, "properties": props}
 
 
 def failover(node: str) -> dict:
@@ -181,6 +196,65 @@ def review_round(
     ]
 
 
+def fallback_round(
+    who: str = "refute", *, updates: dict | None = None, fail_on: str | None = None
+) -> list[dict]:
+    """One round in which reviewer `who` (`refute` or `review`) timed out on all three of its
+    box tries, in the order `task_<who>_check` runs. This is A3's counted road to the E13
+    fallback, where a timeout or a failure is a try; a session that merely ends with no result
+    is re-run by `stage-end` first, and is not this stream (C4).
+
+    Each try is one visit that ends `stage.failed`; the check counts it and routes `retry`,
+    and the third routes `fallback`, where the hosted `task_<who>_fb` answers. The check's visit
+    after that publishes `done` with the count it had (3): a result does not add a try. The
+    other reviewer passes on its first try, so its check publishes 0. A `_fb` stage is a
+    reviewer like the other three.
+    """
+    other = "review" if who == "refute" else "refute"
+    clean = [
+        started(f"task_{other}"),
+        completed(f"task_{other}", ms=600_000),
+        completed(
+            f"task_{other}_check",
+            {f"task_{other}_next": "done", f"task_{other}_tries": 0},
+            ms=15_000,
+        ),
+    ]
+    events: list[dict | None] = [started("task_review_prep"), completed("task_review_prep")]
+    if who == "review":
+        events += clean
+    for count in (1, 2, 3):
+        events += [
+            started(f"task_{who}"),
+            failed(f"task_{who}", ms=1_800_000),  # the box timeout, with `max_retries=0` (P8)
+            completed(
+                f"task_{who}_check",
+                {
+                    f"task_{who}_next": "fallback" if count == 3 else "retry",
+                    f"task_{who}_tries": count,
+                },
+                ms=15_000,
+            ),
+        ]
+    events += [
+        started(f"task_{who}_fb"),
+        failover(f"task_{who}_fb") if fail_on == f"task_{who}_fb" else None,
+        completed(f"task_{who}_fb", ms=900_000),
+        completed(
+            f"task_{who}_check",
+            {f"task_{who}_next": "done", f"task_{who}_tries": 3},
+            ms=15_000,
+        ),
+    ]
+    if who == "refute":
+        events += clean
+    served = {f"{who}_served": "fallback"}
+    events.append(
+        completed("task_review_gate", updates if updates is not None else gate_updates(**served))
+    )
+    return [event for event in events if event is not None]
+
+
 def clean_v2_events() -> list[dict]:
     """The clean v2 run: one planned Task that passes its first review, then the PR round."""
     return (
@@ -217,6 +291,42 @@ def clean_v2_events() -> list[dict]:
             not_met=1, defects=2, tampering=1, standards=2, spec=1
         )
     )
+
+
+def nine_streams() -> dict[str, tuple[str, list[dict]]]:
+    """The eight fixture streams that have events, each with the workflow it is a run of, in
+    the order the task names them. The ninth, a v1 run from before the two columns existed,
+    is the v1 stream read back with `first_round` and `task_plans` NULL.
+    """
+    return {
+        "clean v2 run": ("ralph-v2", clean_v2_events()),
+        "reworked Task": (
+            "ralph-v2",
+            review_round(
+                updates=gate_updates(
+                    round_=1, verdict="rework", errors=2, edges=2, edges_covered=1
+                )
+            )
+            + review_round(
+                updates=gate_updates(round_=2, verdict="pass", edges=2, edges_covered=2)
+            ),
+        ),
+        "blocked Task": (
+            "ralph-v2",
+            review_round(updates=gate_updates(round_=4, verdict="blocked", errors=1)),
+        ),
+        "one reviewer missed": (
+            "ralph-v2",
+            review_round(updates=gate_updates(refute_served="missed", edges=0, edges_covered=0)),
+        ),
+        "a fallback": ("ralph-v2", fallback_round()),
+        "mid-session failover": ("ralph-v2", review_round(fail="task_refute")),
+        "stopped before any review": (
+            "ralph-v2",
+            [started("iterate_t1"), completed("iterate_t1", ms=600_000)],
+        ),
+        "v1 run": ("ralph", quality_events(not_met=1)),
+    }
 
 
 def summarize_run(run_id: str, events: list[dict], *, workflow: str = "ralph-v2") -> RunSummary:
@@ -393,6 +503,62 @@ def test_a_mid_session_failover_marks_the_round_and_is_a_failover_of_the_run():
     assert [review.failover for review in two.task_reviews] == [True, False]
 
 
+@pytest.mark.parametrize("who", ["refute", "review"])
+def test_a_fallback_round_keeps_its_failed_tries_the_fallback_visit_and_the_last_tries(who):
+    """The E13 fallback: each of the three failed box tries is a spent visit, and so is the
+    hosted `_fb` visit that answered after them. The round's `ms` is all four plus the other
+    reviewer's one -- 30 + 30 + 30 + 15 + 10 minutes -- and its `tries` is the **last** count
+    each check published, 3 for the reviewer that fell back (four publishes: 1, 2, 3, 3) and 0
+    for the one that passed first time. The fallback is a stage of the ladder, not a provider
+    failover (E17), so `failover` stays False."""
+    summary = summarize_run("R1", fallback_round(who))
+
+    served = {"refute_served": "box", "review_served": "box"}
+    served[f"{who}_served"] = "fallback"
+    assert summary.task_reviews == [
+        TaskReview(
+            task="T1", source="plan", round=1, verdict="pass",
+            errors=0, warnings=0, disputed=0, withdrawn=0, dropped=0,
+            edges=0, edges_covered=0,
+            tries=3,
+            ms=6_900_000,
+            failover=False,
+            **served,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "stage", ["task_refute", "task_refute_fb", "task_review", "task_review_fb"]
+)
+def test_a_failover_on_any_of_the_four_reviewers_marks_the_round(stage):
+    """E17 on the Task review loop: `failover` is an `agent.route.failover` on **any** of the
+    four reviewer stages since the previous gate, the two fallback stages included."""
+    if stage.endswith("_fb"):
+        who = "refute" if stage.startswith("task_refute") else "review"
+        events = fallback_round(who, fail_on=stage)
+    else:
+        events = review_round(fail=stage)
+
+    assert summarize_run("R1", events).task_reviews[0].failover is True
+
+
+def test_a_submit_tool_is_matched_on_its_tail_and_only_a_submit_is_a_result():
+    """The rule is the baseline reader's: a tool whose name **ends in** `submit` carries the
+    stage's result. A profile that names it `review_submit` is read the same way, and another
+    tool's arguments are never a result, so a stage that completed after only that leaves its
+    field None."""
+    events = [
+        submit("standards", {"findings": findings(3)}, tool="review_submit"),
+        completed("standards"),
+        submit("spec", {"findings": findings(5)}, tool="inputs"),
+        completed("spec"),
+    ]
+    summary = summarize_run("R1", events)
+    assert summary.first_round == FirstRound(standards_errors=3, spec_errors=None)
+    assert summary.first_round.total() is None
+
+
 def test_a_run_that_stopped_before_any_review_has_no_first_round_fields_and_no_rows():
     """A run that ended in the task loop or on the box lenses reaches no hosted reviewer and
     no Task review gate: every field stays None, and nothing is invented as 0."""
@@ -437,6 +603,73 @@ def test_a_backlog_run_records_no_first_round(store):
     # And the scorecard's reader treats a row from before the columns the same way.
     assert scorecard._first_round(stored["first_round"]) is None
     assert scorecard._first_round('{"refute_not_met": 0}').total() is None
+
+
+# `run_task_reviews`' columns after `run_id`, in the table's order: what a stored round must
+# give back.
+REVIEW_COLUMNS = (
+    "seq", "task", "source", "round", "verdict", "errors", "warnings", "disputed",
+    "withdrawn", "dropped", "refute_served", "review_served", "edges", "edges_covered",
+    "tries", "ms", "failover",
+)
+
+
+@pytest.mark.parametrize("name", list(nine_streams()))
+def test_every_fixture_stream_is_stored_column_for_column(store, name):
+    """For each stream, the rows it stores: `save_run_summary` writes the first round, the
+    plans and every Task review round exactly as the summary held them, column for column,
+    so a reader of the store sees what the summary said."""
+    workflow, events = nine_streams()[name]
+    summary = summarize_run(name, events, workflow=workflow)
+    store.save_run_summary(summary)
+
+    stored = store._conn.execute(
+        "SELECT first_round, task_plans FROM run_summary WHERE run_id = ?", (name,)
+    ).fetchone()
+    assert json.loads(stored["first_round"]) == asdict(summary.first_round)
+    assert json.loads(stored["task_plans"]) == {
+        "types": dict(summary.task_plans.types),
+        "goals": summary.task_plans.goals,
+        "edges": summary.task_plans.edges,
+    }
+    rows = store._conn.execute(
+        "SELECT * FROM run_task_reviews WHERE run_id = ? ORDER BY seq", (name,)
+    ).fetchall()
+    assert [tuple(row[column] for column in REVIEW_COLUMNS) for row in rows] == [
+        (
+            seq, review.task, review.source, review.round, review.verdict, review.errors,
+            review.warnings, review.disputed, review.withdrawn, review.dropped,
+            review.refute_served, review.review_served, review.edges, review.edges_covered,
+            review.tries, review.ms, int(review.failover),
+        )
+        for seq, review in enumerate(summary.task_reviews, start=1)
+    ]
+
+
+def test_a_row_from_before_the_columns_is_refilled_by_a_re_summarize(store):
+    """The ninth stream: a v1 run's row as the collector wrote it before the two columns
+    existed. NULL to every reader, and a second summary of the same events writes both."""
+    workflow, events = nine_streams()["v1 run"]
+    store.save_run_summary(summarize_run("R1", events, workflow=workflow))
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE run_summary SET first_round = NULL, task_plans = NULL WHERE run_id = 'R1'"
+        )
+        before = store._conn.execute(
+            "SELECT first_round, task_plans FROM run_summary WHERE run_id = 'R1'"
+        ).fetchone()
+    assert (before["first_round"], before["task_plans"]) == (None, None)
+
+    store.save_run_summary(summarize_run("R1", events, workflow=workflow))
+
+    after = store._conn.execute(
+        "SELECT first_round, task_plans FROM run_summary WHERE run_id = 'R1'"
+    ).fetchone()
+    assert json.loads(after["first_round"]) == {
+        "refute_not_met": 1, "refute_defects": 0, "refute_tampering": 0,
+        "standards_errors": 0, "spec_errors": 0,
+    }
+    assert json.loads(after["task_plans"]) == {"types": {}, "goals": 0, "edges": 0}
 
 
 # --- the arms, the trial line and the stop rules ------------------------------------
@@ -555,25 +788,66 @@ def test_the_trial_line_needs_two_runs_in_each_arm(store):
     assert card.trial == scorecard.TrialLine()
 
 
-def test_the_fixture_runs_read_as_one_arm(store):
-    """The nine fixture streams as one window: six v2 runs and two v1 ones. Only the clean run
-    reached a hosted reviewer, so the quality mean is over one run; the review loop counts
-    every round, one per fixture, and the round-1 rows are where the edge cases are read."""
-    fixtures = {
-        "VC": clean_v2_events(),
-        "VR": review_round(
-            updates=gate_updates(round_=1, verdict="rework", errors=2, edges=2, edges_covered=1)
-        )
-        + review_round(updates=gate_updates(round_=2, verdict="pass", edges=2, edges_covered=2)),
-        "VB": review_round(updates=gate_updates(round_=4, verdict="blocked", errors=1)),
-        "VM": review_round(
-            updates=gate_updates(refute_served="missed", edges=0, edges_covered=0)
+def test_a_merge_with_an_operator_commit_is_not_a_zero_touch_merge(store):
+    """Measure 1 is `merged_by_workflow` **and** `operator_commits` 0 (the experiment). A PR
+    the merge phase merged after the operator had committed is a merge for the split table and
+    is not one for the trial: it stays in `runs`, and leaves both the numerator and the
+    guardrail's denominator."""
+    run(store, "V1", workflow="ralph-v2", pr=11, merged=True)
+    run(store, "V2", workflow="ralph-v2", pr=12, merged=True)
+    store.save_pr_facts(REPO, 11, fact(state="merged", merged_at="2026-11-23T05:00:00Z"))
+    store.save_pr_facts(
+        REPO, 12, fact(state="merged", operator=2, merged_at="2026-11-23T05:00:00Z")
+    )
+
+    card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
+
+    assert card.cards["ralph-v2"].merged_workflow == 2, "the split table counts both"
+    v2 = card.arms[1]
+    assert (v2.runs, v2.zero_touch, v2.merge_rate) == (2, 1, pytest.approx(0.5))
+    assert v2.lease_hours_per_merge == pytest.approx(4.0)  # two 2-hour leases over the one
+
+
+def test_a_run_that_ran_out_is_counted_and_a_partial_round_is_the_refuters_alone(store):
+    """Two ways a run sits beside the quality mean instead of in it (the experiment).
+
+    A run whose loop ran out reaches no hosted reviewer, the Refuter being last (E14): it is
+    one of the arm's `exhausted_runs`, and in no mean. A run whose Refuter completed but whose
+    `standards` and `spec` did not is out of the five-count mean and in the Refuter's three
+    alone: 2 + 1 + 0 for it and 1 + 0 + 0 for the clean run, so n 2, mean 2 and sample sd
+    sqrt((1 + 1) / 1).
+    """
+    for run_id, events in (
+        ("V1", [completed("pick", {"phase": "pre", "loop_exhausted": True})]),
+        (
+            "V2",
+            [
+                submit("refute", refute_arguments(not_met=2, defects=1)),
+                completed("refute", ms=600_000),
+            ],
         ),
-        "VF": review_round(fail="task_refute"),
-        "VS": [started("iterate_t1"), completed("iterate_t1", ms=600_000)],
-    }
-    for run_id, events in fixtures.items():
-        run(store, run_id, workflow="ralph-v2", at=T0 + timedelta(hours=len(run_id)))
+        ("V3", quality_events(not_met=1)),
+    ):
+        run(store, run_id, workflow="ralph-v2")
+        store.save_run_summary(summarize_run(run_id, events))
+
+    v2 = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW).arms[1]
+
+    assert (v2.runs, v2.exhausted_runs) == (3, 1)
+    assert (v2.quality_n, v2.quality_mean) == (1, pytest.approx(1.0))
+    assert (v2.refuter_n, v2.refuter_mean) == (2, pytest.approx(2.0))
+    assert v2.refuter_sd == pytest.approx(math.sqrt(2.0))
+
+
+def test_the_fixture_runs_read_as_one_arm(store):
+    """The fixture streams as one window: every v2 stream, seven runs, beside two v1 ones, so
+    each one is read through the arm lines too. Only the clean run reached a hosted reviewer, so
+    the quality mean is over one run; the review loop counts every round, one per fixture and
+    two for the reworked Task; and the round-1 rows are where the edge cases are read."""
+    for index, (run_id, (workflow, events)) in enumerate(nine_streams().items(), start=1):
+        if workflow != "ralph-v2":
+            continue
+        run(store, run_id, workflow="ralph-v2", at=T0 + timedelta(hours=index))
         store.save_run_summary(summarize_run(run_id, events))
     for i, value in enumerate([1, 3], start=1):
         run(store, f"R{i}", workflow="ralph", at=T0 + timedelta(hours=9 + i), pr=i, merged=True)
@@ -588,22 +862,28 @@ def test_the_fixture_runs_read_as_one_arm(store):
 
     v1, v2 = card.arms
     assert (v1.runs, v1.zero_touch, v1.quality_n) == (2, 2, 2)
-    assert (v2.runs, v2.zero_touch) == (6, 0)
+    assert (v2.runs, v2.zero_touch) == (7, 0)
     assert v2.quality_n == 1, "only the clean run reached the hosted reviewers"
     assert v2.quality_mean == pytest.approx(7.0)
     assert v2.quality_sd is None, "one measured run has no spread"
 
     reviews = card.task_reviews
-    assert reviews.reviews == 6, "one row per fixture round: the reworked Task has two"
-    assert reviews.verdicts == {"pass": 4, "rework": 1, "blocked": 1}
+    assert reviews.reviews == 7, "one row per fixture round: the reworked Task has two"
+    assert reviews.verdicts == {"pass": 5, "rework": 1, "blocked": 1}
     assert reviews.blocked == 1
+    # One missed reviewer is one miss. A fallback answered, so it is none (E13).
     assert reviews.misses == 1
-    # Round 1 rejected one of its four rows, round 2 none, and round 4 is the blocked Task's.
-    assert reviews.rejection_rate == {1: pytest.approx(0.25), 2: 0.0, 4: 1.0}
+    assert reviews.refute_served == {"box": 5, "fallback": 1, "missed": 1}
+    assert reviews.review_served == {"box": 6, "fallback": 1, "missed": 0}
+    # Round 1 rejected one of its five rows, round 2 none, and round 4 is the blocked Task's.
+    assert reviews.rejection_rate == {1: pytest.approx(0.2), 2: 0.0, 4: 1.0}
+    # A round's reviewer minutes, smallest first: 25, 30 x5 and the fallback's 115. p50 is the
+    # fourth of seven, 30; p90 is 30 + 0.4 x (115 - 30) = 64.
+    assert (reviews.ms.p50, reviews.ms.p90) == (pytest.approx(30.0), pytest.approx(64.0))
     assert (reviews.edges_planned, reviews.edges_covered) == (3, 3)
     assert reviews.plan_types == {"planned": 1}
     assert card.trial.merge_diff == pytest.approx(-1.0)
-    assert card.trial.merge_verdict == "worse", "v2 merged none of its six, v1 both of its two"
+    assert card.trial.merge_verdict == "worse", "v2 merged none of its seven, v1 both of its two"
 
 
 def test_the_arm_line_leaves_out_a_run_whose_first_round_is_not_measured(store):
@@ -631,7 +911,7 @@ def test_the_arm_line_leaves_out_a_run_whose_first_round_is_not_measured(store):
 
 def test_the_miss_stop_rule_reads_the_windows_task_reviews(store):
     """The experiment's third stop rule: more than one Task review in ten lost its reviewer.
-    Five rounds are ten reviewers, so two misses are 20% and the rule fires."""
+    Two rounds are four reviewers, so two misses are 50% and the rule fires."""
     for i in (1, 2):
         run(store, f"V{i}", workflow="ralph-v2")
         store.save_run_summary(
@@ -648,6 +928,167 @@ def test_the_miss_stop_rule_reads_the_windows_task_reviews(store):
     assert (card.task_reviews.reviews, card.task_reviews.misses) == (2, 2)
     assert card.trial.miss_stop is True
     assert "| stop rules | lease no, merge no, misses yes |" in scorecard.workflows_to_markdown(card)
+
+
+@pytest.mark.parametrize(
+    ("one", "both", "misses", "stops"),
+    [
+        pytest.param(2, 1, 4, False, id="4 misses in 20 rounds: a tenth, which is not above"),
+        pytest.param(3, 1, 5, True, id="5 misses in 20 rounds: 12.5%"),
+    ],
+)
+def test_the_miss_stop_rule_is_over_reviewers_two_to_a_round(store, one, both, misses, stops):
+    """The third rule's rate is the one `GET /api/box-health` reports: a review is one reviewer,
+    two to a round (step 4), so 20 rounds are 40 reviewers: 4 misses is a tenth, which is not
+    above, and 5 is 12.5%. A round with one missed reviewer is one miss; a round with both is
+    two (E13). `one` rounds here miss one reviewer and `both` miss both, so `one + 2 x both`
+    misses.
+
+    Divided by rounds instead, the same 4 misses read 20% and stopped the trial where C11,
+    reading 10%, would not.
+    """
+    events: list[dict] = []
+    for index in range(one):
+        events += review_round(updates=gate_updates(task=f"one{index}", refute_served="missed"))
+    for index in range(both):
+        events += review_round(
+            updates=gate_updates(
+                task=f"both{index}", verdict="missed",
+                refute_served="missed", review_served="missed",
+            )
+        )
+    for index in range(20 - one - both):
+        events += review_round(updates=gate_updates(task=f"clean{index}"))
+    run(store, "V1", workflow="ralph-v2")
+    store.save_run_summary(summarize_run("V1", events))
+
+    card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
+
+    assert (card.task_reviews.reviews, card.task_reviews.misses) == (20, misses)
+    assert card.trial.miss_stop is stops
+    text = scorecard.workflows_to_markdown(card)
+    assert f"| stop rules | lease no, merge no, misses {'yes' if stops else 'no'} |" in text
+    # The same rows through the other reader: one rate, to the four places the endpoint rounds.
+    gathered = store.box_health_rows(since=T0)
+    health = measure.box_health(
+        gathered["history"],
+        gathered["stages"],
+        gathered["failovers"],
+        reviews=gathered["reviews"],
+        hours=24,
+        now=T0 + timedelta(days=1),
+    )
+    assert (health["reviews"], health["reviews_missed"], health["miss_rate"]) == (
+        40, misses, round(misses / 40, 4)
+    )
+
+
+def arm_of(store, workflow: str, *, runs: int, merged: int, hours: float, first: int) -> None:
+    """`runs` released runs of one arm, each holding its lease `hours`; the first `merged` of
+    them had a PR the merge phase merged with no operator commit."""
+    for index in range(runs):
+        number = first + index
+        run(
+            store,
+            f"{workflow}-{index}",
+            workflow=workflow,
+            hours=hours,
+            pr=number,
+            merged=True if index < merged else None,
+        )
+        if index < merged:
+            store.save_pr_facts(
+                REPO, number, fact(state="merged", merged_at="2026-11-23T05:00:00Z")
+            )
+
+
+def test_the_lease_and_merge_stop_rules_fire_past_their_lines_and_their_counts(store):
+    """*Stop early*'s first two weekly checks, on hand-computed numbers.
+
+    v1: 60 runs, all 60 merged by the run, 2 lease-hours each: 120 lease-hours, 2.0 a merge.
+    v2: 60 runs, 42 merged by the run, 10 lease-hours each: 600 lease-hours, 600 / 42 = 14.29
+        a merge.
+    merge: 42/60 - 60/60 = -0.30, which is 30 points below (the line is 15), with 60 v2 runs
+      (the count is 60): it fires. se = sqrt(0.7 x 0.3 / 60 + 1 x 0 / 60) = 0.059, and 0.30 is
+      above 2 x 0.059, so the verdict is `worse` as well.
+    lease: (600 / 42) / 2.0 = 7.14, above 2 (the line), with 60 v2 runs (the count is 40): it
+      fires.
+    """
+    arm_of(store, "ralph", runs=60, merged=60, hours=2.0, first=1)
+    arm_of(store, "ralph-v2", runs=60, merged=42, hours=10.0, first=1000)
+
+    card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
+
+    v1, v2 = card.arms
+    assert (v1.runs, v1.zero_touch, v1.merge_rate) == (60, 60, pytest.approx(1.0))
+    assert (v2.runs, v2.zero_touch, v2.merge_rate) == (60, 42, pytest.approx(0.7))
+    assert (v1.lease_hours, v2.lease_hours) == (pytest.approx(120.0), pytest.approx(600.0))
+    assert v2.lease_hours_per_merge == pytest.approx(600 / 42)
+    trial = card.trial
+    assert trial.merge_diff == pytest.approx(-0.30)
+    assert trial.merge_se == pytest.approx(math.sqrt(0.7 * 0.3 / 60))
+    assert trial.merge_verdict == "worse"
+    assert trial.guardrail == pytest.approx(600 / 42 / 2.0)
+    assert (trial.lease_stop, trial.merge_stop, trial.miss_stop) == (True, True, False)
+    text = scorecard.workflows_to_markdown(card)
+    assert "| merge, v2 - v1 | -0.30 ± 0.06: worse |" in text
+    assert "| guardrail, v2 / v1 | 7.14x (the trial is lost above 2.00x) |" in text
+    assert "| stop rules | lease yes, merge yes, misses no |" in text
+
+
+@pytest.mark.parametrize(
+    ("v2", "stops", "verdict", "guardrail", "why"),
+    [
+        pytest.param(
+            dict(runs=39, merged=39, hours=10.0),
+            (False, False),
+            "unclear",
+            10.0,
+            "the lease ratio is 10 with 39 v2 runs: one short of the 40 the rule needs",
+            id="39 v2 runs",
+        ),
+        pytest.param(
+            dict(runs=40, merged=40, hours=2.0),
+            (False, False),
+            "unclear",
+            2.0,
+            "the lease ratio is exactly 2 with 40 v2 runs: the rule is above 2",
+            id="a ratio of exactly 2",
+        ),
+        pytest.param(
+            dict(runs=59, merged=0, hours=1.0),
+            (False, False),
+            "worse",
+            None,
+            "100 points below with 59 v2 runs: one short of the 60 the rule needs",
+            id="59 v2 runs",
+        ),
+        pytest.param(
+            dict(runs=100, merged=86, hours=1.5),
+            (False, False),
+            "worse",
+            150 / 86,
+            "14 points below, one short of the 15 the rule names, and a ratio of 1.74 with"
+            " 100 v2 runs: worse, and under both lines",
+            id="under both lines",
+        ),
+    ],
+)
+def test_a_stop_rule_holds_below_its_line_or_short_of_its_count(
+    store, v2, stops, verdict, guardrail, why
+):
+    """A rule fires only when its line **and** its count are met. v1 is two runs, both merged
+    by the run at 1 lease-hour each, so v1's merge rate is 1.0 with no spread and its
+    lease-hours a merge 1.0: an equal v2 is `unclear` (the difference is 0), a lower one
+    `worse`. A `worse` verdict is not a stop: the rule has its own line."""
+    arm_of(store, "ralph", runs=2, merged=2, hours=1.0, first=1)
+    arm_of(store, "ralph-v2", first=1000, **v2)
+
+    trial = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW).trial
+
+    assert (trial.lease_stop, trial.merge_stop) == stops, why
+    assert trial.merge_verdict == verdict
+    assert trial.guardrail == (None if guardrail is None else pytest.approx(guardrail))
 
 
 def test_the_task_review_line_reads_the_loop(store):
@@ -702,6 +1143,21 @@ def test_the_task_review_line_reads_the_loop(store):
         "iterate_t1": pytest.approx(17.4),
     }
     assert row.plan_types == {"fallback": 1}
+
+
+def test_the_box_minutes_are_per_run_of_the_whole_arm_summarized_or_not(store):
+    """`per run` divides by every v2 run of the window, summarized or not, so a run released
+    but not yet summarized lowers the average instead of vanishing from it."""
+    run(store, "V1", workflow="ralph-v2")
+    store.save_run_summary(
+        with_stages(summarize_run("V1", []), StageStat("task_plan", "agent", 1, 900_000, 900_000))
+    )
+    run(store, "V2", workflow="ralph-v2")  # released, not summarized yet
+
+    row = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW).task_reviews
+
+    assert row.box_minutes["task_plan"] == pytest.approx(7.5)  # 15 minutes over two runs
+    assert row.box_minutes["task_review"] == 0.0
 
 
 def test_re_summarizing_a_run_replaces_its_rows(store):
