@@ -1,4 +1,4 @@
-"""ralph-v2 (ADR 0034, docs/plans/ralph-v2/05-07): the package's own rules and its Task loop.
+"""ralph-v2 (ADR 0034, docs/plans/ralph-v2/05-08): the package's own rules and its Task loop.
 
 Everything ralph-v2 copies from ralph is held by R10 in `ops/check-graph-invariants.py`, and
 the graphs' behaviour by the gate tests that already cover ralph's nodes. What no other gate
@@ -6,11 +6,13 @@ covers is the file itself: the profile images run Debian, where `/bin/sh` is das
 a bashism at parse time, a template token left in a node renders as the literal text, and the
 dispatch payload has a size the server refuses.
 
-Pin what tasks 05-07 decided and nothing more: the fourth rung is gone from the edges, the
+Pin what tasks 05-08 decided and nothing more: the fourth rung is gone from the edges, the
 graph stays inside the size the plan gives it (`P14`: under 350,000 bytes), the prompts and
 schemas are the plan's assets byte for byte, because the plan is the review of that text, and
-the Task loop runs `pick` -> `task_plan_gate` -> `excerpts` -> `task_block_gate` -> `record` ->
-`pick` in the order `task_plan_gate` and `record` were written for (C1, C2).
+the Task loop runs in the order its nodes were written for: `pick` -> `task_plan_gate` ->
+`excerpts` -> `task_block_gate` -> `record` -> `pick` (C1, C2), then a pass through
+`task_review_prep` -> the two Task reviewers, each behind its check -> `task_review_gate` ->
+`pick` (C3-C5), with the Sealed lists that keep the two reviewers apart.
 """
 
 import json
@@ -872,6 +874,14 @@ def test_record_counts_and_answers(ck, tmp_path):
     ck("a post Iteration counts", "1", cat(T / "post_iterations"))
     ck("a post Iteration spends no cap", "0", cat(T / "iterations"))
 
+    # `review_due` is true exactly when `record` set `reviewing` (C1 step 6): a pass that names
+    # no Task sets nothing, so it is due no review.
+    setup(one_task(), done)
+    rm(T / "current_task.json")
+    pub = go()
+    ck("a pass that names no Task is not due a review", "False", str(pub["review_due"]))
+    ck("and the Task list is left alone", "open", jq(".[0].status", file=T / "tasks.json"))
+
 
 def test_the_task_loop_in_order(ck, tmp_path):
     """The order the edges run, with the real scripts: `pick` -> `task_plan_gate` ->
@@ -1149,8 +1159,8 @@ def check_node(ck, tmp_path, node: str, k: str) -> None:
         ck(f"try {i} counts {want_tries}", want_tries, pub[TRY])
     ck("the third try creates the fallback marker", "present", present(ST / f"{k}.fb"))
 
-    # The wait, when the box can be asked: no pool, no URL or no pair means no wait; a box that
-    # never answers within the 40 polls is the fallback.
+    # The wait, when the box can be asked: no pool, no URL or no pair means no wait at all,
+    # not even one poll; a box that never answers within the 40 polls is the fallback.
     for label, box, health, why in (
         ("no pool", None, "coders-b=http://127.0.0.1:1/h", "retry"),
         ("no health variable", "coders-b", "", "retry"),
@@ -1161,9 +1171,14 @@ def check_node(ck, tmp_path, node: str, k: str) -> None:
             write(T / "box", box + "\n")
         stage_json(node, "w1")
         result(node, "earlier")
-        pub = go(path=tool_path(RP / "bin-ok", curl="#!/bin/sh\necho 200\n",
+        # The stub answers 200, so a wait that happened would end well: only the count says
+        # whether the node asked at all.
+        asked = RP / ("asked-" + label.replace(" ", "-"))
+        pub = go(path=tool_path(RP / "bin-ok",
+                                curl="#!/bin/sh\necho x >> " + str(asked) + "\necho 200\n",
                                 sleep="#!/bin/sh\nexit 0"), env={"FABRO_BOX_HEALTH": health})
         ck(f"{label}: {why}", why, pub[NXT])
+        ck(f"{label}: the box is not asked", "absent", present(asked))
 
     reset()
     write(T / "box", "coders-b\n")
@@ -1315,19 +1330,22 @@ def test_task_review_prep(ck, tmp_path):
     ck("an oversized diff records its reason", "the diff is too large to review",
        jq(".[0].review_note", file=T / "tasks.json"))
 
-    # Every visit clears the last round's inputs, results and check state: a stale file is the
-    # one thing the receipt cannot catch, because the gate reads `served`, not a visit.
+    # Every visit clears the last round's inputs, results, check state and the gate's scratch
+    # (`task_review/gate/` is not Sealed: a killed gate leaves both results' findings there): a
+    # stale file is the one thing the receipt cannot catch, because the gate reads `served`, not
+    # a visit, and the next reviewer must not find the last round in the scratch.
     setup(patches=("001.patch",))
     for path in (IN / "task.json", IN / "plan.json", IN / "delta.patch", IN / "history.md",
                  T / "task_review/out/refute.json", T / "task_review/out/review.json",
                  ST / "refute.served", ST / "refute.fb", ST / "refute.tries",
-                 ST / "review.served", ST / "review.fb", ST / "review.tries"):
+                 ST / "review.served", ST / "review.fb", ST / "review.tries",
+                 T / "task_review/gate/cand.json"):
         write(path, "x\n")
     go()
     for path in (T / "task_review/out/refute.json", T / "task_review/out/review.json",
                  ST / "refute.served", ST / "refute.fb", ST / "refute.tries",
                  ST / "review.served", ST / "review.fb", ST / "review.tries",
-                 IN / "delta.patch", IN / "history.md"):
+                 IN / "delta.patch", IN / "history.md", T / "task_review/gate/cand.json"):
         ck(f"a new round clears {path.name}", "absent", present(path))
 
     # The validated mode and targets of the mechanical gate go with the inputs.
@@ -1365,7 +1383,8 @@ class ReviewCase:
         self.pub: dict = {}
 
     def run(self, refute=None, review=None, served=("box", "box"), reviews=0, task=None,
-            findings=None, answers=None, dropped=None, patches=("001.patch",), plan=None):
+            findings=None, answers=None, dropped=None, patches=("001.patch",), plan=None,
+            recovers=None):
         # What `task_review_prep` clears, and nothing else: the round records, the dropped list
         # and `progress.md` live for the run, which is what makes a later round a later round.
         T = self.T
@@ -1390,6 +1409,9 @@ class ReviewCase:
                           (T / "task_review/state/dropped/t1.json", dropped)):
             if doc is not None:
                 write(path, json.dumps(doc) + "\n")
+        # `pick`'s recovery counter, as a crashed gate's recovery leaves it.
+        if recovers is not None:
+            write(T / "task_review/state/recovers/t1", f"{recovers}\n")
         # The real prep, in its place in the loop: it owns `in/` and it clears `out/`, which is
         # why the reviewers' results are written after it.
         r = sh(self.prep, cwd=self.repo)
@@ -1474,6 +1496,10 @@ def test_the_gate_acceptance_and_edge_cases(ck, tmp_path):
     C.run(refute=refuted(), review=reviewed(acceptance=[
         {"index": 3, "met": False, "evidence": "src/a.txt:1"}]))
     ck("an index outside the acceptance list is ignored", "0", C.pub["task_review_errors"])
+    # Zero is outside it too: the list is 1-based, so an index of 0 names no statement.
+    C.run(refute=refuted(), review=reviewed(acceptance=[
+        {"index": 0, "met": False, "evidence": "src/a.txt:1"}]))
+    ck("index 0 is outside the acceptance list too", "0", C.pub["task_review_errors"])
 
     # An uncovered edge case is a warning: it rides along in a rework but triggers nothing.
     # A warning rides along in the rework the error forces; alone it would pass the Task, and
@@ -1556,6 +1582,31 @@ def test_the_gate_disputes(ck, tmp_path):
         reviews=1, findings=prior, answers=disputed)
     ck("the other reviewer's response does not count", "0", C.pub["task_review_errors"])
 
+    # The other way round: a finding of the review's is answered by the review alone. The
+    # refuter's verdict on it, either way, is not the review's.
+    mine = [a_finding(id="t1v1s1", source="review", kind="spec", file="test/a.txt")]
+    C.run(refute=refuted([], responses=[
+        {"finding_id": "t1v1s1", "verdict": "withdrawn", "new_evidence": ""}]),
+        review=reviewed([], responses=[
+            {"finding_id": "t1v1s1", "verdict": "upheld", "new_evidence": "src/a.txt:2 shows it"}]),
+        reviews=1, findings=mine, answers={"t1v1s1": {"answer": "disputed", "reason": "r",
+                                                          "evidence": "`x`"}})
+    ck("the review upholds its own finding with new evidence", "1", C.pub["task_review_errors"])
+    ck("the upheld finding stays the review's", "review",
+       jq(".[0].source", file=C.T / "task_review/state/findings/t1.json"))
+    ck("with the review's new evidence", "src/a.txt:2 shows it",
+       jq(".[0].evidence", file=C.T / "task_review/state/findings/t1.json"))
+    ck("and it is numbered in the review's series", "t1v2s1",
+       jq(".[0].id", file=C.T / "task_review/state/findings/t1.json"))
+    C.run(refute=refuted([], responses=[
+        {"finding_id": "t1v1s1", "verdict": "upheld", "new_evidence": "src/a.txt:2"}]),
+        review=reviewed([], responses=[
+            {"finding_id": "t1v1s1", "verdict": "withdrawn", "new_evidence": ""}]),
+        reviews=1, findings=mine, answers={"t1v1s1": {"answer": "disputed", "reason": "r",
+                                                          "evidence": "`x`"}})
+    ck("the refuter cannot uphold the review's finding", "0", C.pub["task_review_errors"])
+    ck("and the review's own withdrawal withdraws it", "1", C.pub["task_review_withdrawn"])
+
     # An undisputed finding is not looked up at all, and a coder's `fixed` does not silence the
     # reviewer: the finding it raises again this round stands on its own evidence.
     C.run(refute=refuted([a_finding()], responses=[]), review=reviewed(), reviews=1,
@@ -1583,6 +1634,16 @@ def test_the_gate_repeats(ck, tmp_path):
     C.run(refute=refuted([a_finding(evidence="test/a.txt:2 fails")]), review=reviewed(),
           dropped=[gone])
     ck("a finding with new evidence is not a repeat", "1", C.pub["task_review_errors"])
+
+    # The pair that makes a repeat is the file and the normalized evidence (C5 step 4): the
+    # same evidence against another file is another finding, and the same evidence in another
+    # case and spacing is the same one.
+    C.run(refute=refuted([a_finding(file="test/a.txt")]), review=reviewed(), dropped=[gone])
+    ck("the same evidence on another file is not a repeat", "1", C.pub["task_review_errors"])
+    C.run(refute=refuted([a_finding(evidence="  `MAKE   check` FAILS ")]), review=reviewed(),
+          dropped=[gone])
+    ck("the same evidence in another case and spacing is a repeat", "0", C.pub["task_review_errors"])
+    ck("and so the Task passes", "pass", C.verdict())
 
     # Withdrawn in this round and raised again in the same round's findings: dropped, because
     # the entry the withdrawal added counts as much as one that was already there.
@@ -1692,6 +1753,35 @@ def test_the_gate_state_and_records(ck, tmp_path):
        jq(".[0].class", file=T / "task_review/state/findings/t1.json"))
     ck("every finding carries its source", "refuter",
        jq(".[0].source", file=T / "task_review/state/findings/t1.json"))
+
+    # Survivors are numbered upheld disputes first, then the refuter's, then the review's, in
+    # the order they were raised (C5 step 5), whatever order the gate collected them in: the
+    # upheld one is appended to the candidates after the refuter's new finding.
+    C.run(refute=refuted([a_finding(message="A new one")], responses=[
+        {"finding_id": "t1v1f1", "verdict": "upheld", "new_evidence": "test/a.txt:2 fails"}]),
+        review=reviewed(), reviews=1,
+        findings=[a_finding(id="t1v1f1", source="refuter")],
+        answers={"t1v1f1": {"answer": "disputed", "reason": "r", "evidence": "`x`"}})
+    ck("an upheld dispute is numbered ahead of a new finding", "t1v2f1,t1v2f2",
+       jq("[.[].id] | join(\",\")", file=T / "task_review/state/findings/t1.json"))
+    ck("the first is the upheld one", "test/a.txt:2 fails",
+       jq(".[0].evidence", file=T / "task_review/state/findings/t1.json"))
+    ck("the second is the new one", "`make check` fails",
+       jq(".[1].evidence", file=T / "task_review/state/findings/t1.json"))
+
+    # The recovery counter a crashed gate's recovery left is cleared with the round (C5 step 8).
+    C.run(refute=refuted(), review=reviewed(), recovers=2)
+    ck("the recovery counter is cleared with the round", "absent",
+       present(T / "task_review/state/recovers/t1"))
+
+    # A progress line is one line an error: a message's newline becomes a space, and a warning
+    # stays out of the progress log.
+    C.run(refute=refuted([a_finding(message="Two\nlines"),
+                          a_finding(severity="warning", message="Only a warning")]),
+          review=reviewed())
+    ck("a multi-line message is one progress line", "1",
+       count("^- Two lines$", file=T / "progress.md"))
+    ck("a warning is not in the progress log", "0", count("Only a warning", file=T / "progress.md"))
 
 
 def test_the_task_review_loop_in_order(ck, tmp_path):
@@ -1906,6 +1996,17 @@ def test_pick_recovers_a_review_that_did_not_finish(ck, tmp_path):
        jq(".[0].review_note", file=T / "tasks.json"))
     ck("and the loop takes the next Task", "t2", jq(".id", file=T / "current_task.json"))
 
+    # The last Task of the list is recovered the same way. The recovery skips the scan that
+    # would read "nothing open" as the loop being done (C1 step 3: "go to step 6"), so a Task
+    # left in review never ends the loop unreviewed.
+    rm(T / "task_review/state/recovers/t1")
+    write(T / "tasks.json",
+          task_list(one_task(id="t1", status="reviewing", reviews=1, context="## one\n"),
+                    one_task(id="t2", status="passed")))
+    pub = go()
+    ck("the last Task, left in review, is reviewed", "review", pub["loop"])
+    ck("and it is the Task the recovery names", "t1", jq(".id", file=T / "current_task.json"))
+
     # A conflict leaves the recovery alone: the merge is resolved before any review runs, and
     # `pick` must not spend a recovery on it.
     rm(T / "task_review/state/recovers/t1")
@@ -2011,6 +2112,47 @@ def test_the_task_review_loop_edges(ck):
     ck("the reviewer's check goes on to the gate", "1",
        count("^task_review_check->task_review_gate $", e))
     ck("the gate's only way out is pick", "1", count("^task_review_gate->pick $", e))
+
+
+def test_the_reviewers_sealed_lists(ck):
+    """C3's Sealed lists as the generator embedded them (P5). Neither Task reviewer reads the
+    other's result or the loop's state, and every stage that ran before the loop existed keeps
+    v1's list plus the paths the loop added."""
+    source = json.loads((WF / "_io/manifest.json").read_text())["workflows"]
+    v1 = source["ralph"]["stages"]
+    embedded = next(line[line.index("{"):line.rindex("}") + 1]
+                    for line in (V2 / "workflow.toml").read_text().split("\n")
+                    if line.startswith("FABRO_IO_MANIFEST"))
+    v2 = {name: stage.get("sealed", []) for name, stage in json.loads(embedded)["stages"].items()}
+    for stage in ("task_refute", "task_refute_fb", "task_review", "task_review_fb"):
+        ck(f"the source and the embedded manifest agree on {stage}",
+           source["ralph-v2"]["stages"][stage]["sealed"], v2[stage])
+
+    record = [
+        "/tmp/fabro/task_review/state/", "/tmp/fabro/task_plans/", "/tmp/fabro/task_plan.json",
+        "/tmp/fabro/tasks.json", "/tmp/fabro/current_task.json", "/tmp/fabro/task-context.md",
+        "/tmp/fabro/task-code.md", "/tmp/fabro/progress.md", "/tmp/fabro/iteration.json",
+        "/tmp/fabro/task_list.json", "/tmp/fabro/feedback/", "/tmp/fabro/plan_review/",
+        "/tmp/fabro/local_review/", "/tmp/fabro/review/",
+    ]
+    for stage, other in (("task_refute", "review"), ("task_refute_fb", "review"),
+                         ("task_review", "refute"), ("task_review_fb", "refute")):
+        want = sorted([f"/tmp/fabro/task_review/out/{other}.json", *record])
+        ck(f"{stage}: seals the other reviewer's result and the loop's record", want,
+           sorted(v2[stage]))
+
+    loop = ["/tmp/fabro/task_review/", "/tmp/fabro/task_plans/"]
+    added = {stage: loop for stage in ("iterate_t1", "iterate_t2", "iterate_t3",
+                                        "resolve_merge", "resolve_base", "learn")}
+    added.update({stage: loop + ["/tmp/fabro/task_plan.json"]
+                  for stage in ("standards", "spec", "local_standards", "local_spec")})
+    added["refute"] = loop + ["/tmp/fabro/task_plan.json", "/tmp/fabro/review/standards.json",
+                               "/tmp/fabro/review/spec.json"]
+    for stage, extra in added.items():
+        ck(f"{stage}: v1's list plus the loop's paths", sorted([*v1[stage]["sealed"], *extra]),
+           sorted(v2[stage]))
+    for stage in ("plan", "plan_review"):
+        ck(f"{stage}: v1's list, unchanged", sorted(v1[stage]["sealed"]), sorted(v2[stage]))
 
 
 def test_the_checker_holds_the_task_review_loop(ck, tmp_path):

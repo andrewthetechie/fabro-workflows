@@ -1576,7 +1576,8 @@ R10_V2_COPIES: list[tuple[str, tuple[tuple[str, str], ...]]] = [
 ]
 
 # Nodes `ralph-v2` owns: its script is its own and no row above can compare it. `pick` and
-# `record` rewrite ralph's for the Task loop (C1); task 08 adds the rest.
+# `record` rewrite ralph's for the Task loop (C1). The review loop's eight nodes (task 08) are
+# new, with no ralph node to copy, so they are in neither list: R19 holds them.
 R10_V2_OWN: set[str] = {"pick", "record"}
 
 # Prompt rows: the agent nodes whose prompt file must be ralph's, byte for byte. Two node

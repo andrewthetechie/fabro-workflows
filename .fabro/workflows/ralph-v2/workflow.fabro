@@ -882,13 +882,14 @@ case \"$P\" in '' | *[!0-9]*) P=0 ;; esac
 echo $P > /tmp/fabro/task_index
 jq -nc --argjson p \"$PASSED\" --argjson d \"$RD\" '{context_updates:{iteration_passed:$p,review_due:$d}}'"]
 
-    // C3: the two reviewers' inputs for this round. Every visit clears `in/`, `out/` and the
-    // two check nodes' state, so an earlier round's result can never be read as this one's, then
-    // concatenates the Task's patches into `task.patch` and, from the second review on, only the
-    // patches numbered above `state/patches/<id>/reviewed` into `delta.patch`. No patch, or one
-    // over 2,000,000 bytes, passes the Task with the reason in `review_note`: there is nothing
-    // for a reviewer to read. It always exits 0, and `task_review_go=false` sends the run back
-    // to `pick`.
+    // C3: the two reviewers' inputs for this round. Every visit clears `in/`, `out/`, the
+    // two check nodes' state and the gate's scratch directory (`task_review/gate/`, which is
+    // not Sealed: a killed gate leaves both results' findings in it), so an earlier round's
+    // result can never be read as this one's. It then concatenates the Task's patches into
+    // `task.patch` and, from the second review on, only the patches numbered above
+    // `state/patches/<id>/reviewed` into `delta.patch`. No patch, or one over 2,000,000 bytes,
+    // passes the Task with the reason in `review_note`: there is nothing for a reviewer to
+    // read. It always exits 0, and `task_review_go=false` sends the run back to `pick`.
     task_review_prep [label="Prepare the Task review", shape=parallelogram, timeout="2m", output_schema="routing",
         script="F=/tmp/fabro
 IN=$F/task_review/in
@@ -897,6 +898,7 @@ SD=$F/task_review/state
 TASK=$F/current_task.json
 ID=$(jq -r '.id // empty' $TASK 2>/dev/null)
 mkdir -p $IN $OUT $SD $SD/patches $SD/answers $SD/findings $SD/recovers $SD/rounds
+rm -rf $F/task_review/gate
 rm -f $IN/* $OUT/* $SD/refute.served $SD/refute.fb $SD/refute.tries $SD/review.served $SD/review.fb $SD/review.tries
 REV=0
 if [ -n \"$ID\" ] && [ -s $F/tasks.json ]; then
@@ -1140,7 +1142,9 @@ jq -nc --arg n \"$NEXT\" --argjson t \"$TRIES\" '{context_updates:{task_review_n
     // `missed`, which passes it with a note rather than silently (E13). The survivors go to
     // `state/findings/`, which `pick` renders for the rework Iteration, and the whole round to
     // `state/rounds/`. No edge reads its keys: a crash leaves the Task `reviewing` and the
-    // unconditional edge to `pick` recovers it (C1 step 3).
+    // unconditional edge to `pick` recovers it (C1 step 3). The scratch under `task_review/gate/`
+    // is not Sealed and holds both results only while the gate runs: `task_review_prep` removes
+    // what a killed visit left, before any reviewer runs again.
     task_review_gate [label="Decide the Task review", shape=parallelogram, timeout="2m", output_schema="routing",
         script="F=/tmp/fabro
 ST=$F/task_review/state
