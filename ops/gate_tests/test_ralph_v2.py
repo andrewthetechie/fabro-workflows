@@ -2494,8 +2494,10 @@ def test_the_issue_level_order_edges(ck):
     ck("the graph has edges to check", "true", str(bool(e)).lower())
     for node, block in C7_EDGES.items():
         ck(f"{node}'s edges are C7's, exactly", block, out_edges(e, node))
+    # A substring count: an edge line is `from->to <condition>`, so an exact-line match
+    # (`-x`) needs that condition spelled out, and under `-F` a caret is a literal character.
     ck("no edge goes from refute_gate back to review_prep", "0",
-       count("^refute_gate->review_prep", e, flags="xF"))
+       count("refute_gate->review_prep", e, flags="F"))
 
 
 def test_review_prep_asks_about_an_exhausted_loop_first(ck, tmp_path):
@@ -2566,11 +2568,37 @@ def test_review_prep_asks_about_an_exhausted_loop_first(ck, tmp_path):
        present(T / "review/standards.json") + "|" + present(T / "review/spec.json"))
 
 
+def holds(condition: str, ctx: dict) -> bool:
+    """Whether one edge condition holds in the keys the node before it published, as fabro
+    reads them: clauses joined by `&&`, each `key=value`. `outcome=` reads `succeeded`, the
+    only outcome the walk continues past, and a JSON boolean is spelled `true` or `false`."""
+    for clause in condition.split("&&"):
+        key, _, want = clause.strip().partition("=")
+        if key == "outcome":
+            if want != "succeeded":
+                return False
+            continue
+        got = ctx.get(key.removeprefix("context."), "")
+        if isinstance(got, bool):
+            got = "true" if got else "false"
+        if str(got) != want:
+            return False
+    return True
+
+
+def routed(e: str, node: str, ctx: dict) -> str:
+    """Where the graph sends `node` next: among its out-edges in file order, the first whose
+    condition holds in `ctx`, else its unconditional edge."""
+    mine = [line[len(node) + 2:].split(" ", 1)
+            for line in e.split("\n") if line.startswith(node + "->")]
+    return next((to for to, cond in mine if cond and holds(cond, ctx)),
+                next(to for to, cond in mine if not cond))
+
+
 class IssueRound:
-    """A throwaway repository and ralph-v2's issue-level round, in the order the edges run it:
-    `review_prep` -> the hosted reviewers -> `refute_prep` -> the Refuter -> `refute_gate` ->
-    `review_gate`. The reviewers are fixtures at their own receipts; every command node is
-    real."""
+    """A throwaway repository and ralph-v2's issue-level round, run as the graph routes it.
+    The reviewers are fixtures at their own receipts; every command node is the real script,
+    and it is the edges that say which comes next."""
 
     def __init__(self, ck, tmp_path):
         self.ck = ck
@@ -2594,18 +2622,37 @@ class IssueRound:
         no_braces(self.ck, node, r.out)
         return json.loads(lastjson(r.out))["context_updates"]
 
-    def reviews(self, *errors):
-        """The hosted reviewers' results, each at its own visit: an `error` on each axis given."""
-        for axis in ("standards", "spec"):
-            findings = ([{"id": axis[:3].upper() + "-001", "severity": "error",
-                          "message": f"the {axis} review found this", "files": ["src/a.txt"]}]
-                        if axis in errors else [])
-            write(self.T / f"review/{axis}.json", json.dumps({
-                "decision": "findings" if findings else "approve", "summary": "s",
-                "findings": findings, "_io": {"stage": axis, "visit": "hosted-" + axis}}) + "\n")
+    def walk(self, start, agents):
+        """Run the round as the graph routes it: from `start` until its edges leave the round
+        for a node that is neither a command node of the round nor an agent stage (`pick`,
+        `open_pr` or `stop_reason`). `agents` maps an agent stage to a fixture that writes its
+        result. Returns the nodes in the order visited and each command node's published keys;
+        an agent publishes none, so the node before it still decides its edges."""
+        order, pub, node, ctx = [], {}, start, {}
+        for _ in range(24):
+            node = routed(edges(RAPH2), node, ctx)
+            order.append(node)
+            if node in agents:
+                agents[node]()
+            elif node in self.nodes:
+                ctx = pub[node] = self.run(node)
+            else:
+                return order, pub
+        self.ck.fail("the walk never left the issue-level round", ",".join(order))
+        return order, pub
+
+    def review(self, axis, error=False):
+        """The hosted `axis` reviewer's result at its own visit: one `error`, or none."""
+        findings = ([{"id": axis[:3].upper() + "-001", "severity": "error",
+                      "message": f"the {axis} review found this", "files": ["src/a.txt"]}]
+                    if error else [])
+        write(self.T / f"review/{axis}.json", json.dumps({
+            "decision": "findings" if findings else "approve", "summary": "s",
+            "findings": findings, "_io": {"stage": axis, "visit": "hosted-" + axis}}) + "\n")
 
     def refuter(self, verdict):
         """The Refuter's result at the visit the server stamped for this stage."""
+        mkreadok(self.T, "r" + cat(self.T / "refute_visits"))
         write(self.T / "review/refute.json", json.dumps({
             "summary": "checked",
             "criteria": [{"criterion": "the work is done",
@@ -2615,30 +2662,42 @@ class IssueRound:
         set_visit(self.T / "review/refute.json",
                   jq(".visit", file=self.T / ".io/stage.json"))
 
-    def round(self, visits, refuter, *errors):
-        """One whole round. `refute_visits` is set to `visits - 1`, and `refute_prep` counts the
-        visit that makes it `visits`, as it does in a run."""
+    def fixtures(self, verdict, *errors):
+        """The round's three agent stages as fixtures: the Refuter's verdict, and a review
+        `error` on each axis named."""
+        return {"standards": lambda: self.review("standards", "standards" in errors),
+                "spec": lambda: self.review("spec", "spec" in errors),
+                "refute": lambda: self.refuter(verdict)}
+
+    def start(self, visits):
+        """What a run brings to its Refute round `visits`: the rounds already spent, and no
+        extra pass, exhaustion or Refuter route left over."""
         write(self.T / "refute_visits", f"{visits - 1}\n")
         rm(self.T / "loop_exhausted", self.T / "review_extra", self.T / "review_rerun",
            self.T / "review/refute_route")
-        rp = self.run("review_prep")
-        self.reviews(*errors)
-        mkreadok(self.T, f"r{visits}")
-        prep = self.run("refute_prep")
-        self.refuter(refuter)
-        return rp, prep, self.run("refute_gate"), self.run("review_gate")
+
+
+# The order E14's edges give a round: the hosted reviews, then the Refuter, then both gates.
+THE_ROUND = "review_prep,standards,spec,refute_prep,refute,refute_gate,review_gate"
 
 
 def test_the_issue_level_round_in_order(ck, tmp_path):
-    """E14 and C7, with the real scripts in the order the edges run them: one round's review
-    errors and Refuter findings become Tasks together, the one extra pass skips the Refuter and
-    keeps its route, and a Refuter `hold` with the rounds spent opens the PR as needs_human."""
+    """E14 and C7, with the real scripts run as the graph routes them: one round's review
+    errors and Refuter findings become Tasks together, the one extra pass skips the Refuter
+    and keeps its route, and a Refuter `hold` with the rounds spent opens the PR as
+    needs_human. The order is read from the edges at every step, so a graph that routes the
+    round any other way fails here too, and not only in the edge test above."""
     R = IssueRound(ck, tmp_path)
     T = R.T
 
     # 1. The first round: the Refuter's not_met and both reviews' errors are Tasks together.
     write(T / "tasks.json", "[]\n")
-    rp, prep, gate, out = R.round(1, "fail", "standards", "spec")
+    R.start(1)
+    order, pub = R.walk("local_review_gate", R.fixtures("fail", "standards", "spec"))
+    ck("round 1: the reviews, the Refuter, both gates, back to pick",
+       THE_ROUND + ",pick", ",".join(order))
+    rp, prep, gate, out = (pub[n] for n in ("review_prep", "refute_prep", "refute_gate",
+                                            "review_gate"))
     ck("round 1: the reviews run first", "True|True",
        f'{rp["review_run_standards"]}|{rp["review_run_spec"]}')
     ck("round 1: the Refuter runs in the same round", "False", str(prep["refute_skip"]))
@@ -2650,29 +2709,36 @@ def test_the_issue_level_round_in_order(ck, tmp_path):
 
     # 2. A Refuter pass with review errors, first round: the errors still become Tasks.
     write(T / "tasks.json", "[]\n")
-    _, _, gate, out = R.round(1, "pass", "spec")
+    R.start(1)
+    order, pub = R.walk("local_review_gate", R.fixtures("pass", "spec"))
+    ck("refuter pass: the same round, back to pick", THE_ROUND + ",pick", ",".join(order))
+    gate, out = pub["refute_gate"], pub["review_gate"]
     ck("refuter pass: the route is pass", "pass", gate["refute_route"])
     ck("refuter pass + errors: they become Tasks", "tasks", out["review_route"])
     ck("refuter pass: no extra pass is asked for", "absent", present(T / "review_extra"))
 
     # 3. Round 3: the same pass with the Refute rounds spent is THE EXTRA PASS.
     write(T / "tasks.json", "[]\n")
-    _, _, gate, out = R.round(3, "pass", "spec")
+    R.start(3)
+    order, pub = R.walk("local_review_gate", R.fixtures("pass", "spec"))
+    ck("round 3: the same round once more", THE_ROUND + ",pick", ",".join(order))
+    gate, out = pub["refute_gate"], pub["review_gate"]
     ck("round 3: the Refuter passed", "pass", gate["refute_route"])
     ck("round 3: its errors are Tasks once more", "tasks", out["review_route"])
     ck("round 3: the extra pass is pending", "pending", cat(T / "review_extra"))
     ck("round 3: only the axis that blocked re-runs", "spec", cat(T / "review_rerun"))
     ck("round 3: its Task id is the extra pass's", "rvxp1",
        jq('map(.id) | join(",")', file=T / "tasks.json"))
-    rp = R.run("review_prep")
+    # The extra pass itself: spec alone, no Refuter, and the PR opens.
+    order, pub = R.walk("local_review_gate", R.fixtures("pass"))
+    ck("the extra pass: spec re-runs, the Refuter is skipped, and the PR opens",
+       "review_prep,spec,refute_prep,review_gate,open_pr", ",".join(order))
+    rp, prep, out = pub["review_prep"], pub["refute_prep"], pub["review_gate"]
     ck("the extra pass: standards is kept and spec re-runs", "False|True",
        f'{rp["review_run_standards"]}|{rp["review_run_spec"]}')
-    R.reviews()
-    prep = R.run("refute_prep")
     ck("the extra pass: the Refuter is skipped", "True", str(prep["refute_skip"]))
     ck("the extra pass: no Refute round is spent", "3", cat(T / "refute_visits"))
     ck("the extra pass: the last round's route survives", "pass", cat(T / "refute_route"))
-    out = R.run("review_gate")
     ck("the extra pass: the run goes on to the PR", "pass", out["review_route"])
     ck("the extra pass is spent", "done", cat(T / "review_extra"))
     ck("the extra pass cleared: nothing left to fix", "no_changes_needed",
@@ -2680,7 +2746,11 @@ def test_the_issue_level_round_in_order(ck, tmp_path):
 
     # 4. A Refuter hold with the rounds spent: no Task, and `review_gate` opens the PR.
     write(T / "tasks.json", "[]\n")
-    _, _, gate, out = R.round(3, "fail", "standards")
+    R.start(3)
+    order, pub = R.walk("local_review_gate", R.fixtures("fail", "standards"))
+    ck("a Refuter hold: the whole round, and the PR opens", THE_ROUND + ",open_pr",
+       ",".join(order))
+    gate, out = pub["refute_gate"], pub["review_gate"]
     ck("a Refuter hold is the route", "hold", gate["refute_route"])
     ck("a hold with the rounds spent makes no Task", "0",
        jq("length", file=T / "tasks.json", raw=False))
