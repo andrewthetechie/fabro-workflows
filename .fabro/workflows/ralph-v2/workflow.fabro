@@ -1145,6 +1145,11 @@ jq -nc --arg n \"$NEXT\" --argjson t \"$TRIES\" '{context_updates:{task_review_n
     // unconditional edge to `pick` recovers it (C1 step 3). The scratch under `task_review/gate/`
     // is not Sealed and holds both results only while the gate runs: `task_review_prep` removes
     // what a killed visit left, before any reviewer runs again.
+    //
+    // The round is read as computed only from five non-empty array files. Size first, because
+    // `jq -e` alone cannot say it: jq 1.6, the images' jq, exits 0 for `-e` when it produced no
+    // output at all, and a filter that died leaves an empty file. On that the gate must stop
+    // (C5 step 9), never pass a Task it could not judge.
     task_review_gate [label="Decide the Task review", shape=parallelogram, timeout="2m", output_schema="routing",
         script="F=/tmp/fabro
 ST=$F/task_review/state
@@ -1289,7 +1294,7 @@ case \"$NREP\" in '' | *[!0-9]*) NREP=0 ;; esac
 jq -c --arg id \"$ID\" --argjson n \"$N\" 'to_entries | sort_by([(if .value.dispute == true then 0 elif .value.source == \"refuter\" then 1 else 2 end), .key]) | map(.value) | reduce .[] as $c ({out: [], k: {f: 0, s: 0}}; (($c | if .source == \"refuter\" then \"f\" else \"s\" end)) as $l | .k[$l] = ((.k[$l] // 0) + 1) | .out += [$c + {id: ($id + \"v\" + ($n | tostring) + $l + (.k[$l] | tostring))}]) | .out' $G/surv.json > $G/survivors.json 2>/dev/null
 BADARR=''
 for X in $G/cand.json $G/surv.json $G/survivors.json $G/adddrop.json $G/bad.json; do
-  if ! jq -e 'type == \"array\"' $X >/dev/null 2>&1; then BADARR=$X; fi
+  if ! [ -s $X ] || ! jq -e 'type == \"array\"' $X >/dev/null 2>&1; then BADARR=$X; fi
 done
 if [ -n \"$BADARR\" ]; then
   rm -rf $G

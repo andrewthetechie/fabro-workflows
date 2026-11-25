@@ -1243,12 +1243,13 @@ def test_task_review_prep(ck, tmp_path):
     ST = T / "task_review/state"
     PD = ST / "patches/t1"
 
-    def setup(reviews=0, patches=(), reviewed=None, findings=None, answers=None, task=None):
+    def setup(reviews=0, patches=(), reviewed=None, findings=None, answers=None, task=None,
+              plan=None):
         rm(T / "task_review", T / "progress.md", T / "task_check.json")
         write(T / "current_task.json", json.dumps(dict(REVIEW_TASK, **(task or {}))) + "\n")
         write(T / "tasks.json",
               task_list(dict(REVIEW_TASK, status="reviewing", reviews=reviews, **(task or {}))))
-        write(T / "task_plans/t1.json", json.dumps(REVIEW_PLAN) + "\n")
+        write(T / "task_plans/t1.json", json.dumps(plan or REVIEW_PLAN) + "\n")
         PD.mkdir(parents=True, exist_ok=True)
         for name in patches:
             write(PD / name, "PATCH " + name + "\n")
@@ -1280,17 +1281,32 @@ def test_task_review_prep(ck, tmp_path):
        "bug_class,edge_cases,goals,risks", jq("keys | sort | join(\",\")", file=IN / "plan.json"))
     ck("plan.json's goals keep their id, goal, covers and check", "id,goal,covers,check",
        jq(".goals[0] | keys_unsorted | join(\",\")", file=IN / "plan.json"))
+    ck("task.json is the Task's own title, body and source, as written", "A|do it|plan",
+       jq("[.title, .body, .source] | join(\"|\")", file=IN / "task.json"))
+    ck("plan.json carries the plan's edge case whole", "e1|an empty input|no crash|1",
+       jq(".edge_cases[0] | [.id, .case, .expected, (.covers | tostring)] | join(\"|\")",
+          file=IN / "plan.json"))
     ck("check.json says the mechanical gate passed, in full mode, with no target", "true,full,0",
        jq("(.passed | tostring) + \",\" + .mode + \",\" + ((.targets | length) | tostring)",
           file=IN / "check.json"))
     ck("the first review has no delta", "absent", present(IN / "delta.patch"))
     ck("the first review has no history", "absent", present(IN / "history.md"))
 
+    # A fix Task's plan: the class of the bug and the risks reach the reviewers with the goals.
+    setup(patches=("001.patch",),
+          plan=dict(REVIEW_PLAN, bug_class="a handler that trusts its argument",
+                    risks=["the empty list", "a zero count"]))
+    go()
+    ck("plan.json carries the class of the bug", "a handler that trusts its argument",
+       jq(".bug_class", file=IN / "plan.json"))
+    ck("plan.json carries the plan's risks", "the empty list,a zero count",
+       jq(".risks | join(\",\")", file=IN / "plan.json"))
+
     # The second review: only the patches above `reviewed` are the delta, and the earlier
     # findings become the history the coder's answers are written into.
     setup(reviews=1, patches=("001.patch", "002.patch", "003.patch"), reviewed="1",
           findings=[a_finding(id="t1v1f1", source="refuter"),
-                    a_finding(id="t1v1f2", source="refuter", severity="warning"),
+                    a_finding(id="t1v1f2", source="refuter", severity="warning", line=None),
                     a_finding(id="t1v1s1", source="review", kind="spec", file="test/a.txt")],
           answers={"t1v1f1": {"answer": "fixed"},
                    "t1v1f2": {"answer": "disputed", "reason": "the check covers it",
@@ -1303,6 +1319,14 @@ def test_task_review_prep(ck, tmp_path):
     ck("history.md lists every earlier finding", "3", count("^- t1v1", file=IN / "history.md"))
     ck("history.md names the source of each finding", "1",
        count("^- t1v1s1 (error, spec, review) test/a.txt:", file=IN / "history.md"))
+    # The line is C3's own: `- <id> (<severity>, <kind>, <source>) <file>[:<line>]: <message>`,
+    # and a finding with no line names its file and goes straight to the message.
+    ck("a finding with a line cites it", "1",
+       count(r"^- t1v1f1 (error, defect, refuter) src/a\.txt:1: "
+            "An empty input reaches the handler$", file=IN / "history.md"))
+    ck("a finding with no line names its file only", "1",
+       count(r"^- t1v1f2 (warning, defect, refuter) src/a\.txt: "
+            "An empty input reaches the handler$", file=IN / "history.md"))
     ck("a fixed finding says fixed", "1", count("^  Coder: fixed$", file=IN / "history.md"))
     ck("a dispute keeps its reason and evidence", "1",
        count(r"^  Coder: \*\*disputed\*\*: the check covers it Evidence: test/a\.txt:2$",
@@ -1431,6 +1455,11 @@ class ReviewCase:
         self.pub = json.loads(lastjson(r.out))["context_updates"]
         self.ck("gate: its thirteen keys on every path", GATE_KEYS,
                 ",".join(sorted(self.pub)))
+        # Both results' findings are in the scratch only while the gate runs, and no Sealed
+        # list covers it: a gate that ends takes it with it (the next `task_review_prep`
+        # removes what a killed one leaves).
+        self.ck("gate: its scratch is gone when it ends", "absent",
+                present(T / "task_review/gate"))
         return self.pub
 
     def findings(self):
@@ -1537,6 +1566,7 @@ def test_the_gate_disputes(ck, tmp_path):
           findings=prior, answers=disputed)
     ck("a withdrawn dispute drops the finding", "0", C.pub["task_review_errors"])
     ck("a withdrawn dispute is counted", "1", C.pub["task_review_withdrawn"])
+    ck("a dispute is counted as disputed", "1", C.pub["task_review_disputed"])
     ck("a withdrawn dispute is recorded", "src/a.txt", jq(".[0].file", file=C.T / "task_review/state/dropped/t1.json"))
     ck("the recorded evidence is normalized", "`make check` fails",
        jq(".[0].evidence_norm", file=C.T / "task_review/state/dropped/t1.json"))
@@ -1623,6 +1653,7 @@ def test_the_gate_repeats(ck, tmp_path):
             "message": "An empty input reaches the handler"}
     C.run(refute=refuted([a_finding()]), review=reviewed(), dropped=[gone])
     ck("a repeat of a dropped finding is dropped", "0", C.pub["task_review_errors"])
+    ck("and it is counted as dropped", "1", C.pub["task_review_dropped"])
     ck("and it passes the Task", "pass", C.verdict())
 
     # The same in a later round: the dropped list lives for the run.
@@ -1686,6 +1717,27 @@ def test_the_gate_verdicts(ck, tmp_path):
     ck("a missing served file is a miss", "missed", C.verdict())
     ck("and it is published as missed", "missed", C.pub["task_review_refute_served"])
 
+    # Only `box` and `fallback` are a result (C5): any other word in a `served` file is the
+    # check node's crash, read as a miss and published as one.
+    C.run(refute=refuted([a_finding()]), review=reviewed(), served=("box", "never"))
+    ck("another word in a served file is a miss", "missed", C.pub["task_review_review_served"])
+    ck("and the refuter's own error still reworks", "rework", C.verdict())
+    C.run(refute=refuted([a_finding()]), review=reviewed(), served=("never", "box"))
+    ck("on the refuter's side too", "missed", C.pub["task_review_refute_served"])
+    ck("and a result file nobody served is not read", "pass", C.verdict())
+
+    # A missed reviewer's result file counts for nothing, whatever it holds: the refuter's
+    # findings and edge cases, the review's unmet statements.
+    C.run(refute=refuted([a_finding()], edge_cases=[
+        {"id": "e1", "covered": False, "evidence": "no test of the empty input"}]),
+        review=reviewed(), served=("missed", "box"))
+    ck("a missed refuter's findings are not read", "0", C.pub["task_review_errors"])
+    ck("nor its edge cases", "0", C.pub["task_review_warnings"])
+    ck("so the Task passes", "pass", C.verdict())
+    C.run(refute=refuted(), review=reviewed(acceptance=[
+        {"index": 1, "met": False, "evidence": "src/a.txt:1"}]), served=("box", "missed"))
+    ck("a missed review's unmet statements are not read", "0", C.pub["task_review_errors"])
+
     # One miss is not a miss: the other reviewer's findings still decide the round.
     C.run(refute=refuted([a_finding()]), review=reviewed(), served=("box", "missed"))
     ck("one missed reviewer leaves the other's findings", "rework", C.verdict())
@@ -1715,6 +1767,11 @@ def test_the_gate_state_and_records(ck, tmp_path):
           patches=("001.patch", "002.patch"))
     ck("ids are numbered per source and round", "t1v1f1,t1v1f2,t1v1s1",
        jq("[.[].id] | join(\",\")", file=T / "task_review/state/findings/t1.json"))
+    # A survivor is the whole finding with its id (C5 step 5): the line and the kind `pick`'s
+    # dossier heading is built from.
+    ck("each survivor keeps its line and kind", "1|defect,1|defect,1|spec",
+       jq("[.[] | ((.line | tostring) + \"|\" + .kind)] | join(\",\")",
+          file=T / "task_review/state/findings/t1.json"))
     ck("the patch count is what the next delta reads", "2",
        cat(T / "task_review/state/patches/t1/reviewed"))
     ck("the answers are read and deleted", "absent",
@@ -1876,6 +1933,9 @@ def test_the_task_review_loop_in_order(ck, tmp_path):
                                                      file=T / "task-context.md"))
     ck("the dossier names the evidence", "1", count("Evidence: `make check` fails",
                                                    file=T / "task-context.md"))
+    # The heading is C2's, built from what the gate kept: severity, kind, file and line.
+    ck("the dossier heading names severity, kind, file and line", "1",
+       count("^### t1v1f1: error, defect, src/a.txt:1$", file=T / "task-context.md"))
     work("t1 rework", "i2", disputes=[{"finding_id": "t1v1f1", "reason": "the test covers it",
                                        "evidence": "test/a.txt:2"}])
     iteration()
@@ -1983,6 +2043,7 @@ def test_pick_recovers_a_review_that_did_not_finish(ck, tmp_path):
         pub = go()
         ck(f"recovery {attempt} runs the review", "review", pub["loop"])
         ck(f"recovery {attempt} names no step", "none", pub["task_step"])
+        ck(f"recovery {attempt} is rung 0", "0", pub["rung"])
         ck(f"recovery {attempt} counts", str(attempt),
            cat(T / "task_review/state/recovers/t1"))
         ck(f"recovery {attempt} names the reviewing Task", "t1",
@@ -2073,6 +2134,117 @@ def test_a_post_iteration_is_never_reviewed(ck, tmp_path):
         pub = json.loads(lastjson(r.out))["context_updates"]
         ck(f"a {source} Task in phase pre is never reviewed", "False", str(pub["review_due"]))
         ck(f"a {source} Task passes outright", "passed", jq(".[0].status", file=T / "tasks.json"))
+
+
+def test_a_crashed_gate_publishes_nothing_and_pick_recovers(ck, tmp_path):
+    """C5 step 9: a gate that cannot compute its round exits non-zero, publishes nothing,
+    removes its scratch and leaves the Task `reviewing`, its review count where it was.
+
+    The crash is a real one: a `jq` that dies on the call the survivors come from, which
+    leaves an empty file behind. The wrapper answers `-e` on an empty file as jq 1.6, the
+    profile images' jq, does (exit 0; 1.7 and later exit 4), because that is the answer the
+    gate must not trust. `pick` then recovers the Task (C1 step 3) and the round completes."""
+    RP = tmp_path / "crash08"
+    T = RP / "sb"
+    T.mkdir(parents=True)
+    repo, origin = RP / "repo", RP / "origin.git"
+    base_repo(origin, repo)
+    nodes = {n: stage(ck, n, T, graph=RAPH2, label=n)
+             for n in ("pick", "task_review_prep", "task_review_gate")}
+    write(T / "phase", "pre\n")
+    write(T / "iterations", "0\n")
+    write(T / "current_task.json",
+          json.dumps(dict(REVIEW_TASK, status="reviewing", reviews=1)) + "\n")
+    write(T / "tasks.json", task_list(dict(REVIEW_TASK, status="reviewing", reviews=1,
+                                           iterations=2, misses=1)))
+    write(T / "task_plans/t1.json", json.dumps(REVIEW_PLAN) + "\n")
+    for name in ("001.patch", "002.patch"):
+        write(T / f"task_review/state/patches/t1/{name}", "diff\n")
+    write(T / "task_review/state/patches/t1/reviewed", "1\n")
+    write(T / "task_review/state/findings/t1.json",
+          json.dumps([a_finding(id="t1v1f1", source="refuter")]) + "\n")
+    write(T / "task_review/state/answers/t1.json",
+          json.dumps({"t1v1f1": {"answer": "fixed"}}) + "\n")
+    write(T / "progress.md", "## Iteration 1: t1 awaiting review (rung 1)\n")
+    for key in ("refute", "review"):
+        write(T / f"task_review/state/{key}.served", "box\n")
+    write(T / "task_review/out/refute.json", json.dumps(refuted([a_finding()])) + "\n")
+    write(T / "task_review/out/review.json", json.dumps(reviewed()) + "\n")
+
+    # Every call is the real jq but the survivors filter, which exits as a killed process
+    # would. (`tool_path` stubs through a symlink, which here would overwrite the real jq.)
+    bin_ = RP / "bin"
+    bin_.mkdir()
+    for name in ("sh", "cat", "mkdir", "rm", "cp", "ls", "wc", "tr", "cut", "grep",
+                 "sed", "sort", "head"):
+        src = shutil.which(name, path=ORIG_PATH)
+        if src:
+            (bin_ / name).symlink_to(src)
+    real_jq = shutil.which("jq", path=ORIG_PATH)
+    stub(bin_, "jq", "#!/bin/sh\ncase \" $* \" in\n  *'--slurpfile b '*) exit 137 ;;\nesac\n"
+         "if [ \"$1\" = -e ] && [ -f \"$3\" ] && [ ! -s \"$3\" ]; then exit 0; fi\n"
+         "exec " + real_jq + " \"$@\"\n")
+
+    r = sh(nodes["task_review_gate"], cwd=repo, path=str(bin_))
+    ck("a crashed gate exits non-zero", "true", str(r.rc != 0).lower())
+    ck("a crashed gate publishes nothing", "0", count("[{}]", r.out, pipe=True))
+    ck("a crashed gate says why", "1", count("could not be computed", r.out, flags="F"))
+    ck("the Task stays in review", "reviewing", jq(".[0].status", file=T / "tasks.json"))
+    ck("its review count is where it was", "1", jq(".[0].reviews", file=T / "tasks.json"))
+    ck("no round is recorded", "absent", present(T / "task_review/state/rounds/t1-2.json"))
+    ck("the progress log is not appended", "1", count("^## ", file=T / "progress.md"))
+    ck("the answers are still there for the recovered round", "present",
+       present(T / "task_review/state/answers/t1.json"))
+    ck("a crashed gate takes its scratch with it", "absent", present(T / "task_review/gate"))
+
+    # `pick` recovers it, and the recovered round runs to its end with the real jq.
+    r = sh(nodes["pick"], cwd=repo)
+    ck("pick: exits 0 (after the crash)", "0", r.rc)
+    pub = json.loads(lastjson(r.out))["context_updates"]
+    ck("pick runs the review again", "review", pub["loop"])
+    ck("and counts the crash", "1", cat(T / "task_review/state/recovers/t1"))
+    r = sh(nodes["task_review_prep"], cwd=repo)
+    ck("the recovered round has a diff to review", "True",
+       str(json.loads(lastjson(r.out))["context_updates"]["task_review_go"]))
+    for key in ("refute", "review"):
+        write(T / f"task_review/state/{key}.served", "box\n")
+    write(T / "task_review/out/refute.json", json.dumps(refuted()) + "\n")
+    write(T / "task_review/out/review.json", json.dumps(reviewed()) + "\n")
+    r = sh(nodes["task_review_gate"], cwd=repo)
+    ck("the recovered round completes", "0", r.rc)
+    pub = json.loads(lastjson(r.out))["context_updates"]
+    ck("with a clean verdict", "pass", pub["task_review_verdict"])
+    ck("numbered as the round it is", "2", pub["task_review_round"])
+    ck("the Task is passed", "passed", jq(".[0].status", file=T / "tasks.json"))
+    ck("and the crash counter is cleared", "absent", present(T / "task_review/state/recovers/t1"))
+
+
+def test_the_review_nodes_carry_the_plan_s_attributes(ck):
+    """*New nodes* (00): the class, timeout, retry count and prompt the plan gives each of
+    the eight nodes, and `routing` on the four command nodes. R19 holds the retry half and
+    the twin's hosted class; nothing else stops a timeout or a prompt from drifting, and the
+    manifest generator never compares a node's prompt with its stage's."""
+    def decl(node):
+        prefix = f"    {node} ["
+        return next((line for line in RAPH2.read_text().split("\n") if line.startswith(prefix)), "")
+
+    def from_class(line):
+        return line[line.index("class="):].rstrip("]") if "class=" in line else line
+
+    for stage, cls, timeout in (("task_refute", "task-refute", "30m"),
+                                ("task_review", "task-review", "40m")):
+        prompt = f'prompt="@prompts/{stage}.md.j2"'
+        ck(f"{stage}: the plan's class, timeout, one try and prompt",
+           f'class="{cls}", timeout="{timeout}", max_retries=0, {prompt}', from_class(decl(stage)))
+        ck(f"{stage}_fb: hosted, one session, the box stage's own prompt",
+           f'class="review-fallback", timeout="25m", max_retries=0, {prompt}',
+           from_class(decl(f"{stage}_fb")))
+    for node, timeout in (("task_refute_check", "15m"), ("task_review_check", "15m"),
+                          ("task_review_prep", "2m"), ("task_review_gate", "2m")):
+        d = decl(node)
+        ck(f"{node}: a routing command node timed at {timeout}", "true",
+           str('shape=parallelogram' in d and f'timeout="{timeout}"' in d
+               and 'output_schema="routing"' in d and "prompt=" not in d).lower())
 
 
 def test_the_task_review_loop_edges(ck):
