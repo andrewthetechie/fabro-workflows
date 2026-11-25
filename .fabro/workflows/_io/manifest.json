@@ -3130,6 +3130,60 @@
             "schema": "plan_review"
           },
           "box": true
+        },
+        "task_plan": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph-v2/prompts/task_plan.md.j2",
+          "inputs": [
+            {
+              "name": "current_task.json",
+              "path": "/tmp/fabro/current_task.json",
+              "required": true,
+              "about": "The Task to plan."
+            },
+            {
+              "name": "task-context.md",
+              "path": "/tmp/fabro/task-context.md",
+              "required": true,
+              "about": "The issue planner's dossier for this Task."
+            },
+            {
+              "name": "issue.json",
+              "path": "/tmp/fabro/issue.json",
+              "required": true,
+              "about": "The parent issue."
+            },
+            {
+              "name": "progress.md",
+              "path": "/tmp/fabro/progress.md",
+              "required": false,
+              "about": "What earlier Iterations of this run did.",
+              "absent": "No Iteration has run yet."
+            },
+            {
+              "name": "error.txt",
+              "path": "/tmp/fabro/task_plan_error.txt",
+              "required": false,
+              "about": "Why the gate rejected the previous plan.",
+              "absent": "This is the first plan for this Task; nothing was rejected."
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/plan_review/",
+            "/tmp/fabro/local_review/",
+            "/tmp/fabro/review/"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/task_plan.json",
+            "schema": "task_plan"
+          },
+          "box": true
         }
       }
     },

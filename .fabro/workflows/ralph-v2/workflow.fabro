@@ -113,10 +113,17 @@ else
 fi
 rm -f /tmp/fabro/background.raw"]
 
-    // copy: ralph.prep
+    // copy: ralph.prep, plus the Task loop's directories, its plan files and the rework
+    // counter (C1): `task_plans/` holds each Task's stored plan, `task_review/` its patches,
+    // its answers and its findings, and `rework_iterations` counts the Iterations a review
+    // asked for, which the Iteration cap does not (P9). All of them are re-created empty.
     prep [label="Prep workspace and install deps", shape=parallelogram, timeout="20m", max_retries=1,
         script="set -e
 mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra
+rm -rf /tmp/fabro/task_plans /tmp/fabro/task_review
+mkdir -p /tmp/fabro/task_plans /tmp/fabro/task_review/in /tmp/fabro/task_review/out /tmp/fabro/task_review/state/patches /tmp/fabro/task_review/state/answers /tmp/fabro/task_review/state/findings /tmp/fabro/task_review/state/dropped /tmp/fabro/task_review/state/recovers /tmp/fabro/task_review/state/rounds
+rm -f /tmp/fabro/task_plan.json /tmp/fabro/task_plan_error.txt /tmp/fabro/task_plan_tries
+echo 0 > /tmp/fabro/rework_iterations
 echo 0 > /tmp/fabro/iterations
 echo 0 > /tmp/fabro/post_iterations
 echo 0 > /tmp/fabro/refute_visits
@@ -283,13 +290,23 @@ else
 fi
 jq -nc --arg r \"$ROUTE\" '{context_updates:{plan_review_route:$r}}'"]
 
-    // copy: ralph.pick
+    // Own node (C1): ralph's `pick`, rewritten for the per-Task plan. Five differences:
+    // it deletes the `task_plan` contract files with the per-Iteration ones; it publishes
+    // `task_step`, which is `plan` for a pre-PR Task whose stored plan is missing and
+    // `work` otherwise; it renders `task-context.md` from that stored plan with the same
+    // jq program `task_plan_gate` uses (`RENDER`), and appends `## Review findings` when
+    // the Task has them; a Task is blocked after 6 failed Iterations, with the reason in
+    // `block_reason`; and the Iteration cap is not tested once the Task has been reviewed,
+    // because a rework Iteration spends `rework_iterations`, not the cap (P9). This `pick`
+    // has no review branch: `loop=review` is task 08's, together with `reviewing`.
     pick [label="Next Iteration", shape=parallelogram, timeout="5m", output_schema="routing",
         script="git worktree remove --force /tmp/fabro/base-tree >/dev/null 2>&1
 rm -rf /tmp/fabro/base-tree
 git worktree prune >/dev/null 2>&1
 rm -f /tmp/fabro/iteration.json /tmp/fabro/task_block_scope.md /tmp/fabro/task-context.md /tmp/fabro/task-code.md /tmp/fabro/check_ok /tmp/fabro/rung
+rm -f /tmp/fabro/task_plan.json /tmp/fabro/task_plan_error.txt /tmp/fabro/task_plan_tries
 echo 0 > /tmp/fabro/merge_attempts
+RENDER='def nl: [10] | implode; ($p[0].goals_done // []) as $d | ($p[0].context // \"\") + nl + nl + \"## Goals\" + nl + nl + ([($p[0].goals // [])[] | . as $g | if ($d | index($g.id)) != null then \"- \" + $g.id + \" (done): \" + $g.goal else \"- \" + $g.id + \": \" + $g.goal + \" Covers: \" + ([$g.covers[]? | tostring] | join(\", \")) + \". Check: \" + $g.check end] | join(nl)) + (if (($p[0].edge_cases // []) | length) > 0 then nl + nl + \"## Edge cases to cover\" + nl + nl + ([($p[0].edge_cases // [])[] | \"- \" + .id + \" (acceptance \" + (.covers | tostring) + \"): \" + .case + \" -> \" + .expected] | join(nl)) else \"\" end) + (if (($p[0].bug_class // \"\") != \"\") then nl + nl + \"## Class of the bug\" + nl + nl + $p[0].bug_class else \"\" end)'
 PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
 case \"$PH\" in pre | post) : ;; *) PH=pre ;; esac
 REBASE=false
@@ -304,8 +321,9 @@ if [ \"$PH\" = pre ]; then
 fi
 LOOP=work
 RUNG=0
+STEP=none
 IDX=-1
-if [ \"$REBASE\" = true ]; then LOOP=work; else
+if [ \"$REBASE\" = true ]; then LOOP=work; STEP=none; else
 while :; do
   IDX=-1
   COUNT=$(jq length /tmp/fabro/tasks.json 2>/dev/null || echo 0)
@@ -318,18 +336,23 @@ while :; do
     BLOCKED=$(jq '[.[] | select(.status == \"blocked\")] | length' /tmp/fabro/tasks.json 2>/dev/null || echo 0)
     case \"$BLOCKED\" in '' | *[!0-9]*) BLOCKED=0 ;; esac
     if [ $BLOCKED -gt 0 ]; then LOOP=exhausted; else LOOP=done; fi
+    STEP=none
     break
   fi
-  if [ \"$PH\" = pre ]; then CAP=$((COUNT * 3)); if [ $CAP -gt 24 ]; then CAP=24; fi; DONE=$(cat /tmp/fabro/iterations 2>/dev/null || echo 0)
-  else CAP=2; DONE=$(cat /tmp/fabro/post_iterations 2>/dev/null || echo 0); fi
-  case \"$DONE\" in '' | *[!0-9]*) DONE=0 ;; esac
-  if [ $DONE -ge $CAP ]; then LOOP=exhausted; break; fi
+  REVIEWS=$(jq -r \".[$IDX].reviews // 0\" /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+  case \"$REVIEWS\" in '' | *[!0-9]*) REVIEWS=0 ;; esac
+  if [ $REVIEWS -le 0 ]; then
+    if [ \"$PH\" = pre ]; then CAP=$((COUNT * 3)); if [ $CAP -gt 24 ]; then CAP=24; fi; DONE=$(cat /tmp/fabro/iterations 2>/dev/null || echo 0)
+    else CAP=2; DONE=$(cat /tmp/fabro/post_iterations 2>/dev/null || echo 0); fi
+    case \"$DONE\" in '' | *[!0-9]*) DONE=0 ;; esac
+    if [ $DONE -ge $CAP ]; then LOOP=exhausted; STEP=none; break; fi
+  fi
   MISSES=$(jq -r \".[$IDX].misses // 0\" /tmp/fabro/tasks.json 2>/dev/null || echo 0)
   case \"$MISSES\" in '' | *[!0-9]*) MISSES=0 ;; esac
   if [ $MISSES -ge 6 ]; then
     TID=$(jq -r \".[$IDX].id // empty\" /tmp/fabro/tasks.json 2>/dev/null)
-    jq --argjson i $IDX --arg s blocked '.[$i].status = $s' /tmp/fabro/tasks.json > /tmp/fabro/tasks.pick.json 2>/dev/null && mv /tmp/fabro/tasks.pick.json /tmp/fabro/tasks.json
-    echo 'pick: '${TID:-a task}' is blocked after 6 misses; the loop moves on' >&2
+    jq --argjson i $IDX --arg s blocked --arg r '6 failed Iterations' '.[$i].status = $s | .[$i].block_reason = $r' /tmp/fabro/tasks.json > /tmp/fabro/tasks.pick.json 2>/dev/null && mv /tmp/fabro/tasks.pick.json /tmp/fabro/tasks.json
+    echo 'pick: '${TID:-a task}' is blocked after 6 failed Iterations; the loop moves on' >&2
     continue
   fi
   RUNG=$((1 + MISSES / 2))
@@ -338,13 +361,26 @@ done
 fi
 if [ \"$LOOP\" = work ] && [ $IDX -ge 0 ] && [ \"$REBASE\" = false ]; then
   jq --argjson i $IDX '.[$i]' /tmp/fabro/tasks.json > /tmp/fabro/current_task.json
-  CTX=$(jq -r '.context // empty' /tmp/fabro/current_task.json 2>/dev/null)
-  printf '%s' \"$CTX\" > /tmp/fabro/task-context.md
-  echo >> /tmp/fabro/task-context.md
+  ID=$(jq -r '.id // empty' /tmp/fabro/current_task.json 2>/dev/null)
+  SRC=$(jq -r '.source // empty' /tmp/fabro/current_task.json 2>/dev/null)
+  STEP=work
+  if [ -n \"$ID\" ] && [ \"$PH\" = pre ] && [ \"$SRC\" != ci ] && [ \"$SRC\" != final_fix ] && [ ! -s /tmp/fabro/task_plans/$ID.json ]; then STEP=plan; fi
+  if [ -n \"$ID\" ] && [ -s /tmp/fabro/task_plans/$ID.json ]; then
+    jq -nr --slurpfile p /tmp/fabro/task_plans/$ID.json \"$RENDER\" > /tmp/fabro/task-context.md 2>/dev/null || true
+  else
+    CTX=$(jq -r '.context // empty' /tmp/fabro/current_task.json 2>/dev/null)
+    printf '%s' \"$CTX\" > /tmp/fabro/task-context.md
+    echo >> /tmp/fabro/task-context.md
+  fi
   MISSES=$(jq -r '.misses // 0' /tmp/fabro/current_task.json 2>/dev/null || echo 0)
   case \"$MISSES\" in '' | *[!0-9]*) MISSES=0 ;; esac
   if [ $MISSES -gt 0 ] && [ -s /tmp/fabro/feedback/rework.md ]; then
     { echo; echo '## Last attempt'; echo; cat /tmp/fabro/feedback/rework.md; } >> /tmp/fabro/task-context.md
+  fi
+  REVIEWS=$(jq -r '.reviews // 0' /tmp/fabro/current_task.json 2>/dev/null || echo 0)
+  case \"$REVIEWS\" in '' | *[!0-9]*) REVIEWS=0 ;; esac
+  if [ -n \"$ID\" ] && [ -s /tmp/fabro/task_review/state/findings/$ID.json ]; then
+    jq -r --argjson r \"$REVIEWS\" 'def nl: [10] | implode; nl + nl + \"## Review findings\" + nl + nl + \"Two reviewers found these after attempt \" + ($r | tostring) + \". Answer every id in `fixed` or `disputes`.\" + nl + ([.[] | nl + \"### \" + .id + \": \" + .severity + \", \" + .kind + \", \" + (.file // \"\") + (if (.line // null) == null then \"\" else \":\" + (.line | tostring) end) + nl + nl + (.message // \"\") + nl + nl + \"Evidence: \" + (.evidence // \"\") + (if ((.class // \"\") | tostring) == \"\" then \"\" else nl + \"Class: \" + .class end)] | join(nl))' /tmp/fabro/task_review/state/findings/$ID.json >> /tmp/fabro/task-context.md 2>/dev/null || true
   fi
   git rev-parse HEAD > /tmp/fabro/task_base_sha
   echo $RUNG > /tmp/fabro/rung
@@ -360,7 +396,139 @@ if [ \"$LOOP\" = exhausted ]; then
     echo 'CI is red after 2 post-PR Iterations' > /tmp/fabro/needs_human_reason
   fi
 fi
-jq -nc --arg l \"$LOOP\" --argjson r \"${RUNG:-0}\" --arg p \"$PH\" --argjson rb \"$REBASE\" --argjson le \"$LE\" '{context_updates:{loop:$l,rung:$r,phase:$p,rebase_failed:$rb,loop_exhausted:$le}}'"]
+jq -nc --arg l \"$LOOP\" --argjson r \"${RUNG:-0}\" --arg p \"$PH\" --argjson rb \"$REBASE\" --argjson le \"$LE\" --arg s \"$STEP\" '{context_updates:{loop:$l,rung:$r,phase:$p,rebase_failed:$rb,loop_exhausted:$le,task_step:$s}}'"]
+
+    // The per-Task plan (E5, C2). One fresh session on the run's box reads the Task, the
+    // issue planner's dossier and the issue, and writes what the coder works from: a
+    // dossier refreshed against this checkout, one to four goals that together cover every
+    // acceptance statement, the edge cases to test, and, for a Task that fixes a finding,
+    // the class of the bug. 30m and max_retries=0 (P8): `task_plan_gate` owns the retry, one
+    // attempt with the reason the plan was rejected, and then a fallback plan.
+    task_plan [label="Plan the Task", class="task-plan", timeout="30m", max_retries=0, prompt="@prompts/task_plan.md.j2"]
+
+    // C2's gate: everything the schema cannot say. The receipt; the dossier at most 14,000
+    // bytes; the goals' `covers` exactly the Task's acceptance statements; at most six edge
+    // cases, each naming one; every goal's `check` a command in backticks or a path that
+    // exists; every `path:N` or `path:N-M` in the dossier a file with that many lines; and
+    // `bug_class` set when the Task came from a finding. It never fails the run: the first
+    // rejection deletes the plan, writes the reason to `task_plan_error.txt` and routes
+    // `retry`; the second writes the fallback plan (one goal per acceptance statement, the
+    // fourth holding the rest) and routes `go`; the unconditional edge to `excerpts` is only
+    // for a crash. `rung` is `pick`'s alone here: `excerpts` reads it from the context.
+    task_plan_gate [label="Validate the Task plan", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro
+P=$F/task_plans
+J=$F/task_plan.json
+E=$F/task_plan_error.txt
+T=$F/task_plan_tries
+TASK=$F/current_task.json
+mkdir -p $P
+RENDER='def nl: [10] | implode; ($p[0].goals_done // []) as $d | ($p[0].context // \"\") + nl + nl + \"## Goals\" + nl + nl + ([($p[0].goals // [])[] | . as $g | if ($d | index($g.id)) != null then \"- \" + $g.id + \" (done): \" + $g.goal else \"- \" + $g.id + \": \" + $g.goal + \" Covers: \" + ([$g.covers[]? | tostring] | join(\", \")) + \". Check: \" + $g.check end] | join(nl)) + (if (($p[0].edge_cases // []) | length) > 0 then nl + nl + \"## Edge cases to cover\" + nl + nl + ([($p[0].edge_cases // [])[] | \"- \" + .id + \" (acceptance \" + (.covers | tostring) + \"): \" + .case + \" -> \" + .expected] | join(nl)) else \"\" end) + (if (($p[0].bug_class // \"\") != \"\") then nl + nl + \"## Class of the bug\" + nl + nl + $p[0].bug_class else \"\" end)'
+ID=$(jq -r '.id // empty' $TASK 2>/dev/null)
+N=$(jq -r '.acceptance | if type == \"array\" then length else 0 end' $TASK 2>/dev/null || echo 0)
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+SRC=$(jq -r '.source // empty' $TASK 2>/dev/null)
+V=$(jq -r '.visit // empty' $F/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $J 2>/dev/null)
+RS=$(jq -r '._io.stage // empty' $J 2>/dev/null)
+WHY=''
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ] || [ \"$RS\" != task_plan ]; then WHY='the plan carries no valid Input receipt, so submit it rather than write it'; fi
+if [ -z \"$WHY\" ]; then
+  WHY=$(jq -r --argjson n \"$N\" 'def s: if type == \"string\" then . else \"\" end;
+if (.context | type) != \"string\" then \"context is missing, and it is the refreshed dossier the coder reads\"
+elif (.context | utf8bytelength) > 14000 then \"context is \" + ((.context | utf8bytelength) | tostring) + \" bytes and the stage accepts at most 14000, so cut it\"
+elif (.goals | type) != \"array\" then \"goals must be a list of one to four goals\"
+elif ((.goals | length) < 1) or ((.goals | length) > 4) then \"the plan has \" + ((.goals | length) | tostring) + \" goals and must have one to four\"
+elif (([.goals[] | (.id | s)] | unique | length) != (.goals | length)) then \"two goals share an id, and each one needs its own\"
+elif ([.goals[] | select((.covers | type) != \"array\")] | length) > 0 then \"every goal needs a covers list of the acceptance numbers it satisfies\"
+elif (([.goals[].covers[]] | unique) != [range(1; $n + 1)]) then \"the goals do not cover exactly the acceptance numbers 1 to \" + ($n | tostring)
+elif (.edge_cases | type) != \"array\" then \"edge_cases must be a list, empty when the Task has no case\"
+elif (.edge_cases | length) > 6 then \"the plan has \" + ((.edge_cases | length) | tostring) + \" edge cases and at most six fit\"
+elif (([.edge_cases[] | (.id | s)] | unique | length) != (.edge_cases | length)) then \"two edge cases share an id, and each one needs its own\"
+elif ([.edge_cases[] | select((.covers | type) != \"number\" or .covers < 1 or .covers > $n)] | length) > 0 then \"an edge case names an acceptance number the Task does not have\"
+else \"\" end' $J 2>/dev/null)
+  if [ $? -ne 0 ]; then WHY='the plan is not a JSON object this gate can read'; fi
+fi
+if [ -z \"$WHY\" ]; then
+  GI=$(jq -r '.goals | length' $J 2>/dev/null || echo 0)
+  case \"$GI\" in '' | *[!0-9]*) GI=0 ;; esac
+  I=0
+  while [ $I -lt $GI ]; do
+    GID=$(jq -r --argjson i $I '.goals[$i].id | if type == \"string\" then . else \"\" end' $J 2>/dev/null)
+    CHK=$(jq -r --argjson i $I '.goals[$i].check | if type == \"string\" then . else \"\" end' $J 2>/dev/null)
+    OKC=false
+    if printf '%s' \"$CHK\" | grep -q '`[^`]*`'; then OKC=true; else
+      for REF in $(printf '%s' \"$CHK\" | grep -oE '[A-Za-z0-9_./-]+:[0-9]+(-[0-9]+)?'); do
+        if [ -f \"${REF%:*}\" ]; then OKC=true; break; fi
+      done
+    fi
+    if [ \"$OKC\" = false ]; then WHY=\"goal ${GID:-?} has no command in backticks and names no test file in this checkout, so the goal cannot be shown to hold\"; break; fi
+    I=$((I + 1))
+  done
+fi
+if [ -z \"$WHY\" ]; then
+  CTX=$(jq -r '.context' $J 2>/dev/null)
+  for REF in $(printf '%s' \"$CTX\" | grep -oE '[A-Za-z0-9_./-]+:[0-9]+(-[0-9]+)?'); do
+    CF=${REF%:*}
+    L=${REF##*:}
+    CF=${CF#./}
+    case \"$L\" in
+      *-*) LE=${L#*-} ;;
+      *) LE=$L ;;
+    esac
+    if [ ! -f \"$CF\" ]; then WHY=\"context cites $CF, which is not a file in this checkout\"; break; fi
+    CL=$(awk 'END {print NR}' \"$CF\")
+    if [ \"$LE\" -gt \"$CL\" ]; then WHY=\"context cites $CF:$LE, and $CF has only $CL lines\"; break; fi
+  done
+fi
+if [ -z \"$WHY\" ]; then
+  case \"$SRC\" in
+    refute | review | local_review)
+      case \"$(jq -r '.bug_class // empty' $J 2>/dev/null)\" in
+        '') WHY=\"this Task fixes a $SRC finding, so bug_class must name the class of the bug\" ;;
+      esac ;;
+  esac
+fi
+FB=false
+if [ -z \"$WHY\" ]; then
+  ID=${ID:-task}
+  jq 'del(._io) + {goals_done: [], plan_type: \"planned\"}' $J > $P/$ID.json 2>/dev/null
+  if [ -s $P/$ID.json ]; then PLAN_TYPE=planned; else
+    rm -f $P/$ID.json
+    WHY='the gate could not store the plan it had accepted'
+    FB=true
+  fi
+else
+  TRIES=$(cat $T 2>/dev/null || echo 0)
+  case \"$TRIES\" in '' | *[!0-9]*) TRIES=0 ;; esac
+  if [ \"$TRIES\" -le 0 ]; then
+    echo 1 > $T
+    rm -f $J
+    printf '%s' \"$WHY\" > $E
+    echo 'task_plan_gate: the plan was rejected and the planner gets one more try: '\"$WHY\" >&2
+    jq -nc '{context_updates:{task_plan_route:\"retry\",task_plan_type:\"none\",task_plan_goals:0,task_plan_edges:0}}'
+    exit 0
+  fi
+  FB=true
+fi
+if [ \"$FB\" = true ]; then
+  ID=${ID:-task}
+  jq '. as $t | ($t.acceptance // []) as $a | ($t.files // []) as $f | {context: ($t.context // \"\"), goals: (if ($a | length) <= 3 then [range(1; ($a | length) + 1) | {id: (\"g\" + (. | tostring)), goal: ($a[. - 1] // \"\"), covers: [.], check: \"(none: fallback plan)\", files: $f}] else [{id: \"g1\", goal: ($a[0] // \"\"), covers: [1], check: \"(none: fallback plan)\", files: $f}, {id: \"g2\", goal: ($a[1] // \"\"), covers: [2], check: \"(none: fallback plan)\", files: $f}, {id: \"g3\", goal: ($a[2] // \"\"), covers: [3], check: \"(none: fallback plan)\", files: $f}, {id: \"g4\", goal: (($a[3:] // []) | join(\"; \")), covers: [range(4; ($a | length) + 1)], check: \"(none: fallback plan)\", files: $f}] end), edge_cases: [], bug_class: \"\", risks: [], goals_done: [], plan_type: \"fallback\"}' $TASK > $P/$ID.json 2>/dev/null
+  PLAN_TYPE=fallback
+  echo 'task_plan_gate: no valid plan after two attempts, so the fallback plan stands for '$ID':' >&2
+  echo '  '\"$WHY\" >&2
+fi
+if [ -n \"$ID\" ] && [ -s $F/tasks.json ]; then
+  jq --arg id \"$ID\" --arg t \"$PLAN_TYPE\" 'map(if .id == $id then .plan_type = $t else . end)' $F/tasks.json > $F/tasks.tp.json 2>/dev/null && mv $F/tasks.tp.json $F/tasks.json
+fi
+jq -nr --slurpfile p $P/$ID.json \"$RENDER\" > $F/task-context.md 2>/dev/null || true
+rm -f $E
+GOALS=$(jq -r '.goals | length' $P/$ID.json 2>/dev/null || echo 0)
+EDGES=$(jq -r '.edge_cases | length' $P/$ID.json 2>/dev/null || echo 0)
+case \"$GOALS\" in '' | *[!0-9]*) GOALS=0 ;; esac
+case \"$EDGES\" in '' | *[!0-9]*) EDGES=0 ;; esac
+echo 'task_plan_gate: '${PLAN_TYPE}' plan for '${ID}' with '$GOALS' goal(s) and '$EDGES' edge case(s)' >&2
+jq -nc --argjson g \"$GOALS\" --argjson e \"$EDGES\" --arg t \"$PLAN_TYPE\" '{context_updates:{task_plan_route:\"go\",task_plan_type:$t,task_plan_goals:$g,task_plan_edges:$e}}'"]
 
     // copy: ralph.excerpts
     excerpts [label="Copy the code the dossier cites", shape=parallelogram, timeout="5m",
@@ -561,7 +729,14 @@ echo 'task validation: mode='$MODE' reason='$REASON' ok='$OK' selected='$SEL' un
 tail -c 4000 /tmp/fabro/validate_output.log | tr -d '{}'
 jq -nc --argjson ok $OK --arg mode \"$MODE\" --arg reason \"$REASON\" --argjson sel $SEL --argjson unt $UNT --argjson unch $UNCH --argjson prep $PREP '{context_updates:{task_validation_ok:$ok,task_validation_mode:$mode,task_validation_reason:$reason,task_validation_selected:$sel,task_validation_untested:$unt,task_validation_unchecked:$unch,task_validation_prepare_s:$prep}}' || exit 1"]
 
-    // copy: ralph.record
+    // Own node (C1): ralph's `record`, rewritten for the Task loop. New: every pre-PR
+    // Iteration of a Task writes the diff it made since `task_base_sha` to
+    // `task_review/state/patches/<id>/<NNN>.patch`; a Task that has been reviewed writes
+    // `state/answers/<id>.json` from the Iteration's `fixed` and `disputes`, a dispute only
+    // with evidence (C5), and an id in both lists is a dispute; `goals_done` is unioned into
+    // the stored plan; and a rework Iteration counts against `rework_iterations` rather than
+    // the cap (P9). Its pass still sets `passed`: task 08 makes it `reviewing` and reports
+    // `review_due`.
     record [label="Record the Iteration", shape=parallelogram, timeout="1m", output_schema="routing",
         script="F=/tmp/fabro/iteration.json
 PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
@@ -571,7 +746,9 @@ RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
 OK=$(cat /tmp/fabro/check_ok 2>/dev/null || echo 0)
 STATUS=''
 SUM='(no result submitted)'
+RECEIPT=false
 if [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
+  RECEIPT=true
   STATUS=$(jq -r '.status // empty' $F 2>/dev/null)
   SUM=$(jq -r '.summary // empty' $F 2>/dev/null)
 fi
@@ -579,23 +756,43 @@ case \"$SUM\" in '') SUM='(no summary submitted)' ;; esac
 SCOPE=false
 if [ -s /tmp/fabro/task_block_scope.md ]; then SCOPE=true; fi
 PASSED=false
-if [ \"$OK\" = 1 ] && [ \"$STATUS\" = done ] && [ \"$SCOPE\" = false ] && [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then PASSED=true; fi
+if [ \"$OK\" = 1 ] && [ \"$STATUS\" = done ] && [ \"$SCOPE\" = false ] && [ \"$RECEIPT\" = true ]; then PASSED=true; fi
 ID=$(jq -r '.id // empty' /tmp/fabro/current_task.json 2>/dev/null)
+SRC=''
+REVIEWS=0
+if [ -n \"$ID\" ] && [ -s /tmp/fabro/tasks.json ]; then
+  SRC=$(jq -r --arg id \"$ID\" '.[] | select(.id == $id) | .source // empty' /tmp/fabro/tasks.json 2>/dev/null)
+  REVIEWS=$(jq -r --arg id \"$ID\" '.[] | select(.id == $id) | .reviews // 0' /tmp/fabro/tasks.json 2>/dev/null)
+fi
+case \"$REVIEWS\" in '' | *[!0-9]*) REVIEWS=0 ;; esac
+PRE=false
+if [ \"$PH\" = pre ] && [ \"$SRC\" != ci ] && [ \"$SRC\" != final_fix ]; then PRE=true; fi
+if [ \"$PRE\" = true ] && [ -n \"$ID\" ]; then
+  PD=/tmp/fabro/task_review/state/patches/$ID
+  mkdir -p $PD
+  PN=$(ls $PD 2>/dev/null | wc -l | tr -d ' ')
+  case \"$PN\" in '' | *[!0-9]*) PN=0 ;; esac
+  PN=$((PN + 1))
+  PT=/tmp/fabro/task_review/state/patch.tmp
+  BASE=$(cat /tmp/fabro/task_base_sha 2>/dev/null || echo '')
+  rm -f $PT
+  if [ -n \"$BASE\" ] && git diff --no-renames \"$BASE\" HEAD > $PT 2>/dev/null; then
+    if [ -s $PT ]; then mv $PT $PD/$(printf '%03d' $PN).patch; else rm -f $PT; fi
+  else
+    rm -f $PT
+    echo 'record: no diff against the task base, so this Iteration has no patch recorded' >&2
+  fi
+fi
 if [ -n \"$ID\" ] && [ -s /tmp/fabro/tasks.json ]; then
   jq --arg id \"$ID\" --argjson p \"$PASSED\" --argjson b \"$SCOPE\" 'map(if .id == $id then (.iterations = ((.iterations // 0) + 1) | (if $p then .status = \"passed\" else ((.misses = ((.misses // 0) + 1)) | (if $b then .status = \"blocked\" else . end)) end)) else . end)' /tmp/fabro/tasks.json > /tmp/fabro/tasks.rec.json 2>/dev/null && mv /tmp/fabro/tasks.rec.json /tmp/fabro/tasks.json
 fi
 if [ \"$SCOPE\" = true ]; then cp /tmp/fabro/task_block_scope.md /tmp/fabro/feedback/rework.md 2>/dev/null || true; fi
-if [ \"$PH\" = post ]; then
-  N=$(cat /tmp/fabro/post_iterations 2>/dev/null || echo 0)
-  case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
-  N=$((N + 1))
-  echo $N > /tmp/fabro/post_iterations
-else
-  N=$(cat /tmp/fabro/iterations 2>/dev/null || echo 0)
-  case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
-  N=$((N + 1))
-  echo $N > /tmp/fabro/iterations
-fi
+COUNTER=iterations
+if [ \"$PH\" = post ]; then COUNTER=post_iterations; elif [ \"$REVIEWS\" -gt 0 ]; then COUNTER=rework_iterations; fi
+N=$(cat /tmp/fabro/$COUNTER 2>/dev/null || echo 0)
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+N=$((N + 1))
+echo $N > /tmp/fabro/$COUNTER
 RUNG=$(cat /tmp/fabro/rung 2>/dev/null || echo 0)
 case \"$RUNG\" in '' | *[!0-9]*) RUNG=0 ;; esac
 if [ \"$PASSED\" = true ]; then RES=passed; else RES='not passed'; fi
@@ -606,10 +803,46 @@ if [ \"$PASSED\" = true ]; then RES=passed; else RES='not passed'; fi
   jq -r '.learnings // [] | .[] | \"- \" + .' $F 2>/dev/null || true
   echo
 } >> /tmp/fabro/progress.md
+if [ \"$RECEIPT\" = true ] && [ \"$PRE\" = true ] && [ -n \"$ID\" ]; then
+  PLAN=/tmp/fabro/task_plans/$ID.json
+  if [ -s $PLAN ]; then
+    GD=$(jq -c '.goals_done | if type == \"array\" then . else [] end' $F 2>/dev/null)
+    if printf '%s' \"$GD\" | jq -e 'type == \"array\"' >/dev/null 2>&1; then :; else GD='[]'; fi
+    jq --argjson g \"$GD\" '.goals_done = (((.goals_done // []) + $g) | unique)' $PLAN > $PLAN.tmp 2>/dev/null && mv $PLAN.tmp $PLAN || rm -f $PLAN.tmp
+  fi
+  if [ \"$REVIEWS\" -gt 0 ]; then
+    AD=/tmp/fabro/task_review/state/answers
+    mkdir -p $AD
+    OKIDS=''
+    DN=$(jq -r '.disputes | if type == \"array\" then length else 0 end' $F 2>/dev/null || echo 0)
+    case \"$DN\" in '' | *[!0-9]*) DN=0 ;; esac
+    I=0
+    while [ $I -lt $DN ]; do
+      FID=$(jq -r --argjson i $I '.disputes[$i].finding_id | if type == \"string\" then . else \"\" end' $F 2>/dev/null)
+      EVD=$(jq -r --argjson i $I '.disputes[$i].evidence | if type == \"string\" then . else \"\" end' $F 2>/dev/null)
+      AOK=false
+      if printf '%s' \"$EVD\" | grep -q '`[^`]*`'; then AOK=true; else
+        for REF in $(printf '%s' \"$EVD\" | grep -oE '[A-Za-z0-9_./-]+:[0-9]+'); do
+          if [ -f \"${REF%:*}\" ]; then AOK=true; break; fi
+        done
+      fi
+      if [ \"$AOK\" = true ] && [ -n \"$FID\" ]; then OKIDS=\"$OKIDS $FID\"; fi
+      I=$((I + 1))
+    done
+    KJ=$(printf '%s' \"$OKIDS\" | jq -R -c 'split(\" \") | map(select(. != \"\")) | unique' 2>/dev/null)
+    [ -n \"$KJ\" ] || KJ='[]'
+    NEW=$AD/$ID.new.json
+    jq --argjson ok \"$KJ\" '(.fixed // []) as $fx | [ ($fx | map(select((type == \"string\") and (. != \"\")) | {k: ., v: {answer: \"fixed\"}}))[], ((.disputes // [])[] | select(. as $d | ($ok | index($d.finding_id // \"\")) != null) | {k: .finding_id, v: {answer: \"disputed\", reason: (.reason // \"\"), evidence: (.evidence // \"\")}}) ] | reduce .[] as $e ({}; .[$e.k] = $e.v)' $F > $NEW 2>/dev/null
+    if [ -s $NEW ] && [ \"$(jq 'length' $NEW 2>/dev/null || echo 0)\" != 0 ]; then
+      if [ -s $AD/$ID.json ]; then jq -s '.[0] + .[1]' $AD/$ID.json $NEW > $AD/$ID.tmp 2>/dev/null && mv $AD/$ID.tmp $AD/$ID.json; rm -f $AD/$ID.tmp; else mv $NEW $AD/$ID.json; fi
+    fi
+    rm -f $NEW
+  fi
+fi
 P=$(jq '[.[] | select(.status == \"passed\")] | length' /tmp/fabro/tasks.json 2>/dev/null || echo 0)
 case \"$P\" in '' | *[!0-9]*) P=0 ;; esac
 echo $P > /tmp/fabro/task_index
-jq -nc --argjson p \"$PASSED\" '{context_updates:{iteration_passed:$p}}'"]
+jq -nc --argjson p \"$PASSED\" '{context_updates:{iteration_passed:$p,review_due:false}}'"]
 
     // copy: ralph.resolve_merge
     // v1 runs it on glm-5.3 for 30m; that number is void on the box, and 60m is unmeasured.
@@ -2553,7 +2786,7 @@ if [ \"$LEARN\" = run ]; then
     echo
     echo '## Tasks'
     echo
-    jq -r '.[]? | \"- \" + (.id // \"?\") + \" [\" + (.source // \"?\") + \"] \" + (.status // \"?\") + \", iterations=\" + ((.iterations // 0) | tostring) + \", misses=\" + ((.misses // 0) | tostring) + \", highest rung=\" + (if ((1 + (((.misses // 0) / 2) | floor)) > 4) then 4 else (1 + (((.misses // 0) / 2) | floor)) end | tostring)' $F/tasks.json 2>/dev/null || echo '(no Task list)'
+    jq -r '.[]? | \"- \" + (.id // \"?\") + \" [\" + (.source // \"?\") + \"] \" + (.status // \"?\") + \", iterations=\" + ((.iterations // 0) | tostring) + \", misses=\" + ((.misses // 0) | tostring) + \", reviews=\" + ((.reviews // 0) | tostring) + (if ((.block_reason // \"\") | tostring) == \"\" then \"\" else \", \" + (.block_reason | tostring) end) + \", highest rung=\" + (if ((1 + (((.misses // 0) / 2) | floor)) > 3) then 3 else (1 + (((.misses // 0) / 2) | floor)) end | tostring)' $F/tasks.json 2>/dev/null || echo '(no Task list)'
   } > $F/learn/inputs.md
 fi
 jq -nc --arg l \"$LEARN\" '{context_updates:{learn:$l}}'"]
@@ -2886,10 +3119,17 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     learn -> learn_post
     learn_post -> exit
     pick -> resolve_merge                     [condition="context.rebase_failed=true"]
-    pick -> excerpts                          [condition="context.loop=work && context.rebase_failed=false"]
+    pick -> task_plan                         [condition="context.loop=work && context.rebase_failed=false && context.task_step=plan"]
+    pick -> excerpts                          [condition="context.loop=work && context.rebase_failed=false && context.task_step=work"]
     pick -> hygiene                          [condition="context.loop=done && context.phase=post"]
     pick -> report_blocked                   [condition="context.loop=exhausted && context.phase=post"]
     pick -> stop_reason
+    // C2: one rejected plan is retried, a second rejection is the fallback plan, and the
+    // unconditional edge to `excerpts` only carries a gate that crashed before it wrote one.
+    task_plan -> task_plan_gate               [condition="outcome=succeeded"]
+    task_plan -> task_plan_gate
+    task_plan_gate -> task_plan              [condition="outcome=succeeded && context.task_plan_route=retry"]
+    task_plan_gate -> excerpts
     excerpts -> iterate_t1                    [condition="context.rung=1"]
     excerpts -> iterate_t2                    [condition="context.rung=2"]
     excerpts -> iterate_t3                    [condition="context.rung=3"]

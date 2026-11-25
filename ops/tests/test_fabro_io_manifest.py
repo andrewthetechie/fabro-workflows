@@ -133,7 +133,7 @@ class Box(unittest.TestCase):
                 "resolve_base": True,
             },
             # The trial's second arm (ADR 0034): the same box stages, with `resolve_merge`
-            # moved onto the box and the fourth rung gone.
+            # moved onto the box, the fourth rung gone, and the per-Task planner (task 07).
             "ralph-v2": {
                 "iterate_t1": True,
                 "learn": True,
@@ -143,6 +143,7 @@ class Box(unittest.TestCase):
                 "plan_review": True,
                 "resolve_base": True,
                 "resolve_merge": True,
+                "task_plan": True,
             },
             # A leased run holds its box (ADR 0033): its stages block a background fill.
             "issue-sharpen": {

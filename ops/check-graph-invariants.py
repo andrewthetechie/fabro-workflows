@@ -1475,28 +1475,46 @@ def r10_copies(root: Path) -> list[tuple]:
 # above check it against the shared originals, so one hop is enough, and an outage fix that
 # reaches one arm and not the other fails here. Prompts that must not change are rows too.
 # A row is (node id, replacements); the original is the same node id in `RALPH_GRAPH`.
+
+# ralph's `## Tasks` line in `learn_prep`, and ralph-v2's. A Learning is written about the
+# Task list, so a v2 Task reports the reviews it has had and why it was blocked, and its
+# highest rung is 3: the ladder has three rungs (E16).
+LEARN_PREP_TASK_LINE = '    jq -r \'.[]? | "- " + (.id // "?") + " [" + (.source // "?") + "] " + (.status // "?") + ", iterations=" + ((.iterations // 0) | tostring) + ", misses=" + ((.misses // 0) | tostring) + ", highest rung=" + (if ((1 + (((.misses // 0) / 2) | floor)) > 4) then 4 else (1 + (((.misses // 0) / 2) | floor)) end | tostring)\' $F/tasks.json 2>/dev/null || echo \'(no Task list)\''
+
+LEARN_PREP_TASK_LINE_V2 = '    jq -r \'.[]? | "- " + (.id // "?") + " [" + (.source // "?") + "] " + (.status // "?") + ", iterations=" + ((.iterations // 0) | tostring) + ", misses=" + ((.misses // 0) | tostring) + ", reviews=" + ((.reviews // 0) | tostring) + (if ((.block_reason // "") | tostring) == "" then "" else ", " + (.block_reason | tostring) end) + ", highest rung=" + (if ((1 + (((.misses // 0) / 2) | floor)) > 3) then 3 else (1 + (((.misses // 0) / 2) | floor)) end | tostring)\' $F/tasks.json 2>/dev/null || echo \'(no Task list)\''
+
 R10_V2_COPIES: list[tuple[str, tuple[tuple[str, str], ...]]] = [
     (node, ()) for node in (
-        "claim", "prep", "plan_gate", "plan_review_prep", "plan_review_gate", "excerpts",
-        "task_block_gate", "autofix", "check", "record", "resolve_merge_gate",
+        "claim", "plan_gate", "plan_review_prep", "plan_review_gate", "excerpts",
+        "task_block_gate", "autofix", "check", "resolve_merge_gate",
         "refute_prep", "refute_gate", "review_prep", "review_gate", "local_review_prep",
         "local_review_gate", "final_merge", "final_check", "criterion_checks", "hygiene",
         "open_pr", "file_remainder", "pr_handoff", "merge_prep", "deliver", "merge_gate",
         "watch_checks", "merge", "remerge_base", "resolve_base_gate", "ci_task",
-        "report_merged", "report_blocked", "report_queued", "learn_prep", "learn_post",
+        "report_merged", "report_blocked", "report_queued", "learn_post",
         "mark_needs_human", "close_noop", "return_to_triage", "mark_stuck",
     )
 ] + [
     # The fourth rung's node is gone, so the agent list stops naming it.
     ("stop_reason", ((" | iterate_t4", ""),)),
-    # E16's ladder is three rungs: a Task is blocked after 6 misses, not 8.
-    ("pick", (("if [ $MISSES -ge 8 ]; then", "if [ $MISSES -ge 6 ]; then"),
-              ("is blocked after 8 misses", "is blocked after 6 misses"))),
+    # The Task loop's own directories, its plan files and the rework counter (C1).
+    ("prep", (('mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra',
+               'mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra\n'
+               'rm -rf /tmp/fabro/task_plans /tmp/fabro/task_review\n'
+               'mkdir -p /tmp/fabro/task_plans /tmp/fabro/task_review/in /tmp/fabro/task_review/out '
+               '/tmp/fabro/task_review/state/patches /tmp/fabro/task_review/state/answers '
+               '/tmp/fabro/task_review/state/findings /tmp/fabro/task_review/state/dropped '
+               '/tmp/fabro/task_review/state/recovers /tmp/fabro/task_review/state/rounds\n'
+               'rm -f /tmp/fabro/task_plan.json /tmp/fabro/task_plan_error.txt /tmp/fabro/task_plan_tries\n'
+               'echo 0 > /tmp/fabro/rework_iterations'),)),
+    # The Task line a Learning is written about: how many reviews the Task has had, why it
+    # was blocked, and the three rungs above it.
+    ("learn_prep", ((LEARN_PREP_TASK_LINE, LEARN_PREP_TASK_LINE_V2),)),
 ]
 
-# Nodes `ralph-v2` owns: its script is its own and no row above can compare it. Empty in
-# task 05 -- tasks 07 and 08 move nodes here as they rewrite them.
-R10_V2_OWN: set[str] = set()
+# Nodes `ralph-v2` owns: its script is its own and no row above can compare it. `pick` and
+# `record` rewrite ralph's for the Task loop (C1); task 08 adds the rest.
+R10_V2_OWN: set[str] = {"pick", "record"}
 
 # Prompt rows: the agent nodes whose prompt file must be ralph's, byte for byte. Two node
 # ids share `standards.md.j2` and two share `spec.md.j2`.

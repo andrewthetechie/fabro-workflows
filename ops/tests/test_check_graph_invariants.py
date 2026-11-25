@@ -677,9 +677,11 @@ class Counts(unittest.TestCase):
             # done edge from `pick` goes straight to final_merge again: net -4 on that half).
             "ralph": (59, 155),
             # ralph-v2 (ADR 0034, docs/plans/ralph-v2/05): ralph minus the fourth rung -- one
-            # node and its four edges -- with v2's stylesheet and fallbacks. Tasks 07-09 of
-            # the series raise it to 68 nodes and 176 edges.
-            "ralph-v2": (58, 151),
+            # node and its four edges -- with v2's stylesheet and fallbacks. Task 07 adds the
+            # Task plan: task_plan and task_plan_gate, and pick's split out of excerpts for
+            # the step, +2 nodes and +5 edges. Tasks 08-09 of the series raise it to 68 nodes
+            # and 176 edges.
+            "ralph-v2": (60, 156),
         })
 
 
@@ -905,7 +907,9 @@ class R10V2Copies(unittest.TestCase):
 
     def test_the_real_copies_match_ralph(self):
         self.assertEqual(cgi.r10_v2_copies(REAL), [])
-        self.assertEqual(cgi.R10_V2_OWN, set())
+        # `pick` and `record` are ralph-v2's own: task 07 rewrote both for the Task loop (C1),
+        # so no row above can compare them. Task 08 adds the nodes it rewrites too.
+        self.assertEqual(cgi.R10_V2_OWN, {"pick", "record"})
 
 
 class RealTree(unittest.TestCase):
