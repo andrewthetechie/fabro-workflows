@@ -1478,7 +1478,10 @@ def _trial_line(v1: ArmLine, v2: ArmLine, reviews: TaskReviewLine) -> TrialLine:
             quality_se=se,
             quality_verdict=_verdict(diff, se, better_high=False),
         )
-    if v1.lease_hours_per_merge is not None and v2.lease_hours_per_merge is not None:
+    # A v1 arm whose merges held no lease time (a zero-length or unreadable lease) has no
+    # hours a merge to divide by: there is no ratio to report, which is not a reason to take
+    # the whole window's scorecard down with it.
+    if v1.lease_hours_per_merge and v2.lease_hours_per_merge is not None:
         guardrail = v2.lease_hours_per_merge / v1.lease_hours_per_merge
         line = replace(
             line,

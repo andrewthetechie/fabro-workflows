@@ -503,6 +503,40 @@ def test_a_mid_session_failover_marks_the_round_and_is_a_failover_of_the_run():
     assert [review.failover for review in two.task_reviews] == [True, False]
 
 
+def test_a_crashed_gate_leaves_no_row_and_lends_nothing_to_the_recovery_round():
+    """C5 step 9: a gate that crashes publishes nothing and leaves the Task `reviewing`; the
+    unconditional edge reaches `pick`, which sends the Task round again (C1 step 3), and
+    `task_review_prep` rebuilds `in/`, `out/` and both checks' state (C3 step 1).
+
+    So the recovery round's row is its own. The crashed round's reviewers ran 10 + 20 minutes,
+    its refuter failed over, and its two checks counted 3 and 2: none of that is the recovery's,
+    which ran 5 + 5 minutes on the box, with its refuter's check at 0 and its review check
+    crashed before it could publish. A gate that completes with no verdict ends its round the
+    same way. The crashed round's time is not lost: it is still on the run's reviewer stage
+    rows, which the box-minutes line reads.
+    """
+    crashed = review_round(
+        refute_ms=600_000, review_ms=1_200_000, refute_tries=3, review_tries=2,
+        fail="task_refute",
+    )
+    crashed[-1] = failed("task_review_gate")  # exit 1: no object, so no row
+    recovery = review_round(refute_ms=300_000, review_ms=300_000, refute_tries=0, review_tries=2)
+    recovery[9] = failed("task_review_check")  # its review check crashed: no `task_review_tries`
+    verdictless = review_round(fail="task_review")
+    verdictless[-1] = completed("task_review_gate", {})  # a completion that says nothing
+
+    summary = summarize_run("R1", crashed + recovery + verdictless + review_round())
+
+    assert [(review.verdict, review.ms, review.tries, review.failover)
+            for review in summary.task_reviews] == [
+        ("pass", 600_000, 0, False),
+        ("pass", 1_800_000, 2, False),
+    ]
+    # Every reviewer visit is still the run's, round or no row: 10 + 5 + 10 + 10 minutes.
+    assert summary.stages["task_refute"].wall_ms == 2_100_000
+    assert summary.stages["task_review"].wall_ms == 3_900_000
+
+
 @pytest.mark.parametrize("who", ["refute", "review"])
 def test_a_fallback_round_keeps_its_failed_tries_the_fallback_visit_and_the_last_tries(who):
     """The E13 fallback: each of the three failed box tries is a spent visit, and so is the
@@ -1089,6 +1123,25 @@ def test_a_stop_rule_holds_below_its_line_or_short_of_its_count(
     assert (trial.lease_stop, trial.merge_stop) == stops, why
     assert trial.merge_verdict == verdict
     assert trial.guardrail == (None if guardrail is None else pytest.approx(guardrail))
+
+
+def test_the_guardrail_has_no_ratio_when_v1_s_merges_held_no_lease_time(store):
+    """`lease_hours_per_merge` is lease-hours over zero-touch merges, and an arm's can be 0.0:
+    two merges whose leases read no time (`dispatched_at` equal to `finished_at`, or a
+    `finished_at` that does not parse). There is then no ratio to report, which is `None` and
+    a `lease_stop` that cannot fire -- not a `ZeroDivisionError` that takes the whole
+    window's scorecard, the other stop rule and both arms down with it."""
+    arm_of(store, "ralph", runs=2, merged=2, hours=0.0, first=1)
+    arm_of(store, "ralph-v2", runs=2, merged=2, hours=2.0, first=1000)
+
+    card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
+
+    v1, v2 = card.arms
+    assert (v1.zero_touch, v1.lease_hours, v1.lease_hours_per_merge) == (2, 0.0, 0.0)
+    assert v2.lease_hours_per_merge == pytest.approx(2.0)
+    assert card.trial.guardrail is None and card.trial.lease_stop is False
+    assert card.trial.merge_diff == pytest.approx(0.0)
+    assert "| guardrail, v2 / v1 | — |" in scorecard.workflows_to_markdown(card)
 
 
 def test_the_task_review_line_reads_the_loop(store):

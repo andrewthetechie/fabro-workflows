@@ -330,9 +330,10 @@ CREATE TABLE IF NOT EXISTS run_task_reviews (
   verdict       TEXT    NOT NULL,  -- pass, missed, rework or blocked
   errors        INTEGER NOT NULL,  -- surviving error findings
   warnings      INTEGER NOT NULL,
-  disputed      INTEGER NOT NULL,  -- findings the coder disputed and the reviewer withdrew
-  withdrawn     INTEGER NOT NULL,
-  dropped       INTEGER NOT NULL,  -- repeats of a finding already reported
+  disputed      INTEGER NOT NULL,  -- findings the coder disputed (E12), answered this round
+  withdrawn     INTEGER NOT NULL,  -- the disputed ones the reviewer did not uphold
+  dropped       INTEGER NOT NULL,  -- findings the gate threw out: evidence or file that
+                                    -- fails its rule, withdrawn, or an unchanged repeat
   refute_served TEXT    NOT NULL,  -- box, fallback or missed
   review_served TEXT    NOT NULL,
   edges         INTEGER NOT NULL,  -- the Task's edge cases, from its plan

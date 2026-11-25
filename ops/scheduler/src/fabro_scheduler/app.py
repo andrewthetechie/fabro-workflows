@@ -699,7 +699,9 @@ def build_app(
 
         The same window parameters as `/api/scorecard`, and the same `?format=md`
         switch, because it is the same numbers split by `run_history.workflow`: a
-        card per arm, the repo x coder-pool strata table, and the `ralph` line.
+        card per arm, the repo x coder-pool strata table, the `ralph` line, and
+        (ralph-v2 11) the ralph-v2 trial's two arms with its stop rules and the
+        Task review line.
         """
         params = request.query_params
         start, end = _window(params.get("from"), params.get("to"), params.get("days"))
@@ -1728,8 +1730,9 @@ def _resummarize(argv: Sequence[str]) -> int:
     """`python -m fabro_scheduler resummarize --from D --to D`: rebuild a window.
 
     Both dates are inclusive, like `/api/scorecard`'s. It deletes only the window's
-    `run_summary` and `run_stage_stats` rows and prints how many; the collector's next
-    ticks stream the events again and write the current fields (ADR 0025, C9).
+    `run_summary`, `run_stage_stats` and `run_task_reviews` rows and prints how many
+    of the first two; the collector's next ticks stream the events again and write the
+    current fields (ADR 0025, C9).
     """
     parser = argparse.ArgumentParser(
         prog="fabro-scheduler resummarize",

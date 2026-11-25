@@ -56,13 +56,15 @@ for d in "$FROM" "$TO"; do
     fi
 done
 
-# The pair the review compares, as `A,B`. The reducer checks it too; this catches the
-# operator's typo here, where the message names the script they ran.
-case "$ARMS" in
-    [A-Za-z0-9-]*,[A-Za-z0-9-]*) ;;
-    *) echo "fabro-trial-review.sh: --arms needs two workflow names, e.g. ralph,ralph-v2 (got '$ARMS')" >&2
-       exit 2 ;;
-esac
+# The pair the review compares, as `A,B`: two workflow names and nothing else, so the
+# script refuses a typo here, where the message names the script the operator ran. The
+# reducer checks the pair again inside the container, but only after `fabro-scorecard.sh`
+# and one `ssh` round trip; and the pair then expands, unquoted, into the command that
+# `ssh` runs on the host, so it must carry nothing but the names.
+if ! [[ "$ARMS" =~ ^[A-Za-z0-9-]+,[A-Za-z0-9-]+$ ]]; then
+    echo "fabro-trial-review.sh: --arms needs two workflow names, e.g. ralph,ralph-v2 (got '$ARMS')" >&2
+    exit 2
+fi
 
 # The routing edges of one run, with the Iteration loop's plumbing left out: `→ record`
 # keeps `check`'s outcome, `→ iterate_tN` the rung, `✗` a failed or timed-out attempt.

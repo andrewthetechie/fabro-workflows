@@ -80,7 +80,7 @@ section reads `run_task_reviews`, one row per round of `ralph-v2`'s Task loop (E
 
 | Field | What it is |
 |---|---|
-| reviews (rounds) | rows, so a Task reworked twice is three. A round is **two** reviewers |
+| reviews (rounds) | rows, so a Task reworked twice is three. A round is **two** reviewers. A gate that crashed leaves no row (the Task is reviewed again) and adds nothing to the next round's: that time stays on the run's stage rows |
 | verdicts | `pass`, `missed` (both reviewers left no valid result), `rework` (an error, rounds 1-3) and `blocked` (an error on the fourth) |
 | rejection rate by round | the share of each round's reviews that rejected the work (`rework` or `blocked`), by round number |
 | Tasks blocked | rows whose verdict is `blocked`: the Task a box review failed (E10) |

@@ -1,6 +1,6 @@
 """The host scripts the automations lean on: the scout-summary Discord kind,
-fabro-run-prune.sh, fabro-sandbox-sweep.sh, fabro-monitor.sh's C3/C4/C8/C11 checks, and the
-three fire scripts' version payload."""
+fabro-run-prune.sh, fabro-sandbox-sweep.sh, fabro-monitor.sh's C3/C4/C8/C11 checks, the
+three fire scripts' version payload, and fabro-trial-review.sh's `--arms` pair."""
 
 import datetime
 import json
@@ -899,3 +899,55 @@ def test_fire_ralph_refuses_any_other_workflow(ck, tmp_path):
     ck("fire ralph: WORKFLOW=backlog fails", "1", r.rc)
     ck("fire ralph: the failure is the one sentence that names the value",
        "WORKFLOW must be ralph or ralph-v2, got 'backlog'", r.out.split("\n")[-1])
+
+
+# ---------------------------------------------------------------------------
+# fabro-trial-review.sh --arms (ralph-v2 11): the arm pair is checked on the Mac, before the
+# scorecard is read, before ssh, and before it expands into the command ssh runs on the host.
+# ---------------------------------------------------------------------------
+def test_fabro_trial_review_arms(ck, tmp_path):
+    TR = tmp_path / "trialreview"
+    # A stubbed host: nothing this test runs may reach the real one, so both transports only
+    # record what they were asked.
+    stub(TR / "bin", "ssh", '#!/bin/sh\necho "ssh $*" >> "$TR_LOG"\nexit 0\n')
+    stub(TR / "bin", "curl", '#!/bin/sh\necho "curl $*" >> "$TR_LOG"\nexit 0\n')
+    log = TR / "log"
+
+    def tr_run(*args):
+        write(log, "")
+        r = run(["bash", REPO_ROOT / "ops/fabro-trial-review.sh", *args],
+                path=f"{TR / 'bin'}:{ORIG_PATH}",
+                env={"TR_LOG": log, "SCHEDULER_URL": "http://scheduler.test"})
+        return r, log.read_text().split("\n") if log.exists() else []
+
+    # The guard is an exact match, not a glob. A `case` pattern like
+    # `[A-Za-z0-9-]*,[A-Za-z0-9-]*` let every one of these but the first through, because its
+    # `*` means "anything", not "more of the class": three names, an empty name, and a name
+    # with a space or a `;` in it (which then ran on the host, after the `;`).
+    for bad in ("ralph", "ralph,ralph-v2,backlog", "a,,b", "a b,c", "a;id,b", "ralph,ralph-v2,"):
+        r, _ = tr_run("--arms", bad)
+        ck(f"trial-review: --arms {bad!r} is refused on the Mac", "2", r.rc)
+        ck(f"trial-review: --arms {bad!r} is refused in the script's own words", "1",
+           count("^fabro-trial-review\\.sh: --arms needs two workflow names, e\\.g\\. ralph,ralph-v2 [(]got '", r.out))
+        ck(f"trial-review: --arms {bad!r} reaches neither the scorecard nor the host", "0|0",
+           count("curl", file=log) + "|" + count("ssh", file=log))
+
+    r, lines = tr_run("--arms", "ralph,ralph-v2")
+    ck("trial-review: a good pair exits 0", "0", r.rc)
+    ck("trial-review: the scorecard is read first, and once", "curl|1",
+       lines[0].split(" ")[0] + "|" + count("api/scorecard/workflows?format=md", file=log))
+    ck("trial-review: the pair reaches the host as the last argument, unsplit", "1",
+       count("^ssh [^ ]* docker exec -i fabro-scheduler python -I - --from [0-9][0-9-]*"
+             " --to [0-9][0-9-]* --arms ralph,ralph-v2$", file=log))
+    ck("trial-review: without --traces that is the one ssh", "1", count("^ssh ", file=log))
+
+    # The default pair is unchanged, and --traces asks for the ids of each arm that starts
+    # with `ralph`: one here, and never `backlog`.
+    r, _ = tr_run()
+    ck("trial-review: the default pair is backlog,ralph", "1", count("--arms backlog,ralph$", file=log))
+    r, _ = tr_run("--arms", "backlog,ralph-v2", "--traces")
+    ck("trial-review: --traces asks for the ids of the ralph arm only", "1|0",
+       count("--ids ralph-v2$", file=log) + "|" + count("--ids backlog", file=log))
+    r, _ = tr_run("--arms", "ralph,ralph-v2", "--traces")
+    ck("trial-review: --traces asks for the ids of both ralph arms", "1|1",
+       count("--ids ralph$", file=log) + "|" + count("--ids ralph-v2$", file=log))

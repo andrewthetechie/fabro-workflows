@@ -515,6 +515,42 @@ def summarize(
                     if tries is not None:
                         review_tries[key] = tries
 
+        # One row per round, from the keys the gate publishes on every completed path (C5 step
+        # 9). A gate that crashed, or completed with no verdict, publishes nothing and leaves
+        # no row: the Task stays `reviewing`, and `pick` sends it round again (C1 step 3).
+        # The round is over however its gate ended, so what the four reviewers spent since the
+        # previous gate belongs to that gate and never to the next row: a recovery round
+        # rebuilds `in/`, `out/` and both checks' state (C3 step 1), and its row is its own.
+        # The crashed round's time is not lost: it stays on the run's reviewer stage rows.
+        if name in ("stage.completed", "stage.failed") and node == TASK_REVIEW_GATE and is_v2:
+            updates = props.get("context_updates")
+            if name == "stage.completed" and isinstance(updates, Mapping):
+                verdict = _str(updates.get("task_review_verdict"))
+                if verdict:
+                    task_reviews.append(
+                        TaskReview(
+                            task=_str(updates.get("task_review_task")),
+                            source=_str(updates.get("task_review_source")),
+                            round=_int(updates.get("task_review_round")),
+                            verdict=verdict,
+                            errors=_int(updates.get("task_review_errors")),
+                            warnings=_int(updates.get("task_review_warnings")),
+                            disputed=_int(updates.get("task_review_disputed")),
+                            withdrawn=_int(updates.get("task_review_withdrawn")),
+                            dropped=_int(updates.get("task_review_dropped")),
+                            refute_served=_str(updates.get("task_review_refute_served")),
+                            review_served=_str(updates.get("task_review_review_served")),
+                            edges=_int(updates.get("task_review_edges")),
+                            edges_covered=_int(updates.get("task_review_edges_covered")),
+                            tries=sum(review_tries.values()),
+                            ms=review_ms,
+                            failover=review_failover,
+                        )
+                    )
+            review_ms = 0
+            review_failover = False
+            review_tries = {}
+
         if name == "stage.started":
             if node and node != "exit":
                 terminal = node
@@ -655,37 +691,6 @@ def summarize(
                 plan_types[_str(updates.get("task_plan_type")) or "none"] += 1
                 plan_goals += _int(updates.get("task_plan_goals"))
                 plan_edges += _int(updates.get("task_plan_edges"))
-        elif name == "stage.completed" and node == TASK_REVIEW_GATE and is_v2:
-            # One row per round, from the keys the gate publishes on every path. A gate that
-            # crashed published nothing and leaves no row: the Task stays `reviewing`.
-            updates = props.get("context_updates")
-            if isinstance(updates, Mapping):
-                verdict = _str(updates.get("task_review_verdict"))
-                if verdict:
-                    task_reviews.append(
-                        TaskReview(
-                            task=_str(updates.get("task_review_task")),
-                            source=_str(updates.get("task_review_source")),
-                            round=_int(updates.get("task_review_round")),
-                            verdict=verdict,
-                            errors=_int(updates.get("task_review_errors")),
-                            warnings=_int(updates.get("task_review_warnings")),
-                            disputed=_int(updates.get("task_review_disputed")),
-                            withdrawn=_int(updates.get("task_review_withdrawn")),
-                            dropped=_int(updates.get("task_review_dropped")),
-                            refute_served=_str(updates.get("task_review_refute_served")),
-                            review_served=_str(updates.get("task_review_review_served")),
-                            edges=_int(updates.get("task_review_edges")),
-                            edges_covered=_int(updates.get("task_review_edges_covered")),
-                            tries=sum(review_tries.values()),
-                            ms=review_ms,
-                            failover=review_failover,
-                        )
-                    )
-            # The round is over either way: what it spent belongs to it, not to the next one.
-            review_ms = 0
-            review_failover = False
-            review_tries = {}
 
     # A node's box time is its corrected wall time when the node is a coder box, so a
     # retried box stage's both attempts count as box time (issue #66).
