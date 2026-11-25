@@ -11,6 +11,7 @@ Every fixture is a scratch tree passed to `check`, so nothing here reads this ch
 """
 import importlib.util
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -59,6 +60,42 @@ class PayloadBudget(unittest.TestCase):
             "workflows/backlog/prompts/coder.md.j2",
             "workflows/backlog/workflow.fabro",
         ])
+
+    def test_a_sibling_package_whose_name_starts_with_this_one_does_not_travel(self):
+        # The filter is `workflows/<package>/`, slash included. `ralph` and `ralph-v2` share a
+        # prefix, so a filter without it would count the other arm's bytes as this one's
+        # (ralph-v2 01; task 05 adds the second package to the real tree).
+        write(self.root, "workflows/ralph/workflow.fabro", "digraph R {}")
+        write(self.root, "workflows/ralph-v2/workflow.fabro", "digraph R2 {}")
+        write(self.root, "workflows/ralph-v2/prompts/coder.md.j2", "v2")
+
+        files = cpp.package_files(self.root / ".fabro", "ralph")
+
+        self.assertEqual(sorted(files), ["workflows/ralph/workflow.fabro"])
+
+    def test_the_byte_count_is_the_server_s_measure(self):
+        # Compact separators and `ensure_ascii` on: the larger of the encodings the server may
+        # canonicalise to. A non-ASCII character is three bytes raw and six escaped, and the
+        # default separators pad every key. Either drift reports a number no dispatch sends.
+        write(self.root, "workflows/backlog/prompts/dash.md.j2", "—")
+        files = cpp.package_files(self.root / ".fabro", "backlog")
+        body = {
+            "entrypoint": "workflows/backlog/workflow.fabro",
+            "files": files,
+            "workflow_dependencies": {},
+        }
+
+        size = cpp.payload_bytes("backlog", files)
+
+        self.assertEqual(
+            size,
+            len(json.dumps(body, separators=(",", ":"), ensure_ascii=True).encode("utf-8")),
+        )
+        self.assertNotEqual(
+            size,
+            len(json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")),
+        )
+        self.assertNotEqual(size, len(json.dumps(body, ensure_ascii=True).encode("utf-8")))
 
     def test_shared_files_are_counted_in_the_byte_count(self):
         before = cpp.payload_bytes("backlog", cpp.package_files(self.root / ".fabro", "backlog"))
