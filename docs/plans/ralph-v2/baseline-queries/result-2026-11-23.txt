@@ -1,0 +1,131 @@
+ralph-v2 baseline, read 2026-11-23. Method: baseline-queries/README.md. Read-only.
+
+## Scheduler store: ralph issue runs by era (dispatched)
+era                                   runs  PRs  merged by run  lease-h/run  lease-h/merge
+11-02..11-12 (before plan review)      127   96   41 (32%)        3.11         9.62
+11-12..11-13 (after)                    17   14    6 (35%)        5.15        14.59
+11-13..11-16 (box incident)             51   45   31 (61%)        3.22         5.30
+11-17..11-23 (clean; the baseline)      89   70   43 (48%)        4.17         8.64
+Since 11-12, by planner arm: box 43 of 78 merged, hosted 37 of 79. 11-02..11-12: box 16 of 61, hosted 25 of 66.
+
+## Box failovers (box-* source), by dispatch day
+11-13: 18   11-14: 77   11-15: 172   11-16: 100   every other day 10-25..11-23: 0
+Iterate_t1 box share of wall time: 11-14 0.91, 11-15 0.44, 11-16 0.78, otherwise 1.00.
+11-13..11-16 runs with a flash-served Iteration: 28 of 47 merged; without: 7 of 16.
+
+## Before and after the 11-12 change (plan review AND the local lens round shipped together)
+                         runs  first Refuter pass   refute Tasks/run  review Tasks/run  Refute visits/run
+before, with a Refuter    103  48 of 103 (47%)      0.74              0.33              1.52
+after                     134  77 of 133 (58%)      0.76              0.34              1.63
+Older box pre-review (ralph): on 16 of 49 merged, off 32 of 68.
+
+## Holds (since 11-17, 27): hygiene 13, refuter 4, review 3, none recorded 3, push 2, ci-none 1, ci 1
+Hygiene holds since 11-09 (29): merged 26 (17 with no operator commit), open 3.
+
+## Box lens visits on clean days that ended "succeeded" or failed with no submit
+local_standards 8 of 76, local_spec 5 of 76, plan_review 0 of 102.
+Looked at four: all had printed a tool call as text.
+
+## Clean-era stage minutes (77 runs), p50 / p90 / mean
+plan_review 10.0/38.8/13.9  local_standards 11.2/22.2/15.0  local_spec 6.3/36.7/11.2
+iterate, planned 17.4/54.7/25.2  iterate, finding Tasks 17.9/73.3/31.0  refute 1.1/1.7/1.1
+standards 7.5/10.8/7.7  spec 3.4/6.0/3.7.  Pre-PR Tasks a run: mean 4.25.
+
+## z.ai credits a visit at glm-5.3 rates, off-peak (peak doubles)
+standards 173, spec 57.  Total z.ai a week: 12,626 (11-02), 31,604 (11-09), 18,508 (11-16) of 140,000.
+
+# Event analysis, 133 runs (extract-events.py)
+
+## finding-attribution.py
+plan Tasks worked per run: [(1, 8), (2, 38), (3, 44), (4, 33), (5, 8), (7, 1), (8, 1)]
+Tasks by source {'plan': 403, 'local_review': 51, 'refute': 97, 'review': 41, 'ci': 37, 'final_fix': 9}
+passed on FIRST iteration by source {'plan': '386/403', 'local_review': '49/51', 'refute': '92/97', 'review': '39/41', 'ci': '32/37', 'final_fix': '9/9'}
+iterations per Task by source {'plan': [(1, 386), (2, 16), (3, 1)], 'local_review': [(1, 49), (2, 2)], 'refute': [(1, 95), (2, 2)], 'review': [(1, 40), (2, 1)], 'ci': [(1, 35), (2, 2)], 'final_fix': [(1, 9)]}
+miss reasons [(('plan', 'validation-red'), 10), (('plan', 'no-submit/timeout'), 8), (('ci', 'no-submit/timeout'), 4), (('refute', 'blocked'), 3), (('refute', 'validation-red'), 2), (('local_review', 'no-submit/timeout'), 2), (('review', 'blocked'), 1), (('review', 'no-submit/timeout'), 1), (('ci', 'blocked'), 1), (('plan', 'blocked'), 1)]
+--- blocking findings by stage x Task attribution
+local_standards 47 [('1 plan Task', 21), ('2+ plan Tasks', 20), ('no Task edited cited file', 4), ('1 plan Task (single-Task run)', 2)]
+refute 116 [('2+ plan Tasks', 45), ('1 plan Task', 38), ('1 plan Task + finding Task(s)', 25), ('finding Task(s) only', 3), ('no-file', 2), ('no Task edited cited file', 2), ('1 plan Task + finding Task(s) (single-Task run)', 1)]
+standards 45 [('2+ plan Tasks', 24), ('1 plan Task', 9), ('no Task edited cited file', 4), ('1 plan Task + finding Task(s)', 4), ('finding Task(s) only', 4)]
+spec 6 [('1 plan Task', 4), ('1 plan Task + finding Task(s)', 1), ('2+ plan Tasks', 1)]
+local_spec 4 [('1 plan Task', 2), ('2+ plan Tasks', 1), ('1 plan Task (single-Task run)', 1)]
+--- refute by round: kind / attribution
+1 {'not_met': 16, 'defect': 49} [('1 plan Task', 36), ('2+ plan Tasks', 24), ('1 plan Task + finding Task(s)', 3), ('no Task edited cited file', 1), ('finding Task(s) only', 1)]
+2 {'not_met': 9, 'defect': 27} [('1 plan Task + finding Task(s)', 15), ('2+ plan Tasks', 14), ('no-file', 2), ('1 plan Task', 2), ('no Task edited cited file', 1), ('1 plan Task + finding Task(s) (single-Task run)', 1), ('finding Task(s) only', 1)]
+3 {'not_met': 3, 'defect': 12} [('2+ plan Tasks', 7), ('1 plan Task + finding Task(s)', 7), ('finding Task(s) only', 1)]
+
+## late-findings.py
+(2, 'file NOT edited since last refute (missed earlier)') 10
+(2, 'file edited since last refute (fix/regression zone)') 26
+(3, 'file NOT edited since last refute (missed earlier)') 3
+(3, 'file edited since last refute (fix/regression zone)') 12
+(2, 'new file') 12
+(2, 'same file as an earlier-round finding') 24
+(3, 'new file') 3
+(3, 'same file as an earlier-round finding') 12
+minutes/run by stage (133 runs)
+  iterate:plan             73.9
+  iterate:finding          51.8
+  plan                     17.8
+  plan_review              16.5
+  local_standards          14.1
+  standards                12.5
+  check                    11.7
+  final_check              10.5
+  local_spec                9.4
+  spec                      5.9
+  learn                     4.7
+  refute                    1.9
+  resolve_merge             0.3
+  open_pr                   0.2
+  pick                      0.1
+  report_merged             0.0
+
+## findings-per-visit.py
+blocking findings per refute visit (visit,count)->visits [((1, 0), 83), ((1, 1), 39), ((1, 2), 8), ((1, 3), 2), ((1, 4), 1), ((2, 0), 35), ((2, 1), 16), ((2, 2), 5), ((2, 3), 2), ((2, 4), 1), ((3, 0), 14), ((3, 1), 9), ((3, 2), 3)]
+iteration minutes by source: total/run, visits, p50
+  plan          73.9 min/run  n=428 p50=15.7 p90=50.4
+  ci            18.4 min/run  n=45 p50=45.0 p90=120.0
+  refute        13.2 min/run  n=100 p50=11.1 p90=38.6
+  local_review   9.1 min/run  n=53 p50=14.6 p90=54.5
+  review         8.5 min/run  n=43 p50=14.2 p90=69.7
+  final_fix      2.6 min/run  n=9 p50=24.7 p90=70.5
+Counter({1: 74, 2: 33, 3: 26})
+what forced a further Refute round: Counter({'refute': 50, 'refute+review': 20, 'review': 15})
+minutes from one Refute visit to the next: n=85 p50=41 p90=105 mean=54
+
+## task-predictors.py
+-- acceptance statements plan
+   [0,2) n=  2 (0%) refuter-hit=0% any-hit=0% share of refuter hits=0%
+   [2,4) n= 51 (13%) refuter-hit=10% any-hit=16% share of refuter hits=10%
+   [4,6) n=189 (47%) refuter-hit=9% any-hit=23% share of refuter hits=34%
+   [6,9) n=152 (38%) refuter-hit=16% any-hit=32% share of refuter hits=50%
+   [9,99) n=  9 (2%) refuter-hit=33% any-hit=44% share of refuter hits=6%
+-- files edited plan
+   [0,2) n= 86 (21%) refuter-hit=9% any-hit=17% share of refuter hits=16%
+   [2,3) n=110 (27%) refuter-hit=8% any-hit=22% share of refuter hits=18%
+   [3,5) n=126 (31%) refuter-hit=14% any-hit=28% share of refuter hits=36%
+   [5,8) n= 56 (14%) refuter-hit=20% any-hit=36% share of refuter hits=22%
+   [8,99) n= 25 (6%) refuter-hit=16% any-hit=36% share of refuter hits=8%
+-- edit calls plan
+   [0,5) n= 80 (20%) refuter-hit=2% any-hit=11% share of refuter hits=4%
+   [5,10) n=102 (25%) refuter-hit=10% any-hit=23% share of refuter hits=20%
+   [10,20) n=141 (35%) refuter-hit=14% any-hit=30% share of refuter hits=40%
+   [20,40) n= 69 (17%) refuter-hit=26% any-hit=41% share of refuter hits=36%
+   [40,999) n= 11 (3%) refuter-hit=0% any-hit=9% share of refuter hits=0%
+-- duration min plan
+   [0,10) n=130 (32%) refuter-hit=7% any-hit=18% share of refuter hits=18%
+   [10,20) n= 98 (24%) refuter-hit=15% any-hit=31% share of refuter hits=30%
+   [20,40) n=103 (26%) refuter-hit=11% any-hit=28% share of refuter hits=22%
+   [40,999) n= 72 (18%) refuter-hit=21% any-hit=28% share of refuter hits=30%
+ALL plan Tasks n 403 refuter-hit 50 any-hit 103 | finding Tasks n 189 refuter-hit 40 any-hit 49
+last plan Task hit rate 0.16541353383458646 earlier 0.1037037037037037
+nacc p50 5 ctx p50 4779 files p50 3
+refute models Counter({'openai/gpt-6-luna': 218})
+luna visits 218 cost p50 $0.0054 p90 $0.0108 total $1.37 min p50 1.1 p90 1.7
+[(('iterate_t1', 'box-a'), 303), (('iterate_t1', 'box-b'), 360), (('iterate_t1', 'none'), 14), (('local_spec', 'box-a'), 58), (('local_spec', 'box-b'), 73), (('local_spec', 'none'), 5), (('local_standards', 'box-a'), 59), (('local_standards', 'box-b'), 73), (('local_standards', 'none'), 7), (('plan_review', 'box-a'), 77), (('plan_review', 'box-b'), 90), (('plan_review', 'none'), 11)]
+
+## box-lens-vs-refuter.py
+runs by (box lens found error, Refuter round 1 found blocker): {(False, False): 59, (True, True): 17, (False, True): 33, (True, False): 24}
+P(refuter fails | box found) = 0.41  P(refuter fails | box clean) = 0.36
+pick visits per run: max 20 p50 7
+
