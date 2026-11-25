@@ -413,8 +413,7 @@ The stylesheet is the authority; this table reproduces it with the fallback chai
 
 | Stage | Class | Model | Where it runs | Effort | Fallbacks |
 |---|---|---|---|---|---|
-| `plan` (hosted arm) | `.plan` | `kimi-k3` | hosted (Venice/Kimi) | — | `zai:glm-5.3-flash`, `zai:glm-5.3`, `orfallback:qwen3.8-27b` |
-| `plan` (box arm) | `.plan` | the run's box (`coders-a`…`coders-d`) | local strix box, `qwen3.8-flash-next` | medium | `zai:glm-5.3-flash`, `openai:gpt-6-luna` |
+| `plan` | `.plan` | the run's box (`coders-a`…`coders-d`) | local strix box, `qwen3.8-flash-next` | medium | `zai:glm-5.3-flash`, `openai:gpt-6-luna` |
 | `plan_review` | `.plan-review` | the run's box | local box | medium | same as above |
 | `iterate_t1` | `.coder` | the run's box | local box | medium | same as above |
 | `iterate_t2` | `.coder-t2` | `glm-5.3-flash` | z.ai | — | `zai:glm-5.3` |
@@ -439,9 +438,10 @@ Notes a reader will want:
   `features.reasoning: false`, and replaying its reasoning blocks kills the stage.
 - **What actually served the requests.** Since 2026-11-12 the store records 801 agent stages
   served by `zai/glm-5.3-flash` against 46 by `kimi/kimi-k3`. Kimi's weekly quota runs out
-  mid-week, so the "hosted frontier" stages (`plan` hosted arm, `standards`, `spec`) spend most
-  of their time on the first z.ai fallback. The box stages account for the rest
-  (`coders-a`…`coders-d`, 860 stages), and `gpt-6-luna` for 200 Refuter stages.
+  mid-week, so the "hosted frontier" stages (`standards`, `spec`, and `plan`'s hosted arm
+  until the box-plan trial closed) spend most of their time on the first z.ai fallback. The box
+  stages account for the rest (`coders-a`…`coders-d`, 860 stages), and `gpt-6-luna` for 200
+  Refuter stages.
 - **The plan arm is real.** 154 of the 311 runs dispatched since 2026-10-28 planned on the
   run's own box rather than on the hosted chain (`(issue_number // 2) % 2 == 1`). The trial
   closed on 2026-11-24 for the box (ADR 0034 D5), so every run plans there since.

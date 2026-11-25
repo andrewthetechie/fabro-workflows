@@ -285,9 +285,10 @@ loudly:
 ```
 
 `backlog` has both; `pr-review` only `.rebase` (its merge-phase classes stay hosted).
-`backlog`'s `.refute-fix` and `.merge-resolve` name the box the same way. The planner,
-`.plan { model: glm-5.3; }`, is hosted and names no box, so it cannot queue behind another
-run's lease; it replaced the box's `.improve` on 2026-10-21 (ADR 0030). Every class that
+`backlog`'s `.refute-fix` and `.merge-resolve` name the box the same way, and so does the
+planner in `backlog` and `ralph` since the box-plan trial closed (ralph-v2 task 03, ADR 0034 D5).
+It had replaced the box's `.improve` on 2026-10-21 (ADR 0030) as a hosted glm-5.3 stage that
+named no box and so could not queue behind another run's lease. Every class that
 does name a box must name the **same** one: the scheduler leases exactly one per run, so a
 rule pointing at the other one would queue behind whoever holds it. The scheduler will pass `args.inputs.coder_pool = "coders-a"` on the intent;
 a hand-fired run passes nothing and gets the pinned `coders-a` box (the both-boxes
@@ -1283,7 +1284,9 @@ curl -fsS "$B/api/background/measure?format=md"
 50% off-peak, computed per run from its dispatch time. Only `decompose` and `plan` are priced:
 the store keeps tokens per node and no node -> model map, so any other node reports tokens only
 and `credits_per_visit` is null. `plan` in the box arm is not priced either, because it ran on a
-box and costs no credits.
+box and costs no credits. The other bit is still priced at glm-5.3's rates, although `plan` has
+run on the box on both bits since the box-plan trial closed (ralph-v2 task 03), so its credits
+are right only for runs dispatched before that reached `main`.
 
 **`SCHEDULER_PRE_REVIEW_ARM_SINCE`** is the first `dispatched_at` whose pre-review arm is a
 measurement. Before it the arm was the ralph trial's bit, so those runs are left out. Its

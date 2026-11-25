@@ -5,9 +5,9 @@ Question (00-overview.md): does the planner belong on a hosted model or on the r
 coder box? The trial re-opened the question ADR 0030 closed on 2026-10-21 in favour of
 hosted glm-5.3, and its answer reverses that decision (ADR 0034 D5).
 
-Window: 2026-10-28 to 2026-11-24, UTC (inclusive dates; every run dispatched in it).
-Closed by the operator on 2026-11-24 (ralph-v2 E19), before task 03 of that series made
-the box the only arm in both stylesheets.
+Window: 2026-10-28 to 2026-11-24, UTC, inclusive dates; a run is in the window by its
+dispatch time. Closed by the operator on 2026-11-24 (ralph-v2 E19), before task 03 of that
+series made the box the only arm in both stylesheets.
 
 VERDICT: the box wins. `plan` runs on the run's own leased box in `backlog` and `ralph`,
 `.plan` is one stylesheet line in each, and the `plan` stage's manifest `box` is `true`
@@ -57,14 +57,17 @@ The earlier window's counts are kept here for the record, not read against the b
 
 The verdict, by the trial's own rule
 ------------------------------------
-The trial's rule (00-overview.md, *Decision*): the box arm wins if its merge rate is no
-worse, and then "the box planner's credit saving decides it".
+The trial's rule (00-overview.md, *Decision*): "The box arm wins if its merge rate is no
+worse and its coder and rework minutes per task are no worse by more than their week-to-week
+noise. If it wins, the box planner's credit saving decides it". This record holds the merge
+rate, and `ralph`'s runs only: the minutes per task and `backlog`'s two arms are not in it.
 
-The later window is no worse — 52% against 51%, level inside the noise — so the credit
-saving decides, and it is the box's. The planner was the largest z.ai charge the factory
-had: in the week the quota ran out (2026-10-22..27) `backlog`'s `plan` on glm-5.3 was 22% of
-all credits, and `ralph`'s `plan` added 6.7% through its kimi-k3 fallback. A box planner
-spends no credit at all, and it spends the lease that is already bought for the run.
+The later window's merge rate is no worse — 52% against 51%, level inside the noise — so on
+it the credit saving decides, and it is the box's. The planner was the largest z.ai charge
+the factory had: in the week the quota ran out (2026-10-22..27) `backlog`'s `plan` on
+glm-5.3 was 22% of all credits, and `ralph`'s `plan` added 6.7% through its kimi-k3
+fallback. A box planner spends no credit at all, and it spends the lease that is already
+bought for the run.
 
 What the close changed
 ----------------------
@@ -76,7 +79,8 @@ What the close changed
 - Timeouts are unchanged (ralph 80m, backlog 60m). Each is still the 2026-11-11 two-slot
   doubling, and neither is measured on the box.
 - `ops/scheduler`'s planner report still groups by the arm bit. For a run dispatched after
-  2026-11-24 that bit is not an arm.
+  this close reached `main` that bit is not an arm; a run dispatched between the decision
+  and the push still carries one.
 
 Recorded in ADR 0034 D5, which reverses ADR 0030 D1. The graphs' comments above `plan` carry
 the numbers that matter to the node.
