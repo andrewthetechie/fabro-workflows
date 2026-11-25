@@ -1,7 +1,8 @@
 # The box-plan trial
 
-**Status:** running since 2026-10-28. It re-opens one question that ADR 0030 closed on
-2026-10-21: does the planner belong on a hosted model or on the run's own coder box?
+**Status:** closed 2026-11-24: the box wins (ADR 0034 D5), result-2026-11-24.txt. The
+trial re-opened one question that ADR 0030 closed on 2026-10-21: does the planner belong on
+a hosted model or on the run's own coder box?
 
 ## Why now
 

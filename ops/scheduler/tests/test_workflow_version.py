@@ -367,7 +367,8 @@ def test_read_box_stages_reads_the_real_generated_block(tmp_path):
     got = read(tmp_path, "ralph")
     assert got == {sid: ("true" if box is True else "plan-arm")
                    for sid, box in stages.items() if box is not False}
-    assert "iterate_t1" in got and got["plan"] == "plan-arm"
+    assert "iterate_t1" in got and got["plan"] == "true", \
+        "the planner is a plain box stage since the box-plan trial closed"
 
 
 def test_read_box_stages_returns_empty_for_a_tree_or_block_it_cannot_read(tmp_path):

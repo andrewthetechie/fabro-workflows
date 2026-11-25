@@ -202,7 +202,7 @@ issue that did have actionable work.
 
 | Stage | Model | Cap | Median / p90 |
 |---|---|---|---|
-| `plan` | `kimi-k3` (hosted) unless `(issue_number // 2) % 2 == 1`, in which case **the run's own box** (`qwen3.8-flash-next`) runs it — the box-plan trial, about half the runs | 80m | 9.4 / 28.3 overall; box arm 12.5 / 40.0, hosted arm 8.7 / 13.2 |
+| `plan` | the run's leased box (the run's `coder_pool`), `reasoning_effort: medium` — every run since the box-plan trial closed on 2026-11-24 (ADR 0034 D5) | 80m | 9.4 / 28.3 overall; box arm 12.5 / 40.0, hosted arm 8.7 / 13.2 |
 | `plan_review` | the run's leased box, `reasoning_effort: medium` | 40m | 9.5 / 28.0 |
 | `plan_gate`, `plan_review_prep`, `plan_review_gate` | shell | 1m / 2m / 1m | < 0.1 |
 
@@ -443,7 +443,8 @@ Notes a reader will want:
   of their time on the first z.ai fallback. The box stages account for the rest
   (`coders-a`…`coders-d`, 860 stages), and `gpt-6-luna` for 200 Refuter stages.
 - **The plan arm is real.** 154 of the 311 runs dispatched since 2026-10-28 planned on the
-  run's own box rather than on the hosted chain (`(issue_number // 2) % 2 == 1`).
+  run's own box rather than on the hosted chain (`(issue_number // 2) % 2 == 1`). The trial
+  closed on 2026-11-24 for the box (ADR 0034 D5), so every run plans there since.
 
 ---
 

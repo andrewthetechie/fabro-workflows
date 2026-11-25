@@ -659,7 +659,7 @@
             "path": "/tmp/fabro/improve_result.json",
             "schema": "improve_result"
           },
-          "box": "plan-arm"
+          "box": true
         },
         "coder": {
           "live": true,
@@ -1747,7 +1747,7 @@
             "path": "/tmp/fabro/task_list.json",
             "schema": "task_list"
           },
-          "box": "plan-arm"
+          "box": true
         },
         "iterate_t1": {
           "live": true,

@@ -130,25 +130,17 @@ digraph Backlog {
             // `coders` group (ADR 0007, task 04 removed it with the LiteLLM provider);
             // the escape hatch fires an explicit `coder_pool` so it never relies on this.
             //
-            // `.plan` is the planner (ADR 0030): `glm-5.3` with no `reasoning_effort`,
-            // exactly like `.decomp`, so it runs a configuration already proven on this
-            // server. It does the dossier's job on a hosted model and also writes the edit
-            // plan the coder follows -- the strong-model-plans, small-model-edits split. It
-            // replaced `.improve`, which ran the same job on the run's own box at 24% of all
-            // stage time (#25); the box now only codes. It is one more glm-5.3 stage per task
-            // against z.ai's 3 concurrent sessions (ADR 0003), which is the cost the close of
-            // the trial accepted.
-            //
-            // THE BOX-PLAN TRIAL (2026-10-28, docs/plan-box-trial/). Half the runs plan on
-            // the run's own box instead: both boxes now serve qwen3.8-flash-next (QFN) at
-            // 33-45 output tok/s against the 10 of the model that lost #25, and glm-5.3
-            // `plan` was 22% of the z.ai credits of the week the quota ran out. The arm is
-            // `(issue_number // 2) % 2`: 1 is the box, 0 is glm-5.3. Not parity, because
-            // the scheduler already sends even issues to ralph; this splits backlog's odd
-            // numbers (and ralph's even ones, which carry the same rule) in half. An
-            // unbound issue_number (a hand fire without it) reads 0 and plans hosted. The
-            // arm is visible after the fact as the `plan` stage's model in fabro's usage.
-            // `fabro preflight -I issue_number=N` shows which arm N gets.
+            // `.plan` is the planner (ADR 0030), and the box-plan trial's verdict moved it:
+            // it runs on the run's own leased box, `reasoning_effort: medium`, since the trial
+            // closed on 2026-11-24 (ADR 0034 D5 reverses ADR 0030 D1; the record is
+            // docs/plan-box-trial/result-2026-11-24.txt). Half of each lane's runs planned
+            // here from 2026-10-28 against glm-5.3 on the other half, because both boxes serve
+            // qwen3.8-flash-next at 33-45 output tok/s against the 10 of the model that lost
+            // #25, and glm-5.3 `plan` was 22% of the z.ai credits of the week the quota ran
+            // out. The box arm merged no worse over the later window the result file reads,
+            // so the trial's own rule -- the credit saving decides -- closed it. It does the
+            // dossier's job and also writes the edit plan the coder follows. An unbound
+            // `coder_pool` falls back to `coders-a`, as everywhere else here.
             //
             // `.extra-decomp` (extra_decompose) and `.merge-resolve` (resolve_merge, and the
             // imported resolve_base) run on the run's own box (2026-10-27). The box is leased
@@ -158,9 +150,8 @@ digraph Backlog {
             // run's own code, and extra_decompose is read-only and scoped to the findings it
             // is handed. extra_decompose used to share `.review-frontier` with `spec`; it
             // has its own class so the reviewer stays hosted. NOT moved, and why: `ci_fix_t1`
-            // ran here before ADR 0011 D3 and died at its 20m timeout on 3 of 12 visits;
-            // `plan` lost to the box in the #25 trial (ADR 0030); every reviewer's value is a
-            // model unlike the coder's.
+            // ran here before ADR 0011 D3 and died at its 20m timeout on 3 of 12 visits, and
+            // every reviewer's value is a model unlike the coder's.
             //
             // The review classes are split one-per-node rather than sharing a `.review`
             // rule. They used to share it, which meant the three per-task reviewers and
@@ -188,11 +179,7 @@ digraph Backlog {
         model_stylesheet="
             *                 { model: coders-a; }
             .decomp           { model: glm-5.3; }
-{% if (inputs.issue_number | default(0) | int) // 2 % 2 == 1 %}
             .plan             { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
-{% else %}
-            .plan             { model: glm-5.3; }
-{% endif %}
             .coder            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .coder-t2         { model: glm-5.3-flash; }
             .coder-t3         { model: kimi-for-coding; }
@@ -699,12 +686,12 @@ fi"]
     // excluded: the 429-minute `plan` visit in run 01M5B0G5ZVJ2X5X5KZZACGKFRK is the
     // 10-19 disk fill (`~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md`), not a stall.
     //
-    // 30m since the box-plan trial (2026-10-28): the box arm runs this node on QFN, and a
-    // timeout serves both arms. Re-measured per visit on glm-5.3, 2026-10-21..28 (264
+    // 30m since the box-plan trial (2026-10-28). It runs on the box only since that trial
+    // closed (2026-11-24, ADR 0034 D5), and the number is still the two-slot doubling of
+    // 2026-11-11 and unmeasured. Re-measured per visit on glm-5.3, 2026-10-21..28 (264
     // visits): p50 5.5m, p95 11.6m, heaviest 57k output tokens at ~51 tok/s. QFN on the
     // boxes emits 33-45 output tok per wall-second, so p95 projects to ~16m and the
-    // heaviest visit to ~26m. The hosted arm's stall now costs 30m instead of 20m; that
-    // is the price of one node serving both. Unmeasured on QFN: re-time from the trial.
+    // heaviest visit to ~26m.
     // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
     plan [label="Plan task", class="plan", timeout="60m", max_retries=1, prompt="@prompts/plan.md.j2"]
 
@@ -1380,8 +1367,9 @@ echo demoted"]
     // rest do not. It is deliberately NOT `N % 2`: that is the ralph trial's bit
     // (`dispatch.choose_workflow`: even -> ralph, odd -> backlog), and under the first arm
     // this node ran on every backlog run and on no ralph run, so the pre-review could not be
-    // measured and it skewed the trial. Bit 1 is the box-plan trial's arm
-    // (`issue_number // 2 % 2`). Three trials, three bits; never reuse one (more-local-
+    // measured and it skewed the trial. Bit 1 was the box-plan trial's arm (the second bit
+    // of the issue number); it is free again since that trial closed on 2026-11-24 (ADR
+    // 0034 D5). Three trials, three bits; never reuse one (more-local-
     // inference, the traps list). The arm is published as `pre_review_arm`, and its outcome as
     // `pre_review_verdict`, on every visit of the next node, so `fabro events` and the run
     // summary say which arm a run was in and what the pre-review did. **To pre-review every

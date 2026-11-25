@@ -27,13 +27,12 @@ digraph Ralph {
         //
         //   *                 the fallback. Every node that names no class resolves here; every
         //                     class below is explicit so a stylesheet mistake is visible.
-        //   .plan             kimi-k3 (O4, O5): the planner runs once per run on the hosted
-        //                     frontier chain. It is the one stage that sees the whole issue,
-        //                     so it gets the strongest of the three. EXCEPT in the box-plan
-        //                     trial (2026-10-28, docs/plan-box-trial/): when
-        //                     `(issue_number // 2) % 2` is 1 it runs on the run's own box
-        //                     (QFN), the same rule as backlog's `.plan`. backlog's stylesheet
-        //                     comment has the reasoning.
+        //   .plan             the run's leased box, reasoning_effort medium: the planner runs
+        //                     on the run's own box since the box-plan trial closed (2026-11-24,
+        //                     ADR 0034 D5), and the trial's record is
+        //                     docs/plan-box-trial/result-2026-11-24.txt. backlog's stylesheet
+        //                     comment has the reasoning, and the rule is the same in both
+        //                     graphs.
         //   .coder            the run's leased box, reasoning_effort medium (measured on the
         //                     box: `high` is 1.38x the tokens of no parameter). The
         //                     `default('coders-a')` filter is LOAD-BEARING and single quotes are
@@ -66,11 +65,7 @@ digraph Ralph {
         // fallback. Every model named here must also exist in the server settings overlay.
         model_stylesheet="
             *                 { model: coders-a; }
-{% if (inputs.issue_number | default(0) | int) // 2 % 2 == 1 %}
             .plan             { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
-{% else %}
-            .plan             { model: kimi-k3; }
-{% endif %}
             .coder            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .coder-t2         { model: glm-5.3-flash; }
             .coder-t3         { model: kimi-for-coding; }
@@ -261,11 +256,12 @@ else echo 'agent guide: could not write .codex/instructions.md' >&2; fi
 jq -r '.body // \"\"' /tmp/fabro/issue.json 2>/dev/null | awk '/^## Task map$/{s=1; next} s && /^## /{s=0} s && !/^[[:space:]]*$/{print}' > /tmp/fabro/task-map.md
 if [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi"]
 
-    // The plan (O4, O16, C2). It runs ONCE per run, before the loop, on the hosted frontier
-    // chain: `.plan` is kimi-k3 with `zai:glm-5.3-flash`, `zai:glm-5.3` and then
-    // `orfallback:qwen3.8-27b` behind it (O5) -- or, in the box-plan trial's box arm, on the
-    // run's own box. It is not backlog's `plan`, which plans one already-decomposed task from a
-    // dossier; this one reads the whole issue and writes the Task list the loop works.
+    // The plan (O4, O16, C2). It runs ONCE per run, before the loop, on the run's own leased
+    // box since the box-plan trial closed (2026-11-24, ADR 0034 D5; the trial's record is
+    // docs/plan-box-trial/result-2026-11-24.txt). O5's hosted frontier chain (`kimi-k3` with
+    // flash, glm-5.3 and qwen behind it) is no longer this node's. It is not backlog's `plan`,
+    // which plans one already-decomposed task from a dossier; this one reads the whole issue
+    // and writes the Task list the loop works.
     //
     // timeout="20m" is the plan trial's number, not a new measurement: the trial's `plan`
     // node did the same job -- read an issue and a checkout, write an ordered task list --
@@ -278,8 +274,9 @@ if [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi"]
     // Re-derived 2026-10-28 as 40m, for both arms of the box-plan trial. Measured per visit,
     // 2026-10-21..28 (62 visits, kimi-k3 and its fallbacks): p50 9.4m, p95 17.8m, heaviest
     // 73k output tokens, and 7 visits hit the 20m timeout. The heaviest visit projects to
-    // ~34m on QFN (33-45 tok/s) and ~40m on the chain's flash rung (30.9 tok/s), which now
-    // carries this node while Kimi's quota is spent. Unmeasured on QFN: re-time from the trial.
+    // ~34m on QFN (33-45 tok/s), which is what this node runs on: it runs on the box only
+    // since the trial closed (2026-11-24, ADR 0034 D5), and the number is still the two-slot
+    // doubling of 2026-11-11, unmeasured.
     // 2026-11-11: timeout DOUBLED for two-slot boxes (each slot runs slower; more throughput, longer tasks). Unmeasured on two slots: re-time from runs.
     plan [label="Plan the issue", class="plan", timeout="80m", max_retries=1, prompt="@prompts/plan.md.j2"]
 

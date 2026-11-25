@@ -81,9 +81,10 @@ PEAK_UTC_HOURS = (6, 10)  # 14:00-18:00 UTC+8
 PEAK_WEEKDAYS = frozenset({0, 1, 2, 3, 4})  # Monday to Friday, as `peak.py` reads `mon-fri`
 
 # Which nodes' tokens the credit figure prices, and on which model. `decompose` is hosted in
-# both graphs; `plan` is hosted unless the box-plan trial's arm is 1 (`(issue // 2) % 2 == 1`,
-# C1's `"plan-arm"`), where it runs on the box and costs no credits. A node outside this table
-# is reported as tokens only, because the store keeps no node -> model map.
+# both graphs; `plan` costs credits only in the half of the box-plan trial that ran it on
+# glm-5.3 (`(issue // 2) % 2 == 0`, the side C1 records as hosted), and since the trial closed
+# on 2026-11-24 it runs on the box and prices nothing. A node outside this table is reported as
+# tokens only, because the store keeps no node -> model map.
 PRICED = ("decompose", "plan")
 PRICED_MODEL = "zai/glm-5.3"
 
@@ -305,12 +306,13 @@ def planner_visits(
 
     Grouped by workflow, by whether a context pack existed at dispatch (`had_pack`, D21), and by
     the box-plan trial's arm — a pack changes `plan`'s credits in both arms of that trial, so a
-    figure that did not stratify would confound the two.
+    figure that did not stratify would confound the two. For a run dispatched after the trial
+    closed (2026-11-24) the bit is not an arm: `plan` runs on the box either way.
 
     Credits are computed per run, at the run's peak or off-peak factor, and only for the two
-    nodes in `PRICED`: `decompose` is hosted in both graphs, and `plan` is hosted except in the
-    box arm. Every other node is reported as tokens only, because the store keeps no
-    node -> model map to price it with.
+    nodes in `PRICED`: `decompose` is hosted in both graphs, and `plan` was hosted except in the
+    box arm that became the only arm when the trial closed. Every other node is reported as
+    tokens only, because the store keeps no node -> model map to price it with.
     """
     by_run = {row["run_id"]: row for row in history}
     groups: dict[tuple[str, str, int, int], dict[str, float]] = defaultdict(

@@ -109,7 +109,7 @@ class Box(unittest.TestCase):
             "backlog": {
                 "coder": True,
                 "extra_decompose": True,
-                "plan": "plan-arm",
+                "plan": True,
                 # Part B: the whole-branch pre-review runs on the run's own box.
                 "pre_review": True,
                 "resolve_merge": True,
@@ -127,7 +127,7 @@ class Box(unittest.TestCase):
                 "learn": True,
                 "local_spec": True,
                 "local_standards": True,
-                "plan": "plan-arm",
+                "plan": True,
                 "plan_review": True,
                 "resolve_base": True,
             },
