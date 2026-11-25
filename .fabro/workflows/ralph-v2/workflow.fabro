@@ -3,8 +3,9 @@ digraph RalphV2 {
         goal="RalphV2: plan the agent-labelled issue, implement it one task per fresh coder session, with each Task planned and reviewed on the box, until a refuter cannot break it, then review it and merge the PR",
         // The graph stall watchdog, as v1 sets it: a command node emits only (started,
         // completed) and its output never enters the event stream, so `watch_checks`'
-        // `sleep 30` poll is invisible to it, and 60m keeps EVERY node's own timeout
-        // strictly below it -- a node timeout ROUTES, a watchdog cancel does not.
+        // `sleep 30` poll is invisible to it, and 60m keeps every command node's own
+        // timeout strictly below it (the tallest command node is `watch_checks` at 50m) --
+        // a node timeout ROUTES, a watchdog cancel does not.
         stall_timeout="60m",
         // The failure-signature breaker counts run-wide and never resets on success, and
         // this loop cycles through command nodes many times a Task, so the default of 3
@@ -37,7 +38,8 @@ digraph RalphV2 {
         // run at compile, and an unescaped `"` would end this DOT string. `coder_pool` is
         // never bound in [run.inputs] (invariants-graph). NO CLASS MAY NAME glm-4.7: it is
         // the one catalog model with `features.reasoning: false`, and replaying its
-        // reasoning block kills the stage with no retry and no fallback.
+        // reasoning block kills the stage with no retry and no fallback. Every model
+        // named here must also exist in the server settings overlay.
         model_stylesheet="
             *                 { model: coders-a; }
             .plan             { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }

@@ -39,9 +39,9 @@ graph = "workflow.fabro"
 # The adversarial reviewer (`.refute`): try glm-5.3-flash, then an OpenRouter model that
 # is neither OpenAI nor GLM, so an OpenAI outage still leaves an independent Refuter.
 "gpt-6-luna" = ["zai:glm-5.3-flash", "orfallback:qwen3.8-27b"]
-# The ladder's first hosted rung and the Task reviewers' fallback class. Both escalate UP
-# to full glm-5.3 rather than sideways, so an outage degrades into a better model and
-# never a worse one. Non-recursive, so this row never applies to a coder chain.
+# The ladder's first hosted rung and the Task reviewers' fallback class. Flash falls to
+# kimi-for-coding, the ladder's next hosted rung (E16); that row goes to glm-5.3.
+# Non-recursive, so this row never applies to a coder chain.
 "glm-5.3-flash" = ["kimi:kimi-for-coding"]
 kimi-for-coding = ["zai:glm-5.3"]
 # The two hosted reviewers, and any stage a fallback row left here. See the header.
