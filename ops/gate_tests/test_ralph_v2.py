@@ -12,6 +12,7 @@ schemas are the plan's assets byte for byte, because the plan is the review of t
 """
 
 import sys
+from pathlib import Path
 
 from harness import (RAPH2, REPO_ROOT, WF, count, diff, edges, extract, run, script_nodes,
                      syntax_ok, write)
@@ -75,6 +76,18 @@ ASSETS = REPO_ROOT / "docs/plans/ralph-v2/assets"
 V2 = WF / "ralph-v2"
 
 
+def same_bytes(a: Path, b: Path) -> str:
+    """`""` only when both files exist and `diff` finds no difference between them.
+
+    Not `diff(a, b)` alone: `diff` names a missing file on stderr only, which the harness
+    drops, so a deleted schema, prompt or asset reads as identical to its original.
+    """
+    for p in (a, b):
+        if not p.is_file():
+            return f"missing: {p}"
+    return diff(a, b)
+
+
 def test_the_new_prompts_are_the_plan_s_assets(ck):
     """Task 06 copies the plan's three prompts unchanged, and each one is a read-only stage's
     only output through `submit`: a prompt that names a `/tmp/fabro` path would be naming an
@@ -83,7 +96,7 @@ def test_the_new_prompts_are_the_plan_s_assets(ck):
         copy = V2 / f"prompts/{name}.md.j2"
         text = copy.read_text()
         ck(f"{name}.md.j2: byte for byte the plan's prompt", "",
-           diff(ASSETS / f"prompts/{name}.md.j2", copy))
+           same_bytes(ASSETS / f"prompts/{name}.md.j2", copy))
         ck(f"{name}.md.j2: names no /tmp/fabro path", "0", count("/tmp/fabro", text, flags="F"))
         ck(f"{name}.md.j2: submit is the only result", "1",
            count("Only a result written by `submit`", text, flags="F"))
@@ -94,7 +107,8 @@ def test_the_new_schemas_are_the_plan_s_assets(ck):
     generator inlines them into a `workflow.toml`, so the asset is still what was reviewed."""
     for name in ("iteration_v2", "task_plan", "task_refute", "task_review"):
         ck(f"{name}.schema.json: byte for byte the plan's schema", "",
-           diff(ASSETS / f"schemas/{name}.schema.json", WF / f"_io/schemas/{name}.schema.json"))
+           same_bytes(ASSETS / f"schemas/{name}.schema.json",
+                      WF / f"_io/schemas/{name}.schema.json"))
 
 
 def test_iterate_is_ralphs_prompt_plus_task_06_s_edits(ck, tmp_path):
@@ -107,7 +121,7 @@ def test_iterate_is_ralphs_prompt_plus_task_06_s_edits(ck, tmp_path):
              str(WF / "ralph/prompts/iterate.md.j2"), str(out)])
     ck("the replacements script still fits ralph's iterate prompt", "0", r.rc)
     ck("ralph-v2's iterate prompt is the script's output", "",
-       diff(out, V2 / "prompts/iterate.md.j2"))
+       same_bytes(out, V2 / "prompts/iterate.md.j2"))
 
 
 def test_the_fourth_rung_is_gone_from_the_edges(ck):
