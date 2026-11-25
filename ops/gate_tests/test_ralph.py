@@ -4,7 +4,9 @@ rather than the text, because a wrong route is invisible to `fabro validate`."""
 
 
 import json
+import re
 import time
+import tomllib
 
 from harness import (ORIG_PATH, RAPH, SHARED, WF, cat, count, edges, extract, git,
                      grep, head1, jq, jq_n, lastjson, mkreadok, present, rebase, rm,
@@ -2059,6 +2061,31 @@ def test_ralph_local_review_gate(ck, tmp_path):
     ck("lr gate both missing: drops the round and exits 0", "0|pass|1", f"{st['rc']}|{route()}|{ntasks()}")
     setup(std=[f("STD-001", "error")], tasks="not json"); go()
     ck("lr gate broken tasks.json: exits 0 and passes", "0|pass", f"{st['rc']}|{route()}")
+
+
+RALPH_TOML = WF / "ralph" / "workflow.toml"
+
+
+def stylesheet_models(graph):
+    """{class: model} for a graph's model_stylesheet, as fabro resolves a class to its rule."""
+    m = re.search(r'model_stylesheet="(.*?)"', graph.read_text(), re.S)
+    assert m, "no model_stylesheet in the graph"
+    return dict(re.findall(r"\.([a-z0-9-]+)\s*\{\s*model:\s*([^;]+?)\s*;", m.group(1)))
+
+
+def test_ralph_hosted_reviews(ck):
+    """The two pre-PR reviewers run hosted on glm-5.3, the `glm-5.3` chain is hy4-preview then
+    terra, and no `kimi-k3` row survives (ADR 0034; ralph-v2 04 puts both arms' reviewers on
+    glm-5.3 and E15 leaves no kimi-k3 anywhere). Read from what fabro reads: the graph's
+    stylesheet and workflow.toml."""
+    models = stylesheet_models(RAPH)
+    for node, cls in (("standards", "review-standards"), ("spec", "review-spec")):
+        ck(f"hosted: {node} is the .{cls} stage", "1", count(f'class="{cls}"', RAPH.read_text(), flags="F"))
+        ck(f"hosted: .{cls} resolves to glm-5.3", "glm-5.3", models.get(cls, ""))
+    fallbacks = tomllib.loads(RALPH_TOML.read_text())["run"]["model"]["fallbacks"]
+    ck("hosted: the glm-5.3 chain is hy4-preview then terra",
+       "orfallback:hy4-preview|openai:gpt-5.6-terra", "|".join(fallbacks.get("glm-5.3", [])))
+    ck("hosted: no kimi-k3 fallback row", "False", str("kimi-k3" in fallbacks))
 
 
 def test_ralph_local_review_edges(ck):

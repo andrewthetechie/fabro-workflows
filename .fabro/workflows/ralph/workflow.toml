@@ -4,26 +4,22 @@ _version = 1
 graph = "workflow.fabro"
 
 # Model escalation fallbacks. A model that errors or is rate-limited falls through
-# to the next one. Two rows differ from backlog's on purpose, and the graph comment
+# to the next one. One row differs from backlog's on purpose, and the graph comment
 # above `model_stylesheet` carries the reasoning:
 #
-#   kimi-k3 = ["zai:glm-5.3-flash", "zai:glm-5.3", "orfallback:qwen3.8-27b"]
-#     Reversed (O5): ralph's three hosted stages -- plan, standards, spec -- must reach
-#     z.ai BEFORE OpenRouter, because OpenRouter is only ever a fallback here, and
-#     OpenRouter is on a fixed $100 budget. Flash first since 2026-10-28: Kimi's weekly
-#     quota runs out mid-week, so this row carries those stages for days at a time,
-#     and z.ai bills flash at a third of glm-5.3's credits per token. glm-5.3 stays as
-#     the rung for a flash-only fault.
-#
-#   "glm-5.3" = ["orfallback:qwen3.8-27b"]
-#     No `kimi:kimi-k3` rung. `.coder-t4` is the top rung of the Iteration ladder and
-#     requests glm-5.3; backlog's row would escalate it to Kimi, and Kimi's weekly quota
-#     is the reviewers'. A rung that spends it on coding starves plan, standards and spec.
+#   "glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-5.6-terra"]
+#     The two pre-PR reviewers (`.review-standards`, `.review-spec`) and `.coder-t4` are
+#     the stages that request glm-5.3: both arms review on it (ADR 0034 D4), and it is
+#     the top rung of the Iteration ladder. backlog's row escalates it to Kimi first;
+#     ralph has no `kimi-k3` row at all since ralph-v2 04, so its chain is OpenRouter's
+#     hy4-preview and then OpenAI's terra. That chain is a fallback and not a home: a
+#     `standards` visit that lands on the second rung costs about $0.70, which is why
+#     C11 in `fabro-monitor.sh` alerts on any failover to terra (ralph-v2 02).
 #
 # The rest are backlog's. Keys containing a dot MUST be quoted or the TOML parse fails
 # with a 422 at automation fire time. Fallbacks are non-recursive: one lookup from the
-# original request, so the `kimi-k3` row above is the whole chain for `.plan`,
-# `.review-standards` and `.review-spec`.
+# original request, so the `glm-5.3` row above is the whole chain for the two reviewers
+# and `.coder-t4`.
 [run.model.fallbacks]
 # The scheduler pins a run to one coder **slot** by naming `coders-a` to `coders-d` in the
 # run's `coder_pool` input (see the stylesheet) — four slots on two boxes, all serving the same
@@ -44,11 +40,8 @@ graph = "workflow.fabro"
 # model and never a worse one. Non-recursive, so this row never applies to a coder chain.
 "glm-5.3-flash" = ["zai:glm-5.3"]
 kimi-for-coding = ["zai:glm-5.3"]
-# The top Iteration rung. See the header: no Kimi rung.
-"glm-5.3" = ["orfallback:qwen3.8-27b"]
-# The three hosted frontier stages: plan, standards, spec. Non-GLM first is backlog's
-# order and O5 reverses it here; flash before full glm-5.3 for credits (see the header).
-kimi-k3 = ["zai:glm-5.3-flash", "zai:glm-5.3", "orfallback:qwen3.8-27b"]
+# The two pre-PR reviewers and the top Iteration rung. See the header: no Kimi rung.
+"glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-5.6-terra"]
 
 # Checkpoints still COMMIT after every stage, but fabro no longer PUSHES them
 # (ADR 0011 D1). Every checkpoint is an allow-empty commit, and once the PR exists

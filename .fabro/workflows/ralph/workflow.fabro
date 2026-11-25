@@ -44,8 +44,11 @@ digraph Ralph {
         //                     kimi-for-coding, glm-5.3. A Task climbs one rung per two misses.
         //   .merge-resolve    the resolved-mainline agent, on the run's box: a merge is an
         //                     edit, and this is the run's own code.
-        //   .review-standards kimi-k3 (O5). The standards axis reads a documented rubric.
-        //   .review-spec      kimi-k3 (O5). The spec axis judges the issue against the diff.
+        //   .review-standards glm-5.3 (ADR 0034 D4). The standards axis reads a documented
+        //                     rubric. Both arms review on glm-5.3 so the trial's quality
+        //                     measure compares like with like, and v1 is frozen otherwise.
+        //   .review-spec      glm-5.3 (ADR 0034 D4). The spec axis judges the issue against
+        //                     the diff; same model and same reason.
         //   .refute           gpt-6-luna, a family unlike the coder's and the reviewers' (ADR
         //                     0013 D6 and its luna amendment): the independence is the product.
         //                     Its fallback is qwen3.8-27b, never GLM and never OpenAI, so an
@@ -71,8 +74,8 @@ digraph Ralph {
             .coder-t3         { model: kimi-for-coding; }
             .coder-t4         { model: glm-5.3; }
             .merge-resolve    { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
-            .review-standards { model: kimi-k3; }
-            .review-spec      { model: kimi-k3; }
+            .review-standards { model: glm-5.3; }
+            .review-spec      { model: glm-5.3; }
             .refute           { model: gpt-6-luna; }
             .learn            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
             .plan-review      { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
@@ -266,9 +269,9 @@ if [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi"]
     // timeout="20m" is the plan trial's number, not a new measurement: the trial's `plan`
     // node did the same job -- read an issue and a checkout, write an ordered task list --
     // and 20m is 1.6x its slowest visit, derived from glm-5.3's 15m39s worst case
-    // (docs/plan-trial/, invariants-graph *Timeouts*). O5 moves `.plan` to kimi-k3, which
-    // this node has never been timed on, so the number carries the trial's subject, not this
-    // one; re-derive it from task 12's shakedown. `max_retries=1` because a provider error on
+    // (docs/plan-trial/, invariants-graph *Timeouts*). It was sized for the hosted chain
+    // this node no longer runs, so it carries the trial's subject and not this one; the
+    // re-derivation below is the one that holds. `max_retries=1` because a provider error on
     // the one stage that writes the whole Task list costs the entire run.
     //
     // Re-derived 2026-10-28 as 40m, for both arms of the box-plan trial. Measured per visit,
@@ -1502,21 +1505,18 @@ jq -nc --argjson s $RS --argjson p $RP '{context_updates:{review_run_standards:$
     // ---- The two pre-PR reviews (O9, C6, R4, R5) ----
     // They run right after the Refuter in every round (`review_gate` says why), and before
     // the pull request exists, so neither sees a PR number and neither is part of the
-    // shared merge phase. Since 2026-11-02 they run when the Refuter found work, too.
-    //
-    // timeout="25m" (standards) and "15m" (spec) are the shared phase's numbers, chosen
-    // there for the shared prompts. They were measured with `.merge-standards` on
-    // glm-5.3-flash and `.merge-spec` on glm-5.3; O5 puts both on kimi-k3, which is
-    // UNMEASURED on these prompts, so the numbers carry the old subject and the shakedown
-    // must re-derive them (invariants-graph, *Timeouts*). Once a finding blocks, it becomes
+    // shared merge phase. Since 2026-11-02 they run when the Refuter found work, too. Both
+    // run on glm-5.3 since ralph-v2 04 (ADR 0034 D4: both arms review on it, so the
+    // trial's quality measure compares like with like). Once a finding blocks, it becomes
     // a Task for the loop, and the next round re-runs both reviews.
     //
-    // Re-derived 2026-10-28 for the chain's FLASH rung, which carries both stages
-    // whenever Kimi's weekly quota is spent (the kimi-k3 row in workflow.toml). Measured
-    // per visit, 2026-10-21..28, on kimi-k3 and its glm-5.3 fallback: standards p95 13.3m,
-    // heaviest 47k output tokens; spec p95 7.0m, heaviest 26k. glm-5.3-flash emits 30.9
-    // output tok per wall-second against kimi-k3's 32.8 and glm-5.3's 45.4, so on flash
-    // the heaviest visits project to ~25m and ~14m. Hence 30m and 20m.
+    // timeout="30m" (standards) and "20m" (spec) are the FLASH projection: measured per
+    // visit, 2026-10-21..28, standards p95 13.3m and heaviest 47k output tokens, spec p95
+    // 7.0m and heaviest 26k, scaled at glm-5.3-flash's 30.9 output tok per wall-second,
+    // which projects the heaviest visits to ~25m and ~14m. glm-5.3 emits about 45 output
+    // tok per wall-second against flash's 31, so the heaviest visits are shorter than the
+    // flash projection these numbers came from and the numbers stand as a ceiling;
+    // `fabro-scorecard.sh` re-times them after two weeks (invariants-graph, *Timeouts*).
     standards [label="Standards review", class="review-standards", timeout="30m", max_retries=1, prompt="@prompts/standards.md.j2"]
     spec [label="Spec review", class="review-spec", timeout="20m", max_retries=1, prompt="@prompts/spec.md.j2"]
 
