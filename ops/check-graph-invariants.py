@@ -6,7 +6,7 @@ Usage:
   check-graph-invariants.py --dump FILE.fabro   print the reader's statements in fabro parse's shape
   check-graph-invariants.py --normalize         normalize a `fabro parse` JSON read from stdin
 
-A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R18;
+A package is a directory with a workflow.toml. Every package's root graph gets R1-R9 and R11-R19;
 every `_shared/*/*.fabro` phase gets the file rules (the reader, R6, R8, R9 and R12). Each violation prints as
 `<package> <rule> <node or hook> <why>`, then `VIOLATIONS: N`. Exit status is min(N, 125).
 
@@ -14,7 +14,8 @@ R13-R16 are the background-lane rules (more-local-inference C1, C2, C4, C5, C10)
 stage's `box` value in the Stage manifest agrees with the stylesheet that decides where it runs,
 no `-bg` model is a fallback key or target, the three coder loops carry the `box-claim` hook and
 write the run's box file while no other package does, and a box-only package names no model but
-the run's `-bg` pool, guards itself with `box-guard`, and has no run branch.
+the run's `-bg` pool, guards itself with `box-guard`, and has no run branch. R17 is the leased box
+run, R18 the `stage-end` hooks, and R19 `ralph-v2`'s per-Task review loop (ADR 0034).
 
 Standard library only (Python 3.11+, tomllib). It reads the graphs itself, so it runs offline
 in `make check`. `make check-host` proves the reader agrees with `fabro parse` on the six files
@@ -1139,6 +1140,68 @@ def r14_background_fallbacks(package: str, toml: dict) -> list[tuple]:
 
 
 # --------------------------------------------------------------------------- #
+# R19: ralph-v2's Task review loop (ADR 0034, docs/plans/ralph-v2 08 C4)
+# --------------------------------------------------------------------------- #
+
+# The two Task reviewers. `ralph-v2` is the only package with them, so R19 is silent for the
+# others: it reads one graph by name rather than a package's rules.
+TASK_REVIEW_STAGES = ("task_refute", "task_review")
+
+
+def r19_task_review_loop(root: Path) -> list[tuple]:
+    """R19: each Task reviewer has one check node that owns its retry, one hosted twin, and no
+    other way out (docs/plans/ralph-v2 08 C4; ralph-v2 12's invariants-ralph rows).
+
+    `max_retries=0` on both the stage and its twin is what makes one C4 "try" one session
+    (P8): with a node retry, one try is two sessions and E13's three tries become nine. The
+    check node is the only place a missing result is retried -- on the box, then once on the
+    twin -- and the twin's class must resolve to a hosted model, because a hosted stage may not
+    claim a box; its manifest `box` is `false` (R13 checks that half). Every edge out of the
+    stage or the twin lands on the check, so no edge can route a missing result past it, and
+    the check keeps an unconditional edge that is not a loop back: that is the escape a crashed
+    check takes, which the gate reads from the missing `served` file.
+    """
+    graph_path = root / RALPH_V2_GRAPH
+    if not graph_path.exists():
+        return []
+    graph = Graph(read_graph(graph_path.read_text()))
+    variants = [(holds, style_rules(text)) for holds, text in
+                stylesheet_variants(graph.graph_attrs.get("model_stylesheet", ""))]
+    out: list[tuple] = []
+    for stage in TASK_REVIEW_STAGES:
+        check, twin = f"{stage}_check", f"{stage}_fb"
+        attrs = graph.nodes.get(stage)
+        if attrs is None or not is_agent_stage(attrs):
+            out.append(("R19", stage, "is not an agent node of the graph"))
+        elif attrs.get("max_retries") != "0":
+            out.append(("R19", stage, f"sets max_retries={attrs.get('max_retries')!r}; "
+                                      "its check node owns the retry, so this must be 0"))
+        if "script" not in graph.nodes.get(check, {}):
+            out.append(("R19", check, "is missing, so nothing owns the stage's retry"))
+        twin_attrs = graph.nodes.get(twin)
+        if twin_attrs is None or not is_agent_stage(twin_attrs):
+            out.append(("R19", twin, "is missing: a reviewer with no valid result needs one hosted attempt"))
+        else:
+            if twin_attrs.get("max_retries") != "0":
+                out.append(("R19", twin, f"sets max_retries={twin_attrs.get('max_retries')!r}; "
+                                         "one hosted attempt is one session"))
+            for _, model in resolve_models(twin_attrs, variants):
+                if is_coder_pool(model) or BOX_LITERAL.fullmatch(model):
+                    out.append(("R19", twin, f"resolves to {model!r}: the fallback reviewer is a "
+                                             "hosted stage and may not claim a box"))
+                    break
+        for src, dst, _ in graph.edges:
+            if src in (stage, twin) and dst != check:
+                out.append(("R19", src, f"has an edge to {dst}; every edge out of it goes to {check}"))
+        forward = [dst for src, dst, edge_attrs in graph.edges
+                   if src == check and not edge_attrs.get("condition") and dst not in (stage, twin)]
+        if not forward:
+            out.append(("R19", check, "has no unconditional edge forward, so a check that crashed "
+                                      "has no way out of the loop"))
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # R10: ralph's copies of backlog's entry nodes and the shared merge stage
 # --------------------------------------------------------------------------- #
 # ADR 0029 D4 / docs/ralph C8. `ralph` owns its merge stage, so its copies of the
@@ -1667,6 +1730,7 @@ def run(root_dir: Path) -> list[tuple]:
     for phase in sorted((workflows / "_shared").glob("*/*.fabro")) if (workflows / "_shared").is_dir() else []:
         violations += phase_violations(f"_shared/{phase.parent.name}", phase)
     violations += r10_copies(root_dir)
+    violations += r19_task_review_loop(root_dir)
     violations += r10_v2_copies(root_dir)
     violations += r10_calibration_copies(root_dir)
     violations += r10_shared_nodes(root_dir)

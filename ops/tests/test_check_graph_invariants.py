@@ -679,9 +679,11 @@ class Counts(unittest.TestCase):
             # ralph-v2 (ADR 0034, docs/plans/ralph-v2/05): ralph minus the fourth rung -- one
             # node and its four edges -- with v2's stylesheet and fallbacks. Task 07 adds the
             # Task plan: task_plan and task_plan_gate, and pick's split out of excerpts for
-            # the step, +2 nodes and +5 edges. Tasks 08-09 of the series raise it to 68 nodes
-            # and 176 edges.
-            "ralph-v2": (60, 156),
+            # the step, +2 nodes and +5 edges. Task 08 adds the review loop: the prep, the two
+            # reviewers, their two check nodes, their two hosted fallbacks and the gate, eight
+            # nodes, and `pick`'s review branch, `record`'s review edge and the loop's own
+            # fifteen edges, +19. Task 09 raises it to 68 nodes and 176 edges.
+            "ralph-v2": (68, 175),
         })
 
 
@@ -908,7 +910,8 @@ class R10V2Copies(unittest.TestCase):
     def test_the_real_copies_match_ralph(self):
         self.assertEqual(cgi.r10_v2_copies(REAL), [])
         # `pick` and `record` are ralph-v2's own: task 07 rewrote both for the Task loop (C1),
-        # so no row above can compare them. Task 08 adds the nodes it rewrites too.
+        # so no row above can compare them. Task 08's eight nodes are new, so R10 has no
+        # original to hold them to; R19 does.
         self.assertEqual(cgi.R10_V2_OWN, {"pick", "record"})
 
     def test_each_copy_carries_the_one_comment_line(self):

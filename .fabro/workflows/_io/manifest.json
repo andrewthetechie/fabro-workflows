@@ -3184,6 +3184,266 @@
             "schema": "task_plan"
           },
           "box": true
+        },
+        "task_refute": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph-v2/prompts/task_refute.md.j2",
+          "inputs": [
+            {
+              "name": "task.json",
+              "path": "/tmp/fabro/task_review/in/task.json",
+              "required": true,
+              "about": "The Task: title, body, acceptance and source."
+            },
+            {
+              "name": "plan.json",
+              "path": "/tmp/fabro/task_review/in/plan.json",
+              "required": true,
+              "about": "Goals, edge cases, class of the bug and risks from the Task's plan."
+            },
+            {
+              "name": "task.patch",
+              "path": "/tmp/fabro/task_review/in/task.patch",
+              "required": true,
+              "about": "Everything this Task changed."
+            },
+            {
+              "name": "check.json",
+              "path": "/tmp/fabro/task_review/in/check.json",
+              "required": true,
+              "about": "What the mechanical gate ran."
+            },
+            {
+              "name": "delta.patch",
+              "path": "/tmp/fabro/task_review/in/delta.patch",
+              "required": false,
+              "about": "What changed since the last review."
+            },
+            {
+              "name": "history.md",
+              "path": "/tmp/fabro/task_review/in/history.md",
+              "required": false,
+              "about": "Earlier findings and what the coder answered."
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/task_review/state/",
+            "/tmp/fabro/task_review/out/review.json",
+            "/tmp/fabro/task_plans/",
+            "/tmp/fabro/task_plan.json",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/current_task.json",
+            "/tmp/fabro/task-context.md",
+            "/tmp/fabro/task-code.md",
+            "/tmp/fabro/progress.md",
+            "/tmp/fabro/iteration.json",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/plan_review/",
+            "/tmp/fabro/local_review/",
+            "/tmp/fabro/review/"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/task_review/out/refute.json",
+            "schema": "task_refute"
+          },
+          "box": true
+        },
+        "task_refute_fb": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph-v2/prompts/task_refute.md.j2",
+          "inputs": [
+            {
+              "name": "task.json",
+              "path": "/tmp/fabro/task_review/in/task.json",
+              "required": true,
+              "about": "The Task: title, body, acceptance and source."
+            },
+            {
+              "name": "plan.json",
+              "path": "/tmp/fabro/task_review/in/plan.json",
+              "required": true,
+              "about": "Goals, edge cases, class of the bug and risks from the Task's plan."
+            },
+            {
+              "name": "task.patch",
+              "path": "/tmp/fabro/task_review/in/task.patch",
+              "required": true,
+              "about": "Everything this Task changed."
+            },
+            {
+              "name": "check.json",
+              "path": "/tmp/fabro/task_review/in/check.json",
+              "required": true,
+              "about": "What the mechanical gate ran."
+            },
+            {
+              "name": "delta.patch",
+              "path": "/tmp/fabro/task_review/in/delta.patch",
+              "required": false,
+              "about": "What changed since the last review."
+            },
+            {
+              "name": "history.md",
+              "path": "/tmp/fabro/task_review/in/history.md",
+              "required": false,
+              "about": "Earlier findings and what the coder answered."
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/task_review/state/",
+            "/tmp/fabro/task_review/out/review.json",
+            "/tmp/fabro/task_plans/",
+            "/tmp/fabro/task_plan.json",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/current_task.json",
+            "/tmp/fabro/task-context.md",
+            "/tmp/fabro/task-code.md",
+            "/tmp/fabro/progress.md",
+            "/tmp/fabro/iteration.json",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/plan_review/",
+            "/tmp/fabro/local_review/",
+            "/tmp/fabro/review/"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/task_review/out/refute.json",
+            "schema": "task_refute"
+          },
+          "box": false
+        },
+        "task_review": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph-v2/prompts/task_review.md.j2",
+          "inputs": [
+            {
+              "name": "task.json",
+              "path": "/tmp/fabro/task_review/in/task.json",
+              "required": true,
+              "about": "The Task: title, body, acceptance and source."
+            },
+            {
+              "name": "plan.json",
+              "path": "/tmp/fabro/task_review/in/plan.json",
+              "required": true,
+              "about": "Goals, edge cases, class of the bug and risks from the Task's plan."
+            },
+            {
+              "name": "task.patch",
+              "path": "/tmp/fabro/task_review/in/task.patch",
+              "required": true,
+              "about": "Everything this Task changed."
+            },
+            {
+              "name": "check.json",
+              "path": "/tmp/fabro/task_review/in/check.json",
+              "required": true,
+              "about": "What the mechanical gate ran."
+            },
+            {
+              "name": "delta.patch",
+              "path": "/tmp/fabro/task_review/in/delta.patch",
+              "required": false,
+              "about": "What changed since the last review."
+            },
+            {
+              "name": "history.md",
+              "path": "/tmp/fabro/task_review/in/history.md",
+              "required": false,
+              "about": "Earlier findings and what the coder answered."
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/task_review/state/",
+            "/tmp/fabro/task_review/out/refute.json",
+            "/tmp/fabro/task_plans/",
+            "/tmp/fabro/task_plan.json",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/current_task.json",
+            "/tmp/fabro/task-context.md",
+            "/tmp/fabro/task-code.md",
+            "/tmp/fabro/progress.md",
+            "/tmp/fabro/iteration.json",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/plan_review/",
+            "/tmp/fabro/local_review/",
+            "/tmp/fabro/review/"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/task_review/out/review.json",
+            "schema": "task_review"
+          },
+          "box": true
+        },
+        "task_review_fb": {
+          "live": true,
+          "prompt": ".fabro/workflows/ralph-v2/prompts/task_review.md.j2",
+          "inputs": [
+            {
+              "name": "task.json",
+              "path": "/tmp/fabro/task_review/in/task.json",
+              "required": true,
+              "about": "The Task: title, body, acceptance and source."
+            },
+            {
+              "name": "plan.json",
+              "path": "/tmp/fabro/task_review/in/plan.json",
+              "required": true,
+              "about": "Goals, edge cases, class of the bug and risks from the Task's plan."
+            },
+            {
+              "name": "task.patch",
+              "path": "/tmp/fabro/task_review/in/task.patch",
+              "required": true,
+              "about": "Everything this Task changed."
+            },
+            {
+              "name": "check.json",
+              "path": "/tmp/fabro/task_review/in/check.json",
+              "required": true,
+              "about": "What the mechanical gate ran."
+            },
+            {
+              "name": "delta.patch",
+              "path": "/tmp/fabro/task_review/in/delta.patch",
+              "required": false,
+              "about": "What changed since the last review."
+            },
+            {
+              "name": "history.md",
+              "path": "/tmp/fabro/task_review/in/history.md",
+              "required": false,
+              "about": "Earlier findings and what the coder answered."
+            }
+          ],
+          "sealed": [
+            "/tmp/fabro/task_review/state/",
+            "/tmp/fabro/task_review/out/refute.json",
+            "/tmp/fabro/task_plans/",
+            "/tmp/fabro/task_plan.json",
+            "/tmp/fabro/tasks.json",
+            "/tmp/fabro/current_task.json",
+            "/tmp/fabro/task-context.md",
+            "/tmp/fabro/task-code.md",
+            "/tmp/fabro/progress.md",
+            "/tmp/fabro/iteration.json",
+            "/tmp/fabro/task_list.json",
+            "/tmp/fabro/feedback/",
+            "/tmp/fabro/plan_review/",
+            "/tmp/fabro/local_review/",
+            "/tmp/fabro/review/"
+          ],
+          "also": [],
+          "output": {
+            "path": "/tmp/fabro/task_review/out/review.json",
+            "schema": "task_review"
+          },
+          "box": false
         }
       }
     },

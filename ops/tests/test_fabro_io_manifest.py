@@ -144,6 +144,9 @@ class Box(unittest.TestCase):
                 "resolve_base": True,
                 "resolve_merge": True,
                 "task_plan": True,
+                # Task 08's two reviewers, box only: their `_fb` twins are hosted.
+                "task_refute": True,
+                "task_review": True,
             },
             # A leased run holds its box (ADR 0033): its stages block a background fill.
             "issue-sharpen": {
@@ -160,7 +163,8 @@ class Box(unittest.TestCase):
         for loop, stages in generated["coder_box_stages"].items():
             with self.subTest(loop=loop):
                 self.assertNotIn(False, stages.values())
-                for sid in ("review", "decompose", "rework_t2", "spec", "standards", "refute"):
+                for sid in ("review", "decompose", "rework_t2", "spec", "standards", "refute",
+                            "task_refute_fb", "task_review_fb"):
                     self.assertNotIn(sid, stages)
 
     def test_a_missing_box_is_an_error(self):

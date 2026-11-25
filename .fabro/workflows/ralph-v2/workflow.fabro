@@ -287,15 +287,18 @@ else
 fi
 jq -nc --arg r \"$ROUTE\" '{context_updates:{plan_review_route:$r}}'"]
 
-    // Own node (C1): ralph's `pick`, rewritten for the per-Task plan. Five differences:
+    // Own node (C1): ralph's `pick`, rewritten for the per-Task plan. Six differences:
     // it deletes the `task_plan` contract files with the per-Iteration ones; it publishes
     // `task_step`, which is `plan` for a pre-PR Task whose stored plan is missing and
     // `work` otherwise; it renders `task-context.md` from that stored plan with the same
     // jq program `task_plan_gate` uses (`RENDER`), and appends `## Review findings` when
     // the Task has them; a Task is blocked after 6 failed Iterations, with the reason in
-    // `block_reason`; and the Iteration cap is not tested once the Task has been reviewed,
-    // because a rework Iteration spends `rework_iterations`, not the cap (P9). This `pick`
-    // has no review branch: `loop=review` is task 08's, together with `reviewing`.
+    // `block_reason`; the Iteration cap is not tested once the Task has been reviewed,
+    // because a rework Iteration spends `rework_iterations`, not the cap (P9); and a Task
+    // left `reviewing` is recovered before anything else (C1 step 3). Only a review that
+    // crashed gets there -- a clean round always ends `passed`, `open` or `blocked` -- so
+    // the counter in `state/recovers/<id>` counts failures, and the fourth one passes the
+    // Task with the reason in `review_note` rather than looping on a broken gate.
     pick [label="Next Iteration", shape=parallelogram, timeout="5m", output_schema="routing",
         script="git worktree remove --force /tmp/fabro/base-tree >/dev/null 2>&1
 rm -rf /tmp/fabro/base-tree
@@ -321,6 +324,37 @@ RUNG=0
 STEP=none
 IDX=-1
 if [ \"$REBASE\" = true ]; then LOOP=work; STEP=none; else
+if [ \"$PH\" = pre ]; then
+  RIDX=-1
+  RTOT=$(jq length /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+  case \"$RTOT\" in '' | *[!0-9]*) RTOT=0 ;; esac
+  RI=0
+  while [ $RI -lt $RTOT ]; do
+    if [ \"$(jq -r \".[$RI].status // empty\" /tmp/fabro/tasks.json 2>/dev/null)\" = reviewing ]; then RIDX=$RI; break; fi
+    RI=$((RI + 1))
+  done
+  if [ $RIDX -ge 0 ]; then
+    RID=$(jq -r \".[$RIDX].id // empty\" /tmp/fabro/tasks.json 2>/dev/null)
+    if [ -n \"$RID\" ]; then
+      mkdir -p /tmp/fabro/task_review/state/recovers
+      RC=$(cat /tmp/fabro/task_review/state/recovers/$RID 2>/dev/null || echo 0)
+      case \"$RC\" in '' | *[!0-9]*) RC=0 ;; esac
+      RC=$((RC + 1))
+      echo $RC > /tmp/fabro/task_review/state/recovers/$RID
+      if [ $RC -le 3 ]; then
+        LOOP=review
+        STEP=none
+        RUNG=0
+        jq --argjson i $RIDX '.[$i]' /tmp/fabro/tasks.json > /tmp/fabro/current_task.json 2>/dev/null || echo '{}' > /tmp/fabro/current_task.json
+        echo 'pick: '${RID}' was left in review by a round that did not finish; the review runs again ('$RC' of 3)' >&2
+      else
+        jq --argjson i $RIDX --arg n 'the Task review did not finish' '.[$i].status = \"passed\" | .[$i].review_note = $n' /tmp/fabro/tasks.json > /tmp/fabro/tasks.pick.json 2>/dev/null && mv /tmp/fabro/tasks.pick.json /tmp/fabro/tasks.json
+        echo 'pick: '${RID}' was left in review four times, so it is passed with a note; the loop goes on' >&2
+      fi
+    fi
+  fi
+fi
+if [ \"$LOOP\" != review ]; then
 while :; do
   IDX=-1
   COUNT=$(jq length /tmp/fabro/tasks.json 2>/dev/null || echo 0)
@@ -356,6 +390,7 @@ while :; do
   break
 done
 fi
+fi
 if [ \"$LOOP\" = work ] && [ $IDX -ge 0 ] && [ \"$REBASE\" = false ]; then
   jq --argjson i $IDX '.[$i]' /tmp/fabro/tasks.json > /tmp/fabro/current_task.json
   ID=$(jq -r '.id // empty' /tmp/fabro/current_task.json 2>/dev/null)
@@ -382,7 +417,7 @@ if [ \"$LOOP\" = work ] && [ $IDX -ge 0 ] && [ \"$REBASE\" = false ]; then
   git rev-parse HEAD > /tmp/fabro/task_base_sha
   echo $RUNG > /tmp/fabro/rung
 fi
-case \"$LOOP\" in work | done | exhausted) : ;; *) LOOP=work ;; esac
+case \"$LOOP\" in work | done | exhausted | review) : ;; *) LOOP=work ;; esac
 LE=false
 if [ -s /tmp/fabro/loop_exhausted ]; then LE=true; fi
 if [ \"$LOOP\" = exhausted ]; then
@@ -733,8 +768,9 @@ jq -nc --argjson ok $OK --arg mode \"$MODE\" --arg reason \"$REASON\" --argjson 
     // with evidence (C5: a `path:N` of a file in the checkout, or a non-empty span in
     // backticks, so an empty pair is none), and an id in both lists is a dispute;
     // `goals_done` is unioned into the stored plan; and a rework Iteration counts against
-    // `rework_iterations` rather than the cap (P9). Its pass still sets `passed`: task 08
-    // makes it `reviewing` and reports `review_due`.
+    // `rework_iterations` rather than the cap (P9). A pre-PR pass sets `reviewing`, not
+    // `passed`, and publishes `review_due=true`: the Task's diff is what the two Task
+    // reviewers read next (E7), and the gate decides whether it passed.
     record [label="Record the Iteration", shape=parallelogram, timeout="1m", output_schema="routing",
         script="F=/tmp/fabro/iteration.json
 PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
@@ -781,8 +817,10 @@ if [ \"$PRE\" = true ] && [ -n \"$ID\" ]; then
     echo 'record: no diff against the task base, so this Iteration has no patch recorded' >&2
   fi
 fi
+RD=false
+if [ \"$PASSED\" = true ] && [ \"$PRE\" = true ] && [ -n \"$ID\" ]; then RD=true; fi
 if [ -n \"$ID\" ] && [ -s /tmp/fabro/tasks.json ]; then
-  jq --arg id \"$ID\" --argjson p \"$PASSED\" --argjson b \"$SCOPE\" 'map(if .id == $id then (.iterations = ((.iterations // 0) + 1) | (if $p then .status = \"passed\" else ((.misses = ((.misses // 0) + 1)) | (if $b then .status = \"blocked\" else . end)) end)) else . end)' /tmp/fabro/tasks.json > /tmp/fabro/tasks.rec.json 2>/dev/null && mv /tmp/fabro/tasks.rec.json /tmp/fabro/tasks.json
+  jq --arg id \"$ID\" --argjson p \"$PASSED\" --argjson b \"$SCOPE\" --argjson rd \"$RD\" 'map(if .id == $id then (.iterations = ((.iterations // 0) + 1) | (if $p then .status = (if $rd then \"reviewing\" else \"passed\" end) else ((.misses = ((.misses // 0) + 1)) | (if $b then .status = \"blocked\" else . end)) end)) else . end)' /tmp/fabro/tasks.json > /tmp/fabro/tasks.rec.json 2>/dev/null && mv /tmp/fabro/tasks.rec.json /tmp/fabro/tasks.json
 fi
 if [ \"$SCOPE\" = true ]; then cp /tmp/fabro/task_block_scope.md /tmp/fabro/feedback/rework.md 2>/dev/null || true; fi
 COUNTER=iterations
@@ -793,7 +831,9 @@ N=$((N + 1))
 echo $N > /tmp/fabro/$COUNTER
 RUNG=$(cat /tmp/fabro/rung 2>/dev/null || echo 0)
 case \"$RUNG\" in '' | *[!0-9]*) RUNG=0 ;; esac
-if [ \"$PASSED\" = true ]; then RES=passed; else RES='not passed'; fi
+RES='not passed'
+if [ \"$PASSED\" = true ]; then RES=passed; fi
+if [ \"$RD\" = true ]; then RES='awaiting review'; fi
 {
   echo \"## Iteration $N: ${ID:-unknown} $RES (rung $RUNG)\"
   echo
@@ -840,7 +880,478 @@ fi
 P=$(jq '[.[] | select(.status == \"passed\")] | length' /tmp/fabro/tasks.json 2>/dev/null || echo 0)
 case \"$P\" in '' | *[!0-9]*) P=0 ;; esac
 echo $P > /tmp/fabro/task_index
-jq -nc --argjson p \"$PASSED\" '{context_updates:{iteration_passed:$p,review_due:false}}'"]
+jq -nc --argjson p \"$PASSED\" --argjson d \"$RD\" '{context_updates:{iteration_passed:$p,review_due:$d}}'"]
+
+    // C3: the two reviewers' inputs for this round. Every visit clears `in/`, `out/` and the
+    // two check nodes' state, so an earlier round's result can never be read as this one's, then
+    // concatenates the Task's patches into `task.patch` and, from the second review on, only the
+    // patches numbered above `state/patches/<id>/reviewed` into `delta.patch`. No patch, or one
+    // over 2,000,000 bytes, passes the Task with the reason in `review_note`: there is nothing
+    // for a reviewer to read. It always exits 0, and `task_review_go=false` sends the run back
+    // to `pick`.
+    task_review_prep [label="Prepare the Task review", shape=parallelogram, timeout="2m", output_schema="routing",
+        script="F=/tmp/fabro
+IN=$F/task_review/in
+OUT=$F/task_review/out
+SD=$F/task_review/state
+TASK=$F/current_task.json
+ID=$(jq -r '.id // empty' $TASK 2>/dev/null)
+mkdir -p $IN $OUT $SD $SD/patches $SD/answers $SD/findings $SD/recovers $SD/rounds
+rm -f $IN/* $OUT/* $SD/refute.served $SD/refute.fb $SD/refute.tries $SD/review.served $SD/review.fb $SD/review.tries
+REV=0
+if [ -n \"$ID\" ] && [ -s $F/tasks.json ]; then
+  REV=$(jq -r --arg id \"$ID\" 'if type == \"array\" then ([.[] | select(.id == $id) | (.reviews // 0)][0] // 0) else 0 end' $F/tasks.json 2>/dev/null || echo 0)
+fi
+case \"$REV\" in '' | *[!0-9]*) REV=0 ;; esac
+PD=$SD/patches/$ID
+: > $IN/task.patch
+RN=0
+if [ -n \"$ID\" ] && [ -d \"$PD\" ]; then
+  for P in $(ls $PD/*.patch 2>/dev/null | sort); do
+    cat \"$P\" >> $IN/task.patch 2>/dev/null || true
+  done
+  RN=$(cat $PD/reviewed 2>/dev/null || echo 0)
+  case \"$RN\" in '' | *[!0-9]*) RN=0 ;; esac
+fi
+SZ=$(wc -c < $IN/task.patch 2>/dev/null | tr -d ' ')
+case \"$SZ\" in '' | *[!0-9]*) SZ=0 ;; esac
+if [ \"$SZ\" = 0 ] || [ \"$SZ\" -gt 2000000 ]; then
+  NOTE='no diff to review'
+  if [ \"$SZ\" -gt 2000000 ]; then NOTE='the diff is too large to review'; fi
+  if [ -n \"$ID\" ] && [ -s $F/tasks.json ]; then
+    jq --arg id \"$ID\" --arg n \"$NOTE\" 'map(if .id == $id then .status = \"passed\" | .review_note = $n else . end)' $F/tasks.json > $F/tasks.trp.json 2>/dev/null && mv $F/tasks.trp.json $F/tasks.json
+  fi
+  echo 'task_review_prep: no Task review: '\"$NOTE\" >&2
+  jq -nc '{context_updates:{task_review_go:false}}'
+  exit 0
+fi
+if [ \"$REV\" -gt 0 ]; then
+  : > $IN/delta.patch
+  for P in $(ls $PD/*.patch 2>/dev/null | sort); do
+    B=${P##*/}
+    NUM=${B%.patch}
+    NUM=$(printf '%s' \"$NUM\" | sed 's/^0*//')
+    case \"$NUM\" in '') NUM=0 ;; esac
+    if [ \"$NUM\" -gt \"$RN\" ]; then cat \"$P\" >> $IN/delta.patch 2>/dev/null || true; fi
+  done
+  if [ ! -s $IN/delta.patch ]; then rm -f $IN/delta.patch; fi
+fi
+echo '{\"title\": \"\", \"body\": \"\", \"acceptance\": [], \"source\": \"\"}' > $IN/task.json
+if [ -n \"$ID\" ] && [ -s $F/tasks.json ]; then
+  jq --arg id \"$ID\" '.[] | select(.id == $id) | {title: (.title // \"\" | tostring), body: (.body // \"\" | tostring), acceptance: (if (.acceptance | type) == \"array\" then .acceptance else [] end), source: (.source // \"\" | tostring)}' $F/tasks.json > $IN/task.json 2>/dev/null
+fi
+if [ ! -s $IN/task.json ] || ! jq -e . $IN/task.json >/dev/null 2>&1; then echo '{\"title\": \"\", \"body\": \"\", \"acceptance\": [], \"source\": \"\"}' > $IN/task.json; fi
+echo '{\"goals\": [], \"edge_cases\": [], \"bug_class\": \"\", \"risks\": []}' > $IN/plan.json
+if [ -n \"$ID\" ] && [ -s $F/task_plans/$ID.json ]; then
+  jq '{goals: [(if (.goals | type) == \"array\" then .goals[] else empty end) | {id: .id, goal: .goal, covers: .covers, check: .check}], edge_cases: (if (.edge_cases | type) == \"array\" then .edge_cases else [] end), bug_class: (.bug_class // \"\" | tostring), risks: (if (.risks | type) == \"array\" then .risks else [] end)}' $F/task_plans/$ID.json > $IN/plan.json 2>/dev/null
+fi
+if [ ! -s $IN/plan.json ] || ! jq -e . $IN/plan.json >/dev/null 2>&1; then echo '{\"goals\": [], \"edge_cases\": [], \"bug_class\": \"\", \"risks\": []}' > $IN/plan.json; fi
+echo '{\"passed\": true, \"mode\": \"full\", \"targets\": []}' > $IN/check.json
+if [ -s $F/task_check.json ]; then
+  jq '{passed: true, mode: (.mode // \"full\" | tostring), targets: [(if (.targets | type) == \"array\" then .targets[] else empty end) | .name]}' $F/task_check.json > $IN/check.json 2>/dev/null
+fi
+if [ ! -s $IN/check.json ] || ! jq -e . $IN/check.json >/dev/null 2>&1; then echo '{\"passed\": true, \"mode\": \"full\", \"targets\": []}' > $IN/check.json; fi
+if [ \"$REV\" -gt 0 ] && [ -n \"$ID\" ] && [ -s $SD/findings/$ID.json ] && jq -e 'type == \"array\"' $SD/findings/$ID.json >/dev/null 2>&1; then
+  A2=$F/task_review/answers.tmp.json
+  echo '{}' > $A2
+  if [ -s $SD/answers/$ID.json ] && jq -e 'type == \"object\"' $SD/answers/$ID.json >/dev/null 2>&1; then cp $SD/answers/$ID.json $A2; fi
+  jq -r --slurpfile a $A2 'def nl: [10] | implode; ($a[0] // {}) as $an | [.[] | \"- \" + ((.id // \"\" | tostring)) + \" (\" + ((.severity // \"\" | tostring)) + \", \" + ((.kind // \"\" | tostring)) + \", \" + ((.source // \"refuter\" | tostring)) + \") \" + ((.file // \"\" | tostring)) + (if (.line // null) == null then \"\" else \":\" + ((.line | tostring)) end) + \": \" + ((.message // \"\" | tostring)) + nl + \"  Coder: \" + (($an[(.id // \"\" | tostring)] // null) as $x | if $x == null then \"no answer\" elif ($x.answer // \"\") == \"fixed\" then \"fixed\" elif ($x.answer // \"\") == \"disputed\" then \"**disputed**: \" + (($x.reason // \"\" | tostring)) + \" Evidence: \" + (($x.evidence // \"\" | tostring)) else \"no answer\" end)] | join(nl)' $SD/findings/$ID.json > $IN/history.md 2>/dev/null || true
+  rm -f $A2
+  if [ ! -s $IN/history.md ]; then rm -f $IN/history.md; fi
+fi
+jq -nc '{context_updates:{task_review_go:true}}'"]
+
+    // C5, E8: the refuter hunts for what the Task got wrong: unhandled input, an unmet goal, a
+    // test that cannot fail, a fix that only patches the reported instance. Two schemas, two
+    // stages, two files, always in this order, and neither reviewer sees the other's result
+    // (P5). `max_retries=0` (P8): `task_refute_check` owns the retry, so one C4 try is never
+    // two sessions.
+    task_refute [label="Refute the Task", class="task-refute", timeout="30m", max_retries=0, prompt="@prompts/task_refute.md.j2"]
+
+    // C4: reads the refuter's result, or its absence. A result with this visit's receipt is
+    // served; otherwise the stage runs again, up to three tries, with a box-health wait before
+    // each one, and then one hosted session (E13). A3: `stage-end` has already re-run a box
+    // session that ended with nothing, so a result still missing once that is spent goes
+    // straight to the fallback. The wait is bounded by 40 polls 15 s apart with a 5 s curl, so
+    // the node's 15m stays under `stall_timeout` (R2).
+    task_refute_check [label="Check the refuter's result", shape=parallelogram, timeout="15m", output_schema="routing",
+        script="F=/tmp/fabro
+ST=$F/task_review/state
+OUT=$F/task_review/out/refute.json
+mkdir -p $ST
+V=$(jq -r '.visit // empty' $F/.io/stage.json 2>/dev/null)
+CUR=$(jq -r '.node // empty' $F/.io/stage.json 2>/dev/null)
+TRIES=$(cat $ST/refute.tries 2>/dev/null || echo 0)
+case \"$TRIES\" in '' | *[!0-9]*) TRIES=0 ;; esac
+SERVED=''
+if [ -s $OUT ] && jq -e . $OUT >/dev/null 2>&1; then
+  RS=$(jq -r '._io.stage // empty' $OUT 2>/dev/null)
+  RV=$(jq -r '._io.visit // empty' $OUT 2>/dev/null)
+  case \"$RS\" in
+    task_refute) SERVED=box ;;
+    task_refute_fb) SERVED=fallback ;;
+    *) SERVED='' ;;
+  esac
+  if [ -n \"$SERVED\" ] && [ -n \"$RV\" ] && [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then :; else SERVED=''; fi
+fi
+NEXT=done
+if [ -n \"$SERVED\" ]; then
+  echo $SERVED > $ST/refute.served
+elif [ -f $ST/refute.fb ]; then
+  echo missed > $ST/refute.served
+  rm -f $OUT
+elif [ \"$CUR\" = task_refute ] && [ -n \"$V\" ] && [ \"$(cat $F/.io/stage-end/task_refute.succeeded 2>/dev/null)\" = \"$V\" ]; then
+  : > $ST/refute.fb
+  rm -f $OUT
+  NEXT=fallback
+else
+  TRIES=$((TRIES + 1))
+  echo $TRIES > $ST/refute.tries
+  rm -f $OUT
+  NEXT=retry
+  if [ \"$TRIES\" -ge 3 ]; then
+    : > $ST/refute.fb
+    NEXT=fallback
+  else
+    P=$(cat $F/box 2>/dev/null)
+    U=''
+    if [ -n \"$P\" ] && [ -n \"$FABRO_BOX_HEALTH\" ] && command -v curl >/dev/null 2>&1; then
+      OLDIFS=$IFS
+      IFS=,
+      for PAIR in $FABRO_BOX_HEALTH; do
+        case \"$PAIR\" in
+          \"$P=\"*) U=${PAIR#*=} ;;
+        esac
+      done
+      IFS=$OLDIFS
+      if [ -n \"$U\" ]; then
+        C=000
+        I=0
+        while [ $I -lt 40 ]; do
+          C=$(curl -s -o /dev/null -m 5 -w '%{http_code}' \"$U\" 2>/dev/null)
+          if [ \"$C\" = 200 ]; then break; fi
+          I=$((I + 1))
+          if [ $I -lt 40 ]; then sleep 15; fi
+        done
+        if [ \"$C\" != 200 ]; then
+          : > $ST/refute.fb
+          NEXT=fallback
+        fi
+      fi
+    fi
+  fi
+fi
+echo 'task_refute_check: next='$NEXT' tries='$TRIES >&2
+jq -nc --arg n \"$NEXT\" --argjson t \"$TRIES\" '{context_updates:{task_refute_next:$n,task_refute_tries:$t}}'"]
+
+    // The hosted fallback reviewer (E13): the same prompt, inputs and output file, on
+    // `.review-fallback` (glm-5.3-flash) and `box: false` in the manifest, so no claim runs for
+    // it and no lease is needed. 25m is unmeasured; task 13 re-times it.
+    task_refute_fb [label="Refute the Task (hosted fallback)", class="review-fallback", timeout="25m", max_retries=0, prompt="@prompts/task_refute.md.j2"]
+
+    // C5, E8: standards then spec, in one session, on the Task alone. It reports everything it
+    // can ground, because one rework takes every finding (E9), and it re-answers the disputes
+    // that are about its own findings. `max_retries=0` for the same reason as the refuter.
+    task_review [label="Review the Task", class="task-review", timeout="40m", max_retries=0, prompt="@prompts/task_review.md.j2"]
+
+    // C4 for the reviewer: the same program as `task_refute_check`, with the three names
+    // changed, so the two can never drift (a gate test compares them).
+    task_review_check [label="Check the reviewer's result", shape=parallelogram, timeout="15m", output_schema="routing",
+        script="F=/tmp/fabro
+ST=$F/task_review/state
+OUT=$F/task_review/out/review.json
+mkdir -p $ST
+V=$(jq -r '.visit // empty' $F/.io/stage.json 2>/dev/null)
+CUR=$(jq -r '.node // empty' $F/.io/stage.json 2>/dev/null)
+TRIES=$(cat $ST/review.tries 2>/dev/null || echo 0)
+case \"$TRIES\" in '' | *[!0-9]*) TRIES=0 ;; esac
+SERVED=''
+if [ -s $OUT ] && jq -e . $OUT >/dev/null 2>&1; then
+  RS=$(jq -r '._io.stage // empty' $OUT 2>/dev/null)
+  RV=$(jq -r '._io.visit // empty' $OUT 2>/dev/null)
+  case \"$RS\" in
+    task_review) SERVED=box ;;
+    task_review_fb) SERVED=fallback ;;
+    *) SERVED='' ;;
+  esac
+  if [ -n \"$SERVED\" ] && [ -n \"$RV\" ] && [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then :; else SERVED=''; fi
+fi
+NEXT=done
+if [ -n \"$SERVED\" ]; then
+  echo $SERVED > $ST/review.served
+elif [ -f $ST/review.fb ]; then
+  echo missed > $ST/review.served
+  rm -f $OUT
+elif [ \"$CUR\" = task_review ] && [ -n \"$V\" ] && [ \"$(cat $F/.io/stage-end/task_review.succeeded 2>/dev/null)\" = \"$V\" ]; then
+  : > $ST/review.fb
+  rm -f $OUT
+  NEXT=fallback
+else
+  TRIES=$((TRIES + 1))
+  echo $TRIES > $ST/review.tries
+  rm -f $OUT
+  NEXT=retry
+  if [ \"$TRIES\" -ge 3 ]; then
+    : > $ST/review.fb
+    NEXT=fallback
+  else
+    P=$(cat $F/box 2>/dev/null)
+    U=''
+    if [ -n \"$P\" ] && [ -n \"$FABRO_BOX_HEALTH\" ] && command -v curl >/dev/null 2>&1; then
+      OLDIFS=$IFS
+      IFS=,
+      for PAIR in $FABRO_BOX_HEALTH; do
+        case \"$PAIR\" in
+          \"$P=\"*) U=${PAIR#*=} ;;
+        esac
+      done
+      IFS=$OLDIFS
+      if [ -n \"$U\" ]; then
+        C=000
+        I=0
+        while [ $I -lt 40 ]; do
+          C=$(curl -s -o /dev/null -m 5 -w '%{http_code}' \"$U\" 2>/dev/null)
+          if [ \"$C\" = 200 ]; then break; fi
+          I=$((I + 1))
+          if [ $I -lt 40 ]; then sleep 15; fi
+        done
+        if [ \"$C\" != 200 ]; then
+          : > $ST/review.fb
+          NEXT=fallback
+        fi
+      fi
+    fi
+  fi
+fi
+echo 'task_review_check: next='$NEXT' tries='$TRIES >&2
+jq -nc --arg n \"$NEXT\" --argjson t \"$TRIES\" '{context_updates:{task_review_next:$n,task_review_tries:$t}}'"]
+
+    // The reviewer's hosted fallback, exactly as `task_refute_fb` is the refuter's.
+    task_review_fb [label="Review the Task (hosted fallback)", class="review-fallback", timeout="25m", max_retries=0, prompt="@prompts/task_review.md.j2"]
+
+    // C5: the one place a Task's review becomes a state change. Candidates are both reviewers'
+    // findings, an acceptance statement the reviewer reports unmet whose evidence passes the
+    // evidence rule, and an uncovered edge case as a warning. A finding whose file or evidence
+    // does not hold is dropped, a disputed one survives only when its own reviewer upholds it
+    // with evidence that passes the rule and differs from the original, and a withdrawn one goes
+    // to `state/dropped/`, where an unchanged repeat of it is dropped this round and every later
+    // one (E12). `n` is the Task's review count plus one: an `error` sends the Task back for
+    // rework below n=4 and blocks it at n=4 (E10); no error passes it; both reviewers missing is
+    // `missed`, which passes it with a note rather than silently (E13). The survivors go to
+    // `state/findings/`, which `pick` renders for the rework Iteration, and the whole round to
+    // `state/rounds/`. No edge reads its keys: a crash leaves the Task `reviewing` and the
+    // unconditional edge to `pick` recovers it (C1 step 3).
+    task_review_gate [label="Decide the Task review", shape=parallelogram, timeout="2m", output_schema="routing",
+        script="F=/tmp/fabro
+ST=$F/task_review/state
+G=$F/task_review/gate
+TASK=$F/current_task.json
+TASKS=$F/tasks.json
+OUTF=$F/task_review/out/refute.json
+OUTS=$F/task_review/out/review.json
+rm -rf $G
+mkdir -p $G $ST/findings $ST/dropped $ST/rounds $ST/patches
+ID=$(jq -r '.id // empty' $TASK 2>/dev/null)
+SRC=$(jq -r '.source // empty' $TASK 2>/dev/null)
+REV=$(jq -r --arg id \"$ID\" 'if type == \"array\" then ([.[] | select(.id == $id) | (.reviews // 0)][0] // 0) else 0 end' $TASKS 2>/dev/null || echo 0)
+case \"$REV\" in '' | *[!0-9]*) REV=0 ;; esac
+N=$((REV + 1))
+SF=$(cat $ST/refute.served 2>/dev/null)
+SS=$(cat $ST/review.served 2>/dev/null)
+case \"$SF\" in box | fallback) : ;; *) SF=missed ;; esac
+case \"$SS\" in box | fallback) : ;; *) SS=missed ;; esac
+ev_ok() {
+  if printf '%s' \"$1\" | grep -qE '`[^`]+`'; then return 0; fi
+  for R in $(printf '%s' \"$1\" | grep -oE '[A-Za-z0-9_./-]+:[0-9]+'); do
+    if [ -f \"${R%:*}\" ]; then return 0; fi
+  done
+  return 1
+}
+ev_path() {
+  for R in $(printf '%s' \"$1\" | grep -oE '[A-Za-z0-9_./-]+:[0-9]+'); do
+    if [ -f \"${R%:*}\" ]; then printf '%s' \"${R%:*}\" | cut -c1-300; return 0; fi
+  done
+  printf '%s' ''
+}
+: > $G/cand.ndjson
+: > $G/bad.ndjson
+: > $G/adddrop.ndjson
+echo '[]' > $G/dropped.before.json
+if [ -n \"$ID\" ] && [ -s $ST/dropped/$ID.json ] && jq -e 'type == \"array\"' $ST/dropped/$ID.json >/dev/null 2>&1; then cp $ST/dropped/$ID.json $G/dropped.before.json; fi
+echo '{\"edge_cases\": []}' > $G/plan.json
+if [ -n \"$ID\" ] && [ -s $F/task_plans/$ID.json ] && jq -e . $F/task_plans/$ID.json >/dev/null 2>&1; then cp $F/task_plans/$ID.json $G/plan.json; fi
+for S in refuter review; do
+  RES=$OUTS
+  SV=$SS
+  if [ \"$S\" = refuter ]; then RES=$OUTF; SV=$SF; fi
+  CNT=0
+  if [ \"$SV\" != missed ] && [ -s \"$RES\" ]; then
+    CNT=$(jq -r 'if (.findings | type) == \"array\" then (.findings | length) else 0 end' \"$RES\" 2>/dev/null || echo 0)
+  fi
+  case \"$CNT\" in '' | *[!0-9]*) CNT=0 ;; esac
+  I=0
+  while [ $I -lt $CNT ]; do
+    jq -c --argjson i $I 'if (.findings | type) == \"array\" then .findings[$i] else null end' \"$RES\" > $G/one.json 2>/dev/null
+    FL=$(jq -r 'if . == null then \"\" else (.file // \"\" | tostring) end' $G/one.json 2>/dev/null)
+    EV=$(jq -r 'if . == null then \"\" else (.evidence // \"\" | tostring) end' $G/one.json 2>/dev/null)
+    if [ -n \"$FL\" ] && [ -f \"$FL\" ] && ev_ok \"$EV\"; then
+      jq -c --arg s \"$S\" '{source: $s, dispute: false, severity: (.severity // \"\" | tostring), kind: (.kind // \"\" | tostring), file: (.file // \"\" | tostring), line: (if (.line | type) == \"number\" then .line else null end), message: (.message // \"\" | tostring), evidence: (.evidence // \"\" | tostring), class: (.class // \"\" | tostring), repeat_of: (if (.repeat_of | type) == \"string\" then .repeat_of else null end)}' $G/one.json >> $G/cand.ndjson
+    else
+      jq -c '{file: (.file // \"\" | tostring), evidence_norm: ((.evidence // \"\" | tostring) | ascii_downcase | gsub(\"[[:space:]]+\"; \" \") | sub(\"^[[:space:]]+\"; \"\") | sub(\"[[:space:]]+$\"; \"\")), message: (.message // \"\" | tostring)}' $G/one.json >> $G/bad.ndjson 2>/dev/null
+    fi
+    I=$((I + 1))
+  done
+done
+if [ \"$SS\" != missed ] && [ -s \"$OUTS\" ]; then
+  NT=$(jq -r 'if (.acceptance | type) == \"array\" then (.acceptance | length) else 0 end' $TASK 2>/dev/null || echo 0)
+  case \"$NT\" in '' | *[!0-9]*) NT=0 ;; esac
+  CNT=$(jq -r 'if (.acceptance | type) == \"array\" then (.acceptance | length) else 0 end' $OUTS 2>/dev/null || echo 0)
+  case \"$CNT\" in '' | *[!0-9]*) CNT=0 ;; esac
+  I=0
+  while [ $I -lt $CNT ]; do
+    jq -c --argjson i $I 'if (.acceptance | type) == \"array\" then .acceptance[$i] else null end' $OUTS > $G/one.json 2>/dev/null
+    IDX=$(jq -r 'if (.index | type) == \"number\" then (.index | floor | tostring) else \"\" end' $G/one.json 2>/dev/null)
+    MET=$(jq -r 'if .met == true then \"true\" else \"false\" end' $G/one.json 2>/dev/null)
+    EV=$(jq -r '.evidence // \"\" | tostring' $G/one.json 2>/dev/null)
+    case \"$IDX\" in
+      '' | *[!0-9]*) : ;;
+      *)
+        if [ \"$IDX\" -ge 1 ] && [ \"$IDX\" -le \"$NT\" ] && [ \"$MET\" = false ] && ev_ok \"$EV\"; then
+          FP=$(ev_path \"$EV\")
+          jq -nc --slurpfile t $TASK --slurpfile o $G/one.json --arg f \"$FP\" '{source: \"review\", dispute: false, severity: \"error\", kind: \"spec\", file: $f, line: null, message: (\"Acceptance \" + ((($o[0].index | floor) | tostring)) + \" is not met: \" + ((($t[0].acceptance[$o[0].index - 1]) // \"\" ) | tostring)), evidence: ($o[0].evidence // \"\" | tostring), class: \"\", repeat_of: null}' >> $G/cand.ndjson 2>/dev/null
+        fi ;;
+    esac
+    I=$((I + 1))
+  done
+fi
+if [ \"$SF\" != missed ] && [ -s \"$OUTF\" ]; then
+  CNT=$(jq -r 'if (.edge_cases | type) == \"array\" then (.edge_cases | length) else 0 end' $OUTF 2>/dev/null || echo 0)
+  case \"$CNT\" in '' | *[!0-9]*) CNT=0 ;; esac
+  I=0
+  while [ $I -lt $CNT ]; do
+    jq -c --argjson i $I 'if (.edge_cases | type) == \"array\" then .edge_cases[$i] else null end' $OUTF > $G/one.json 2>/dev/null
+    CV=$(jq -r 'if .covered == true then \"true\" else \"false\" end' $G/one.json 2>/dev/null)
+    if [ \"$CV\" = false ]; then
+      jq -nc --slurpfile o $G/one.json --slurpfile p $G/plan.json '(($o[0].id // \"\" ) | tostring) as $eid | (($p[0].edge_cases // []) | if type == \"array\" then . else [] end) as $ec | {source: \"refuter\", dispute: false, severity: \"warning\", kind: \"defect\", file: \"\", line: null, message: (\"No test covers edge case \" + $eid + \": \" + (([$ec[] | select(((.id // \"\") | tostring) == $eid) | (.case // \"\" | tostring)][0]) // \"\")), evidence: (($o[0].evidence // \"\") | tostring), class: \"\", repeat_of: null}' >> $G/cand.ndjson 2>/dev/null
+    fi
+    I=$((I + 1))
+  done
+fi
+DISP=0
+WDRAWN=0
+if [ -n \"$ID\" ] && [ -s $ST/findings/$ID.json ] && [ -s $ST/answers/$ID.json ] && jq -e 'type == \"array\"' $ST/findings/$ID.json >/dev/null 2>&1; then
+  CNT=$(jq -r 'if type == \"array\" then length else 0 end' $ST/findings/$ID.json 2>/dev/null || echo 0)
+  case \"$CNT\" in '' | *[!0-9]*) CNT=0 ;; esac
+  I=0
+  while [ $I -lt $CNT ]; do
+    jq -c --argjson i $I '.[$i]' $ST/findings/$ID.json > $G/one.json 2>/dev/null
+    FID=$(jq -r '.id // \"\" | tostring' $G/one.json 2>/dev/null)
+    ANS=$(jq -r --arg k \"$FID\" 'if type == \"object\" then ((.[$k] // {}).answer // \"\") else \"\" end' $ST/answers/$ID.json 2>/dev/null)
+    if [ \"$ANS\" = disputed ] && [ -n \"$FID\" ]; then
+      DISP=$((DISP + 1))
+      SRC2=$(jq -r '.source // \"\" ' $G/one.json 2>/dev/null)
+      RES=$OUTF
+      SVV=$SF
+      if [ \"$SRC2\" = review ]; then RES=$OUTS; SVV=$SS; fi
+      UPH=false
+      if [ \"$SVV\" != missed ] && [ -s \"$RES\" ]; then
+        jq -c --arg k \"$FID\" '[(if (.responses | type) == \"array\" then .responses[] else empty end) | select((.finding_id // \"\" | tostring) == $k)][0] // null' \"$RES\" > $G/resp.json 2>/dev/null
+        VER=$(jq -r 'if . == null then \"\" else (.verdict // \"\") end' $G/resp.json 2>/dev/null)
+        NEV=$(jq -r 'if . == null then \"\" else (.new_evidence // \"\" | tostring) end' $G/resp.json 2>/dev/null)
+        OLD=$(jq -r '.evidence // \"\" | tostring' $G/one.json 2>/dev/null)
+        if [ \"$VER\" = upheld ] && ev_ok \"$NEV\"; then
+          SAME=$(jq -nc --arg a \"$OLD\" --arg b \"$NEV\" 'def norm: ascii_downcase | gsub(\"[[:space:]]+\"; \" \") | sub(\"^[[:space:]]+\"; \"\") | sub(\"[[:space:]]+$\"; \"\"); (($a | norm) == ($b | norm))' 2>/dev/null)
+          if [ \"$SAME\" = false ]; then UPH=true; fi
+        fi
+      fi
+      if [ \"$UPH\" = true ]; then
+        jq -nc --slurpfile f $G/one.json --slurpfile r $G/resp.json '($r[0] // {}) as $r | {source: ($f[0].source // \"\" | tostring), dispute: true, severity: ($f[0].severity // \"\" | tostring), kind: ($f[0].kind // \"\" | tostring), file: ($f[0].file // \"\" | tostring), line: (if ($f[0].line | type) == \"number\" then $f[0].line else null end), message: ($f[0].message // \"\" | tostring), evidence: ($r.new_evidence // \"\" | tostring), class: ($f[0].class // \"\" | tostring), repeat_of: ($f[0].repeat_of // null)}' >> $G/cand.ndjson 2>/dev/null
+      else
+        WDRAWN=$((WDRAWN + 1))
+        jq -nc --slurpfile f $G/one.json '$f[0] | {file: (.file // \"\" | tostring), evidence_norm: ((.evidence // \"\" | tostring) | ascii_downcase | gsub(\"[[:space:]]+\"; \" \") | sub(\"^[[:space:]]+\"; \"\") | sub(\"[[:space:]]+$\"; \"\")), message: (.message // \"\" | tostring)}' >> $G/adddrop.ndjson 2>/dev/null
+      fi
+    fi
+    I=$((I + 1))
+  done
+fi
+jq -s '.' $G/cand.ndjson > $G/cand.json 2>/dev/null
+jq -s '.' $G/adddrop.ndjson > $G/adddrop.json 2>/dev/null
+jq -s '.' $G/bad.ndjson > $G/bad.json 2>/dev/null
+NDROP=$(jq -r 'if type == \"array\" then length else 0 end' $G/bad.json 2>/dev/null || echo 0)
+case \"$NDROP\" in '' | *[!0-9]*) NDROP=0 ;; esac
+jq -c --slurpfile b $G/dropped.before.json --slurpfile a $G/adddrop.json 'def norm: ascii_downcase | gsub(\"[[:space:]]+\"; \" \") | sub(\"^[[:space:]]+\"; \"\") | sub(\"[[:space:]]+$\"; \"\"); (($b[0] // []) + ($a[0] // [])) as $dead | [.[] | . as $c | select(([$dead[] | select(((.file // \"\") == ($c.file // \"\")) and ((.evidence_norm // \"\") == (($c.evidence // \"\") | norm)))] | length) == 0)]' $G/cand.json > $G/surv.json 2>/dev/null
+NREP=$(jq -n --slurpfile c $G/cand.json --slurpfile s $G/surv.json '(($c[0] // []) | length) - (($s[0] // []) | length)' 2>/dev/null || echo 0)
+case \"$NREP\" in '' | *[!0-9]*) NREP=0 ;; esac
+jq -c --arg id \"$ID\" --argjson n \"$N\" 'to_entries | sort_by([(if .value.dispute == true then 0 elif .value.source == \"refuter\" then 1 else 2 end), .key]) | map(.value) | reduce .[] as $c ({out: [], k: {f: 0, s: 0}}; (($c | if .source == \"refuter\" then \"f\" else \"s\" end)) as $l | .k[$l] = ((.k[$l] // 0) + 1) | .out += [$c + {id: ($id + \"v\" + ($n | tostring) + $l + (.k[$l] | tostring))}]) | .out' $G/surv.json > $G/survivors.json 2>/dev/null
+BADARR=''
+for X in $G/cand.json $G/surv.json $G/survivors.json $G/adddrop.json $G/bad.json; do
+  if ! jq -e 'type == \"array\"' $X >/dev/null 2>&1; then BADARR=$X; fi
+done
+if [ -n \"$BADARR\" ]; then
+  rm -rf $G
+  echo 'task_review_gate: this round could not be computed, so the Task stays in review' >&2
+  exit 1
+fi
+ERR=$(jq -r 'if type == \"array\" then [.[] | select(.severity == \"error\")] | length else 0 end' $G/survivors.json 2>/dev/null || echo 0)
+WRN=$(jq -r 'if type == \"array\" then [.[] | select(.severity == \"warning\")] | length else 0 end' $G/survivors.json 2>/dev/null || echo 0)
+case \"$ERR\" in '' | *[!0-9]*) ERR=0 ;; esac
+case \"$WRN\" in '' | *[!0-9]*) WRN=0 ;; esac
+V=pass
+if [ \"$SF\" = missed ] && [ \"$SS\" = missed ]; then V=missed
+elif [ \"$ERR\" -gt 0 ]; then
+  V=rework
+  if [ \"$N\" -ge 4 ]; then V=blocked; fi
+fi
+if [ -n \"$ID\" ] && [ -s $TASKS ]; then
+  ST2=passed
+  case \"$V\" in rework) ST2=open ;; blocked) ST2=blocked ;; esac
+  NT2=''
+  if [ \"$V\" = missed ]; then NT2='no valid Task review'; fi
+  jq -c --slurpfile s $G/survivors.json --arg id \"$ID\" --argjson n \"$N\" --arg st \"$ST2\" --arg nt \"$NT2\" '([ (if type == \"array\" then $s[0][] else empty end) | select(.severity == \"error\") | (.message // \"\" | tostring)][0] // \"\") as $msg | ($msg | .[0:200]) as $cut | map(if .id == $id then .reviews = $n | .status = $st | (if $st == \"blocked\" then .block_reason = (\"box review: \" + $cut) else . end) | (if $nt != \"\" then .review_note = $nt else . end) else . end)' $TASKS > $F/tasks.trg.json 2>/dev/null && mv $F/tasks.trg.json $TASKS
+fi
+if [ \"$V\" = rework ] || [ \"$V\" = blocked ]; then
+  jq -c '[.[] | {id: .id, severity: .severity, kind: .kind, file: .file, line: .line, message: .message, evidence: .evidence, class: .class, source: .source, repeat_of: .repeat_of}]' $G/survivors.json > $ST/findings/$ID.json 2>/dev/null
+else
+  rm -f $ST/findings/$ID.json
+fi
+if [ -s $G/adddrop.ndjson ]; then
+  if [ -s $ST/dropped/$ID.json ] && jq -e 'type == \"array\"' $ST/dropped/$ID.json >/dev/null 2>&1; then
+    jq -s '.[0] + .[1]' $ST/dropped/$ID.json $G/adddrop.json > $G/dropped.json 2>/dev/null && mv $G/dropped.json $ST/dropped/$ID.json
+  else
+    cp $G/adddrop.json $ST/dropped/$ID.json 2>/dev/null
+  fi
+fi
+PC=0
+if [ -n \"$ID\" ]; then
+  PC=$(ls $ST/patches/$ID/*.patch 2>/dev/null | wc -l | tr -d ' ')
+  case \"$PC\" in '' | *[!0-9]*) PC=0 ;; esac
+  mkdir -p $ST/patches/$ID
+  echo $PC > $ST/patches/$ID/reviewed 2>/dev/null
+fi
+rm -f $ST/answers/$ID.json $ST/recovers/$ID
+echo 'null' > $G/none.json
+RFJ=$G/none.json
+if [ -s $OUTF ] && jq -e . $OUTF >/dev/null 2>&1; then RFJ=$OUTF; fi
+RSJ=$G/none.json
+if [ -s $OUTS ] && jq -e . $OUTS >/dev/null 2>&1; then RSJ=$OUTS; fi
+jq -s '.[0] + .[1]' $G/bad.json $G/adddrop.json > $G/thisdrop.json 2>/dev/null
+jq -n --slurpfile rf $RFJ --slurpfile rs $RSJ --slurpfile s $G/survivors.json --slurpfile d $G/thisdrop.json --arg id \"$ID\" --argjson n \"$N\" --arg v \"$V\" '{task: $id, round: $n, verdict: $v, refute: $rf[0], review: $rs[0], findings: $s[0], dropped: $d[0]}' > $ST/rounds/$ID-$N.json 2>/dev/null
+{
+  echo \"## Review $N of ${ID:-unknown}: $V\"
+  echo
+  jq -r 'def nl: [10] | implode; if type == \"array\" then .[] | select(.severity == \"error\") | \"- \" + ((.message // \"\" | tostring) | gsub(nl; \" \") | .[0:300]) else empty end' $G/survivors.json 2>/dev/null || true
+} >> $F/progress.md
+EDGES=$(jq -r 'if (.edge_cases | type) == \"array\" then (.edge_cases | length) else 0 end' $G/plan.json 2>/dev/null || echo 0)
+case \"$EDGES\" in '' | *[!0-9]*) EDGES=0 ;; esac
+ECOV=0
+if [ \"$SF\" != missed ] && [ -s \"$OUTF\" ]; then
+  ECOV=$(jq -r 'if (.edge_cases | type) == \"array\" then [.edge_cases[] | select(.covered == true)] | length else 0 end' $OUTF 2>/dev/null || echo 0)
+fi
+case \"$ECOV\" in '' | *[!0-9]*) ECOV=0 ;; esac
+NDROPPED=$((NDROP + WDRAWN + NREP))
+rm -rf $G
+echo 'task_review_gate: round '$N' of '${ID:-unknown}' is '$V' with '$ERR' error(s) and '$WRN' warning(s)' >&2
+jq -nc --arg t \"$ID\" --arg s \"$SRC\" --argjson n \"$N\" --arg v \"$V\" --argjson e \"$ERR\" --argjson w \"$WRN\" --argjson d \"$DISP\" --argjson wd \"$WDRAWN\" --argjson dr \"$NDROPPED\" --arg rf \"$SF\" --arg rs \"$SS\" --argjson ec \"$EDGES\" --argjson cv \"$ECOV\" '{context_updates:{task_review_task:$t,task_review_source:$s,task_review_round:$n,task_review_verdict:$v,task_review_errors:$e,task_review_warnings:$w,task_review_disputed:$d,task_review_withdrawn:$wd,task_review_dropped:$dr,task_review_refute_served:$rf,task_review_review_served:$rs,task_review_edges:$ec,task_review_edges_covered:$cv}}'"]
 
     // copy: ralph.resolve_merge
     // v1 runs it on glm-5.3 for 30m; that number is void on the box, and 60m is unmeasured.
@@ -3119,6 +3630,7 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     pick -> resolve_merge                     [condition="context.rebase_failed=true"]
     pick -> task_plan                         [condition="context.loop=work && context.rebase_failed=false && context.task_step=plan"]
     pick -> excerpts                          [condition="context.loop=work && context.rebase_failed=false && context.task_step=work"]
+    pick -> task_review_prep                  [condition="context.loop=review && context.rebase_failed=false"]
     pick -> hygiene                          [condition="context.loop=done && context.phase=post"]
     pick -> report_blocked                   [condition="context.loop=exhausted && context.phase=post"]
     pick -> stop_reason
@@ -3150,7 +3662,32 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     check -> record                           [condition="outcome=succeeded"]
     check -> record                           [condition="outcome=failed"]
     check -> stop_reason
+    // C1, C3, C4, C5: the Task review loop. `record` reports a pass as `reviewing`, so the
+    // Task's diff goes to `task_review_prep` and then to the two reviewers in this order. Each
+    // reviewer's own check node owns its retry (P8, `max_retries=0` on all four agent nodes):
+    // a missing result is retried on the box, then served once by the hosted fallback, and a
+    // miss after that is recorded and the round goes on. The gate is the only writer of the
+    // Task's status from here, and its unconditional edge to `pick` is what recovers a gate
+    // that crashed (C1 step 3).
+    record -> task_review_prep                [condition="outcome=succeeded && context.review_due=true"]
     record -> pick
+    task_review_prep -> task_refute           [condition="outcome=succeeded && context.task_review_go=true"]
+    task_review_prep -> pick
+    task_refute -> task_refute_check          [condition="outcome=succeeded"]
+    task_refute -> task_refute_check
+    task_refute_check -> task_refute          [condition="outcome=succeeded && context.task_refute_next=retry"]
+    task_refute_check -> task_refute_fb       [condition="outcome=succeeded && context.task_refute_next=fallback"]
+    task_refute_check -> task_review
+    task_refute_fb -> task_refute_check       [condition="outcome=succeeded"]
+    task_refute_fb -> task_refute_check
+    task_review -> task_review_check          [condition="outcome=succeeded"]
+    task_review -> task_review_check
+    task_review_check -> task_review          [condition="outcome=succeeded && context.task_review_next=retry"]
+    task_review_check -> task_review_fb       [condition="outcome=succeeded && context.task_review_next=fallback"]
+    task_review_check -> task_review_gate
+    task_review_fb -> task_review_check       [condition="outcome=succeeded"]
+    task_review_fb -> task_review_check
+    task_review_gate -> pick
     resolve_merge -> resolve_merge_gate       [condition="outcome=succeeded"]
     resolve_merge -> resolve_merge_gate
     resolve_merge_gate -> pick                [condition="context.merge_ok=true && context.merge_return=task", weight=10]

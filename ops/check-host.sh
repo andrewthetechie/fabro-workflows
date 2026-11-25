@@ -39,9 +39,11 @@ declare -A BASELINE=(
     # this script, which is task 12 of docs/ralph.
     [ralph]="59 nodes, 155 edges"
     # `ralph-v2`, the trial's second arm (ADR 0034, docs/plans/ralph-v2/05): ralph minus the
-    # fourth rung, plus the per-Task plan (task 07: task_plan and task_plan_gate), 60 nodes and
-    # 156 edges. Tasks 08-09 of the series raise this baseline.
-    [ralph-v2]="60 nodes, 156 edges"
+    # fourth rung, plus the per-Task plan (task 07: task_plan and task_plan_gate) and the per-Task
+    # review loop (task 08: task_review_prep, task_refute, task_review, their two check nodes,
+    # their two hosted fallbacks and task_review_gate), 68 nodes and 175 edges. Task 09 of the
+    # series raises this baseline by one edge.
+    [ralph-v2]="68 nodes, 175 edges"
     # The background lane's box-only package (more-local-inference task 04). The offline
     # parser's count: expected, unverified until task 12, Phase 1 runs this script.
     [box-noop]="4 nodes, 3 edges"
