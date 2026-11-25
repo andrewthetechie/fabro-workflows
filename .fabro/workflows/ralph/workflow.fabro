@@ -262,9 +262,10 @@ if [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi"]
     // The plan (O4, O16, C2). It runs ONCE per run, before the loop, on the run's own leased
     // box since the box-plan trial closed (2026-11-24, ADR 0034 D5; the trial's record is
     // docs/plan-box-trial/result-2026-11-24.txt). O5's hosted frontier chain (`kimi-k3` with
-    // flash, glm-5.3 and qwen behind it) is no longer this node's. It is not backlog's `plan`,
-    // which plans one already-decomposed task from a dossier; this one reads the whole issue
-    // and writes the Task list the loop works.
+    // flash, glm-5.3 and qwen behind it) is no longer this node's, and ralph-v2 04 removed it
+    // from ralph altogether (ADR 0034 D2). It is not backlog's `plan`, which plans one
+    // already-decomposed task from a dossier; this one reads the whole issue and writes the
+    // Task list the loop works.
     //
     // timeout="20m" is the plan trial's number, not a new measurement: the trial's `plan`
     // node did the same job -- read an issue and a checkout, write an ordered task list --
@@ -1511,12 +1512,13 @@ jq -nc --argjson s $RS --argjson p $RP '{context_updates:{review_run_standards:$
     // a Task for the loop, and the next round re-runs both reviews.
     //
     // timeout="30m" (standards) and "20m" (spec) are the FLASH projection: measured per
-    // visit, 2026-10-21..28, standards p95 13.3m and heaviest 47k output tokens, spec p95
-    // 7.0m and heaviest 26k, scaled at glm-5.3-flash's 30.9 output tok per wall-second,
-    // which projects the heaviest visits to ~25m and ~14m. glm-5.3 emits about 45 output
-    // tok per wall-second against flash's 31, so the heaviest visits are shorter than the
-    // flash projection these numbers came from and the numbers stand as a ceiling;
-    // `fabro-scorecard.sh` re-times them after two weeks (invariants-graph, *Timeouts*).
+    // visit, 2026-10-21..28, on kimi-k3 and its glm-5.3 fallback, standards p95 13.3m and
+    // heaviest 47k output tokens, spec p95 7.0m and heaviest 26k, scaled at glm-5.3-flash's
+    // 30.9 output tok per wall-second, which projects the heaviest visits to ~25m and ~14m.
+    // glm-5.3 emits about 45 output tok per wall-second against flash's 31, so the heaviest
+    // visits are shorter than the flash projection these numbers came from and the numbers
+    // stand as a ceiling; `fabro-scorecard.sh` re-times them after two weeks
+    // (invariants-graph, *Timeouts*).
     standards [label="Standards review", class="review-standards", timeout="30m", max_retries=1, prompt="@prompts/standards.md.j2"]
     spec [label="Spec review", class="review-spec", timeout="20m", max_retries=1, prompt="@prompts/spec.md.j2"]
 
