@@ -233,7 +233,7 @@ def choose_workflow(issue: Issue, share: int, v2_share: int) -> str:
         return "backlog"
     if "fast-path" in issue.labels:
         return "backlog"
-    if share == 50 and issue.number % 2 != 0:
+    if share != 100 and issue.number % 2 != 0:
         return "backlog"
     # The issue is on v1's `ralph` arm, and `v2_share` decides which package works it.
     if v2_share == 0:

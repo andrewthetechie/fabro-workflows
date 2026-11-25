@@ -651,6 +651,40 @@ def test_the_gap_table_predicts_a_gap_and_zero_for_an_unknown_key(tmp_path):
     assert not [key for key in BACKGROUND_GAP_MINUTES if key[1] in box]
 
 
+def test_the_ralph_v2_gap_rows_are_ralphs_copy():
+    """ralph-v2 10, step 4, as a diff against the original. Every `ralph` row has a
+    `ralph-v2` twin with the same number but the three whose position moved (E14), which
+    read 1; the two task-loop gates are the only rows the arm adds; and both workflow lists
+    name it. The test above spot-checks two of the twelve copied rows. Any of the other ten
+    dropped predicts 0 there, which silently keeps the lane idle beside a v2 run in that
+    node, so the copy is compared whole rather than sampled."""
+    from fabro_scheduler.config import (
+        BACKGROUND_GAP_MINUTES,
+        BACKGROUND_GAP_WORKFLOWS,
+        CODER_LOOP_WORKFLOWS,
+    )
+
+    v1 = {
+        node: minutes
+        for (workflow, node), minutes in BACKGROUND_GAP_MINUTES.items()
+        if workflow == "ralph"
+    }
+    v2 = {
+        node: minutes
+        for (workflow, node), minutes in BACKGROUND_GAP_MINUTES.items()
+        if workflow == "ralph-v2"
+    }
+    moved = {"refute", "refute_gate", "refute_prep"}
+    assert v2 == {
+        **{node: minutes for node, minutes in v1.items() if node not in moved},
+        **dict.fromkeys(moved, 1),
+        "task_plan_gate": 1,
+        "task_review_gate": 1,
+    }
+    assert "ralph-v2" in BACKGROUND_GAP_WORKFLOWS
+    assert "ralph-v2" in CODER_LOOP_WORKFLOWS
+
+
 def test_box_host_is_the_health_urls_host_and_none_outside_the_map():
     from fabro_scheduler.config import box_host, parse_box_health
 

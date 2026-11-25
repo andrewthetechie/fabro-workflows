@@ -1063,6 +1063,23 @@ def test_choose_workflow_reads_the_issue_number_not_its_repo():
     ) == "ralph-v2"
 
 
+def test_a_share_the_config_refuses_still_gets_v1s_answer():
+    """C8: `v2_share` splits only the arm today's rules hand to `ralph`, and a `backlog`
+    answer is never reconsidered. The rule is total, so that holds for a share the config
+    refuses as well. Before ralph-v2 a share that was neither 0 nor 100 split by parity,
+    and an odd issue went to `backlog`; reading `50` where v1 read "not 100" sends every
+    such issue to a ralph package instead."""
+    from fabro_scheduler.dispatch import choose_workflow
+
+    for share in (25, 1, 99, 101, -1):
+        for v2_share in (0, 50, 100):
+            assert choose_workflow(issue("o/a", 3, AGENT), share, v2_share) == "backlog"
+            assert choose_workflow(issue("o/a", 4, FAST), share, v2_share) == "backlog"
+        assert choose_workflow(issue("o/a", 4, AGENT), share, 0) == "ralph"
+        assert choose_workflow(issue("o/a", 4, AGENT), share, 50) == "ralph-v2"
+        assert choose_workflow(issue("o/a", 4, AGENT), share, 100) == "ralph-v2"
+
+
 @respx.mock
 def test_share_50_sends_an_even_issue_to_ralphs_entrypoint(store, leases, fabro):
     """The whole arm, end to end: the version, the run's label, the lease and the

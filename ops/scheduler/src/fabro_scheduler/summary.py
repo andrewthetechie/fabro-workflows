@@ -122,8 +122,8 @@ NODES: dict[str, WorkflowNodes] = {
         final_validation="final_check",
         disposition_gate="",
     ),
-    # v1 without `iterate_t4`: the trial's ladder ends at the box-reachable `kimi-for-coding`
-    # rung, and nothing else in the summary table changed.
+    # v1 without `iterate_t4`: the trial's ladder is box, `glm-5.3-flash`, `kimi-for-coding`
+    # (E16), so rung 3 is the last, and nothing else in the summary table changed.
     "ralph-v2": WorkflowNodes(
         refute_gate="refute_gate",
         coder_nodes=frozenset({"iterate_t1", "iterate_t2", "iterate_t3"}),

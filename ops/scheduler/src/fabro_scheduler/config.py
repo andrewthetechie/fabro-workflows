@@ -274,7 +274,7 @@ BACKGROUND_GAP_MINUTES: dict[tuple[str, str], int] = {
     ("ralph-v2", "final_merge"): 13,  # copied from ralph, unmeasured
     ("ralph-v2", "hygiene"): 11,  # copied from ralph, unmeasured
     ("ralph-v2", "prep"): 5,  # copied from ralph, unmeasured
-    ("ralph-v2", "refute"): 1,  # position moved: the hosted round still starts here
+    ("ralph-v2", "refute"): 1,  # position moved: it now ends the hosted round (E14)
     ("ralph-v2", "refute_gate"): 1,  # position moved: it now follows the hosted round
     ("ralph-v2", "refute_prep"): 1,  # position moved: it now follows the hosted round
     ("ralph-v2", "review_prep"): 11,  # copied from ralph, unmeasured
