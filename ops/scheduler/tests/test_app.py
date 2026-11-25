@@ -1506,9 +1506,11 @@ def test_retro_last_week_and_week_of_together_exit_two():
 
 def test_the_workflows_endpoint_splits_the_window_by_arm(client):
     """ADR 0029 C12: `/api/scorecard/workflows` answers both arms, the strata table
-    and the ralph line, over the same window parameters as `/api/scorecard`."""
+    and the ralph line, over the same window parameters as `/api/scorecard`. From
+    ralph-v2 10 the trial's package is a third column, at zero until its share is set."""
     body = client.get("/api/scorecard/workflows?days=7").json()
-    assert set(body["workflows"]) == {"backlog", "ralph"}
+    assert set(body["workflows"]) == {"backlog", "ralph", "ralph-v2"}
+    assert body["workflows"]["ralph-v2"]["runs"] == 0
     assert "window" in body
     assert isinstance(body["strata"], list)
     assert "runs_exhausted" in body["ralph"]

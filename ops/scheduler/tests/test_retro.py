@@ -143,6 +143,27 @@ def test_a_ralph_ending_is_classed_under_ralph(store):
     assert [r.run_id for r in classified.classes["ending:mark_stuck:deterministic"].runs] == ["B1"]
 
 
+def test_a_ralph_v2_ending_is_classed_under_its_own_workflow(store):
+    """The same rule without a new line of code (ralph-v2 10): `node_part` prefixes any
+    workflow but `backlog`, so the trial's keys are `ralph-v2.<node>` and a `mark_stuck`
+    in one package never files a fix for the other."""
+    run(store, "B1", kind="failed", reason="workflow_error", category="deterministic")
+    run(store, "V1", kind="failed", reason="workflow_error", category="deterministic",
+        workflow="ralph-v2")
+    store.save_run_summary(summary("B1", [], terminal="mark_stuck"))
+    store.save_run_summary(summary("V1", [], terminal="mark_stuck"))
+
+    classified = classify(store)
+
+    assert set(classified.classes) == {
+        "ending:mark_stuck:deterministic",
+        "ending:ralph-v2.mark_stuck:deterministic",
+    }
+    assert [
+        r.run_id for r in classified.classes["ending:ralph-v2.mark_stuck:deterministic"].runs
+    ] == ["V1"]
+
+
 def test_held_classes(store):
     run(store, "REF", pr=1, merged=False)
     run(store, "ARCH", pr=2, merged=False)
@@ -684,6 +705,38 @@ def test_discord_text_signed_deltas():
         "Week over week: Runs 45 (-3) · PRs 10 (+2) · merged by the workflow 3 = 30% (+5pp)"
         " · box-hours per merge 6.1 (-0.8)" in text
     )
+
+
+def test_the_arms_line_names_every_arm_with_runs_in_the_window():
+    """E2: once the trial is on, the week splits three ways, so the line cannot say
+    `ralph` alone. An arm with no runs is left out rather than printed as a zero."""
+    current = card(
+        runs=15,
+        prs=4,
+        merged_workflow=2,
+        box_hours_per_merge=5.0,
+        workflow_runs={"backlog": 9, "ralph": 2, "ralph-v2": 4},
+    )
+    text = retro.discord_text(
+        current, card(), [], week_start=WEEK, dry_run=False, still_leased=0, unsummarized=0
+    )
+    assert "arms backlog 9 / ralph 2 / ralph-v2 4" in text
+
+
+def test_a_week_of_v2_runs_alone_still_states_the_arms():
+    """The condition was `a ralph run is in the window`; a week where every ralph run is
+    a v2 one would otherwise lose the line that makes its merge rate readable."""
+    current = card(
+        runs=4,
+        prs=1,
+        merged_workflow=1,
+        box_hours_per_merge=5.0,
+        workflow_runs={"ralph-v2": 4},
+    )
+    text = retro.discord_text(
+        current, card(), [], week_start=WEEK, dry_run=False, still_leased=0, unsummarized=0
+    )
+    assert "arms ralph-v2 4" in text
 
 
 def test_discord_text_n_a_when_a_side_is_missing():

@@ -963,14 +963,17 @@ def _card_line(card: Scorecard, prev: Scorecard) -> str:
         f"Runs {card.runs} ({_signed(card.runs - prev.runs)})",
     ]
     # During the trial the reader has to know how the week split between the arms
-    # before any merge rate means anything (ADR 0029 C12). Emitted only when a
-    # `ralph` run is in the window, so a pre-trial week's line is unchanged.
-    if card.workflow_runs.get("ralph"):
+    # before any merge rate means anything (ADR 0029 C12), and from ralph-v2 the arm
+    # itself splits in two (E2). Emitted only when a run of either ralph package is in
+    # the window, so a pre-trial week's line is unchanged; an arm with no runs is left
+    # out rather than printed as a zero.
+    if card.workflow_runs.get("ralph") or card.workflow_runs.get("ralph-v2"):
         parts.append(
             "arms "
             + " / ".join(
                 f"{name} {card.workflow_runs.get(name, 0)}"
-                for name in ("backlog", "ralph")
+                for name in ("backlog", "ralph", "ralph-v2")
+                if card.workflow_runs.get(name)
             )
         )
     parts += [

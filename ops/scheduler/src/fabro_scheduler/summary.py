@@ -88,11 +88,12 @@ PATH_TAIL = 8
 class WorkflowNodes:
     """The node ids one workflow's summary reads (ADR 0029 C12).
 
-    Two workflows share this module and none of these ids: `backlog`'s refute gate
-    is the imported phase's `review_merge.refute_gate`, and `ralph`'s is its own
-    `refute_gate`; `backlog`'s coder attempts start at `coder`, `ralph`'s at any of
-    the four `iterate_t*` rungs. A summary that guessed would read zeroes and look
-    like a healthy run, so the ids are a table rather than a constant.
+    `backlog` and `ralph` share no id: `backlog`'s refute gate is the imported
+    phase's `review_merge.refute_gate`, and `ralph`'s is its own `refute_gate`;
+    `backlog`'s coder attempts start at `coder`, `ralph`'s at any of the
+    `iterate_t*` rungs. `ralph-v2` is v1's graph with a task loop, so its row is
+    `ralph`'s with the rungs it has (task 10). A summary that guessed would read
+    zeroes and look like a healthy run, so the ids are a table rather than a constant.
     """
 
     refute_gate: str
@@ -121,12 +122,21 @@ NODES: dict[str, WorkflowNodes] = {
         final_validation="final_check",
         disposition_gate="",
     ),
+    # v1 without `iterate_t4`: the trial's ladder ends at the box-reachable `kimi-for-coding`
+    # rung, and nothing else in the summary table changed.
+    "ralph-v2": WorkflowNodes(
+        refute_gate="refute_gate",
+        coder_nodes=frozenset({"iterate_t1", "iterate_t2", "iterate_t3"}),
+        validate="check",
+        final_validation="final_check",
+        disposition_gate="",
+    ),
 }
 
-# The node every terminal `ralph` node routes through before `exit` (C9). The edge
-# INTO it names the ending: `report_queued -> learn_prep` says the run handed its PR
-# to the merge queue, which is the fact the Retro's ending key wants. Without this
-# every ralph run would be classed by `learn_post`, the last node it started.
+# The node every terminal `ralph` or `ralph-v2` run routes through before `exit` (C9).
+# The edge INTO it names the ending: `report_queued -> learn_prep` says the run handed its
+# PR to the merge queue, which is the fact the Retro's ending key wants. Without this every
+# ralph run would be classed by `learn_post`, the last node it started.
 LEARN_PREP_NODE = "learn_prep"
 
 # The box pre-review's two nodes (pre-review-and-calibration, Part B). Both graphs spell them
@@ -369,9 +379,9 @@ def summarize(
                 if dst == LEARN_PREP_NODE and src:
                     ending = src
         elif name == "stage.completed" and node == "pick":
-            # `ralph`'s loop head: it publishes the phase it is about to run in and
-            # whether the loop has ever run out. Both are read here rather than from
-            # a file, because a summary must come from the run's own event stream.
+            # `ralph`'s and `ralph-v2`'s loop head: it publishes the phase it is about to
+            # run in and whether the loop has ever run out. Both are read here rather than
+            # from a file, because a summary must come from the run's own event stream.
             updates = props.get("context_updates")
             if isinstance(updates, Mapping):
                 here = _str(updates.get("phase"))

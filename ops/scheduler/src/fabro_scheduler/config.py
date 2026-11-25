@@ -72,6 +72,13 @@ DEFAULT_GITHUB_POLL_SECONDS = 60
 DEFAULT_RALPH_SHARE = 0
 RALPH_SHARES = (0, 50, 100)
 
+# `ralph-v2`'s share of the arm those rules hand to `ralph` (ralph-v2 E2, C8, task 10).
+# The same three values for the same reason, and a narrower question: it splits only an
+# issue that would already have run `ralph`, so `backlog`'s answer — a `fast-path` issue's
+# included — never changes. 0 is the default and the kill switch: a host that never sets
+# it runs v1 only.
+DEFAULT_RALPH_V2_SHARE = 0
+
 # The provider's peak hours (`peak.py`): no new dispatch from `lead` minutes before a
 # window opens until it closes. Off when unset, so a test or a fresh host never blocks
 # by surprise; compose sets z.ai's window. The lead is 15 minutes by default.
@@ -195,6 +202,12 @@ DEFAULT_CALIBRATION_SINCE = "2026-09-25"
 # Phase 1). A job that fits a node's median finishes at least half the time it starts there.
 # `.scratch/more-local-inference/gap-analysis.md` has the per-node odds for each job length.
 # Re-measure when the graphs change: the scripts are next to that file.
+#
+# The `ralph-v2` rows are `ralph`'s copied unchanged (ralph-v2 10), which is a guess the lane
+# makes deliberately: the trial runs beside v1, so it must not start a job v1's own row would
+# refuse. The three issue-level review nodes read 1 rather than ralph's number because their
+# position moved (E14: `standards` and `spec` now run first, the Refuter last). Task 13
+# re-measures all of them from the trial's runs.
 BACKGROUND_GAP_MINUTES: dict[tuple[str, str], int] = {
     ("backlog", "autofix"): 14,  # n=259
     ("backlog", "claim"): 12,  # n=97
@@ -254,6 +267,23 @@ BACKGROUND_GAP_MINUTES: dict[tuple[str, str], int] = {
     ("ralph", "standards"): 11,  # n=65
     ("ralph", "task_block_gate"): 2,  # n=210
     ("ralph", "watch_checks"): 2,  # n=23
+    ("ralph-v2", "autofix"): 2,  # copied from ralph, unmeasured
+    ("ralph-v2", "check"): 1,  # copied from ralph, unmeasured
+    ("ralph-v2", "claim"): 5,  # copied from ralph, unmeasured
+    ("ralph-v2", "final_check"): 13,  # copied from ralph, unmeasured
+    ("ralph-v2", "final_merge"): 13,  # copied from ralph, unmeasured
+    ("ralph-v2", "hygiene"): 11,  # copied from ralph, unmeasured
+    ("ralph-v2", "prep"): 5,  # copied from ralph, unmeasured
+    ("ralph-v2", "refute"): 1,  # position moved: the hosted round still starts here
+    ("ralph-v2", "refute_gate"): 1,  # position moved: it now follows the hosted round
+    ("ralph-v2", "refute_prep"): 1,  # position moved: it now follows the hosted round
+    ("ralph-v2", "review_prep"): 11,  # copied from ralph, unmeasured
+    ("ralph-v2", "spec"): 4,  # copied from ralph, unmeasured
+    ("ralph-v2", "standards"): 11,  # copied from ralph, unmeasured
+    ("ralph-v2", "task_block_gate"): 2,  # copied from ralph, unmeasured
+    ("ralph-v2", "task_plan_gate"): 1,  # new node, unmeasured
+    ("ralph-v2", "task_review_gate"): 1,  # new node, unmeasured
+    ("ralph-v2", "watch_checks"): 2,  # copied from ralph, unmeasured
 }
 
 # Any other node of a coder loop, and any other workflow, predicts 0 (C7: "an unknown key
@@ -262,13 +292,13 @@ BACKGROUND_GAP_MINUTES_DEFAULT = 0
 
 # The loops the table covers today. `pr-review` leases a box too (task 06), but no gap
 # after its stages has been measured yet, so it predicts 0.
-BACKGROUND_GAP_WORKFLOWS = ("backlog", "ralph")
+BACKGROUND_GAP_WORKFLOWS = ("backlog", "ralph", "ralph-v2")
 
 # The workflows whose box stages a background run must never overlap (D1). A coder loop
 # with no current box stage leaves its whole remaining gap to the lane. `issue-sharpen` is a
 # leased run, not a loop (issue-sharpening, ADR 0033), and it holds its box the same way: it has
 # no row in the gap table, so its gaps predict 0 and the lane fills nothing while it runs.
-CODER_LOOP_WORKFLOWS = ("backlog", "ralph", "pr-review", "issue-sharpen")
+CODER_LOOP_WORKFLOWS = ("backlog", "ralph", "ralph-v2", "pr-review", "issue-sharpen")
 
 # The run probe's beat: how often the background thread refreshes the cached
 # per-lease task count and current stage that the page renders. Stages last tens
@@ -416,6 +446,9 @@ class SchedulerConfig:
     automation_author: str = DEFAULT_AUTOMATION_AUTHOR
     # 0, 50 or 100; see `DEFAULT_RALPH_SHARE`. Read by `choose_workflow`.
     ralph_share: int = DEFAULT_RALPH_SHARE
+    # 0, 50 or 100, applied only to the arm `ralph_share` puts on `ralph`; see
+    # `DEFAULT_RALPH_V2_SHARE`. Read by `choose_workflow`.
+    ralph_v2_share: int = DEFAULT_RALPH_V2_SHARE
     # When dispatch pauses for the provider's peak hours; see `peak.py`. Off by default.
     peak_hours: PeakHours = field(default_factory=PeakHours)
     # The background lane (C7, D12). `off` means no new background run starts; running
@@ -521,6 +554,7 @@ def load_config(path: Path, env: Mapping[str, str] | None = None) -> SchedulerCo
             environ, "SCHEDULER_AUTOMATION_AUTHOR", DEFAULT_AUTOMATION_AUTHOR
         ),
         ralph_share=_env_ralph_share(environ),
+        ralph_v2_share=_env_share(environ, "SCHEDULER_RALPH_V2_SHARE", DEFAULT_RALPH_V2_SHARE),
         peak_hours=_env_peak_hours(environ),
         background=_env_background(environ),
         bg_gap_seconds=_env_int_at_least(
@@ -681,17 +715,16 @@ def _env_str(environ: Mapping[str, str], key: str, default: str) -> str:
     return value or default
 
 
-def _env_ralph_share(environ: Mapping[str, str]) -> int:
-    """`SCHEDULER_RALPH_SHARE`: 0 (the default, and the kill switch), 50 or 100.
+def _env_share(environ: Mapping[str, str], key: str, default: int) -> int:
+    """A share of the queue: 0 (the default, and the kill switch), 50 or 100.
 
     Anything else — `25`, `yes`, `-1`, an empty-but-present value — is a
     `ConfigError` naming the key: nothing in a run's history says which share
     produced it, so the arm must follow from the issue alone.
     """
-    key = "SCHEDULER_RALPH_SHARE"
     raw = environ.get(key, "").strip()
     if not raw:
-        return DEFAULT_RALPH_SHARE
+        return default
     try:
         value = int(raw)
     except ValueError as exc:
@@ -703,6 +736,11 @@ def _env_ralph_share(environ: Mapping[str, str]) -> int:
             f"{key}: {value} is not one of {', '.join(str(v) for v in RALPH_SHARES)}"
         )
     return value
+
+
+def _env_ralph_share(environ: Mapping[str, str]) -> int:
+    """`SCHEDULER_RALPH_SHARE`: `ralph`'s share of the queue; see `_env_share`."""
+    return _env_share(environ, "SCHEDULER_RALPH_SHARE", DEFAULT_RALPH_SHARE)
 
 
 def _env_background(environ: Mapping[str, str]) -> bool:

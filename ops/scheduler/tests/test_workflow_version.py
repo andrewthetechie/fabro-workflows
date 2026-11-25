@@ -16,16 +16,20 @@ import json
 import posixpath
 import re
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from fabro_scheduler.dispatch import choose_workflow
+from fabro_scheduler.github import Issue
 from fabro_scheduler.workflow_version import (
     BACKLOG_ENTRYPOINT,
     ENTRYPOINTS,
+    RALPH_ENTRYPOINT,
+    RALPH_V2_ENTRYPOINT,
     read_box_stages,
     MAX_FILE_BYTES,
-    RALPH_ENTRYPOINT,
     VersionCache,
     WorkflowVersionError,
     build_version_payload,
@@ -37,6 +41,9 @@ ENTRYPOINT = "workflows/backlog/workflow.fabro"
 SHARED = "workflows/_shared/review-merge/review-merge.fabro"
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# The parity numbers `choose_workflow` splits on, and the shares it accepts.
+NOW = datetime(2026, 11, 24, 12, 0, tzinfo=UTC)
 
 # `ops/check-payload.py`'s budget: the headroom a package keeps under the server's 2 MiB
 # version cap, because one package over it stops every workflow's dispatch (ralph-v2 01).
@@ -164,6 +171,39 @@ def test_every_entrypoint_builds_from_this_repository_under_the_budget():
         size = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
         assert payload["entrypoint"] == entrypoint
         assert size <= PAYLOAD_BUDGET_BYTES, f"{workflow}: {size} bytes"
+
+
+def test_every_workflow_choose_workflow_returns_has_a_real_entrypoint():
+    """`dispatch` looks its workflow up in `ENTRYPOINTS`, so a rule that can answer a
+    name with no row is a `KeyError` on the first such issue, in the dispatch thread.
+
+    The table is the module's own, and the answers come from the rule itself over every
+    share pair and both parities: a fake keyed by the names this test expects would pass
+    while the dispatcher raised.
+    """
+    answers = {
+        choose_workflow(
+            Issue("o/a", number, "t", labels, NOW), share, v2_share
+        )
+        for share in (0, 50, 100)
+        for v2_share in (0, 50, 100)
+        for number in (8, 9)
+        for labels in (frozenset({"agent"}), frozenset({"agent", "fast-path"}))
+    }
+    assert answers == {"backlog", "ralph", "ralph-v2"}
+    assert answers <= set(ENTRYPOINTS)
+    assert ENTRYPOINTS["ralph-v2"] == RALPH_V2_ENTRYPOINT
+
+
+def test_read_box_stages_of_the_real_ralph_v2_package():
+    """The generated manifest is what the background lane judges a v2 run by: the first
+    reviewer is a box stage, so the lane may not start beside it, and its hosted twin is
+    not, so the lane may (task 10)."""
+    stages = read_box_stages(REPO_ROOT / ".fabro", "ralph-v2")
+    assert stages.get("task_refute") == "true"
+    assert "task_refute_fb" not in stages
+    assert stages.get("task_review") == "true"
+    assert "task_review_fb" not in stages
 
 
 def test_check_payload_counts_the_bytes_the_scheduler_sends():

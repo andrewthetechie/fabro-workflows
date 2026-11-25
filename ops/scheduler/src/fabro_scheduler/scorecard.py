@@ -1134,9 +1134,9 @@ def by_workflow(rows: ScorecardRows, start: datetime, end: datetime) -> Workflow
     by_name: dict[str, list[sqlite3.Row]] = defaultdict(list)
     for row in rows.history:
         by_name[row["workflow"] or "backlog"].append(row)
-    # A window with no `ralph` run still gets the arm's column, at zero: a table
+    # A window with no run in an arm still gets that arm's column, at zero: a table
     # that loses a column when the arm is idle is a table nobody can read.
-    for name in ("backlog", "ralph"):
+    for name in ("backlog", "ralph", "ralph-v2"):
         by_name.setdefault(name, [])
 
     workflow_of_pr: dict[tuple[str, int], str] = {}
@@ -1145,8 +1145,10 @@ def by_workflow(rows: ScorecardRows, start: datetime, end: datetime) -> Workflow
             workflow_of_pr.setdefault((row["repo"], row["pr_number"]), row["workflow"] or "backlog")
 
     # A stable column order for every renderer: `backlog` first (the control arm),
-    # then `ralph`, then anything a later series adds.
-    order = ["backlog", "ralph"] + sorted(n for n in by_name if n not in ("backlog", "ralph"))
+    # then `ralph`, then `ralph-v2`, then anything a later series adds.
+    order = ["backlog", "ralph", "ralph-v2"] + sorted(
+        n for n in by_name if n not in ("backlog", "ralph", "ralph-v2")
+    )
     cards: dict[str, Scorecard] = {}
     for name in order:
         history = by_name[name]

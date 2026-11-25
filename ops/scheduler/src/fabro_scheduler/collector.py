@@ -130,7 +130,7 @@ class ScorecardCollector:
                     self._fabro.iter_events(run_id),
                     workflow=workflow,
                 )
-                if workflow == "ralph":
+                if workflow in ("ralph", "ralph-v2"):
                     # C12: the Tasks by `source` line needs the Task list. The collector
                     # takes it from the copy the live probe stored on the lease and the
                     # release carried here — it never reads the run's sandbox, because

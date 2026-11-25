@@ -458,6 +458,40 @@ def test_a_backlog_summary_ignores_ralphs_ids():
     assert summary.first_edit_ms == []
 
 
+def test_a_ralph_v2_summary_reads_ralphs_ids_without_the_fourth_rung():
+    """The trial's ladder ends at `iterate_t3` (E16), so `iterate_t4` is not one of its
+    coder attempts — and its Refuter is still `refute_gate`, not `backlog`'s imported
+    gate: a missing row falls back to `backlog` and would read neither."""
+
+    def edit(node: str) -> list[dict]:
+        return [
+            {"event": "stage.started", "node_id": node, "ts": "2026-11-24T10:00:00Z"},
+            {
+                "event": "agent.tool.started",
+                "node_id": node,
+                "ts": "2026-11-24T10:00:30Z",
+                "properties": {"event": {"ToolCallStarted": {"tool_name": "edit_file"}}},
+            },
+        ]
+
+    stages = [
+        {"node_id": "iterate_t3", "handler": "agent", "wall_time_ms": 60_000},
+        {"node_id": "iterate_t4", "handler": "agent", "wall_time_ms": 60_000},
+    ]
+    events = edit("iterate_t3") + edit("iterate_t4") + [
+        {
+            "event": "stage.completed",
+            "node_id": "refute_gate",
+            "properties": {"context_updates": {"refute_verdict": "pass"}},
+        },
+    ]
+
+    summary = summarize("R1", stages, events, workflow="ralph-v2")
+
+    assert summary.first_edit_ms == [30_000], "iterate_t3 counts, iterate_t4 does not"
+    assert [v.verdict for v in summary.refute] == ["pass"]
+
+
 def test_the_pre_reviews_arm_and_verdict_come_from_their_two_nodes():
     """`pre_review_prep` publishes the A/B arm and `pre_review_check` its verdict
     (pre-review-and-calibration Part B). Both graphs spell the ids identically, so a ralph

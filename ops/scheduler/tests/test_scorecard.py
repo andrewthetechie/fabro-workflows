@@ -636,24 +636,29 @@ def test_a_window_splits_into_one_card_per_workflow_and_a_strata_table(store):
     run(store, "B3", merged=False)  # no PR
     run(store, "R1", pr=3, merged=True, workflow="ralph")
     run(store, "R2", repo=OTHER, pr=4, merged=False, workflow="ralph")
+    run(store, "V1", pr=5, merged=True, workflow="ralph-v2")
     store.save_pr_facts(REPO, 1, facts(state="merged", merged_at="2026-10-05T05:00:00Z"))
     store.save_pr_facts(OTHER, 2, facts())
     store.save_pr_facts(REPO, 3, facts(state="merged", merged_at="2026-10-05T05:00:00Z"))
     store.save_pr_facts(OTHER, 4, facts())
+    store.save_pr_facts(REPO, 5, facts(state="merged", merged_at="2026-10-05T05:00:00Z"))
 
     card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
 
-    assert set(card.cards) == {"backlog", "ralph"}
+    assert set(card.cards) == {"backlog", "ralph", "ralph-v2"}
     assert card.cards["backlog"].runs == 3
     assert card.cards["ralph"].runs == 2
+    assert card.cards["ralph-v2"].runs == 1
     assert card.cards["backlog"].merged_workflow == 1
     assert card.cards["ralph"].merged_workflow == 1
+    assert card.cards["ralph-v2"].merged_workflow == 1
     # A row per repo x pool, per arm, with each arm's own counts.
     assert {(row.repo, row.workflow): row.runs for row in card.strata} == {
         (REPO, "backlog"): 2,
         (OTHER, "backlog"): 1,
         (REPO, "ralph"): 1,
         (OTHER, "ralph"): 1,
+        (REPO, "ralph-v2"): 1,
     }
     cell = next(
         row for row in card.strata if row.repo == REPO and row.workflow == "backlog"
@@ -682,7 +687,7 @@ def test_a_pr_row_is_not_a_scorecard_run(store):
     rows = store.scorecard_rows(*WINDOW)
     assert [row["run_id"] for row in rows.history] == ["B1"]
     card = scorecard.by_workflow(rows, *WINDOW)
-    assert set(card.cards) == {"backlog", "ralph"}
+    assert set(card.cards) == {"backlog", "ralph", "ralph-v2"}
     assert card.cards["backlog"].runs == 1
     assert card.cards["backlog"].merged_workflow == 0
 
@@ -691,6 +696,9 @@ def test_a_window_with_no_ralph_run_keeps_the_column_at_zero(store):
     run(store, "B1", pr=1, merged=True)
     card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
     assert card.cards["ralph"].runs == 0
+    # The trial's column too, before its switch is ever turned on: a table that grows a
+    # column on the first v2 run is a table nobody can compare weeks across.
+    assert card.cards["ralph-v2"].runs == 0
     assert card.ralph.runs == 0
     assert card.ralph.iterations.count == 0
 
@@ -736,12 +744,15 @@ def test_the_ralph_line_reads_its_own_stage_rows(store):
 
 def test_the_workflows_markdown_names_both_arms_and_the_strata(store):
     run(store, "R1", pr=1, merged=True, workflow="ralph")
+    run(store, "V1", pr=3, merged=False, workflow="ralph-v2")
     run(store, "B1", pr=2, merged=True)
     card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
     text = scorecard.workflows_to_markdown(card)
-    assert "|  | backlog | ralph |" in text
+    assert "|  | backlog | ralph | ralph-v2 |" in text
     assert "## Strata: repo x coder pool" in text
+    # `## ralph` stays v1's own line; task 11 adds the trial's.
     assert "## ralph" in text
     payload = scorecard.workflows_to_json(card)
-    assert set(payload["workflows"]) == {"backlog", "ralph"}
+    assert set(payload["workflows"]) == {"backlog", "ralph", "ralph-v2"}
+    assert payload["workflows"]["ralph-v2"]["runs"] == 1
     assert payload["ralph"]["runs"] == 1

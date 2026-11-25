@@ -197,16 +197,28 @@ def choose_next(
     )
 
 
-def choose_workflow(issue: Issue, share: int) -> str:
-    """Which workflow works this issue: `ralph` or `backlog` (ADR 0029 D2, O2).
+def choose_workflow(issue: Issue, share: int, v2_share: int) -> str:
+    """Which workflow works this issue: `backlog`, `ralph` or `ralph-v2`
+    (ADR 0029 D2, O2; ralph-v2 E2, C8).
 
-    Pure and total: same inputs, same answer, no I/O. The rule is the trial's:
+    Pure and total: same inputs, same answer, no I/O. `share` is the trial's own rule and
+    decides between `backlog` and `ralph` exactly as it did before `ralph-v2` existed:
 
     * `share` is 0 (the default, and the kill switch) -> always `backlog`;
     * `share` is 50 -> an EVEN issue number is `ralph`, an odd one `backlog`;
     * `share` is 100 -> every issue is `ralph` (the trial's result, O24);
     * a `fast-path` issue is always `backlog`, whatever its number or the share: the
       fast lane is `backlog`'s own feature (ADR 0023), and O24 keeps it there.
+
+    `v2_share` then splits the arm those rules hand to `ralph`, and only that arm (E2):
+
+    * `v2_share` is 0 (the default, and the kill switch) -> `ralph`;
+    * `v2_share` is 50 -> an EVEN issue number is `ralph-v2`, an odd one `ralph`;
+    * `v2_share` is 100 -> every issue `ralph` would have worked is `ralph-v2`.
+
+    A `backlog` answer is never reconsidered: a `fast-path` issue stays on the fast lane,
+    and a `share` of 0 keeps every issue there. Both shares use the same bit, so an issue
+    is on the same side of both parity splits.
 
     Parity is the issue's own number, so a Remainder issue or a Child issue takes
     the parity of ITS number, not its parent's. That is deliberate: the arms are
@@ -221,9 +233,14 @@ def choose_workflow(issue: Issue, share: int) -> str:
         return "backlog"
     if "fast-path" in issue.labels:
         return "backlog"
-    if share == 100:
+    if share == 50 and issue.number % 2 != 0:
+        return "backlog"
+    # The issue is on v1's `ralph` arm, and `v2_share` decides which package works it.
+    if v2_share == 0:
         return "ralph"
-    return "ralph" if issue.number % 2 == 0 else "backlog"
+    if v2_share == 100:
+        return "ralph-v2"
+    return "ralph-v2" if issue.number % 2 == 0 else "ralph"
 
 
 class DispatchLoop:
@@ -557,7 +574,9 @@ class DispatchLoop:
 
         # One call, one arm: the lease, the run's label and `run_history` all read
         # this value, so a second call could only disagree with it.
-        workflow = choose_workflow(item.issue, self._config.ralph_share)
+        workflow = choose_workflow(
+            item.issue, self._config.ralph_share, self._config.ralph_v2_share
+        )
 
         row = self._config.repo_named(repo)
         if row is None or not row.enabled:

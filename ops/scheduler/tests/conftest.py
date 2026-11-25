@@ -49,6 +49,10 @@ def fake_checkout(tmp_path: Path) -> FakeCheckout:
     # filter that stopped working shows up in a payload a test asserts on.
     (root / "workflows/ralph/workflow.fabro").write_text("digraph R {}")
     (root / "workflows/ralph/workflow.toml").write_text('name = "ralph"\n')
+    # The trial's parallel package (ralph-v2 10), beside v1 in the same commit.
+    (root / "workflows/ralph-v2").mkdir(parents=True)
+    (root / "workflows/ralph-v2/workflow.fabro").write_text("digraph R2 {}")
+    (root / "workflows/ralph-v2/workflow.toml").write_text('name = "ralph-v2"\n')
     (root / "workflows/_shared/review-merge/review-merge.fabro").write_text(
         "digraph S {}"
     )

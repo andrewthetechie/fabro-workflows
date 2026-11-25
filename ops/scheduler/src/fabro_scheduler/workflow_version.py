@@ -65,6 +65,8 @@ WORKFLOWS_REF = "main"
 # the cache below is keyed by the pair and not by the commit.
 BACKLOG_ENTRYPOINT = "workflows/backlog/workflow.fabro"
 RALPH_ENTRYPOINT = "workflows/ralph/workflow.fabro"
+# The parallel package the trial runs beside v1 (ralph-v2 E1, E2, C8).
+RALPH_V2_ENTRYPOINT = "workflows/ralph-v2/workflow.fabro"
 # The first box-only package (more-local-inference task 04). Tasks 06-10 add theirs.
 BOX_NOOP_ENTRYPOINT = "workflows/box-noop/workflow.fabro"
 # Task 07's background package.
@@ -83,6 +85,7 @@ ISSUE_SHARPEN_ENTRYPOINT = "workflows/issue-sharpen/workflow.fabro"
 ENTRYPOINTS = {
     "backlog": BACKLOG_ENTRYPOINT,
     "ralph": RALPH_ENTRYPOINT,
+    "ralph-v2": RALPH_V2_ENTRYPOINT,
     "box-noop": BOX_NOOP_ENTRYPOINT,
     "issue-precheck": ISSUE_PRECHECK_ENTRYPOINT,
     "issue-sharpen": ISSUE_SHARPEN_ENTRYPOINT,

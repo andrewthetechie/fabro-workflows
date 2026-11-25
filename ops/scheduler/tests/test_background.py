@@ -27,13 +27,15 @@ from fabro_scheduler.background import (
     plan_arm_true,
     running_node,
 )
-from fabro_scheduler.config import ConfigError, load_config
+from fabro_scheduler.config import ConfigError, load_config, predicted_gap_minutes
 from fabro_scheduler.fabro import DispatchResult, FabroError, build_job_intent, status_reason
 from fabro_scheduler.lease import Lease, LeaseStore
 from fabro_scheduler.store import Store
+from fabro_scheduler.workflow_version import read_box_stages
 
 TRACKED_REPOS = Path(__file__).resolve().parents[1] / "repos.toml"
 COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 JELLY = "andrewthetechie/jelly-swipe"  # priority 99, environment_id "python"
 BOXES = "coders-a=http://a.invalid/health,coders-b=http://b.invalid/health"
@@ -49,6 +51,10 @@ BACKLOG_STAGES = {
     "review_merge.refute_fix": "true",
     "review_merge.resolve_base": "true",
 }
+
+# The box stages a `ralph-v2` lease carries, read from the real generated manifest: this is
+# the same text `fabro-io box-claim` and `box-guard` read at run time (task 10).
+RALPH_V2_STAGES = read_box_stages(REPO_ROOT / ".fabro", "ralph-v2")
 
 
 # --- fakes -------------------------------------------------------------------------
@@ -265,6 +271,35 @@ def test_a_coder_loop_in_a_box_stage_blocks_the_start(store, leases):
     lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
     assert lane_.fill(NOW) == []
     assert fabro.dispatched == []
+
+
+def test_a_ralph_v2_lease_in_task_refute_blocks_its_box(store, leases):
+    """The trial's package is a coder loop the lane must not start inside (task 10), and
+    the manifest says so: its first task reviewer is a box stage, read from the real
+    generated block rather than a list this test made up."""
+    held_lease(leases, workflow="ralph-v2", box_stages=RALPH_V2_STAGES)
+    fabro = FakeFabro(
+        stages={"coderun": [{"node_id": "task_refute", "status": "running"}]}
+    )
+    enqueue(store)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
+    assert lane_.fill(NOW) == []
+    assert fabro.dispatched == []
+
+
+def test_a_ralph_v2_lease_in_check_predicts_the_copied_gap(store, leases):
+    """`check` is a command node, so the lane may fill after it, and the gap is ralph's
+    `check` row copied: one minute. That 1 is the whole point — an unmeasured 0 would
+    refuse every job and leave the lane idle behind a run it could have filled beside."""
+    held_lease(leases, workflow="ralph-v2", box_stages=RALPH_V2_STAGES)
+    assert predicted_gap_minutes("ralph-v2", "check") == 1
+    fabro = FakeFabro(stages={"coderun": [{"node_id": "check", "status": "running"}]})
+    fabro.active = [{"id": "coderun"}]
+    enqueue(store, typical=5)
+    lane_ = check(store, leases, fabro, FakeHealth({"coders-a": IDLE}), config())
+    assert lane_.fill(NOW) == [], "five minutes does not fit the copied one"
+    enqueue(store, typical=1, target="second")
+    assert [start.box for start in lane_.fill(NOW)] == ["coders-a"]
 
 
 def test_a_coder_loop_between_stages_predicts_zero(store, leases):
@@ -1060,6 +1095,14 @@ def test_the_compose_file_carries_the_ten_variables_with_their_defaults():
     pairs = ("coders-a=http://10.10.0.29:5300/health,coders-b=http://10.10.0.29:5300/health,"
              "coders-c=http://10.10.0.56:5300/health,coders-d=http://10.10.0.56:5300/health")
     assert f'SCHEDULER_BOX_HEALTH: "${{SCHEDULER_BOX_HEALTH:-{pairs}}}"' in text, "SCHEDULER_BOX_HEALTH"
+
+
+def test_the_compose_file_ships_the_v2_share_at_zero():
+    """The trial's kill switch is the value the container receives (ralph-v2 10): a
+    variable compose does not pass is one the scheduler never reads, so the trial would
+    sit silently off while the code accepted it."""
+    text = COMPOSE.read_text()
+    assert 'SCHEDULER_RALPH_V2_SHARE: "${SCHEDULER_RALPH_V2_SHARE:-0}"' in text
 
 
 # --- the HTTP surface -------------------------------------------------------------

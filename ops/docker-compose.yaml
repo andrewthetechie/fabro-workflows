@@ -55,6 +55,13 @@ services:
       # ~/fabro/.env and `docker compose up -d --no-deps scheduler` on the host.
       # Either recreates only the scheduler; in-flight `ralph` runs finish.
       SCHEDULER_RALPH_SHARE: "${SCHEDULER_RALPH_SHARE:-100}"
+      # ralph-v2's share of what that sends to `ralph` (E2, C8): 0, 50 or 100, and
+      # `ralph-v2` 10 ships it at 0, the kill switch, so every issue `ralph` works
+      # stays on v1 until the operator turns the trial on. 50 is the trial's parity:
+      # an even issue number runs `ralph-v2`. Set it in ~/fabro/.env and apply it with
+      # `docker compose up -d --no-deps scheduler`; without this line the variable
+      # never reaches the container at all.
+      SCHEDULER_RALPH_V2_SHARE: "${SCHEDULER_RALPH_V2_SHARE:-0}"
       # z.ai's peak hours (ops/scheduler/src/fabro_scheduler/peak.py): weekdays
       # 14:00-18:00 Singapore time, which has no DST, so 06:00-10:00 UTC. Usage
       # off-peak costs 50% of the peak credit rate (docs.z.ai/devpack/overview, read

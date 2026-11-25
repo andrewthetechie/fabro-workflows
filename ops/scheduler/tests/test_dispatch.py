@@ -988,33 +988,67 @@ def test_an_agent_shaped_ending_is_not_dispatched_again(config, store, leases, f
     assert loop.tick() == []
 
 
-# --- the arm: which workflow works the issue (ADR 0029 O2, O21) --------------------
+# --- the arm: which workflow works the issue (ADR 0029 O2, O21; ralph-v2 E2, C8) --
+
+AGENT = frozenset({"agent"})
+FAST = frozenset({"agent", "fast-path"})
 
 
 @pytest.mark.parametrize(
-    "share, number, labels, expected",
+    "share, v2_share, number, labels, expected",
     [
-        (0, 2, frozenset({"agent"}), "backlog"),
-        (0, 3, frozenset({"agent"}), "backlog"),
-        (0, 4, frozenset({"agent", "fast-path"}), "backlog"),
-        (50, 2, frozenset({"agent"}), "ralph"),
-        (50, 3, frozenset({"agent"}), "backlog"),
-        (50, 8, frozenset({"agent", "fast-path"}), "backlog"),
+        # share 0 is v1's kill switch, and it stays the whole answer: every issue is
+        # `backlog`'s whatever `v2_share` says.
+        (0, 0, 2, AGENT, "backlog"),
+        (0, 0, 2, FAST, "backlog"),
+        (0, 0, 3, AGENT, "backlog"),
+        (0, 0, 3, FAST, "backlog"),
+        (0, 50, 2, AGENT, "backlog"),
+        (0, 50, 2, FAST, "backlog"),
+        (0, 50, 3, AGENT, "backlog"),
+        (0, 50, 3, FAST, "backlog"),
+        (0, 100, 2, AGENT, "backlog"),
+        (0, 100, 2, FAST, "backlog"),
+        (0, 100, 3, AGENT, "backlog"),
+        (0, 100, 3, FAST, "backlog"),
+        # share 50: the arm is an even issue number. `v2_share` splits that arm, and an
+        # odd number stays on `backlog` at every `v2_share`.
+        (50, 0, 2, AGENT, "ralph"),
+        (50, 0, 2, FAST, "backlog"),
+        (50, 0, 3, AGENT, "backlog"),
+        (50, 0, 3, FAST, "backlog"),
+        (50, 50, 2, AGENT, "ralph-v2"),
+        (50, 50, 2, FAST, "backlog"),
+        (50, 50, 3, AGENT, "backlog"),
+        (50, 50, 3, FAST, "backlog"),
+        (50, 100, 2, AGENT, "ralph-v2"),
+        (50, 100, 2, FAST, "backlog"),
+        (50, 100, 3, AGENT, "backlog"),
+        (50, 100, 3, FAST, "backlog"),
+        # share 100: the whole ralph arm is on. `v2_share` 50 splits it by parity (E2),
+        # and 100 puts all of it on the trial's package.
+        (100, 0, 2, AGENT, "ralph"),
+        (100, 0, 2, FAST, "backlog"),
+        (100, 0, 3, AGENT, "ralph"),
+        (100, 0, 3, FAST, "backlog"),
+        (100, 50, 2, AGENT, "ralph-v2"),
+        (100, 50, 2, FAST, "backlog"),
+        (100, 50, 3, AGENT, "ralph"),
+        (100, 50, 3, FAST, "backlog"),
+        (100, 100, 2, AGENT, "ralph-v2"),
+        (100, 100, 2, FAST, "backlog"),
+        (100, 100, 3, AGENT, "ralph-v2"),
+        (100, 100, 3, FAST, "backlog"),
         # The label is matched exactly: an upper-case spelling is a different label,
         # which is how the graph's own lane check reads it too.
-        (50, 10, frozenset({"agent", "Fast-Path"}), "ralph"),
-        (50, 11, frozenset({"agent", "review"}), "backlog"),
-        # 100, since the trial's result (ADR 0029 O24): every issue but the fast lane's.
-        (100, 2, frozenset({"agent"}), "ralph"),
-        (100, 3, frozenset({"agent"}), "ralph"),
-        (100, 5, frozenset({"agent", "fast-path"}), "backlog"),
-        (100, 6, frozenset({"agent", "fast-path"}), "backlog"),
+        (50, 50, 10, frozenset({"agent", "Fast-Path"}), "ralph-v2"),
+        (50, 0, 11, frozenset({"agent", "review"}), "backlog"),
     ],
 )
-def test_choose_workflow(share, number, labels, expected):
+def test_choose_workflow(share, v2_share, number, labels, expected):
     from fabro_scheduler.dispatch import choose_workflow
 
-    assert choose_workflow(issue("o/a", number, labels), share) == expected
+    assert choose_workflow(issue("o/a", number, labels), share, v2_share) == expected
 
 
 def test_choose_workflow_reads_the_issue_number_not_its_repo():
@@ -1022,11 +1056,11 @@ def test_choose_workflow_reads_the_issue_number_not_its_repo():
     from fabro_scheduler.dispatch import choose_workflow
 
     assert choose_workflow(
-        Issue("o/a", 12, "t", frozenset({"agent"}), NOW), 50
-    ) == "ralph"
+        Issue("o/a", 12, "t", frozenset({"agent"}), NOW), 50, 50
+    ) == "ralph-v2"
     assert choose_workflow(
-        Issue("o/b", 12, "t", frozenset({"agent"}), NOW), 50
-    ) == "ralph"
+        Issue("o/b", 12, "t", frozenset({"agent"}), NOW), 50, 50
+    ) == "ralph-v2"
 
 
 @respx.mock
@@ -1087,6 +1121,61 @@ def test_share_0_keeps_every_even_issue_on_backlog(store, leases, fabro):
         "workflows/backlog/workflow.fabro"
     )
     assert leases.active()[0].workflow == "backlog"
+
+
+@respx.mock
+def test_share_100_and_v2_share_100_put_an_even_issue_on_ralph_v2(store, leases, fabro):
+    """The whole v2 arm, end to end: the version registered is `ralph-v2`'s graph, and
+    the run's label, the lease and the history row all say `ralph-v2` — the four places
+    the scorecard, the lane and the lease read."""
+    config = load_config(
+        TRACKED_REPOS,
+        env={"SCHEDULER_RALPH_SHARE": "100", "SCHEDULER_RALPH_V2_SHARE": "100"},
+    )
+    loop = DispatchLoop(config, store, leases, fabro, "ghp_test")
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    seed(store, JELLY, 8)
+
+    attempts = loop.tick()
+
+    assert attempts[0].run_id == "R1"
+    registered = recorder.bodies("POST", "/api/v1/workflow-versions")[0]
+    assert registered["entrypoint"] == "workflows/ralph-v2/workflow.fabro"
+    intent = recorder.bodies("POST", "/api/v1/runs")[0]
+    assert intent["args"]["labels"]["workflow"] == "ralph-v2"
+    assert leases.active()[0].workflow == "ralph-v2"
+
+    leases.archive_and_release("R1", RunOutcome(kind="succeeded"))
+    assert store.history_rows()[0]["workflow"] == "ralph-v2"
+
+
+@respx.mock
+def test_a_requeued_issue_keeps_its_arm(store, leases, fabro):
+    """A requeue is the same issue number, so it is the same arm (C8): nothing saves the
+    choice for the requeue to restore it from, and nothing has to."""
+    config = load_config(
+        TRACKED_REPOS,
+        env={"SCHEDULER_RALPH_SHARE": "100", "SCHEDULER_RALPH_V2_SHARE": "100"},
+    )
+    loop = DispatchLoop(config, store, leases, fabro, "ghp_test")
+    recorder = Recorder()
+    install_labels(recorder)
+    install_fabro(recorder)
+    seed(store, JELLY, 8)
+
+    assert loop.tick()[0].run_id == "R1"
+    leases.archive_and_release("R1", RunOutcome(kind="failed", reason="terminated"))
+    store.requeue(JELLY, 8, first_seen=NOW)
+
+    assert loop.tick()[0].run_id == "R2"
+    intents = recorder.bodies("POST", "/api/v1/runs")
+    assert [intent["args"]["labels"]["workflow"] for intent in intents] == [
+        "ralph-v2",
+        "ralph-v2",
+    ]
+    assert leases.active()[0].workflow == "ralph-v2"
 
 
 # --- the peak-hours block (peak.py) -------------------------------------------------

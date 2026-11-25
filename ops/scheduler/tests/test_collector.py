@@ -174,6 +174,22 @@ def test_the_collector_never_reads_a_sandbox(store):
     assert json.loads(summary_row(store, "RALPH")["task_sources"]) == {"plan": 3, "refute": 2}
 
 
+def test_a_ralph_v2_run_gets_its_task_sources_too(store):
+    """The trial's package writes the same `tasks.json`, so the Tasks-by-`source` line is
+    collected for it exactly as for v1 (task 10) — and still without a sandbox read."""
+    released(
+        store, "V2", workflow="ralph-v2", task_sources={"plan": 4, "review": 1}
+    )
+    fabro = FakeFabro()
+
+    assert collector(store, fabro).tick().summarized == 1
+    assert fabro.sandbox_reads == []
+    assert json.loads(summary_row(store, "V2")["task_sources"]) == {
+        "plan": 4,
+        "review": 1,
+    }
+
+
 def test_a_run_the_probe_never_recorded_is_unmeasured_rather_than_invented(store):
     # A `ralph` run released before the probe recorded anything, or one whose graph wrote
     # no `tasks.json`: no counts, and still no sandbox read to go and find them.

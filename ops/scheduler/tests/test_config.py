@@ -481,6 +481,30 @@ def test_a_ralph_share_the_trial_never_validated_names_the_key(tmp_path, raw):
         load_config(write(tmp_path, repo()), env={"SCHEDULER_RALPH_SHARE": raw})
 
 
+def test_the_ralph_v2_share_defaults_to_zero_and_reads_fifty_and_a_hundred(tmp_path):
+    """0 is the kill switch and the default, and it is what ships: a host that has never
+    heard of the trial keeps every issue on a v1 package."""
+    cfg = load_config(write(tmp_path, repo()), env={})
+    assert cfg.ralph_v2_share == 0
+    assert load_config(
+        write(tmp_path, repo()), env={"SCHEDULER_RALPH_V2_SHARE": "50"}
+    ).ralph_v2_share == 50
+    assert load_config(
+        write(tmp_path, repo()), env={"SCHEDULER_RALPH_V2_SHARE": " 0 "}
+    ).ralph_v2_share == 0
+    assert load_config(
+        write(tmp_path, repo()), env={"SCHEDULER_RALPH_V2_SHARE": "100"}
+    ).ralph_v2_share == 100
+
+
+@pytest.mark.parametrize("raw", ["25", "yes", "-1", "75", "101", "50.0"])
+def test_a_ralph_v2_share_outside_the_three_values_names_the_key(tmp_path, raw):
+    """The same three values as v1's share, and the same refusal, naming its own key:
+    `SCHEDULER_RALPH_SHARE=25` must not be what a typo in the v2 variable reports."""
+    with pytest.raises(ConfigError, match="SCHEDULER_RALPH_V2_SHARE"):
+        load_config(write(tmp_path, repo()), env={"SCHEDULER_RALPH_V2_SHARE": raw})
+
+
 # --- the background lane (more-local-inference C7, D12) -----------------------------
 
 
@@ -601,6 +625,17 @@ def test_the_gap_table_predicts_a_gap_and_zero_for_an_unknown_key(tmp_path):
     assert predicted_gap_minutes("backlog", "review") == 12
     assert predicted_gap_minutes("backlog", "review_merge.standards") == 24
     assert predicted_gap_minutes("ralph", "refute") == 11
+    # `ralph-v2`'s rows are v1's copied (task 10), so the lane behaves beside the trial as
+    # it does beside v1; the three issue-level review nodes read 1 because their position
+    # moved (E14), and the two task-loop gates are new and unmeasured.
+    assert predicted_gap_minutes("ralph-v2", "prep") == 5
+    assert predicted_gap_minutes("ralph-v2", "check") == 1
+    assert predicted_gap_minutes("ralph-v2", "refute") == 1
+    assert predicted_gap_minutes("ralph-v2", "refute_gate") == 1
+    assert predicted_gap_minutes("ralph-v2", "refute_prep") == 1
+    assert predicted_gap_minutes("ralph-v2", "task_plan_gate") == 1
+    assert predicted_gap_minutes("ralph-v2", "task_review_gate") == 1
+    assert predicted_gap_minutes("ralph-v2", "not-a-node") == 0
     # Too few visits, or a median under a minute, predicts 0, the safe direction.
     assert ("ralph", "check") in BACKGROUND_GAP_MINUTES
     assert ("backlog", "review_merge.ci_fix_gate") in BACKGROUND_GAP_MINUTES
