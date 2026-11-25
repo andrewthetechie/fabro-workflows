@@ -682,8 +682,10 @@ class Counts(unittest.TestCase):
             # the step, +2 nodes and +5 edges. Task 08 adds the review loop: the prep, the two
             # reviewers, their two check nodes, their two hosted fallbacks and the gate, eight
             # nodes, and `pick`'s review branch, `record`'s review edge and the loop's own
-            # fifteen edges, +19. Task 09 raises it to 68 nodes and 176 edges.
-            "ralph-v2": (68, 175),
+            # fifteen edges, +19. Task 09 moves the issue-level round's edges -- the reviews
+            # before the Refuter, and `review_prep`'s split into three instead of two: +1 edge,
+            # 68 nodes and 176 edges (`fabro validate` confirms).
+            "ralph-v2": (68, 176),
         })
 
 

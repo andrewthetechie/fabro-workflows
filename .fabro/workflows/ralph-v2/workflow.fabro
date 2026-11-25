@@ -1506,7 +1506,7 @@ R=/tmp/fabro/review
 LE=false
 if [ -s /tmp/fabro/loop_exhausted ]; then LE=true; fi
 exhausted_result() {
-  jq -n --slurpfile t /tmp/fabro/tasks.json '{outcome: \"needs_human\", risk: 3, summary: \"The loop ran out with Tasks unpassed, so this pull request is not merged automatically.\", own_findings: [], fixes_applied: [], not_fixed: ([$t[0][] | select(.status != \"passed\") | {finding_id: .id, original_finding: (.title // .id), reason: \"not passed when the loop ran out\"}])}' > $R/fix_result.json
+  jq -n --slurpfile t /tmp/fabro/tasks.json '{outcome: \"needs_human\", risk: 3, summary: \"The loop ran out with Tasks unpassed, so this pull request is not merged automatically.\", own_findings: [], fixes_applied: [], not_fixed: ([$t[0][] | select(.status != \"passed\") | {finding_id: .id, original_finding: (.title // .id), reason: (\"not passed when the loop ran out\" + (if (.block_reason // \"\") == \"\" then \"\" else \": \" + .block_reason end))}])}' > $R/fix_result.json
 }
 V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
 RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
@@ -1697,6 +1697,12 @@ jq -nc --arg v \"$V\" --argjson n \"$NOT\" --argjson u \"$UO\" --argjson c \"$CC
     // copy: ralph.review_prep
     review_prep [label="Prepare review inputs", shape=parallelogram, timeout="2m", output_schema="routing",
         script="set -e
+if [ -s /tmp/fabro/loop_exhausted ]; then
+  echo 'review: the loop ran out, so the branch is held and no hosted review runs' >&2
+  rm -f /tmp/fabro/review/fix_result.json
+  echo '{\"context_updates\":{\"review_run_standards\":false,\"review_run_spec\":false}}'
+  exit 0
+fi
 B=main
 RS=true
 RP=true
@@ -2395,7 +2401,7 @@ git fetch origin \"$R\"
 N=$(jq -r .number /tmp/fabro/issue.json)
 T=$(cat /tmp/fabro/pr_title.txt)
 if [ -s /tmp/fabro/loop_exhausted ]; then
-  { echo; echo '### Unmet criteria'; echo; echo 'The loop ran out before these Tasks passed, so this pull request must not merge automatically:'; echo; jq -r '.[] | select(.status != \"passed\") | \"- \" + (.title // .id) + \" (\" + (.status // \"open\") + \")\"' /tmp/fabro/tasks.json; } >> /tmp/fabro/pr_body.md
+  { echo; echo '### Unmet criteria'; echo; echo 'The loop ran out before these Tasks passed, so this pull request must not merge automatically:'; echo; jq -r '.[] | select(.status != \"passed\") | \"- \" + (.title // .id) + \" (\" + (.status // \"open\") + (if (.block_reason // \"\") == \"\" then \"\" else \": \" + .block_reason end) + \")\"' /tmp/fabro/tasks.json; } >> /tmp/fabro/pr_body.md
 fi
 rm -f /tmp/fabro/draft_reason.md /tmp/fabro/pr_create.err /tmp/fabro/stuck_reason.md
 DRAFT=false
@@ -3544,21 +3550,22 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     plan_gate -> mark_stuck                   [condition="context.plan_status=needs_human"]
     plan_gate -> stop_reason
     refute_prep -> refute                     [condition="outcome=succeeded && context.refute_skip=false"]
-    refute_prep -> review_prep                [condition="outcome=succeeded && context.refute_skip=true"]
+    refute_prep -> review_gate                [condition="outcome=succeeded && context.refute_skip=true"]
     refute_prep -> stop_reason
     refute -> refute_gate                     [condition="outcome=succeeded"]
     refute -> refute_gate
-    refute_gate -> review_prep                [condition="context.refute_route=tasks"]
-    refute_gate -> review_prep                [condition="context.refute_route=pass"]
-    refute_gate -> review_prep                [condition="context.refute_route=hold && context.loop_exhausted=false"]
+    refute_gate -> review_gate                [condition="context.refute_route=tasks"]
+    refute_gate -> review_gate                [condition="context.refute_route=pass"]
+    refute_gate -> review_gate                [condition="context.refute_route=hold && context.loop_exhausted=false"]
     refute_gate -> stop_reason
     review_prep -> standards                  [condition="outcome=succeeded && context.review_run_standards=true"]
-    review_prep -> spec                       [condition="outcome=succeeded && context.review_run_standards=false"]
+    review_prep -> spec                       [condition="outcome=succeeded && context.review_run_standards=false && context.review_run_spec=true"]
+    review_prep -> refute_prep                [condition="outcome=succeeded && context.review_run_standards=false && context.review_run_spec=false"]
     review_prep -> stop_reason
     standards -> spec                         [condition="outcome=succeeded && context.review_run_spec=true"]
-    standards -> review_gate                  [condition="outcome=succeeded && context.review_run_spec=false"]
+    standards -> refute_prep                  [condition="outcome=succeeded && context.review_run_spec=false"]
     standards -> stop_reason
-    spec -> review_gate                       [condition="outcome=succeeded"]
+    spec -> refute_prep                       [condition="outcome=succeeded"]
     spec -> stop_reason
     review_gate -> pick                       [condition="context.review_route=tasks"]
     review_gate -> stop_reason
@@ -3580,13 +3587,13 @@ jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
     final_check -> stop_reason
     hygiene -> local_review_prep             [condition="outcome=succeeded && context.phase=pre"]
     local_review_prep -> local_standards     [condition="outcome=succeeded && context.local_review_go=true"]
-    local_review_prep -> refute_prep
+    local_review_prep -> review_prep
     local_standards -> local_spec            [condition="outcome=succeeded"]
     local_standards -> local_spec
     local_spec -> local_review_gate          [condition="outcome=succeeded"]
     local_spec -> local_review_gate
     local_review_gate -> pick                [condition="context.local_review_route=tasks"]
-    local_review_gate -> refute_prep
+    local_review_gate -> review_prep
     hygiene -> deliver                       [condition="outcome=succeeded && context.phase=post"]
     hygiene -> stop_reason
     refute_gate -> open_pr                   [condition="context.refute_route=hold && context.loop_exhausted=true"]

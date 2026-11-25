@@ -1547,12 +1547,34 @@ LEARN_PREP_TASK_LINE = '    jq -r \'.[]? | "- " + (.id // "?") + " [" + (.source
 LEARN_PREP_TASK_LINE_V2 = '    jq -r \'.[]? | "- " + (.id // "?") + " [" + (.source // "?") + "] " + (.status // "?") + ", iterations=" + ((.iterations // 0) | tostring) + ", misses=" + ((.misses // 0) | tostring) + ", reviews=" + ((.reviews // 0) | tostring) + (if ((.block_reason // "") | tostring) == "" then "" else ", " + (.block_reason | tostring) end) + ", highest rung=" + (if ((1 + (((.misses // 0) / 2) | floor)) > 3) then 3 else (1 + (((.misses // 0) / 2) | floor)) end | tostring)\' $F/tasks.json 2>/dev/null || echo \'(no Task list)\''
 
 R10_V2_COPIES: list[tuple[str, tuple[tuple[str, str], ...]]] = [
+    # C7, the issue-level order (ralph-v2 09). `review_prep` asks about `loop_exhausted` FIRST,
+    # because in v2 an exhausted run reaches it and v1's order would end that run at
+    # `mark_stuck` on a >2 MB diff instead of holding the PR (P6). `refute_gate` and `open_pr`
+    # say WHY a Task did not pass, from the `block_reason` the Task review left.
+    ("review_prep", ((
+        "B=main",
+        "if [ -s /tmp/fabro/loop_exhausted ]; then\n"
+        "  echo 'review: the loop ran out, so the branch is held and no hosted review runs' >&2\n"
+        "  rm -f /tmp/fabro/review/fix_result.json\n"
+        "  echo '{\"context_updates\":{\"review_run_standards\":false,\"review_run_spec\":false}}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "B=main"),)),
+    ("refute_gate", ((
+        'reason: "not passed when the loop ran out"',
+        'reason: ("not passed when the loop ran out" + (if (.block_reason // "") == "" then "" '
+        'else ": " + .block_reason end))'),)),
+    ("open_pr", ((
+        '(.status // "open") + ")"',
+        '(.status // "open") + (if (.block_reason // "") == "" then "" else ": " + .block_reason '
+        'end) + ")"'),)),
+] + [
     (node, ()) for node in (
         "claim", "plan_gate", "plan_review_prep", "plan_review_gate", "excerpts",
         "task_block_gate", "autofix", "check", "resolve_merge_gate",
-        "refute_prep", "refute_gate", "review_prep", "review_gate", "local_review_prep",
+        "refute_prep", "review_gate", "local_review_prep",
         "local_review_gate", "final_merge", "final_check", "criterion_checks", "hygiene",
-        "open_pr", "file_remainder", "pr_handoff", "merge_prep", "deliver", "merge_gate",
+        "file_remainder", "pr_handoff", "merge_prep", "deliver", "merge_gate",
         "watch_checks", "merge", "remerge_base", "resolve_base_gate", "ci_task",
         "report_merged", "report_blocked", "report_queued", "learn_post",
         "mark_needs_human", "close_noop", "return_to_triage", "mark_stuck",

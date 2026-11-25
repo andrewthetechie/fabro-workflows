@@ -1,4 +1,4 @@
-"""ralph-v2 (ADR 0034, docs/plans/ralph-v2/05-08): the package's own rules and its Task loop.
+"""ralph-v2 (ADR 0034, docs/plans/ralph-v2/05-09): the package's own rules and its loops.
 
 Everything ralph-v2 copies from ralph is held by R10 in `ops/check-graph-invariants.py`, and
 the graphs' behaviour by the gate tests that already cover ralph's nodes. What no other gate
@@ -6,13 +6,16 @@ covers is the file itself: the profile images run Debian, where `/bin/sh` is das
 a bashism at parse time, a template token left in a node renders as the literal text, and the
 dispatch payload has a size the server refuses.
 
-Pin what tasks 05-08 decided and nothing more: the fourth rung is gone from the edges, the
+Pin what tasks 05-09 decided and nothing more: the fourth rung is gone from the edges, the
 graph stays inside the size the plan gives it (`P14`: under 350,000 bytes), the prompts and
 schemas are the plan's assets byte for byte, because the plan is the review of that text, and
 the Task loop runs in the order its nodes were written for: `pick` -> `task_plan_gate` ->
 `excerpts` -> `task_block_gate` -> `record` -> `pick` (C1, C2), then a pass through
 `task_review_prep` -> the two Task reviewers, each behind its check -> `task_review_gate` ->
-`pick` (C3-C5), with the Sealed lists that keep the two reviewers apart.
+`pick` (C3-C5), with the Sealed lists that keep the two reviewers apart. Task 09 puts the
+issue-level round in E14's order -- `review_prep`, the hosted reviewers, `refute_prep`, the
+Refuter, then both gates -- so an exhausted run is held before it takes its diff (P6), and
+one round's review errors and Refuter findings become Tasks together (C7).
 """
 
 import json
@@ -20,9 +23,9 @@ import shutil
 import sys
 from pathlib import Path
 
-from harness import (ORIG_PATH, RAPH2, REPO_ROOT, WF, cat, count, diff, edges, extract, git,
-                     jq, jq_n, lastjson, mkreadok, present, rm, run, script_nodes, set_visit, sh,
-                     stage, stub, syntax_ok, write)
+from harness import (ORIG_PATH, RAPH, RAPH2, REPO_ROOT, WF, cat, count, diff, edges, extract,
+                     git, jq, jq_n, lastjson, mkreadok, present, rm, run, script_nodes, set_visit,
+                     sh, stage, stub, syntax_ok, write)
 # The two substitutions the server makes in a command node's script before it runs. Every
 # other `{{ }}` in an attribute is literal text, so a render token somewhere else is a bug
 # only this can see: `fabro validate` accepts it.
@@ -2422,3 +2425,369 @@ def test_a_reworked_task_is_worked_past_the_cap(ck, tmp_path):
     ck("the plan is kept, so the rework needs no new plan", "work", pub["task_step"])
     ck("the findings reach the rework's dossier", "1", count("^## Review findings$",
                                                              file=T / "task-context.md"))
+
+
+# ---------------------------------------------------------------------------
+# Task 09 (C7, E14, P6): the issue-level order — the hosted reviews first, the Refuter last.
+#
+# `refute_prep`, `refute_gate` and `review_gate` are ralph's scripts under R10, and
+# `review_prep` is ralph's plus P6's early exit. The three reviewers are fixtures here: what
+# these pin is the contract between the command nodes, in the order the edges give them.
+# ---------------------------------------------------------------------------
+
+BRANCH = "fabro/run/01V2TEST"
+# C7's block, per node: every edge out of the nine nodes the issue-level order touches, as
+# `destination condition`. Sorted, so the set compares as text and an old edge left beside a
+# new one fails.
+C7_EDGES = {
+    "local_review_prep": (
+        "local_standards outcome=succeeded && context.local_review_go=true\n"
+        "review_prep"),
+    "local_review_gate": (
+        "pick context.local_review_route=tasks\n"
+        "review_prep"),
+    "review_prep": (
+        "refute_prep outcome=succeeded && context.review_run_standards=false && "
+        "context.review_run_spec=false\n"
+        "spec outcome=succeeded && context.review_run_standards=false && "
+        "context.review_run_spec=true\n"
+        "standards outcome=succeeded && context.review_run_standards=true\n"
+        "stop_reason"),
+    "standards": (
+        "refute_prep outcome=succeeded && context.review_run_spec=false\n"
+        "spec outcome=succeeded && context.review_run_spec=true\n"
+        "stop_reason"),
+    "spec": (
+        "refute_prep outcome=succeeded\n"
+        "stop_reason"),
+    "refute_prep": (
+        "refute outcome=succeeded && context.refute_skip=false\n"
+        "review_gate outcome=succeeded && context.refute_skip=true\n"
+        "stop_reason"),
+    "refute": (
+        "refute_gate\n"
+        "refute_gate outcome=succeeded"),
+    "refute_gate": (
+        "open_pr context.refute_route=hold && context.loop_exhausted=true\n"
+        "review_gate context.refute_route=hold && context.loop_exhausted=false\n"
+        "review_gate context.refute_route=pass\n"
+        "review_gate context.refute_route=tasks\n"
+        "stop_reason"),
+    "review_gate": (
+        "open_pr context.review_route=pass\n"
+        "pick context.review_route=tasks\n"
+        "stop_reason"),
+}
+
+
+def out_edges(e: str, node: str) -> str:
+    """Every edge out of node, as `destination condition`, sorted, one per line."""
+    return "\n".join(sorted(line[len(node) + 2:].rstrip()
+                            for line in e.split("\n") if line.startswith(node + "->")))
+
+
+def test_the_issue_level_order_edges(ck):
+    """E14: standards and spec before the Refuter, in every round, and the Refuter's gate
+    hands that round's findings to `review_gate` rather than back to `review_prep`. C7's block
+    is compared edge for edge, and `refute_gate -> review_prep` is gone."""
+    e = edges(RAPH2)
+    ck("the graph has edges to check", "true", str(bool(e)).lower())
+    for node, block in C7_EDGES.items():
+        ck(f"{node}'s edges are C7's, exactly", block, out_edges(e, node))
+    ck("no edge goes from refute_gate back to review_prep", "0",
+       count("^refute_gate->review_prep", e, flags="xF"))
+
+
+def test_review_prep_asks_about_an_exhausted_loop_first(ck, tmp_path):
+    """P6: in v2 an exhausted run REACHES `review_prep`, so it must answer before it takes the
+    diff. A 3 MB branch that v1's node refuses with `stuck_reason.md` (and so ends at
+    `mark_stuck`) exits 0 with both keys false, and the PR is held instead. The extra pass and
+    a normal visit still run the axes they did."""
+    RP = tmp_path / "v2-review-prep"
+    T = RP / "sb"
+    (T / "review").mkdir(parents=True)
+    repo = RP / "repo"
+    base_repo(RP / "origin.git", repo)
+    git("-C", repo, "checkout", "-qb", BRANCH)
+    write(repo / "big.txt", "".join(f"line {i} of a branch too large to review\n"
+                                    for i in range(100_000)))
+    git("-C", repo, "add", "-A")
+    git("-C", repo, "commit", "-qm", "a branch over 2 MB")
+    prep = stage(ck, "review_prep", T, graph=RAPH2, label="review_prep (ralph-v2)")
+    v1 = stage(ck, "review_prep", T, graph=RAPH, name="review_prep_v1",
+               label="review_prep (ralph)")
+    ck("the fixture branch is over the 2 MB ceiling", "true",
+       str(len(git("-C", repo, "diff", "origin/main...HEAD")) > 2_000_000).lower())
+
+    keys = lambda j: (jq(".context_updates.review_run_standards | tostring", j) + "|"
+                      + jq(".context_updates.review_run_spec | tostring", j))
+
+    # CONTROL: v1's node, on this branch, ends the run. That is the failure v2 must not have.
+    write(T / "loop_exhausted", "true\n")
+    rm(T / "review/diff.patch", T / "stuck_reason.md")
+    r = sh(v1, cwd=repo)
+    ck("v1's review_prep refuses a 3 MB branch", "1", r.rc)
+    ck("v1's refusal is a stuck run", "1", count("exceeds 2000000 bytes",
+                                                 file=T / "stuck_reason.md"))
+
+    # v2: exhausted, the same branch, both keys false and nothing taken.
+    rm(T / "stuck_reason.md", T / "review/diff.patch")
+    write(T / "review/fix_result.json", '{"outcome":"fixed"}\n')
+    r = sh(prep, cwd=repo)
+    ck("exhausted + 3 MB: v2 exits 0", "0", r.rc)
+    ck("exhausted + 3 MB: no hosted reviewer runs", "false|false",
+       keys(lastjson(r.out)))
+    no_braces(ck, "review_prep exhausted", r.out)
+    ck("exhausted + 3 MB: no diff is taken", "absent", present(T / "review/diff.patch"))
+    ck("exhausted + 3 MB: the held run's fix_result is cleared", "absent",
+       present(T / "review/fix_result.json"))
+    ck("exhausted + 3 MB: no stuck reason", "absent", present(T / "stuck_reason.md"))
+
+    # The one extra review pass re-runs only the axis that blocked. The branch is back under
+    # the ceiling first: these two visits must reach the diff, not answer like an exhausted one.
+    git("-C", repo, "rm", "-q", "big.txt")
+    git("-C", repo, "commit", "-qm", "drop the file that made the branch too large")
+    rm(T / "loop_exhausted")
+    for f in ("standards.json", "spec.json"):
+        write(T / "review" / f, "{}\n")
+    write(T / "review_extra", "pending\n")
+    write(T / "review_rerun", "spec\n")
+    r = sh(prep, cwd=repo)
+    ck("the extra pass: only spec re-runs", "false|true", keys(lastjson(r.out)))
+    ck("the extra pass: the standards result is kept", "present|absent",
+       present(T / "review/standards.json") + "|" + present(T / "review/spec.json"))
+
+    # A normal visit runs both.
+    rm(T / "review_extra", T / "review_rerun")
+    write(T / "review/standards.json", "{}\n")
+    r = sh(prep, cwd=repo)
+    ck("a normal visit: both reviewers run", "true|true", keys(lastjson(r.out)))
+    ck("a normal visit: both results are cleared", "absent|absent",
+       present(T / "review/standards.json") + "|" + present(T / "review/spec.json"))
+
+
+class IssueRound:
+    """A throwaway repository and ralph-v2's issue-level round, in the order the edges run it:
+    `review_prep` -> the hosted reviewers -> `refute_prep` -> the Refuter -> `refute_gate` ->
+    `review_gate`. The reviewers are fixtures at their own receipts; every command node is
+    real."""
+
+    def __init__(self, ck, tmp_path):
+        self.ck = ck
+        self.RP = tmp_path / "round"
+        self.T = T = self.RP / "sb"
+        T.mkdir(parents=True)
+        self.repo = repo = self.RP / "repo"
+        base_repo(self.RP / "origin.git", repo)
+        git("-C", repo, "checkout", "-qb", BRANCH)
+        commit_all(repo, {"src/a.txt": "one\ntwo\n"}, "the run's work")
+        write(T / "issue.json", json.dumps({"number": 12, "title": "t", "body": "b",
+                                            "labels": [], "comments": []}) + "\n")
+        write(T / "base_ref", "main\n")
+        (T / "review").mkdir()
+        self.nodes = {n: stage(ck, n, T, graph=RAPH2, label=n + " (ralph-v2)")
+                      for n in ("review_prep", "refute_prep", "refute_gate", "review_gate")}
+
+    def run(self, node):
+        r = sh(self.nodes[node], cwd=self.repo)
+        self.ck(f"{node}: exits 0", "0", r.rc)
+        no_braces(self.ck, node, r.out)
+        return json.loads(lastjson(r.out))["context_updates"]
+
+    def reviews(self, *errors):
+        """The hosted reviewers' results, each at its own visit: an `error` on each axis given."""
+        for axis in ("standards", "spec"):
+            findings = ([{"id": axis[:3].upper() + "-001", "severity": "error",
+                          "message": f"the {axis} review found this", "files": ["src/a.txt"]}]
+                        if axis in errors else [])
+            write(self.T / f"review/{axis}.json", json.dumps({
+                "decision": "findings" if findings else "approve", "summary": "s",
+                "findings": findings, "_io": {"stage": axis, "visit": "hosted-" + axis}}) + "\n")
+
+    def refuter(self, verdict):
+        """The Refuter's result at the visit the server stamped for this stage."""
+        write(self.T / "review/refute.json", json.dumps({
+            "summary": "checked",
+            "criteria": [{"criterion": "the work is done",
+                          "status": "met" if verdict == "pass" else "not_met",
+                          "evidence": "src/a.txt:1"}],
+            "defects": []}) + "\n")
+        set_visit(self.T / "review/refute.json",
+                  jq(".visit", file=self.T / ".io/stage.json"))
+
+    def round(self, visits, refuter, *errors):
+        """One whole round. `refute_visits` is set to `visits - 1`, and `refute_prep` counts the
+        visit that makes it `visits`, as it does in a run."""
+        write(self.T / "refute_visits", f"{visits - 1}\n")
+        rm(self.T / "loop_exhausted", self.T / "review_extra", self.T / "review_rerun",
+           self.T / "review/refute_route")
+        rp = self.run("review_prep")
+        self.reviews(*errors)
+        mkreadok(self.T, f"r{visits}")
+        prep = self.run("refute_prep")
+        self.refuter(refuter)
+        return rp, prep, self.run("refute_gate"), self.run("review_gate")
+
+
+def test_the_issue_level_round_in_order(ck, tmp_path):
+    """E14 and C7, with the real scripts in the order the edges run them: one round's review
+    errors and Refuter findings become Tasks together, the one extra pass skips the Refuter and
+    keeps its route, and a Refuter `hold` with the rounds spent opens the PR as needs_human."""
+    R = IssueRound(ck, tmp_path)
+    T = R.T
+
+    # 1. The first round: the Refuter's not_met and both reviews' errors are Tasks together.
+    write(T / "tasks.json", "[]\n")
+    rp, prep, gate, out = R.round(1, "fail", "standards", "spec")
+    ck("round 1: the reviews run first", "True|True",
+       f'{rp["review_run_standards"]}|{rp["review_run_spec"]}')
+    ck("round 1: the Refuter runs in the same round", "False", str(prep["refute_skip"]))
+    ck("round 1: the Refuter's finding is a Task", "tasks", gate["refute_route"])
+    ck("round 1: the reviews' errors are Tasks in that round", "tasks", out["review_route"])
+    ck("round 1: every finding is a Task", "r1c1,rv1s1,rv1p2",
+       jq('map(.id) | join(",")', file=T / "tasks.json"))
+    ck("round 1: no extra pass is asked for", "absent", present(T / "review_extra"))
+
+    # 2. A Refuter pass with review errors, first round: the errors still become Tasks.
+    write(T / "tasks.json", "[]\n")
+    _, _, gate, out = R.round(1, "pass", "spec")
+    ck("refuter pass: the route is pass", "pass", gate["refute_route"])
+    ck("refuter pass + errors: they become Tasks", "tasks", out["review_route"])
+    ck("refuter pass: no extra pass is asked for", "absent", present(T / "review_extra"))
+
+    # 3. Round 3: the same pass with the Refute rounds spent is THE EXTRA PASS.
+    write(T / "tasks.json", "[]\n")
+    _, _, gate, out = R.round(3, "pass", "spec")
+    ck("round 3: the Refuter passed", "pass", gate["refute_route"])
+    ck("round 3: its errors are Tasks once more", "tasks", out["review_route"])
+    ck("round 3: the extra pass is pending", "pending", cat(T / "review_extra"))
+    ck("round 3: only the axis that blocked re-runs", "spec", cat(T / "review_rerun"))
+    ck("round 3: its Task id is the extra pass's", "rvxp1",
+       jq('map(.id) | join(",")', file=T / "tasks.json"))
+    rp = R.run("review_prep")
+    ck("the extra pass: standards is kept and spec re-runs", "False|True",
+       f'{rp["review_run_standards"]}|{rp["review_run_spec"]}')
+    R.reviews()
+    prep = R.run("refute_prep")
+    ck("the extra pass: the Refuter is skipped", "True", str(prep["refute_skip"]))
+    ck("the extra pass: no Refute round is spent", "3", cat(T / "refute_visits"))
+    ck("the extra pass: the last round's route survives", "pass", cat(T / "refute_route"))
+    out = R.run("review_gate")
+    ck("the extra pass: the run goes on to the PR", "pass", out["review_route"])
+    ck("the extra pass is spent", "done", cat(T / "review_extra"))
+    ck("the extra pass cleared: nothing left to fix", "no_changes_needed",
+       jq(".outcome", file=T / "review/fix_result.json"))
+
+    # 4. A Refuter hold with the rounds spent: no Task, and `review_gate` opens the PR.
+    write(T / "tasks.json", "[]\n")
+    _, _, gate, out = R.round(3, "fail", "standards")
+    ck("a Refuter hold is the route", "hold", gate["refute_route"])
+    ck("a hold with the rounds spent makes no Task", "0",
+       jq("length", file=T / "tasks.json", raw=False))
+    ck("the reviews still report and the PR opens", "pass", out["review_route"])
+    ck("a hold with review errors is needs_human", "needs_human",
+       jq(".outcome", file=T / "review/fix_result.json"))
+    ck("each of its not_fixed entries says the Refuter held it", "2",
+       count("the Refuter held the merge, so review findings did not become Tasks",
+             file=T / "review/fix_result.json"))
+
+
+def test_an_exhausted_run_opens_its_pr_with_every_block_reason(ck, tmp_path):
+    """C7: an exhausted run reaches `open_pr` with no hosted reviewer, and the reasons it
+    carries name each blocked Task's `block_reason`. `refute_gate`'s `fix_result.json` survives
+    `open_pr` for `merge_gate`, the PR body lists the blocked Task under *Unmet criteria* with
+    its reason, and `prfacts` still finds an item in a report rendered from that file."""
+    RP = tmp_path / "exhausted"
+    T = RP / "sb"
+    (T / "review").mkdir(parents=True)
+    (T / "bin").mkdir()
+    repo = RP / "repo"
+    base_repo(RP / "origin.git", repo)
+    git("-C", repo, "checkout", "-qb", BRANCH)
+    commit_all(repo, {"src/a.txt": "one\ntwo\n"}, "the run's work")
+    blocked = "box review: the Task review found a defect and the rework did not clear it"
+    nodes = {n: stage(ck, n, T, graph=RAPH2, label=n + " (ralph-v2)")
+             for n in ("review_prep", "refute_prep", "refute_gate", "open_pr", "merge_prep")}
+    stub(T / "bin", "gh", """#!/bin/sh
+case "$1 $2" in
+  "pr view") [ -f "$GH_STATE/created" ] && echo "https://github.com/o/r/pull/123" ;;
+  "pr create") : > "$GH_STATE/created"; echo "https://github.com/o/r/pull/123" ;;
+esac
+exit 0
+""")
+    path = f"{T / 'bin'}:{ORIG_PATH}"
+    env = {"GH_STATE": T}
+    write(T / "issue.json", json.dumps({"number": 12, "title": "t", "body": "b",
+                                        "labels": [], "comments": []}) + "\n")
+    write(T / "tasks.json", json.dumps([
+        one_task(id="t1", title="Parse the file", status="blocked", reviews=4,
+                 block_reason=blocked),
+        one_task(id="t2", title="Log the count", status="open", misses=6),
+    ]) + "\n")
+    write(T / "base_ref", "main\n")
+    write(T / "head_ref", BRANCH + "\n")
+    write(T / "pr_title.txt", "the work this run did\n")
+    write(T / "pr_body.md", "## What changed\n")
+    write(T / "pr.json", '{"url":"https://github.com/o/r/pull/123"}\n')
+    write(T / "linked_issues.json", '[{"number":12}]\n')
+    write(T / "run_base_sha", git("-C", repo, "rev-parse", "origin/main") + "\n")
+    write(T / "loop_exhausted", "true\n")
+    write(T / "review/fix_result.json", '{"outcome":"fixed"}\n')
+
+    def go(node, **extra_env):
+        r = sh(nodes[node], cwd=repo, path=path, env={**env, **extra_env})
+        ck(f"{node}: exits 0", "0", r.rc)
+        no_braces(ck, node, r.out)
+        return r.out
+
+    # The round: no hosted reviewer, the Refuter's gate holds the loop's exhaustion.
+    rp = json.loads(lastjson(go("review_prep")))["context_updates"]
+    ck("no hosted reviewer runs on an exhausted run", "False|False",
+       f'{rp["review_run_standards"]}|{rp["review_run_spec"]}')
+    ck("the stale fix_result is cleared before the Refuter", "absent",
+       present(T / "review/fix_result.json"))
+    prep = json.loads(lastjson(go("refute_prep")))["context_updates"]
+    ck("the Refuter itself still runs", "False", str(prep["refute_skip"]))
+    mkreadok(T, "ex")
+    write(T / "review/refute.json", json.dumps({
+        "summary": "s", "criteria": [{"criterion": "the work is done", "status": "met",
+                                      "evidence": "src/a.txt:1"}], "defects": []}) + "\n")
+    set_visit(T / "review/refute.json", "ex")
+    gate = json.loads(lastjson(go("refute_gate")))["context_updates"]
+    ck("an exhausted run is held whatever the verdict", "hold", gate["refute_route"])
+    ck("the gate writes the held PR's fix_result", "needs_human",
+       jq(".outcome", file=T / "review/fix_result.json"))
+    ck("each reason names the Task's block_reason", "not passed when the loop ran out: " + blocked,
+       jq('[.not_fixed[] | select(.finding_id == "t1") | .reason] | join(",")',
+          file=T / "review/fix_result.json"))
+    ck("a Task with no block_reason keeps the plain reason",
+       "not passed when the loop ran out",
+       jq('[.not_fixed[] | select(.finding_id == "t2") | .reason] | join(",")',
+          file=T / "review/fix_result.json"))
+
+    # `open_pr` reads that file and leaves it: `merge_gate` checks 7-10 need it afterwards.
+    before = cat(T / "review/fix_result.json")
+    out = json.loads(lastjson(go("open_pr")))["context_updates"]
+    ck("open_pr opens the held PR", "https://github.com/o/r/pull/123", out["pr_url"])
+    ck("the fix_result survives open_pr", before, cat(T / "review/fix_result.json"))
+    ck("the blocked Task is under Unmet criteria, with its reason", "1", count(
+        f"^- Parse the file [(]blocked: {blocked}[)]$", file=T / "pr_body.md"))
+    ck("a Task that never passed is listed too", "1",
+       count("^- Log the count [(]open[)]$", file=T / "pr_body.md"))
+
+    # The report `mark_needs_human` posts, rendered from that same file: `prfacts.py` still
+    # reads it as something to fix, and its reason line is on the PR.
+    go("merge_prep", FABRO_AUTO_MERGE="1")
+    ck("merge_prep writes the renderers", "present", present(T / "render.jq"))
+    body = sh(T / "render_comment.sh", "blocked", cwd=T).out
+    ck("the report lists the blocked Task's reason", "1", count(
+        f"^- [*][*]t1: Parse the file[*][*] - not passed when the loop ran out: ", body))
+
+    # `prfacts.report_has_items` is the scheduler's: it is what decides whether a held PR's
+    # report names something to fix. It needs httpx at import and nothing else here, so the
+    # module is stubbed for the one import (the gate tests have no dependencies).
+    import types
+    sys.path.insert(0, str(REPO_ROOT / "ops/scheduler/src"))
+    sys.modules.setdefault("httpx", types.ModuleType("httpx"))
+    from fabro_scheduler.prfacts import report_has_items
+    ck("prfacts finds an item in the rendered report", "True", str(report_has_items(body)))
