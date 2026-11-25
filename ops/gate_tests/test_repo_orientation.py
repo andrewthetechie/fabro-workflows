@@ -23,8 +23,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from harness import (ORIG_PATH, RAPH, WF, cat, count, edges, extract, git, jq, lastjson, present,
-                     rebase, sh, stub, write)
+from harness import (ORIG_PATH, RAPH, RAPH2, WF, cat, count, edges, extract, git, jq, lastjson,
+                     present, rebase, sh, stub, write)
 
 GRAPH = WF / "repo-orientation" / "workflow.fabro"
 BACKLOG = WF / "backlog" / "workflow.fabro"
@@ -394,9 +394,10 @@ def prep_reader(graph: Path) -> str:
     return script[start:end + len("rm -f /tmp/fabro/orientation.raw /tmp/fabro/orientation.tmp /tmp/fabro/orientation.tmp2")]
 
 
-def test_the_reader_is_the_same_block_in_both_graphs(ck):
-    a, b = prep_reader(BACKLOG), prep_reader(RAPH)
+def test_the_reader_is_the_same_block_in_every_graph(ck):
+    a, b, c = prep_reader(BACKLOG), prep_reader(RAPH), prep_reader(RAPH2)
     ck("reader: identical in backlog and ralph (R10)", "1", str(int(a == b)))
+    ck("reader: identical in backlog and ralph-v2 too", "1", str(int(a == c)))
     ck("reader: one gh call, by label", "1",
        count(f"gh issue list --label {LABEL} --state open", a, flags="F"))
     ck("reader: capped at 6,000 characters", "1", count("6000", a, flags="F"))
@@ -451,7 +452,8 @@ def test_the_reader_caps_a_long_body(ck, tmp_path):
 
 def test_the_planners_read_it_as_an_optional_input(ck):
     manifest = json.loads((WF / "_io" / "manifest.json").read_text())
-    for wf, stage in (("backlog", "decompose"), ("backlog", "plan"), ("ralph", "plan")):
+    for wf, stage in (("backlog", "decompose"), ("backlog", "plan"), ("ralph", "plan"),
+                      ("ralph-v2", "plan")):
         inputs = {i["name"]: i for i in manifest["workflows"][wf]["stages"][stage]["inputs"]}
         assert "orientation.md" in inputs, (wf, stage)
         entry = inputs["orientation.md"]
@@ -514,14 +516,15 @@ SELECTORS = (
 )
 
 
-# Every file allowed to name the label: the package, the reader in `prep` (the three graphs), and
-# the output schema's description. Anything else naming it is a selector, and D22 says there
-# must be none.
+# Every file allowed to name the label: the package, the reader in `prep` (the four graphs),
+# and the output schema's description. Anything else naming it is a selector, and D22 says
+# there must be none.
 ALLOWED = {
     ".fabro/workflows/repo-orientation/workflow.fabro",
     ".fabro/workflows/repo-orientation/workflow.toml",
     ".fabro/workflows/backlog/workflow.fabro",
     ".fabro/workflows/ralph/workflow.fabro",
+    ".fabro/workflows/ralph-v2/workflow.fabro",
     ".fabro/workflows/issue-sharpen/workflow.fabro",
     ".fabro/workflows/_io/schemas/repo_orientation.schema.json",
 }

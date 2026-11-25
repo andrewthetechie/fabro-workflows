@@ -1662,7 +1662,7 @@ def test_hygiene_rulings_sealed(ck):
                         todo.append(b)
         return seen
 
-    for pkg in ("backlog", "pr-review", "dependabot", "ralph"):
+    for pkg in ("backlog", "pr-review", "dependabot", "ralph", "ralph-v2"):
         d = WF / pkg
         root = graph(d / "workflow.fabro")
         imports = dict(inv.imports_of(root))
@@ -1684,7 +1684,7 @@ def test_hygiene_rulings_sealed(ck):
             x, _, local = sid.rpartition(".")
             if x:
                 spec = manifest["phases"]["review-merge"].get(local, {})
-            elif pkg == "ralph":
+            elif pkg in ("ralph", "ralph-v2"):
                 spec = own.get(sid, {})
             else:
                 # An importer's own stage: it must reach no counter consumer but through

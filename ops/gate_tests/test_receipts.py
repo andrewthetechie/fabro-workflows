@@ -133,7 +133,9 @@ def test_hygiene_rulings_sealed(ck, tmp_path):
     rulings = "/tmp/fabro/review/hygiene_rulings.json"
     sealed = (("backlog", "review_merge.refute"), ("backlog", "review_merge.refute_fix"),
               ("ralph", "refute"), ("ralph", "standards"), ("ralph", "spec"),
-              ("ralph", "local_standards"), ("ralph", "local_spec"))
+              ("ralph", "local_standards"), ("ralph", "local_spec"),
+              ("ralph-v2", "refute"), ("ralph-v2", "standards"), ("ralph-v2", "spec"),
+              ("ralph-v2", "local_standards"), ("ralph-v2", "local_spec"))
     for workflow, node in sealed:
         r = guard(workflow, node, rulings)
         ck(f"rulings sealed: {workflow} {node} blocks the read", "2", r.rc)

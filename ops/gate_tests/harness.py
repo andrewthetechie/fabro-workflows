@@ -32,6 +32,7 @@ INTRIAGE = WF / "issue-triage" / "workflow.fabro"
 MQ = WF / "merge-queue" / "workflow.fabro"
 SCOUT = WF / "scout" / "workflow.fabro"
 RAPH = WF / "ralph" / "workflow.fabro"
+RAPH2 = WF / "ralph-v2" / "workflow.fabro"
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +417,24 @@ def edges(graph: Path) -> str:
             raise RuntimeError(f"--dump {graph} failed: {dump.stderr}")
         _edges_cache[graph] = jq(EDGES_FILTER, dump.stdout, pipe=True)
     return _edges_cache[graph]
+
+
+NODES_FILTER = (
+    '.statements[] | select(.Node) | .Node | select(any(.attrs[]; .[0] == "script")) | .id'
+)
+
+
+def script_nodes(graph: Path) -> list[str]:
+    """Every node id whose declaration carries a `script`, from the offline parser.
+
+    The parser's view, not a regex over the file: `extract` reads a script the same way, so a
+    test that walks this list and calls `extract` sees what fabro sees.
+    """
+    dump = subprocess.run(["python3.11", str(REPO_ROOT / "ops/check-graph-invariants.py"),
+                           "--dump", str(graph)], capture_output=True, text=True, env=env_for())
+    if dump.returncode != 0:
+        raise RuntimeError(f"--dump {graph} failed: {dump.stderr}")
+    return jq(NODES_FILTER, dump.stdout, pipe=True).split()
 
 
 # ---------------------------------------------------------------------------

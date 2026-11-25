@@ -895,8 +895,9 @@ def r18_stage_end_hooks(package: str, hooks: list[dict], import_ids: dict[str, s
 
 
 # The coder loops: the packages whose box stages a `box-claim` hook must precede
-# (more-local-inference D1, C4).
-CODER_LOOP_PACKAGES = ["backlog", "ralph", "pr-review"]
+# (more-local-inference D1, C4). `ralph-v2` is the trial's second arm (ADR 0034, E2): it is
+# a coder loop from the day it exists, though nothing dispatches it until task 10.
+CODER_LOOP_PACKAGES = ["backlog", "ralph", "ralph-v2", "pr-review"]
 
 # The leased box packages (issue-sharpening C9, ADR 0033): a run the scheduler leases a coder
 # pool, like an issue run, that is not a coder loop and not a background run. R15 leaves them to
@@ -1154,6 +1155,7 @@ def r14_background_fallbacks(package: str, toml: dict) -> list[tuple]:
 # which is why the row's replacements are empty and the node text is not.
 
 RALPH_GRAPH = ".fabro/workflows/ralph/workflow.fabro"
+RALPH_V2_GRAPH = ".fabro/workflows/ralph-v2/workflow.fabro"
 
 R10_COPIES: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = [
     ('claim', '.fabro/workflows/backlog/workflow.fabro', 'claim', (
@@ -1465,6 +1467,92 @@ def r10_copies(root: Path) -> list[tuple]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# R10 for ralph-v2: its copies of ralph's nodes and prompts
+# --------------------------------------------------------------------------- #
+# P1 (docs/plans/ralph-v2/00): every `ralph-v2` command node that is not new is checked
+# against `ralph`'s node, with the differences recorded as replacements. `ralph`'s own rows
+# above check it against the shared originals, so one hop is enough, and an outage fix that
+# reaches one arm and not the other fails here. Prompts that must not change are rows too.
+# A row is (node id, replacements); the original is the same node id in `RALPH_GRAPH`.
+R10_V2_COPIES: list[tuple[str, tuple[tuple[str, str], ...]]] = [
+    (node, ()) for node in (
+        "claim", "prep", "plan_gate", "plan_review_prep", "plan_review_gate", "excerpts",
+        "task_block_gate", "autofix", "check", "record", "resolve_merge_gate",
+        "refute_prep", "refute_gate", "review_prep", "review_gate", "local_review_prep",
+        "local_review_gate", "final_merge", "final_check", "criterion_checks", "hygiene",
+        "open_pr", "file_remainder", "pr_handoff", "merge_prep", "deliver", "merge_gate",
+        "watch_checks", "merge", "remerge_base", "resolve_base_gate", "ci_task",
+        "report_merged", "report_blocked", "report_queued", "learn_prep", "learn_post",
+        "mark_needs_human", "close_noop", "return_to_triage", "mark_stuck",
+    )
+] + [
+    # The fourth rung's node is gone, so the agent list stops naming it.
+    ("stop_reason", ((" | iterate_t4", ""),)),
+    # E16's ladder is three rungs: a Task is blocked after 6 misses, not 8.
+    ("pick", (("if [ $MISSES -ge 8 ]; then", "if [ $MISSES -ge 6 ]; then"),
+              ("is blocked after 8 misses", "is blocked after 6 misses"))),
+]
+
+# Nodes `ralph-v2` owns: its script is its own and no row above can compare it. Empty in
+# task 05 -- tasks 07 and 08 move nodes here as they rewrite them.
+R10_V2_OWN: set[str] = set()
+
+# Prompt rows: the agent nodes whose prompt file must be ralph's, byte for byte. Two node
+# ids share `standards.md.j2` and two share `spec.md.j2`.
+R10_V2_PROMPTS: list[str] = [
+    "plan", "plan_review", "standards", "spec", "refute", "resolve_base", "resolve_merge",
+    "learn", "local_standards", "local_spec",
+]
+
+
+def r10_v2_copies(root: Path) -> list[tuple]:
+    """R10: every ralph-v2 copy still equals ralph's node plus its recorded replacements.
+
+    Silent when either graph is missing, as `r10_copies` is: a fixture needs no second arm.
+    The last loop is the coverage half -- a command node `ralph-v2` copies and nobody
+    recorded is a copy nobody checks, which is the drift this rule exists to stop.
+    """
+    graph = root / RALPH_V2_GRAPH
+    original_graph = root / RALPH_GRAPH
+    if not graph.exists() or not original_graph.exists():
+        return []
+    out: list[tuple] = []
+    for target, repls in R10_V2_COPIES:
+        original = _script_of(original_graph, target)
+        if original is None:
+            out.append(("ralph-v2", "R10", target, f"ralph has no node {target} to copy"))
+            continue
+        expected, why = _apply(original, repls)
+        if expected is None:
+            out.append(("ralph-v2", "R10", target, why or "a replacement does not fit"))
+            continue
+        copy = _script_of(graph, target)
+        if copy is None:
+            out.append(("ralph-v2", "R10", target, "the copy is missing its script"))
+        elif copy != expected:
+            out.append(("ralph-v2", "R10", target,
+                        f"drifted from ralph {target}; record the difference as a replacement"))
+    for target in R10_V2_PROMPTS:
+        original_p, copy_p = _prompt_of(original_graph, target), _prompt_of(graph, target)
+        if original_p is None or copy_p is None:
+            out.append(("ralph-v2", "R10", target, "a prompt file is missing"))
+        elif not original_p.exists() or not copy_p.exists():
+            out.append(("ralph-v2", "R10", target, "a prompt file does not exist"))
+        elif original_p.read_text() != copy_p.read_text():
+            out.append(("ralph-v2", "R10", target,
+                        f"the prompt drifted from ralph {target}; both arms must run the same rubric"))
+    listed = {node for node, _ in R10_V2_COPIES}
+    original = Graph(read_graph(original_graph.read_text())).nodes
+    for nid, attrs in Graph(read_graph(graph.read_text())).nodes.items():
+        if "script" not in attrs or nid not in original or nid in listed or nid in R10_V2_OWN:
+            continue
+        out.append(("ralph-v2", "R10", nid,
+                    "is a command node ralph also has, in neither R10_V2_COPIES nor "
+                    "R10_V2_OWN: record it as a copy or say why it is its own"))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Drivers
 # ---------------------------------------------------------------------------
@@ -1561,6 +1649,7 @@ def run(root_dir: Path) -> list[tuple]:
     for phase in sorted((workflows / "_shared").glob("*/*.fabro")) if (workflows / "_shared").is_dir() else []:
         violations += phase_violations(f"_shared/{phase.parent.name}", phase)
     violations += r10_copies(root_dir)
+    violations += r10_v2_copies(root_dir)
     violations += r10_calibration_copies(root_dir)
     violations += r10_shared_nodes(root_dir)
     return violations

@@ -1,0 +1,2926 @@
+digraph RalphV2 {
+    graph [
+        goal="RalphV2: plan the agent-labelled issue, implement it one task per fresh coder session, with each Task planned and reviewed on the box, until a refuter cannot break it, then review it and merge the PR",
+        // The graph stall watchdog, as v1 sets it: a command node emits only (started,
+        // completed) and its output never enters the event stream, so `watch_checks`'
+        // `sleep 30` poll is invisible to it, and 60m keeps EVERY node's own timeout
+        // strictly below it -- a node timeout ROUTES, a watchdog cancel does not.
+        stall_timeout="60m",
+        // The failure-signature breaker counts run-wide and never resets on success, and
+        // this loop cycles through command nodes many times a Task, so the default of 3
+        // would end a healthy run. The Iteration cap, the rung ladder and the Refute cap
+        // are the loop's own bounds; the breaker adds no protection the graph lacks.
+        loop_restart_signature_limit=100,
+        // Bound the preamble: `compact` prepends up to 25 lines of every completed stage,
+        // and every prompt names its inputs by path (ADR 0016), so `truncate` loses nothing.
+        default_fidelity="truncate",
+        // One class per stage, and the decision each comes from (ADR 0034, docs/plans/ralph-v2/00):
+        //   *                 the fallback; every class below is explicit, so a mistake shows
+        //   .plan             the run's leased box, medium: the issue planner (E4, ADR 0034 D5)
+        //   .plan-review      the run's leased box, medium: the Task list's review (E4, issue #69)
+        //   .task-plan        the run's leased box, medium: the per-Task planner (E5)
+        //   .coder            the run's leased box, medium: a planned Iteration (E4, E6)
+        //   .coder-t2         glm-5.3-flash: the ladder's first hosted rung (E16)
+        //   .coder-t3         kimi-for-coding: the ladder's second and last hosted rung (E16)
+        //   .task-refute      the run's leased box, medium: a Task's refuter (E8)
+        //   .task-review      the run's leased box, medium: a Task's standards and spec review (E8)
+        //   .review-fallback  glm-5.3-flash: a Task reviewer that left no valid result (E13)
+        //   .review-local     the run's leased box, medium: the whole-branch local round (E20)
+        //   .review-standards glm-5.3: the hosted standards axis, in both arms (E14, E18)
+        //   .review-spec      glm-5.3: the hosted spec axis, in both arms (E14, E18)
+        //   .refute           gpt-6-luna, a family unlike the coder's and the reviewers' (E14, E15)
+        //   .merge-resolve    the run's leased box, medium: a merge is an edit in the run's code
+        //   .learn            the run's leased box, medium: it reads this run's own record
+        //
+        // The `default('coders-a')` filter is LOAD-BEARING and its single quotes are
+        // mandatory: the stylesheet renders in strict mode, so an unbound input FAILS the
+        // run at compile, and an unescaped `"` would end this DOT string. `coder_pool` is
+        // never bound in [run.inputs] (invariants-graph). NO CLASS MAY NAME glm-4.7: it is
+        // the one catalog model with `features.reasoning: false`, and replaying its
+        // reasoning block kills the stage with no retry and no fallback.
+        model_stylesheet="
+            *                 { model: coders-a; }
+            .plan             { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .plan-review      { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .task-plan        { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .coder            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .coder-t2         { model: glm-5.3-flash; }
+            .coder-t3         { model: kimi-for-coding; }
+            .task-refute      { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .task-review      { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .review-fallback  { model: glm-5.3-flash; }
+            .review-local     { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .review-standards { model: glm-5.3; }
+            .review-spec      { model: glm-5.3; }
+            .refute           { model: gpt-6-luna; }
+            .merge-resolve    { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+            .learn            { model: {{ inputs.coder_pool | default('coders-a') }}; reasoning_effort: medium; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // copy: ralph.claim
+    claim [label="Claim issue and fetch it", shape=parallelogram,
+        script="set -e
+mkdir -p /tmp/fabro
+ISSUE='{{ inputs.issue_number }}'
+echo \"{{ inputs.coder_pool }}\" > /tmp/fabro/box || true
+case \"$ISSUE\" in '' | *[!0-9]*) echo 'issue_number must be a positive integer' >&2; exit 1;; esac
+if [ \"$ISSUE\" -lt 1 ]; then echo 'issue_number must be a positive integer' >&2; exit 1; fi
+echo $ISSUE > /tmp/fabro/issue_number
+gh label create agent-in-progress --color FBCA04 2>/dev/null || true
+gh label create agent-stuck --color D93F0B 2>/dev/null || true
+gh label create agent-authored --color 1D76DB 2>/dev/null || true
+gh label create Review --color 0E8A16 2>/dev/null || true
+gh issue edit $ISSUE --add-label agent-in-progress --remove-label agent || true
+A=1
+while :; do
+  if gh issue view $ISSUE --json state,number,title,body,labels,comments > /tmp/fabro/issue.json 2>/tmp/fabro/issue_view.err; then break; fi
+  if [ $A -ge 3 ]; then
+    echo 'could not read issue '$ISSUE' after '$A' attempts:' >&2
+    cat /tmp/fabro/issue_view.err >&2
+    exit 1
+  fi
+  A=$((A + 1))
+  sleep 5
+done
+if jq '(.comments // []) as $c | .comments = ($c | map(select(.isMinimized != true)) | map(select((.body // \"\") | (startswith(\"<!-- fabro:\") | not) or startswith(\"<!-- fabro:triage-questions -->\"))) | .[-10:] | map({author: {login: .author.login}, createdAt, body}) | map(if ((.body // \"\") | length) > 2000 then .body = ((.body // \"\")[0:2000] + \" [cut to 2000 characters]\") else . end))' /tmp/fabro/issue.json > /tmp/fabro/issue.json.new; then
+  mv /tmp/fabro/issue.json.new /tmp/fabro/issue.json
+else
+  echo 'issue.json: could not trim the comments; the run goes on with all of them' >&2
+  rm -f /tmp/fabro/issue.json.new
+fi
+S=$(jq -r .state /tmp/fabro/issue.json)
+if [ \"$S\" != OPEN ]; then
+  echo 'issue '$ISSUE' is '$S', not OPEN; refusing to work a closed issue' >&2
+  exit 1
+fi
+if ! jq -e '.labels | map(.name) | index(\"agent-in-progress\")' /tmp/fabro/issue.json >/dev/null 2>&1; then
+  echo 'issue '$ISSUE' does not carry agent-in-progress after the label swap; refusing to work the wrong issue' >&2
+  exit 1
+fi
+rm -f /tmp/fabro/background.md
+if gh api \"repos/{owner}/{repo}/issues/$ISSUE/comments?per_page=100\" --paginate > /tmp/fabro/background.raw 2>/dev/null; then
+  jq -rs 'add // [] | map(.body // \"\") as $b | [[\"precheck\", \"<!-- fabro:precheck \", 1500], [\"context-pack\", \"<!-- fabro:context-pack \", 8000], [\"flaky-investigation\", \"<!-- fabro:flaky-investigation \", 2500]] | map(. as [$k, $p, $cap] | ($b | map(select(startswith($p))) | last) as $c | select($c != null) | (\"## \" + $k), \"\", (if ($c | length) > $cap then $c[0:$cap] + \" [cut to \" + ($cap | tostring) + \" characters]\" else $c end), \"\") | .[]' /tmp/fabro/background.raw > /tmp/fabro/background.md 2>/dev/null || true
+  [ -s /tmp/fabro/background.md ] || rm -f /tmp/fabro/background.md
+else
+  echo 'background.md: could not read the issue comments; the run goes on without it' >&2
+fi
+rm -f /tmp/fabro/background.raw"]
+
+    // copy: ralph.prep
+    prep [label="Prep workspace and install deps", shape=parallelogram, timeout="20m", max_retries=1,
+        script="set -e
+mkdir -p /tmp/fabro/review /tmp/fabro/feedback /tmp/fabro/extra
+echo 0 > /tmp/fabro/iterations
+echo 0 > /tmp/fabro/post_iterations
+echo 0 > /tmp/fabro/refute_visits
+echo 0 > /tmp/fabro/final_fix_attempts
+echo 0 > /tmp/fabro/plan_attempts
+echo pre > /tmp/fabro/phase
+rm -f /tmp/fabro/remainder.json /tmp/fabro/remainder_issue /tmp/fabro/stuck_reason.md
+rm -f /tmp/fabro/loop_exhausted /tmp/fabro/progress.md /tmp/fabro/task-map.md
+rm -f /tmp/fabro/review_extra /tmp/fabro/review_rerun /tmp/fabro/criterion_checks.json /tmp/fabro/criterion_checks_tree
+./.fabro/setup.sh
+grep -qx '.codegraph/' .git/info/exclude 2>/dev/null || echo '.codegraph/' >> .git/info/exclude
+if command -v fabro-code >/dev/null; then fabro-code index; fabro-code map || true; else echo 'failed: fabro-code not in image' > /tmp/fabro/code_index; fi
+rm -f /tmp/fabro/orientation.md /tmp/fabro/orientation.tmp /tmp/fabro/orientation.tmp2
+if gh issue list --label fabro-orientation --state open --json number,body --limit 5 > /tmp/fabro/orientation.raw 2>/dev/null; then
+  jq -r '[.[] | (.body // \"\") | select(startswith(\"<!-- fabro:orientation \"))] | last // \"\"' /tmp/fabro/orientation.raw > /tmp/fabro/orientation.tmp 2>/dev/null || true
+  if [ -s /tmp/fabro/orientation.tmp ]; then
+    sed 1d /tmp/fabro/orientation.tmp > /tmp/fabro/orientation.tmp2
+    if [ -s /tmp/fabro/orientation.tmp2 ]; then
+      jq -Rrs 'if length > 6000 then .[0:6000] + \" [cut to 6000 characters]\" else . end' /tmp/fabro/orientation.tmp2 > /tmp/fabro/orientation.md || rm -f /tmp/fabro/orientation.md
+    fi
+  fi
+  [ -s /tmp/fabro/orientation.md ] || rm -f /tmp/fabro/orientation.md
+else
+  echo 'orientation.md: could not read the repository orientation; the run goes on without it' >&2
+fi
+rm -f /tmp/fabro/orientation.raw /tmp/fabro/orientation.tmp /tmp/fabro/orientation.tmp2
+if [ -z \"$FABRO_AGENT_GUIDE\" ]; then echo 'agent guide: FABRO_AGENT_GUIDE is empty, nothing installed' >&2
+elif git ls-files --error-unmatch .codex/instructions.md >/dev/null 2>&1; then echo 'agent guide: the repository tracks .codex/instructions.md, left alone' >&2
+elif mkdir -p .codex && printf '%s' \"$FABRO_AGENT_GUIDE\" > .codex/instructions.md; then grep -qx '.codex/instructions.md' .git/info/exclude 2>/dev/null || echo '.codex/instructions.md' >> .git/info/exclude
+else echo 'agent guide: could not write .codex/instructions.md' >&2; fi
+jq -r '.body // \"\"' /tmp/fabro/issue.json 2>/dev/null | awk '/^## Task map$/{s=1; next} s && /^## /{s=0} s && !/^[[:space:]]*$/{print}' > /tmp/fabro/task-map.md
+if [ ! -s /tmp/fabro/task-map.md ]; then rm -f /tmp/fabro/task-map.md; fi"]
+
+    // copy: ralph.plan
+    plan [label="Plan the issue", class="plan", timeout="80m", max_retries=1, prompt="@prompts/plan.md.j2"]
+
+    // copy: ralph.plan_gate
+    plan_gate [label="Validate the plan", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro/task_list.json
+A=$(cat /tmp/fabro/plan_attempts 2>/dev/null || echo 0)
+case \"$A\" in '' | *[!0-9]*) A=0 ;; esac
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+RM=0
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then RM=1; S=invalid; else S=$(jq -r .disposition $F 2>/dev/null || echo invalid); fi
+case \"$S\" in ready | redundant | invalid | contradiction | needs_human) : ;; *) S=invalid ;; esac
+if [ \"$S\" = ready ]; then
+  GOOD=$(jq '((.tasks | type) == \"array\") and ((.tasks | length) > 0) and ((([.tasks[].id] | length) == ([.tasks[].id] | unique | length))) and (([.tasks[] | select((((.id // \"\") | tostring) == \"\") or (((.title // \"\") | tostring) == \"\") or (((.body // \"\") | tostring) == \"\") or (((.context // \"\") | tostring) == \"\") or ((.acceptance | type) != \"array\") or ((.acceptance | length) == 0) or (([.acceptance[] | select((tostring) == \"\")] | length) > 0) or ((.files | type) != \"array\") or ((.covers | type) != \"array\") or ((.context | length) > 12000))] | length) == 0)' $F 2>/dev/null || echo false)
+  if [ \"$GOOD\" != true ]; then S=invalid; fi
+fi
+if [ \"$S\" = contradiction ]; then
+  GOOD=$(jq '((.tasks | type) == \"array\") and ((.tasks | length) == 0) and ((.contradictions | type) == \"array\") and ((.contradictions | length) > 0) and (([.contradictions[] | select((((.criterion // \"\") | tostring) == \"\") or (((.non_goal // \"\") | tostring) == \"\") or (((.needed_surface // \"\") | tostring) == \"\"))] | length) == 0)' $F 2>/dev/null || echo false)
+  if [ \"$GOOD\" != true ]; then S=invalid; fi
+fi
+if [ \"$S\" = invalid ]; then
+  A=$((A+1))
+  echo $A > /tmp/fabro/plan_attempts
+  if [ $A -lt 2 ]; then if [ $RM = 1 ]; then echo 'no valid Input receipt: write the result with the submit tool, not write_file' >&2; else echo 'task_list.json missing or invalid; rewrite it exactly per the contract' >&2; fi; exit 1; fi
+fi
+KEEP=''
+if [ \"$S\" = invalid ] && [ -s /tmp/fabro/plan_review/previous_task_list.json ]; then S=ready; KEEP=1; echo 'plan_gate: the repair turn wrote no valid Task list, so the first plan stands' >&2; fi
+echo 0 > /tmp/fabro/plan_attempts
+if [ \"$S\" = ready ] && [ -z \"$KEEP\" ]; then
+  jq '[.tasks[] | . + {source: \"plan\", round: 0, status: \"open\", iterations: 0, misses: 0}] | .[0:8]' $F > /tmp/fabro/tasks.json
+  jq '[.tasks[] | . + {source: \"plan\", round: 0, status: \"open\", iterations: 0, misses: 0}] | .[8:]' $F > /tmp/fabro/remainder.json
+  jq -c '[(.checks // [])[]? | select(((.criterion | type) == \"string\") and ((.command | type) == \"string\")) | {criterion: .criterion, command: (.command | sub(\"^ +\"; \"\") | sub(\" +$\"; \"\"))} | select(.criterion != \"\" and .command != \"\" and (.command | length) <= 200) | select(([.command | explode[] | select(. == 10 or . == 13 or . == 36 or . == 38 or . == 40 or . == 41 or . == 59 or . == 60 or . == 62 or . == 92 or . == 96 or . == 124)] | length) == 0) | select(.command | test(\"^(cargo (test|nextest|clippy|llvm-cov|tarpaulin|fmt|check|doc)|(npm|pnpm|yarn|bun) (test|run [A-Za-z0-9:_.-]+|exec [A-Za-z0-9@/_.-]+)|(npx|pnpx|bunx) [A-Za-z0-9@/_.-]+|uv run [A-Za-z0-9_.-]+|(python3?|python3[.][0-9]+) -m (pytest|mypy|ruff|coverage)|pytest|ruff|mypy|pyright|coverage|go (test|vet)|make [A-Za-z0-9_.-]+|deno (test|check|lint))( |$)\")) | select(.command | test(\"deploy|release|publish|push|upload|install\") | not)] | .[0:4]' $F > /tmp/fabro/criterion_checks.json 2>/dev/null || echo '[]' > /tmp/fabro/criterion_checks.json
+  NC=$(jq '.checks // [] | length' $F 2>/dev/null || echo 0)
+  KC=$(jq length /tmp/fabro/criterion_checks.json 2>/dev/null || echo 0)
+  if [ \"$NC\" != 0 ]; then echo 'plan: '$KC' of '$NC' criterion check(s) pass the allowlist, and criterion_checks runs them after the Final validation' >&2; fi
+  echo 0 > /tmp/fabro/task_index
+  MOVED=$(jq length /tmp/fabro/remainder.json 2>/dev/null || echo 0)
+  if [ \"$MOVED\" != 0 ]; then echo 'plan: the first 8 Tasks run here and '$MOVED' go to the remainder, which file_remainder files as one issue after open_pr' >&2; fi
+fi
+if [ \"$S\" = needs_human ]; then jq -r '.summary // empty' $F > /tmp/fabro/stuck_reason.md 2>/dev/null || true; fi
+QT=''
+if [ \"$S\" = contradiction ]; then
+  jq '{source: \"plan\", summary: (.summary // \"\"), items: [.contradictions[] | {criterion, non_goal, why: .needed_surface}]}' $F > /tmp/fabro/return.json
+  QT=$(jq -r '[.items[] | \"- \" + .criterion + \" (conflicts with: \" + .non_goal + \")\"] | join(\"  \")' /tmp/fabro/return.json | tr -d '\"' | cut -c1-1200)
+fi
+jq -nc --arg s \"$S\" --arg q \"$QT\" '{context_updates:{plan_status:$s,triage_questions:$q}}'"]
+
+    // copy: ralph.plan_review_prep
+    plan_review_prep [label="Prepare the plan review", shape=parallelogram, timeout="2m", output_schema="routing",
+        script="set -e
+F=/tmp/fabro
+P=$F/plan_review
+mkdir -p $P
+V=$(cat $F/plan_review_visits 2>/dev/null || echo 0)
+case \"$V\" in '' | *[!0-9]*) V=0 ;; esac
+V=$((V + 1))
+echo $V > $F/plan_review_visits
+if [ $V -gt 2 ]; then
+  echo 'plan_review_prep: visit '$V' is past the one review and the one re-review; routing on' >&2
+  echo '{\"context_updates\":{\"plan_review_go\":false,\"plan_review_visit\":'$V'}}'
+  exit 0
+fi
+rm -f $F/plan_review.json $P/plan.json $P/checks.json $P/standards_docs.txt
+jq '{tasks: [.[] | {id, title, body, acceptance, files, covers, context}]}' $F/tasks.json > $P/plan.json
+if [ -s $F/criterion_checks.json ] && [ \"$(jq length $F/criterion_checks.json 2>/dev/null || echo 0)\" != 0 ]; then cp $F/criterion_checks.json $P/checks.json; fi
+: > $P/standards_docs.txt
+for f in AGENTS.md CLAUDE.md CONTRIBUTING.md docs/adr; do
+  if [ -e \"$f\" ]; then echo \"$f\" >> $P/standards_docs.txt; fi
+done
+echo 'plan_review_prep: visit '$V', '\"$(jq '.tasks | length' $P/plan.json)\"' Task(s) to review' >&2
+echo '{\"context_updates\":{\"plan_review_go\":true,\"plan_review_visit\":'$V'}}'"]
+
+    // copy: ralph.plan_review
+    plan_review [label="Review the plan", class="plan-review", timeout="40m", max_retries=1, prompt="@prompts/plan_review.md.j2"]
+
+    // copy: ralph.plan_review_gate
+    plan_review_gate [label="Decide the plan review", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro
+P=$F/plan_review
+R=$F/plan_review.json
+V=$(cat $F/plan_review_visits 2>/dev/null || echo 0)
+case \"$V\" in '' | *[!0-9]*) V=0 ;; esac
+SV=$(jq -r '.visit // empty' $F/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $R 2>/dev/null)
+RS=$(jq -r '._io.stage // empty' $R 2>/dev/null)
+DEC=$(jq -r '.decision // empty' $R 2>/dev/null)
+if [ ! -s $R ] || [ \"$RS\" != plan_review ] || [ -z \"$RV\" ] || [ \"$RV\" != \"$SV\" ] || { [ \"$DEC\" != pass ] && [ \"$DEC\" != repair ]; }; then
+  if [ -s $R ]; then
+    WHY='The plan reviewer wrote no valid result'
+  elif [ -n \"$SV\" ] && [ \"$(cat $F/.io/stage-end/plan_review.succeeded 2>/dev/null)\" = \"$SV\" ]; then
+    WHY='The plan reviewer ended without submitting a result'
+  else
+    WHY='The plan reviewer timed out or failed before it submitted a result'
+  fi
+  echo \"$WHY, so the Task list was not reviewed and the run stops before any code is written.\" > $F/stuck_reason.md
+  exit 1
+fi
+NERR=$(jq '[.findings[]? | select(.severity == \"error\")] | length' $R 2>/dev/null || echo 0)
+NWARN=$(jq '[.findings[]? | select(.severity == \"warning\")] | length' $R 2>/dev/null || echo 0)
+case \"$NERR\" in '' | *[!0-9]*) NERR=0 ;; esac
+case \"$NWARN\" in '' | *[!0-9]*) NWARN=0 ;; esac
+if [ \"$DEC\" = repair ] && [ \"$NERR\" = 0 ]; then echo 'plan_review: decision repair with no error finding; treated as pass' >&2; fi
+if [ \"$DEC\" = pass ] && [ \"$NERR\" != 0 ]; then echo 'plan_review: decision pass with '$NERR' error finding(s); the errors decide' >&2; fi
+ROUTE=pass
+if [ $V -le 1 ] && [ $NERR -gt 0 ]; then ROUTE=repair; fi
+cp $R $P/review_$V.json
+{
+  echo \"### Plan review (visit $V)\"
+  echo
+  echo \"Decision $DEC; $NERR error(s), $NWARN warning(s); route $ROUTE.\"
+  echo
+  jq -r '.findings[]? | \"- \" + .severity + \" \" + .id + \" (\" + .lens + \"): \" + .message' $R
+} > $P/record_$V.md
+if [ \"$ROUTE\" = repair ]; then
+  cp $F/task_list.json $P/previous_task_list.json
+  jq -r 'def nl: [10] | implode;
+    [\"# Plan review findings\", \"\",
+     \"A fresh reviewer read the issue and your Task list, and found the errors below. Address each one: change the Task list, or say in the plan why the finding is wrong. Keep what was right.\", \"\"]
+    + [.findings[] | select(.severity == \"error\")
+       | \"## \" + .id + \" (\" + .lens + \")\" + nl + nl
+         + (if (.requirement // \"\") == \"\" then \"\" else \"Requirement: \" + .requirement + nl + nl end)
+         + .message + nl + nl
+         + \"Files: \" + ((.files // []) | join(\", \")) + nl + nl
+         + \"Evidence: \" + .evidence + nl]
+    | join(nl)' $R > $P/findings.md
+  rm -f $F/task_list.json
+  echo 'plan_review: '$NERR' error finding(s); one planner repair turn follows' >&2
+else
+  echo 'plan_review: visit '$V', '$NERR' error(s) and '$NWARN' warning(s) recorded in '$P'; the plan goes on unchanged' >&2
+fi
+jq -nc --arg r \"$ROUTE\" '{context_updates:{plan_review_route:$r}}'"]
+
+    // copy: ralph.pick
+    pick [label="Next Iteration", shape=parallelogram, timeout="5m", output_schema="routing",
+        script="git worktree remove --force /tmp/fabro/base-tree >/dev/null 2>&1
+rm -rf /tmp/fabro/base-tree
+git worktree prune >/dev/null 2>&1
+rm -f /tmp/fabro/iteration.json /tmp/fabro/task_block_scope.md /tmp/fabro/task-context.md /tmp/fabro/task-code.md /tmp/fabro/check_ok /tmp/fabro/rung
+echo 0 > /tmp/fabro/merge_attempts
+PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
+case \"$PH\" in pre | post) : ;; *) PH=pre ;; esac
+REBASE=false
+if [ \"$PH\" = pre ]; then
+  git rev-parse HEAD > /tmp/fabro/pre_merge_sha
+  if git fetch origin main && git merge --no-edit origin/main; then :; else
+    git merge --abort || true
+    REBASE=true
+    if [ ! -s /tmp/fabro/current_task.json ]; then jq '([.[] | select(.status == \"open\")] + .)[0] // {}' /tmp/fabro/tasks.json > /tmp/fabro/current_task.json 2>/dev/null || echo '{}' > /tmp/fabro/current_task.json; fi
+    echo 'The mainline merge was attempted and aborted, so the next checkpoint cannot commit conflict markers. A dedicated resolve_merge stage redoes the merge and resolves it; no Iteration touches git.' > /tmp/fabro/feedback/rework.md
+  fi
+fi
+LOOP=work
+RUNG=0
+IDX=-1
+if [ \"$REBASE\" = true ]; then LOOP=work; else
+while :; do
+  IDX=-1
+  COUNT=$(jq length /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+  I=0
+  while [ $I -lt $COUNT ]; do
+    if [ \"$(jq -r \".[$I].status // empty\" /tmp/fabro/tasks.json 2>/dev/null)\" = open ]; then IDX=$I; break; fi
+    I=$((I + 1))
+  done
+  if [ $IDX -lt 0 ]; then
+    BLOCKED=$(jq '[.[] | select(.status == \"blocked\")] | length' /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+    case \"$BLOCKED\" in '' | *[!0-9]*) BLOCKED=0 ;; esac
+    if [ $BLOCKED -gt 0 ]; then LOOP=exhausted; else LOOP=done; fi
+    break
+  fi
+  if [ \"$PH\" = pre ]; then CAP=$((COUNT * 3)); if [ $CAP -gt 24 ]; then CAP=24; fi; DONE=$(cat /tmp/fabro/iterations 2>/dev/null || echo 0)
+  else CAP=2; DONE=$(cat /tmp/fabro/post_iterations 2>/dev/null || echo 0); fi
+  case \"$DONE\" in '' | *[!0-9]*) DONE=0 ;; esac
+  if [ $DONE -ge $CAP ]; then LOOP=exhausted; break; fi
+  MISSES=$(jq -r \".[$IDX].misses // 0\" /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+  case \"$MISSES\" in '' | *[!0-9]*) MISSES=0 ;; esac
+  if [ $MISSES -ge 6 ]; then
+    TID=$(jq -r \".[$IDX].id // empty\" /tmp/fabro/tasks.json 2>/dev/null)
+    jq --argjson i $IDX --arg s blocked '.[$i].status = $s' /tmp/fabro/tasks.json > /tmp/fabro/tasks.pick.json 2>/dev/null && mv /tmp/fabro/tasks.pick.json /tmp/fabro/tasks.json
+    echo 'pick: '${TID:-a task}' is blocked after 6 misses; the loop moves on' >&2
+    continue
+  fi
+  RUNG=$((1 + MISSES / 2))
+  break
+done
+fi
+if [ \"$LOOP\" = work ] && [ $IDX -ge 0 ] && [ \"$REBASE\" = false ]; then
+  jq --argjson i $IDX '.[$i]' /tmp/fabro/tasks.json > /tmp/fabro/current_task.json
+  CTX=$(jq -r '.context // empty' /tmp/fabro/current_task.json 2>/dev/null)
+  printf '%s' \"$CTX\" > /tmp/fabro/task-context.md
+  echo >> /tmp/fabro/task-context.md
+  MISSES=$(jq -r '.misses // 0' /tmp/fabro/current_task.json 2>/dev/null || echo 0)
+  case \"$MISSES\" in '' | *[!0-9]*) MISSES=0 ;; esac
+  if [ $MISSES -gt 0 ] && [ -s /tmp/fabro/feedback/rework.md ]; then
+    { echo; echo '## Last attempt'; echo; cat /tmp/fabro/feedback/rework.md; } >> /tmp/fabro/task-context.md
+  fi
+  git rev-parse HEAD > /tmp/fabro/task_base_sha
+  echo $RUNG > /tmp/fabro/rung
+fi
+case \"$LOOP\" in work | done | exhausted) : ;; *) LOOP=work ;; esac
+LE=false
+if [ -s /tmp/fabro/loop_exhausted ]; then LE=true; fi
+if [ \"$LOOP\" = exhausted ]; then
+  echo true > /tmp/fabro/loop_exhausted
+  LE=true
+  if [ \"$PH\" = post ]; then
+    echo 'CI is red after 2 post-PR Iterations' > /tmp/fabro/merge_block_reason
+    echo 'CI is red after 2 post-PR Iterations' > /tmp/fabro/needs_human_reason
+  fi
+fi
+jq -nc --arg l \"$LOOP\" --argjson r \"${RUNG:-0}\" --arg p \"$PH\" --argjson rb \"$REBASE\" --argjson le \"$LE\" '{context_updates:{loop:$l,rung:$r,phase:$p,rebase_failed:$rb,loop_exhausted:$le}}'"]
+
+    // copy: ralph.excerpts
+    excerpts [label="Copy the code the dossier cites", shape=parallelogram, timeout="5m",
+        script="D=/tmp/fabro/task-context.md
+O=/tmp/fabro/task-code.md
+R=/tmp/fabro/excerpts.refs
+rm -f $O $O.tmp $R $R.merged
+if [ ! -s $D ]; then echo 'excerpts: no task dossier, so there is nothing to copy'; exit 0; fi
+FC=0; command -v fabro-code >/dev/null 2>&1 && FC=1
+: > $R
+for REF in $(grep -oE '[A-Za-z0-9_./-]+:[0-9]+(-[0-9]+)?' $D | sort -u); do
+  F=${REF%:*}; L=${REF##*:}; F=${F#./}
+  [ -f \"$F\" ] || continue
+  N=$(awk 'END {print NR}' \"$F\")
+  case $L in
+    *-*) S=${L%-*}; E=${L#*-} ;;
+    *) S=$((L - 3)); E=$((L + 12))
+       if [ $FC = 1 ]; then
+         SE=$(fabro-code show \"$F:$L\" 2>/dev/null | head -n 1 | awk '$1 == \"#\" {n = split($2, a, \":\"); split(a[n], b, \"-\"); if (b[1] + 0 > 0 && b[2] + 0 >= b[1] + 0) print b[1] \" \" b[2]}')
+         case \"$SE\" in *' '*) SS=${SE% *}; EE=${SE#* }; if [ $((EE - SS)) -ge 2 ] && [ $((EE - SS)) -lt 80 ]; then S=$SS; E=$EE; fi ;; esac
+       fi ;;
+  esac
+  if [ $S -lt 1 ]; then S=1; fi
+  if [ $E -gt $N ]; then E=$N; fi
+  if [ $((E - S)) -ge 150 ]; then E=$((S + 149)); fi
+  if [ $S -le $E ]; then echo \"$F $S $E\" >> $R; fi
+done
+sort -k1,1 -k2,2n $R | awk '$1 != f || $2 > e + 3 {if (f != \"\") print f, s, e; f = $1; s = $2; e = $3; next} $3 > e {e = $3} END {if (f != \"\") print f, s, e}' > $R.merged
+USED=0; OUT=0; SKIP=''
+{
+  echo '# Code the task dossier cites'
+  echo ''
+  echo 'Copied from the checkout by the excerpts node right after the planner wrote the dossier, before this stage started. Each block is the current text of the lines in its heading, without line numbers, so a block can be used as the old_string of edit_file. Lines outside these ranges are not shown.'
+} > $O.tmp
+while read F S E; do
+  B=$(awk -v s=$S -v e=$E 'NR >= s && NR <= e' \"$F\" | wc -c)
+  if [ $((USED + B)) -gt 40000 ]; then SKIP=\"$SKIP $F:$S-$E\"; continue; fi
+  USED=$((USED + B)); OUT=$((OUT + 1))
+  { echo ''; echo \"## $F:$S-$E\"; echo '````'; awk -v s=$S -v e=$E 'NR >= s && NR <= e' \"$F\"; echo '````'; } >> $O.tmp
+done < $R.merged
+CN=0
+if [ $FC = 1 ] && [ $OUT -gt 0 ]; then
+  SYMS=$(awk '/^## /{p=($0==\"## Files and symbols\"); next} p' $D | grep -o '`[^`]*`' | tr -d '`' | sed 's/(.*//' | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | awk '!s[$0]++' | head -n 12)
+  : > $O.cs; CB=200
+  for SYM in $SYMS; do
+    fabro-code callers \"$SYM\" 2>/dev/null | grep -E '^[^ ]+:[0-9]+  ' | head -n 15 > $O.rows
+    [ -s $O.rows ] || continue
+    { echo ''; echo \"### $SYM\"
+      while read ROW; do
+        REF=${ROW%% *}; P=${REF%:*}; LN=${REF##*:}
+        echo \"- $ROW\"
+        if [ -f \"$P\" ]; then TXT=$(awk -v l=$LN 'NR==l' \"$P\" | sed 's/^[[:space:]]*//' | cut -c1-160); if [ -n \"$TXT\" ]; then echo \"    $TXT\"; fi; fi
+      done < $O.rows; } > $O.sym
+    SB=$(wc -c < $O.sym)
+    if [ $((USED + CB + SB)) -gt 40000 ]; then break; fi
+    CB=$((CB + SB)); CN=$((CN + 1)); cat $O.sym >> $O.cs
+  done
+  if [ $CN -gt 0 ]; then
+    { echo ''; echo '## Where these are used'; echo ''; echo 'Call sites of the symbols the dossier names, from the code index (fabro-code callers). Each row is path:line, then the enclosing symbol, then the call line itself. An absent caller is not proof of none: grep still applies.'; cat $O.cs; } >> $O.tmp
+  fi
+  rm -f $O.cs $O.rows $O.sym
+fi
+if [ -n \"$SKIP\" ]; then
+  { echo ''; echo '## Not copied: over the 40000-byte cap. Read these with code_show or read_file'; for X in $SKIP; do echo \"- $X\"; done; } >> $O.tmp
+fi
+if [ $OUT -gt 0 ]; then
+  mv $O.tmp $O
+  echo \"excerpts: copied $OUT range(s), $USED bytes, to $O\"
+  if [ $CN -gt 0 ]; then echo \"excerpts: call sites for $CN symbol(s) appended\"; fi
+else
+  rm -f $O.tmp
+  echo 'excerpts: the dossier cites no line range in a file that exists; nothing to copy'
+fi
+rm -f $R $R.merged
+exit 0"]
+
+    // copy: ralph.iterate_t1
+    iterate_t1 [label="Iteration (rung 1, box)", class="coder", timeout="120m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
+
+    // copy: ralph.iterate_t2
+    iterate_t2 [label="Iteration (rung 2, glm-5.3-flash)", class="coder-t2", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
+
+    // copy: ralph.iterate_t3
+    iterate_t3 [label="Iteration (rung 3, kimi-for-coding)", class="coder-t3", timeout="60m", max_retries=1, allow_partial=true, prompt="@prompts/iterate.md.j2"]
+
+    // copy: ralph.task_block_gate
+    task_block_gate [label="Read the Iteration's block", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro/iteration.json
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+K=''
+if [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then K=$(jq -r '.blocked.kind // empty' $F 2>/dev/null); fi
+if [ -z \"$K\" ]; then
+  rm -f /tmp/fabro/task_block_scope.md
+  jq -nc '{context_updates:{task_block:\"none\",triage_questions:\"\"}}'
+  exit 0
+fi
+C=$(jq -r '.blocked.criterion // empty' $F 2>/dev/null)
+W=$(jq -r '.blocked.reason // empty' $F 2>/dev/null)
+N=$(jq -r '.blocked.non_goal // empty' $F 2>/dev/null)
+B=scope
+QT=''
+rm -f /tmp/fabro/task_block_scope.md
+if [ \"$K\" = criterion ] && [ -n \"$C\" ] && [ -n \"$W\" ]; then B=criterion; fi
+if [ $B = criterion ]; then
+  jq --arg c \"$C\" --arg n \"$N\" --arg w \"$W\" -n '{source: \"coder\", summary: $w, items: [{criterion: $c, non_goal: (if $n == \"\" then \"the constraints of this task\" else $n end), why: $w}]}' > /tmp/fabro/return.json
+  QT=$(jq -r '[.items[] | \"- \" + .criterion + \" (conflicts with: \" + .non_goal + \")\"] | join(\"  \")' /tmp/fabro/return.json | tr -d '\"' | cut -c1-1200)
+else
+  T=$(jq -r '.title // empty' /tmp/fabro/current_task.json 2>/dev/null)
+  if [ -z \"$W\" ]; then W='it submitted a block the gate could not read (kind, criterion or reason missing)'; fi
+  echo \"The Iteration blocked on task ${T:-unknown}: $W\" | tr -d '{}' | head -c 600 > /tmp/fabro/task_block_scope.md
+fi
+jq -nc --arg b $B --arg q \"$QT\" '{context_updates:{task_block:$b,triage_questions:$q}}'"]
+
+    // copy: ralph.autofix
+    autofix [label="Autofix (formatters and lint --fix)", shape=parallelogram, timeout="15m", output_schema="routing",
+        script="exec 3>&1 >/tmp/fabro/autofix.log 2>&1
+if [ ! -f ./.fabro/fix.sh ]; then
+  echo 'autofix: no .fabro/fix.sh in this repository; nothing to do'
+  RAN=false; RC=-1
+else
+  RAN=true
+  if [ -x ./.fabro/fix.sh ]; then ./.fabro/fix.sh; RC=$?; else bash ./.fabro/fix.sh; RC=$?; fi
+  echo 'autofix: .fabro/fix.sh exited '$RC'; validate is the gate, so this stage succeeds either way'
+fi
+{ tail -n 40 /tmp/fabro/autofix.log; git status --short 2>/dev/null || true; } | tr -d '{}' >&3
+jq -nc --argjson ran $RAN --argjson rc $RC '{context_updates:{autofix_ran:$ran,autofix_rc:$rc}}' >&3
+exit 0"]
+
+    // copy: ralph.check
+    check [label="Task validation", shape=parallelogram, timeout="20m", output_schema="routing",
+        script="rm -f /tmp/fabro/check_ok /tmp/fabro/rework.prev /tmp/fabro/task_check.json /tmp/fabro/task_check_error.log
+if [ -f /tmp/fabro/feedback/rework.md ]; then cp /tmp/fabro/feedback/rework.md /tmp/fabro/rework.prev; fi
+echo '## Validation failed (timeout): task validation did not finish' > /tmp/fabro/feedback/rework.md
+echo 'The stage was stopped before it finished, most likely on its 20-minute timeout. Its output is in /tmp/fabro/validate_output.log, and for a scoped run in /tmp/fabro/task_check.log.' >> /tmp/fabro/feedback/rework.md
+FF=$(jq -r '.final_fix // false' /tmp/fabro/current_task.json 2>/dev/null || echo false)
+MODE=full
+REASON=task_check_error
+if [ \"$FF\" = true ]; then
+  REASON=final_fix
+else
+  fabro-io task-check --gate --base \"$(cat /tmp/fabro/task_base_sha)\" --out /tmp/fabro/task_check.json > /tmp/fabro/validate_output.log 2>&1
+  if jq -e . /tmp/fabro/task_check.json >/dev/null 2>&1; then
+    MODE=$(jq -r '.mode // \"full\"' /tmp/fabro/task_check.json)
+    REASON=$(jq -r '.reason // \"\"' /tmp/fabro/task_check.json)
+  else
+    cp /tmp/fabro/validate_output.log /tmp/fabro/task_check_error.log 2>/dev/null
+  fi
+fi
+SEL=0
+UNT=0
+UNCH=0
+PREP=0
+if [ \"$MODE\" = scoped ]; then
+  SEL=$(jq -r '[.targets[].args[]?] | length' /tmp/fabro/task_check.json 2>/dev/null || echo 0)
+  UNT=$(jq -r '.untested | length' /tmp/fabro/task_check.json 2>/dev/null || echo 0)
+  UNCH=$(jq -r '.unchecked | length' /tmp/fabro/task_check.json 2>/dev/null || echo 0)
+  PREP=$(jq -r '.prepared_seconds // 0' /tmp/fabro/task_check.json 2>/dev/null || echo 0)
+fi
+RC=0
+OK=true
+if [ \"$MODE\" = full ]; then
+  ./.fabro/setup.sh > /tmp/fabro/validate_output.log 2>&1 && ./.fabro/ci.sh >> /tmp/fabro/validate_output.log 2>&1 || RC=$?
+  if [ $RC -ne 0 ]; then
+    OK=false
+  fi
+else
+  OK=$(jq -r '.ok // false' /tmp/fabro/task_check.json 2>/dev/null || echo false)
+fi
+if [ \"$OK\" = true ]; then
+  if [ -f /tmp/fabro/rework.prev ]; then mv /tmp/fabro/rework.prev /tmp/fabro/feedback/rework.md; else rm -f /tmp/fabro/feedback/rework.md; fi
+else
+  if [ \"$MODE\" = full ]; then
+    echo '## Validation failed (exit '$RC'): ./.fabro/setup.sh && ./.fabro/ci.sh' > /tmp/fabro/feedback/rework.md
+    echo >> /tmp/fabro/feedback/rework.md
+    tail -c 6000 /tmp/fabro/validate_output.log >> /tmp/fabro/feedback/rework.md
+  else
+    {
+      echo '## Validation failed (exit 1): task validation'
+      echo
+      echo 'Task validation ran the checks and tests that cover the files this task changed. The full output is in /tmp/fabro/task_check.log. Failed:'
+      echo
+      jq -r 'select((.prepare.exit_code // 0) != 0) | \"- preparation of the Test environment (exit \" + (.prepare.exit_code|tostring) + \")\"' /tmp/fabro/task_check.json
+      jq -r '. as $r | .results[] | select(.exit_code != null and .exit_code != 0) | .name as $n | \"- \" + .kind + \" `\" + $n + \"` (exit \" + (.exit_code|tostring) + \")\" + (if .kind == \"target\" then ((($r.targets[] | select(.name == $n) | .args) // []) | if length > 0 then \": \" + join(\" \") else \"\" end) else \"\" end)' /tmp/fabro/task_check.json
+      echo
+      {
+      jq -r 'select((.prepare.exit_code // 0) != 0) | \"### preparation\", (.prepare.error // \"\")' /tmp/fabro/task_check.json
+      jq -r '.results[] | select(.exit_code != null and .exit_code != 0) | .kind + \" \" + .name' /tmp/fabro/task_check.json | while read -r KIND NAME; do
+        echo \"### $KIND $NAME\"
+        jq -r --arg k \"$KIND\" --arg n \"$NAME\" '.results[] | select(.kind == $k and .name == $n) | .tail // \"\"' /tmp/fabro/task_check.json
+      done
+      } | head -c 6000
+    } > /tmp/fabro/feedback/rework.md
+  fi
+fi
+if [ \"$OK\" = true ]; then echo 1 > /tmp/fabro/check_ok; fi
+echo 'task validation: mode='$MODE' reason='$REASON' ok='$OK' selected='$SEL' untested='$UNT' unchecked='$UNCH' prepared='$PREP's' | tr -d '{}'
+tail -c 4000 /tmp/fabro/validate_output.log | tr -d '{}'
+jq -nc --argjson ok $OK --arg mode \"$MODE\" --arg reason \"$REASON\" --argjson sel $SEL --argjson unt $UNT --argjson unch $UNCH --argjson prep $PREP '{context_updates:{task_validation_ok:$ok,task_validation_mode:$mode,task_validation_reason:$reason,task_validation_selected:$sel,task_validation_untested:$unt,task_validation_unchecked:$unch,task_validation_prepare_s:$prep}}' || exit 1"]
+
+    // copy: ralph.record
+    record [label="Record the Iteration", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro/iteration.json
+PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
+case \"$PH\" in pre | post) : ;; *) PH=pre ;; esac
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+OK=$(cat /tmp/fabro/check_ok 2>/dev/null || echo 0)
+STATUS=''
+SUM='(no result submitted)'
+if [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then
+  STATUS=$(jq -r '.status // empty' $F 2>/dev/null)
+  SUM=$(jq -r '.summary // empty' $F 2>/dev/null)
+fi
+case \"$SUM\" in '') SUM='(no summary submitted)' ;; esac
+SCOPE=false
+if [ -s /tmp/fabro/task_block_scope.md ]; then SCOPE=true; fi
+PASSED=false
+if [ \"$OK\" = 1 ] && [ \"$STATUS\" = done ] && [ \"$SCOPE\" = false ] && [ -n \"$V\" ] && [ \"$RV\" = \"$V\" ]; then PASSED=true; fi
+ID=$(jq -r '.id // empty' /tmp/fabro/current_task.json 2>/dev/null)
+if [ -n \"$ID\" ] && [ -s /tmp/fabro/tasks.json ]; then
+  jq --arg id \"$ID\" --argjson p \"$PASSED\" --argjson b \"$SCOPE\" 'map(if .id == $id then (.iterations = ((.iterations // 0) + 1) | (if $p then .status = \"passed\" else ((.misses = ((.misses // 0) + 1)) | (if $b then .status = \"blocked\" else . end)) end)) else . end)' /tmp/fabro/tasks.json > /tmp/fabro/tasks.rec.json 2>/dev/null && mv /tmp/fabro/tasks.rec.json /tmp/fabro/tasks.json
+fi
+if [ \"$SCOPE\" = true ]; then cp /tmp/fabro/task_block_scope.md /tmp/fabro/feedback/rework.md 2>/dev/null || true; fi
+if [ \"$PH\" = post ]; then
+  N=$(cat /tmp/fabro/post_iterations 2>/dev/null || echo 0)
+  case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+  N=$((N + 1))
+  echo $N > /tmp/fabro/post_iterations
+else
+  N=$(cat /tmp/fabro/iterations 2>/dev/null || echo 0)
+  case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+  N=$((N + 1))
+  echo $N > /tmp/fabro/iterations
+fi
+RUNG=$(cat /tmp/fabro/rung 2>/dev/null || echo 0)
+case \"$RUNG\" in '' | *[!0-9]*) RUNG=0 ;; esac
+if [ \"$PASSED\" = true ]; then RES=passed; else RES='not passed'; fi
+{
+  echo \"## Iteration $N: ${ID:-unknown} $RES (rung $RUNG)\"
+  echo
+  echo \"$SUM\"
+  jq -r '.learnings // [] | .[] | \"- \" + .' $F 2>/dev/null || true
+  echo
+} >> /tmp/fabro/progress.md
+P=$(jq '[.[] | select(.status == \"passed\")] | length' /tmp/fabro/tasks.json 2>/dev/null || echo 0)
+case \"$P\" in '' | *[!0-9]*) P=0 ;; esac
+echo $P > /tmp/fabro/task_index
+jq -nc --argjson p \"$PASSED\" '{context_updates:{iteration_passed:$p}}'"]
+
+    // copy: ralph.resolve_merge
+    // v1 runs it on glm-5.3 for 30m; that number is void on the box, and 60m is unmeasured.
+    resolve_merge [label="Resolve the mainline merge", class="merge-resolve", timeout="60m", max_retries=1, prompt="@prompts/resolve_merge.md.j2"]
+
+    // copy: ralph.resolve_merge_gate
+    resolve_merge_gate [label="Verify the mainline merge", shape=parallelogram, output_schema="routing",
+        script="PRE=$(cat /tmp/fabro/pre_merge_sha 2>/dev/null || echo '')
+A=$(cat /tmp/fabro/merge_attempts 2>/dev/null || echo 0)
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"pre_merge_sha\",\"current_task.json\",\"issue.json\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+if [ \"$ROK\" != yes ]; then BAD=1; else BAD=0; fi
+if [ -e .git/MERGE_HEAD ]; then BAD=1; fi
+if git diff --name-only --diff-filter=U | grep -q . ; then BAD=1; fi
+: > /tmp/fabro/merge_scan.txt
+if [ -n \"$PRE\" ]; then git diff --name-only \"$PRE\" HEAD >> /tmp/fabro/merge_scan.txt 2>/dev/null || true; fi
+git diff --name-only HEAD >> /tmp/fabro/merge_scan.txt 2>/dev/null || true
+git ls-files --others --exclude-standard >> /tmp/fabro/merge_scan.txt 2>/dev/null || true
+while IFS= read -r f; do
+  [ -f \"$f\" ] || continue
+  if grep -qI '<<<<<<< ' \"$f\"; then BAD=1; fi
+done < /tmp/fabro/merge_scan.txt
+if ! git merge-base --is-ancestor origin/main HEAD; then BAD=1; fi
+MR=task
+if [ -s /tmp/fabro/final_merge_conflict ]; then MR=pr; fi
+if [ $BAD -ne 0 ]; then
+  git merge --abort 2>/dev/null || true
+  if [ -n \"$PRE\" ]; then git reset --hard \"$PRE\" || true; fi
+  A=$((A+1))
+  echo $A > /tmp/fabro/merge_attempts
+  echo 'The merge agent left conflict markers, an in-progress merge, or a branch that still does not contain origin/main.' > /tmp/fabro/needs_human_reason
+  echo '{\"context_updates\":{\"merge_ok\":false,\"merge_attempts\":'$A',\"merge_return\":\"'$MR'\"}}'
+else
+  git rev-parse HEAD > /tmp/fabro/task_base_sha
+  echo '{\"context_updates\":{\"merge_ok\":true,\"merge_attempts\":'$A',\"merge_return\":\"'$MR'\"}}'
+fi"]
+
+    // copy: ralph.refute_prep
+    refute_prep [label="Prepare refuter inputs", shape=parallelogram, timeout="5m", output_schema="routing",
+        script="set -e
+R=/tmp/fabro/review
+mkdir -p $R
+if [ \"$(cat /tmp/fabro/review_extra 2>/dev/null || true)\" = pending ]; then
+  echo 'refuter skipped: this is the one extra review pass after the third Refute round' >&2
+  echo '{\"context_updates\":{\"refute_skip\":true}}'
+  exit 0
+fi
+V=$(cat /tmp/fabro/refute_visits 2>/dev/null || echo 0)
+case \"$V\" in '' | *[!0-9]*) V=0 ;; esac
+V=$((V + 1))
+echo $V > /tmp/fabro/refute_visits
+DROP=$(cat $R/refute_dropped.json 2>/dev/null || echo '[]')
+rm -f $R/refute.json $R/refute_verdict $R/refute_reason.txt $R/refute_dropped.json $R/refute_survivors.json
+rm -f $R/refute_issues.json $R/refute_diff.patch $R/refute_omitted.txt $R/refute_delta.patch $R/refute_history.md $R/post_deploy.md $R/hygiene_rulings.json $R/refute_judged.json
+if [ -f /tmp/fabro/hygiene.sh ] && [ -n \"$(jq -r '.head // empty' $R/hygiene.json 2>/dev/null)\" ] && [ \"$(git rev-parse \"$(jq -r '.head // empty' $R/hygiene.json 2>/dev/null)^{tree}\" 2>/dev/null || echo x)\" = \"$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo y)\" ] && git diff --quiet HEAD; then
+  sh /tmp/fabro/hygiene.sh > /dev/null 2>&1 || true
+else
+  if jq -e 'type == \"object\"' $R/hygiene.json >/dev/null 2>&1; then
+    mkdir -p /tmp/fabro/_refute
+    NC=$(jq '(.cleared // []) | if type == \"array\" then length else 0 end' $R/hygiene.json 2>/dev/null || echo 0)
+    jq '(if ((.tamper.tests_deleted // 0) > 0) then [\"tests_deleted\"] else [] end) as $td | (if ((.tamper.asserts_removed // 0) > 0) then [\"asserts_removed\"] else [] end) as $ar | .cleared = [] | .blocking = (([.blocking[]? | select(. != \"tests_deleted\" and . != \"asserts_removed\")]) + $td + $ar)' $R/hygiene.json > /tmp/fabro/_refute/hygiene.json.fc 2>/dev/null && mv /tmp/fabro/_refute/hygiene.json.fc $R/hygiene.json || true
+    if [ \"${NC:-0}\" != 0 ]; then
+      jq -r '. as $r | if (.blocking | length) == 0 then empty else \"Diff hygiene blocks the merge: \" + ([.blocking[] | . as $k | $k + (if $k == \"config_invalid\" then \"\" else \"=\" + (((($r.tamper // {}) + ($r.erosion // {}))[$k] // 0) | tostring) end)] | join(\", \")) + \". The refuter rulings were dropped, because the checkout changed after the counters ran, so no hit is cleared.\" end' $R/hygiene.json > $R/hygiene_reason.txt 2>/dev/null || true
+      [ -s $R/hygiene_reason.txt ] || rm -f $R/hygiene_reason.txt
+    fi
+  fi
+fi
+if jq -r '.body // \"\"' /tmp/fabro/issue.json 2>/dev/null | grep -q '^## Post-deploy checks$'; then
+  jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Post-deploy checks$/{s=1; next} s && /^## /{s=0} !s{print}' > $R/refute_body.txt
+  jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Post-deploy checks$/{s=1; next} s && /^## /{s=0} s && /^- [[] []] /{print}' > $R/post_items.txt
+  if [ -s $R/post_items.txt ]; then cat $R/post_items.txt > $R/post_deploy.md; fi
+  jq -c --rawfile b $R/refute_body.txt '{number: .number, title: .title, body: $b}' /tmp/fabro/issue.json > $R/refute_issue.json
+else
+  jq -c '{number, title, body}' /tmp/fabro/issue.json > $R/refute_issue.json
+fi
+jq -s '.' $R/refute_issue.json > $R/refute_issues.json 2>/dev/null || echo '[]' > $R/refute_issues.json
+rm -f $R/refute_issue.json $R/refute_body.txt $R/post_items.txt
+git diff --numstat --no-renames \"origin/main...HEAD\" | awk 'BEGIN { FS = sprintf(\"%c\", 9) } { n = ($1 == \"-\" ? 0 : $1) + ($2 == \"-\" ? 0 : $2); print n \" \" $3 }' | sort -n > $R/refute_files.txt
+: > $R/refute_diff.patch
+: > $R/refute_omitted.txt
+SIZE=0
+while read -r N P; do
+  git diff --no-renames \"origin/main...HEAD\" -- \"$P\" > $R/refute_one.patch
+  S=$(wc -c < $R/refute_one.patch | tr -d ' ')
+  if [ $((SIZE + S)) -le 300000 ]; then
+    cat $R/refute_one.patch >> $R/refute_diff.patch
+    SIZE=$((SIZE + S))
+  else
+    echo \"$P ($N lines changed)\" >> $R/refute_omitted.txt
+  fi
+done < $R/refute_files.txt
+rm -f $R/refute_one.patch $R/refute_files.txt
+if [ \"$V\" -ge 2 ] && [ -s /tmp/fabro/refute_tree ]; then
+  PREVT=$(cat /tmp/fabro/refute_tree)
+  git diff \"$PREVT\" HEAD > $R/refute_delta.patch 2>/dev/null || rm -f $R/refute_delta.patch
+  jq -r '.[] | select(.source == \"refute\") | \"- \" + (.title // .id) + \" -> task \" + (.id // \"?\") + \" (\" + (.status // \"open\") + \")\"' /tmp/fabro/tasks.json > $R/refute_history.md 2>/dev/null || rm -f $R/refute_history.md
+  printf '%s' \"$DROP\" | jq -r '.[]? | \"- Dropped by the gate last round: \" + (if .criterion then .criterion + \" (evidence given: \" + (.evidence // \"none\") + \")\" else \"defect at \" + (.file // \"?\") + \": \" + (.scenario // \"\") end)' >> $R/refute_history.md 2>/dev/null || true
+  if [ ! -s $R/refute_history.md ]; then rm -f $R/refute_history.md; fi
+fi
+git rev-parse 'HEAD^{tree}' > /tmp/fabro/refute_tree
+HT=$(git rev-parse 'HEAD^{tree}')
+VT=$(cut -d' ' -f1 /tmp/fabro/validated_tree 2>/dev/null || true)
+VS=$(cut -d' ' -f2 /tmp/fabro/validated_tree 2>/dev/null || true)
+{
+  echo '# Validation of this tree'
+  echo
+  if [ -n \"$VT\" ] && [ \"$VT\" = \"$HT\" ] && git diff --quiet HEAD; then
+    if [ \"$VS\" = final ]; then
+      echo 'Final validation passed on this exact tree ('$HT'): ./.fabro/setup.sh and ./.fabro/ci.sh exited 0 before the pull request was opened.'
+    else
+      echo 'The merge phase validate passed on this exact tree ('$HT'): ./.fabro/setup.sh and ./.fabro/ci.sh exited 0.'
+    fi
+  else
+    echo 'No validation is recorded for this tree ('$HT'). Every command criterion is unverifiable.'
+  fi
+  echo
+  echo '## .fabro/ci.sh'
+  echo
+  echo '```sh'
+  cat .fabro/ci.sh 2>/dev/null || echo '(this checkout has no .fabro/ci.sh)'
+  echo '```'
+  CT=$(cat /tmp/fabro/criterion_checks_tree 2>/dev/null || true)
+  if [ -s $R/criterion_checks.md ] && [ \"$CT\" = \"$HT\" ] && git diff --quiet HEAD; then
+    echo
+    cat $R/criterion_checks.md
+  fi
+} > $R/refute_validation.md
+echo 'refuter inputs: round '$V', '$(jq length $R/refute_issues.json)' issue(s), '$SIZE' diff bytes, '$(wc -l < $R/refute_omitted.txt | tr -d ' ')' file(s) omitted' >&2
+echo '{\"context_updates\":{\"refute_skip\":false}}'"]
+
+    // copy: ralph.refute
+    refute [label="Refute", class="refute", timeout="15m", max_retries=1, prompt="@prompts/refute.md.j2"]
+
+    // copy: ralph.refute_gate
+    refute_gate [label="Validate refuter output", shape=parallelogram, timeout="5m", output_schema="routing",
+        script="F=/tmp/fabro/review/refute.json
+R=/tmp/fabro/review
+LE=false
+if [ -s /tmp/fabro/loop_exhausted ]; then LE=true; fi
+exhausted_result() {
+  jq -n --slurpfile t /tmp/fabro/tasks.json '{outcome: \"needs_human\", risk: 3, summary: \"The loop ran out with Tasks unpassed, so this pull request is not merged automatically.\", own_findings: [], fixes_applied: [], not_fixed: ([$t[0][] | select(.status != \"passed\") | {finding_id: .id, original_finding: (.title // .id), reason: \"not passed when the loop ran out\"}])}' > $R/fix_result.json
+}
+V=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+RV=$(jq -r '._io.visit // empty' $F 2>/dev/null)
+rm -f $R/hygiene_rulings.json
+if [ -z \"$V\" ] || [ \"$RV\" != \"$V\" ]; then
+  echo invalid > $R/refute_verdict
+  echo 'The refuter wrote no valid result for this round, so it has no verdict and the merge is refused.' > $R/refute_reason.txt
+  echo hold > /tmp/fabro/refute_route
+  if [ \"$LE\" = true ]; then exhausted_result; fi
+  jq -nc --argjson le \"$LE\" '{context_updates:{refute_verdict:\"invalid\",refute_not_met:false,refute_unverifiable_only:false,refute_ci_credited:0,refute_route:\"hold\",loop_exhausted:$le,hygiene_cleared:0,hygiene_unsure:0,hygiene_tampering:0}}'
+  exit 0
+fi
+KC='{\"criteria\":[],\"defects\":[]}'
+DROPPED='[]'
+N=$(jq '.criteria | length' $F)
+I=0
+while [ $I -lt $N ]; do
+  C=$(jq -c --argjson i $I '.criteria[$i]' $F)
+  ST=$(printf '%s' \"$C\" | jq -r '.status // empty')
+  OK=false
+  case \"$ST\" in
+    met | unverifiable) OK=true ;;
+    not_met)
+      EV=$(printf '%s' \"$C\" | jq -r '.evidence // empty')
+      P=$(printf '%s' \"$EV\" | grep -oE '[A-Za-z0-9_./-]+:[0-9]+' | head -1 | sed 's/:.*//')
+      if [ -n \"$P\" ] && [ -f \"$P\" ]; then OK=true; fi
+      if printf '%s' \"$EV\" | grep -q '`[^`]*`'; then OK=true; fi ;;
+  esac
+  if [ \"$OK\" = true ]; then KC=$(printf '%s' \"$KC\" | jq --argjson c \"$C\" '.criteria += [$c]'); else DROPPED=$(printf '%s' \"$DROPPED\" | jq --argjson c \"$C\" '. + [$c]'); fi
+  I=$((I + 1))
+done
+N=$(jq '.defects // [] | length' $F)
+I=0
+while [ $I -lt $N ]; do
+  D=$(jq -c --argjson i $I '.defects[$i]' $F)
+  DF=$(printf '%s' \"$D\" | jq -r '.file // empty')
+  if [ -n \"$DF\" ] && [ -f \"$DF\" ]; then KC=$(printf '%s' \"$KC\" | jq --argjson d \"$D\" '.defects += [$d]'); else DROPPED=$(printf '%s' \"$DROPPED\" | jq --argjson d \"$D\" '. + [$d]'); fi
+  I=$((I + 1))
+done
+rm -rf /tmp/fabro/_refute && mkdir -p /tmp/fabro/_refute
+B=$(cat /tmp/fabro/base_ref 2>/dev/null)
+UM=$(jq '[.criteria[]? | select(.status == \"not_met\")] | length' $F 2>/dev/null || echo 1)
+TP=$(jq -r 'if (.test_paths | type) == \"array\" and (.test_paths | length) > 0 then .test_paths | map(\"(\" + . + \")\") | join(\"|\") else \"\" end' $R/hygiene.json 2>/dev/null || true)
+judge_quote() {
+  RES=legitimate
+  WHY=
+  QUOTED=$(jq -rn --arg q \"$1\" --arg f \"$2\" --slurpfile is $R/refute_issues.json 'def norm: gsub(\"[`*]\"; \"\") | gsub(\"[[:space:]]+\"; \" \") | ltrimstr(\" \") | rtrimstr(\" \");
+def word: test(\"^[A-Za-z0-9_]$\");
+def inside($n): . as $h | ($h | split($n)) as $p | ($p | length) as $k
+  | any(range(0; $k - 1); . as $i
+      | ((if $i > 0 then $n else \"\" end) + $p[$i])[-1:] as $l
+      | ($p[$i + 1] + (if $i + 2 < $k then $n else \"\" end))[:1] as $r
+      | ((($n[:1] | word) and ($l | word)) or (($n[-1:] | word) and ($r | word))) | not);
+def names($f): [splits(\"[[:space:]\" + ([34, 39] | implode) + \",;:()<>|~]+\")]
+  | [.[] | sub(\"[.!?]+$\"; \"\") | ., (ltrimstr(\"[\") | rtrimstr(\"]\")) | ltrimstr(\"./\") | . as $t
+      | $t != \"\" and ($t == ($f | split(\"/\") | last) or $t == $f or (($t | contains(\"/\")) and ($f | endswith(\"/\" + $t))))] | any;
+($q | norm) as $n
+| {len: ([$n | scan(\"[A-Za-z0-9_]+\")] | join(\" \") | length), base: ($n | names($f)),
+   issue: (if $n == \"\" then null else [$is[0][]? | select(((.title // \"\") | norm | inside($n)) or ((.body // \"\") | norm | inside($n)))] | .[0].number // null end)}' 2>/dev/null || true)
+  QL=$(printf '%s' \"$QUOTED\" | jq -r '.len // 0' 2>/dev/null)
+  QB=$(printf '%s' \"$QUOTED\" | jq -r '.base // false' 2>/dev/null)
+  QI=$(printf '%s' \"$QUOTED\" | jq -r 'if .issue == null then empty else .issue end' 2>/dev/null)
+  if [ \"${QL:-0}\" -lt 20 ]; then RES=unsure; WHY='check R1 failed: the quote has under 20 characters of words'; return; fi
+  if [ -n \"$2\" ] && [ \"${QB:-false}\" != true ]; then RES=unsure; WHY='check R2 failed: the quote does not name the deleted file'; return; fi
+  if [ -z \"$QI\" ]; then RES=unsure; WHY='check R3 failed: the quote is not in one linked issue title or body'; return; fi
+  WHY='quote found in issue #'$QI
+}
+judge_replace() {
+  RES=legitimate
+  EV=$(jq -rn --arg e \"$1\" '$e | gsub(\"^[[:space:]]+|[[:space:]]+$\"; \"\")')
+  if [ \"$(printf '%s' \"$EV\" | wc -l | tr -d ' ')\" != 0 ]; then RES=unsure; WHY='check P1 failed: the evidence spans more than one line'; return; fi
+  if ! printf '%s' \"$EV\" | grep -qxE '[A-Za-z0-9_./-]+:[0-9]+' || printf '%s' \"$EV\" | grep -q '[.][.]'; then RES=unsure; WHY='check P1 failed: the evidence is not a clean path and line number'; return; fi
+  P=${EV%:*}
+  N=${EV##*:}
+  if [ \"$N\" -eq 0 ]; then RES=unsure; WHY='check P1 failed: the line number is not above zero'; return; fi
+  if ! git diff --name-only \"origin/$B...HEAD\" 2>/dev/null | grep -qxF \"$P\"; then RES=unsure; WHY='check P2 failed: the path is unchanged by this pull request'; return; fi
+  if [ \"$(git cat-file -t \"HEAD:$P\" 2>/dev/null)\" != blob ]; then RES=unsure; WHY='check P3 failed: the path is missing from HEAD'; return; fi
+  if [ \"$(printf '%s' \"$P\" | awk -v tp=\"$TP\" 'tp != \"\" && $0 ~ tp { ok = 1 } END { print (ok ? 1 : 0) }')\" != 1 ]; then
+    case \"$P\" in
+      *.rs) ;;
+      *) RES=unsure; WHY='check P4 failed: the path is not a test path'; return ;;
+    esac
+  fi
+  if [ \"$(git show \"HEAD:$P\" 2>/dev/null | awk -v n=\"$N\" 'BEGIN { tb = sprintf(\"%c\", 9) } NR == n { t = $0; gsub(\" \", \"\", t); gsub(tb, \"\", t); if (length(t) > 0) ok = 1 } END { print (ok ? 1 : 0) }')\" != 1 ]; then
+    RES=unsure
+    WHY='check P5 failed: the path has no non-blank line at that number'
+    return
+  fi
+  WHY=$EV' is a test file this pull request changes'
+}
+jq -c '.hits // [] | if type == \"array\" then . else [] end | .[] | select(.counter == \"tests_deleted\" or .counter == \"asserts_removed\") | [.counter, .file, {count: (.count // 0), texts: (.texts // [])}]' $R/hygiene.json 2>/dev/null > /tmp/fabro/_refute/hits.ndjson || : > /tmp/fabro/_refute/hits.ndjson
+: > /tmp/fabro/_refute/judged.ndjson
+while read -r H; do
+  C=$(printf '%s' \"$H\" | jq -r '.[0]')
+  FL=$(printf '%s' \"$H\" | jq -r '.[1]')
+  printf '%s' \"$H\" | jq -c '.[2]' > /tmp/fabro/_refute/hit.json
+  RU=$(jq -c --arg c \"$C\" --arg f \"$FL\" '[(.hygiene // []) | if type != \"array\" then [] else . end | .[] | select(.counter == $c and .file == $f)] | unique' $F 2>/dev/null || echo '[]')
+  RN=$(printf '%s' \"$RU\" | jq 'length')
+  if [ \"$RN\" -eq 0 ]; then continue; fi
+  if [ \"$RN\" -ge 2 ]; then
+    jq -nc --arg c \"$C\" --arg f \"$FL\" --argjson r \"$RU\" --slurpfile t /tmp/fabro/_refute/hit.json '{counter: $c, file: $f, ruling: \"unsure\", basis: ($r[0].basis // \"none\"), evidence: ($r[0].evidence // \"\"), scenario: ($r[0].scenario // \"\"), reason: \"two rulings were given for one hit\", count: $t[0].count, texts: $t[0].texts}' >> /tmp/fabro/_refute/judged.ndjson
+    continue
+  fi
+  RL=$(printf '%s' \"$RU\" | jq -r '.[0].ruling // \"\"')
+  BA=$(printf '%s' \"$RU\" | jq -r '.[0].basis // \"\"')
+  EVD=$(printf '%s' \"$RU\" | jq -r '.[0].evidence // \"\"')
+  SCN=$(printf '%s' \"$RU\" | jq -r '.[0].scenario // \"\"')
+  RES=$RL
+  WHY=
+  case \"$RL\" in
+    legitimate)
+      if [ \"$BA\" = requirement ]; then
+        if [ \"$C\" = tests_deleted ]; then judge_quote \"$EVD\" \"$FL\"; else judge_quote \"$EVD\" \"\"; fi
+        if [ $RES = legitimate ] && [ \"$UM\" != 0 ]; then RES=unsure; WHY='check R4 failed: a criterion is not met, so the request is not carried out'; fi
+      elif [ \"$BA\" = replacement ]; then
+        judge_replace \"$EVD\"
+      else
+        RES=unsure
+        WHY='basis none carries no evidence the gate can check'
+      fi
+      ;;
+    tampering) WHY='the refuter judged the change hides a failure' ;;
+    unsure) WHY='the refuter was not certain' ;;
+    *) RES=unsure; WHY='the ruling is not one of the three' ;;
+  esac
+  jq -nc --arg c \"$C\" --arg f \"$FL\" --arg rl \"$RES\" --arg b \"$BA\" --arg e \"$EVD\" --arg s \"$SCN\" --arg r \"$WHY\" --slurpfile t /tmp/fabro/_refute/hit.json '{counter: $c, file: $f, ruling: $rl, basis: $b, evidence: $e, scenario: $s, reason: $r, count: $t[0].count, texts: $t[0].texts}' >> /tmp/fabro/_refute/judged.ndjson
+done < /tmp/fabro/_refute/hits.ndjson
+jq -r --slurpfile h /tmp/fabro/_refute/hits.ndjson '(.hygiene // []) as $all | ($h | map(.[0] + \" \" + .[1])) as $keys | (if ($all | type) != \"array\" then [] else $all end) | .[] | (.counter // \"\") as $c | (.file // \"\") as $fl | select(($keys | index($c + \" \" + $fl)) == null) | $c + \" \" + $fl' $F 2>/dev/null | while read -r IC IF; do echo 'ignored a refuter ruling on '$IC' in '$IF': no such hit' >&2; done
+jq -s . /tmp/fabro/_refute/judged.ndjson > $R/hygiene_rulings.json
+HC=$(jq '[.[] | select(.ruling == \"legitimate\")] | length' $R/hygiene_rulings.json)
+HU=$(jq '[.[] | select(.ruling == \"unsure\")] | length' $R/hygiene_rulings.json)
+HT=$(jq '[.[] | select(.ruling == \"tampering\")] | length' $R/hygiene_rulings.json)
+KC=$(printf '%s' \"$KC\" | jq -c --slurpfile hr $R/hygiene_rulings.json '.defects += [$hr[0][] | select(.ruling == \"tampering\") | {file: .file, line: null, scenario: .scenario}]')
+if [ -f /tmp/fabro/hygiene.sh ] && [ -n \"$(jq -r '.head // empty' $R/hygiene.json 2>/dev/null)\" ] && [ \"$(git rev-parse \"$(jq -r '.head // empty' $R/hygiene.json 2>/dev/null)^{tree}\" 2>/dev/null || echo x)\" = \"$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo y)\" ] && git diff --quiet HEAD; then
+  sh /tmp/fabro/hygiene.sh > /dev/null 2>&1 || true
+fi
+printf '%s' \"$DROPPED\" | jq '.' > $R/refute_dropped.json 2>/dev/null || echo '[]' > $R/refute_dropped.json
+printf '%s' \"$KC\" | jq '.' > $R/refute_survivors.json
+V=$(printf '%s' \"$KC\" | jq -r 'if ([.criteria[] | select(.status != \"met\")] | length) == 0 and (.defects | length) == 0 then \"pass\" else \"fail\" end')
+echo $V > $R/refute_verdict
+NM=$(printf '%s' \"$KC\" | jq '[.criteria[] | select(.status == \"not_met\")] | length')
+DF=$(printf '%s' \"$KC\" | jq '.defects | length')
+CC=$(printf '%s' \"$KC\" | jq '[.criteria[] | select(.status == \"met\" and ((.evidence // \"\") | test(\"ci[.]sh\")))] | length')
+NOT=false
+if [ \"$NM\" -gt 0 ]; then NOT=true; fi
+UO=false
+if [ \"$V\" = fail ] && [ \"$NM\" -eq 0 ] && [ \"$DF\" -eq 0 ]; then UO=true; fi
+if [ \"$V\" = fail ]; then
+  printf '%s' \"$KC\" | jq -r '\"The refuter could not confirm the work is done: \" + ([.criteria[] | select(.status != \"met\") | .status + \": \" + .criterion] + [.defects[] | \"defect at \" + .file + (if (.line | type) == \"number\" then \":\" + (.line | tostring) else \"\" end) + \": \" + .scenario] | .[:5] | join(\"; \")) + \".\"' > $R/refute_reason.txt
+else
+  rm -f $R/refute_reason.txt
+fi
+VIS=$(cat /tmp/fabro/refute_visits 2>/dev/null || echo 0)
+case \"$VIS\" in '' | *[!0-9]*) VIS=0 ;; esac
+ROUTE=pass
+if [ \"$V\" = fail ]; then
+  ROUTE=hold
+  if [ $((NM + DF)) -gt 0 ] && [ $VIS -lt 3 ] && [ \"$LE\" = false ]; then ROUTE=tasks; fi
+fi
+if [ \"$ROUTE\" = tasks ]; then
+  printf '%s' \"$KC\" | jq --argjson r $VIS --argjson n $NM --argjson d $DF '
+    def nl: [10] | implode;
+    . as $doc | ([range($n) | . as $i | [$doc.criteria[] | select(.status == \"not_met\")][$i] | {
+       id: (\"r\" + ($r | tostring) + \"c\" + (($i + 1) | tostring)),
+       title: .criterion,
+       body: (\"The Refuter could not confirm this: \" + .evidence),
+       acceptance: [.criterion], files: [], covers: [],
+       context: (\"## Files and symbols\" + nl + nl + \"- the evidence names: \" + .evidence + nl + nl + \"## Done when\" + nl + nl + \"- \" + .criterion),
+       source: \"refute\", round: $r, status: \"open\", iterations: 0, misses: 0 }]
+     + [range($d) | . as $i | $doc.defects[$i] | {
+       id: (\"r\" + ($r | tostring) + \"d\" + (($i + 1) | tostring)),
+       title: (\"Fix: \" + .file),
+       body: .scenario,
+       acceptance: [\"the scenario no longer happens\"], files: [.file], covers: [],
+       context: (\"## Files and symbols\" + nl + nl + \"- \" + .file + nl + nl + \"## Done when\" + nl + nl + \"- \" + .scenario),
+       source: \"refute\", round: $r, status: \"open\", iterations: 0, misses: 0 }])' > /tmp/fabro/refute_tasks.json
+  jq -s '.[0] + .[1]' /tmp/fabro/tasks.json /tmp/fabro/refute_tasks.json > /tmp/fabro/tasks.new.json 2>/dev/null && mv /tmp/fabro/tasks.new.json /tmp/fabro/tasks.json
+  rm -f /tmp/fabro/refute_tasks.json
+  echo 'refuter round '$VIS': '$NM' criterion(a) and '$DF' defect(s) became Tasks' >&2
+fi
+if [ \"$LE\" = true ]; then
+  ROUTE=hold
+  exhausted_result
+fi
+echo $ROUTE > /tmp/fabro/refute_route
+jq -nc --arg v \"$V\" --argjson n \"$NOT\" --argjson u \"$UO\" --argjson c \"$CC\" --arg r \"$ROUTE\" --argjson le \"$LE\" --argjson hc \"$HC\" --argjson hu \"$HU\" --argjson ht \"$HT\" '{context_updates:{refute_verdict:$v,refute_not_met:$n,refute_unverifiable_only:$u,refute_ci_credited:$c,refute_route:$r,loop_exhausted:$le,hygiene_cleared:$hc,hygiene_unsure:$hu,hygiene_tampering:$ht}}'"]
+
+    // copy: ralph.review_prep
+    review_prep [label="Prepare review inputs", shape=parallelogram, timeout="2m", output_schema="routing",
+        script="set -e
+B=main
+RS=true
+RP=true
+if [ \"$(cat /tmp/fabro/review_extra 2>/dev/null || true)\" = pending ]; then
+  RERUN=' '$(tr '[:space:]' ' ' < /tmp/fabro/review_rerun 2>/dev/null || true)' '
+  case \"$RERUN\" in *' standards '*) : ;; *) RS=false ;; esac
+  case \"$RERUN\" in *' spec '*) : ;; *) RP=false ;; esac
+  if [ \"$RS\" = false ] && [ \"$RP\" = false ]; then RS=true; RP=true; fi
+fi
+if [ \"$RS\" = true ]; then rm -f /tmp/fabro/review/standards.json; fi
+if [ \"$RP\" = true ]; then rm -f /tmp/fabro/review/spec.json; fi
+rm -f /tmp/fabro/review/fix_result.json
+git fetch origin \"$B\"
+git diff origin/\"$B\"...HEAD > /tmp/fabro/review/diff.patch
+git diff --stat origin/\"$B\"...HEAD > /tmp/fabro/review/diffstat.txt
+git diff --name-only origin/\"$B\"...HEAD > /tmp/fabro/review/changed_files.txt
+git log origin/\"$B\"..HEAD --format='%h %s' > /tmp/fabro/review/commits.txt
+BYTES=$(wc -c < /tmp/fabro/review/diff.patch | tr -d ' ')
+if [ $BYTES -gt 2000000 ]; then
+  echo 'The branch diff exceeds 2000000 bytes and is not safely reviewable in one pass. Split the issue.' > /tmp/fabro/stuck_reason.md
+  exit 1
+fi
+echo 'review inputs: '$BYTES' diff bytes; standards '$RS', spec '$RP >&2
+jq -nc --argjson s $RS --argjson p $RP '{context_updates:{review_run_standards:$s,review_run_spec:$p}}'"]
+
+    // copy: ralph.standards
+    standards [label="Standards review", class="review-standards", timeout="30m", max_retries=1, prompt="@prompts/standards.md.j2"]
+
+    // copy: ralph.spec
+    spec [label="Spec review", class="review-spec", timeout="20m", max_retries=1, prompt="@prompts/spec.md.j2"]
+
+    // copy: ralph.review_gate
+    review_gate [label="Decide the reviews", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="R=/tmp/fabro/review
+OK=yes
+for X in standards spec; do
+  F=$R/$X.json
+  if [ ! -s $F ]; then OK=no; fi
+  if [ \"$(jq -r '._io.stage // empty' $F 2>/dev/null)\" != \"$X\" ]; then OK=no; fi
+  if [ -z \"$(jq -r '._io.visit // empty' $F 2>/dev/null)\" ]; then OK=no; fi
+done
+if [ \"$OK\" != yes ]; then
+  echo 'A reviewer wrote no valid result for this round, so nothing has been reviewed and no pull request is opened.' > /tmp/fabro/stuck_reason.md
+  exit 1
+fi
+LE=false
+if [ -s /tmp/fabro/loop_exhausted ]; then LE=true; fi
+SF=$R/standards.json
+PF=$R/spec.json
+D1=$(jq -r '.decision // empty' $SF 2>/dev/null)
+D2=$(jq -r '.decision // empty' $PF 2>/dev/null)
+RISK=$(jq -r 'if ((.risk | type) == \"number\") and (.risk >= 1) and (.risk <= 5) then .risk else 3 end' $PF 2>/dev/null || echo 3)
+jq -n --slurpfile a $SF --slurpfile b $PF '([$a[0].findings[]? | select(.severity == \"error\")] + [$b[0].findings[]? | select(.severity == \"error\")])' > $R/blocks.json 2>/dev/null || echo '[]' > $R/blocks.json
+BLOCK=$(jq length $R/blocks.json)
+VIS=$(cat /tmp/fabro/refute_visits 2>/dev/null || echo 0)
+case \"$VIS\" in '' | *[!0-9]*) VIS=0 ;; esac
+RR=$(cat /tmp/fabro/refute_route 2>/dev/null || echo pass)
+XS=$(cat /tmp/fabro/review_extra 2>/dev/null || echo none)
+case \"$XS\" in pending | done) : ;; *) XS=none ;; esac
+SB=$(jq '[.findings[]? | select(.severity == \"error\")] | length' $SF 2>/dev/null || echo 0)
+PB=$(jq '[.findings[]? | select(.severity == \"error\")] | length' $PF 2>/dev/null || echo 0)
+ROUTE=pass
+IDP=rv$VIS
+if [ \"$LE\" = false ] && [ \"$XS\" != pending ]; then
+  if [ \"$RR\" = tasks ]; then
+    ROUTE=tasks
+  elif [ \"$RR\" = pass ] && [ \"$BLOCK\" -gt 0 ]; then
+    if [ \"$VIS\" -lt 3 ]; then
+      ROUTE=tasks
+    elif [ \"$XS\" = none ]; then
+      ROUTE=tasks
+      IDP=rvx
+      echo pending > /tmp/fabro/review_extra
+      { if [ \"$SB\" -gt 0 ]; then echo standards; fi; if [ \"$PB\" -gt 0 ]; then echo spec; fi; } > /tmp/fabro/review_rerun
+      echo 'review: the third Refute round is spent, so '$BLOCK' blocking finding(s) get the one extra pass: no Refuter, and only '$(tr '[:space:]' ' ' < /tmp/fabro/review_rerun)'re-run' >&2
+    fi
+  fi
+fi
+if [ \"$XS\" = pending ]; then echo done > /tmp/fabro/review_extra; fi
+if [ \"$ROUTE\" = tasks ]; then
+  jq -n --slurpfile a $SF --slurpfile b $PF --arg p \"$IDP\" --argjson r $VIS '
+    def nl: [10] | implode;
+    ([$a[0].findings[]? | select(.severity == \"error\") | {axis: \"standards\"} + .]
+     + [$b[0].findings[]? | select(.severity == \"error\") | {axis: \"spec\"} + .])
+    | to_entries
+    | map(.value as $f | .key as $i | {
+        id: ($p + (if $f.axis == \"standards\" then \"s\" else \"p\" end) + (($i + 1) | tostring)),
+        title: (($f.id // \"finding\") + \" \" + $f.message),
+        body: (\"The \" + $f.axis + \" review found this in the branch: \" + $f.message + \" Files: \" + (($f.files // []) | join(\", \")) + \". Suggestion: \" + ($f.suggestion // \"none given\") + \".\"),
+        acceptance: [\"the finding no longer applies to the branch\"],
+        files: ($f.files // []), covers: [],
+        context: (\"## Files and symbols\" + nl + nl + (($f.files // []) | map(\"- \" + . + (if ($f.line // null) == null then \"\" else \":\" + ($f.line | tostring) end)) | join(nl)) + nl + nl + \"## Done when\" + nl + nl + \"- \" + $f.message),
+        source: \"review\", axis: $f.axis, finding_id: $f.id, severity: $f.severity,
+        round: $r, status: \"open\", iterations: 0, misses: 0 })' > /tmp/fabro/review_tasks.json
+  jq -s '.[0] + .[1]' /tmp/fabro/tasks.json /tmp/fabro/review_tasks.json > /tmp/fabro/tasks.new.json 2>/dev/null && mv /tmp/fabro/tasks.new.json /tmp/fabro/tasks.json
+  rm -f /tmp/fabro/review_tasks.json
+  echo 'review: '$BLOCK' blocking finding(s) became Tasks (refuter route '$RR', round '$VIS')' >&2
+else
+  jq '[.[] | select(.source == \"review\" and .status == \"passed\")]' /tmp/fabro/tasks.json > $R/fixed.json 2>/dev/null || echo '[]' > $R/fixed.json
+  jq '[.[] | {finding_id: (.finding_id // .id), axis: (.axis // \"standards\"), severity: (.severity // \"error\"), message: (.title // .id)}]' $R/fixed.json > $R/fixes.json
+  NFR='this review round found it after the third Refute round and the one extra pass were spent'
+  if [ \"$XS\" = pending ]; then NFR='the one extra review pass after the third Refute round did not clear it'; fi
+  if [ \"$RR\" != pass ]; then NFR='the Refuter held the merge, so review findings did not become Tasks'; fi
+  jq --arg why \"$NFR\" '[ .[] | {finding_id: .id, original_finding: .message, reason: $why} ]' $R/blocks.json > $R/notfixed.json
+  FA=$(jq length $R/fixes.json)
+  NF=$(jq length $R/notfixed.json)
+  OUT=no_changes_needed
+  if [ \"$FA\" != 0 ]; then OUT=fixed; fi
+  RSN=''
+  if [ \"$D1\" = needs_human_review ]; then OUT=needs_human; RSN='the standards review asked for a human decision'; fi
+  if [ \"$D2\" = needs_human_review ]; then OUT=needs_human; RSN='the spec review asked for a human decision'; fi
+  if [ \"$NF\" != 0 ] && [ -z \"$RSN\" ]; then OUT=needs_human; RSN=$NF' blocking review finding(s) left unfixed: '$NFR; fi
+  if [ \"$LE\" = true ]; then OUT=needs_human; RSN='the loop ran out with Tasks unpassed'; fi
+  SUM='Ralph reviews: standards '$D1', spec '$D2'. '$FA' finding(s) were fixed by the loop and '$NF' left.'
+  if [ -n \"$RSN\" ]; then SUM=\"$RSN. $SUM\"; fi
+  jq -n --arg o \"$OUT\" --argjson r \"$RISK\" --arg s \"$SUM\" --slurpfile fa $R/fixes.json --slurpfile nf $R/notfixed.json --arg d1 \"$D1\" --arg d2 \"$D2\" '{outcome: $o, risk: $r, summary: $s, own_findings: [], fixes_applied: $fa[0], not_fixed: $nf[0], notes: (\"standards=\" + $d1 + \" spec=\" + $d2)}' > $R/fix_result.json
+  if [ -n \"$RSN\" ]; then printf '%s' \"$RSN\" > /tmp/fabro/merge_block_reason; fi
+  rm -f $R/blocks.json $R/fixed.json $R/fixes.json $R/notfixed.json
+fi
+jq -nc --arg r \"$ROUTE\" --argjson le \"$LE\" '{context_updates:{review_route:$r,loop_exhausted:$le}}'"]
+
+    // copy: ralph.local_review_prep
+    local_review_prep [label="Prepare the local review", shape=parallelogram, timeout="5m", output_schema="routing",
+        script="F=/tmp/fabro
+L=$F/local_review
+if [ -s $F/loop_exhausted ]; then
+  echo 'local_review_prep: the loop ran out, so the branch is about to be held; no local review' >&2
+  echo '{\"context_updates\":{\"local_review_go\":false}}'
+  exit 0
+fi
+if [ -e $F/local_reviewed ]; then
+  echo 'local_review_prep: this run already had its local review; routing on' >&2
+  echo '{\"context_updates\":{\"local_review_go\":false}}'
+  exit 0
+fi
+: > $F/local_reviewed
+mkdir -p $L
+rm -f $L/standards.json $L/spec.json $L/diff.patch $L/diffstat.txt $L/changed_files.txt $L/commits.txt $L/blocks.json
+git fetch origin main >/dev/null 2>&1 || echo 'local_review_prep: could not refresh origin/main; diffing against the one in the checkout' >&2
+OKD=yes
+git diff origin/main...HEAD > $L/diff.patch 2>/dev/null || OKD=no
+git diff --stat origin/main...HEAD > $L/diffstat.txt 2>/dev/null || OKD=no
+git diff --name-only origin/main...HEAD > $L/changed_files.txt 2>/dev/null || OKD=no
+git log origin/main..HEAD --format='%h %s' > $L/commits.txt 2>/dev/null || OKD=no
+if [ \"$OKD\" != yes ]; then
+  echo 'local_review_prep: could not take the branch diff; the local review is skipped' >&2
+  echo '{\"context_updates\":{\"local_review_go\":false}}'
+  exit 0
+fi
+BYTES=$(wc -c < $L/diff.patch | tr -d ' ')
+if [ \"$BYTES\" -gt 2000000 ]; then
+  echo 'local_review_prep: the branch diff is '$BYTES' bytes, over 2000000; the local review is skipped' >&2
+  echo '{\"context_updates\":{\"local_review_go\":false}}'
+  exit 0
+fi
+echo 'local_review_prep: '$BYTES' diff bytes' >&2
+echo '{\"context_updates\":{\"local_review_go\":true}}'"]
+
+    // copy: ralph.local_standards
+    local_standards [label="Local standards review", class="review-local", timeout="60m", max_retries=1, prompt="@prompts/standards.md.j2"]
+
+    // copy: ralph.local_spec
+    local_spec [label="Local spec review", class="review-local", timeout="40m", max_retries=1, prompt="@prompts/spec.md.j2"]
+
+    // copy: ralph.local_review_gate
+    local_review_gate [label="Decide the local review", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro
+L=$F/local_review
+GOOD=0
+for X in standards spec; do
+  OK=yes
+  if [ ! -s $L/$X.json ]; then OK=no; fi
+  if [ \"$(jq -r '._io.stage // empty' $L/$X.json 2>/dev/null)\" != \"local_$X\" ]; then OK=no; fi
+  if [ -z \"$(jq -r '._io.visit // empty' $L/$X.json 2>/dev/null)\" ]; then OK=no; fi
+  if [ \"$OK\" = yes ]; then GOOD=$((GOOD + 1)); continue; fi
+  echo 'local_review: local_'$X' wrote no valid result; it counts as no findings' >&2
+  echo '{\"decision\":\"none\",\"findings\":[]}' > $L/$X.json
+done
+if [ $GOOD = 0 ]; then
+  echo 'local_review: neither local reviewer wrote a valid result, so the local review is dropped and the hosted reviews go on' >&2
+  echo '{\"context_updates\":{\"local_review_route\":\"pass\"}}'
+  exit 0
+fi
+SF=$L/standards.json
+PF=$L/spec.json
+jq -n --slurpfile a $SF --slurpfile b $PF '([$a[0].findings[]? | select(.severity == \"error\")] | length) + ([$b[0].findings[]? | select(.severity == \"error\")] | length)' > $L/nblocks 2>/dev/null || echo 0 > $L/nblocks
+BLOCK=$(cat $L/nblocks)
+rm -f $L/nblocks
+case \"$BLOCK\" in '' | *[!0-9]*) BLOCK=0 ;; esac
+if [ \"$BLOCK\" = 0 ]; then
+  D1=$(jq -r '.decision // empty' $SF 2>/dev/null)
+  D2=$(jq -r '.decision // empty' $PF 2>/dev/null)
+  echo 'local_review: no blocking finding (standards '$D1', spec '$D2')' >&2
+  echo '{\"context_updates\":{\"local_review_route\":\"pass\"}}'
+  exit 0
+fi
+GOT=no
+if jq -n --slurpfile a $SF --slurpfile b $PF '
+    def nl: [10] | implode;
+    def task($f; $p; $n): {
+        id: (\"lr\" + $p + ($n | tostring)),
+        title: (($f.id // \"finding\") + \" \" + $f.message),
+        body: (\"The local \" + $f.axis + \" review found this in the branch before the hosted reviews: \" + $f.message + \" Files: \" + (($f.files // []) | join(\", \")) + \". Suggestion: \" + ($f.suggestion // \"none given\") + \".\"),
+        acceptance: [\"the finding no longer applies to the branch\"],
+        files: ($f.files // []), covers: [],
+        context: (\"## Files and symbols\" + nl + nl + (($f.files // []) | map(\"- \" + . + (if ($f.line // null) == null then \"\" else \":\" + ($f.line | tostring) end)) | join(nl)) + nl + nl + \"## Done when\" + nl + nl + \"- \" + $f.message),
+        source: \"local_review\", axis: $f.axis, finding_id: $f.id, severity: $f.severity,
+        round: 0, status: \"open\", iterations: 0, misses: 0 };
+    ([$a[0].findings[]? | select(.severity == \"error\") | {axis: \"standards\"} + .] | to_entries | map(task(.value; \"s\"; .key + 1)))
+    + ([$b[0].findings[]? | select(.severity == \"error\") | {axis: \"spec\"} + .] | to_entries | map(task(.value; \"p\"; .key + 1)))' > $F/local_review_tasks.json 2>/dev/null; then
+  if jq -s '.[0] + .[1]' $F/tasks.json $F/local_review_tasks.json > $F/tasks.new.json 2>/dev/null; then GOT=yes; fi
+fi
+if [ \"$GOT\" = yes ]; then
+  mv $F/tasks.new.json $F/tasks.json
+  echo 'local_review: '$BLOCK' blocking finding(s) became Tasks' >&2
+  rm -f $F/local_review_tasks.json
+  echo '{\"context_updates\":{\"local_review_route\":\"tasks\"}}'
+else
+  rm -f $F/local_review_tasks.json $F/tasks.new.json
+  echo 'local_review: could not turn '$BLOCK' finding(s) into Tasks; the local review is dropped and the hosted reviews go on' >&2
+  echo '{\"context_updates\":{\"local_review_route\":\"pass\"}}'
+fi"]
+
+    // copy: ralph.final_merge
+    final_merge [label="Merge main before the PR", shape=parallelogram, timeout="5m", output_schema="routing",
+        script="F=/tmp/fabro
+mkdir -p $F
+rm -f $F/final_merge_conflict $F/final_merge_conflict.new
+git fetch origin main || { echo 'final_merge: git fetch origin main failed; nothing was merged' >&2; exit 1; }
+git rev-parse HEAD > $F/pre_merge_sha
+if git merge --no-edit origin/main; then
+  echo '{\"context_updates\":{\"final_conflict\":false}}'
+  exit 0
+fi
+git diff --name-only --diff-filter=U > $F/final_merge_conflict.new
+git merge --abort || true
+PRE=$(cat $F/pre_merge_sha)
+if [ -e .git/MERGE_HEAD ] || [ \"$(git rev-parse HEAD)\" != \"$PRE\" ] || ! git diff --quiet HEAD; then git reset --hard \"$PRE\"; fi
+if [ ! -s $F/final_merge_conflict.new ]; then
+  rm -f $F/final_merge_conflict.new
+  echo 'final_merge: git merge origin/main failed with no conflicted path; the branch is back at '$PRE >&2
+  exit 1
+fi
+mv $F/final_merge_conflict.new $F/final_merge_conflict
+echo 'final_merge: main conflicts with this branch in '$(wc -l < $F/final_merge_conflict)' file(s); the merge was aborted so no checkpoint commits markers, and resolve_merge redoes it'
+echo '{\"context_updates\":{\"final_conflict\":true}}'"]
+
+    // copy: ralph.final_check
+    final_check [label="Final validation and PR prep", shape=parallelogram, timeout="20m",
+        output_schema="routing", stdin_source="failure_signature",
+        script="F=/tmp/fabro
+SIG=$(head -c 600)
+mkdir -p $F
+PH=$(cat $F/phase 2>/dev/null || echo pre)
+case \"$PH\" in pre | post) : ;; *) PH=pre ;; esac
+echo main > $F/base_ref
+rm -f $F/final_failures.txt $F/final_validated_tree
+if [ -n \"$SIG\" ]; then
+  NODE=${SIG%%|*}
+  REST=${SIG#*|}
+  WHY=\"$NODE failed (${REST%%|*}): ${REST#*|}\"
+  printf '%s' \"$WHY\" | cut -c1-600 > $F/stuck_reason.md
+  printf '%s' \"$WHY\" | cut -c1-300 > /tmp/fabro/merge_block_reason
+  printf '%s' \"$WHY\" | cut -c1-300 > /tmp/fabro/needs_human_reason
+  jq -nc --arg p \"$PH\" '{context_updates:{final_ok:false,final_route:(if $p == \"post\" then \"needs_human\" else \"stuck\" end),phase:$p}}'
+  exit 0
+fi
+if git diff --quiet origin/main HEAD; then
+  echo 'refusing to open a pull request: the branch is identical to origin/main, so this run changed nothing. Every commit on it is a stage checkpoint touching no repository file.' > $F/stuck_reason.md
+  jq -nc --arg p \"$PH\" '{context_updates:{final_ok:false,final_route:\"stuck\",phase:$p}}'
+  exit 0
+fi
+WFB=$(for C in $(git rev-list --no-merges origin/main..HEAD); do git diff-tree --no-commit-id --name-only -r \"$C\" -- .github/workflows/ | sed 's/^/'\"$C\"' /'; done)
+if [ -n \"$WFB\" ]; then
+  { echo 'refusing to open a pull request: a commit on this branch changes a file under .github/workflows/, and the sandbox token cannot push that. The operator lands it over SSH or grants the workflow scope.'; echo \"$WFB\"; } > $F/stuck_reason.md
+  jq -nc --arg p \"$PH\" '{context_updates:{final_ok:false,final_route:\"stuck\",phase:$p}}'
+  exit 0
+fi
+RC=0
+./.fabro/setup.sh > $F/validate_output.log 2>&1 && ./.fabro/ci.sh >> $F/validate_output.log 2>&1 || RC=$?
+TREE=$(git rev-parse 'HEAD^{tree}')
+if [ $RC = 0 ]; then
+  echo \"$TREE final\" > $F/validated_tree
+  echo \"$TREE\" > $F/final_validated_tree
+  N=$(jq -r .number /tmp/fabro/issue.json)
+  T=$(jq -r .title /tmp/fabro/issue.json | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  CC='^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .'
+  S=$T
+  if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
+    case \"$S\" in
+      '['*)
+        W=${S#?}
+        W=${W%%]*}
+        W=$(printf '%s' \"$W\" | tr 'A-Z' 'a-z')
+        case \"$W\" in
+          bug) W=fix ;;
+          feature | enhancement) W=feat ;;
+          documentation) W=docs ;;
+          performance) W=perf ;;
+          chore | task) W=chore ;;
+        esac
+        case \"$W\" in
+          feat | fix | docs | chore | refactor | test | ci | build | perf | revert)
+            REST=${S#?}
+            REST=${REST#*]}
+            REST=$(printf '%s' \"$REST\" | sed 's/^[[:space:]]*//')
+            S=\"$W: $REST\"
+            ;;
+        esac
+        ;;
+    esac
+    if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then
+      TYPE=
+      L=$(jq -r '[.labels[].name] | join(\",\")' /tmp/fabro/issue.json 2>/dev/null | tr 'A-Z' 'a-z' || true)
+      case \",$L,\" in
+        *,bug,*) TYPE=fix ;;
+        *,enhancement,* | *,feature,*) TYPE=feat ;;
+        *,documentation,* | *,docs,*) TYPE=docs ;;
+        *,performance,*) TYPE=perf ;;
+      esac
+      if [ -n \"$TYPE\" ]; then S=\"$TYPE: $S\"; fi
+      if ! printf '%s' \"$S\" | grep -qE \"$CC\"; then S='chore: '$S; fi
+    fi
+  fi
+  SUBJ=$(printf '%s' \"$S\" | awk -v maxd=$((72 - ${#N} - 4)) '{ if (length($0) <= maxd) { print $0; exit } t = substr($0, 1, maxd); st = maxd - 11; if (st < 1) st = 1; for (i = maxd; i >= st; i--) { if (substr(t, i, 1) == \" \") { print substr(t, 1, i - 1); exit } } print t }')
+  SUBJ=$(printf '%s' \"$SUBJ\" | sed 's/[[:space:]]*$//')
+  printf '%s (#%s)' \"$SUBJ\" \"$N\" > $F/commit_subject.txt
+  echo >> $F/commit_subject.txt
+  cp $F/commit_subject.txt $F/pr_title.txt
+  B=$(jq -r .body /tmp/fabro/issue.json 2>/dev/null || true)
+  FIRST=$(printf '%s' \"$B\" | awk 'BEGIN { RS = \"\" } /^[[:space:]]*#/ { next } { para = \"\"; for (i = 1; i <= NF; i++) { line = $i; sub(/^[[:space:]]*[-*+][[:space:]]+/, \"\", line); sub(/^[[:space:]]*[0-9]+[.)][[:space:]]+/, \"\", line); sub(/^[[:space:]]*#+[[:space:]]+/, \"\", line); if (para == \"\") para = line; else para = para \" \" line } if (para != \"\" && length(para) <= 500) { print para; exit } }')
+  if [ -n \"$FIRST\" ]; then
+    { printf '%s' \"$FIRST\"; echo; echo; echo 'Resolves #'$N; } > $F/commit_body.md
+  else
+    echo 'Resolves #'$N': '$T > $F/commit_body.md
+  fi
+  echo '- ./.fabro/setup.sh && ./.fabro/ci.sh green after the final merge with origin/main' > $F/validation.md
+  { echo '## Summary'; echo; echo '<!-- fabro:commit-body:start -->'; cat $F/commit_body.md; echo '<!-- fabro:commit-body:end -->'; echo; cat $F/completed.md 2>/dev/null || true; echo '## Validation'; echo; cat $F/validation.md; } > $F/pr_body.md
+  jq -r '.body // \"\"' /tmp/fabro/issue.json | awk '/^## Post-deploy checks$/{s=1; next} s && /^## /{s=0} s && /^- [[] []] /{print}' > $F/post_items.txt
+  if [ -s $F/post_items.txt ]; then { echo; echo '## Post-deploy checks'; echo; echo 'Not checked by the agents. Verify after deploy.'; echo; cat $F/post_items.txt; } >> $F/pr_body.md; fi
+  OK=yes
+  grep -qE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .' $F/commit_subject.txt || OK=no
+  grep -q '^Resolves #' $F/commit_body.md || OK=no
+  grep -q 'fabro:commit-body:start' $F/pr_body.md || OK=no
+  if [ \"$OK\" != yes ]; then
+    echo 'refusing to open a pull request: the commit subject or body could not be derived in the shape the merge node needs.' > $F/stuck_reason.md
+    jq -nc --arg p \"$PH\" '{context_updates:{final_ok:false,final_route:\"stuck\",phase:$p}}'
+    exit 0
+  fi
+  jq -nc --arg p \"$PH\" '{context_updates:{final_ok:true,final_route:\"pr\",phase:$p}}'
+  exit 0
+fi
+awk 'BEGIN { e = sprintf(\"%c\", 27) } { gsub(e \"[[][0-9;]*[A-Za-z]\", \"\"); gsub(/[[:cntrl:]]/, \"\"); sub(/^[[:space:]]+/, \"\"); sub(/[[:space:]]+$/, \"\") } /^FAIL[[:space:]]/ || /^FAILED[[:space:]]/ || /^ERROR[[:space:]]/ || /^--- FAIL: / || /^test .* [.][.][.] FAILED$/ { if (!seen[$0]++) print substr($0, 1, 200) }' $F/validate_output.log | head -30 > $F/final_failures.txt
+FF=$(cat $F/final_fix_attempts 2>/dev/null || echo 0)
+case \"$FF\" in '' | *[!0-9]*) FF=0 ;; esac
+DONE=$(cat $F/iterations 2>/dev/null || echo 0)
+case \"$DONE\" in '' | *[!0-9]*) DONE=0 ;; esac
+CAP=$(jq length $F/tasks.json 2>/dev/null || echo 0)
+case \"$CAP\" in '' | *[!0-9]*) CAP=1 ;; esac
+CAP=$((CAP * 3))
+if [ $CAP -gt 24 ]; then CAP=24; fi
+if [ \"$PH\" = pre ] && [ \"$FF\" = 0 ] && [ $DONE -lt $CAP ]; then
+  echo 1 > $F/final_fix_attempts
+  jq -n --rawfile f $F/final_failures.txt --rawfile log $F/validate_output.log '
+    def nl: [10] | implode;
+    ($f + (if $f == \"\" then \"no failing test name was recognised; the log tail is below.\" else \"\" end) + nl + nl + ($log | .[-3000:])) as $why
+    | [{ id: \"final_fix\", title: \"Make the full suite pass\", body: (\"The Final validation failed after every Task passed and origin/main was merged in, so it is not a flake: \" + nl + nl + $why), acceptance: [\"./.fabro/setup.sh && ./.fabro/ci.sh exits 0 on the branch\"], files: [], covers: [], context: (\"## Done when\" + nl + nl + \"- ./.fabro/setup.sh && ./.fabro/ci.sh exits 0, with the failures below gone.\" + nl + nl + $why), source: \"final_fix\", round: 0, status: \"open\", iterations: 0, misses: 0, final_fix: true }]' > $F/final_fix_task.json
+  jq -s '.[0] + .[1]' $F/tasks.json $F/final_fix_task.json > $F/tasks.new.json 2>/dev/null && mv $F/tasks.new.json $F/tasks.json
+  rm -f $F/final_fix_task.json
+  echo 'final validation is red; one final_fix Task appended, and the loop runs it' >&2
+  jq -nc --arg p \"$PH\" '{context_updates:{final_ok:false,final_route:\"fix\",phase:$p}}'
+  exit 0
+fi
+{ echo 'Final validation (./.fabro/setup.sh && ./.fabro/ci.sh, after origin/main was merged in) failed'$([ \"$FF\" = 0 ] && echo ' and the one automatic fix turn is spent' || echo ' again after the automatic fix turn')'. Failing tests:'; cat $F/final_failures.txt; } > $F/stuck_reason.md
+if [ \"$PH\" = pre ]; then
+  jq -nc --arg p \"$PH\" '{context_updates:{final_ok:false,final_route:\"stuck\",phase:$p}}'
+  exit 0
+fi
+cp $F/stuck_reason.md /tmp/fabro/merge_block_reason
+cp $F/stuck_reason.md /tmp/fabro/needs_human_reason
+jq -nc --arg p \"$PH\" '{context_updates:{final_ok:false,final_route:\"needs_human\",phase:$p}}'"]
+
+    // copy: ralph.criterion_checks
+    criterion_checks [label="Run the criterion checks", shape=parallelogram, timeout="30m", output_schema="routing",
+        script="F=/tmp/fabro
+R=$F/review
+mkdir -p $R $F/checks
+rm -f $R/criterion_checks.md $F/criterion_checks_tree $F/checks/*.log
+N=$(jq length $F/criterion_checks.json 2>/dev/null || echo 0)
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+WHY=''
+if [ \"$N\" = 0 ]; then WHY='the plan named no allowlisted check'; fi
+if [ -z \"$WHY\" ] && [ \"$(cat $F/review_extra 2>/dev/null || true)\" = pending ]; then WHY='this is the extra review pass, and no Refuter reads the result'; fi
+if [ -z \"$WHY\" ] && ! command -v timeout >/dev/null 2>&1; then WHY='the sandbox has no timeout command'; fi
+if [ -z \"$WHY\" ] && [ -n \"$(git status --porcelain 2>/dev/null)\" ]; then WHY='the checkout was not clean, so a check could not be told from the run'; fi
+if [ -n \"$WHY\" ]; then
+  echo 'criterion checks: none run: '$WHY >&2
+  echo '{\"context_updates\":{\"criterion_checks_run\":0,\"criterion_checks_ok\":0}}'
+  exit 0
+fi
+HS=$(git rev-parse HEAD)
+TREE=$(git rev-parse 'HEAD^{tree}')
+START=$(date +%s)
+{
+  echo '## Criterion checks'
+  echo
+  echo 'The plan named a command for each criterion below, for evidence .fabro/ci.sh does not give. Each ran in this checkout, on tree '$TREE', right after the Final validation, with a limit of 480 seconds. Exit status 124 is that limit; 126 or 127 means the command or a tool it needs is not installed here.'
+  echo
+} > $R/criterion_checks.md
+RUN=0
+OK=0
+I=0
+while [ $I -lt $N ]; do
+  C=$(jq -r --argjson i $I '.[$i].command' $F/criterion_checks.json)
+  K=$(jq -r --argjson i $I '.[$i].criterion' $F/criterion_checks.json)
+  I=$((I + 1))
+  if [ $(( $(date +%s) - START )) -gt 1200 ]; then
+    { echo '### Check '$I': `'\"$C\"'`'; echo; echo '- criterion: '\"$K\"; echo '- not run: the time for criterion checks was spent'; echo; } >> $R/criterion_checks.md
+    continue
+  fi
+  RC=0
+  timeout 480 sh -c \"$C\" < /dev/null > $F/checks/$I.log 2>&1 || RC=$?
+  RUN=$((RUN + 1))
+  NOTE=''
+  if [ -n \"$(git status --porcelain 2>/dev/null)\" ] || [ \"$(git rev-parse HEAD)\" != \"$HS\" ]; then
+    git reset -q --hard \"$HS\" || true
+    git clean -qfd || true
+    NOTE='the command changed the checkout; the change was reverted, and this result is not evidence'
+  fi
+  if [ $RC = 0 ] && [ -z \"$NOTE\" ]; then OK=$((OK + 1)); fi
+  {
+    echo '### Check '$I': `'\"$C\"'`'
+    echo
+    echo '- criterion: '\"$K\"
+    echo '- exit status: '$RC
+    if [ -n \"$NOTE\" ]; then echo '- '\"$NOTE\"; fi
+    echo '- output, the last 60 of '$(wc -l < $F/checks/$I.log | tr -d ' ')' lines:'
+    echo
+    echo '```'
+    tail -n 60 $F/checks/$I.log | cut -c1-400
+    echo '```'
+    echo
+  } >> $R/criterion_checks.md
+done
+echo \"$TREE\" > $F/criterion_checks_tree
+echo 'criterion checks: '$RUN' of '$N' run, '$OK' exited 0' >&2
+jq -nc --argjson r $RUN --argjson o $OK '{context_updates:{criterion_checks_run:$r,criterion_checks_ok:$o}}'"]
+
+    // copy: ralph.hygiene
+    hygiene [label="Diff hygiene counters", shape=parallelogram, timeout="5m",
+        script="set -e
+mkdir -p /tmp/fabro/review
+cat > /tmp/fabro/hygiene.sh <<'HYGIENE_SH'
+B=$(cat /tmp/fabro/base_ref)
+R=/tmp/fabro/review
+W=/tmp/fabro/_hygiene
+O=$R/hygiene.json
+rm -rf $W && mkdir -p $W $R
+rm -f $O $R/hygiene_reason.txt
+herr() {
+  jq -n --arg why \"$1\" '{version:1, config:\"default\", error:$why, tamper:{}, erosion:{}, blocking:[\"hygiene_error\"], hits:[], cleared:[], samples:[]}' > $O
+  echo 'The diff-hygiene counters could not be computed ('\"$1\"'), so the merge is refused.' > $R/hygiene_reason.txt
+  exit 0
+}
+jq -n '{erosion_mode:\"report\", erosion_threshold:3, erosion_thresholds:{},
+  test_paths:[\"(^|/)(tests?|__tests__|spec)/\", \"_test[.][a-z]+$\", \"[.](test|spec)[.][a-z]+$\", \"(^|/)test_[^/]*[.]py$\"],
+  exclude_paths:[\"(^|/)(package-lock[.]json|yarn[.]lock|pnpm-lock[.]yaml|bun[.]lockb?|Cargo[.]lock|poetry[.]lock|uv[.]lock)$\", \"[.]min[.](js|css)$\", \"(^|/)(dist|build|vendor|node_modules)/\"]}' > $W/default.json
+CFG=default
+cp $W/default.json $W/cfg.json
+if git cat-file -e \"origin/$B:.fabro/hygiene.json\" 2>/dev/null; then
+  CFG=repo
+  if ! git show \"origin/$B:.fabro/hygiene.json\" > $W/repo.json 2>/dev/null || ! jq -s -e 'length == 1 and (.[0] | type) == \"object\"' $W/repo.json >/dev/null 2>&1 || ! jq -s '.[0] + .[1]' $W/default.json $W/repo.json > $W/cfg.json 2>/dev/null || [ \"$(jq -r '(.erosion_mode == \"report\" or .erosion_mode == \"block\")
+        and ((.erosion_threshold | type) == \"number\")
+        and ((.erosion_thresholds | type) == \"object\") and all(.erosion_thresholds[]; type == \"number\")
+        and ((.test_paths | type) == \"array\") and ((.test_paths | length) > 0)
+        and all(.test_paths[]; type == \"string\")
+        and ((.exclude_paths | type) == \"array\") and all(.exclude_paths[]; type == \"string\")' $W/cfg.json 2>/dev/null)\" != true ]; then
+    CFG=invalid
+    cp $W/default.json $W/cfg.json
+  fi
+fi
+TP=$(jq -r '.test_paths | map(\"(\" + . + \")\") | join(\"|\")' $W/cfg.json)
+EX=$(jq -r '.exclude_paths | map(\"(\" + . + \")\") | join(\"|\")' $W/cfg.json)
+git diff -U0 --no-color --no-ext-diff \"origin/$B...HEAD\" > $W/diff 2>/dev/null || herr 'git diff against the base failed'
+CC=$(git diff --name-only \"origin/$B...HEAD\" 2>/dev/null | grep -cxE '[.]fabro/(hygiene[.]json|test[.]toml|ci[.]sh|scout[.]toml)' || true)
+awk -v tp=\"$TP\" -v ex=\"$EX\" '
+function istest(f) { return tp != \"\" && f ~ tp }
+function skipped(f) { return ex != \"\" && f ~ ex }
+function assertish(f) { return istest(f) || f ~ /[.]rs$/ }
+function emit(c, f, n, t) { print c S f S n S t }
+function trim(s) { gsub(/^ +| +$/, \"\", s); return s }
+function isassert(t,  s) {  # #62: not a comment line, a Rust #[expect( / #![expect( lint attribute, or the word assertion(s)/asserted/asserts in prose
+  if (t ~ COMMENT) return 0
+  s = t; gsub(/#!?[[]expect[(]/, \" \", s); gsub(PROSE, \" \", s)
+  return s ~ ASSERT
+}
+function akey(s) { gsub(WS, \"\", s); return s }
+function subjmatch(rs, es,  c) {  # equal, or rs a member or attribute of es; `outbox` never matches `out` (#38)
+  if (rs == \"\" || es == \"\") return 0
+  if (rs == es) return 1
+  if (index(rs, es) == 1) { c = substr(rs, length(es) + 1, 1); if (c == \".\" || c == \"[\") return 1 }
+  return 0
+}
+function eqsubj(t,  s, p, q) {  # subject of an added `assert x == y`, `expect(x).toEqual(...)` or `assert_eq!(x, ...)`; empty for any other added line (#38)
+  if (match(t, /expect[(][^()]*[)][.]to(Be|Equal|StrictEqual|HaveBeenCalledWith|HaveBeenCalledTimes|HaveBeenLastCalledWith|HaveBeenNthCalledWith|HaveBeenCalledOnceWith|HaveBeenCalledExactlyOnceWith)[(]/)) { s = substr(t, RSTART + 7); p = index(s, \")\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /(assert_eq!|assertEqual|assertEquals)[(]/)) { s = substr(t, RSTART + RLENGTH); p = index(s, \",\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /assert +/)) {
+    s = substr(t, RSTART + RLENGTH); q = index(s, \"==\")
+    if (q < 2 || substr(s, q - 1, 1) ~ /[!<>=]/ || substr(s, q + 2, 1) == \"=\") return \"\"
+    return trim(substr(s, 1, q - 1))
+  }
+  return \"\"
+}
+function rsubj(t,  s, p, q) {  # subject a removed assertion checked: isinstance arg, expect arg, equality left side, else the expression
+  if (match(t, /isinstance *[(]/)) { s = substr(t, RSTART + RLENGTH); p = index(s, \",\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /expect[(]/)) { s = substr(t, RSTART + RLENGTH); p = index(s, \")\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /(assert_eq!|assertEqual|assertEquals)[(]/)) { s = substr(t, RSTART + RLENGTH); p = index(s, \",\"); if (p > 0) s = substr(s, 1, p - 1); return trim(s) }
+  if (match(t, /assert +/)) {
+    s = substr(t, RSTART + RLENGTH); q = index(s, \"==\")
+    if (q > 0 && substr(s, q - 1, 1) !~ /[!<>=]/ && substr(s, q + 2, 1) != \"=\") s = substr(s, 1, q - 1)
+    return trim(s)
+  }
+  return \"\"
+}
+function flush(  i, j, k, h, g, e, ok) {
+  for (i = 1; i <= rn; i++) {
+    k = rk[i]; h = rh[i]
+    for (j = AN[k]; j >= 1; j--) { g = AH[k, j]; if (g == h || HA[g] > RC[g]) break }  # #62: an addition in another hunk is a move only from that hunk surplus
+    if (j >= 1) { HA[g]--; AH[k, j] = AH[k, AN[k]]; AN[k]--; moved[i] = 1; continue }
+    ok = 0
+    for (j = 1; j <= EQL[h]; j++) {  # #38: a removal the added equality assertion of this hunk covers by subject is not a removal
+      e = EQS[h, j]
+      if (subjmatch(rsj[i], e)) {
+        if (!((h, e) in EQUSED)) { EQUSED[h, e] = 1; if (HA[h] > 0) HA[h]-- }  # spent, so it cannot also net here
+        ok = 1; break
+      }
+    }
+    if (!ok) RU[h]++
+    cov[i] = ok
+  }
+  for (i = 1; i <= rn; i++) { h = rh[i]; if (!moved[i] && !cov[i]) lost(h, i) }  # #92: the lines no addition accounts for, first
+  for (i = 1; i <= rn; i++) { h = rh[i]; if (!moved[i] && cov[i] && (XT[h] || EM[h] + HA[h] < RU[h])) { XT[h] = 1; lost(h, i) } }
+}
+function lost(h, i) {  # #92: the first RU - HA lines of a hunk are counted; its others are listed and not counted
+  if (HA[h] >= RU[h]) return
+  if (EM[h] + HA[h] < RU[h]) { EM[h]++; emit(\"asserts_removed\", rf[i], rl[i], rt[i]) }
+  else emit(\"asserts_removed_also\", rf[i], rl[i], rt[i])
+}
+function same(t,  s, a, b, p) {
+  if (match(t, /expect[(][^()]*[)][.]to(Be|Equal|StrictEqual)[(][^()]*[)]/)) {
+    s = substr(t, RSTART, RLENGTH)
+    a = substr(s, 8); a = substr(a, 1, index(a, \")\") - 1)
+    p = index(s, \").to\"); b = substr(s, p + 4); b = substr(b, index(b, \"(\") + 1); b = substr(b, 1, length(b) - 1)
+    if (trim(a) == trim(b)) return 1
+  }
+  if (match(t, /(assert_eq!|assertEqual|assertEquals)[(][^(),]*,[^(),]*[)]/)) {
+    s = substr(t, RSTART, RLENGTH)
+    s = substr(s, index(s, \"(\") + 1); s = substr(s, 1, length(s) - 1)
+    p = index(s, \",\")
+    if (trim(substr(s, 1, p - 1)) == trim(substr(s, p + 1))) return 1
+  }
+  if (match(t, /assert +[a-zA-Z0-9_.]+ *== *[a-zA-Z0-9_.]+ *($|,|#)/)) {
+    s = substr(t, RSTART + 6, RLENGTH - 6); sub(/ *($|,|#)$/, \"\", s)
+    p = index(s, \"==\")
+    if (trim(substr(s, 1, p - 1)) == trim(substr(s, p + 2))) return 1
+  }
+  return 0
+}
+BEGIN {
+  S = sprintf(\"%c\", 31); rn = 0; hid = 0; del = 0; head = 0
+  WS = \"^[ \" sprintf(\"%c\", 9) \"]+|[ \" sprintf(\"%c\", 9) \"]+$\"
+  SKIP_ANY = \"#[[]ignore[]]|@pytest[.]mark[.](skip|xfail)|pytest[.](skip|xfail)[(]|@unittest[.]skip|@(Disabled|Ignore)([^a-zA-Z]|$)\"
+  SKIP_TEST = \"(^|[^a-zA-Z0-9_])(it|describe|test|context|suite)[.](skip|only|todo)[(]|(^|[^a-zA-Z0-9_.])x(it|describe|test)[(]\"
+  ASSERT = \"(^|[^a-zA-Z0-9_])assert[a-zA-Z_]*[ .(!]|(^|[^a-zA-Z0-9_.])expect[(]\"
+  PROSE = \"(^|[^a-zA-Z0-9_])assert(ion|ions|ed|s|ing)([^a-zA-Z0-9_(!]|$)\"
+  COMMENT = \"^[ \" sprintf(\"%c\", 9) \"]*(//|/[*]|[*]( |/|$)|#( |$)|--( |$))\"
+  TAUT = \"(^|[^a-zA-Z0-9_.])expect[(] *(true|false|null|undefined|[0-9]+) *[)]|(^|[^a-zA-Z0-9_])assert +(True|1 *== *1) *($|,|#)|assert![(] *true *[)]\"
+  BROAD = \"except +(Exception|BaseException)( |:|$)|except *:|catch *([(][^)]*[)])? *[{] *[}]\"
+  TYPE = \"#[ ]*type: *ignore|[ (]as any([^a-zA-Z0-9_]|$)|as unknown as|@ts-ignore|@ts-expect-error|cast[(] *Any\"
+  LINT = \"eslint-disable|noqa|#!?[[]allow[(]|pylint: *disable|biome-ignore\"
+  UNWRAP = \"[.]unwrap[(][)]|[.]expect[(]\"
+  TODO = \"(^|[^a-zA-Z0-9_])(TODO|FIXME|XXX)([^a-zA-Z0-9_]|$)\"
+  LINKED = \"#[0-9]+|/issues/[0-9]+\"
+}
+/^diff --git / { head = 1; del = 0; file = \"\"; oldf = \"\"; next }
+head && /^--- / { oldf = substr($0, 7); next }
+head && /^[+][+][+] / {
+  if ($0 == \"+++ /dev/null\") { file = oldf; del = 1; if (istest(oldf) && !skipped(oldf)) emit(\"tests_deleted\", oldf, \"\", \"file deleted\") }
+  else file = substr($0, 7)
+  next
+}
+/^@@ / {
+  hid++; head = 0
+  split($0, p, \" \")
+  split(substr(p[2], 2), q, \",\"); ol = q[1] + 0
+  split(substr(p[3], 2), q, \",\"); nl = q[1] + 0
+  next
+}
+head { next }
+/^[+]/ {
+  t = substr($0, 2)
+  if (!skipped(file)) {
+    if (t ~ SKIP_ANY || (istest(file) && t ~ SKIP_TEST)) emit(\"skips_added\", file, nl, t)
+    if (assertish(file) && isassert(t)) { HA[hid]++; k = akey(t); AN[k]++; AH[k, AN[k]] = hid; e = eqsubj(t); if (e != \"\") { EQL[hid]++; EQS[hid, EQL[hid]] = e } }
+    if (assertish(file) && (t ~ TAUT || same(t))) emit(\"tautologies_added\", file, nl, t)
+    if (t ~ BROAD) emit(\"broad_except\", file, nl, t)
+    if (t ~ TYPE) emit(\"type_escape\", file, nl, t)
+    if (t ~ LINT) emit(\"lint_disable\", file, nl, t)
+    if (file ~ /[.]rs$/ && !istest(file) && t ~ UNWRAP) emit(\"rust_unwrap\", file, nl, t)
+    if (t ~ TODO && t !~ LINKED) emit(\"todo_unlinked\", file, nl, t)
+  }
+  nl++
+  next
+}
+/^-/ {
+  t = substr($0, 2)
+  if (!del && !skipped(file) && assertish(file) && isassert(t)) { RC[hid]++; rn++; rf[rn] = file; rl[rn] = ol; rt[rn] = t; rh[rn] = hid; rk[rn] = akey(t); rsj[rn] = rsubj(t) }
+  ol++
+  next
+}
+END { flush() }
+' $W/diff > $W/hits || herr 'the counter program failed'
+RL=$W/rulings.json
+echo '[]' > $RL
+if [ -f $R/hygiene_rulings.json ] && jq -s -e 'if length == 1 and (.[0] | type) == \"array\" and all(.[0][]; type == \"object\" and (.counter | type) == \"string\" and (.file | type) == \"string\" and (.ruling == \"legitimate\" or .ruling == \"tampering\" or .ruling == \"unsure\") and (.count | type) == \"number\" and (.texts | type) == \"array\" and all(.texts[]; type == \"string\")) then .[0] else false end' $R/hygiene_rulings.json > $W/rulings_ok.json 2>/dev/null; then
+  mv $W/rulings_ok.json $RL
+fi
+jq -Rn --slurpfile cfg $W/cfg.json --slurpfile rl $RL --arg config \"$CFG\" --argjson cc \"${CC:-0}\" --arg base \"$(git rev-parse \"origin/$B\" 2>/dev/null)\" --arg head \"$(git rev-parse HEAD 2>/dev/null)\" '
+  ([31] | implode) as $S
+  | $cfg[0] as $c
+  | [\"tests_deleted\", \"skips_added\", \"asserts_removed\", \"tautologies_added\"] as $TK
+  | [\"broad_except\", \"type_escape\", \"lint_disable\", \"rust_unwrap\", \"todo_unlinked\"] as $EK
+  | $rl[0] as $rules
+  | [\"tests_deleted\", \"asserts_removed\"] as $RK
+  | [inputs | split($S) | {counter: .[0], file: .[1], line: (.[2] | tonumber? // null), text: .[3]}] as $all
+  | [$all[] | select(.counter != \"asserts_removed_also\")] as $h
+  | (reduce ($all[] | select(.counter | IN($TK[], \"asserts_removed_also\"))) as $e ({n: 0, at: {}, hits: []};
+      (if $e.counter == \"asserts_removed_also\" then [\"asserts_removed\", 0] else [$e.counter, 1] end) as [$c, $one]
+      | ($c + $S + $e.file) as $k
+      | ($e.text | gsub(\"^[[:space:]]+|[[:space:]]+$\"; \"\")) as $t
+      | if .at[$k] != null then .at[$k] as $i | .hits[$i] |= (.count += $one | .texts += [$t])
+        else .at[$k] = .n | .n += 1 | .hits += [{counter: $c, file: $e.file, count: $one, texts: [$t]}]
+        end) | .hits) as $hits
+  | ([$hits[] | . as $hit
+      | [$rules[] | select(.counter == $hit.counter and .file == $hit.file)] as $own
+      | . + {ok: ((.counter | IN($RK[])) and ($own | length) == 1 and $own[0].ruling == \"legitimate\"
+        and .count <= $own[0].count
+        and all($hit.texts | unique[]; . as $t
+          | ([$hit.texts[] | select(. == $t)] | length) <= ([$own[0].texts[] | select(. == $t)] | length)))}]) as $judged
+  | ([$judged[] | select(.ok)]) as $cleared
+  | (reduce $TK[] as $k ({}; .[$k] = ([$h[] | select(.counter == $k)] | length)) | .config_changed = $cc) as $tamper
+  | (reduce $EK[] as $k ({}; .[$k] = ([$h[] | select(.counter == $k)] | length))) as $erosion
+  | ( [$tamper | to_entries[] | select(.value > 0) | .key]
+      + (if $c.erosion_mode == \"block\"
+         then [$erosion | to_entries[] | select(.value > ($c.erosion_thresholds[.key] // $c.erosion_threshold)) | .key]
+         else [] end)
+      + (if $config == \"invalid\" then [\"config_invalid\"] else [] end) ) as $allblock
+  | [$allblock[] | . as $k
+      | [$judged[] | select(.counter == $k)] as $js
+      | select(($js | length) == 0 or ($js | map(.ok) | index(false) != null))] as $blocking
+  | {version: 1, base: $base, head: $head, config: $config,
+     erosion_mode: $c.erosion_mode, erosion_threshold: $c.erosion_threshold,
+     tamper: $tamper, erosion: $erosion, blocking: $blocking,
+     hits: [$judged[] | del(.ok)], cleared: [$cleared[] | {counter: .counter, file: .file, count: .count}], test_paths: $c.test_paths,
+     samples: ($h | map(. + {o: (if (.counter | IN($TK[])) then 0 else 1 end)}) | sort_by(.o) | map(del(.o)) | .[:20] | map(.text |= .[0:160]))}
+' $W/hits > $W/out.json 2>/dev/null || herr 'the counters could not be summarised'
+mv $W/out.json $O
+jq -r '. as $r | (.blocking | length) as $n | if $n == 0 then empty else
+  \"Diff hygiene blocks the merge: \"
+  + ([.blocking[] | . as $k | $k + (if $k == \"config_invalid\" then \"\" else \"=\" +
+      (if $k == \"tests_deleted\" or $k == \"asserts_removed\"
+       then (([$r.hits[] | select(.counter == $k and ((.file as $f | any($r.cleared[]; .counter == $k and .file == $f)) | not))] | map(.count) | add) // 0 | tostring)
+       else ((($r.tamper + $r.erosion)[$k]) | tostring) end) end)] | join(\", \"))
+  + (if .config == \"invalid\" then \". The base branch .fabro/hygiene.json is not valid, so the defaults were used\" else \"\" end)
+  + \". Samples: \"
+  + ([.samples[]
+      | select(.counter as $c | $r.blocking | index($c) != null)
+      | select(.counter as $c | .file as $f | any($r.cleared[]; .counter == $c and .file == $f) | not)
+      | .file + (if .line then \":\" + (.line | tostring) else \"\" end) + \" \" + .counter + \" `\" + .text + \"`\"] | .[:5] | join(\"; \"))
+  + (if ($r.cleared | length) > 0 then \" (\" + (($r.cleared | length) | tostring) + \" hit(s) cleared by refuter rulings)\" else \"\" end)
+  end' $O > $R/hygiene_reason.txt 2>/dev/null || true
+[ -s $R/hygiene_reason.txt ] || rm -f $R/hygiene_reason.txt
+exit 0
+HYGIENE_SH
+sh /tmp/fabro/hygiene.sh
+jq -r '\"diff hygiene: config \" + .config + \", blocking [\" + (.blocking | join(\", \")) + \"]\"' /tmp/fabro/review/hygiene.json"]
+
+    // copy: ralph.open_pr
+    open_pr [label="Push and open PR", shape=parallelogram, output_schema="routing",
+        script="set -e
+B=$(git rev-parse --abbrev-ref HEAD)
+git push -u origin HEAD
+R=\"+refs/heads/$B:refs/remotes/origin/$B\"
+git config --get-all remote.origin.fetch | grep -qxF \"$R\" || git config --add remote.origin.fetch \"$R\"
+git fetch origin \"$R\"
+N=$(jq -r .number /tmp/fabro/issue.json)
+T=$(cat /tmp/fabro/pr_title.txt)
+if [ -s /tmp/fabro/loop_exhausted ]; then
+  { echo; echo '### Unmet criteria'; echo; echo 'The loop ran out before these Tasks passed, so this pull request must not merge automatically:'; echo; jq -r '.[] | select(.status != \"passed\") | \"- \" + (.title // .id) + \" (\" + (.status // \"open\") + \")\"' /tmp/fabro/tasks.json; } >> /tmp/fabro/pr_body.md
+fi
+rm -f /tmp/fabro/draft_reason.md /tmp/fabro/pr_create.err /tmp/fabro/stuck_reason.md
+DRAFT=false
+if [ -e /tmp/fabro/pr_draft ]; then DRAFT=true; fi
+PR_URL=$(gh pr view \"$B\" --json url --jq .url 2>/dev/null || true)
+if [ -z \"$PR_URL\" ]; then
+  if [ $DRAFT = true ]; then
+    gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md --draft 2> /tmp/fabro/pr_create.err || cat /tmp/fabro/pr_create.err >&2
+  else
+    gh pr create --head \"$B\" --title \"$T\" --body-file /tmp/fabro/pr_body.md 2> /tmp/fabro/pr_create.err || cat /tmp/fabro/pr_create.err >&2
+  fi
+  PR_URL=$(gh pr view \"$B\" --json url --jq .url 2>/dev/null || true)
+elif [ $DRAFT = true ]; then
+  gh pr ready \"$B\" --undo || echo 'could not turn the open PR back into a draft' >&2
+  gh pr edit \"$B\" --body-file /tmp/fabro/pr_body.md || echo 'could not update the PR body' >&2
+fi
+if [ -z \"$PR_URL\" ]; then
+  { echo 'no PR is visible for head branch '\"$B\"' after create; refusing to report an empty pr_url'; cat /tmp/fabro/pr_create.err 2>/dev/null || true; } > /tmp/fabro/stuck_reason.md
+  head -n 1 /tmp/fabro/stuck_reason.md >&2
+  exit 1
+fi
+echo $PR_URL | sed 's|.*/||' > /tmp/fabro/pr_number
+gh pr edit \"$B\" --add-label agent-authored || { sleep 10; gh pr edit \"$B\" --add-label agent-authored; } || echo 'could not add the agent-authored label, so merge_gate will refuse this PR and report why' >&2
+if jq -e '[.labels[]?.name] | index(\"architecture\") != null' /tmp/fabro/issue.json > /dev/null 2>&1; then
+  gh label create architecture --color 0E8A16 --description 'Architecture review: a deepening candidate (ADR 0012)' 2>/dev/null || true
+  gh pr edit \"$B\" --add-label architecture || echo 'could not add the architecture label' >&2
+fi
+if [ $DRAFT = true ]; then
+  { echo 'The final validation failed twice on the same code, so this run stopped before review and merge. Draft PR '$PR_URL' holds the work that passed review; a human makes CI pass and marks it ready for review.'; if [ -s /tmp/fabro/final_failures.txt ]; then echo; echo 'Failing tests:'; echo; echo '```'; cat /tmp/fabro/final_failures.txt; echo '```'; fi; } > /tmp/fabro/draft_reason.md
+else
+  gh issue edit $N --remove-label agent-in-progress --add-label Review || true
+  gh issue comment $N --body 'Agent run complete. PR: '$PR_URL || true
+fi
+echo '{\"context_updates\":{\"pr_url\":\"'$PR_URL'\",\"pr_draft\":'$DRAFT'}}'"]
+
+    // copy: ralph.file_remainder
+    file_remainder [label="File the remainder issue", shape=parallelogram,
+        script="R=/tmp/fabro/remainder.json
+if [ ! -s $R ] || [ \"$(jq length $R 2>/dev/null || echo 0)\" = 0 ]; then echo 'no remainder: every task fit the task budget'; exit 0; fi
+if [ -s /tmp/fabro/remainder_issue ]; then echo 'remainder already filed as #'$(cat /tmp/fabro/remainder_issue); exit 0; fi
+N=$(jq -r .number /tmp/fabro/issue.json)
+T=$(jq -r .title /tmp/fabro/issue.json)
+PR=$(cat /tmp/fabro/pr_number)
+K=$(jq length $R)
+RUN=$(basename \"$(git rev-parse --abbrev-ref HEAD)\")
+gh label create agent-remainder --color C5DEF5 2>/dev/null || true
+gh label create ai-generated --color EDEDED 2>/dev/null || true
+gh label create priority --color B60205 2>/dev/null || true
+{
+  echo '<!-- fabro:remainder parent='$N' pr='$PR' -->'
+  echo
+  if [ -s /tmp/fabro/remainder_kind ]; then
+    echo 'This issue continues #'$N'. fabro run `'$RUN'` stopped before it finished: an operator chose Accept partial at its rescue gate, and PR #'$PR' carries the tasks that landed. The '$K' task(s) below are not done. The first one may be partly in that PR.'
+  else
+    echo 'This issue continues #'$N'. fabro run `'$RUN'` implemented the first 8 decomposed tasks in PR #'$PR' and stopped at its task budget (fabro-workflows ADR 0011). The '$K' task(s) below were not started.'
+  fi
+  echo
+  echo 'It is held with `agent-remainder`. The scheduler adds `agent` and `priority` as soon as PR #'$PR' merges, so it is worked next. If PR #'$PR' is closed without merging, the scheduler labels it `agent-stuck` instead. Do not add `agent` by hand before the PR merges.'
+  echo
+  echo 'These tasks were decomposed against an older `main`. Decompose again against the current `main`; treat them as a starting point, not a plan.'
+  echo
+  echo '## Remaining tasks'
+  echo
+  jq -r '.[] | \"### \" + .title + ([10]|implode) + ([10]|implode) + .body + ([10]|implode)' $R
+} > /tmp/fabro/remainder_body.md
+AR=''
+if jq -e '[.labels[]?.name] | index(\"architecture\") != null' /tmp/fabro/issue.json > /dev/null 2>&1; then
+  gh label create architecture --color 0E8A16 --description 'Architecture review: a deepening candidate (ADR 0012)' 2>/dev/null || true
+  AR='--label architecture'
+fi
+URL=$(gh issue create --title \"Remainder of #$N: $T\" --body-file /tmp/fabro/remainder_body.md --label agent-remainder --label ai-generated $AR 2>/dev/null) || URL=''
+M=$(printf '%s' \"$URL\" | sed 's|.*/||')
+case \"$M\" in
+  '' | *[!0-9]*)
+    echo 'WARNING: could not file the remainder issue; listing the unstarted tasks on the PR instead' >&2
+    {
+      echo 'fabro could not file a remainder issue for this PR. These tasks from #'$N' were NOT implemented:'
+      echo
+      jq -r '.[] | \"- \" + .title' $R
+    } > /tmp/fabro/remainder_comment.md
+    gh pr comment \"$PR\" --body-file /tmp/fabro/remainder_comment.md || true
+    exit 0 ;;
+esac
+echo $M > /tmp/fabro/remainder_issue
+{
+  if [ -s /tmp/fabro/remainder_kind ]; then
+    echo 'This PR carries the tasks of #'$N' that landed before an operator chose Accept partial at the rescue gate. The other '$K' are in #'$M'.'
+  else
+    echo 'This PR implements the first 8 decomposed tasks of #'$N', plus any extra-review follow-ups. The other '$K' are in #'$M'.'
+  fi
+  echo
+  echo 'The scheduler queues #'$M' with `priority` as soon as this PR merges, whether it is merged automatically or by hand.'
+} > /tmp/fabro/remainder_comment.md
+gh pr comment \"$PR\" --body-file /tmp/fabro/remainder_comment.md || true
+echo 'remainder filed as #'$M"]
+
+    // copy: ralph.pr_handoff
+    pr_handoff [label="Hand off to review and merge", shape=parallelogram,
+        script="set -e
+PR=$(cat /tmp/fabro/pr_number)
+gh pr view $PR --json number,title,body,url,state,isCrossRepository,headRefName,baseRefName,headRefOid,labels,closingIssuesReferences > /tmp/fabro/pr.json
+jq -r .baseRefName /tmp/fabro/pr.json > /tmp/fabro/base_ref
+jq -r .headRefName /tmp/fabro/pr.json > /tmp/fabro/head_ref
+jq '[.closingIssuesReferences[]?]' /tmp/fabro/pr.json > /tmp/fabro/linked_issues.json
+B=$(cat /tmp/fabro/base_ref)
+git fetch origin \"$B\" 2>/dev/null || true
+git merge-base origin/\"$B\" HEAD > /tmp/fabro/run_base_sha 2>/dev/null || git rev-parse HEAD > /tmp/fabro/run_base_sha
+echo 0 > /tmp/fabro/auto_merge_repo
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo '')
+if [ -n \"$REPO\" ] && [ -n \"${FABRO_API_URL:-}\" ] && [ -n \"${FABRO_API_TOKEN:-}\" ]; then
+  if curl -fsS -H \"Authorization: Bearer $FABRO_API_TOKEN\" $FABRO_API_URL/automations > /tmp/fabro/autorows.json 2>/dev/null; then
+    D=$(jq -r --arg r \"$REPO\" '[.data[] | select(.workflow == \"pr-review\" and .target.repo == $r)] | .[0].description // \"\"' /tmp/fabro/autorows.json)
+    case \"$D\" in
+      *auto_merge*) T=$(printf '%s' \"$D\" | grep -o 'auto_merge=[A-Za-z0-9_-]*' | tail -1 | cut -d= -f2)
+                    case \"$T\" in true) echo 1 > /tmp/fabro/auto_merge_repo ;; esac ;;
+      *) echo 1 > /tmp/fabro/auto_merge_repo ;;
+    esac
+  fi
+fi
+echo post > /tmp/fabro/phase
+MM=watch
+if false; then
+  XP='[\"(^|/)(package-lock[.]json|yarn[.]lock|pnpm-lock[.]yaml|bun[.]lockb?|Cargo[.]lock|poetry[.]lock|uv[.]lock)$\", \"[.]min[.](js|css)$\", \"(^|/)(dist|build|vendor|node_modules)/\"]'
+  EX=$(printf '%s' \"$XP\" | jq -r 'map(\"(\" + . + \")\") | join(\"|\")')
+  if git diff --numstat --no-renames \"origin/$B...HEAD\" > /tmp/fabro/numstat.txt 2>/dev/null && RES=$(awk -v ex=\"$EX\" '{ p = $0; sub(/^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+/, \"\", p); if (ex != \"\" && p ~ ex) next; n++; if ($1 != \"-\") l += $1 + $2 } END { print l + 0, n + 0 }' /tmp/fabro/numstat.txt); then
+    FL=${RES% *}; FF=${RES#* }
+    if [ \"$FL\" -le 200 ] && [ \"$FF\" -le 10 ]; then MM=queue
+    else gh pr comment $PR --body \"fast-path: this change is $FL lines in $FF files, over the fast-lane ceiling of 200 lines or 10 files, so this run merges it after CI instead of queueing it.\" || true; fi
+  fi
+fi
+echo $MM > /tmp/fabro/merge_mode
+echo handoff ready"]
+
+    // copy: ralph.merge_prep
+    merge_prep [label="Prepare the merge stage", shape=parallelogram, timeout="5m",
+        output_schema="routing",
+        script="set -e
+mkdir -p /tmp/fabro /tmp/fabro/review /tmp/fabro/feedback
+PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+case \"$PR\" in '' | *[!0-9]*) echo 'review-merge entry contract: /tmp/fabro/pr_number must hold a positive integer' >&2; exit 1;; esac
+for f in base_ref head_ref pr.json linked_issues.json run_base_sha; do
+  test -s /tmp/fabro/$f || { echo \"review-merge entry contract: /tmp/fabro/$f is missing or empty\" >&2; exit 1; }
+done
+AM=$(cat /tmp/fabro/auto_merge_repo 2>/dev/null || echo 1)
+case \"$AM\" in 1) ;; *) AM=0 ;; esac
+H=\"${FABRO_AUTO_MERGE:-0}\"
+case \"$H\" in 1) ;; *) H=0 ;; esac
+if [ \"$AM\" = 1 ] && [ \"$H\" = 1 ]; then
+  echo 1 > /tmp/fabro/auto_merge
+  : > /tmp/fabro/auto_merge_off_reason
+elif [ \"$AM\" != 1 ]; then
+  echo 0 > /tmp/fabro/auto_merge
+  echo 'Auto-merge is switched off for this repository. Flip it with ops/fabro-auto-merge-switch.sh.' > /tmp/fabro/auto_merge_off_reason
+else
+  echo 0 > /tmp/fabro/auto_merge
+  echo 'Auto-merge is switched off host-wide: the FABRO_AUTO_MERGE server variable is not 1. Re-arm it with ops/fabro-auto-merge-switch.sh host on.' > /tmp/fabro/auto_merge_off_reason
+fi
+echo 0 > /tmp/fabro/fix_attempts
+echo 0 > /tmp/fabro/recheck_done
+rm -f /tmp/fabro/delivery /tmp/fabro/review/resolve_base.md /tmp/fabro/review/resolve_conflicts.txt
+MM=$(cat /tmp/fabro/merge_mode 2>/dev/null || echo watch)
+case \"$MM\" in queue) ;; *) MM=watch ;; esac
+echo \"$MM\" > /tmp/fabro/merge_mode
+gh pr edit \"$PR\" --remove-label merge-on-green >/dev/null 2>&1 || true
+git rev-parse 'HEAD^{tree}' > /tmp/fabro/review_entry_tree 2>/dev/null || rm -f /tmp/fabro/review_entry_tree
+cat > /tmp/fabro/render.jq <<'RENDER_JQ'
+def NL: [10] | implode;
+def nz($a): ($a // []);
+def shipped: ($kind != \"needs-human\") or ($delivery == \"delivered\") or ($delivery == \"pushed_on_stop\") or ($delivery == \"unchanged\");
+def sev: (.severity // \"info\");
+def QT: [34] | implode;
+def tx($v): ($v // \"\") | tostring | gsub(\"[[:space:]]+\"; \" \");
+def ruling_line:
+  \"- **\" + tx(.ruling) + \"** - \" + tx(.counter) + \" in \" + tx(.file) + \" - \" + (tx(.basis) | if . == \"\" then \"none\" else . end)
+  + (tx(.evidence) as $e | if $e == \"\" then \"\" elif .basis == \"replacement\" then \" \" + $e else \" \" + QT + $e + QT end)
+  + \" - \" + tx(.reason)
+  + (if .ruling == \"tampering\" then \" - scenario: \" + tx(.scenario) else \"\" end);
+def loc:
+  (nz(.files) | if length > 0 then .[0] else null end) as $f
+  | if $f == null then \"\" else \"**\" + $f + (if .line then \":\" + (.line|tostring) else \"\" end) + \"** - \" end;
+def one($axis):
+  \"- \" + (if .id then \"**\" + .id + \" | \" + $axis + \"** - \" else \"\" end) + loc
+  + \"[\" + sev + \"] \" + (.message // .description // \"(no description)\")
+  + (if (.suggestion // \"\") != \"\" then NL + \"  - _Suggested:_ \" + .suggestion else \"\" end);
+
+($std[0] // {}) as $S | ($spc[0] // {}) as $P | ($fix[0] // {}) as $F | nz($cm[0]) as $C | ($cfix[0] // {}) as $X | ($ref[0] // {}) as $RF | ($hyg[0] // {}) as $HG | ($hrl[0] // [] | if type == \"array\" then [ .[] | select(type == \"object\") ] else [] end) as $HR
+| ( (nz($S.findings) | map(. + {_a:\"standards\"}))
+  + (nz($P.findings) | map(. + {_a:\"spec\"}))
+  + (nz($F.own_findings) | map(. + {_a:\"correctness\"})) ) as $all
+| [
+  ( if $kind == \"merged\"
+    then \"## Merged automatically\"
+       + (if ($F.risk // null) != null then \" - risk \" + ($F.risk|tostring) + \"/5\" else \"\" end)
+    elif $kind == \"needs-human\"
+    then \"## AI PR review stopped - human needed\"
+    elif $kind == \"queued\"
+    then \"## AI PR review complete - queued to merge on green\"
+       + (if ($F.risk // null) != null then \" - risk \" + ($F.risk|tostring) + \"/5\" else \"\" end)
+    else \"## AI PR review complete\"
+       + (if ($F.risk // null) != null then \" - risk \" + ($F.risk|tostring) + \"/5\" else \"\" end) end ),
+  \"\",
+  \"Reviewed HEAD: `\" + $head + \"`\",
+  \"\",
+  ( if $kind == \"needs-human\" then \"**Reason:** \" + $reason
+    else ($F.summary // \"_No summary was produced._\") end ),
+  \"\",
+  \"| Axis | Verdict |\",
+  \"| --- | --- |\",
+  \"| Standards | \" + ($S.decision // \"_did not run_\") + \" |\",
+  \"| Spec | \" + ($P.decision // \"_did not run_\") + \" |\",
+  \"| Review and fix | \" + ($F.outcome // \"_did not run_\") + \" |\",
+  \"| Refuter | \" + (if $rverdict == \"\" then \"_did not run_\" else $rverdict end) + \" |\",
+  \"| Diff hygiene | \" + (if ($HG.blocking | type) != \"array\" then \"_did not run_\" elif ($HG.blocking | length) == 0 then (if ($HG.cleared | type) == \"array\" and ($HG.cleared | length) > 0 then \"clear (\" + ($HG.cleared | length | tostring) + \" ruled)\" else \"clear\" end) else \"blocked: \" + ($HG.blocking | join(\", \")) end) + \" |\",
+  \"\",
+  \"### Unmet criteria\", \"\",
+  ( if ($RF.criteria | type) != \"array\" then \"_The Refuter did not return a result, so no criterion was checked._\"
+    else ( [ $RF.criteria[] | select(.status != \"met\") | \"- **\" + .status + \"** - \" + .criterion + \" - \" + .evidence ]
+           | if length == 0 then \"_None: the Refuter found every criterion met._\" else join(NL) end ) end ),
+  \"\",
+  \"### Findings\", \"\",
+  ( $all | if length == 0 then \"_None recorded._\" else [ .[] | one(._a) ] | join(NL) end ),
+  \"\",
+  ( if shipped then \"### Fixes applied\" else \"### Fixes made in this run but NOT pushed\" end ), \"\",
+  ( if (shipped | not) and ((nz($F.fixes_applied) | length) > 0)
+    then \"_The run stopped before these reached the PR branch. They exist only in the run's sandbox, and the branch does not have them._\", \"\"
+    elif $delivery == \"pushed_on_stop\" and ((nz($F.fixes_applied) | length) > 0)
+    then \"_Pushed to the PR branch when the run stopped, before the run finished checking them. GitHub CI on this head is the check that counts._\", \"\"
+    else empty end ),
+  ( nz($F.fixes_applied)
+    | if length == 0 then \"_None recorded._\"
+      else [ .[] | (. + {id: (.finding_id // .id)}) | one(.axis // \"fix\") ] | join(NL) end ),
+  \"\",
+  \"### Not fixed and why\", \"\",
+  ( nz($F.not_fixed)
+    | if length == 0 then \"_None recorded._\"
+      else [ .[] | \"- **\" + (if .finding_id then .finding_id + \": \" else \"\" end)
+                 + .original_finding + \"** - \" + .reason ] | join(NL) end ),
+  \"\",
+  \"### Refuter\", \"\",
+  ( if ($RF.criteria | type) != \"array\" then \"_The refuter did not return a result._\"
+    else ( [ $RF.criteria[] | \"- **\" + .status + \"** - \" + .criterion + \" - \" + .evidence ]
+         + [ (nz($RF.defects) | .[]) | \"- **defect** - \" + .file + (if (.line | type) == \"number\" then \":\" + (.line | tostring) else \"\" end) + \" - \" + .scenario ]
+         + [ $HR[] | select(.ruling == \"tampering\") | \"- **defect** - \" + tx(.file) + \" - \" + tx(.scenario) + \" (ruled tampering)\" ] )
+         | join(NL) end ),
+  \"\",
+  ( ($rfx[0] // {}) as $RFX
+    | if ($RFX.addressed | type) == \"array\"
+      then \"One fix turn ran after the refuter's first verdict: \" + (($RFX.addressed | length) | tostring) + \" addressed, \" + ((nz($RFX.not_addressed) | length) | tostring) + \" not.\"
+      else empty end ),
+  ( if ($pd | length) > 0
+    then [ \"### Post-deploy checks\", \"\", \"Not checked by the agents. Verify after deploy.\", \"\", ($pd | rtrimstr(NL)), \"\" ] | join(NL)
+    else empty end ),
+  \"### Diff hygiene\", \"\",
+  ( if ($HG.tamper | type) != \"object\" then \"_The counters did not run._\"
+    elif ($HG.error | type) == \"string\" then \"_The counters could not be computed: \" + $HG.error + \"._\"
+    else [ ($HG.tamper + ($HG.erosion // {})) | to_entries[] | select(.value > 0) | .key + \" \" + (.value | tostring) ] as $nz
+      | (if ($nz | length) == 0 then \"No counter fired.\" else \"Counters: \" + ($nz | join(\", \")) + \". Erosion mode: \" + ($HG.erosion_mode // \"report\") + \".\" end)
+        + (if $HG.config == \"invalid\" then \" The base branch .fabro/hygiene.json is not valid, so the defaults were used and the merge is refused.\" else \"\" end)
+        + (if (($HG.tamper.config_changed // 0) > 0) then \" This pull request changes .fabro/hygiene.json, .fabro/test.toml, .fabro/ci.sh or .fabro/scout.toml, so it is not auto-merged.\" else \"\" end)
+        + ( nz($HG.samples) | if length == 0 then \"\"
+            else NL + NL + ([ .[] | \"- `\" + .file + (if .line then \":\" + (.line | tostring) else \"\" end) + \"` \" + .counter + \" - `\" + .text + \"`\" ] | join(NL)) end ) end )
+    + (if ($HR | length) == 0 then \"\" else NL + NL + \"Refuter rulings on the hits:\" + NL + NL + ([ $HR[] | ruling_line ] | join(NL)) end),
+  \"\",
+  ( if $kind == \"queued\"
+    then [ \"### Merge queue\", \"\",
+           \"Every merge gate passed. This run did not wait for CI. The merge queue (ADR 0024) squash-merges this PR when the checks on head `\" + $qhead[0:8] + \"` are green and GitHub reports it mergeable. If CI fails, the queue reruns the failed jobs once, then labels the PR `ai-review-needs-human`. Any push that the queue did not make cancels this approval.\", \"\" ] | join(NL)
+    else empty end ),
+  \"### Commits with changes\", \"\",
+  ( $C | if length == 0 then \"_This review made no file changes._\"
+         else [ .[] | (if shipped then \"- [`\" + .short + \"`](\" + $prurl + \"/commits/\" + .sha + \")\" else \"- `\" + .short + \"`\" end)
+                    + \" - `\" + .stage + \"` - \" + .stat ] | join(NL) end ),
+  ( if ($X | length) > 0
+    then [ \"\", \"### CI fixes\", \"\",
+           ( (nz($X.checks) | if length == 0 then \"GitHub checks\" else join(\", \") end) as $lbl
+             | \"- **\" + $lbl + \"** - \"
+               + ( if $X.outcome == \"cannot_fix\"
+                   then \"_Could not fix:_ \" + ($X.reason // \"(no reason given)\")
+                   else ($X.summary // \"(no summary given)\") end ) ) ]
+             | join(NL)
+    else empty end ),
+  ( if ($rb | length) > 0
+    then [ \"\", \"### Base re-merge\", \"\", ($rb | rtrimstr(NL)) ] | join(NL)
+    else empty end ),
+  ( if $kind == \"merged\"
+    then [ \"\", \"### Merged\", \"\",
+           \"Squash-merged as `\" + $subject + \"`.\"
+             + (if $issue == \"\" then \"\" else \" Resolves #\" + $issue + \".\" end) ]
+            | join(NL)
+    else empty end ),
+  ( if $kind == \"blocked\"
+    then [ \"\", \"### Not auto-merged\", \"\",
+           \"**Reason:** \" + (if $block == \"\" then \"The merge was blocked, but no reason was recorded.\" else $block end),
+           \"\",
+           \"Everything else about this review stands. Merge it by hand when you are happy with it.\" ]
+            | join(NL)
+    else empty end )
+]
++ (if ($F.notes // \"\") != \"\" then [\"\", \"### Notes\", \"\", $F.notes] else [] end)
+| join(NL)
+RENDER_JQ
+cat > /tmp/fabro/render_comment.sh <<'RENDER_SH'
+K=\"${1:-complete}\"
+R=/tmp/fabro/review
+T=/tmp/fabro/_render
+rm -rf $T && mkdir -p $T
+for f in standards spec fix_result ci_fix_result refute refute_fix hygiene; do
+  if [ -s \"$R/$f.json\" ] && jq -e 'type == \"object\"' \"$R/$f.json\" >/dev/null 2>&1; then cp \"$R/$f.json\" \"$T/$f.json\"; else echo '{}' > \"$T/$f.json\"; fi
+done
+if [ -s \"$R/hygiene_rulings.json\" ] && jq -s -e 'length == 1 and (.[0] | type) == \"array\"' \"$R/hygiene_rulings.json\" >/dev/null 2>&1; then cp \"$R/hygiene_rulings.json\" $T/hygiene_rulings.json; else echo '[]' > $T/hygiene_rulings.json; fi
+if [ -s \"$R/post_deploy.md\" ]; then cp \"$R/post_deploy.md\" $T/post_deploy.md; else : > $T/post_deploy.md; fi
+if [ -s \"$R/resolve_base.md\" ]; then cp \"$R/resolve_base.md\" $T/resolve_base.md; else : > $T/resolve_base.md; fi
+PR_URL=$(cat /tmp/fabro/pr_url 2>/dev/null || echo '')
+BASE=$(cat /tmp/fabro/run_base_sha 2>/dev/null || echo '')
+B=$(cat /tmp/fabro/base_ref 2>/dev/null || echo '')
+X=''
+if [ -n \"$B\" ] && git rev-parse -q --verify \"origin/$B^{commit}\" >/dev/null 2>&1; then X=\"^origin/$B\"; fi
+: > $T/cm.ndjson
+if [ -n \"$BASE\" ]; then
+  for c in $(git rev-list --reverse \"$BASE\"..HEAD $X 2>/dev/null); do
+    git diff-tree --no-commit-id --name-only -r \"$c\" 2>/dev/null | grep -q . || continue
+    SHORT=$(git rev-parse --short=8 \"$c\")
+    STAT=$(git show --stat --format= \"$c\" | tail -1 | sed 's/^ *//')
+    STAGE=$(git log -1 --format=%s \"$c\" | sed 's/^.*): //; s/ ([a-z]*)$//')
+    jq -n --arg short \"$SHORT\" --arg sha \"$c\" --arg stage \"$STAGE\" --arg stat \"$STAT\" '{short:$short,sha:$sha,stage:$stage,stat:$stat}' >> $T/cm.ndjson
+  done
+fi
+jq -s . $T/cm.ndjson > $T/cm.json
+jq -rn -f /tmp/fabro/render.jq --slurpfile std $T/standards.json --slurpfile spc $T/spec.json --slurpfile fix $T/fix_result.json --slurpfile cm $T/cm.json --slurpfile cfix $T/ci_fix_result.json --slurpfile ref $T/refute.json --slurpfile rfx $T/refute_fix.json --rawfile pd $T/post_deploy.md --rawfile rb $T/resolve_base.md --slurpfile hyg $T/hygiene.json --slurpfile hrl $T/hygiene_rulings.json --arg rverdict \"$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || true)\" --arg kind \"$K\" --arg head \"$(git rev-parse HEAD 2>/dev/null || echo unknown)\" --arg reason \"$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)\" --arg block \"$(cat /tmp/fabro/merge_block_reason 2>/dev/null || true)\" --arg subject \"$(cat /tmp/fabro/commit_subject.txt 2>/dev/null || true)\" --arg issue \"$(jq -r '.[0].number // empty' /tmp/fabro/linked_issues.json 2>/dev/null || true)\" --arg prurl \"$PR_URL\" --arg delivery \"$(cat /tmp/fabro/delivery 2>/dev/null || true)\" --arg qhead \"${2:-}\"
+RENDER_SH
+echo '{\"context_updates\":{\"review_merge_outcome\":\"needs_human\",\"merge_mode\":\"'$MM'\"}}'"]
+
+    // copy: ralph.deliver
+    deliver [label="Push and label", shape=parallelogram, output_schema="routing",
+        script="PR=$(cat /tmp/fabro/pr_number)
+H=$(cat /tmp/fabro/head_ref)
+B=$(cat /tmp/fabro/base_ref)
+if git push --force-with-lease origin HEAD:\"$H\"; then
+  echo delivered > /tmp/fabro/delivery
+  gh pr edit $PR --add-label ai-review-complete || echo 'WARNING: could not add the ai-review-complete label. Check that the run token has issues:write.' >&2
+  echo 'The review was delivered and the merge decision did not complete; a human should finish this PR.' > /tmp/fabro/needs_human_reason
+  echo '{\"context_updates\":{\"delivered\":true}}'
+else
+  echo rejected > /tmp/fabro/delivery
+  S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
+  D='The number of commits from this review that were not delivered is unknown.'
+  if git rev-parse -q --verify \"refs/remotes/origin/$H\" >/dev/null && git log --format='%h %s' \"refs/remotes/origin/$H\"..HEAD -- . > /tmp/fabro/undelivered.txt; then
+    if [ -s /tmp/fabro/undelivered.txt ]; then
+      N=$(wc -l < /tmp/fabro/undelivered.txt | tr -d ' ')
+      L=$(paste -s -d ';' /tmp/fabro/undelivered.txt | sed 's/;/; /g')
+      D=\"$N commit(s) from this review were not delivered: $L. Apply them by hand if you want them.\"
+    else
+      D='The review left no commit that the PR branch lacks.'
+    fi
+  fi
+  case \"$S\" in
+    MERGED) M=\"The PR was merged by hand before the review finished, so the push was refused. $D\" ;;
+    CLOSED) M=\"The PR was closed before the review finished, so the push was refused. $D\" ;;
+    *) M='git push --force-with-lease was rejected: the PR branch moved while this run was working. Not overwriting.' ;;
+  esac
+  printf '%s' \"$M\" > /tmp/fabro/merge_block_reason
+  printf '%s' \"$M\" > /tmp/fabro/needs_human_reason
+  echo '{\"context_updates\":{\"delivered\":false}}'
+fi"]
+
+    // copy: ralph.merge_gate
+    merge_gate [label="Evaluate merge eligibility", shape=parallelogram, output_schema="routing",
+        script="PR=$(cat /tmp/fabro/pr_number)
+F=/tmp/fabro/review/fix_result.json
+E=true
+fail() { E=false; printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; }
+if [ \"$(cat /tmp/fabro/auto_merge 2>/dev/null || echo 0)\" != 1 ]; then fail \"$(cat /tmp/fabro/auto_merge_off_reason 2>/dev/null || echo 'Auto-merge is switched off.')\"; fi
+if [ \"$E\" = true ]; then
+  L=$(gh pr view \"$PR\" --json labels --jq '[.labels[].name] | index(\"agent-authored\") != null' 2>/dev/null || echo bad)
+  if [ \"$L\" != true ]; then fail 'The PR does not carry the agent-authored label, so it is not eligible for automatic merge.'; fi
+fi
+if [ \"$E\" = true ]; then
+  DN=$(gh pr view \"$PR\" --json labels --jq '[.labels[].name] | index(\"do-not-merge\") != null' 2>/dev/null || echo bad)
+  if [ \"$DN\" != false ]; then fail 'The PR carries the do-not-merge label, so a human merges it.'; fi
+fi
+if [ \"$E\" = true ]; then
+  S=$(gh pr view \"$PR\" --json state,isDraft 2>/dev/null || echo '{\"state\":\"bad\"}')
+  ST=$(printf '%s' \"$S\" | jq -r .state)
+  DR=$(printf '%s' \"$S\" | jq -r '.isDraft // false')
+  if [ \"$ST\" != OPEN ] || [ \"$DR\" = true ]; then fail 'The PR is not open or is still a draft, so it cannot be auto-merged.'; fi
+fi
+if [ \"$E\" = true ]; then
+  RD=$(gh pr view \"$PR\" --json reviewDecision --jq .reviewDecision 2>/dev/null || echo bad)
+  if [ \"$RD\" = CHANGES_REQUESTED ]; then fail 'Reviewers have requested changes on this PR.'; fi
+fi
+if [ \"$E\" = true ]; then
+  U=$(jq -r .url /tmp/fabro/pr.json 2>/dev/null || echo '')
+  O=$(printf '%s' \"$U\" | awk -F/ '{print $4}')
+  R=$(printf '%s' \"$U\" | awk -F/ '{print $5}')
+  T=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved}}}}}' -F o=\"$O\" -F r=\"$R\" -F n=\"$PR\" --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo bad)
+  if [ \"$T\" != 0 ]; then fail 'There are unresolved review conversations on this PR.'; fi
+fi
+if [ \"$E\" = true ]; then
+  C=$(gh pr view \"$PR\" --json commits --jq '[.commits[] | select([.authors[].email] | index(\"noreply@fabro.sh\") | not) | .oid] | join(\" \")' 2>/dev/null || echo bad)
+  BR=$(cat /tmp/fabro/base_ref 2>/dev/null || echo bad)
+  H=0
+  if [ \"$C\" = bad ] || [ \"$BR\" = bad ]; then H=1; else
+    for X in $C; do
+      PS=$(git rev-list --parents -n 1 \"$X\" 2>/dev/null | cut -s -d' ' -f3-)
+      if [ -z \"$PS\" ]; then H=1; break; fi
+      for P in $PS; do
+        if ! git merge-base --is-ancestor \"$P\" \"origin/$BR\" 2>/dev/null; then H=1; fi
+      done
+    done
+  fi
+  if [ \"$H\" != 0 ]; then fail 'A commit on this PR was not authored by the automation; a human must merge it.'; fi
+fi
+if [ \"$E\" = true ]; then
+  O=$(jq -r .outcome \"$F\" 2>/dev/null || echo missing)
+  if [ \"$O\" != fixed ] && [ \"$O\" != no_changes_needed ]; then
+    W=$(jq -r '(.summary // \"\") | tostring | gsub(\"[[:space:]]+\"; \" \") | ltrimstr(\" \") | rtrimstr(\" \") | .[0:220]' \"$F\" 2>/dev/null || true)
+    if [ -n \"$W\" ]; then fail \"The review did not end in a mergeable state ($O): $W\"; else fail \"The review did not end in a mergeable state ($O).\"; fi
+  fi
+fi
+if [ \"$E\" = true ]; then
+  R=$(jq -r 'if (.risk | type) == \"number\" and (.risk >= 0) and (.risk <= 3) and ((.risk | floor) == .risk) then .risk else \"bad\" end' \"$F\" 2>/dev/null || echo bad)
+  if [ \"$R\" = bad ]; then fail 'The risk rating is missing or above 3; a human must merge this PR.'; fi
+fi
+if [ \"$E\" = true ]; then
+  NF=$(jq '[.not_fixed[]?] | length' \"$F\" 2>/dev/null || echo 99)
+  if [ \"$NF\" != 0 ]; then fail 'There are unfixed findings; a human must merge this PR.'; fi
+fi
+if [ \"$E\" = true ]; then
+  M=$(jq '[.own_findings[]? | select(.severity == \"error\") | .id] - [.fixes_applied[]?.finding_id] | length' \"$F\" 2>/dev/null || echo 99)
+  if [ \"$M\" != 0 ]; then fail 'The review reported an error-severity finding of its own that its record does not account for, so whether it was fixed cannot be told from the report; a human must merge this PR.'; fi
+fi
+if [ \"$E\" = true ]; then
+  T=$(gh pr view \"$PR\" --json title --jq .title 2>/dev/null || echo '')
+  if ! printf '%s' \"$T\" | grep -qE '^(feat|fix|docs|chore|refactor|test|ci|build|perf|revert)([(][a-z0-9 ._/-]+[)])?[!]?: .'; then fail 'The PR title is not a Conventional Commit, so it cannot be auto-merged.'; fi
+fi
+if [ \"$E\" = true ]; then
+  gh pr view \"$PR\" --json body --jq .body > /tmp/fabro/pr_body_live.md 2>/dev/null || echo > /tmp/fabro/pr_body_live.md
+  awk '/fabro:commit-body:start/{f=1;next} /fabro:commit-body:end/{f=0} f' /tmp/fabro/pr_body_live.md > /tmp/fabro/commit_body.md
+  if [ ! -s /tmp/fabro/commit_body.md ] || ! grep -q '^Resolves #' /tmp/fabro/commit_body.md; then fail 'The PR description has no valid fabro commit-body block; a human must merge this PR.'; fi
+fi
+if [ \"$E\" = true ]; then
+  HB=$(jq -r 'if (.blocking | type) == \"array\" then (.blocking | length) else \"bad\" end' /tmp/fabro/review/hygiene.json 2>/dev/null || echo bad)
+  if [ \"$HB\" != 0 ]; then fail \"$(cat /tmp/fabro/review/hygiene_reason.txt 2>/dev/null || echo 'The diff-hygiene result is missing or invalid, so the merge is refused.')\"; fi
+fi
+if [ \"$E\" = true ]; then
+  HT=$(git rev-parse \"$(jq -r '.head // empty' /tmp/fabro/review/hygiene.json 2>/dev/null)^{tree}\" 2>/dev/null || echo none)
+  if [ \"$HT\" != \"$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo head)\" ]; then fail 'The code changed after the diff-hygiene counters ran (a later stage, such as the refuter, edited the checkout), so the reviewed diff is not the one on the PR and the merge is refused.'; fi
+fi
+if [ \"$E\" = true ]; then
+  RV=$(cat /tmp/fabro/review/refute_verdict 2>/dev/null || echo missing)
+  if [ \"$RV\" != pass ]; then fail \"$(cat /tmp/fabro/review/refute_reason.txt 2>/dev/null || echo 'The refuter did not return a verdict, so the merge is refused.')\"; fi
+fi
+if [ \"$E\" = true ]; then
+  gh pr view \"$PR\" --json title --jq .title > /tmp/fabro/commit_subject.txt
+  git diff --name-only origin/\"$(cat /tmp/fabro/base_ref)\"...HEAD > /tmp/fabro/review/merge_base_files.txt 2>/dev/null || : > /tmp/fabro/review/merge_base_files.txt
+  echo 0 > /tmp/fabro/gh_fix_attempts
+  rm -f /tmp/fabro/ci_rerun_done /tmp/fabro/ci_flaky_rerun_done /tmp/fabro/flaky_tests.txt
+  echo 0 > /tmp/fabro/strict_retry
+  echo $(( $(date +%s) + 3600 )) > /tmp/fabro/merge_deadline
+  echo '{\"context_updates\":{\"merge_eligible\":true}}'
+else
+  echo '{\"context_updates\":{\"merge_eligible\":false}}'
+fi"]
+
+    // copy: ralph.watch_checks
+    watch_checks [label="Watch GitHub checks", shape=parallelogram, timeout="50m", output_schema="routing",
+        script="PR=$(cat /tmp/fabro/pr_number)
+A=$(cat /tmp/fabro/gh_fix_attempts 2>/dev/null || echo 0)
+DL=$(cat /tmp/fabro/merge_deadline 2>/dev/null || echo 0)
+T0=$(date +%s)
+blocked() {
+  printf '%s' \"$1\" > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":true,\"gh_fix_attempts\":'$A'}}'
+  exit 0
+}
+rerun_ok() {
+  NOW=$(date +%s)
+  if [ $((DL - NOW)) -lt \"$1\" ]; then echo 'not rerunning: under '$(($1 / 60))' minutes of the merge budget left'; return 1; fi
+  if [ $((NOW - T0)) -ge \"$2\" ]; then echo \"not rerunning: $3\"; return 1; fi
+  return 0
+}
+rerun_failed() {
+  RERAN=0
+  for RID in $(jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link] | .[]' /tmp/fabro/checks.json 2>/dev/null | sed 's|.*/actions/runs/||; s|/.*||' | sort -u); do
+    case \"$RID\" in '' | *[!0-9]*) continue ;; esac
+    if gh run rerun \"$RID\" --failed < /dev/null; then RERAN=$((RERAN+1)); fi
+  done
+}
+known_flaky() {
+  KF=false
+  KUNK=false
+  KFT=''
+  FRD=/tmp/fabro/flakeradar
+  : > /tmp/fabro/review/known_flaky.md
+  [ -n \"$FLAKERADAR_URL\" ] || return 0
+  KUNK=true
+  B=${FLAKERADAR_URL%/}
+  rm -rf $FRD
+  mkdir -p $FRD
+  jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link | capture(\"github[.]com/(?<repo>[^/]+/[^/]+)/actions/runs/(?<run>[0-9]+)/\") | .repo + \" \" + .run] | unique | .[]' /tmp/fabro/checks.json > $FRD/runs.txt 2>/dev/null || return 0
+  [ -s $FRD/runs.txt ] || { KUNK=false; return 0; }
+  C=$(curl -sS -m 20 -o $FRD/repos.json -w '%{http_code}' \"$B/api/repos\" < /dev/null 2>/dev/null) || C=000
+  [ \"$C\" = 200 ] || { echo \"flakeradar: the repository list returned $C\"; return 0; }
+  while read -r REPO RID; do
+    jq -e --arg r \"$REPO\" 'any(.[]; .name == $r)' $FRD/repos.json > /dev/null 2>&1 || continue
+    gh api \"repos/$REPO/actions/runs/$RID\" --jq .run_attempt > $FRD/att_$RID < /dev/null 2>/dev/null || rm -f $FRD/att_$RID
+  done < $FRD/runs.txt
+  FRT=$(( $(date +%s) + 180 ))
+  [ \"$FRT\" -le $((T0 + 2820)) ] || FRT=$((T0 + 2820))
+  while : ; do
+    WAIT=0
+    while read -r REPO RID; do
+      [ -f $FRD/run_$RID.json ] && continue
+      ATT=$(cat $FRD/att_$RID 2>/dev/null)
+      case \"$ATT\" in '' | *[!0-9]*) continue ;; esac
+      C=$(curl -sS -m 20 -o $FRD/lookup.json -w '%{http_code}' \"$B/api/ci-runs/$RID/failures?repo=$REPO&ci_run_attempt=$ATT\" < /dev/null 2>/dev/null) || C=000
+      if [ \"$C\" = 200 ] && [ \"$(jq -r '.reports.pending' $FRD/lookup.json 2>/dev/null)\" = 0 ]; then mv $FRD/lookup.json $FRD/run_$RID.json; else WAIT=1; fi
+    done < $FRD/runs.txt
+    [ \"$WAIT\" = 1 ] && [ \"$(date +%s)\" -lt \"$FRT\" ] || break
+    sleep 20
+  done
+  IG='[]'
+  if git show \"origin/$(cat /tmp/fabro/base_ref 2>/dev/null):.fabro/scout.toml\" > $FRD/scout.toml 2>/dev/null; then
+    IG=$(fabro-io scout config --file $FRD/scout.toml 2>/dev/null | jq -c '.flaky.ignore_jobs // []' 2>/dev/null)
+    [ -n \"$IG\" ] || IG='[]'
+  fi
+  fabro-io flakeradar classify --checks /tmp/fabro/checks.json --failures-dir $FRD --ignore-jobs \"$IG\" --section /tmp/fabro/review/known_flaky.md > $FRD/classify.json 2>/dev/null || return 0
+  KF=$(jq -r '.known_flaky' $FRD/classify.json 2>/dev/null)
+  KUNK=$(jq -r '.unknown' $FRD/classify.json 2>/dev/null)
+  KFT=$(jq -r '[.checks[].tests[] | .name + (if .issue then \" #\" + (.issue | tostring) else \"\" end)] | unique | join(\", \")' $FRD/classify.json 2>/dev/null | tr -d '\"{}' | tr -d '[:cntrl:]' | cut -c1-160)
+  [ \"$KF\" != true ] || printf '%s' \"$KFT\" > /tmp/fabro/flaky_tests.txt
+  jq -r '.checks[] | \"flakeradar: \" + .name + \": \" + (if .known_flaky then \"known flaky\" else .reason end)' $FRD/classify.json 2>/dev/null | tr -d '{}'
+}
+while : ; do
+  GRACE=$(( $(date +%s) + 300 ))
+  while : ; do
+    NOW=$(date +%s)
+    if [ \"$NOW\" -ge \"$DL\" ]; then
+      printf '%s' 'The 60-minute merge budget ran out with CI still pending, so the pull request was approved and handed to merge-queue.' > /tmp/fabro/merge_block_reason
+      echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"checks_deadline\":true,\"gh_fix_attempts\":'$A'}}'
+      exit 0
+    fi
+    if [ $((NOW - T0)) -ge 2820 ]; then
+      printf '%s' 'CI had not settled after 47 minutes, so the pull request was approved and handed to merge-queue rather than blocking it.' > /tmp/fabro/merge_block_reason
+      echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"checks_deadline\":true,\"gh_fix_attempts\":'$A'}}'
+      exit 0
+    fi
+    gh pr checks \"$PR\" --json name,state,bucket,link > /tmp/fabro/checks.json 2>/dev/null || echo '[]' > /tmp/fabro/checks.json
+    TOTAL=$(jq length /tmp/fabro/checks.json 2>/dev/null || echo 0)
+    PEND=$(jq '[.[] | select(.bucket == \"pending\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
+    if [ \"$TOTAL\" = 0 ]; then
+      if [ \"$NOW\" -ge \"$GRACE\" ]; then blocked 'No CI checks were reported on the PR head within five minutes; a merge with no evidence is refused.'; fi
+    elif [ \"$PEND\" = 0 ]; then
+      break
+    fi
+    sleep 30
+  done
+  BAD=$(jq '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\")] | length' /tmp/fabro/checks.json 2>/dev/null || echo 99)
+  if [ \"$BAD\" = 0 ]; then
+    echo '{\"context_updates\":{\"checks_ok\":true,\"checks_blocked\":false,\"gh_fix_attempts\":'$A'}}'
+    exit 0
+  fi
+  if [ ! -f /tmp/fabro/ci_rerun_done ] && rerun_ok 1800 1200 'this node has already waited 20 minutes'; then
+    : > /tmp/fabro/ci_rerun_done
+    rerun_failed
+    if [ \"$RERAN\" -gt 0 ]; then
+      echo 'reran the failed jobs of '$RERAN' Actions run(s) once; waiting for them before calling ci_fix'
+      sleep 60
+      continue
+    fi
+    echo 'nothing to rerun: no failing check is a GitHub Actions run'
+  fi
+  known_flaky
+  if [ -f /tmp/fabro/ci_flaky_rerun_done ] && [ \"$KF\" != true ] && [ \"$KUNK\" = true ]; then
+    blocked \"CI is still red after a second rerun of known flaky tests ($(cat /tmp/fabro/flaky_tests.txt 2>/dev/null)), and FlakeRadar cannot judge the new attempt, so ci_fix was not run. A human can rerun the failed jobs and merge this PR.\"
+  fi
+  [ \"$KF\" = true ] || break
+  if [ -f /tmp/fabro/ci_flaky_rerun_done ]; then
+    blocked \"CI still fails only on known flaky tests ($KFT) after a second rerun, so ci_fix was not run. A human can rerun the failed jobs and merge this PR.\"
+  fi
+  if ! rerun_ok 900 1800 'this node has already waited 30 minutes'; then
+    blocked \"CI fails only on known flaky tests ($KFT) and there is no time left for a second rerun, so ci_fix was not run. A human can rerun the failed jobs and merge this PR.\"
+  fi
+  : > /tmp/fabro/ci_flaky_rerun_done
+  rerun_failed
+  echo 'every failing check is a known flaky test: reran the failed jobs of '$RERAN' Actions run(s) a second time'
+  sleep 60
+done
+NAMES=$(jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .name] | join(\", \")' /tmp/fabro/checks.json 2>/dev/null || echo unknown)
+if [ \"$A\" -ge 2 ]; then
+  blocked 'CI is still failing after two fix attempts ('\"$NAMES\"'); a human must merge this PR.'
+fi
+A=$((A+1))
+echo $A > /tmp/fabro/gh_fix_attempts
+rm -f /tmp/fabro/review/ci_fix_result.json
+{
+  echo '## Failing GitHub checks'
+  echo
+  echo \"$NAMES\"
+  echo
+  jq -r '[.[] | select(.bucket != \"pass\" and .bucket != \"skipping\") | .link] | .[]' /tmp/fabro/checks.json 2>/dev/null | sed 's|.*/actions/runs/||; s|/.*||' | sort -u | while IFS= read -r RID; do
+      case \"$RID\" in '' | *[!0-9]*) continue ;; esac
+      echo '### Failing log for run '$RID
+      echo
+      gh run view \"$RID\" --log-failed 2>/dev/null | tail -c 20000 || echo '(logs unavailable)'
+      echo
+    done
+  cat /tmp/fabro/review/known_flaky.md 2>/dev/null
+} > /tmp/fabro/feedback/ci_fix.md
+echo '{\"context_updates\":{\"checks_ok\":false,\"checks_blocked\":false,\"gh_fix_attempts\":'$A'}}'
+exit 0"]
+
+    // copy: ralph.merge
+    merge [label="Squash merge", shape=parallelogram, output_schema="routing", timeout="50m",
+        script="PR=$(cat /tmp/fabro/pr_number)
+DL=$(cat /tmp/fabro/merge_deadline 2>/dev/null || echo 0)
+block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
+settle() {
+  G=$(( $(date +%s) + 120 ))
+  while : ; do
+    NOW=$(date +%s)
+    if [ \"$NOW\" -ge \"$DL\" ]; then return 0; fi
+    gh pr checks \"$PR\" --json name,bucket > /tmp/fabro/merge_checks.json 2>/dev/null || true
+    jq -e type /tmp/fabro/merge_checks.json > /dev/null 2>&1 || echo '[]' > /tmp/fabro/merge_checks.json
+    T=$(jq length /tmp/fabro/merge_checks.json 2>/dev/null || echo 0)
+    P=$(jq '[.[] | select(.bucket == \"pending\")] | length' /tmp/fabro/merge_checks.json 2>/dev/null || echo 0)
+    if [ \"$T\" = 0 ]; then
+      if [ \"$NOW\" -ge \"$G\" ]; then return 0; fi
+    elif [ \"$P\" = 0 ]; then
+      return 0
+    fi
+    echo 'waiting for CI on the current head ('$P' pending of '$T')'
+    sleep 15
+  done
+}
+S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
+if [ \"$S\" != OPEN ]; then
+  echo 'PR '$PR' was no longer open at merge time; assuming it was handled elsewhere. No failure to report.' > /tmp/fabro/merge_block_reason
+  echo '{\"context_updates\":{\"merge_state\":\"closed\"}}'
+  exit 0
+fi
+W=0
+while [ $W -lt 6 ]; do
+  M=$(gh pr view \"$PR\" --json mergeable --jq .mergeable 2>/dev/null || echo UNKNOWN)
+  if [ \"$M\" != UNKNOWN ]; then break; fi
+  echo 'mergeability is UNKNOWN; waiting for GitHub to recompute the merge ref after the last push'
+  W=$((W + 1))
+  sleep 5
+done
+settle
+A=1
+MERGED=0
+while :; do
+  if gh pr merge \"$PR\" --squash --delete-branch=false --subject \"$(cat /tmp/fabro/commit_subject.txt)\" --body-file /tmp/fabro/commit_body.md > /tmp/fabro/merge_attempt.log 2>&1; then
+    MERGED=1
+    break
+  fi
+  cat /tmp/fabro/merge_attempt.log
+  if [ $A -ge 3 ]; then break; fi
+  if grep -q 'branch was modified' /tmp/fabro/merge_attempt.log; then
+    echo 'attempt '$A' lost the branch-moved race; re-reading the PR and retrying'
+    A=$((A + 1))
+    sleep 10
+    continue
+  fi
+  if grep -q 'policy prohibits' /tmp/fabro/merge_attempt.log; then
+    echo 'attempt '$A' was refused by branch protection; waiting for the required checks on the current head'
+    settle
+    A=$((A + 1))
+    continue
+  fi
+  if grep -q 'not mergeable' /tmp/fabro/merge_attempt.log; then
+    echo 'attempt '$A' was told the PR is not mergeable moments after a push; letting GitHub catch up and retrying'
+    A=$((A + 1))
+    sleep 10
+    continue
+  fi
+  break
+done
+if [ \"$MERGED\" = 1 ]; then
+  echo '{\"context_updates\":{\"merge_state\":\"merged\"}}'
+  exit 0
+fi
+B=$(cat /tmp/fabro/base_ref)
+SR=$(cat /tmp/fabro/strict_retry 2>/dev/null || echo 0)
+git fetch origin \"$B\" 2>/dev/null || true
+if git merge-base --is-ancestor origin/\"$B\" HEAD 2>/dev/null; then
+  if grep -q 'branch was modified' /tmp/fabro/merge_attempt.log; then
+    block 'GitHub rejected the squash merge three times with a branch-moved error, while this branch is NOT behind its base. That is the head-push race, not a problem with the change: the PR is very likely mergeable as it stands, and a human can merge it directly.'
+  elif grep -q 'policy prohibits' /tmp/fabro/merge_attempt.log; then
+    block 'Branch protection on the base refused the merge: a required status check was not successful on the head commit at merge time. The head moved after CI was confirmed (a push by ci_fix or the base re-merge, or by someone outside this run), so the required checks had to start over; this node waited for them and still ran out of attempts. The change itself was approved and CI passed on the reviewed head, so a human can merge this PR once the checks on the current head are green.'
+  elif grep -q 'not mergeable' /tmp/fabro/merge_attempt.log; then
+    block 'GitHub refused the squash merge three times as not mergeable, while this branch is NOT behind its base. It cannot be a conflict: the base is an ancestor of this branch, so there is nothing to conflict with. This is the head-push race seen through the GitHub mergeability cache, which can report the PREVIOUS head as mergeable while the mutation evaluates the new one. The PR is very likely mergeable as it stands, and a human can merge it directly.'
+  else
+    R=$(grep -v '^$' /tmp/fabro/merge_attempt.log | tail -3)
+    block 'The squash merge was rejected and this run could not complete it; a human must merge this PR. GitHub said: '\"$R\"
+  fi
+  exit 1
+fi
+if [ \"$SR\" = 0 ]; then
+  echo '{\"context_updates\":{\"merge_state\":\"stale\"}}'
+  exit 0
+fi
+echo 'The branch is still behind the base after a re-merge attempt; a human must merge this PR.' > /tmp/fabro/merge_block_reason
+echo '{\"context_updates\":{\"merge_state\":\"blocked\"}}'
+exit 0"]
+
+    // copy: ralph.remerge_base
+    remerge_base [label="Re-merge base tip", shape=parallelogram, output_schema="routing",
+        script="B=$(cat /tmp/fabro/base_ref)
+H=$(cat /tmp/fabro/head_ref)
+RA=$(cat /tmp/fabro/resolve_base_attempts 2>/dev/null || echo 0)
+echo 1 > /tmp/fabro/strict_retry
+block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
+git fetch origin \"$B\"
+if git rebase origin/\"$B\"; then
+  if git push --force-with-lease origin HEAD:\"$H\"; then
+    echo '{\"context_updates\":{\"remerge_ok\":true,\"remerge_conflict\":false}}'
+  else
+    git rebase --abort 2>/dev/null || true
+    block 'The re-merge push was rejected because the branch moved; a human must merge this PR.'
+    echo '{\"context_updates\":{\"remerge_ok\":false,\"remerge_conflict\":false}}'
+  fi
+else
+  git diff --name-only --diff-filter=U > /tmp/fabro/review/resolve_conflicts.txt 2>/dev/null || : > /tmp/fabro/review/resolve_conflicts.txt
+  git rebase --abort 2>/dev/null || true
+  if [ \"$RA\" = 0 ]; then
+    echo 1 > /tmp/fabro/resolve_base_attempts
+    PI=$(cat /tmp/fabro/post_iterations 2>/dev/null || echo 0)
+    case \"$PI\" in '' | *[!0-9]*) PI=0 ;; esac
+    echo $((PI + 1)) > /tmp/fabro/post_iterations
+    git rev-parse HEAD > /tmp/fabro/resolve_base_pre
+    echo 'remerge_base: the rebase onto origin/'$B' conflicted in '$(grep -c . /tmp/fabro/review/resolve_conflicts.txt)' file(s); aborted, and resolve_base redoes it as a merge'
+    echo '{\"context_updates\":{\"remerge_ok\":false,\"remerge_conflict\":true}}'
+  else
+    block 'A conflict appeared after the review; the base moved substantially, and a human must resolve it.'
+    echo '{\"context_updates\":{\"remerge_ok\":false,\"remerge_conflict\":false}}'
+  fi
+fi
+exit 0"]
+
+    // copy: ralph.resolve_base
+    resolve_base [label="Resolve the base merge", class="merge-resolve", timeout="60m", max_retries=1, prompt="@prompts/resolve_base.md.j2"]
+
+    // copy: ralph.resolve_base_gate
+    resolve_base_gate [label="Verify the base merge", shape=parallelogram, output_schema="routing", timeout="5m",
+        script="B=$(cat /tmp/fabro/base_ref)
+PRE=$(cat /tmp/fabro/resolve_base_pre 2>/dev/null || echo '')
+CF=$(paste -s -d ',' /tmp/fabro/review/resolve_conflicts.txt 2>/dev/null | sed 's/,/, /g')
+block() { printf '%s' \"$1\" > /tmp/fabro/merge_block_reason; printf '%s' \"$1\" > /tmp/fabro/needs_human_reason; }
+rm -f /tmp/fabro/review/resolve_base.md
+RV=$(jq -r '.visit // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+SV=$(jq -r '.visit // empty' /tmp/fabro/.io/served.json 2>/dev/null)
+ROK=probe
+if [ -z \"$RV\" ] || [ \"$SV\" != \"$RV\" ]; then ROK=no; fi
+if [ \"$ROK\" = probe ]; then
+  ROK=$(jq -r --argjson req '[\"base_ref\",\"resolve_base_pre\",\"resolve_conflicts.txt\",\"pr\"]' 'if (. as $r | all($req[]; ($r.inputs[.] // null) as $e | ($e != null) and ($e.status == \"ok\") and (($e.parts == 0) or (([range(1; ($e.parts + 1))] - ($e.served | map(select(. >= 1)))) | length == 0)))) then \"yes\" else \"no\" end' /tmp/fabro/.io/served.json 2>/dev/null || echo no)
+fi
+WHY=''
+if [ \"$ROK\" != yes ]; then WHY='the merge agent did not finish (no Input receipt)'; fi
+if [ -z \"$WHY\" ] && [ -e .git/MERGE_HEAD ]; then WHY='a merge was left in progress'; fi
+if [ -z \"$WHY\" ] && git diff --name-only --diff-filter=U | grep -q . ; then WHY='unmerged paths remain'; fi
+if [ -z \"$WHY\" ]; then
+  : > /tmp/fabro/resolve_scan.txt
+  if [ -n \"$PRE\" ]; then git diff --name-only \"$PRE\" HEAD >> /tmp/fabro/resolve_scan.txt 2>/dev/null || true; fi
+  git diff --name-only HEAD >> /tmp/fabro/resolve_scan.txt 2>/dev/null || true
+  git ls-files --others --exclude-standard >> /tmp/fabro/resolve_scan.txt 2>/dev/null || true
+  while IFS= read -r f; do
+    [ -f \"$f\" ] || continue
+    if grep -qI '<<<<<<< ' \"$f\"; then WHY=\"conflict markers were left in $f\"; break; fi
+  done < /tmp/fabro/resolve_scan.txt
+fi
+if [ -z \"$WHY\" ] && ! git merge-base --is-ancestor origin/\"$B\" HEAD 2>/dev/null; then WHY='the branch still does not contain origin/'\"$B\"' (the agent aborted the merge)'; fi
+if [ -n \"$WHY\" ]; then
+  git merge --abort 2>/dev/null || true
+  if [ -n \"$PRE\" ]; then git reset -q --hard \"$PRE\" && git clean -fdq || echo 'could not reset the merge agent edits' >&2; fi
+  block \"A conflict appeared after the review (in: $CF), and the merge agent could not resolve it: $WHY. The branch was left at the reviewed head; a human must resolve it.\"
+  echo '{\"context_updates\":{\"resolve_ok\":false}}'
+else
+  printf '%s' \"The base moved after the review and conflicted with this branch (in: $CF). A merge agent merged origin/$B into the branch and resolved the conflict; the final validation, the diff-hygiene counters and the review then ran again on the result.\" > /tmp/fabro/review/resolve_base.md
+  echo '{\"context_updates\":{\"resolve_ok\":true}}'
+fi"]
+
+    // copy: ralph.ci_task
+    ci_task [label="Turn red CI into a Task", shape=parallelogram, timeout="2m", output_schema="routing",
+        script="F=/tmp/fabro
+PI=$(cat $F/post_iterations 2>/dev/null || echo 0)
+case \"$PI\" in '' | *[!0-9]*) PI=0 ;; esac
+if [ \"$PI\" -ge 2 ]; then
+  echo 'CI is red after 2 post-PR Iterations' > $F/merge_block_reason
+  echo 'CI is red after 2 post-PR Iterations' > $F/needs_human_reason
+  jq -nc '{context_updates:{ci_route:\"stop\",phase:\"post\"}}'
+  exit 0
+fi
+echo post > $F/phase
+LOGP=$F/feedback/ci_fix.md
+if [ ! -s $LOGP ]; then echo 'watch_checks recorded no failing-check log, so the Task names the checks only.' > $LOGP; fi
+jq -n --argjson pi \"$PI\" --rawfile log $LOGP '
+  def nl: [10] | implode;
+  [{ id: (\"ci\" + (($pi + 1) | tostring)),
+     title: \"Make the failing checks pass\",
+     body: (\"The pull request is open and its checks are red. watch_checks saved the failing checks and their logs:\" + nl + nl + ($log | .[-4000:])),
+     acceptance: [\"every check that is red now passes on the pushed head\"],
+     files: [], covers: [],
+     context: (\"## Done when\" + nl + nl + \"- the checks named below pass, and no test is skipped to make them pass.\" + nl + nl + $log),
+     source: \"ci\", round: $pi, status: \"open\", iterations: 0, misses: 0 }]' > $F/ci_task.json
+jq -s '.[0] + .[1]' $F/tasks.json $F/ci_task.json > $F/tasks.new.json 2>/dev/null && mv $F/tasks.new.json $F/tasks.json
+rm -f $F/ci_task.json
+echo 'CI is red: one Task appended, and the loop runs it' >&2
+jq -nc '{context_updates:{ci_route:\"task\",phase:\"post\"}}'"]
+
+    // copy: ralph.report_merged
+    report_merged [label="Report merged", shape=parallelogram, output_schema="routing",
+        script="echo report_merged > /tmp/fabro/ending
+echo merged > /tmp/fabro/review_merge_outcome
+PR=$(cat /tmp/fabro/pr_number)
+N=$(jq -r '.[0].number // 0' /tmp/fabro/linked_issues.json 2>/dev/null || echo 0)
+if ! sh /tmp/fabro/render_comment.sh merged > /tmp/fabro/pr_comment.md; then
+  echo 'WARNING: could not render the review comment; falling back to a minimal one.' >&2
+  { echo 'Automated review complete and the PR was squash-merged, but the detailed report could not be rendered.'
+    echo
+    echo 'Squash-merged as `'$(cat /tmp/fabro/commit_subject.txt 2>/dev/null)'`.'
+  } > /tmp/fabro/pr_comment.md
+fi
+gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the merge comment.' >&2
+if [ \"$N\" != 0 ]; then
+  gh issue edit \"$N\" --remove-label Review || true
+fi
+echo '{\"context_updates\":{\"pr_url\":\"'$(cat /tmp/fabro/pr_url 2>/dev/null)'\",\"issue_number\":'$N'}}'
+exit 0"]
+
+    // copy: ralph.report_blocked
+    report_blocked [label="Report blocked", shape=parallelogram, output_schema="routing",
+        script="exec 3>&1 >>/tmp/fabro/report.log 2>&1
+echo report_blocked > /tmp/fabro/ending
+echo blocked > /tmp/fabro/review_merge_outcome
+PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+R=$(cat /tmp/fabro/merge_block_reason 2>/dev/null || echo 'The merge was blocked for an unspecified reason.')
+K=$(printf '%s' \"$R\" | tr '[:cntrl:]' ' ' | head -c 300)
+echo 'Merge blocked for PR '$PR': '$R
+if [ -z \"$PR\" ]; then echo done; jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3; exit 0; fi
+if ! sh /tmp/fabro/render_comment.sh blocked > /tmp/fabro/pr_comment.md; then
+  echo 'WARNING: could not render the review comment; falling back to a minimal one.'
+  { echo 'Automated review complete, but the detailed report could not be rendered.'
+    echo
+    echo '**Reason:** '\"$R\"
+  } > /tmp/fabro/pr_comment.md
+fi
+gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the blocked comment.'
+echo done
+jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3
+exit 0"]
+
+    // copy: ralph.report_queued
+    report_queued [label="Report queued", shape=parallelogram, output_schema="routing", timeout="2m",
+        script="exec 3>&1 >>/tmp/fabro/report.log 2>&1
+echo report_queued > /tmp/fabro/ending
+echo queued > /tmp/fabro/review_merge_outcome
+fail() {
+  printf '%s' \"$1\" > /tmp/fabro/needs_human_reason
+  printf '%s' \"$1\" > /tmp/fabro/merge_block_reason
+  echo \"report_queued: $1\"
+  exit 1
+}
+PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+H=$(gh pr view \"$PR\" --json headRefOid --jq .headRefOid 2>/dev/null || echo '')
+test -n \"$H\" || fail 'Could not read the PR head from GitHub, so the PR was not queued.'
+if ! git cat-file -e \"$H^{commit}\" 2>/dev/null; then git fetch origin \"$H\" || true; fi
+T1=$(git rev-parse \"$H^{tree}\" 2>/dev/null || echo none)
+T2=$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)
+[ \"$T1\" = \"$T2\" ] || fail 'The PR head on GitHub is not the tree this review approved, so the PR was not queued.'
+RUN=$(basename \"$(git rev-parse --abbrev-ref HEAD)\")
+sh /tmp/fabro/render_comment.sh queued \"$H\" > /tmp/fabro/pr_comment.body || fail 'Could not render the review comment, so the PR was not queued.'
+{ echo \"<!-- fabro:merge-queue approved head=$H run=$RUN -->\"; cat /tmp/fabro/pr_comment.body; } > /tmp/fabro/pr_comment.md
+gh pr comment \"$PR\" --body-file /tmp/fabro/pr_comment.md || fail 'Could not post the approval comment, so the PR was not queued.'
+gh label create merge-on-green --color 0E8A16 --description 'Approved by the fabro merge phase; the merge queue merges it when CI is green (ADR 0024)' 2>/dev/null || true
+gh pr edit \"$PR\" --add-label merge-on-green || fail 'Could not add the merge-on-green label, so the PR was not queued.'
+N=$(jq -r '.[0].number // 0' /tmp/fabro/linked_issues.json 2>/dev/null || echo 0)
+jq -nc --arg h \"$H\" --arg u \"$(cat /tmp/fabro/pr_url 2>/dev/null || true)\" --argjson n \"$N\" '{context_updates:{merge_mode:\"queue\",queued_head:$h,pr_url:$u,issue_number:$n}}' >&3
+exit 0"]
+
+    // copy: ralph.learn_prep
+    learn_prep [label="Prepare the learnings input", shape=parallelogram, timeout="1m", output_schema="routing",
+        script="F=/tmp/fabro
+IT=$(cat $F/iterations 2>/dev/null || echo 0)
+case \"$IT\" in '' | *[!0-9]*) IT=0 ;; esac
+LEARN=skip
+if [ \"$IT\" -gt 0 ]; then LEARN=run; fi
+if [ \"$LEARN\" = run ]; then
+  mkdir -p $F/learn
+  ENDING=$(cat $F/ending 2>/dev/null || echo unknown)
+  RV=$(cat $F/refute_visits 2>/dev/null || echo 0)
+  {
+    echo '# The run'
+    echo
+    echo 'Ending: '$ENDING
+    echo 'Iterations: '$IT
+    echo 'Refute rounds: '$RV
+    echo
+    echo '## Progress log'
+    echo
+    if [ -s $F/progress.md ]; then cat $F/progress.md; else echo '(no progress log)'; fi
+    echo
+    echo '## Refute rounds'
+    echo
+    if [ -s $F/review/refute_history.md ]; then cat $F/review/refute_history.md; else echo '(no Refute round became a Task)'; fi
+    echo
+    echo '## Tasks'
+    echo
+    jq -r '.[]? | \"- \" + (.id // \"?\") + \" [\" + (.source // \"?\") + \"] \" + (.status // \"?\") + \", iterations=\" + ((.iterations // 0) | tostring) + \", misses=\" + ((.misses // 0) | tostring) + \", highest rung=\" + (if ((1 + (((.misses // 0) / 2) | floor)) > 4) then 4 else (1 + (((.misses // 0) / 2) | floor)) end | tostring)' $F/tasks.json 2>/dev/null || echo '(no Task list)'
+  } > $F/learn/inputs.md
+fi
+jq -nc --arg l \"$LEARN\" '{context_updates:{learn:$l}}'"]
+
+    // copy: ralph.learn
+    learn [label="Propose learnings", class="learn", timeout="15m", max_retries=0, prompt="@prompts/learn.md.j2"]
+
+    // copy: ralph.learn_post
+    learn_post [label="Post the learnings", shape=parallelogram, timeout="2m",
+        script="F=/tmp/fabro/learnings.json
+mkdir -p /tmp/fabro/learn
+if [ ! -s $F ]; then echo 'learn_post: no learnings result; nothing to post' >&2; exit 0; fi
+jq '[.learnings[]? | select(((.evidence // \"\") | test(\"[A-Za-z0-9_./-]+:[0-9]+\")) or ((.evidence // \"\") | test(\"`[^`]*`\")))]' $F > /tmp/fabro/learn/keep.json 2>/dev/null || rm -f /tmp/fabro/learn/keep.json
+K=$(jq length /tmp/fabro/learn/keep.json 2>/dev/null || echo 0)
+case \"$K\" in '' | *[!0-9]*) K=0 ;; esac
+if [ \"$K\" = 0 ]; then echo 'learn_post: no Learning had evidence, so nothing is posted' >&2; rm -f /tmp/fabro/learn/keep.json; exit 0; fi
+RUN=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo fabro/run/unknown)
+PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+ISS=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || echo '')
+if ! gh issue list --label learning --state open --json number,body > /tmp/fabro/learn/issues.json 2>/dev/null; then
+  echo 'learn_post: could not list the learning issues; the learnings are in the run log only' >&2
+  rm -f /tmp/fabro/learn/keep.json
+  exit 0
+fi
+NUM=$(jq -r '.[] | select(((.body // \"\") | contains(\"<!-- fabro:ralph-learnings -->\"))) | .number' /tmp/fabro/learn/issues.json 2>/dev/null | head -1)
+if [ -z \"$NUM\" ]; then
+  gh label create learning --color 0E8A16 --description 'A rule a ralph run proposed; a human accepts or ignores it' > /dev/null 2>&1 || true
+  {
+    echo '<!-- fabro:ralph-learnings -->'
+    echo
+    echo 'Each fabro `ralph` run that implemented something adds one comment here: up to five rules it learned about this repository, each with the evidence that produced it.'
+    echo
+    echo 'A Learning is a proposal, never an instruction. To accept one, make the change in the place the entry names (AGENTS.md, .fabro/test.toml, .fabro/ci.sh or a ralph prompt), then reply or resolve the comment. Nothing reads this issue automatically, and no run edits any file to apply a Learning.'
+  } > /tmp/fabro/learn/issue.md
+  if ! gh issue create --title 'ralph learnings' --body-file /tmp/fabro/learn/issue.md --label learning > /tmp/fabro/learn/create.log 2>&1; then
+    echo 'learn_post: could not create the learning issue; the learnings are in the run log only' >&2
+    rm -f /tmp/fabro/learn/keep.json
+    exit 0
+  fi
+  NUM=$(sed 's|.*/||' /tmp/fabro/learn/create.log | tr -d '[:space:]')
+  case \"$NUM\" in '' | *[!0-9]*) echo 'learn_post: the new learning issue has no number; nothing was commented' >&2; rm -f /tmp/fabro/learn/keep.json; exit 0 ;; esac
+fi
+{
+  echo 'Run `'$RUN'`'$(if [ -n \"$PR\" ]; then echo ', pull request #'$PR; else echo ''; fi)$(if [ -n \"$ISS\" ]; then echo ', issue #'$ISS; else echo ''; fi)'. Proposed learnings:'
+  echo
+  jq -r '(def nl: [10] | implode; .[] | \"- **\" + (.home // \"agents_md\") + \"**: \" + .rule + nl + nl + \"  _evidence: \" + .evidence + \"_\")' /tmp/fabro/learn/keep.json
+  echo
+  echo '_Nothing here was applied. A human decides._'
+} > /tmp/fabro/learn/comment.md
+if ! gh issue comment \"$NUM\" --body-file /tmp/fabro/learn/comment.md > /dev/null 2>&1; then
+  echo 'learn_post: could not comment on the learning issue; the learnings are in the run log only' >&2
+fi
+rm -f /tmp/fabro/learn/keep.json
+exit 0"]
+
+    // copy: ralph.mark_needs_human
+    mark_needs_human [label="Label needs-human", shape=parallelogram, output_schema="routing",
+        stdin_source="failure_signature",
+        script="SIG=$(head -c 600)
+exec 3>&1 >>/tmp/fabro/report.log 2>&1
+echo mark_needs_human > /tmp/fabro/ending
+echo needs_human > /tmp/fabro/review_merge_outcome
+if [ -n \"$SIG\" ]; then
+  FN=${SIG%%|*}
+  FN=${FN##*.}
+  FR=${SIG#*|}
+  FC=${FR%%|*}
+  FM=${FR#*|}
+  case \" $FN \" in
+    *' standards '*|*' spec '*|*' refute '*|*' resolve_base '*|*' resolve_merge '*) FA=yes ;;
+    *) FA=no ;;
+  esac
+  if [ \"$FA\" = yes ] || [ \"$FC\" = transient_infra ] || [ ! -s /tmp/fabro/needs_human_reason ]; then
+    RE=\"$FN failed ($FC)\"
+    case \"$FM\" in *'timed out'*) RE=\"$RE: timed out\" ;; esac
+    if [ \"$FC\" = transient_infra ]; then RE=\"retryable: $RE\"; fi
+    printf '%s' \"$RE\" > /tmp/fabro/needs_human_reason
+    printf '%s' \"$RE\" > /tmp/fabro/merge_block_reason
+  fi
+fi
+R=$(cat /tmp/fabro/needs_human_reason 2>/dev/null || echo unspecified)
+K=$(printf '%s' \"$R\" | tr '[:cntrl:]' ' ' | head -c 300)
+PR=$(cat /tmp/fabro/pr_number 2>/dev/null || echo '')
+if [ -z \"$PR\" ]; then
+  echo 'No PR number was recorded, so there is nothing to label or comment on.'
+  jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3
+  exit 0
+fi
+D=$(cat /tmp/fabro/delivery 2>/dev/null || echo '')
+H=$(cat /tmp/fabro/head_ref 2>/dev/null || echo '')
+E=$(cat /tmp/fabro/review_entry_tree 2>/dev/null || echo '')
+if [ -z \"$D\" ] && [ -n \"$E\" ] && [ \"$(git rev-parse 'HEAD^{tree}' 2>/dev/null)\" = \"$E\" ]; then
+  echo unchanged > /tmp/fabro/delivery
+elif [ -z \"$D\" ] && [ -n \"$H\" ]; then
+  S=$(gh pr view \"$PR\" --json state --jq .state 2>/dev/null || echo UNKNOWN)
+  if [ \"$S\" = OPEN ]; then
+    if git push --force-with-lease origin HEAD:\"$H\"; then echo pushed_on_stop > /tmp/fabro/delivery
+    else echo rejected > /tmp/fabro/delivery; fi
+  else
+    echo not_pushed > /tmp/fabro/delivery
+  fi
+fi
+if ! sh /tmp/fabro/render_comment.sh needs-human > /tmp/fabro/pr_comment.md; then
+  { echo 'Automated review could not finish.'; echo; echo 'Reason: '$R; } > /tmp/fabro/pr_comment.md
+fi
+gh pr edit $PR --add-label ai-review-needs-human || echo 'WARNING: could not add the ai-review-needs-human label. Check that the run token has issues:write.'
+gh pr comment $PR --body-file /tmp/fabro/pr_comment.md || echo 'WARNING: could not post the needs-human comment.'
+echo done
+jq -nc --arg r \"$K\" '{context_updates:{merge_block_reason:$r}}' >&3"]
+
+    // copy: ralph.close_noop
+    close_noop [label="Close (no actionable work)", shape=parallelogram,
+        script="N=$(jq -r .number /tmp/fabro/issue.json)
+S=$(jq -r '.summary // empty' /tmp/fabro/task_list.json 2>/dev/null || true)
+{
+  echo 'Agent run found no actionable plan for this issue; leaving it for human triage.'
+  if [ -n \"$(printf '%s' \"$S\" | tr -d '[:space:]')\" ]; then
+    echo
+    echo 'The planner reported:'
+    echo
+    printf '%s' \"$S\" | sed 's/^/> /'
+    echo
+  fi
+} > /tmp/fabro/noop_comment.md
+gh issue edit $N --remove-label agent-in-progress || true
+gh label create agent-noop --color D4C5F9 --description 'Agent run found nothing to do; read the comment before re-adding agent' 2>/dev/null || true
+gh issue edit $N --add-label agent-noop || true
+gh issue comment $N --body-file /tmp/fabro/noop_comment.md || true
+echo close_noop > /tmp/fabro/ending
+echo done"]
+
+    // copy: ralph.return_to_triage
+    return_to_triage [label="Return the issue to triage", shape=parallelogram, timeout="2m", output_schema="routing",
+        script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || true)
+case \"$N\" in '' | *[!0-9]*) N=$(cat /tmp/fabro/issue_number 2>/dev/null || echo 0) ;; esac
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+F=/tmp/fabro/return.json
+L=/tmp/fabro/return.log
+if ! jq -e '(.items | type) == \"array\" and (.items | length) > 0' $F >/dev/null 2>&1; then echo 'return_to_triage: return.json is missing or names no criterion; mark_stuck takes over' >&2; exit 1; fi
+jq -r '([10] | implode) as $nl | \"The issue asks for something its own boundaries forbid, so it was returned to triage:\" + $nl + $nl + ([.items[] | \"- \" + .criterion + \" (conflicts with: \" + .non_goal + \"): \" + .why] | join($nl))' $F > /tmp/fabro/stuck_reason.md
+if [ \"$N\" = 0 ]; then echo 'return_to_triage: no issue number; mark_stuck takes over' >&2; exit 1; fi
+jq -r '([10] | implode) as $nl
+| (if .source == \"decompose\" then \"the decomposer\" elif .source == \"plan\" then \"the planner\" else \"the coder\" end) as $who
+| \"<!-- fabro:triage-questions -->\" + $nl
++ \"> *This was generated by AI during an autonomous implementation run.*\" + $nl + $nl
++ \"## Returned to triage\" + $nl + $nl
++ \"The implementation run stopped before opening a pull request, because \" + $who + \" found an acceptance criterion that the boundaries of this issue forbid. A criterion that cannot be met as written is reported, never replaced by a similar behaviour, so nothing from this run was kept.\" + $nl + $nl
++ ([.items[] | \"- **Criterion:** \" + .criterion + $nl + \"  - **Conflicts with:** \" + .non_goal + $nl + \"  - **Why:** \" + .why] | join($nl + $nl)) + $nl + $nl
++ \"### Question\" + $nl + $nl
++ \"For each item: should the criterion change, or the non-goal? Edit the issue body to match, then answer in a new comment. The next triage reads the answer and, when nothing else is open, queues the issue for the agent again.\" + $nl + $nl
++ \"Answer by replying in a new comment. Editing this comment is not detected.\"' $F > /tmp/fabro/return_comment.md
+gh label create needs-info --color FEF2C0 --description 'Waiting on a human for triage answers' >> $L 2>&1 || true
+if ! gh issue comment $N --body-file /tmp/fabro/return_comment.md >> $L 2>&1; then echo 'return_to_triage: gh issue comment failed; see return.log' >&2; exit 1; fi
+if ! gh issue edit $N --remove-label agent --remove-label agent-in-progress --add-label needs-info >> $L 2>&1; then echo 'return_to_triage: gh issue edit failed; see return.log' >&2; exit 1; fi
+R=$(jq -r '\"Returned to triage: \" + ([.items[] | .criterion + \" conflicts with \" + .non_goal] | join(\"; \"))' $F | tr '[:cntrl:]' ' ' | cut -c1-300 | sed 's/ *$//')
+echo return_to_triage > /tmp/fabro/ending
+jq -nc --arg r \"$R\" '{context_updates:{return_reason:$r}}'"]
+
+    // copy: ralph.mark_stuck
+    mark_stuck [label="Mark stuck", shape=parallelogram,
+        script="N=$(jq -r .number /tmp/fabro/issue.json 2>/dev/null || true)
+case \"$N\" in '' | *[!0-9]*) N=$(cat /tmp/fabro/issue_number 2>/dev/null || echo 0) ;; esac
+case \"$N\" in '' | *[!0-9]*) N=0 ;; esac
+if [ \"$N\" != 0 ]; then
+  gh issue edit $N --remove-label agent-in-progress --add-label agent-stuck || true
+  if [ -s /tmp/fabro/stuck_reason.md ]; then
+    { echo 'Agent run stopped without opening a pull request. The run reported:'; echo; cat /tmp/fabro/stuck_reason.md; } > /tmp/fabro/stuck_comment.md
+  else
+    echo 'Agent run could not complete this issue and gave up. See the fabro run for details.' > /tmp/fabro/stuck_comment.md
+  fi
+  PR=$(cat /tmp/fabro/pr_number 2>/dev/null || true)
+  if [ -n \"$PR\" ] && [ ! -s /tmp/fabro/draft_reason.md ]; then
+    { echo 'Agent run stopped after opening pull request #'$PR', which holds its work but did not finish review and merge.'; echo; cat /tmp/fabro/stuck_comment.md; } > /tmp/fabro/stuck_comment.tmp
+    mv /tmp/fabro/stuck_comment.tmp /tmp/fabro/stuck_comment.md
+  fi
+  gh issue comment $N --body-file /tmp/fabro/stuck_comment.md || true
+fi
+echo mark_stuck > /tmp/fabro/ending
+echo done"]
+
+    // copy: ralph.stop_reason
+    stop_reason [label="Record why the run stopped", shape=parallelogram, timeout="1m",
+        output_schema="routing", stdin_source="failure_signature",
+        script="mkdir -p /tmp/fabro
+SIG=$(head -c 600)
+PH=$(cat /tmp/fabro/phase 2>/dev/null || echo pre)
+case \"$PH\" in pre | post) : ;; *) PH=pre ;; esac
+if [ \"$PH\" = pre ] && [ -s /tmp/fabro/pr_number ]; then PH=post; fi
+WHY=''
+if [ -n \"$SIG\" ]; then
+  NODE=${SIG%%|*}
+  REST=${SIG#*|}
+  CLS=${REST%%|*}
+  case \"$NODE\" in
+    plan | iterate_t1 | iterate_t2 | iterate_t3 | refute | standards | spec | resolve_merge | resolve_base | learn) FA=yes ;;
+    *) FA=no ;;
+  esac
+  if [ \"$FA\" = no ] && [ \"$CLS\" != transient_infra ] && [ -s /tmp/fabro/stuck_reason.md ]; then :; else
+    WHY=\"$NODE failed ($CLS): ${REST#*|}\"
+  fi
+fi
+if [ -z \"$WHY\" ] && [ -s /tmp/fabro/stuck_reason.md ]; then WHY=$(head -c 600 /tmp/fabro/stuck_reason.md | tr '[:cntrl:]' ' ' | sed 's/ *$//'); fi
+if [ -z \"$WHY\" ]; then
+  STG=$(jq -r '.node // empty' /tmp/fabro/.io/stage.json 2>/dev/null)
+  WHY=\"a gate rejected its agent's output after its retries. The last agent stage was ${STG:-unknown}. The run's events name the gate and its reason.\"
+fi
+printf '%s' \"$WHY\" | cut -c1-600 > /tmp/fabro/stuck_reason.md
+printf '%s' \"$WHY\" | cut -c1-300 > /tmp/fabro/merge_block_reason
+printf '%s' \"$WHY\" | cut -c1-300 > /tmp/fabro/needs_human_reason
+echo $PH > /tmp/fabro/stop_phase
+jq -nc --arg p \"$PH\" '{context_updates:{stop_phase:$p}}'"]
+    // ---- Routing ----
+    // Every failure edge lands on `stop_reason`, which is the one node that ends a failed
+    // run (R1). The conditional edges out of `plan_gate` carry a status the node prints on
+    // every path, so exactly one of them can match; the unconditional edge is the escape
+    // and catches a node that failed before it printed.
+    start -> claim
+    claim -> prep                             [condition="outcome=succeeded"]
+    claim -> stop_reason
+    prep -> plan                              [condition="outcome=succeeded"]
+    prep -> stop_reason
+    plan -> plan_gate                         [condition="outcome=succeeded"]
+    plan -> stop_reason
+    plan_gate -> plan                         [condition="outcome=failed"]
+    plan_gate -> plan_review_prep             [condition="context.plan_status=ready"]
+    plan_review_prep -> plan_review           [condition="outcome=succeeded && context.plan_review_go=true"]
+    plan_review_prep -> pick                  [condition="outcome=succeeded && context.plan_review_go=false"]
+    plan_review_prep -> stop_reason
+    plan_review -> plan_review_gate           [condition="outcome=succeeded"]
+    plan_review -> plan_review_gate
+    plan_review_gate -> plan                  [condition="outcome=succeeded && context.plan_review_route=repair"]
+    plan_review_gate -> pick                  [condition="outcome=succeeded && context.plan_review_route=pass"]
+    plan_review_gate -> stop_reason
+    plan_gate -> return_to_triage             [condition="context.plan_status=contradiction"]
+    plan_gate -> close_noop                   [condition="context.plan_status=redundant"]
+    plan_gate -> close_noop                   [condition="context.plan_status=invalid"]
+    plan_gate -> mark_stuck                   [condition="context.plan_status=needs_human"]
+    plan_gate -> stop_reason
+    refute_prep -> refute                     [condition="outcome=succeeded && context.refute_skip=false"]
+    refute_prep -> review_prep                [condition="outcome=succeeded && context.refute_skip=true"]
+    refute_prep -> stop_reason
+    refute -> refute_gate                     [condition="outcome=succeeded"]
+    refute -> refute_gate
+    refute_gate -> review_prep                [condition="context.refute_route=tasks"]
+    refute_gate -> review_prep                [condition="context.refute_route=pass"]
+    refute_gate -> review_prep                [condition="context.refute_route=hold && context.loop_exhausted=false"]
+    refute_gate -> stop_reason
+    review_prep -> standards                  [condition="outcome=succeeded && context.review_run_standards=true"]
+    review_prep -> spec                       [condition="outcome=succeeded && context.review_run_standards=false"]
+    review_prep -> stop_reason
+    standards -> spec                         [condition="outcome=succeeded && context.review_run_spec=true"]
+    standards -> review_gate                  [condition="outcome=succeeded && context.review_run_spec=false"]
+    standards -> stop_reason
+    spec -> review_gate                       [condition="outcome=succeeded"]
+    spec -> stop_reason
+    review_gate -> pick                       [condition="context.review_route=tasks"]
+    review_gate -> stop_reason
+    // The loop is done: merge main and open the PR (the local review comes later, after hygiene).
+    // `loop=exhausted` keeps its direct edge to `final_merge`: a run that ran out has no
+    // reason to spend box time on a branch it is going to hold (O18).
+    pick -> final_merge                      [condition="context.loop=done && context.phase=pre"]
+    pick -> final_merge                      [condition="context.loop=exhausted && context.phase=pre"]
+    final_merge -> final_check               [condition="outcome=succeeded && context.final_conflict=false"]
+    final_merge -> resolve_merge             [condition="outcome=succeeded && context.final_conflict=true"]
+    final_merge -> stop_reason
+    resolve_merge_gate -> final_merge        [condition="context.merge_ok=true && context.merge_return=pr", weight=10]
+    final_check -> criterion_checks          [condition="outcome=succeeded && context.final_route=pr && context.phase=pre"]
+    criterion_checks -> hygiene
+    final_check -> hygiene                   [condition="outcome=succeeded && context.final_route=pr && context.phase=post"]
+    final_check -> mark_needs_human          [condition="outcome=succeeded && context.final_route=needs_human"]
+    final_check -> pick                      [condition="outcome=succeeded && context.final_route=fix"]
+    final_check -> mark_stuck                [condition="outcome=succeeded && context.final_route=stuck"]
+    final_check -> stop_reason
+    hygiene -> local_review_prep             [condition="outcome=succeeded && context.phase=pre"]
+    local_review_prep -> local_standards     [condition="outcome=succeeded && context.local_review_go=true"]
+    local_review_prep -> refute_prep
+    local_standards -> local_spec            [condition="outcome=succeeded"]
+    local_standards -> local_spec
+    local_spec -> local_review_gate          [condition="outcome=succeeded"]
+    local_spec -> local_review_gate
+    local_review_gate -> pick                [condition="context.local_review_route=tasks"]
+    local_review_gate -> refute_prep
+    hygiene -> deliver                       [condition="outcome=succeeded && context.phase=post"]
+    hygiene -> stop_reason
+    refute_gate -> open_pr                   [condition="context.refute_route=hold && context.loop_exhausted=true"]
+    review_gate -> open_pr                   [condition="context.review_route=pass"]
+    open_pr -> file_remainder                [condition="outcome=succeeded"]
+    open_pr -> stop_reason
+    file_remainder -> pr_handoff             [condition="outcome=succeeded"]
+    file_remainder -> stop_reason
+    pr_handoff -> merge_prep                 [condition="outcome=succeeded"]
+    pr_handoff -> stop_reason
+    merge_prep -> merge_gate                  [condition="outcome=succeeded"]
+    merge_prep -> stop_reason
+    deliver -> merge_gate                    [condition="context.delivered=true"]
+    deliver -> mark_needs_human
+    merge_gate -> watch_checks               [condition="context.merge_eligible=true && context.merge_mode!=queue", weight=10]
+    merge_gate -> report_queued              [condition="context.merge_eligible=true && context.merge_mode=queue", weight=10]
+    merge_gate -> report_blocked             [condition="context.merge_eligible=false"]
+    merge_gate -> mark_needs_human
+    watch_checks -> report_queued            [condition="context.checks_deadline=true", weight=30]
+    watch_checks -> report_blocked           [condition="context.checks_blocked=true", weight=20]
+    watch_checks -> merge                    [condition="context.checks_ok=true", weight=10]
+    watch_checks -> ci_task                  [condition="context.checks_ok=false && context.gh_fix_attempts=1"]
+    watch_checks -> ci_task                  [condition="context.checks_ok=false && context.gh_fix_attempts=2"]
+    watch_checks -> mark_needs_human
+    ci_task -> pick                          [condition="context.ci_route=task"]
+    ci_task -> report_blocked                [condition="context.ci_route=stop"]
+    ci_task -> stop_reason
+    merge -> report_merged                   [condition="context.merge_state=merged", weight=10]
+    merge -> remerge_base                    [condition="context.merge_state=stale"]
+    merge -> report_blocked                  [condition="context.merge_state=closed || context.merge_state=blocked"]
+    merge -> mark_needs_human
+    remerge_base -> resolve_base             [condition="context.remerge_conflict=true", weight=20]
+    remerge_base -> watch_checks             [condition="context.remerge_ok=true", weight=10]
+    remerge_base -> report_blocked           [condition="context.remerge_ok=false"]
+    remerge_base -> mark_needs_human
+    resolve_base -> resolve_base_gate        [condition="outcome=succeeded"]
+    resolve_base -> resolve_base_gate
+    resolve_base_gate -> final_check         [condition="context.resolve_ok=true", weight=10]
+    resolve_base_gate -> report_blocked      [condition="context.resolve_ok=false"]
+    resolve_base_gate -> mark_needs_human
+    report_merged -> learn_prep
+    report_blocked -> learn_prep
+    report_queued -> learn_prep
+    mark_needs_human -> learn_prep
+    learn_prep -> learn                       [condition="context.learn=run"]
+    learn_prep -> exit
+    learn -> learn_post                       [condition="outcome=succeeded"]
+    learn -> learn_post
+    learn_post -> exit
+    pick -> resolve_merge                     [condition="context.rebase_failed=true"]
+    pick -> excerpts                          [condition="context.loop=work && context.rebase_failed=false"]
+    pick -> hygiene                          [condition="context.loop=done && context.phase=post"]
+    pick -> report_blocked                   [condition="context.loop=exhausted && context.phase=post"]
+    pick -> stop_reason
+    excerpts -> iterate_t1                    [condition="context.rung=1"]
+    excerpts -> iterate_t2                    [condition="context.rung=2"]
+    excerpts -> iterate_t3                    [condition="context.rung=3"]
+    excerpts -> stop_reason
+    iterate_t1 -> task_block_gate             [condition="outcome=succeeded"]
+    iterate_t1 -> task_block_gate             [condition="outcome=partially_succeeded"]
+    iterate_t1 -> record
+    iterate_t2 -> task_block_gate             [condition="outcome=succeeded"]
+    iterate_t2 -> task_block_gate             [condition="outcome=partially_succeeded"]
+    iterate_t2 -> record
+    iterate_t3 -> task_block_gate             [condition="outcome=succeeded"]
+    iterate_t3 -> task_block_gate             [condition="outcome=partially_succeeded"]
+    iterate_t3 -> record
+    task_block_gate -> autofix                [condition="outcome=succeeded && context.task_block=none"]
+    task_block_gate -> return_to_triage       [condition="outcome=succeeded && context.task_block=criterion"]
+    task_block_gate -> record
+    autofix -> check                          [condition="outcome=succeeded"]
+    autofix -> check                          [condition="outcome=failed"]
+    autofix -> stop_reason
+    check -> record                           [condition="outcome=succeeded"]
+    check -> record                           [condition="outcome=failed"]
+    check -> stop_reason
+    record -> pick
+    resolve_merge -> resolve_merge_gate       [condition="outcome=succeeded"]
+    resolve_merge -> resolve_merge_gate
+    resolve_merge_gate -> pick                [condition="context.merge_ok=true && context.merge_return=task", weight=10]
+    resolve_merge_gate -> resolve_merge       [condition="context.merge_attempts=1"]
+    resolve_merge_gate -> stop_reason
+    return_to_triage -> learn_prep            [condition="outcome=succeeded"]
+    return_to_triage -> mark_stuck
+    stop_reason -> mark_stuck
+    stop_reason -> mark_needs_human           [condition="context.stop_phase=post"]
+    close_noop -> learn_prep
+    mark_stuck -> learn_prep
+}
+

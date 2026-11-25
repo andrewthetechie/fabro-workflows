@@ -7,7 +7,7 @@
 # operator with LAN access runs `make check-host`; a pre-push hook never does.
 #
 # It rsyncs `.fabro/` up, runs the routing-schema checker in the container, and
-# runs `fabro validate` on all fifteen packages, comparing each node/edge count to
+# runs `fabro validate` on all sixteen packages, comparing each node/edge count to
 # the AGENTS.md *Validating* baselines (the one place to update them). It also
 # checks the live settings overlay for the openai Agent profile (ADR 0017).
 #
@@ -38,6 +38,9 @@ declare -A BASELINE=(
     # The offline parser's count (AGENTS.md *Validating*): unverified until the first run of
     # this script, which is task 12 of docs/ralph.
     [ralph]="59 nodes, 155 edges"
+    # `ralph-v2`, the trial's second arm (ADR 0034, docs/plans/ralph-v2/05): ralph minus the
+    # fourth rung, 58 nodes and 151 edges. Tasks 07-09 of the series raise this baseline.
+    [ralph-v2]="58 nodes, 151 edges"
     # The background lane's box-only package (more-local-inference task 04). The offline
     # parser's count: expected, unverified until task 12, Phase 1 runs this script.
     [box-noop]="4 nodes, 3 edges"
@@ -68,13 +71,14 @@ rsync -a --delete .fabro/ "$HOST:/tmp/check/"
 say "mount the tree into the fabro container"
 ssh "$HOST" 'docker exec fabro-fabro-1 rm -rf /tmp/check && docker cp /tmp/check fabro-fabro-1:/tmp/check'
 
-say "parity: fabro parse against check-graph-invariants.py --dump, seventeen files (ADR 0019, D2)"
+say "parity: fabro parse against check-graph-invariants.py --dump, eighteen files (ADR 0019, D2)"
 scp -q ops/check-graph-invariants.py "$HOST:/tmp/check-graph-invariants.py"
 PARITY_BAD=0
 for f in workflows/backlog/workflow.fabro workflows/pr-review/workflow.fabro \
          workflows/issue-triage/workflow.fabro workflows/arch-review/workflow.fabro \
          workflows/dependabot/workflow.fabro workflows/merge-queue/workflow.fabro \
          workflows/scout/workflow.fabro workflows/ralph/workflow.fabro \
+         workflows/ralph-v2/workflow.fabro \
          workflows/box-noop/workflow.fabro \
          workflows/issue-precheck/workflow.fabro workflows/context-pack/workflow.fabro \
          workflows/precheck-calibration/workflow.fabro \
@@ -99,8 +103,8 @@ if [ "$PARITY_BAD" -ne 0 ]; then
     exit 1
 fi
 
-say "fabro validate on all fifteen packages (node/edge vs AGENTS.md baselines)"
-for w in backlog pr-review issue-triage arch-review dependabot merge-queue scout ralph box-noop issue-precheck context-pack precheck-calibration flaky-investigation repo-orientation issue-sharpen; do
+say "fabro validate on all sixteen packages (node/edge vs AGENTS.md baselines)"
+for w in backlog pr-review issue-triage arch-review dependabot merge-queue scout ralph ralph-v2 box-noop issue-precheck context-pack precheck-calibration flaky-investigation repo-orientation issue-sharpen; do
     OUT=$(ssh "$HOST" "cd ~/fabro && docker compose exec -T fabro fabro validate /tmp/check/workflows/$w/workflow.toml" 2>&1)
     LINE=$(printf '%s\n' "$OUT" | grep -E '^Workflow: ' | head -1)
     echo "  $LINE"

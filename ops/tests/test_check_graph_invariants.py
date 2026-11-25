@@ -341,7 +341,7 @@ class BoxStages(unittest.TestCase):
             try:
                 self.assertEqual([v for v in cgi.run(root) if v[1] == "R15"], [])
             finally:
-                cgi.CODER_LOOP_PACKAGES = ["backlog", "ralph", "pr-review"]
+                cgi.CODER_LOOP_PACKAGES = ["backlog", "ralph", "ralph-v2", "pr-review"]
 
     def test_a_coder_loop_without_the_claim_hook_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -350,7 +350,7 @@ class BoxStages(unittest.TestCase):
             try:
                 found = [(rule, node) for _, rule, node, _ in cgi.run(root) if rule == "R15"]
             finally:
-                cgi.CODER_LOOP_PACKAGES = ["backlog", "ralph", "pr-review"]
+                cgi.CODER_LOOP_PACKAGES = ["backlog", "ralph", "ralph-v2", "pr-review"]
             self.assertIn(("R15", "box-claim"), found)
 
     def test_a_claim_node_that_writes_no_box_file_is_reported(self):
@@ -360,7 +360,7 @@ class BoxStages(unittest.TestCase):
             try:
                 found = [(rule, node) for _, rule, node, _ in cgi.run(root) if rule == "R15"]
             finally:
-                cgi.CODER_LOOP_PACKAGES = ["backlog", "ralph", "pr-review"]
+                cgi.CODER_LOOP_PACKAGES = ["backlog", "ralph", "ralph-v2", "pr-review"]
             self.assertEqual(found, [("R15", "claim")], found)
 
     def test_a_package_that_is_not_a_coder_loop_may_not_run_the_claim(self):
@@ -373,7 +373,7 @@ class BoxStages(unittest.TestCase):
 
     def test_the_real_coder_loops_carry_the_claim(self):
         real = json.loads((REAL / ".fabro/workflows/_io/manifest.json").read_text())
-        for package in ("backlog", "ralph", "pr-review"):
+        for package in cgi.CODER_LOOP_PACKAGES:
             with self.subTest(package=package):
                 self.assertIn(package, real["workflows"])
                 pkg = REAL / ".fabro/workflows" / package
@@ -676,6 +676,10 @@ class Counts(unittest.TestCase):
             # and pre_review_check: +1 node; +8 edges for the four, -5 for the three, and the
             # done edge from `pick` goes straight to final_merge again: net -4 on that half).
             "ralph": (59, 155),
+            # ralph-v2 (ADR 0034, docs/plans/ralph-v2/05): ralph minus the fourth rung -- one
+            # node and its four edges -- with v2's stylesheet and fallbacks. Tasks 07-09 of
+            # the series raise it to 68 nodes and 176 edges.
+            "ralph-v2": (58, 151),
         })
 
 
@@ -813,6 +817,95 @@ class CalibrationCopies(unittest.TestCase):
 
     def test_the_real_calibration_package_matches_the_live_precheck(self):
         self.assertEqual(cgi.r10_calibration_copies(REAL), [])
+
+
+class R10V2Copies(unittest.TestCase):
+    """R10 for ralph-v2: each copy equals ralph's node plus its recorded replacements."""
+
+    NODES = 'b [script="echo hi"] a [prompt="@prompts/p.md.j2"]'
+
+    def _root(self, tmp, *, original: str = NODES, copy: str = NODES,
+              original_prompt: str = "same", copy_prompt: str = "same") -> Path:
+        root = Path(tmp)
+        (root / ".fabro/workflows/ralph/prompts").mkdir(parents=True)
+        (root / ".fabro/workflows/ralph-v2/prompts").mkdir(parents=True)
+        (root / ".fabro/workflows/ralph/workflow.fabro").write_text(
+            f"digraph R {{ {original} }}\n")
+        (root / ".fabro/workflows/ralph/prompts/p.md.j2").write_text(original_prompt)
+        (root / ".fabro/workflows/ralph-v2/workflow.fabro").write_text(f"digraph V {{ {copy} }}\n")
+        (root / ".fabro/workflows/ralph-v2/prompts/p.md.j2").write_text(copy_prompt)
+        return root
+
+    def _violations(self, root: Path, *, copies: tuple[str, ...] = ("b",),
+                    repls: tuple[tuple[str, str], ...] = (), prompts: tuple[str, ...] = ("a",),
+                    own: tuple[str, ...] = ()) -> list[tuple]:
+        saved = cgi.R10_V2_COPIES, cgi.R10_V2_PROMPTS, cgi.R10_V2_OWN
+        try:
+            cgi.R10_V2_COPIES = [(node, tuple(repls) if node == "b" else ()) for node in copies]
+            cgi.R10_V2_PROMPTS = list(prompts)
+            cgi.R10_V2_OWN = set(own)
+            return cgi.r10_v2_copies(root)
+        finally:
+            cgi.R10_V2_COPIES, cgi.R10_V2_PROMPTS, cgi.R10_V2_OWN = saved
+
+    def test_a_clean_pair_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._violations(self._root(tmp)), [])
+
+    def test_a_recorded_replacement_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, copy=R10V2Copies.NODES.replace("echo hi", "echo hey"))
+            self.assertEqual(
+                self._violations(root, repls=(("echo hi", "echo hey"),)), [])
+
+    def test_one_character_of_drift_fails_and_names_the_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, copy=R10V2Copies.NODES.replace("echo hi", "echo ho"))
+            found = self._violations(root)
+            self.assertEqual(found, [("ralph-v2", "R10", "b",
+                                      "drifted from ralph b; record the difference as a replacement")])
+
+    def test_a_missing_copy_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, copy='a [prompt="@prompts/p.md.j2"]')
+            self.assertEqual([(p, r, n) for p, r, n, _ in self._violations(root)],
+                             [("ralph-v2", "R10", "b")])
+
+    def test_an_original_that_is_gone_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, original='a [prompt="@prompts/p.md.j2"]')
+            found = self._violations(root)
+            self.assertIn("ralph has no node b", found[0][3], found)
+
+    def test_a_prompt_that_drifted_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, copy_prompt="same\n")
+            self.assertEqual([(r, n) for _, r, n, _ in self._violations(root)],
+                             [("R10", "a")])
+
+    def test_a_command_node_ralph_also_has_must_be_recorded(self):
+        """The coverage half: a copy nobody listed is a copy nobody checks."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, copy=R10V2Copies.NODES + ' c [script="echo hi"]',
+                              original=R10V2Copies.NODES + ' c [script="echo hi"]')
+            found = self._violations(root)
+            self.assertEqual([(r, n) for _, r, n, _ in found], [("R10", "c")], found)
+            self.assertIn("neither R10_V2_COPIES", found[0][3])
+            # Recorded as ralph-v2's own, it is not a copy and needs no row.
+            self.assertEqual(self._violations(root, own=("c",)), [])
+
+    def test_a_node_ralph_does_not_have_needs_no_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, copy=R10V2Copies.NODES + ' c [script="echo mine"]')
+            self.assertEqual(self._violations(root), [])
+
+    def test_either_graph_missing_is_silent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(cgi.r10_v2_copies(Path(tmp)), [])
+
+    def test_the_real_copies_match_ralph(self):
+        self.assertEqual(cgi.r10_v2_copies(REAL), [])
+        self.assertEqual(cgi.R10_V2_OWN, set())
 
 
 class RealTree(unittest.TestCase):

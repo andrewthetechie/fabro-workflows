@@ -67,7 +67,7 @@ def box_claim_hook(toml: Path) -> str:
         return ""
 
 
-@pytest.mark.parametrize("w", ["backlog", "ralph", "pr-review"])
+@pytest.mark.parametrize("w", ["backlog", "ralph", "ralph-v2", "pr-review"])
 def test_box_claim_hook_wrapper(ck, tmp_path, w):
     hook = box_claim_hook(WF / w / "workflow.toml")
     ck(f"{w}: box-claim hook script found", "1", count("^fabro-io box-claim; exit 0$", hook))

@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from harness import (GRAPH, ORIG_PATH, RAPH, cat, count, edges, extract, grep, head1, jq, jq_n,
+from harness import (GRAPH, ORIG_PATH, RAPH, RAPH2, cat, count, edges, extract, grep, head1, jq,
+                     jq_n,
                      lastjson, lines, mkreadok, present, rebase, rm, sh, stage, stub, syntax_ok,
                      wc_c, write)
 
@@ -307,7 +308,8 @@ def test_claim(ck, tmp_path):
 # with a bare `{{ inputs.coder_pool }}` substitution. `claim` routes on stdout, so the write
 # must not print; and an unset pool renders empty, which C2 reads as "no box is known".
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("graph,label", [(GRAPH, "backlog"), (RAPH, "ralph")])
+@pytest.mark.parametrize("graph,label", [(GRAPH, "backlog"), (RAPH, "ralph"),
+                                           (RAPH2, "ralph-v2")])
 def test_claim_writes_the_box_file(ck, tmp_path, graph, label):
     T = tmp_path / f"box-{label}"
     (T / "bin").mkdir(parents=True)
@@ -351,7 +353,8 @@ def test_claim_writes_the_box_file(ck, tmp_path, graph, label):
 # never through the comments: the newest marker comment of each kind, in C9's order, each
 # capped. Nothing about it may fail the node or reach stdout, which `claim` routes on.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("graph,label", [(GRAPH, "backlog"), (RAPH, "ralph")])
+@pytest.mark.parametrize("graph,label", [(GRAPH, "backlog"), (RAPH, "ralph"),
+                                           (RAPH2, "ralph-v2")])
 def test_claim_writes_background_md(ck, tmp_path, graph, label):
     T = tmp_path / f"bg-{label}"
     (T / "bin").mkdir(parents=True)
@@ -426,7 +429,8 @@ def test_claim_writes_background_md(ck, tmp_path, graph, label):
 # with them: drop the comments a human hid and fabro's own markers but `triage-questions`,
 # both before it keeps the newest ten, keep only the keys a prompt reads, and cut each body.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("graph,label", [(GRAPH, "backlog"), (RAPH, "ralph")])
+@pytest.mark.parametrize("graph,label", [(GRAPH, "backlog"), (RAPH, "ralph"),
+                                           (RAPH2, "ralph-v2")])
 def test_claim_writes_the_issue_comments(ck, tmp_path, graph, label):
     T = tmp_path / f"comments-{label}"
     (T / "bin").mkdir(parents=True)

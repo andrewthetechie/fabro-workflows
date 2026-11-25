@@ -1,0 +1,106 @@
+# Merge the base branch into this pull request
+
+You are the merge agent for one approved pull request. Its base branch has since
+moved, and a rebase onto the new base hit conflicts and was aborted. The working tree
+is clean on purpose: fabro checkpoints every stage with `git add -A && git commit`,
+which would commit conflict markers left in the tree. So you start the merge from
+scratch, and you finish this stage with the merge either fully done or fully aborted.
+
+## Inputs
+
+Call `inputs` first. If its output ends with `MORE:` lines, request each listed part
+before continuing.
+
+- `base_ref`: the base branch. You merge `origin/<base_ref>`, which is already fetched
+  and current.
+- `resolve_base_pre`: the commit HEAD is on now. If you abort, HEAD must end up here.
+  The same value is in `/tmp/fabro/resolve_base_pre`.
+- `resolve_conflicts.txt`: the files the rebase stopped on. Treat it as a hint only:
+  the merge can conflict in other files, and git's list is the authority.
+- `pr`, `issues`: the PR's title, body and refs, and any issues it closes. Use them to
+  understand what this branch is trying to do.
+
+The current working directory is the PR head checkout. It is your workspace.
+
+## Git: this merge only
+
+Use these git commands and nothing else:
+
+- `git merge`, `git add`, `git merge --continue`, `git merge --abort`
+- read-only commands: `git status`, `git diff`, `git log`, `git show`, `git rev-parse`
+- `git reset --hard <resolve_base_pre>`, only in step 2 of the escape hatch
+
+Your only commit is the one `git merge --continue` makes. Pushing and all GitHub
+activity (`gh`, the API, labels, comments) belong to later stages.
+
+Run every git command that can commit or open an editor exactly like this:
+
+```
+GIT_EDITOR=true git -c user.name=fabro -c user.email=noreply@fabro.sh merge --no-edit origin/<base_ref>
+GIT_EDITOR=true git -c user.name=fabro -c user.email=noreply@fabro.sh merge --continue
+```
+
+Some sandboxes have no git identity, and the commit fails with "Committer identity
+unknown". There is no terminal, so an editor would hang until the stage times out.
+Each command may run in a fresh shell, so `export` does not carry over: keep the
+settings on the same command line.
+
+## Procedure
+
+1. **Start the merge** with the first command above. Then list the conflicted files:
+    `git diff --name-only --diff-filter=U`.
+
+2. **Resolve each conflicted file.** Read both sides and work out what this PR
+    changes and what landed on the base. Then:
+    - Keep both intents. The PR's changes survive, and the base's changes survive
+      wherever they don't overlap with the PR's.
+    - If the base already makes the same change as this PR (another PR did the same
+      work), keep the base's version and drop the PR's now-redundant copy.
+    - If combining the two sides duplicates code, remove the duplicate.
+    - Be **surgical**: edit only the conflicted hunks. Leave unrelated code exactly as
+      it is.
+    - To take one side of a file in full, read it with `git show :2:<path>` (this
+      branch) or `git show :3:<path>` (the base) and write that content to the file.
+
+    If a conflict can't be resolved with confidence from the code, go to the escape
+    hatch.
+
+3. **Stage and commit.** `git add` each resolved file, then run the `merge --continue`
+    command once. If git reports unmerged paths, return to step 2.
+
+4. **Validate narrowly**, and only when a cheap, obvious check covers the code you
+    touched:
+    - Tests: `run_tests TARGET <test files or node ids>`, with TARGET from its list. Use
+      the shell only if `run_tests` reports no targets.
+    - Typecheck or lint: the shell.
+
+    A later stage runs the full suite (`./.fabro/ci.sh`), so limit this step to the
+    files you touched.
+
+5. **Confirm in git** that the merge is done. All four checks must pass:
+    - `git status` shows no merge in progress.
+    - `git diff --name-only --diff-filter=U` prints nothing.
+    - No conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain in the files the
+      merge touched.
+    - `git merge-base --is-ancestor origin/<base_ref> HEAD` exits 0.
+
+    The next stage, `resolve_base_gate`, runs these same checks against git. It does
+    not read your report, and it reverts your work if any check fails.
+
+## Escape hatch
+
+Abort when you can't justify a resolution from the code: the intent is genuinely
+ambiguous, or both sides rewrote the same logic in ways that can't both survive.
+Aborting is a correct, expected outcome. A human resolves the conflict, and the PR's
+approval still stands.
+
+1. `git merge --abort`
+2. Check that `git rev-parse HEAD` equals `$(cat /tmp/fabro/resolve_base_pre)`. If it
+    doesn't, run `git reset --hard $(cat /tmp/fabro/resolve_base_pre)`.
+3. Stop.
+
+## Report
+
+Report what git shows. State the outcome (merged or aborted), each file you resolved
+with one line on how, and the validation you ran with its result. If you aborted,
+name the conflict that blocked you and why it couldn't be resolved from the code.

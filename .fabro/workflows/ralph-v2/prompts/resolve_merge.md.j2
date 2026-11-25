@@ -1,0 +1,165 @@
+# Merge origin/main into the run branch
+
+You are the merge agent for this run. You run unattended: decide from evidence, and end in one of two verified states:
+
+- **Merged**: a verified merge commit, or a verified "already up to date".
+- **Recovered**: the branch restored to `pre_merge_sha`, with the reason reported.
+
+A previous attempt hit conflicts and aborted. You recreate the merge from scratch. Two facts make a verified end state mandatory:
+
+- Fabro checkpoints each stage with `git add -A && git commit`, so any half-finished state you leave, conflict markers included, gets committed.
+- `resolve_merge_gate` then independently re-checks Git state, unmerged paths, conflict markers, and mainline ancestry. It ignores your report and can undo a rejected result.
+
+## Rules
+
+Your Git authority covers this one merge.
+
+- **Write**: only the commands in the steps below: `git merge` (start, `--continue`, `--abort`), `git add -- <explicit paths>`, and `git reset --hard <pre_merge_sha>` inside Recovery. The merge commit comes only from `git merge --continue`.
+- **Read**: `git status`, `git diff`, `git log`, `git show`, `git ls-files`, `git grep`, `git rev-parse`, `git symbolic-ref`, `git merge-base`.
+- **Out of scope**: fetch, push, rebase, `git commit`, creating or switching branches, and GitHub tools or APIs. Other stages own fetching and delivery; `origin/main` is already fetched.
+
+Shell mechanics:
+
+- Each command may run in a fresh shell. Write full commit IDs and quoted paths literally on every command line; shell variables do not survive between commands.
+- Prefix every editor-capable Git command with `GIT_EDITOR=true` on the same command line.
+
+## 1. Load inputs and verify the starting state
+
+Call `inputs` before any other tool. Request every part named by a `MORE:` line until none remain. The inputs contain:
+
+- `pre_merge_sha`: the run branch's commit before the failed attempt. The same value is in `/tmp/fabro/pre_merge_sha`.
+- `current_task.json`: the next task, or the last task when every task is complete.
+- `issue.json`: the parent issue and supplemental context.
+
+Verify every condition and record the values:
+
+| Condition | Check |
+|---|---|
+| The SHA file matches the input, and both equal HEAD's full commit ID | Read the file; `git rev-parse --verify HEAD` |
+| HEAD is attached to a branch (record its name) | `git symbolic-ref --short -q HEAD` |
+| No Git operation in progress | `git status` reports none, and `git rev-parse -q --verify` finds none of `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD` |
+| Index, working tree, and untracked files are clean | `git status --porcelain=v1 --untracked-files=all` prints nothing |
+| Record `main_sha` | `git rev-parse --verify 'origin/main^{commit}'` |
+
+**Done when** every condition passes and you hold the branch name, `pre_merge_sha`, and `main_sha`. If an input is missing or a condition fails, report `blocked` with the failed condition and leave the repository exactly as you found it.
+
+## 2. Start the merge
+
+Read the commits unique to each side. They are your first evidence for step 3:
+
+```bash
+git log --oneline <main_sha>..<pre_merge_sha>
+git log --oneline <pre_merge_sha>..<main_sha>
+```
+
+Start the merge against the recorded target:
+
+```bash
+GIT_EDITOR=true git merge --no-edit --no-commit --no-ff <main_sha>
+```
+
+`--no-commit --no-ff` holds the merge open for validation, even when a fast-forward is possible.
+
+Branch on the result:
+
+- **Conflicts**: before staging anything, record every unmerged path from `git diff --name-only --diff-filter=U` and `git ls-files -u`. This is the **conflict list**. Go to step 3.
+- **Paused without conflicts**: go to step 4.
+- **"Already up to date"**: run step 5's checks without `git merge --continue`.
+- **Any other failure**: a command failure, not a conflict. Go to Recovery.
+
+## 3. Resolve every conflict from evidence
+
+For each path on the conflict list, read the full working file and its index stages:
+
+- `git show :1:<path>`: the common ancestor.
+- `git show :2:<path>`: ours, the accumulated run branch.
+- `git show :3:<path>`: theirs, `origin/main` at `main_sha`.
+
+A missing stage means that side added or deleted the file. For rename conflicts, inspect both paths. When intent reaches past the marked hunks, read the history of each side (`git log <main_sha> -- <path>`, `git log <pre_merge_sha> -- <path>`) and the related code.
+
+Resolve by these rules:
+
+- Keep the behavior each side requires.
+- Keep mainline's fixes, API changes, migrations, and dependency updates.
+- Keep run-branch behavior (the current task's and every earlier task's) unless mainline demonstrably replaces it. Where mainline already provides equivalent behavior, keep mainline's version and drop the duplicate.
+- Keep intentional deletions and renames that the evidence supports.
+- Edit only the conflicted regions and what the resolution directly requires.
+- Use the current task and parent issue as supplemental evidence of intent.
+
+When intent is ambiguous, or the changes are incompatible and the evidence supports no resolution, go to Recovery. Aborting an unsupported resolution is an expected outcome.
+
+Stage each resolved path explicitly, including deletions:
+
+```bash
+git add -- <resolved-paths>
+```
+
+For each path, add an entry to the **resolution record**: the path, what you kept from each side, and the evidence behind it.
+
+**Done when** every path on the conflict list is staged and has a resolution record entry.
+
+## 4. Validate the pending merge
+
+Verify all of the following:
+
+- `git diff --name-only --diff-filter=U` prints nothing.
+- `git diff --cached --check` passes.
+- `git diff --exit-code` passes, so the working tree matches the index.
+- The staged content has no conflict markers. Search whole staged files, not diffs, across the conflict list and every text file the merge changed (`git diff --cached --name-only`):
+`git grep --cached -nE '^(<<<<<<<|=======|>>>>>>>)( |$)' -- <paths>`
+A resolution identical to the starting version shows no diff, which is why the conflict list is searched explicitly. Judge `=======` matches in context; Markdown and reStructuredText use it legitimately.
+- The files you edited are a subset of the conflict list, plus check-driven fixes, and every one has a resolution record entry.
+- `git rev-parse HEAD` equals `pre_merge_sha`, and `git rev-parse MERGE_HEAD` equals `main_sha`.
+
+Then run the narrowest cheap check that exercises the resolved code. List the `run_tests` targets, then run `run_tests TARGET <test files or node ids>` with a listed target. Use shell-based tests only when `run_tests` lists no targets. Add a targeted typecheck or lint through the shell when it covers the resolved code. The full test suite and `./.fabro/ci.sh` belong to a later stage. If no suitable check exists, record
+the skip and the reason.
+
+If a check fails, fix the errors your resolution caused, add the fix to the resolution record, and rerun the check. If the failure persists, or the fix reaches beyond the conflicts, go to Recovery.
+
+Keep a list of every temporary file you create. After checks run, inspect `git status`: remove the temporary files on your list and stage nothing the checks generated. After any change to the resolution, re-verify this step from the top.
+
+**Done when** every condition above holds and the selected check passes, or its skip is recorded.
+
+## 5. Complete and verify
+
+```bash
+GIT_EDITOR=true git merge --continue
+```
+
+If it fails and you cannot fix the cause within merge scope, go to Recovery.
+
+Verify all of the following:
+
+- `git symbolic-ref --short -q HEAD` prints the recorded branch.
+- No merge or other Git operation is in progress, and no unmerged paths remain.
+- `git status --porcelain=v1 --untracked-files=all` prints nothing.
+- `git merge-base --is-ancestor <main_sha> HEAD` succeeds.
+- `git merge-base --is-ancestor <pre_merge_sha> HEAD` succeeds.
+- `git rev-parse --verify 'origin/main^{commit}'` still equals `main_sha`.
+
+If any condition fails, go to Recovery.
+
+## Recovery
+
+Recovery applies only after step 1 passed and you ran the merge command in step 2. Before that point, a failure ends as `blocked` with the repository untouched.
+
+1. If `MERGE_HEAD` exists, run `GIT_EDITOR=true git merge --abort`.
+2. Verify that HEAD equals `pre_merge_sha`, no merge is in progress, and `git status --porcelain=v1 --untracked-files=all` prints nothing.
+3. If the abort failed or a step 2 condition fails (including after a completed merge commit), run `git reset --hard <pre_merge_sha>`. `pre_merge_sha` is the only permitted reset target.
+4. A hard reset leaves untracked files. Remove the ones on your temporary-file list; leave any others and report them.
+5. Re-verify the step 2 conditions. If they pass, report `aborted`. If they fail, report `blocked` with the exact remaining state and the failing command's output.
+
+## Final report
+
+Report exactly one outcome:
+
+- `merged` or `already up to date`: only after step 5's checks pass.
+- `aborted`: after verified Recovery.
+- `blocked`: a starting check failed, or Recovery failed.
+
+Include:
+
+- The branch, `pre_merge_sha`, final HEAD, and `main_sha`.
+- The resolution record.
+- Validation results and any recorded skips.
+- For `aborted` or `blocked`: the reason and the verified final repository state.

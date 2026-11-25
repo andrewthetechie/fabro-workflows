@@ -4,6 +4,7 @@ Stage manifest's `box` field (more-local-inference C1).
     python3.11 -m unittest discover -s ops/tests
 """
 import importlib.util
+import copy
 import unittest
 from pathlib import Path
 
@@ -131,6 +132,18 @@ class Box(unittest.TestCase):
                 "plan_review": True,
                 "resolve_base": True,
             },
+            # The trial's second arm (ADR 0034): the same box stages, with `resolve_merge`
+            # moved onto the box and the fourth rung gone.
+            "ralph-v2": {
+                "iterate_t1": True,
+                "learn": True,
+                "local_spec": True,
+                "local_standards": True,
+                "plan": True,
+                "plan_review": True,
+                "resolve_base": True,
+                "resolve_merge": True,
+            },
             # A leased run holds its box (ADR 0033): its stages block a background fill.
             "issue-sharpen": {
                 "comprehend": True,
@@ -172,6 +185,62 @@ class Box(unittest.TestCase):
             "refute_fix": {"live": True, "prompt": "p",
                            "box": {"backlog": "plan-arm"}}}))
         self.assertTrue(any("only true or false" in p for p in problems), problems)
+
+
+class Rungs(unittest.TestCase):
+    """rule 6 (ADR 0034 E16): a package's Iteration rungs are one stage under several ids.
+
+    `ralph` has four rungs and `ralph-v2` three, and each package's check names that
+    package: the rule used to be ralph's alone.
+    """
+
+    def src(self) -> dict:
+        return copy.deepcopy(fim.load_source())
+
+    def test_the_real_source_is_clean(self):
+        self.assertEqual(fim.rung_problems(fim.load_source()), [])
+
+    def test_a_package_missing_a_rung_is_named(self):
+        for wf, expected in (
+            ("ralph", "rule6: ralph is missing one of its iterate_t1, iterate_t2, iterate_t3, iterate_t4"),
+            ("ralph-v2", "rule6: ralph-v2 is missing one of its iterate_t1, iterate_t2, iterate_t3"),
+        ):
+            with self.subTest(wf=wf):
+                src = self.src()
+                del src["workflows"][wf]["stages"]["iterate_t3"]
+                self.assertEqual(fim.rung_problems(src), [expected])
+
+    def test_a_rung_that_differs_from_its_siblings_is_named(self):
+        src = self.src()
+        src["workflows"]["ralph-v2"]["stages"]["iterate_t2"]["prompt"] = "p"
+        self.assertEqual(fim.rung_problems(src), [
+            "rule6: ralph-v2's iterate_t1..iterate_t3 specs differ; they are one stage under "
+            "several node ids"])
+
+    def test_the_box_field_is_the_one_the_rungs_may_differ_in(self):
+        src = self.src()
+        src["workflows"]["ralph-v2"]["stages"]["iterate_t1"]["box"] = "plan-arm"
+        self.assertEqual(fim.rung_problems(src), [])
+
+
+class ManifestSize(unittest.TestCase):
+    """rule 7: a generated manifest is one environment string, and Linux caps it at 131,072.
+
+    Past that every stage start of a run in that package fails, so the size is checked
+    offline, with a margin (120,000) for the escaping a growing manifest adds.
+    """
+
+    def test_the_real_manifests_fit(self):
+        self.assertEqual(fim.body_problems(fim.load_source(), fim.load_schemas()), [])
+
+    def test_a_package_over_the_limit_is_named(self):
+        src = copy.deepcopy(fim.load_source())
+        stage = src["workflows"]["ralph-v2"]["stages"]["plan"]
+        stage["inputs"][0]["about"] = "x" * (fim.MANIFEST_MAX_BYTES + 1)
+        problems = fim.body_problems(src, fim.load_schemas())
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("rule7: ralph-v2 generated manifest is", problems[0])
+        self.assertIn(f"over the {fim.MANIFEST_MAX_BYTES:,}-byte", problems[0])
 
 
 if __name__ == "__main__":
