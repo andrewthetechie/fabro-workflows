@@ -94,6 +94,8 @@ CHECK_PR="${CHECK_PR:-1}"
 # (`workflow.toml selects graph workflow.fabro, but the version entrypoint is
 # workflow.toml`). It is also the key the graph must appear under in `files`.
 ENTRYPOINT="workflows/pr-review/workflow.fabro"
+# The package a version carries: the entrypoint's own, plus `workflows/_shared/`.
+PKG="${ENTRYPOINT#workflows/}"; PKG="${PKG%%/*}"
 
 die() { printf '%s\n' "$1" >&2; exit 1; }
 warn() { printf 'warning: %s\n' "$1" >&2; }
@@ -275,21 +277,24 @@ git clone --depth 1 --branch "$WORKFLOWS_REF" \
 # #13). Captured, not printed: the last stdout line of this script is the run id.
 SHA="$(git -C "$tmp/wf" rev-parse HEAD)" || die "could not read the commit of the $WORKFLOWS_REF clone"
 
-# The whole `.fabro/` tree, not the pr-review package: that is what makes the `../`
-# import resolvable. The cost is that a version now carries all three packages (26
-# files today) and the entrypoint picks one of them, which is fine — registration is
-# content-addressed and idempotent, and the extra bytes are a few round trips of
-# prompt text once per fire.
+# The version is rooted at `.fabro/`, not at the package, which is what makes the
+# `../` import resolvable; of that tree it carries the pr-review package and
+# `workflows/_shared/`, and registration is content-addressed and idempotent, so the
+# same package is registered once per commit of `main`.
 pkg="$tmp/wf/.fabro"
 [ -f "$pkg/$ENTRYPOINT" ] \
   || die "$WORKFLOWS_REPO at $WORKFLOWS_REF has no $ENTRYPOINT"
 
 # Enumerate from the directory, never a hardcoded list: a prompt added to pr-review
 # later would silently fail to register, and the run would then die at admission on an
-# unresolved @prompts reference. Now that the root is `.fabro/`, this is also what picks
-# up `workflows/_shared/review-merge/review-merge.fabro`.
-( cd "$pkg" && find . -type f | sed 's|^\./||' | sort ) > "$tmp/paths" \
+# unresolved @prompts reference. The enumeration is the whole `.fabro/` tree and the
+# filter keeps this package and `workflows/_shared/`, so a new package is never
+# uploaded by a fire that does not run it (ralph-v2 01: the whole tree is over the
+# server's 2 MiB version limit).
+( cd "$pkg" && find . -type f | sed 's|^\./||' | sort ) > "$tmp/paths.all" \
   || die "could not enumerate the .fabro tree"
+
+grep -E "^workflows/($PKG|_shared)/" "$tmp/paths.all" > "$tmp/paths"
 
 [ -s "$tmp/paths" ] || die "the .fabro tree at $WORKFLOWS_REF contains no files"
 grep -qx "$ENTRYPOINT" "$tmp/paths" \

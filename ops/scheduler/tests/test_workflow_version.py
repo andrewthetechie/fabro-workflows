@@ -11,6 +11,9 @@ the `remote` parameter is for.
 
 from __future__ import annotations
 
+import json
+import posixpath
+import re
 import subprocess
 from pathlib import Path
 
@@ -18,6 +21,7 @@ import pytest
 
 from fabro_scheduler.workflow_version import (
     BACKLOG_ENTRYPOINT,
+    ENTRYPOINTS,
     read_box_stages,
     MAX_FILE_BYTES,
     RALPH_ENTRYPOINT,
@@ -25,10 +29,17 @@ from fabro_scheduler.workflow_version import (
     WorkflowVersionError,
     build_version_payload,
     clone_fabro_tree,
+    package_paths,
 )
 
 ENTRYPOINT = "workflows/backlog/workflow.fabro"
 SHARED = "workflows/_shared/review-merge/review-merge.fabro"
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# `ops/check-payload.py`'s budget: the headroom a package keeps under the server's 2 MiB
+# version cap, because one package over it stops every workflow's dispatch (ralph-v2 01).
+PAYLOAD_BUDGET_BYTES = 1_500_000
 
 
 def test_rooted_at_fabro_includes_shared_and_has_no_parent_segments(tmp_path):
@@ -97,6 +108,86 @@ def test_a_symlink_is_refused(tmp_path):
 
     with pytest.raises(WorkflowVersionError, match="symlink"):
         build_version_payload(tmp_path, ENTRYPOINT)
+
+
+def test_the_filter_keeps_the_package_and_shared_and_drops_the_rest():
+    """A version is one package plus `_shared/`, never the whole `.fabro/` (C9)."""
+    paths = [
+        "workflows/_io/manifest.json",
+        SHARED,
+        "workflows/backlog/prompts/coder.md.j2",
+        "workflows/backlog/workflow.fabro",
+        "workflows/backlogshot/workflow.fabro",
+        "workflows/ralph/workflow.fabro",
+    ]
+
+    assert package_paths(paths, ENTRYPOINT) == [
+        SHARED,
+        "workflows/backlog/prompts/coder.md.j2",
+        "workflows/backlog/workflow.fabro",
+    ]
+
+
+def test_a_broken_file_in_another_package_does_not_fail_this_dispatch(tmp_path):
+    # `_io/` and the other packages are not read at all, so a file that cannot decode there
+    # fails that package's dispatch and not this one.
+    (tmp_path / "workflows/backlog").mkdir(parents=True)
+    (tmp_path / "workflows/backlog/workflow.fabro").write_text("digraph B {}")
+    (tmp_path / "workflows/ralph").mkdir(parents=True)
+    (tmp_path / "workflows/ralph/prompts.md.j2").write_bytes(b"\xff\xfe\x00bad")
+    (tmp_path / "workflows/_io").mkdir(parents=True)
+    (tmp_path / "workflows/_io/broken.json").write_bytes(b"\xff\xfe")
+
+    payload = build_version_payload(tmp_path, ENTRYPOINT)
+
+    assert sorted(payload["files"]) == ["workflows/backlog/workflow.fabro"]
+
+
+def test_an_entrypoint_outside_workflows_is_refused(tmp_path):
+    # The filter reads the package out of the entrypoint, so the shape is checked: anything
+    # but `workflows/<package>/<file>` cannot name a package to upload.
+    (tmp_path / "prompts").mkdir(parents=True)
+    (tmp_path / "prompts/x.md").write_text("hi")
+    with pytest.raises(WorkflowVersionError, match="must be workflows/<package>/<file>"):
+        build_version_payload(tmp_path, "prompts/x.md")
+    for entrypoint in ("workflow.fabro", "workflows/backlog", "workflows/_shared/x/y.fabro"):
+        with pytest.raises(WorkflowVersionError, match="must be workflows/<package>/<file>"):
+            package_paths([], entrypoint)
+
+
+def test_every_entrypoint_builds_from_this_repository_under_the_budget():
+    """The real tree, as `ops/check-payload.py` measures it in `make check`."""
+    fabro = REPO_ROOT / ".fabro"
+    for workflow, entrypoint in sorted(ENTRYPOINTS.items()):
+        payload = build_version_payload(fabro, entrypoint)
+        size = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        assert payload["entrypoint"] == entrypoint
+        assert size <= PAYLOAD_BUDGET_BYTES, f"{workflow}: {size} bytes"
+
+
+def test_every_reference_of_every_entrypoint_graph_travels_with_it():
+    """Every `import=` and `prompt=@` a package's graph names is in that package's payload.
+
+    A reference outside the package would resolve from the clone and fail at admission from
+    the version, which is the failure the old whole-tree payload could not have.
+    """
+    fabro = REPO_ROOT / ".fabro"
+    missing: list[str] = []
+    references = 0
+    for workflow, entrypoint in sorted(ENTRYPOINTS.items()):
+        files = build_version_payload(fabro, entrypoint)["files"]
+        text = (fabro / entrypoint).read_text()
+        targets = re.findall(r'import="([^"]+)"', text)
+        targets += re.findall(r'prompt="@([^"]+)"', text)
+        for target in targets:
+            references += 1
+            resolved = posixpath.normpath(
+                posixpath.join(posixpath.dirname(entrypoint), target)
+            )
+            if resolved not in files:
+                missing.append(f"{workflow}: {entrypoint} needs {resolved}")
+    assert references > 0
+    assert missing == []
 
 
 def test_a_bad_repo_or_ref_is_refused_before_git_runs():
@@ -233,11 +324,9 @@ def test_read_box_stages_keeps_true_and_plan_arm_and_drops_false(tmp_path):
 def test_read_box_stages_reads_the_real_generated_block(tmp_path):
     """The block is JSON inside a TOML literal string, exactly as the generator writes
     it — and a mis-parse would leave the lane failing closed and starting nothing."""
-    import json
-
     from fabro_scheduler.workflow_version import read_box_stages as read
 
-    source = Path(__file__).resolve().parents[3] / ".fabro/workflows/_io/manifest.json"
+    source = REPO_ROOT / ".fabro/workflows/_io/manifest.json"
     if not source.exists():  # pragma: no cover - the repo always has it
         pytest.skip("no source manifest")
     generated = json.loads(source.read_text())

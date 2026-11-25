@@ -17,9 +17,13 @@ forced, and both are verified failures otherwise — the reasoning and the exact
 * naming `workflow.toml` returns 422 `workflow.toml selects graph workflow.fabro,
   but the version entrypoint is workflow.toml`.
 
-The cost is that a version carries all three packages (26 files, ~290 KB today),
-not just the one being run. That is accepted: registration is content-addressed
-and idempotent, so the same bytes return the same id and nothing accumulates.
+**A version carries one package, not the whole tree.** `package_paths` keeps the
+entrypoint's package and `workflows/_shared/`, and drops every other path: another
+package's files, and `_io/`, which each `workflow.toml` embeds. That is a hard limit
+rather than tidiness — the `.fabro` tree was 1,993,895 bytes of compact JSON on
+2026-11-24 against the server's 2 MiB `WorkflowVersion` cap, and the refusal stops
+every workflow's dispatch, not the oversized one's (ralph-v2 01). Registration is
+content-addressed and idempotent either way, so the same bytes return the same id.
 
 `workflow_dependencies` stays `{}`. It keys **child-workflow version ids** for
 `stack.child_workflow`, which no graph here uses; `import=` graphs travel in
@@ -41,7 +45,7 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,9 +60,9 @@ WORKFLOWS_REPO = "andrewthetechie/fabro-workflows"
 WORKFLOWS_REF = "main"
 
 # The graph each workflow runs. Relative to `.fabro/`, and the key it must appear
-# under in `files`. A version is the whole `.fabro/` tree PLUS one entrypoint, so the
-# two workflows share every file and differ only in which graph is entered; that is
-# why the cache below is keyed by the pair and not by the commit.
+# under in `files`. A version is one package plus `workflows/_shared/` PLUS its
+# entrypoint, so two packages of one commit are two different payloads; that is why
+# the cache below is keyed by the pair and not by the commit.
 BACKLOG_ENTRYPOINT = "workflows/backlog/workflow.fabro"
 RALPH_ENTRYPOINT = "workflows/ralph/workflow.fabro"
 # The first box-only package (more-local-inference task 04). Tasks 06-10 add theirs.
@@ -110,6 +114,12 @@ GIT_ERROR_CHARS = 300
 # rather than merely out of the URL.
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
+# The one shape an entrypoint may have. `package_paths` reads the package out of it.
+_ENTRYPOINT = re.compile(r"^workflows/([^/]+)/[^/]+$")
+
+# The shared phase graphs and their prompts travel with every package that imports them.
+SHARED_PREFIX = "workflows/_shared/"
+
 
 class WorkflowVersionError(RuntimeError):
     """The tree could not be fetched, read or turned into a version payload.
@@ -123,9 +133,11 @@ class WorkflowVersionError(RuntimeError):
 class FabroTree:
     """A checkout of the workflow repository, at one commit.
 
-    `directory` is the `.fabro` subdirectory — the version's root — not the
-    checkout root. Nothing outside `.fabro/` is ever sent: `ops/`, `docs/` and the
-    three published packages' prose are all irrelevant to a run.
+    `directory` is the `.fabro` subdirectory, not the checkout root: nothing outside
+    `.fabro/` is ever sent, and `ops/`, `docs/` and the packages' prose are all
+    irrelevant to a run. Of `.fabro/` a dispatch uploads one package and
+    `workflows/_shared/` (`package_paths`), but the whole checkout is here because
+    `read_box_stages` reads a package's `workflow.toml` out of it.
     """
 
     directory: Path
@@ -169,36 +181,63 @@ def read_box_stages(fabro_dir: Path, workflow: str) -> dict[str, str]:
     return stages
 
 
+def package_paths(paths: Sequence[str], entrypoint: str) -> list[str]:
+    """The paths one dispatch of `entrypoint` uploads, in the order they arrive.
+
+    `entrypoint` must be `workflows/<package>/<file>`, the shape every `ENTRYPOINTS`
+    value has. What travels is that package's files and `workflows/_shared/`'s, and
+    nothing else: a version rooted at `.fabro/` was 1,993,895 bytes of compact JSON
+    on 2026-11-24 against the server's 2 MiB cap, and one package over it stops every
+    workflow's dispatch. Nothing outside those two trees is read by a run — no graph
+    imports another package's files, and `_io/` is embedded in each `workflow.toml`
+    (ralph-v2 01, C9).
+    """
+    matched = _ENTRYPOINT.match(entrypoint)
+    if matched is None:
+        raise WorkflowVersionError(
+            f"{entrypoint!r}: the entrypoint must be workflows/<package>/<file>"
+        )
+    package = f"workflows/{matched.group(1)}/"
+    return [
+        path
+        for path in paths
+        if path.startswith(package) or path.startswith(SHARED_PREFIX)
+    ]
+
+
 def build_version_payload(fabro_dir: Path, entrypoint: str) -> dict:
     """The `WorkflowVersion` body for `fabro_dir`, rooted there.
 
     `entrypoint` is relative to `fabro_dir`, e.g.
-    `workflows/backlog/workflow.fabro`. Every file under `fabro_dir` is read as
-    UTF-8 and keyed by its POSIX relative path; the entrypoint must be one of
-    them.
+    `workflows/backlog/workflow.fabro`, and decides what travels: its package and
+    `workflows/_shared/` (`package_paths`), each read as UTF-8 and keyed by its POSIX
+    relative path. The entrypoint must be one of the tree's files.
 
     Raises `WorkflowVersionError` — naming the path at fault — for a tree that
     cannot be registered: a non-UTF-8 file, a path the server's `WorkflowPath`
-    rejects, or a file count or size over the documented limits. Non-UTF-8 is a
-    hard error rather than a skip, because the file that fails to decode is
-    exactly the one whose absence breaks a run at admission.
+    rejects, or a file count or size over the documented limits. Only the files that
+    travel are read, so a broken file in another package fails that package's
+    dispatch and not this one. Non-UTF-8 is a hard error rather than a skip, because
+    the file that fails to decode is exactly the one whose absence breaks a run at
+    admission.
     """
     if not fabro_dir.is_dir():
         raise WorkflowVersionError(f"{fabro_dir}: not a directory")
 
+    paths = _relative_paths(fabro_dir)
+    if entrypoint not in paths:
+        _check_path(entrypoint)
+        raise WorkflowVersionError(
+            f"{fabro_dir}: entrypoint {entrypoint!r} is not in the tree"
+        )
+
     files: dict[str, str] = {}
-    for relative in _relative_paths(fabro_dir):
+    for relative in package_paths(paths, entrypoint):
         if len(files) >= MAX_FILES:
             raise WorkflowVersionError(
                 f"{fabro_dir}: more than {MAX_FILES} files; the server accepts at most that"
             )
         files[relative] = _read_text(fabro_dir / relative, relative)
-
-    if entrypoint not in files:
-        _check_path(entrypoint)
-        raise WorkflowVersionError(
-            f"{fabro_dir}: entrypoint {entrypoint!r} is not in the tree"
-        )
 
     payload = {
         "entrypoint": entrypoint,
@@ -291,11 +330,11 @@ class VersionCache:
     of `main` instead of one per dispatch; a restart that lost it would re-POST
     identical bytes and get the identical id back.
 
-    The key is the PAIR. One commit of `main` is two versions — `backlog`'s graph
-    and `ralph`'s — because the entrypoint is part of the version, not of the tree.
-    A cache keyed by the sha alone would hand a `ralph` dispatch `backlog`'s version
-    silently: the run would work the issue with the other workflow, and nothing in
-    the run would say so.
+    The key is the PAIR. One commit of `main` is one version per package — `backlog`'s
+    and `ralph`'s — because the entrypoint decides which package travels, not only
+    which graph is entered. A cache keyed by the sha alone would hand a `ralph`
+    dispatch `backlog`'s version silently, and the run would die at admission on an
+    entrypoint the version does not carry, naming nothing that points back here.
 
     No lock. Two dispatches racing on a cold cache both clone and both register,
     which is idempotent and harmless — unlike a lock held across a `git clone`,

@@ -44,15 +44,15 @@ def fake_checkout(tmp_path: Path) -> FakeCheckout:
     (root / "workflows/_shared/review-merge").mkdir(parents=True)
     (root / "workflows/backlog/workflow.fabro").write_text("digraph B {}")
     (root / "workflows/backlog/workflow.toml").write_text('name = "backlog"\n')
-    # Both entrypoints are in every checkout: a version is the whole `.fabro/`
-    # tree plus one graph, so the trial's second graph travels in the same files
-    # (ADR 0029 O21).
+    # Every package is in every checkout, and a version carries exactly one of them
+    # plus `workflows/_shared/` (ralph-v2 01): the fixture holds more than that, so a
+    # filter that stopped working shows up in a payload a test asserts on.
     (root / "workflows/ralph/workflow.fabro").write_text("digraph R {}")
     (root / "workflows/ralph/workflow.toml").write_text('name = "ralph"\n')
     (root / "workflows/_shared/review-merge/review-merge.fabro").write_text(
         "digraph S {}"
     )
-    # Two more packages, so a version carries more than the graph it enters.
+    # Two more packages, so there is something for a version NOT to carry.
     for workflow in ("pr-review", "box-noop"):
         (root / f"workflows/{workflow}").mkdir(parents=True)
         (root / f"workflows/{workflow}/workflow.fabro").write_text("digraph P {}")

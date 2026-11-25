@@ -461,8 +461,9 @@ def test_dispatch_once_creates_and_starts_one_run_for_the_named_issue(
     assert sent["environment_id"] == "python"
     assert sent["args"]["inputs"] == {"issue_number": 123, "coder_pool": "coders-a"}
     assert sent["target"]["repo"] == "andrewthetechie/jelly-swipe"
-    # The tree is the whole `.fabro`, entrypoint included: a package-rooted version
-    # cannot resolve `../_shared/review-merge/review-merge.fabro`.
+    # The version is rooted at `.fabro/`, entrypoint included, because a package-rooted
+    # one cannot resolve `../_shared/review-merge/review-merge.fabro`; it carries the
+    # backlog package and `workflows/_shared/`, and no other package.
     payload = json.loads(register.calls.last.request.content)
     assert payload["entrypoint"] == "workflows/backlog/workflow.fabro"
     assert "workflows/_shared/review-merge/review-merge.fabro" in payload["files"]

@@ -84,7 +84,14 @@ for f in .fabro/workflows/*/workflow.toml; do
 done
 echo "  ok: $n workflow.toml files parse"
 
-# 6. The output schemas (ADR 0016 D7) are compiled in Rust: cargo test in
+# 6. The dispatch payload. A run uploads one package plus `workflows/_shared/` (ralph-v2 01),
+#    and the server refuses a version over 2 MiB for EVERY workflow, not just the one that
+#    grew. This is the offline headroom check on that number: 1,500,000 bytes a package and
+#    512 KiB a file, one line of byte counts per package.
+say "python3.11 ops/check-payload.py"
+"$PY" ops/check-payload.py
+
+# 7. The output schemas (ADR 0016 D7) are compiled in Rust: cargo test in
 #    ops/fabro-io/ compiles every _io/schemas/*.schema.json under draft 2020-12.
 #    Compiling Rust is slow, so by default this runs only when that tree (or the
 #    schemas it reads) changed vs origin/main. CHECK_CARGO overrides: auto (default),
@@ -110,18 +117,18 @@ if [ "$RUN_CARGO" = 1 ]; then
     (cd ops/fabro-io && cargo test)
 fi
 
-# 7. The graph invariants (ADR 0019, #12): R1-R8 over every package and shared phase. The
+# 8. The graph invariants (ADR 0019, #12): R1-R8 over every package and shared phase. The
 #    checker reads the .fabro files itself, so it needs no fabro binary and runs on every push.
 say "python3.11 ops/check-graph-invariants.py"
 "$PY" ops/check-graph-invariants.py
 
-# 8. The onboarding tool (skills/setup-repo-for-factory) edits ops/ files by anchor and reads the
+# 9. The onboarding tool (skills/setup-repo-for-factory) edits ops/ files by anchor and reads the
 #    labels and images from them. A change here it cannot follow fails now, not during an onboarding.
 say "pytest skills/setup-repo-for-factory/tests"
 (unset VIRTUAL_ENV; uv run --no-project --quiet --python 3.11 --with 'pytest>=8' --with 'pyyaml>=6' \
     pytest -q -p no:cacheprovider skills/setup-repo-for-factory/tests)
 
-# 9. The planning skill (skills/plan-factory-issues): its lint is the tooling's definition of a
+# 10. The planning skill (skills/plan-factory-issues): its lint is the tooling's definition of a
 #    verifiable criterion, and its publisher writes the Child-issue markers the scheduler reads.
 say "pytest skills/plan-factory-issues/tests"
 (unset VIRTUAL_ENV; uv run --no-project --quiet --python 3.11 --with 'pytest>=8' \

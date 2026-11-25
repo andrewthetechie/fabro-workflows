@@ -1,5 +1,6 @@
 """The host scripts the automations lean on: the scout-summary Discord kind,
-fabro-run-prune.sh, fabro-sandbox-sweep.sh and fabro-monitor.sh's C3/C4/C8 checks."""
+fabro-run-prune.sh, fabro-sandbox-sweep.sh, fabro-monitor.sh's C3/C4/C8 checks, and the
+three fire scripts' version payload."""
 
 import datetime
 import time
@@ -582,3 +583,155 @@ def test_fabro_monitor_disk_gate(ck, tmp_path):
           '{"status":"ok","disk":{"gated":false,"free_gb":100.0,"min_free_gb":50,"hysteresis_gb":10}}')
     out = m.run(wedge="0")
     ck("monitor C8: an open disk gate restores the wedge alert", "1", count("DRY.*scheduler-wedged", file=out))
+
+
+# ---------------------------------------------------------------------------
+# The fire scripts' version payload (ralph-v2 01): a run uploads its own package and
+# `workflows/_shared/`, and never the whole `.fabro/` tree, which is 1.99 MB of compact
+# JSON against the server's 2 MiB version cap. git, curl and gh are stubs; the DRY_RUN
+# output is the payload the script would have posted.
+# ---------------------------------------------------------------------------
+FIRE_GIT = """#!/bin/sh
+case "$1" in
+  clone)
+    for dir in "$@"; do :; done
+    mkdir -p "$dir"
+    cp -R "$FIRE_TREE"/. "$dir"/
+    ;;
+  -C) echo "$FIRE_SHA" ;;
+esac
+exit 0
+"""
+
+FIRE_CURL = """#!/bin/sh
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    http*) url="$1" ;;
+  esac
+  shift
+done
+case "$url" in
+  */automations) body=$(cat "$FIRE_AUTOMATIONS"); code=200 ;;
+  *) body='{}'; code=500 ;;
+esac
+[ -n "$out" ] && printf '%s' "$body" > "$out"
+printf '%s' "$code"
+"""
+
+# `gh issue view --jq .state` prints OPEN; `gh api --include` starts with the status line,
+# which the fire scripts read with `head -1 | awk '{print $2}'`.
+FIRE_GH = """#!/bin/sh
+case "$1" in
+  api) printf 'HTTP/2.0 200\\n\\n' ;;
+  *) echo OPEN ;;
+esac
+exit 0
+"""
+
+
+def _fire_automations():
+    """One `backlog`, `ralph` and `pr-review` row for the test repository."""
+    return jq_n(
+        '[("backlog", "ralph", "pr-review") | {id: (. + "-jelly-swipe"), workflow: .,'
+        ' target: {repo: "andrewthetechie/jelly-swipe", branch: "main"},'
+        ' environment_id: "python", description: ""}]'
+        ' | {data: ., meta: {has_more: false}}'
+    ) + "\n"
+
+
+def _fire_section(out, tail):
+    """The JSON a DRY_RUN prints after `== POST .../<tail> ==`."""
+    lines = out.split("\n")
+    begin = next(i for i, line in enumerate(lines)
+                 if line.startswith("== POST ") and line.endswith(f"/{tail} =="))
+    body = []
+    for line in lines[begin + 1:]:
+        if line.startswith("== "):
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def _fire_keys(version):
+    """The `files` keys of a printed version payload, one per line."""
+    return jq('.files | keys | join("\\n")', data=version)
+
+
+class Fire:
+    """A stubbed host: a clone with four packages, and the automations the scripts read."""
+
+    def __init__(self, tmp_path):
+        self.fs = fs = tmp_path / "fire"
+        self.tree = fs / "wf"
+        for package in ("backlog", "ralph", "ralph-v2", "pr-review"):
+            write(self.tree / f".fabro/workflows/{package}/workflow.fabro",
+                  f"digraph {package} {{}}")
+            write(self.tree / f".fabro/workflows/{package}/prompts/coder.md.j2", package)
+        write(self.tree / ".fabro/workflows/_shared/review-merge/review-merge.fabro",
+              "digraph S {}")
+        write(self.tree / ".fabro/workflows/_io/manifest.json", "{}")
+        stub(fs / "bin", "git", FIRE_GIT)
+        stub(fs / "bin", "curl", FIRE_CURL)
+        stub(fs / "bin", "gh", FIRE_GH)
+        write(fs / "automations.json", _fire_automations())
+
+    def run(self, script, *args, **env):
+        return sh(script, *args, path=f"{self.fs / 'bin'}:{ORIG_PATH}",
+                  env={"FABRO_API_URL": "http://127.0.0.1:1/api/v1", "FABRO_API_TOKEN": "tok",
+                       "DRY_RUN": "1", "CHECK_ISSUE": "1", "CHECK_PR": "1",
+                       "FIRE_TREE": self.tree, "FIRE_SHA": "a" * 40,
+                       "FIRE_AUTOMATIONS": self.fs / "automations.json", **env})
+
+
+def test_fire_scripts_upload_one_package_and_shared(ck, tmp_path):
+    f = Fire(tmp_path)
+    scripts = (
+        ("backlog", REPO_ROOT / "ops/fabro-fire-backlog.sh", "backlog"),
+        ("ralph", REPO_ROOT / "ops/fabro-fire-ralph.sh", "ralph"),
+        ("pr-review", WF / "backlog/scripts/fire-pr-review.sh", "pr-review"),
+    )
+    for name, script, package in scripts:
+        r = f.run(script, "andrewthetechie/jelly-swipe", "7")
+        ck(f"fire {name}: a dry run exits 0", "0", r.rc)
+        version = _fire_section(r.out, "workflow-versions")
+        keys = _fire_keys(version)
+        ck(f"fire {name}: the entrypoint is the package's graph",
+           f"workflows/{package}/workflow.fabro", jq(".entrypoint", data=version))
+        ck(f"fire {name}: every path is this package's or _shared's", "0",
+           count(f"^workflows/{package}/\\|^workflows/_shared/", keys, flags="v"))
+        ck(f"fire {name}: _shared travels with the package", "1",
+           count("^workflows/_shared/review-merge/review-merge.fabro$", keys))
+        ck(f"fire {name}: _io does not travel", "0", count("^workflows/_io/", keys))
+
+
+def test_fire_ralph_serves_both_packages(ck, tmp_path):
+    f = Fire(tmp_path)
+    script = REPO_ROOT / "ops/fabro-fire-ralph.sh"
+
+    default = f.run(script, "andrewthetechie/jelly-swipe", "7")
+    ck("fire ralph: the default entrypoint is ralph's graph", "workflows/ralph/workflow.fabro",
+       jq(".entrypoint", data=_fire_section(default.out, "workflow-versions")))
+    ck("fire ralph: the default run label is ralph", "ralph",
+       jq(".args.labels.workflow", data=_fire_section(default.out, "runs")))
+
+    v2 = f.run(script, "andrewthetechie/jelly-swipe", "8", WORKFLOW="ralph-v2")
+    version = _fire_section(v2.out, "workflow-versions")
+    ck("fire ralph: WORKFLOW=ralph-v2 changes the entrypoint",
+       "workflows/ralph-v2/workflow.fabro", jq(".entrypoint", data=version))
+    ck("fire ralph: WORKFLOW=ralph-v2 changes the run's workflow label", "ralph-v2",
+       jq(".args.labels.workflow", data=_fire_section(v2.out, "runs")))
+    ck("fire ralph: WORKFLOW=ralph-v2 uploads ralph-v2's own prompts", "1",
+       count("^workflows/ralph-v2/prompts/coder.md.j2$", _fire_keys(version)))
+    ck("fire ralph: WORKFLOW=ralph-v2 uploads no file of the other arm", "0",
+       count("^workflows/ralph/", _fire_keys(version)))
+
+
+def test_fire_ralph_refuses_any_other_workflow(ck, tmp_path):
+    f = Fire(tmp_path)
+    r = f.run(REPO_ROOT / "ops/fabro-fire-ralph.sh", "andrewthetechie/jelly-swipe", "7",
+              WORKFLOW="backlog")
+    ck("fire ralph: WORKFLOW=backlog fails", "1", r.rc)
+    ck("fire ralph: the failure is the one sentence that names the value",
+       "WORKFLOW must be ralph or ralph-v2, got 'backlog'", r.out.split("\n")[-1])

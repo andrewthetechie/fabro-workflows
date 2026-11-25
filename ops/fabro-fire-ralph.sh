@@ -3,6 +3,10 @@
 #
 # Usage: fabro-fire-ralph.sh <owner/repo> <issue_number>
 #
+# `WORKFLOW=ralph-v2` fires the trial package instead (ADR 0034): the same three POSTs,
+# with the entrypoint's package and the run's `workflow` label swapped. Everything else
+# — the automation lookup, the pinned box, the usage — is identical.
+#
 # `fabro-fire-ralph.sh` with ralph's graph, its run label and its usage text. The
 # same rules apply: a run works exactly the `issue_number` it is given, no
 # automation path supplies one, and this is how a run is fired by hand when the
@@ -33,7 +37,9 @@
 # Env:
 #   FABRO_API_URL    http://10.10.0.32:32276/api/v1   includes the /api/v1 prefix
 #   FABRO_API_TOKEN  —                                required; never echoed
-#   WORKFLOWS_REPO   andrewthetechie/fabro-workflows  source of the ralph package
+#   WORKFLOW         ralph                            the graph to run: `ralph` or
+#                                                     `ralph-v2` (ADR 0034)
+#   WORKFLOWS_REPO   andrewthetechie/fabro-workflows  source of the package
 #   WORKFLOWS_REF    main                             ref to register
 #   DRY_RUN          1                                print payloads, send nothing
 #   CHECK_ISSUE      1                                pre-flight the issue is open
@@ -60,16 +66,19 @@
 set -u
 
 FABRO_API_URL="${FABRO_API_URL:-http://10.10.0.32:32276/api/v1}"
+WORKFLOW="${WORKFLOW:-ralph}"
 WORKFLOWS_REPO="${WORKFLOWS_REPO:-andrewthetechie/fabro-workflows}"
 WORKFLOWS_REF="${WORKFLOWS_REF:-main}"
 DRY_RUN="${DRY_RUN:-1}"
 CHECK_ISSUE="${CHECK_ISSUE:-1}"
 
-# The version is rooted at `.fabro/`, not at the backlog package, and the entrypoint
-# is package-qualified. Both are forced, not stylistic — see fire-pr-review.sh for
-# the two failure modes they avoid (an unresolved `import="../_shared/..."` and a
-# `workflow.toml` wrongly named as the entrypoint).
-ENTRYPOINT="workflows/ralph/workflow.fabro"
+# The version is rooted at `.fabro/`, not at the package, and the entrypoint is
+# package-qualified. Both are forced, not stylistic — see fire-pr-review.sh for the two
+# failure modes they avoid (an unresolved `import="../_shared/..."` and a `workflow.toml`
+# wrongly named as the entrypoint). `WORKFLOW` picks the package and the graph together.
+ENTRYPOINT="workflows/$WORKFLOW/workflow.fabro"
+# The package a version carries: the entrypoint's own, plus `workflows/_shared/`.
+PKG="${ENTRYPOINT#workflows/}"; PKG="${PKG%%/*}"
 
 die() { printf '%s\n' "$1" >&2; exit 1; }
 warn() { printf 'warning: %s\n' "$1" >&2; }
@@ -112,6 +121,10 @@ done
 
 case "$DRY_RUN" in 1) ;; 0) ;; *) die "DRY_RUN must be 0 or 1, got '$DRY_RUN'" ;; esac
 case "$CHECK_ISSUE" in 1) ;; 0) ;; *) die "CHECK_ISSUE must be 0 or 1, got '$CHECK_ISSUE'" ;; esac
+case "$WORKFLOW" in
+  ralph | ralph-v2) ;;
+  *) die "WORKFLOW must be ralph or ralph-v2, got '$WORKFLOW'" ;;
+esac
 case "$WORKFLOWS_REPO" in
   *[!A-Za-z0-9._/-]*) die "WORKFLOWS_REPO '$WORKFLOWS_REPO' is not a valid owner/name" ;;
 esac
@@ -221,12 +234,16 @@ pkg="$tmp/wf/.fabro"
 [ -f "$pkg/$ENTRYPOINT" ] \
   || die "$WORKFLOWS_REPO at $WORKFLOWS_REF has no $ENTRYPOINT"
 
-# Enumerate from the directory, never a hardcoded list: a prompt added to backlog
-# later would silently fail to register, and the run would then die at admission on
-# an unresolved @prompts reference. Rooting the version at `.fabro/` is also what
-# picks up `workflows/_shared/review-merge/review-merge.fabro`.
-( cd "$pkg" && find . -type f | sed 's|^\./||' | sort ) > "$tmp/paths" \
+# Enumerate from the directory, never a hardcoded list: a prompt added to the package
+# later would silently fail to register, and the run would then die at admission on an
+# unresolved @prompts reference. The enumeration is the whole `.fabro/` tree and the
+# filter keeps this package and `workflows/_shared/`, so the other arm is never uploaded
+# by a fire that does not run it (ralph-v2 01: the whole tree is over the server's 2 MiB
+# version limit).
+( cd "$pkg" && find . -type f | sed 's|^\./||' | sort ) > "$tmp/paths.all" \
   || die "could not enumerate the .fabro tree"
+
+grep -E "^workflows/($PKG|_shared)/" "$tmp/paths.all" > "$tmp/paths"
 
 [ -s "$tmp/paths" ] || die "the .fabro tree at $WORKFLOWS_REF contains no files"
 grep -qx "$ENTRYPOINT" "$tmp/paths" \
@@ -240,8 +257,8 @@ while IFS= read -r path; do
     || die "could not read $path from the .fabro tree"
 done < "$tmp/paths"
 
-# workflow_dependencies is {}: ralph imports no phase — its merge stage is a copy,
-# not a splice — so it declares no child workflow.
+# workflow_dependencies is {}: ralph and ralph-v2 import no phase — the merge stage is a
+# copy, not a splice — so neither declares a child workflow.
 jq -s --arg ep "$ENTRYPOINT" \
    '{entrypoint:$ep, files:(from_entries), workflow_dependencies:{}}' \
    "$tmp/entries.jsonl" > "$tmp/version.json" \
@@ -286,12 +303,13 @@ jq -n \
   --arg issue_s "$ISSUE_NUM" \
   --arg env_id "$env_id" \
   --arg sha "$SHA" \
+  --arg workflow "$WORKFLOW" \
   '{
     workflow_version_id: $vvid,
     target: $target,
     args: {
       inputs: { issue_number: $issue, coder_pool: "coders-a" },
-      labels: { source: "manual", issue: $issue_s, workflow_sha: $sha, workflow: "ralph" }
+      labels: { source: "manual", issue: $issue_s, workflow_sha: $sha, workflow: $workflow }
     },
     environment_id: $env_id
   }' > "$tmp/intent.json" || die "could not build the RunIntent payload"

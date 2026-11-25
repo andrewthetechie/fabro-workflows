@@ -266,7 +266,7 @@ def test_dispatch_registers_the_version_then_creates_and_starts_the_run(fake_che
     assert register.call_count == 1
     assert create.call_count == 1
 
-    # The register call carried the whole `.fabro` tree, entrypoint included.
+    # The register call carried the backlog package and `workflows/_shared/`.
     payload = json.loads(register.calls.last.request.content)
     assert payload["entrypoint"] == "workflows/backlog/workflow.fabro"
     assert "workflows/_shared/review-merge/review-merge.fabro" in payload["files"]

@@ -71,6 +71,8 @@ CHECK_ISSUE="${CHECK_ISSUE:-1}"
 # the two failure modes they avoid (an unresolved `import="../_shared/..."` and a
 # `workflow.toml` wrongly named as the entrypoint).
 ENTRYPOINT="workflows/backlog/workflow.fabro"
+# The package a version carries: the entrypoint's own, plus `workflows/_shared/`.
+PKG="${ENTRYPOINT#workflows/}"; PKG="${PKG%%/*}"
 
 die() { printf '%s\n' "$1" >&2; exit 1; }
 warn() { printf 'warning: %s\n' "$1" >&2; }
@@ -218,10 +220,14 @@ pkg="$tmp/wf/.fabro"
 
 # Enumerate from the directory, never a hardcoded list: a prompt added to backlog
 # later would silently fail to register, and the run would then die at admission on
-# an unresolved @prompts reference. Rooting the version at `.fabro/` is also what
-# picks up `workflows/_shared/review-merge/review-merge.fabro`.
-( cd "$pkg" && find . -type f | sed 's|^\./||' | sort ) > "$tmp/paths" \
+# an unresolved @prompts reference. The enumeration is the whole `.fabro/` tree and
+# the filter keeps this package and `workflows/_shared/`, so a new package is never
+# uploaded by a fire that does not run it (ralph-v2 01: the whole tree is over the
+# server's 2 MiB version limit).
+( cd "$pkg" && find . -type f | sed 's|^\./||' | sort ) > "$tmp/paths.all" \
   || die "could not enumerate the .fabro tree"
+
+grep -E "^workflows/($PKG|_shared)/" "$tmp/paths.all" > "$tmp/paths"
 
 [ -s "$tmp/paths" ] || die "the .fabro tree at $WORKFLOWS_REF contains no files"
 grep -qx "$ENTRYPOINT" "$tmp/paths" \
