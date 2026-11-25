@@ -655,7 +655,7 @@ def test_fabro_monitor_c11_box_degraded(ck, tmp_path):
     ck("monitor C11: a failover rate over 5% of 20+ visits fires", "1",
        count("box-degraded — ", file=out))
     ck("monitor C11: the message names the rate and its n", "1",
-       count(r"0\.1 of 40 box-stage visits failed over", file=out, flags="E"))
+       count(r"box-degraded — in the last 24h: 0\.1 of 40 box-stage visits failed over", file=out, flags="E"))
     ck("monitor C11: the failover rate alone names no other condition", "0",
        count("Task reviews missed|gpt-5.6-terra", file=out, flags="E"))
 
@@ -688,6 +688,19 @@ def test_fabro_monitor_c11_box_degraded(ck, tmp_path):
     out = _box_health(m, {**quiet, "visits": 19, "failovers": 9, "failover_rate": 0.5,
                           "reviews": 19, "miss_rate": 0.5})
     ck("monitor C11: under 20 visits and 20 reviews neither rate fires", "0",
+       count("box-degraded — ", file=out))
+
+    # The limits are exactly as written: 20 is enough, and a rate of exactly 5% or 2% is not
+    # over. Read at the edge, because 19 against 50% cannot tell `-ge 20` from `-gt 20`, nor
+    # `>` from `>=`.
+    out = _box_health(m, {**quiet, "visits": 20, "failovers": 2, "failover_rate": 0.1,
+                          "reviews": 20, "miss_rate": 0.05})
+    ck("monitor C11: 20 visits and 20 reviews are enough to fire on", "1|1",
+       count("0.1 of 20 box-stage visits failed over", file=out) + "|"
+       + count("0.05 of 20 Task reviews missed", file=out))
+    out = _box_health(m, {**quiet, "visits": 20, "failovers": 1, "failover_rate": 0.05,
+                          "reviews": 20, "miss_rate": 0.02})
+    ck("monitor C11: a rate of exactly 5% or 2% is not over the limit", "0",
        count("box-degraded — ", file=out))
 
     out = _box_health(m, "HTTP500")

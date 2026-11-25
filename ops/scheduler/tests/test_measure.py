@@ -517,16 +517,25 @@ def test_the_box_health_endpoint_windows_on_hours_and_refuses_0_and_169(store):
     from fabro_scheduler.app import build_app
     from test_precheck import config
 
-    # The endpoint windows on the real clock, so the run is stamped relative to it.
-    run(store, run_id="R1", at=datetime.now(UTC) - timedelta(hours=1))
+    # The endpoint windows on the real clock, so the runs are stamped relative to it. EDGE
+    # finished 24h05m ago: outside the default window, and inside one five minutes wider.
+    now = datetime.now(UTC)
+    run(store, run_id="R1", at=now - timedelta(hours=1))
     summary(store, run_id="R1")
     stage(store, run_id="R1", node="iterate_t1", visits=4, box_ms=60_000)
+    run(store, run_id="EDGE", at=now - timedelta(hours=24, minutes=5))
+    summary(store, run_id="EDGE")
+    stage(store, run_id="EDGE", node="iterate_t1", visits=6, box_ms=60_000)
     client = TestClient(build_app(config(), store))
     body = client.get("/api/box-health").json()
     assert body["window"]["hours"] == 24, "C11 reads the default window"
-    assert body["visits"] == 4
+    assert body["visits"] == 4, "a run that finished 24h05m ago is outside the default window"
     assert body["failover_rate"] == 0.0
-    assert client.get("/api/box-health?hours=168").status_code == 200
+    wider = client.get("/api/box-health?hours=25").json()
+    assert wider["visits"] == 10, "the window is the hours asked for"
+    assert wider["window"]["hours"] == 25, "and the document says so"
+    assert client.get("/api/box-health?hours=1").status_code == 200, "1 is the smallest window"
+    assert client.get("/api/box-health?hours=168").status_code == 200, "and 168 the largest"
     for bad in ("0", "169"):
         assert client.get(f"/api/box-health?hours={bad}").status_code == 400, bad
     # A non-integer is FastAPI's own 422, which names the parameter.

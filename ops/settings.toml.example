@@ -259,7 +259,8 @@ enabled = false
 # Kimi's 7-day quota spent keeps a non-GLM model in review-frontier instead of glm-5.3.
 # A CUSTOM provider, not the built-in `openrouter`: the built-in's catalog carries kimi-k3,
 # glm and gpt ids, and a configured built-in wins over an overlay provider (the moonshot
-# lesson above). `orfallback` owns only this model and reads ORFALLBACK_API_KEY from the vault.
+# lesson above). `orfallback` owns only the OpenRouter model rows below and reads
+# ORFALLBACK_API_KEY from the vault.
 [llm.providers.orfallback]
 display_name = "OpenRouter (kimi quota fallback)"
 base_url = "https://openrouter.ai/api/v1"
