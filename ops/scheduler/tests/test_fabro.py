@@ -266,10 +266,16 @@ def test_dispatch_registers_the_version_then_creates_and_starts_the_run(fake_che
     assert register.call_count == 1
     assert create.call_count == 1
 
-    # The register call carried the backlog package and `workflows/_shared/`.
+    # The register call carried the backlog package and `workflows/_shared/`, and nothing
+    # of another package (ralph-v2 01): the fixture also holds `ralph`, `pr-review` and
+    # `box-noop`.
     payload = json.loads(register.calls.last.request.content)
     assert payload["entrypoint"] == "workflows/backlog/workflow.fabro"
     assert "workflows/_shared/review-merge/review-merge.fabro" in payload["files"]
+    assert not any(
+        key.startswith(("workflows/ralph/", "workflows/pr-review/", "workflows/box-noop/"))
+        for key in payload["files"]
+    ), sorted(payload["files"])
 
 
 @respx.mock

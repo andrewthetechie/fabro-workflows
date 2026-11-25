@@ -289,8 +289,9 @@ pkg="$tmp/wf/.fabro"
 # later would silently fail to register, and the run would then die at admission on an
 # unresolved @prompts reference. The enumeration is the whole `.fabro/` tree and the
 # filter keeps this package and `workflows/_shared/`, so a new package is never
-# uploaded by a fire that does not run it (ralph-v2 01: the whole tree is over the
-# server's 2 MiB version limit).
+# uploaded by a fire that does not run it (ralph-v2 01: the whole tree is about 100 KB
+# under the server's 2 MiB version limit, a second ralph package crosses it, and one
+# refusal stops every workflow's dispatch).
 ( cd "$pkg" && find . -type f | sed 's|^\./||' | sort ) > "$tmp/paths.all" \
   || die "could not enumerate the .fabro tree"
 

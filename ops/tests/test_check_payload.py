@@ -118,6 +118,25 @@ class PayloadBudget(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("FAIL", out.getvalue())
 
+    def test_no_package_to_check_is_a_failure_not_a_pass(self):
+        # The empty path: a checkout with no `workflows/*/workflow.fabro` has nothing to
+        # measure, and `ok: 0 packages` over nothing would be a green gate that checks
+        # nothing. The same answer for a root with no `.fabro/` at all.
+        empty = self.root / "empty"
+        (empty / ".fabro" / "workflows").mkdir(parents=True)
+
+        lines, failures = cpp.check(empty)
+
+        self.assertEqual(lines, [])
+        self.assertEqual(len(failures), 1)
+        self.assertIn("no workflows/*/workflow.fabro to check", failures[0])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = cpp.main(["--root", str(empty)])
+        self.assertEqual(rc, 1)
+        self.assertNotIn("ok:", out.getvalue())
+        self.assertEqual(len(cpp.check(self.root / "nowhere")[1]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -88,7 +88,7 @@ echo "  ok: $n workflow.toml files parse"
 #    and the server refuses a version over 2 MiB for EVERY workflow, not just the one that
 #    grew. This is the offline headroom check on that number: 1,500,000 bytes a package and
 #    512 KiB a file, one line of byte counts per package.
-say "python3.11 ops/check-payload.py"
+say "workflow version payload, per package"
 "$PY" ops/check-payload.py
 
 # 7. The output schemas (ADR 0016 D7) are compiled in Rust: cargo test in

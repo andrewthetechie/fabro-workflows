@@ -11,6 +11,7 @@ the `remote` parameter is for.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import posixpath
 import re
@@ -163,6 +164,34 @@ def test_every_entrypoint_builds_from_this_repository_under_the_budget():
         size = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
         assert payload["entrypoint"] == entrypoint
         assert size <= PAYLOAD_BUDGET_BYTES, f"{workflow}: {size} bytes"
+
+
+def test_check_payload_counts_the_bytes_the_scheduler_sends():
+    """`ops/check-payload.py` is a stdlib copy of this module's payload, not an import.
+
+    The offline gate and the dispatcher must count the same bytes for the same package
+    (the package and `workflows/_shared/`, compact JSON, `ensure_ascii` on), under the
+    same budget and per-file limit. A copy that drifts is a green gate over a number
+    nobody sends, so the two are held together on this repository's own tree.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "check_payload", REPO_ROOT / "ops" / "check-payload.py"
+    )
+    check_payload = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(check_payload)
+
+    assert check_payload.PAYLOAD_BUDGET_BYTES == PAYLOAD_BUDGET_BYTES
+    assert check_payload.MAX_FILE_BYTES == MAX_FILE_BYTES
+    fabro = REPO_ROOT / ".fabro"
+    packages = sorted(path.parent.name for path in (fabro / "workflows").glob("*/workflow.fabro"))
+    assert packages
+    for package in packages:
+        payload = build_version_payload(fabro, f"workflows/{package}/workflow.fabro")
+        sent = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        measured = check_payload.payload_bytes(
+            package, check_payload.package_files(fabro, package)
+        )
+        assert measured == sent, f"{package}: check-payload.py says {measured}, dispatch sends {sent}"
 
 
 def test_every_reference_of_every_entrypoint_graph_travels_with_it():

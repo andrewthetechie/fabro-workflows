@@ -463,10 +463,15 @@ def test_dispatch_once_creates_and_starts_one_run_for_the_named_issue(
     assert sent["target"]["repo"] == "andrewthetechie/jelly-swipe"
     # The version is rooted at `.fabro/`, entrypoint included, because a package-rooted
     # one cannot resolve `../_shared/review-merge/review-merge.fabro`; it carries the
-    # backlog package and `workflows/_shared/`, and no other package.
+    # backlog package and `workflows/_shared/`, and no other package: the fixture also
+    # holds `ralph`, `pr-review` and `box-noop`, and none of them may travel (ralph-v2 01).
     payload = json.loads(register.calls.last.request.content)
     assert payload["entrypoint"] == "workflows/backlog/workflow.fabro"
     assert "workflows/_shared/review-merge/review-merge.fabro" in payload["files"]
+    assert not any(
+        key.startswith(("workflows/ralph/", "workflows/pr-review/", "workflows/box-noop/"))
+        for key in payload["files"]
+    ), sorted(payload["files"])
 
 
 @respx.mock

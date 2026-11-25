@@ -16,8 +16,9 @@ byte count; exit 1 when a package is over either.
 
 Standard library only, and it reads the tree itself rather than importing the scheduler:
 this is an offline gate in `make check`, where the scheduler's dependencies are not
-installed and its package is not on the path. `tests/test_check_payload.py` holds the two
-together.
+installed and its package is not on the path. It is a second copy of one rule, so
+`ops/scheduler/tests/test_workflow_version.py` holds its count to the bytes
+`build_version_payload` sends, and `tests/test_check_payload.py` covers the checker itself.
 """
 
 from __future__ import annotations
