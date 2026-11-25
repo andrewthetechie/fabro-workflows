@@ -2521,12 +2521,14 @@
             }
           ],
           "sealed": [
-            "/tmp/fabro/review/hygiene_rulings.json"
+            "/tmp/fabro/review/hygiene_rulings.json",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/"
           ],
           "also": [],
           "output": {
             "path": "/tmp/fabro/iteration.json",
-            "schema": "iteration"
+            "schema": "iteration_v2"
           },
           "box": true
         },
@@ -2569,12 +2571,14 @@
             }
           ],
           "sealed": [
-            "/tmp/fabro/review/hygiene_rulings.json"
+            "/tmp/fabro/review/hygiene_rulings.json",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/"
           ],
           "also": [],
           "output": {
             "path": "/tmp/fabro/iteration.json",
-            "schema": "iteration"
+            "schema": "iteration_v2"
           },
           "box": false
         },
@@ -2617,12 +2621,14 @@
             }
           ],
           "sealed": [
-            "/tmp/fabro/review/hygiene_rulings.json"
+            "/tmp/fabro/review/hygiene_rulings.json",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/"
           ],
           "also": [],
           "output": {
             "path": "/tmp/fabro/iteration.json",
-            "schema": "iteration"
+            "schema": "iteration_v2"
           },
           "box": false
         },
@@ -2685,7 +2691,12 @@
             "/tmp/fabro/task_list.json",
             "/tmp/fabro/feedback/",
             "/tmp/fabro/local_review/",
-            "/tmp/fabro/review/hygiene_rulings.json"
+            "/tmp/fabro/review/hygiene_rulings.json",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/",
+            "/tmp/fabro/task_plan.json",
+            "/tmp/fabro/review/standards.json",
+            "/tmp/fabro/review/spec.json"
           ],
           "also": [],
           "output": {
@@ -2745,7 +2756,10 @@
             "/tmp/fabro/review/refute_survivors.json",
             "/tmp/fabro/review/refute_reason.txt",
             "/tmp/fabro/review/hygiene_rulings.json",
-            "/tmp/fabro/local_review/"
+            "/tmp/fabro/local_review/",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/",
+            "/tmp/fabro/task_plan.json"
           ],
           "also": [],
           "output": {
@@ -2805,7 +2819,10 @@
             "/tmp/fabro/review/refute_survivors.json",
             "/tmp/fabro/review/refute_reason.txt",
             "/tmp/fabro/review/hygiene_rulings.json",
-            "/tmp/fabro/local_review/"
+            "/tmp/fabro/local_review/",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/",
+            "/tmp/fabro/task_plan.json"
           ],
           "also": [],
           "output": {
@@ -2839,7 +2856,9 @@
             }
           ],
           "sealed": [
-            "/tmp/fabro/review/hygiene_rulings.json"
+            "/tmp/fabro/review/hygiene_rulings.json",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/"
           ],
           "also": [],
           "box": true
@@ -2882,7 +2901,9 @@
             }
           ],
           "sealed": [
-            "/tmp/fabro/review/hygiene_rulings.json"
+            "/tmp/fabro/review/hygiene_rulings.json",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/"
           ],
           "also": [],
           "box": true
@@ -2899,7 +2920,9 @@
             }
           ],
           "sealed": [
-            "/tmp/fabro/review/hygiene_rulings.json"
+            "/tmp/fabro/review/hygiene_rulings.json",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/"
           ],
           "also": [],
           "output": {
@@ -2962,7 +2985,10 @@
             "/tmp/fabro/review/refute_dropped.json",
             "/tmp/fabro/review/refute_survivors.json",
             "/tmp/fabro/review/refute_reason.txt",
-            "/tmp/fabro/review/hygiene_rulings.json"
+            "/tmp/fabro/review/hygiene_rulings.json",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/",
+            "/tmp/fabro/task_plan.json"
           ],
           "also": [],
           "output": {
@@ -3025,7 +3051,10 @@
             "/tmp/fabro/review/refute_dropped.json",
             "/tmp/fabro/review/refute_survivors.json",
             "/tmp/fabro/review/refute_reason.txt",
-            "/tmp/fabro/review/hygiene_rulings.json"
+            "/tmp/fabro/review/hygiene_rulings.json",
+            "/tmp/fabro/task_review/",
+            "/tmp/fabro/task_plans/",
+            "/tmp/fabro/task_plan.json"
           ],
           "also": [],
           "output": {

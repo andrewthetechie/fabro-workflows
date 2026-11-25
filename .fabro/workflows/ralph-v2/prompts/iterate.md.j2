@@ -20,8 +20,12 @@ Authority runs Task, then plan, then issue.
 - `task-context.md`, when present, is the plan for this Task, written by the run's planner
   against this checkout minutes or hours ago. Its `## Plan` is an ordered list of edits;
   follow it in order. Depart only when an edit fails, evidence contradicts the plan, or
-  following it would violate the Task, and name every departure in your summary. Under
-  `## Last attempt` is the previous Iteration's failure on this same Task: start there.
+  following it would violate the Task, and name every departure in your summary. `## Goals`
+  lists the goals in the order to work them, `## Edge cases to cover` the cases that each need
+  a test, and `## Class of the bug`, when present, the class a fix must cover, not only the
+  reported example. Under `## Last attempt` is the previous Iteration's failure on this same
+  Task: start there. Under `## Review findings` is what two reviewers found after a passing
+  attempt: this Iteration is the rework.
 - `task-code.md`, when present, holds the exact text of the ranges the plan cites, usable
   as `edit_file` old text.
 - `progress.md`, when present, is every earlier Iteration of this run: which Task, whether
@@ -32,7 +36,18 @@ Authority runs Task, then plan, then issue.
 
 ## 2. Work the Task
 
-Think in a loop of three: the next acceptance statement, the edit, the check.
+Think in a loop of three: the next goal, the edit, the check. Work every open goal in this
+Iteration, in order. When the dossier has no `## Goals`, the acceptance statements are the
+goals.
+
+Write a test for each edge case under `## Edge cases to cover`. Skip one only when you can show
+it cannot happen, and say so in your summary.
+
+**On a rework** (`## Review findings` is present), answer every finding. Fix all of them in this
+Iteration, warnings included, and fix the whole class when one is named. When you can show that
+a finding is wrong, dispute it instead: give a `path:N` or a command in backticks. The next
+review must then withdraw it or bring new evidence. A dispute without evidence is an unanswered
+finding. Do not change correct code to please a finding you can disprove.
 
 Every changed line implements, integrates, or verifies this Task. That includes necessary
 caller updates, registration, and tests, even when `.files` omits them. A file the Task
@@ -86,6 +101,15 @@ Call `submit` once, with:
   progress log verbatim, so name the files and the departures from the plan.
 - `learnings`: at most three sentences of durable repository facts the next Iteration would
   want: a command that works, a trap, a convention, a fixture to reuse.
+
+Add these optional fields when they apply:
+
+- `goals_done`: the ids of the goals that now hold.
+- `edge_tests`: for each edge case, its id and the test that covers it.
+- `fixed`: the ids of the review findings you fixed.
+- `disputes`: for each finding you can disprove, its id, the reason and the evidence.
+
+On a rework, every finding id belongs in `fixed` or in `disputes`.
 
 Add the optional `blocked` object, with status `progress`, only when this Iteration could
 not do the Task at all. A Task that is merely hard gets worked.

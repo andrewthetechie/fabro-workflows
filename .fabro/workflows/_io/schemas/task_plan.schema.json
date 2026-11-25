@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task_plan",
+  "title": "task_plan — the box's plan for one ralph-v2 Task (docs/plans/ralph-v2 C2)",
+  "description": "The ralph-v2 task_plan output. task_plan_gate re-checks it against the Task (every acceptance statement covered, every cited path:N real), stores it as task_plans/<id>.json and renders task-context.md from it. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "context",
+    "goals",
+    "edge_cases",
+    "bug_class",
+    "risks"
+  ],
+  "properties": {
+    "context": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 14000,
+      "description": "The refreshed dossier: `## Files and symbols`, `## Plan`, `## Done when`. Every path:N is true in this checkout."
+    },
+    "goals": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "description": "1 to 4 goals.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "goal",
+          "covers",
+          "check",
+          "files"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^g[1-4]$",
+            "description": "g1 to g4, in the order to work them."
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600,
+            "description": "One outcome, in one or two sentences."
+          },
+          "covers": {
+            "type": "array",
+            "minItems": 1,
+            "description": "1-based indexes into the Task's acceptance list that this goal satisfies. Together the goals cover every index.",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "check": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "How to show the goal holds: a command in backticks, or the path:N of the test that proves it or that will hold it."
+          },
+          "files": {
+            "type": "array",
+            "description": "Repository-relative paths the goal is expected to touch; may name new files; may be empty.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "edge_cases": {
+      "type": "array",
+      "maxItems": 6,
+      "description": "0 to 6 cases, each a test to write. Only cases an acceptance statement covers.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "case",
+          "expected",
+          "covers"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^e[1-6]$",
+            "description": "e1 to e6."
+          },
+          "case": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "The concrete input or state."
+          },
+          "expected": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "What must happen."
+          },
+          "covers": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The 1-based index of the acceptance statement that makes this case in scope."
+          }
+        }
+      }
+    },
+    "bug_class": {
+      "type": "string",
+      "maxLength": 600,
+      "description": "For a Task whose source is refute, review or local_review: the class of input or state the finding is one example of, and where else in this branch it applies. An empty string otherwise."
+    },
+    "risks": {
+      "type": "array",
+      "maxItems": 3,
+      "description": "At most 3.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300,
+        "description": "One sentence for the reviewer, such as a caller outside the diff."
+      }
+    }
+  }
+}

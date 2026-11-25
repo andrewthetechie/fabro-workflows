@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task_refute",
+  "title": "task_refute — the box refuter's result on one ralph-v2 Task (docs/plans/ralph-v2 C5)",
+  "description": "Written by task_refute, and by task_refute_fb on the hosted fallback. task_review_gate applies the evidence rule and the disputes; the reviewer decides nothing. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "summary",
+    "edge_cases",
+    "findings",
+    "responses"
+  ],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "description": "One or two sentences: the verdict, and what was left unchecked."
+    },
+    "edge_cases": {
+      "type": "array",
+      "maxItems": 6,
+      "description": "One entry per edge case in plan.json; [] when there is none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "covered",
+          "evidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^e[1-6]$",
+            "description": "The edge case's id from plan.json."
+          },
+          "covered": {
+            "type": "boolean",
+            "description": "true when a test in this Task's change would fail if the case broke."
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "The path:N of that test, or what you searched for and did not find."
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "Every finding you can prove; [] when there is none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "kind",
+          "file",
+          "line",
+          "message",
+          "evidence",
+          "class",
+          "repeat_of"
+        ],
+        "properties": {
+          "severity": {
+            "enum": [
+              "error",
+              "warning"
+            ],
+            "description": "error: the Task must not pass with it. warning: worth fixing while the Task is open."
+          },
+          "kind": {
+            "enum": [
+              "not_met",
+              "defect"
+            ],
+            "description": "not_met: a goal or acceptance statement does not hold. defect: the change introduces wrong behaviour."
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "Repository-relative path of an existing file."
+          },
+          "line": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The most relevant line in `file`, or null."
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1500,
+            "description": "What is wrong, the concrete impact, and the outcome the code must reach. Written for someone who has not seen the diff."
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600,
+            "description": "What proves it: a path:N that exists, or a command in backticks with its result. The gate drops a finding without one."
+          },
+          "class": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "The class of input or state this is one example of; an empty string when it is a single case."
+          },
+          "repeat_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The id of the earlier finding in history.md this repeats, or null."
+          }
+        }
+      }
+    },
+    "responses": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "Exactly one entry per disputed finding that is yours; [] when there is none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "finding_id",
+          "verdict",
+          "new_evidence"
+        ],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "description": "The id of a disputed finding listed in history.md."
+          },
+          "verdict": {
+            "enum": [
+              "withdrawn",
+              "upheld"
+            ],
+            "description": "withdrawn: the dispute is right. upheld: it is wrong, and new_evidence shows why."
+          },
+          "new_evidence": {
+            "type": "string",
+            "maxLength": 600,
+            "description": "For upheld: a path:N or a command in backticks that the finding did not cite before. An empty string for withdrawn."
+          }
+        }
+      }
+    }
+  }
+}

@@ -109,6 +109,43 @@ def test_refute_hygiene_end_to_end(ck, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# ralph-v2's Task I/O is Sealed where task 06 says (docs/plans/ralph-v2 C3): an Iteration must
+# not read the review state written after it, and the Refuter must not read the hosted
+# reviewers' results, which are fresh when it runs in v2. The REAL `fabro-io guard` under
+# ralph-v2's GENERATED manifest, with the committed `/tmp/fabro` paths, because the hook
+# compares the tool's path with the sealed entry. Needs fabro-io on PATH; skipped otherwise.
+# ---------------------------------------------------------------------------
+def test_ralph_v2_task_io_sealed(ck, tmp_path):
+    if not shutil.which("fabro-io", path=ORIG_PATH):
+        pytest.skip("no fabro-io on PATH; present in profile images")
+    T = tmp_path / "v2sealed"
+    (T / ".io").mkdir(parents=True)
+    manifest = next(line[line.index("{"):line.rindex("}") + 1]
+                    for line in (WF / "ralph-v2/workflow.toml").read_text().split("\n")
+                    if line.startswith("FABRO_IO_MANIFEST"))
+
+    def guard(node, path):
+        write(T / ".io/stage.json", f'{{"workflow":"ralph-v2","node":"{node}","visit":"{FV}"}}')
+        e = {"FABRO_IO_ROOT": T, "FABRO_IO_MANIFEST": manifest,
+             "FABRO_HOOK_CONTEXT": f'{{"tool_input":{{"path":"{path}"}}}}'}
+        return run(["fabro-io", "guard"], env=e)
+
+    for node, path in (("iterate_t1", "/tmp/fabro/task_review/state/findings/t1.json"),
+                       ("iterate_t1", "/tmp/fabro/task_plans/t1.json"),
+                       ("refute", "/tmp/fabro/review/standards.json"),
+                       ("refute", "/tmp/fabro/task_plan.json")):
+        r = guard(node, path)
+        ck(f"v2 sealed: {node} blocks {path}", "2", r.rc)
+        ck(f"v2 sealed: {node} says why", "1", count("is sealed for this stage", r.out))
+    # The Iteration still reads its own Task and writes its own result, and the Refuter still
+    # reads its counters: a guard that blocked those would stop every visit.
+    for node, path in (("iterate_t1", "/tmp/fabro/current_task.json"),
+                       ("iterate_t1", "/tmp/fabro/iteration.json"),
+                       ("refute", "/tmp/fabro/review/hygiene.json")):
+        ck(f"v2 sealed: {node} still reads {path}", "0", guard(node, path).rc)
+
+
+# ---------------------------------------------------------------------------
 # the rulings file is Sealed (#92): `refute_gate` writes /tmp/fabro/review/hygiene_rulings.json
 # after the Refuter's visit, so the Refuter never sees an earlier round's rulings, and neither
 # the fix turn nor ralph's reviewers do. The REAL `fabro-io guard` under each GENERATED

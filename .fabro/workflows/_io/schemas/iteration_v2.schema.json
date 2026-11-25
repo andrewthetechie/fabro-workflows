@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "iteration_v2",
+  "title": "iteration_v2 — one ralph-v2 Iteration's result (docs/plans/ralph-v2 C6)",
+  "description": "The ralph-v2 iterate_t1..iterate_t3 output: ralph's iteration contract plus four optional arrays. task_block_gate and record read the v1 fields unchanged; record copies goals_done into the stored plan and fixed/disputes into the answers the next review reads. _io is stamped by the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "learnings"
+  ],
+  "properties": {
+    "status": {
+      "enum": [
+        "done",
+        "progress"
+      ],
+      "description": "done: task_check passes and every acceptance statement of the current Task holds. progress: something is left, and the next Iteration starts from it. A status of done that check_ok contradicts is still a miss."
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 600,
+      "description": "What changed and what is left. It goes into the progress log verbatim."
+    },
+    "learnings": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "string",
+        "maxLength": 300
+      },
+      "description": "Facts about the repository the next Iteration would want: a command, a trap, a convention. Never a summary of this Iteration's work."
+    },
+    "blocked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "criterion",
+        "non_goal",
+        "reason"
+      ],
+      "description": "Present only when this Iteration could not do the Task. It is backlog's task_blocked contract (#17): a scope block ends the loop as exhausted, a criterion block goes back to triage.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "scope",
+            "criterion"
+          ],
+          "description": "scope: the Task needs an edit the run may not make (for example .github/workflows/). criterion: an acceptance criterion cannot be met as written."
+        },
+        "criterion": {
+          "type": "string",
+          "description": "The exact criterion for criterion, or an empty string for scope."
+        },
+        "non_goal": {
+          "type": "string",
+          "description": "The conflicting non-goal or constraint, or an empty string for scope."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One or two sentences on why the Task cannot be completed within the constraints."
+        }
+      }
+    },
+    "goals_done": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "pattern": "^g[1-4]$"
+      },
+      "description": "Ids of the goals that now hold."
+    },
+    "edge_tests": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "test"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^e[1-6]$"
+          },
+          "test": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "The test that covers the case: path:N or test name."
+          }
+        }
+      },
+      "description": "One entry per edge case you wrote a test for."
+    },
+    "fixed": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "string"
+      },
+      "description": "Ids of the review findings this Iteration fixed."
+    },
+    "disputes": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "finding_id",
+          "reason",
+          "evidence"
+        ],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "description": "The id of the review finding you dispute."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600,
+            "description": "Why the finding is wrong."
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600,
+            "description": "A path:N or a command in backticks that shows it."
+          }
+        }
+      },
+      "description": "Review findings you can show are wrong. A finding in neither list counts as unanswered."
+    }
+  }
+}
