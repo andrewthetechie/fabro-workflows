@@ -42,6 +42,61 @@ operator commit, and box-hours per merged PR, each per repo × pool. A merge rat
 because `ralph` ran on the faster box would be an artefact, and the strata table is what
 shows it.
 
+## The ralph-v2 trial (ADR 0034, ralph-v2 11)
+
+The ralph-v2 trial compares `ralph` with `ralph-v2` the same way, so the split gained two
+sections: `## ralph-v2 trial`, which is the experiment's own measures, and `## Task reviews`,
+which is the loop only v2 has. `ops/fabro-trial-review.sh --arms ralph,ralph-v2 --from
+<switch date>` reads the same window. The experiment, its stop rules and its result rule
+are in `docs/plans/ralph-v2/00-overview-and-contracts.md`.
+
+**The first-round rule** is the one thing to hold on to: the quality measure reads what the
+three hosted reviewers **submitted** on their **first completed visit**, never what their gate
+later decided and never a later round. So it counts the Refuter's `not_met` criteria, its
+defects and its `tampering` rulings, plus `standards`' and `spec`'s error findings, from the
+last `submit` before that visit's `stage.completed` -- an `arguments` that is not an object is
+not a submitted result. A stage that never completed leaves its own fields NULL, so a run that
+stopped before the Refuter is not a run that found nothing, and it is left out of the mean
+rather than counted as 0. A re-summarize picks the round up: the counts are stored in
+`run_summary.first_round`, and a row summarized before the column existed reads NULL.
+
+| Field | What it is |
+|---|---|
+| runs | the arm's runs in the window, including the ones that opened no PR (the experiment counts every run) |
+| zero-touch merges | runs whose PR the workflow merged with no operator commit: `merged_by_workflow` and the PR's `operator_commits` 0. A PR whose facts GitHub has not answered for is not credited yet |
+| merge rate (standard error) | zero-touch merges over runs, and its binomial standard error `sqrt(p(1-p)/n)` |
+| quality, sum of the five: n / mean / sd | over the arms' runs whose five counts were all measured: the five summed, then n, the mean and the **sample** standard deviation (None below 2 runs) |
+| quality, the Refuter's three | the same over the Refuter's three counts alone, for the reviewer one arm can be read on its own |
+| runs that ran out | summaries whose loop published `loop_exhausted` (the `ralph` line's number, per arm) |
+| lease-hours / per zero-touch merge | lease time dispatch to release, and that over the zero-touch merges: the guardrail |
+| merge, v2 - v1 | the difference of the merge rates, the standard error of the difference `sqrt(p1(1-p1)/n1 + p2(1-p2)/n2)`, and `better`, `worse` or `unclear` at 2 standard errors. More merges is better |
+| quality, v2 - v1 | the same for the five-count mean, `sqrt(s1²/n1 + s2²/n2)`. Fewer findings is better |
+| guardrail, v2 / v1 | v2's lease-hours per zero-touch merge over v1's. The trial is lost above +50% |
+| stop rules | the three weekly checks: `lease` above 2x after 40 v2 runs, `merge` 15 points below after 60, and `misses` above 10% of the window's Task reviews |
+
+The differences and the guardrail are NULL below 2 runs in either arm -- one run is not a
+comparison -- and each stop rule stays `no` until its own count is reached. The `Task reviews`
+section reads `run_task_reviews`, one row per round of `ralph-v2`'s Task loop (E7-E13):
+
+| Field | What it is |
+|---|---|
+| reviews (rounds) | rows, so a Task reworked twice is three. A round is **two** reviewers |
+| verdicts | `pass`, `missed` (both reviewers left no valid result), `rework` (an error, rounds 1-3) and `blocked` (an error on the fourth) |
+| rejection rate by round | the share of each round's reviews that rejected the work (`rework` or `blocked`), by round number |
+| Tasks blocked | rows whose verdict is `blocked`: the Task a box review failed (E10) |
+| disputes / withdrawals | findings the coder disputed, and how many of them the next reviewer withdrew (E12) |
+| served, Refuter / review | per reviewer: `box`, `fallback` (the third box try came back empty, so it ran on `glm-5.3-flash`, E13) or `missed`. A reviewer that **rejected** the work is neither, and is never a miss (E11) |
+| misses | reviewer visits with no valid result, one per reviewer |
+| reviewer minutes p50 / p90 | the four reviewer stages' wall time a round, from the events |
+| edge cases planned / covered | what the accepted Task plans wrote, against what the **first** review of each Task found covered: later rounds restate the same edge cases |
+| box minutes a run | what `task_plan`, `task_refute`, `task_review` and `iterate_t1` spent on the box, per v2 run (`run_stage_stats.box_ms`) |
+| plan types | the plans `task_plan_gate` accepted, by type (`planned` or `fallback`); a rejected visit routes `retry` and wrote no plan |
+
+The third stop rule's rate is also `GET /api/box-health`'s `miss_rate`, which
+`fabro-monitor.sh`'s C11 alerts on: two reviewers a round, so a row's `missed` services are its
+misses. A window with no `ralph-v2` run reads 0 reviews and no rate, which is what C11's
+`>= 20` reviews guard is for.
+
 ## The sharpening row (ADR 0033, issue-sharpening 06)
 
 The factory rewrites an `unverifiable` issue's acceptance criteria itself, with no human approval,
@@ -139,8 +194,9 @@ node is always `learn_post`.
 
 A summary is built once, so a field added to `summary.py` exists for an old run only
 after it is re-summarized. `python -m fabro_scheduler resummarize --from D --to D`, run
-inside the scheduler container, deletes the window's `run_summary` and `run_stage_stats`
-rows and prints how many; the collector's next ticks stream the events again. Both dates
+inside the scheduler container, deletes the window's `run_summary`, `run_stage_stats` and
+`run_task_reviews` rows and prints how many; the collector's next ticks stream the events
+again. The review rows go with the summary because the same events write both. Both dates
 are inclusive, and `run_history`, the leases and the PR facts are never touched. The
 first `resummarize` after the Task validation deploy (#26) rebuilt the whole history so
 the trial had a baseline.

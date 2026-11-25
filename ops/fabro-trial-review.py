@@ -7,8 +7,14 @@ scorecard owns (`merged_by_workflow`, `held_bucket`), so a review and the scorec
 cannot disagree on what merged or why a PR was held. Standard library otherwise.
 
 Usage: python -I - [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--db PATH] [--ids WORKFLOW]
+                   [--arms A,B]
 Both dates are inclusive (UTC); a window holds the runs dispatched in it, as the
 scorecard's does.
+
+`--arms A,B` names the two arms the O3 line compares, default `backlog,ralph` (the ralph
+trial); `ralph,ralph-v2` reads the ralph-v2 trial (ralph-v2 11). The ralph-only sections --
+the per-run Iteration column, where each lease went, and the runs to read first -- run for
+each name that starts with `ralph`, so the default output is unchanged.
 """
 
 import argparse
@@ -42,7 +48,14 @@ def main() -> None:
     ap.add_argument("--to", dest="end", default=datetime.now(UTC).date().isoformat())
     ap.add_argument("--db", default="/data/scheduler.db")
     ap.add_argument("--ids", metavar="WORKFLOW", help="print only the window's run ids for WORKFLOW")
+    ap.add_argument("--arms", default="backlog,ralph", metavar="A,B",
+                    help="the two arms to compare (default backlog,ralph)")
     a = ap.parse_args()
+    arms = [name.strip() for name in a.arms.split(",")]
+    if len(arms) != 2 or not all(arms):
+        ap.error("--arms needs two comma-separated workflow names, e.g. ralph,ralph-v2")
+    control, trial = arms
+    ralph_arms = [name for name in arms if name.startswith("ralph")]
     start = datetime.combine(date.fromisoformat(a.start), datetime.min.time(), UTC)
     end = datetime.combine(date.fromisoformat(a.end), datetime.min.time(), UTC) + timedelta(days=1)
 
@@ -112,7 +125,7 @@ def main() -> None:
         refute = "".join("P" if v.get("verdict") == "pass" else "F" if v.get("verdict") == "fail" else "?"
                          for v in json.loads(s["refute"] or "[]")) if s else ""
         extra = ""
-        if h["workflow"] == "ralph":
+        if h["workflow"] in ralph_arms:
             iters = sum(st[n_]["visits"] for n_ in ITERATE if n_ in st)
             rungs = "/".join(str(st[n_]["visits"]) if n_ in st else "0" for n_ in ITERATE)
             visits = st["refute"]["visits"] if "refute" in st else 0
@@ -134,65 +147,69 @@ def main() -> None:
         print(f"| {w} | {n['runs']} | {n['prs']} | {n['merged']} | {n['merged_clean']} | "
               f"{n['merged_clean'] / n['runs']:.2f} | {lease_h[w]:.1f} | "
               f"{'—' if per_merge[w] is None else f'{per_merge[w]:.2f}'} |")
-    if per_merge.get("ralph") and per_merge.get("backlog"):
-        d = per_merge["ralph"] / per_merge["backlog"] - 1
-        print(f"\nralph's box-hours per clean merge are {d:+.0%} against backlog's (the guardrail is +20%).")
+    if per_merge.get(trial) and per_merge.get(control):
+        d = per_merge[trial] / per_merge[control] - 1
+        print(f"\n{trial}'s box-hours per clean merge are {d:+.0%} against {control}'s "
+              f"(the guardrail is +20%).")
     print()
 
-    # --- ralph runs ----------------------------------------------------------------------
+    # --- the ralph arms' leases ----------------------------------------------------------
     # A stage's wall time counts only the attempt that finished, so a timed-out attempt
-    # that was retried shows up under `other`, and `timeouts` says where it was.
-    print("## ralph runs: where each lease went (minutes)\n")
-    print("| run | lease | plan | iterations | check | final_check | refute | standards+spec | merge stage | learn | other | timeouts |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
-    for h in history:
-        if h["workflow"] != "ralph":
-            continue
-        st = stages.get(h["run_id"], {})
-        m = lambda *ns: sum(st[n_]["wall_ms"] for n_ in ns if n_ in st) / 60000
-        merge = m("merge_prep", "merge_gate", "watch_checks", "merge", "deliver", "remerge_base",
-                  "resolve_base", "resolve_base_gate", "ci_task")
-        parts = [m("plan"), m(*ITERATE), m("check"), m("final_check"), m("refute"), m("standards", "spec"),
-                 merge, m("learn")]
-        lease = _hours(h["dispatched_at"], h["finished_at"]) * 60
-        timeouts = ", ".join(f"{n_} {r['timeouts']}" for n_, r in sorted(st.items()) if r["timeouts"])
-        print(f"| {h['run_id'][-8:]} | {lease:.0f} | " + " | ".join(f"{p:.0f}" for p in parts)
-              + f" | {lease - sum(parts):.0f} | {timeouts} |")
-    print()
+    # that was retried shows up under `other`, and `timeouts` says where it was. One table an
+    # arm, so `ralph` alone reads as it always did.
+    for name in ralph_arms:
+        print(f"## {name} runs: where each lease went (minutes)\n")
+        print("| run | lease | plan | iterations | check | final_check | refute | standards+spec | merge stage | learn | other | timeouts |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+        for h in history:
+            if h["workflow"] != name:
+                continue
+            st = stages.get(h["run_id"], {})
+            m = lambda *ns: sum(st[n_]["wall_ms"] for n_ in ns if n_ in st) / 60000
+            merge = m("merge_prep", "merge_gate", "watch_checks", "merge", "deliver", "remerge_base",
+                      "resolve_base", "resolve_base_gate", "ci_task")
+            parts = [m("plan"), m(*ITERATE), m("check"), m("final_check"), m("refute"), m("standards", "spec"),
+                     merge, m("learn")]
+            lease = _hours(h["dispatched_at"], h["finished_at"]) * 60
+            timeouts = ", ".join(f"{n_} {r['timeouts']}" for n_, r in sorted(st.items()) if r["timeouts"])
+            print(f"| {h['run_id'][-8:]} | {lease:.0f} | " + " | ".join(f"{p:.0f}" for p in parts)
+                  + f" | {lease - sum(parts):.0f} | {timeouts} |")
+        print()
 
     # --- Flags --------------------------------------------------------------------------
     # What the per-run read should look at first. The first one is the 2026-10-23 bug:
     # watch_checks queued every PR on its first poll (docs/ralph/review-2026-10-23.md).
-    print("## Flags: ralph runs to read first\n")
-    flagged = 0
-    for h in history:
-        if h["workflow"] != "ralph":
-            continue
-        s = summaries.get(h["run_id"])
-        st = stages.get(h["run_id"], {})
-        flags = []
-        if s is None:
-            flags.append("not summarized yet")
-        elif _ending(h, s) == "report_queued" and "watch_checks" in st and st["watch_checks"]["wall_ms"] < 60000:
-            flags.append("queued with watch_checks under a minute: CI was never read")
-        flags += [f"{n_} timed out {r['timeouts']}x" for n_, r in sorted(st.items()) if r["timeouts"]]
-        if s is not None:
-            iters = sum(st[n_]["visits"] for n_ in ITERATE if n_ in st)
-            tasks = sum(json.loads(s["task_sources"] or "{}").values())
-            if iters > tasks:
-                flags.append(f"{iters - tasks} Iteration(s) more than Tasks: misses")
-            if any(n_ in st for n_ in ITERATE[1:]):
-                flags.append("a Task climbed the ladder")
-            if s["loop_exhausted"]:
-                flags.append("the loop ran out (O18)")
-            if s["post_iterations"]:
-                flags.append(f"{s['post_iterations']} post-PR Iteration(s)")
-        if flags:
-            flagged += 1
-            print(f"- {h['run_id'][-8:]} ({h['repo'].split('/')[1]}#{h['issue_number']}): " + "; ".join(flags))
-    if not flagged:
-        print("- none")
-    print()
+    for name in ralph_arms:
+        print(f"## Flags: {name} runs to read first\n")
+        flagged = 0
+        for h in history:
+            if h["workflow"] != name:
+                continue
+            s = summaries.get(h["run_id"])
+            st = stages.get(h["run_id"], {})
+            flags = []
+            if s is None:
+                flags.append("not summarized yet")
+            elif _ending(h, s) == "report_queued" and "watch_checks" in st and st["watch_checks"]["wall_ms"] < 60000:
+                flags.append("queued with watch_checks under a minute: CI was never read")
+            flags += [f"{n_} timed out {r['timeouts']}x" for n_, r in sorted(st.items()) if r["timeouts"]]
+            if s is not None:
+                iters = sum(st[n_]["visits"] for n_ in ITERATE if n_ in st)
+                tasks = sum(json.loads(s["task_sources"] or "{}").values())
+                if iters > tasks:
+                    flags.append(f"{iters - tasks} Iteration(s) more than Tasks: misses")
+                if any(n_ in st for n_ in ITERATE[1:]):
+                    flags.append("a Task climbed the ladder")
+                if s["loop_exhausted"]:
+                    flags.append("the loop ran out (O18)")
+                if s["post_iterations"]:
+                    flags.append(f"{s['post_iterations']} post-PR Iteration(s)")
+            if flags:
+                flagged += 1
+                print(f"- {h['run_id'][-8:]} ({h['repo'].split('/')[1]}#{h['issue_number']}): " + "; ".join(flags))
+        if not flagged:
+            print("- none")
+        print()
 
     # --- Stage time per arm --------------------------------------------------------------
     print("## Stage time per arm: the ten longest nodes\n")

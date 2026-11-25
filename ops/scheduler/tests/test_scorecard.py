@@ -756,3 +756,84 @@ def test_the_workflows_markdown_names_both_arms_and_the_strata(store):
     assert set(payload["workflows"]) == {"backlog", "ralph", "ralph-v2"}
     assert payload["workflows"]["ralph-v2"]["runs"] == 1
     assert payload["ralph"]["runs"] == 1
+
+
+# --- the ralph-v2 trial leaves the v1 column alone (ralph-v2 11) --------------------
+
+# `by_workflow`'s `ralph` card over the fixture above, captured from the code before task 11
+# added the trial's arms, trial line and Task review section. The task's rule is that the v1
+# column does not change shape, and byte for byte is the only version of that a diff cannot
+# argue with.
+RALPH_CARD_BEFORE_TASK_11 = """Factory scorecard, 2026-10-05 to 2026-10-11 (2 runs, 0 summarized)
+
+| Metric | Value |
+|---|---|
+| PRs opened / merged by the workflow | 2 / 1 (50%) |
+| Non-architecture merged by the workflow | 1 of 2 (50%) |
+| Architecture merged by the workflow | 0 of 0 (n/a) |
+| Held PRs, by reason | no reason recorded 1 |
+| PRs with operator commits before merge | 0 of 2 (0%), 0 commits |
+| Box-hours per merged PR | 4.0 (4 box-hours in all) |
+| Lease share: writing code / improve / idle | 0% / 0% / 0% |
+| Idle by phase: hosted agents / validate / merge phase / human gates / other / overhead | 0% / 0% / 0% / 0% / 0% / 0% |
+| Timeouts by node | none |
+| Provider failovers by node and reason | none |
+| Runs with no PR, by terminal node | 0 runs, 0 box-hours: none |
+| Refuter first verdicts: pass / not_met / defects / unverifiable-only / other / invalid | 0 / 0 / 0 / 0 / 0 / 0; fix turns 0, cleared 0 |
+| Sharpened | applied 0, released unapplied 0; applied issues' PRs merged 0 of 0 |
+| Refuter CI-credited criteria (first verdicts) | 0 over 0 runs |
+| Refuter hygiene rulings: hits cleared / unsure / tampering | 0 / 0 / 0 over 0 runs that carry them; no run in this window publishes them |
+| Ruled merges | 0 PR(s) the workflow merged on a cleared hit (0 run(s)) |
+| Open to merge, p50 / p90 hours: architecture / other | n/a / n/a (n=0) / 2.0 / 2.0 (n=1) |
+| Task validation: visits by mode (p50/p90 min) | none; all 0 (n/a/n/a min) |
+| Task validation: full visits by reason | none |
+| Task validation: red visits by mode | none |
+| Task validation: unchecked files | 0 |
+| Task validation: untested files | 0 |
+| Final validation: verdicts / first route | 0 / none (red n/a) |
+
+Tokens by model (0 of 2 runs read)
+
+| Model | Where | Runs | Visits | Input | Output | Cache read | Total | Share | Cost |
+|---|---|---|---|---|---|---|---|---|---|
+| none | | | | | | | | | |
+
+2 run(s) are not summarized yet: the lease share, timeouts, failovers and terminal nodes count only summarized runs.
+"""
+
+# The header and summary rows of the split table, which the arm columns share.
+SPLIT_BEFORE_TASK_11 = """|  | backlog | ralph | ralph-v2 |
+|---|---|---|---|
+| runs | 3 | 2 | 1 |
+| PRs | 2 | 2 | 1 |
+| merged by the workflow | 1 | 1 | 1 |
+| merge rate | 50% | 50% | 100% |
+| box-hours | 6.0 | 4.0 | 2.0 |
+| box-hours per merge | 6.00 | 4.00 | 2.00 |
+"""
+
+
+def test_the_v1_column_of_by_workflow_is_unchanged(store):
+    """ralph-v2 11: the trial's own lines were added beside v1's, and nothing existing changed
+    shape. The `ralph` card and the split table's columns are byte for byte what they were."""
+    run(store, "B1", pr=1, merged=True)
+    run(store, "B2", repo=OTHER, pr=2, merged=False)
+    run(store, "B3", merged=False)  # no PR
+    run(store, "R1", pr=3, merged=True, workflow="ralph")
+    run(store, "R2", repo=OTHER, pr=4, merged=False, workflow="ralph")
+    run(store, "V1", pr=5, merged=True, workflow="ralph-v2")
+    store.save_pr_facts(REPO, 1, facts(state="merged", merged_at="2026-10-05T05:00:00Z"))
+    store.save_pr_facts(OTHER, 2, facts())
+    store.save_pr_facts(REPO, 3, facts(state="merged", merged_at="2026-10-05T05:00:00Z"))
+    store.save_pr_facts(OTHER, 4, facts())
+    store.save_pr_facts(REPO, 5, facts(state="merged", merged_at="2026-10-05T05:00:00Z"))
+
+    card = scorecard.by_workflow(store.scorecard_rows(*WINDOW), *WINDOW)
+
+    assert scorecard.to_markdown(card.cards["ralph"]) == RALPH_CARD_BEFORE_TASK_11
+    text = scorecard.workflows_to_markdown(card)
+    assert text.startswith(SPLIT_BEFORE_TASK_11)
+    # The two new sections come after the strata table, and `## ralph` keeps its own rows.
+    assert text.index("## Strata: repo x coder pool") < text.index("## ralph")
+    assert text.index("## ralph") < text.index("## ralph-v2 trial")
+    assert text.index("## ralph-v2 trial") < text.index("## Task reviews")

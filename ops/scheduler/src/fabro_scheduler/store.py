@@ -266,7 +266,7 @@ CREATE TABLE IF NOT EXISTS run_history (
   task_sources     TEXT         -- JSON object: a Task's source -> count, from the probe
 );
 
--- Issue #22, the scorecard. Five tables the collector fills after a run is released
+-- Issue #22, the scorecard. Six tables the collector fills after a run is released
 -- (`collector.py`), and nothing else writes. They are derived data: dropping them
 -- loses nothing that the fabro run store and GitHub cannot rebuild, which the
 -- collector does on its own (every `run_history` row without a summary is work).
@@ -302,7 +302,45 @@ CREATE TABLE IF NOT EXISTS run_summary (
   -- `pre_review_check`'s ending. NULL means the run was summarized before the stage
   -- existed, or never reached that node; never read it as "arm off" or "unchanged".
   pre_review_arm     TEXT,
-  pre_review_verdict TEXT
+  pre_review_verdict TEXT,
+  -- The ralph-v2 trial's two measures (ralph-v2 11). `first_round` is the experiment's
+  -- quality measure: the first completed `refute`, `standards` and `spec` of a `ralph` or
+  -- `ralph-v2` run, from what each of them submitted, as {refute_not_met, refute_defects,
+  -- refute_tampering, standards_errors, spec_errors}; a field is NULL when its stage never
+  -- completed. `task_plans` is {types: {plan_type: count}, goals, edges} over the
+  -- `task_plan_gate` visits that routed `go`. Both NULL on a run summarized before them,
+  -- which the scorecard reads as "not measured", never as 0.
+  first_round   TEXT,
+  task_plans    TEXT
+);
+
+-- One row per Task review round of a `ralph-v2` run (ralph-v2 11, C5 step 9): the thirteen
+-- keys `task_review_gate` publishes, plus what the round cost. `seq` is the round's position
+-- in the run, 1-based, so a run's rounds stay in order however its Tasks interleave.
+-- `refute_served` and `review_served` say whether each reviewer answered on the box, on the
+-- fallback model or not at all (`missed`, E13); a reviewer that rejects the work is neither,
+-- and never counts as a miss (E11). Written and replaced inside `save_run_summary`'s
+-- transaction, and dropped with the run's other summary rows by `resummarize_window`.
+CREATE TABLE IF NOT EXISTS run_task_reviews (
+  run_id        TEXT    NOT NULL,
+  seq           INTEGER NOT NULL,
+  task          TEXT    NOT NULL,
+  source        TEXT    NOT NULL,  -- the Task's source: plan, refute, review, final_fix, ci
+  round         INTEGER NOT NULL,  -- the Task's review number, 1-4 (E10)
+  verdict       TEXT    NOT NULL,  -- pass, missed, rework or blocked
+  errors        INTEGER NOT NULL,  -- surviving error findings
+  warnings      INTEGER NOT NULL,
+  disputed      INTEGER NOT NULL,  -- findings the coder disputed and the reviewer withdrew
+  withdrawn     INTEGER NOT NULL,
+  dropped       INTEGER NOT NULL,  -- repeats of a finding already reported
+  refute_served TEXT    NOT NULL,  -- box, fallback or missed
+  review_served TEXT    NOT NULL,
+  edges         INTEGER NOT NULL,  -- the Task's edge cases, from its plan
+  edges_covered INTEGER NOT NULL,
+  tries         INTEGER NOT NULL,  -- both checks' tries: the fallback ladder (E13, A3)
+  ms            INTEGER NOT NULL,  -- the four reviewer visits' wall time
+  failover      INTEGER NOT NULL,  -- 0 | 1: a reviewer ran on a fallback model
+  PRIMARY KEY (run_id, seq)
 );
 
 -- One row per node per run: every visit's totals. `box_ms` is the part of
@@ -512,6 +550,10 @@ ADDED_COLUMNS = {
         # a run summarized before the stage existed, or one that never reached the node.
         "pre_review_arm": "pre_review_arm TEXT",
         "pre_review_verdict": "pre_review_verdict TEXT",
+        # The ralph-v2 trial's two measures (ralph-v2 11): the experiment's first-round
+        # counts and the accepted Task plans. NULL on a run summarized before them.
+        "first_round": "first_round TEXT",
+        "task_plans": "task_plans TEXT",
     },
 }
 
@@ -576,6 +618,9 @@ class ScorecardRows:
     # `sharpen` rows that ended in the window (issue-sharpening 06): the scorecard's *Sharpened*
     # row and the retro's `sharpen:<state>` classes read them. Empty before the first one.
     sharpen: list[sqlite3.Row] = field(default_factory=list)
+    # `run_task_reviews`: one row per `ralph-v2` Task review round (ralph-v2 11). Empty before
+    # the first v2 run, which is every window before the switch.
+    task_reviews: list[sqlite3.Row] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1796,6 +1841,7 @@ class Store:
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM run_stage_stats WHERE run_id = ?", (summary.run_id,))
             self._conn.execute("DELETE FROM run_failovers WHERE run_id = ?", (summary.run_id,))
+            self._conn.execute("DELETE FROM run_task_reviews WHERE run_id = ?", (summary.run_id,))
             self._conn.executemany(
                 "INSERT INTO run_stage_stats (run_id, node_id, handler, visits, wall_ms,"
                 " box_ms, timeouts, failures, input_tokens, output_tokens, cache_read_tokens)"
@@ -1830,8 +1876,8 @@ class Store:
                 " terminal_node, path, refute, events, error, first_edit_ms, dispositions,"
                 " task_validations, task_validation_unchecked, task_validation_untested,"
                 " final_routes, post_iterations, loop_exhausted, task_sources,"
-                " pre_review_arm, pre_review_verdict)"
-                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " pre_review_arm, pre_review_verdict, first_round, task_plans)"
+                " VALUES (?, 'ok', 1, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(run_id) DO UPDATE SET status = 'ok',"
                 "  attempts = run_summary.attempts + 1, summarized_at = excluded.summarized_at,"
                 "  terminal_node = excluded.terminal_node, path = excluded.path,"
@@ -1845,7 +1891,9 @@ class Store:
                 "  loop_exhausted = excluded.loop_exhausted,"
                 "  task_sources = excluded.task_sources,"
                 "  pre_review_arm = excluded.pre_review_arm,"
-                "  pre_review_verdict = excluded.pre_review_verdict",
+                "  pre_review_verdict = excluded.pre_review_verdict,"
+                "  first_round = excluded.first_round,"
+                "  task_plans = excluded.task_plans",
                 (
                     summary.run_id,
                     stamp,
@@ -1864,7 +1912,45 @@ class Store:
                     json.dumps(dict(sorted(summary.task_sources.items()))),
                     summary.pre_review_arm,
                     summary.pre_review_verdict,
+                    # None, not "{}": a workflow that has no such round was never measured.
+                    None if summary.first_round is None else json.dumps(asdict(summary.first_round)),
+                    json.dumps(
+                        {
+                            "types": dict(sorted(summary.task_plans.types.items())),
+                            "goals": summary.task_plans.goals,
+                            "edges": summary.task_plans.edges,
+                        }
+                    ),
                 ),
+            )
+            self._conn.executemany(
+                "INSERT INTO run_task_reviews (run_id, seq, task, source, round, verdict, errors,"
+                " warnings, disputed, withdrawn, dropped, refute_served, review_served, edges,"
+                " edges_covered, tries, ms, failover) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                " ?, ?, ?, ?)",
+                [
+                    (
+                        summary.run_id,
+                        seq,
+                        review.task,
+                        review.source,
+                        review.round,
+                        review.verdict,
+                        review.errors,
+                        review.warnings,
+                        review.disputed,
+                        review.withdrawn,
+                        review.dropped,
+                        review.refute_served,
+                        review.review_served,
+                        review.edges,
+                        review.edges_covered,
+                        review.tries,
+                        review.ms,
+                        1 if review.failover else 0,
+                    )
+                    for seq, review in enumerate(summary.task_reviews, start=1)
+                ],
             )
 
     def save_summary_failure(
@@ -1886,10 +1972,11 @@ class Store:
 
         The collector's only entry point (`runs_to_summarize`) is a `LEFT JOIN` on
         `run_summary`, so deleting the summary rows is what puts a window back in the
-        queue; it streams the events again and writes the current fields. Returns the
-        number of runs in the window and the `run_summary` / `run_stage_stats` rows
-        deleted. `run_history`, the leases and the PR facts are never touched: they are
-        the window's own record, not a summary of it.
+        queue; it streams the events again and writes the current fields. The window's
+        `run_task_reviews` rows go with them, so a re-summarized run cannot keep a round
+        its events no longer show. Returns the number of runs in the window and the
+        `run_summary` / `run_stage_stats` rows deleted. `run_history`, the leases and the
+        PR facts are never touched: they are the window's own record, not a summary of it.
         """
         bounds = (start.isoformat(), end.isoformat())
         with self._lock, self._conn:
@@ -1910,6 +1997,9 @@ class Store:
             stages = self._conn.execute(
                 f"DELETE FROM run_stage_stats WHERE run_id IN ({placeholders})", run_ids
             ).rowcount
+            self._conn.execute(
+                f"DELETE FROM run_task_reviews WHERE run_id IN ({placeholders})", run_ids
+            )
         return len(run_ids), summaries, stages
 
     def runs_to_read_models(self, *, retry_before: datetime, limit: int) -> list[str]:
@@ -2040,7 +2130,7 @@ class Store:
     def scorecard_rows(self, start: datetime, end: datetime) -> ScorecardRows:
         """Everything the scorecard reads for runs dispatched in `[start, end)`.
 
-        Six SELECTs under one lock, so the window is one consistent snapshot.
+        Seven SELECTs under one lock, so the window is one consistent snapshot.
 
         Issue runs only (`target_kind = 'issue'`). A `pr` row (the retired PR doctor's follow-up
         reviews, none ever written) would give a PR a second "PR opened" and credit its merge
@@ -2076,12 +2166,19 @@ class Store:
             models = self._conn.execute(
                 f"SELECT * FROM run_model_usage WHERE run_id IN ({in_window})", bounds
             ).fetchall()
+            task_reviews = self._conn.execute(
+                f"SELECT * FROM run_task_reviews WHERE run_id IN ({in_window})"
+                " ORDER BY run_id, seq",
+                bounds,
+            ).fetchall()
             sharpen = self._conn.execute(
                 "SELECT * FROM sharpen WHERE finished_at >= ? AND finished_at < ? "
                 "ORDER BY finished_at, id",
                 bounds,
             ).fetchall()
-        return ScorecardRows(history, summaries, stages, failovers, prs, models, sharpen)
+        return ScorecardRows(
+            history, summaries, stages, failovers, prs, models, sharpen, task_reviews
+        )
 
     def measure_rows(self, *, since: datetime, baseline_since: datetime) -> dict[str, list]:
         """The rows `measure.report` computes task 12's Phase 3 and Phase 4 numbers from.
@@ -2177,8 +2274,9 @@ class Store:
         Issue runs released at or after `since` whose `run_summary` is `ok`: an
         unsummarized run has no `run_stage_stats` and no `run_failovers` of its own, so
         counting it in `runs` would divide a failover count by visits it did not have.
-        The two derived tables are fetched for exactly those runs, so `failover_rate`
-        is one numerator and one denominator over one set of runs.
+        The three derived tables are fetched for exactly those runs, so `failover_rate`
+        and the Task-review miss rate are one numerator and one denominator over one set
+        of runs. `reviews` is `run_task_reviews`, empty on a window with no `ralph-v2` run.
         """
         with self._lock:
             history = self._conn.execute(
@@ -2202,7 +2300,18 @@ class Store:
                 ).fetchall()
                 if run_ids else []
             )
-        return {"history": history, "stages": stages, "failovers": failovers}
+            reviews = (
+                self._conn.execute(
+                    f"SELECT * FROM run_task_reviews WHERE run_id IN ({placeholders})", run_ids
+                ).fetchall()
+                if run_ids else []
+            )
+        return {
+            "history": history,
+            "stages": stages,
+            "failovers": failovers,
+            "reviews": reviews,
+        }
 
     def first_dispatch(self) -> datetime | None:
         """When the oldest `run_history` row was dispatched, or None if there is none."""

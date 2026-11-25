@@ -261,6 +261,7 @@ def test_the_migration_adds_the_plan_trial_columns_to_existing_scorecard_tables(
           timeouts INTEGER NOT NULL, failures TEXT NOT NULL, PRIMARY KEY (run_id, node_id)
         );
         INSERT INTO run_stage_stats VALUES ('R0', 'improve', 'agent', 1, 10, 10, 0, '{}');
+        INSERT INTO run_summary (run_id, status, summarized_at) VALUES ('R0', 'ok', 'now');
         """
     )
     conn.commit()
@@ -273,8 +274,16 @@ def test_the_migration_adds_the_plan_trial_columns_to_existing_scorecard_tables(
 
         assert {"input_tokens", "output_tokens", "cache_read_tokens"} <= columns("run_stage_stats")
         assert {"first_edit_ms", "dispositions"} <= columns("run_summary")
+        # The ralph-v2 trial's columns (ralph-v2 11) are added the same way, and a row from
+        # before them is "not measured", never a 0.
+        assert {"first_round", "task_plans"} <= columns("run_summary")
+        summary = reopened._conn.execute("SELECT * FROM run_summary WHERE run_id = 'R0'").fetchone()
+        assert summary["first_round"] is None and summary["task_plans"] is None
         old = reopened._conn.execute("SELECT * FROM run_stage_stats").fetchone()
         assert old["input_tokens"] is None
+        # The review table is new, so the schema creates it; a row for an old run is absent.
+        assert columns("run_task_reviews") >= {"run_id", "seq", "task", "round", "verdict"}
+        assert reopened._conn.execute("SELECT COUNT(*) AS n FROM run_task_reviews").fetchone()["n"] == 0
     finally:
         reopened.close()
 
@@ -337,13 +346,15 @@ def test_avg_run_duration_is_the_mean_of_released_runs(store):
 def test_resummarize_window_deletes_only_its_summary_rows(tmp_path):
     """`resummarize_window` (ADR 0025, C9) puts a window back in the collector's queue.
 
-    It deletes `run_summary` and `run_stage_stats` rows for runs dispatched in the
-    window and nothing else: the `run_history` rows, and every row of a run outside
-    the window, are the window's own record.
+    It deletes the `run_summary`, `run_stage_stats` and `run_task_reviews` rows of the runs
+    dispatched in the window and nothing else: the `run_history` rows, and every row of a
+    run outside the window, are the window's own record. The review rows go with the
+    summary because the collector writes them from the same events (ralph-v2 11), so a
+    re-summarized run must not keep a round its stream no longer shows.
     """
     from collections import Counter
 
-    from fabro_scheduler.summary import RunSummary, StageStat
+    from fabro_scheduler.summary import RunSummary, StageStat, TaskReview
 
     store = Store(tmp_path / "scheduler.db")
     try:
@@ -369,6 +380,14 @@ def test_resummarize_window_deletes_only_its_summary_rows(tmp_path):
                     terminal_node="exit",
                     refute=[],
                     events=1,
+                    task_reviews=[
+                        TaskReview(
+                            task="T1", source="plan", round=1, verdict="pass", errors=0,
+                            warnings=0, disputed=0, withdrawn=0, dropped=0,
+                            refute_served="box", review_served="box", edges=0,
+                            edges_covered=0, tries=0, ms=60_000, failover=False,
+                        )
+                    ],
                 )
             )
 
@@ -381,6 +400,9 @@ def test_resummarize_window_deletes_only_its_summary_rows(tmp_path):
         }
         assert {
             r["run_id"] for r in store._conn.execute("SELECT run_id FROM run_stage_stats")
+        } == {"OUT"}
+        assert {
+            r["run_id"] for r in store._conn.execute("SELECT run_id FROM run_task_reviews")
         } == {"OUT"}
         assert {r["run_id"] for r in _history(store)} == {"IN1", "IN2", "OUT"}
     finally:

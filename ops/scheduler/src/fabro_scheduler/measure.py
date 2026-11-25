@@ -220,6 +220,7 @@ def box_health(
     stages: Sequence[Any],
     failovers: Sequence[Any],
     *,
+    reviews: Sequence[Any],
     hours: int,
     now: datetime,
 ) -> dict[str, object]:
@@ -236,9 +237,13 @@ def box_health(
     with no box visits has no rate, and says `null` rather than `0.0` — the difference
     between "never failed over" and "nothing ran".
 
-    `reviews`, `reviews_missed` and `miss_rate` are the Task-review misses C11's second
-    condition reads; they stay `null` until the `ralph-v2` task review loop records them
-    (ralph-v2 task 11).
+    `reviews`, `reviews_missed` and `miss_rate` are C11's second condition, from the window's
+    `run_task_reviews` rows (`ralph-v2` 11): a row is one review round and **two** reviewers,
+    so `reviews` is twice the rows; a miss is one reviewer whose `refute_served` or
+    `review_served` is `missed` (E13: it left no valid result, on the box after three tries and
+    then on flash). A reviewer that rejected the work is neither, and never counts as a miss
+    (E11). Both counts are 0 on a window with no v2 run, so the monitor's `>= 20` guard is
+    what keeps a quiet window from reading as a healthy miss rate.
     """
     run_ids = {row["run_id"] for row in history}
     visits = sum(
@@ -256,6 +261,13 @@ def box_health(
             box_failovers += count
         if str(row["to_model"]) == TERRA_MODEL:
             terra += count
+    reviewer_count = 2 * len(reviews)
+    reviews_missed = sum(
+        1
+        for row in reviews
+        for served in (row["refute_served"], row["review_served"])
+        if served == "missed"
+    )
     return {
         "window": {
             "hours": hours,
@@ -267,9 +279,9 @@ def box_health(
         "failovers": box_failovers,
         "failover_rate": None if visits == 0 else round(box_failovers / visits, 4),
         "terra": terra,
-        "reviews": None,
-        "reviews_missed": None,
-        "miss_rate": None,
+        "reviews": reviewer_count,
+        "reviews_missed": reviews_missed,
+        "miss_rate": None if reviewer_count == 0 else round(reviews_missed / reviewer_count, 4),
     }
 
 

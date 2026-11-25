@@ -30,15 +30,17 @@ Definitions, each the one the 2026-10-11 retro used:
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 from .sharpen import UNAPPLIED_STATES
 from .store import ScorecardRows
+from .summary import FIRST_ROUND_FIELDS, FirstRound, TaskPlans
 from .usage import LOCAL_PROVIDERS
 
 WEEK = timedelta(days=7)
@@ -533,6 +535,7 @@ def _filter_repo(rows: ScorecardRows, repo: str) -> ScorecardRows:
         prs=[row for row in rows.prs if row["repo"] == repo],
         models=[row for row in rows.models if row["run_id"] in run_ids],
         sharpen=[row for row in rows.sharpen if row["repo"] == repo],
+        task_reviews=[row for row in rows.task_reviews if row["run_id"] in run_ids],
     )
 
 
@@ -1108,6 +1111,118 @@ class RalphLine:
     refute_output_tokens: int = 0
 
 
+# --------------------------------------------------------------------------- #
+# The ralph-v2 trial (ADR 0034, ralph-v2 11, *The experiment*)
+# --------------------------------------------------------------------------- #
+
+# The two arms of the ralph-v2 trial, in the order the comparison is read: v1 first, so
+# "v2 - v1" is a subtraction of the second from the first.
+TRIAL_ARMS = ("ralph", "ralph-v2")
+
+# A round's verdicts that rejected the Task's work. `missed` does not: a reviewer that
+# returned nothing is not a reviewer that refused (E11), and the Task passes on a miss.
+REJECTED_VERDICTS = frozenset({"rework", "blocked"})
+
+# The reviewer service a round records (C4). `missed` is the one that counts as a miss.
+SERVED_STATES = ("box", "fallback", "missed")
+MISSED = "missed"
+
+# The stages the Task review loop added, whose box minutes the scorecard reports per run
+# (`box_ms` from `run_stage_stats`, the same clock the lease share uses).
+TASK_REVIEW_BOX_NODES = ("task_plan", "task_refute", "task_review", "iterate_t1")
+
+# Below these counts a stop rule cannot have fired yet (the experiment, *Stop early*).
+LEASE_STOP_RUNS = 40
+MERGE_STOP_RUNS = 60
+MISS_STOP_RATE = 0.10
+
+
+@dataclass(frozen=True)
+class ArmLine:
+    """One arm of the ralph-v2 trial, in the experiment's own terms (ralph-v2 11).
+
+    `zero_touch` counts the runs whose PR the workflow merged with no operator commit
+    (`merged_by_workflow` and the PR's `operator_commits` 0), and it is the only measure of
+    "the run delivered": a run with no PR still counts in `runs`, because the experiment
+    counts every run (measure 1). `merge_rate` is over the arm's runs and `merge_se` its
+    binomial standard error. `quality_*` are over the runs whose `first_round` measured all
+    five counts, and `refuter_*` over the three the Refuter alone publishes: n, the mean and
+    the **sample** standard deviation, which is None below 2 runs because a spread needs a
+    pair. `lease_hours_per_merge` is the guardrail.
+    """
+
+    workflow: str
+    runs: int = 0
+    zero_touch: int = 0
+    merge_rate: float | None = None
+    merge_se: float | None = None
+    quality_n: int = 0
+    quality_mean: float | None = None
+    quality_sd: float | None = None
+    refuter_n: int = 0
+    refuter_mean: float | None = None
+    refuter_sd: float | None = None
+    exhausted_runs: int = 0
+    lease_hours: float = 0.0
+    lease_hours_per_merge: float | None = None
+
+
+@dataclass(frozen=True)
+class TrialLine:
+    """v2 against v1 over one window, and the three stop rules (the experiment).
+
+    `merge_diff` and `quality_diff` are v2 - v1 -- more merges is better, fewer findings is
+    better -- each with the standard error of the difference and the verdict the trial's
+    2-standard-error rule gives it. `guardrail` is v2's lease-hours per zero-touch merge over
+    v1's, against the trial's +50%. The three stop rules are the weekly checks: v2's guardrail
+    above 2 after 40 v2 runs, its merge measure 15 points below after 60, and misses above 10%
+    of the window's Task reviews. Each is False until its own threshold holds, and the numeric
+    fields are None below 2 runs in either arm, where there is nothing to compare.
+    """
+
+    merge_diff: float | None = None
+    merge_se: float | None = None
+    merge_verdict: str | None = None  # better, worse or unclear
+    quality_diff: float | None = None
+    quality_se: float | None = None
+    quality_verdict: str | None = None
+    guardrail: float | None = None
+    lease_stop: bool = False
+    merge_stop: bool = False
+    miss_stop: bool = False
+
+
+@dataclass(frozen=True)
+class TaskReviewLine:
+    """`ralph-v2`'s Task review loop over the window (E7-E13, C5).
+
+    `reviews` is one row per round and a round is two reviewers, so a box-health miss rate is
+    over twice it. `rejection_rate` is the share of each round's reviews whose verdict was
+    `rework` or `blocked`, keyed by the round number: how often the first review rejected the
+    work, and how often the fourth. `misses` counts reviewer visits that returned nothing valid
+    (one per reviewer, E13), `refute_served`/`review_served` count where each reviewer answered,
+    and `edges_planned`/`edges_covered` are what the plans wrote against what the first review
+    of each Task found covered -- the first, because every round restates the same edge cases.
+    `box_minutes` is what each of the new stages spent on the box per v2 run, and `plan_types`
+    counts the plans `task_plan_gate` accepted.
+    """
+
+    reviews: int = 0
+    verdicts: dict[str, int] = field(default_factory=dict)
+    rejection_rate: dict[int, float] = field(default_factory=dict)
+    blocked: int = 0  # Tasks whose fourth review left an error on the box (E10)
+    disputes: int = 0
+    withdrawals: int = 0
+    refute_served: dict[str, int] = field(default_factory=dict)  # box / fallback / missed
+    review_served: dict[str, int] = field(default_factory=dict)
+    misses: int = 0
+    ms: Percentiles = field(default_factory=lambda: Percentiles(0, None, None))
+    edges_planned: int = 0
+    edges_covered: int = 0
+    box_minutes: dict[str, float] = field(default_factory=dict)
+    plan_types: dict[str, int] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class WorkflowsCard:
     """Both arms over one window, side by side (C12, O3).
@@ -1122,6 +1237,13 @@ class WorkflowsCard:
     cards: dict[str, Scorecard]
     strata: list[StrataRow] = field(default_factory=list)
     ralph: RalphLine = field(default_factory=RalphLine)
+    # --- the ralph-v2 trial (ralph-v2 11, *The experiment*) ------------------------
+    # One line per arm (`ralph` and `ralph-v2`), their difference and the stop rules, and
+    # the Task review loop's own numbers. All three are empty/None on a window with too
+    # little history to compare, which is every window before the switch.
+    arms: list[ArmLine] = field(default_factory=list)
+    trial: TrialLine = field(default_factory=TrialLine)
+    task_reviews: TaskReviewLine = field(default_factory=TaskReviewLine)
 
 
 def by_workflow(rows: ScorecardRows, start: datetime, end: datetime) -> WorkflowsCard:
@@ -1211,13 +1333,279 @@ def by_workflow(rows: ScorecardRows, start: datetime, end: datetime) -> Workflow
             )
         )
 
+    # --- the trial's two arms, their difference and the Task review loop ---------
+    arms = []
+    for name in TRIAL_ARMS:
+        history = by_name[name]
+        run_ids = {row["run_id"] for row in history}
+        arms.append(
+            _arm_line(
+                name,
+                history,
+                {
+                    row["run_id"]: row
+                    for row in rows.summaries
+                    if row["run_id"] in run_ids and row["status"] == "ok"
+                },
+                facts,
+                pr_runs,
+            )
+        )
+    v2_ids = {row["run_id"] for row in by_name["ralph-v2"]}
+    task_reviews = _task_review_line(
+        [row for row in rows.task_reviews if row["run_id"] in v2_ids],
+        {
+            row["run_id"]: row
+            for row in rows.summaries
+            if row["run_id"] in v2_ids and row["status"] == "ok"
+        },
+        [row for row in rows.stages if row["run_id"] in v2_ids],
+        len(v2_ids),
+    )
+
     return WorkflowsCard(
         start=start,
         end=end,
         cards=cards,
         strata=table,
         ralph=_ralph_line(by_name["ralph"], rows),
+        arms=arms,
+        trial=_trial_line(arms[0], arms[1], task_reviews),
+        task_reviews=task_reviews,
     )
+
+
+def _arm_line(
+    name: str,
+    history: Sequence[sqlite3.Row],
+    summaries: Mapping[str, sqlite3.Row],
+    facts: Mapping[tuple[str, int], sqlite3.Row],
+    pr_runs: Mapping[tuple[str, int], Sequence[sqlite3.Row]],
+) -> ArmLine:
+    """One arm's numbers, from its own runs (see `ArmLine`)."""
+    lease_ms = 0
+    zero_touch = 0
+    for row in history:
+        lease_ms += _lease_ms(row)
+        if row["pr_lookup"] != "found" or row["pr_number"] is None:
+            continue
+        key = (row["repo"], row["pr_number"])
+        fact = facts.get(key)
+        # An unread PR has no operator-commit count, so it is not a zero-touch merge yet:
+        # the measure waits for GitHub's answer rather than crediting a run blind.
+        if fact is None or fact["operator_commits"] != 0:
+            continue
+        if merged_by_workflow(pr_runs.get(key, ()), fact):
+            zero_touch += 1
+
+    quality: list[int] = []
+    refuter: list[int] = []
+    exhausted = 0
+    for run in history:
+        summary = summaries.get(run["run_id"])
+        if summary is None:
+            continue
+        if summary["loop_exhausted"]:
+            exhausted += 1
+        round_one = _first_round(summary["first_round"])
+        if round_one is None:
+            continue
+        total = round_one.total()
+        if total is not None:
+            quality.append(total)
+        refuter_total = round_one.refuter_total()
+        if refuter_total is not None:
+            refuter.append(refuter_total)
+
+    runs = len(history)
+    quality_n, quality_mean, quality_sd = _mean_sd(quality)
+    refuter_n, refuter_mean, refuter_sd = _mean_sd(refuter)
+    lease_hours = lease_ms / 3_600_000
+    rate = _rate(zero_touch, runs)
+    return ArmLine(
+        workflow=name,
+        runs=runs,
+        zero_touch=zero_touch,
+        merge_rate=rate,
+        merge_se=None if rate is None else math.sqrt(rate * (1 - rate) / runs),
+        quality_n=quality_n,
+        quality_mean=quality_mean,
+        quality_sd=quality_sd,
+        refuter_n=refuter_n,
+        refuter_mean=refuter_mean,
+        refuter_sd=refuter_sd,
+        exhausted_runs=exhausted,
+        lease_hours=lease_hours,
+        lease_hours_per_merge=(lease_hours / zero_touch if zero_touch else None),
+    )
+
+
+def _trial_line(v1: ArmLine, v2: ArmLine, reviews: TaskReviewLine) -> TrialLine:
+    """v2 - v1 on both co-primary measures, the guardrail and the stop rules."""
+    line = TrialLine(
+        miss_stop=reviews.reviews > 0 and reviews.misses / reviews.reviews > MISS_STOP_RATE
+    )
+    if v1.runs < 2 or v2.runs < 2:
+        return line  # nothing to compare on one run, and the stop rules above still stand
+    if v1.merge_rate is not None and v2.merge_rate is not None:
+        diff = v2.merge_rate - v1.merge_rate
+        se = math.sqrt(
+            v1.merge_rate * (1 - v1.merge_rate) / v1.runs
+            + v2.merge_rate * (1 - v2.merge_rate) / v2.runs
+        )
+        line = replace(
+            line,
+            merge_diff=diff,
+            merge_se=se,
+            merge_verdict=_verdict(diff, se, better_high=True),
+            merge_stop=diff <= -0.15 and v2.runs >= MERGE_STOP_RUNS,
+        )
+    if (
+        v1.quality_mean is not None
+        and v2.quality_mean is not None
+        and v1.quality_sd is not None
+        and v2.quality_sd is not None
+    ):
+        diff = v2.quality_mean - v1.quality_mean
+        se = math.sqrt(v1.quality_sd**2 / v1.quality_n + v2.quality_sd**2 / v2.quality_n)
+        line = replace(
+            line,
+            quality_diff=diff,
+            quality_se=se,
+            quality_verdict=_verdict(diff, se, better_high=False),
+        )
+    if v1.lease_hours_per_merge is not None and v2.lease_hours_per_merge is not None:
+        guardrail = v2.lease_hours_per_merge / v1.lease_hours_per_merge
+        line = replace(
+            line,
+            guardrail=guardrail,
+            lease_stop=guardrail > 2 and v2.runs >= LEASE_STOP_RUNS,
+        )
+    return line
+
+
+def _verdict(diff: float, se: float, *, better_high: bool) -> str:
+    """`better`, `worse` or `unclear` by the trial's 2-standard-error rule."""
+    if abs(diff) <= 2 * se:
+        return "unclear"
+    return "better" if (diff > 0) == better_high else "worse"
+
+
+def _task_review_line(
+    reviews: Sequence[sqlite3.Row],
+    summaries: Mapping[str, sqlite3.Row],
+    stages: Sequence[sqlite3.Row],
+    runs: int,
+) -> TaskReviewLine:
+    """The Task review loop's numbers over the window (see `TaskReviewLine`)."""
+    verdicts = Counter(str(row["verdict"]) for row in reviews)
+    by_round: dict[int, list[str]] = defaultdict(list)
+    refute_served: Counter[str] = Counter()
+    review_served: Counter[str] = Counter()
+    disputes = withdrawals = misses = edges_covered = 0
+    for row in reviews:
+        by_round[int(row["round"])].append(str(row["verdict"]))
+        refute_served[str(row["refute_served"])] += 1
+        review_served[str(row["review_served"])] += 1
+        disputes += int(row["disputed"] or 0)
+        withdrawals += int(row["withdrawn"] or 0)
+        misses += sum(
+            1 for served in (row["refute_served"], row["review_served"]) if served == MISSED
+        )
+        if int(row["round"]) == 1:
+            edges_covered += int(row["edges_covered"] or 0)
+
+    plan_types: Counter[str] = Counter()
+    edges_planned = 0
+    for summary in summaries.values():
+        one = _task_plans(summary["task_plans"])
+        plan_types.update(one.types)
+        edges_planned += one.edges
+
+    box_ms: Counter[str] = Counter()
+    for row in stages:
+        if row["node_id"] in TASK_REVIEW_BOX_NODES:
+            box_ms[str(row["node_id"])] += int(row["box_ms"] or 0)
+
+    return TaskReviewLine(
+        reviews=len(reviews),
+        verdicts=dict(verdicts.most_common()),
+        rejection_rate={
+            number: sum(1 for verdict in names if verdict in REJECTED_VERDICTS) / len(names)
+            for number, names in sorted(by_round.items())
+        },
+        blocked=verdicts.get("blocked", 0),
+        disputes=disputes,
+        withdrawals=withdrawals,
+        refute_served={state: refute_served[state] for state in SERVED_STATES},
+        review_served={state: review_served[state] for state in SERVED_STATES},
+        misses=misses,
+        ms=_percentiles([int(row["ms"] or 0) / 60_000 for row in reviews]),
+        edges_planned=edges_planned,
+        edges_covered=edges_covered,
+        box_minutes={
+            node: (box_ms[node] / 60_000 / runs if runs else 0.0)
+            for node in TASK_REVIEW_BOX_NODES
+        },
+        plan_types=dict(plan_types.most_common()),
+    )
+
+
+def _first_round(text: str | None) -> FirstRound | None:
+    """A stored `run_summary.first_round`; None for NULL (a run summarized before it)."""
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return FirstRound(
+        **{
+            name: parsed.get(name) if _is_count(parsed.get(name)) else None
+            for name in FIRST_ROUND_FIELDS
+        }
+    )
+
+
+def _task_plans(text: str | None) -> TaskPlans:
+    """A stored `run_summary.task_plans`; empty for NULL (a run summarized before it)."""
+    if not text:
+        return TaskPlans()
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return TaskPlans()
+    if not isinstance(parsed, dict):
+        return TaskPlans()
+    types = parsed.get("types")
+    return TaskPlans(
+        types=Counter({
+            str(name): int(count)
+            for name, count in (types.items() if isinstance(types, dict) else ())
+            if _is_count(count)
+        }),
+        goals=int(parsed.get("goals") or 0),
+        edges=int(parsed.get("edges") or 0),
+    )
+
+
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _mean_sd(values: Sequence[int]) -> tuple[int, float | None, float | None]:
+    """n, the mean and the **sample** standard deviation (None below 2 values)."""
+    n = len(values)
+    if n == 0:
+        return 0, None, None
+    mean = sum(values) / n
+    if n < 2:
+        return n, mean, None
+    variance = sum((value - mean) ** 2 for value in values) / (n - 1)
+    return n, mean, math.sqrt(variance)
+
 
 
 def _ralph_line(history: Sequence[sqlite3.Row], rows: ScorecardRows) -> RalphLine:
@@ -1282,6 +1670,9 @@ def workflows_to_json(card: WorkflowsCard) -> dict[str, object]:
         "workflows": {name: to_json(one) for name, one in card.cards.items()},
         "strata": [asdict(row) for row in card.strata],
         "ralph": asdict(card.ralph),
+        "arms": [asdict(arm) for arm in card.arms],
+        "trial": asdict(card.trial),
+        "task_reviews": asdict(card.task_reviews),
     }
 
 
@@ -1344,7 +1735,113 @@ def workflows_to_markdown(card: WorkflowsCard) -> str:
             ],
         ],
     )
+    lines += _trial_markdown(card)
+    lines += _task_review_markdown(card)
     return "\n".join(lines) + "\n"
+
+
+def _trial_markdown(card: WorkflowsCard) -> list[str]:
+    """The ralph-v2 trial's two arms, their difference and the stop rules.
+
+    One row per measure with an arm column each, so the two arms are read side by side and
+    the trial's co-primary comparison is the two lines under the table. Both arms are always
+    there (`by_workflow` builds the pair), at zero for a window that ran none of them.
+    """
+    arms = card.arms
+    trial = card.trial
+    lines = ["", "## ralph-v2 trial", ""]
+    lines += _md_rows(
+        ["measure", *[arm.workflow for arm in arms]],
+        [
+            ["runs", *[str(arm.runs) for arm in arms]],
+            ["zero-touch merges", *[str(arm.zero_touch) for arm in arms]],
+            ["merge rate (standard error)", *[_se_cell(arm.merge_rate, arm.merge_se) for arm in arms]],
+            [
+                "quality, sum of the five: n / mean / sd",
+                *[_nsd_cell(arm.quality_n, arm.quality_mean, arm.quality_sd) for arm in arms],
+            ],
+            [
+                "quality, the Refuter's three: n / mean / sd",
+                *[_nsd_cell(arm.refuter_n, arm.refuter_mean, arm.refuter_sd) for arm in arms],
+            ],
+            ["runs that ran out", *[str(arm.exhausted_runs) for arm in arms]],
+            ["lease-hours", *[f"{arm.lease_hours:.1f}" for arm in arms]],
+            ["lease-hours per zero-touch merge", *[_num(arm.lease_hours_per_merge) for arm in arms]],
+        ],
+    )
+    lines += [""]
+    lines += _md_rows(
+        ["check", "value"],
+        [
+            ["merge, v2 - v1", _diff_cell(trial.merge_diff, trial.merge_se, trial.merge_verdict)],
+            [
+                "quality, v2 - v1",
+                _diff_cell(trial.quality_diff, trial.quality_se, trial.quality_verdict),
+            ],
+            [
+                "guardrail, v2 / v1",
+                "—" if trial.guardrail is None
+                else f"{trial.guardrail:.2f}x (the trial is lost above 2.00x)",
+            ],
+            [
+                "stop rules",
+                f"lease {'yes' if trial.lease_stop else 'no'},"
+                f" merge {'yes' if trial.merge_stop else 'no'},"
+                f" misses {'yes' if trial.miss_stop else 'no'}",
+            ],
+        ],
+    )
+    return lines
+
+
+def _task_review_markdown(card: WorkflowsCard) -> list[str]:
+    """`ralph-v2`'s Task review loop: what it reviewed, what it found and what it cost."""
+    row = card.task_reviews
+    rounds = ", ".join(
+        f"round {number} {_pct(rate)}" for number, rate in row.rejection_rate.items()
+    ) or "—"
+    return ["", "## Task reviews", ""] + _md_rows(
+        ["measure", "value"],
+        [
+            ["reviews (rounds)", str(row.reviews)],
+            ["verdicts", _counts(row.verdicts) or "—"],
+            ["rejection rate by round", rounds],
+            ["Tasks blocked", str(row.blocked)],
+            ["disputes / withdrawals", f"{row.disputes} / {row.withdrawals}"],
+            [
+                "served, Refuter: box / fallback / missed",
+                " / ".join(str(row.refute_served.get(state, 0)) for state in SERVED_STATES),
+            ],
+            [
+                "served, review: box / fallback / missed",
+                " / ".join(str(row.review_served.get(state, 0)) for state in SERVED_STATES),
+            ],
+            ["misses (a reviewer with no valid result)", str(row.misses)],
+            ["reviewer minutes p50 / p90", _arm_pct(row.ms)],
+            ["edge cases planned / covered", f"{row.edges_planned} / {row.edges_covered}"],
+            [
+                "box minutes a run: " + " / ".join(TASK_REVIEW_BOX_NODES),
+                " / ".join(f"{row.box_minutes.get(node, 0.0):.1f}" for node in TASK_REVIEW_BOX_NODES),
+            ],
+            ["plan types", _counts(row.plan_types) or "—"],
+        ],
+    )
+
+
+def _se_cell(value: float | None, se: float | None) -> str:
+    """A rate with its standard error, `50% (25%)`."""
+    return "—" if value is None else f"{_pct(value)} ({_pct(se)})"
+
+
+def _nsd_cell(n: int, mean: float | None, sd: float | None) -> str:
+    return f"{n} / {_num(mean)} / {_num(sd)}"
+
+
+def _diff_cell(diff: float | None, se: float | None, verdict: str | None) -> str:
+    """A difference with its standard error and the rule's verdict, `+0.67 ± 0.22: better`."""
+    if diff is None:
+        return "—"
+    return f"{diff:+.2f} ± {'n/a' if se is None else f'{se:.2f}'}: {verdict or 'unclear'}"
 
 
 def _arm_rate(value: float | None) -> str:

@@ -5,8 +5,13 @@
 # Usage:
 #   ./ops/fabro-trial-review.sh                          # the trial so far: 2026-10-22 to today
 #   ./ops/fabro-trial-review.sh --from 2026-10-26 --to 2026-11-01
+#   ./ops/fabro-trial-review.sh --arms ralph,ralph-v2     # the ralph-v2 trial (ralph-v2 11)
 #   ./ops/fabro-trial-review.sh --traces [...]           # also each ralph run's routing edges
 #   ./ops/fabro-trial-review.sh --trace RUN_ID           # one run's routing edges, either arm
+#
+# `--arms A,B` names the two arms the review compares, default `backlog,ralph` (the ralph
+# trial), and `ralph,ralph-v2` reads the ralph-v2 trial instead. The ralph-only sections run
+# for each name that starts with `ralph`, so the default output is what it always was.
 #
 # Both dates are inclusive (UTC). A window holds the runs dispatched in it, as the
 # scorecard's does, so the first window also holds the backlog runs of 2026-10-22
@@ -28,6 +33,7 @@ HOST="${FABRO_HOST:-andrew@10.10.0.32}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 FROM="2026-10-22"
 TO="$(date -u +%Y-%m-%d)"
+ARMS="backlog,ralph"
 TRACES=0
 TRACE=""
 
@@ -35,9 +41,10 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --from) FROM="${2:?--from needs a date}"; shift 2 ;;
         --to) TO="${2:?--to needs a date}"; shift 2 ;;
+        --arms) ARMS="${2:?--arms needs two workflow names}"; shift 2 ;;
         --traces) TRACES=1; shift ;;
         --trace) TRACE="${2:?--trace needs a run id}"; shift 2 ;;
-        -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "fabro-trial-review.sh: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -48,6 +55,14 @@ for d in "$FROM" "$TO"; do
         exit 2
     fi
 done
+
+# The pair the review compares, as `A,B`. The reducer checks it too; this catches the
+# operator's typo here, where the message names the script they ran.
+case "$ARMS" in
+    [A-Za-z0-9-]*,[A-Za-z0-9-]*) ;;
+    *) echo "fabro-trial-review.sh: --arms needs two workflow names, e.g. ralph,ralph-v2 (got '$ARMS')" >&2
+       exit 2 ;;
+esac
 
 # The routing edges of one run, with the Iteration loop's plumbing left out: `→ record`
 # keeps `check`'s outcome, `→ iterate_tN` the rung, `✗` a failed or timed-out attempt.
@@ -78,17 +93,24 @@ echo "# Scorecard by workflow, $FROM to $TO"
 echo
 "$HERE/fabro-scorecard.sh" --by-workflow --from "$FROM" --to "$TO"
 echo
-reducer --from "$FROM" --to "$TO"
+reducer --from "$FROM" --to "$TO" --arms "$ARMS"
 
 if [ "$TRACES" = 1 ]; then
-    echo
-    echo "## ralph routes"
-    reducer --from "$FROM" --to "$TO" --ids ralph | while read -r RUN WHAT; do
-        echo
-        echo "### $RUN ($WHAT)"
-        echo
-        echo '```'
-        trace "$RUN" < /dev/null
-        echo '```'
+    # The ralph-only section, for each arm that is one: `--ids` prints one workflow's ids.
+    for ARM in ${ARMS//,/ }; do
+        case "$ARM" in
+            ralph*)
+                echo
+                echo "## $ARM routes"
+                reducer --from "$FROM" --to "$TO" --ids "$ARM" | while read -r RUN WHAT; do
+                    echo
+                    echo "### $RUN ($WHAT)"
+                    echo
+                    echo '```'
+                    trace "$RUN" < /dev/null
+                    echo '```'
+                done
+                ;;
+        esac
     done
 fi

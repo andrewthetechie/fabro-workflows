@@ -58,6 +58,17 @@ Diff-hygiene rulings (#92) added three counts to each refuter verdict: `hygiene_
 or `tampering`. `refute_gate` publishes them with its verdict in both graphs; a pass from a
 run whose gate published none has `None` for each, which is never read as 0.
 
+The `ralph-v2` trial (ralph-v2 11) added three facts. `first_round` is the experiment's quality
+measure, read from what `refute`, `standards` and `spec` **submitted** on their first completed
+visit (`agent.tool.started`'s `ToolCallStarted.arguments`), never from the gate's verdict: the
+Refuter's `not_met` criteria, its defects and its `tampering` rulings, and the two reviewers'
+error findings. A stage that never completed leaves its own fields None, so a run that stopped
+early is not a run with a perfect first round. `task_reviews` is one entry per
+`task_review_gate` round of a `ralph-v2` run, from the thirteen keys the gate publishes plus
+the reviewer wall time, the check nodes' tries and whether a reviewer failed over; and
+`task_plans` is the plan types, goals and edge cases `task_plan_gate` accepted. Only
+`ralph-v2` writes the last two, because only it has those nodes.
+
 Pure: no I/O, so the parsing is tested with fixture event lines.
 """
 
@@ -151,6 +162,37 @@ PRE_REVIEW_CHECK_NODE = "pre_review_check"
 # docstrings and the tests below name them.
 EDIT_TOOLS = frozenset({"edit_file", "write_file"})
 
+# The workflows whose first hosted round the experiment's quality measure reads (the
+# ralph-v2 trial, *The experiment*, measure 2). `backlog` reviews through the imported
+# `review_merge.*` nodes and is not an arm, so it records no `first_round`.
+QUALITY_WORKFLOWS = ("ralph", "ralph-v2")
+
+# The stages of that round. The Refuter runs last in both arms and sees the whole branch;
+# `local_standards` and `local_spec` are box stages and part of neither arm's measure.
+QUALITY_STAGES = ("refute", "standards", "spec")
+
+# The tail of every agent stage's submit tool (`submit`, `submit_iteration`, ...). What a
+# stage submitted is in `ToolCallStarted.arguments`.
+SUBMIT_TOOL = "submit"
+
+# The five counts `FirstRound` holds, in its field order: the list the stored JSON and the
+# scorecard both iterate, so a field added here cannot be read by only one of them.
+FIRST_ROUND_FIELDS = (
+    "refute_not_met",
+    "refute_defects",
+    "refute_tampering",
+    "standards_errors",
+    "spec_errors",
+)
+
+# `ralph-v2`'s Task review loop (C4, C5): the four reviewers whose wall time, tries and
+# failover a round's row carries, the two check nodes that publish the tries, and the two
+# gates that open and close a round.
+TASK_REVIEW_STAGES = frozenset({"task_refute", "task_refute_fb", "task_review", "task_review_fb"})
+TASK_REVIEW_CHECKS = ("task_refute_check", "task_review_check")
+TASK_PLAN_GATE = "task_plan_gate"
+TASK_REVIEW_GATE = "task_review_gate"
+
 
 @dataclass(frozen=True)
 class TaskValidation:
@@ -203,6 +245,82 @@ class RefuteVerdict:
     hygiene_tampering: int | None = None
 
 
+@dataclass(frozen=True)
+class FirstRound:
+    """The first hosted round's submitted results, for the experiment's quality measure.
+
+    Every field is a count, and every one is None when its stage never completed: a run
+    that stopped before the Refuter is not a run that found nothing. A reviewer that
+    completed without a submitted result -- a crash, or an `arguments` that is not an
+    object -- leaves its own field None for the same reason. `standards_errors` and
+    `spec_errors` are error-severity findings; the Refuter's defects are its own list's
+    length, so a defect-only fail counts.
+    """
+
+    refute_not_met: int | None = None
+    refute_defects: int | None = None
+    refute_tampering: int | None = None
+    standards_errors: int | None = None
+    spec_errors: int | None = None
+
+    def total(self) -> int | None:
+        """All five summed: the measure's number, or None when the round is incomplete."""
+        return _sum_counts(
+            self.refute_not_met,
+            self.refute_defects,
+            self.refute_tampering,
+            self.standards_errors,
+            self.spec_errors,
+        )
+
+    def refuter_total(self) -> int | None:
+        """The Refuter's three summed, for the same run read one reviewer narrower."""
+        return _sum_counts(self.refute_not_met, self.refute_defects, self.refute_tampering)
+
+
+@dataclass(frozen=True)
+class TaskReview:
+    """One round of `ralph-v2`'s Task review loop (C5 step 9), plus what it cost.
+
+    The first thirteen are the keys `task_review_gate` publishes on every path. `ms` is the
+    wall time of the four reviewer visits since the previous round, `tries` the tries their
+    two check nodes counted (the fallback ladder, E13 and A3), and `failover` whether a
+    reviewer ran on a fallback model -- a box failover is an incident (E17, C11), so a round
+    records it.
+    """
+
+    task: str
+    source: str
+    round: int
+    verdict: str  # pass, missed, rework or blocked
+    errors: int
+    warnings: int
+    disputed: int
+    withdrawn: int
+    dropped: int
+    refute_served: str  # box, fallback or missed
+    review_served: str
+    edges: int  # the Task's edge cases, from its plan
+    edges_covered: int  # how many of them the reviewers found covered
+    tries: int
+    ms: int
+    failover: bool
+
+
+@dataclass(frozen=True)
+class TaskPlans:
+    """The Task plans one `ralph-v2` run wrote, over `task_plan_gate`'s accepted visits.
+
+    `types` counts the plan types (`planned` or `fallback`) the gate accepted, and `goals`
+    and `edges` sum its `task_plan_goals` and `task_plan_edges`. A rejected visit wrote no
+    plan and is not counted: it routes `retry`, never `go`.
+    """
+
+    types: Counter[str] = field(default_factory=Counter)
+    goals: int = 0
+    edges: int = 0
+
+
 @dataclass
 class RunSummary:
     run_id: str
@@ -240,6 +358,14 @@ class RunSummary:
     # never reached the node, which is every run from before the stage existed.
     pre_review_arm: str | None = None
     pre_review_verdict: str | None = None
+    # --- the ralph-v2 trial's measures (ralph-v2 11). ---------------------------
+    # The first hosted round's submitted results (see `FirstRound`): None on a workflow
+    # that is not an arm, and None fields on an arm that stopped before a reviewer.
+    first_round: FirstRound | None = None
+    # One entry per `task_review_gate` round, in order: `ralph-v2` only.
+    task_reviews: list[TaskReview] = field(default_factory=list)
+    # The Task plans its planner gate accepted: `ralph-v2` only.
+    task_plans: TaskPlans = field(default_factory=TaskPlans)
 
 
 def summarize(
@@ -298,6 +424,25 @@ def summarize(
     loop_exhausted = False
     pre_review_arm: str | None = None
     pre_review_verdict: str | None = None
+    # The `ralph-v2` trial (ralph-v2 11): the first hosted round's five counts, the Task
+    # review rounds, and the planner gate's accepted plans. Each is filled only for the
+    # workflow that has the nodes, so a `backlog` run records none of them.
+    is_quality_arm = workflow in QUALITY_WORKFLOWS
+    is_v2 = workflow == "ralph-v2"
+    first_not_met: int | None = None
+    first_defects: int | None = None
+    first_tampering: int | None = None
+    first_standards: int | None = None
+    first_spec: int | None = None
+    submitted: dict[str, Mapping[str, object] | None] = {}  # node -> its last submit's arguments
+    quality_done: set[str] = set()  # the QUALITY_STAGES whose first completion was read
+    task_reviews: list[TaskReview] = []
+    review_ms = 0  # reviewer wall time since the previous `task_review_gate`
+    review_failover = False
+    review_tries: dict[str, int] = {}  # `task_refute_tries` / `task_review_tries`, last seen
+    plan_types: Counter[str] = Counter()
+    plan_goals = 0
+    plan_edges = 0
     phase = "pre"
     ending: str | None = None
     count = 0
@@ -324,6 +469,51 @@ def summarize(
                 if stat is None:
                     stat = stats[node] = StageStat(node, "unknown")
                 stat.wall_ms += wall
+            if is_v2 and node in TASK_REVIEW_STAGES:
+                review_ms += _timing_ms(props)
+
+        # The quality measure reads what a reviewer submitted, not the verdict its gate
+        # reached: the last `submit` before the stage's first `stage.completed` is the
+        # result that counted, and a submit whose `arguments` is not an object is not a
+        # result at all (see `FirstRound`).
+        if name == "agent.tool.started" and is_quality_arm and node in QUALITY_STAGES:
+            inner = props.get("event")
+            call = inner.get("ToolCallStarted") if isinstance(inner, Mapping) else None
+            if (
+                isinstance(call, Mapping)
+                and _str(call.get("tool_name")).endswith(SUBMIT_TOOL)
+                and node not in quality_done
+            ):
+                args = call.get("arguments")
+                submitted[node] = args if isinstance(args, Mapping) else None
+        elif (
+            name == "stage.completed"
+            and is_quality_arm
+            and node in QUALITY_STAGES
+            and node not in quality_done
+        ):
+            quality_done.add(node)
+            args = submitted.get(node)
+            if args is not None:
+                if node == "refute":
+                    first_not_met = _count_where(args.get("criteria"), "status", "not_met")
+                    first_defects = _length(args.get("defects"))
+                    first_tampering = _count_where(args.get("hygiene"), "ruling", "tampering")
+                elif node == "standards":
+                    first_standards = _count_where(args.get("findings"), "severity", "error")
+                elif node == "spec":
+                    first_spec = _count_where(args.get("findings"), "severity", "error")
+
+        if name == "agent.route.failover" and is_v2 and node in TASK_REVIEW_STAGES:
+            review_failover = True
+
+        if name == "stage.completed" and is_v2 and node in TASK_REVIEW_CHECKS:
+            updates = props.get("context_updates")
+            if isinstance(updates, Mapping):
+                for key in ("task_refute_tries", "task_review_tries"):
+                    tries = _int_or_none(updates.get(key))
+                    if tries is not None:
+                        review_tries[key] = tries
 
         if name == "stage.started":
             if node and node != "exit":
@@ -458,6 +648,44 @@ def summarize(
                             _int_or_none(updates.get("hygiene_tampering")),
                         )
                     )
+        elif name == "stage.completed" and node == TASK_PLAN_GATE and is_v2:
+            # A rejected visit routes `retry` and wrote no plan, so only `go` is counted.
+            updates = props.get("context_updates")
+            if isinstance(updates, Mapping) and _str(updates.get("task_plan_route")) == "go":
+                plan_types[_str(updates.get("task_plan_type")) or "none"] += 1
+                plan_goals += _int(updates.get("task_plan_goals"))
+                plan_edges += _int(updates.get("task_plan_edges"))
+        elif name == "stage.completed" and node == TASK_REVIEW_GATE and is_v2:
+            # One row per round, from the keys the gate publishes on every path. A gate that
+            # crashed published nothing and leaves no row: the Task stays `reviewing`.
+            updates = props.get("context_updates")
+            if isinstance(updates, Mapping):
+                verdict = _str(updates.get("task_review_verdict"))
+                if verdict:
+                    task_reviews.append(
+                        TaskReview(
+                            task=_str(updates.get("task_review_task")),
+                            source=_str(updates.get("task_review_source")),
+                            round=_int(updates.get("task_review_round")),
+                            verdict=verdict,
+                            errors=_int(updates.get("task_review_errors")),
+                            warnings=_int(updates.get("task_review_warnings")),
+                            disputed=_int(updates.get("task_review_disputed")),
+                            withdrawn=_int(updates.get("task_review_withdrawn")),
+                            dropped=_int(updates.get("task_review_dropped")),
+                            refute_served=_str(updates.get("task_review_refute_served")),
+                            review_served=_str(updates.get("task_review_review_served")),
+                            edges=_int(updates.get("task_review_edges")),
+                            edges_covered=_int(updates.get("task_review_edges_covered")),
+                            tries=sum(review_tries.values()),
+                            ms=review_ms,
+                            failover=review_failover,
+                        )
+                    )
+            # The round is over either way: what it spent belongs to it, not to the next one.
+            review_ms = 0
+            review_failover = False
+            review_tries = {}
 
     # A node's box time is its corrected wall time when the node is a coder box, so a
     # retried box stage's both attempts count as box time (issue #66).
@@ -485,7 +713,42 @@ def summarize(
         loop_exhausted=loop_exhausted,
         pre_review_arm=pre_review_arm,
         pre_review_verdict=pre_review_verdict,
+        # A `backlog` run has neither an arm's hosted round nor a Task review loop, and
+        # `first_round=None` is what tells it from an arm that never reached a reviewer.
+        first_round=(
+            FirstRound(
+                refute_not_met=first_not_met,
+                refute_defects=first_defects,
+                refute_tampering=first_tampering,
+                standards_errors=first_standards,
+                spec_errors=first_spec,
+            )
+            if is_quality_arm
+            else None
+        ),
+        task_reviews=task_reviews,
+        task_plans=TaskPlans(types=plan_types, goals=plan_goals, edges=plan_edges),
     )
+
+
+def _sum_counts(*counts: int | None) -> int | None:
+    """Counts summed, or None as soon as one is unmeasured: half a round is not a score."""
+    measured = [count for count in counts if count is not None]
+    return sum(measured) if len(measured) == len(counts) else None
+
+
+def _count_where(value: object, key: str, wanted: str) -> int:
+    """How many entries of a submitted list are objects whose `key` is `wanted`."""
+    if not isinstance(value, list):
+        return 0
+    return sum(
+        1 for entry in value if isinstance(entry, Mapping) and _str(entry.get(key)) == wanted
+    )
+
+
+def _length(value: object) -> int:
+    """A submitted list's length; 0 for anything else, so a missing list is no defects."""
+    return len(value) if isinstance(value, list) else 0
 
 
 def _timing_ms(props: Mapping[str, object]) -> int:

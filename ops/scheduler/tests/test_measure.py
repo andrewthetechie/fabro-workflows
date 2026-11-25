@@ -139,7 +139,12 @@ def test_box_use_ignores_a_run_outside_the_window_and_a_job_with_no_span(store):
 def box_health(store: Store, *, hours: int = 24) -> dict[str, object]:
     gathered = store.box_health_rows(since=NOW - timedelta(hours=hours))
     return measure.box_health(
-        gathered["history"], gathered["stages"], gathered["failovers"], hours=hours, now=NOW
+        gathered["history"],
+        gathered["stages"],
+        gathered["failovers"],
+        reviews=gathered["reviews"],
+        hours=hours,
+        now=NOW,
     )
 
 
@@ -160,9 +165,11 @@ def test_box_health_on_an_empty_store_has_no_rate_rather_than_zero(store):
     assert document["failovers"] == 0
     assert document["failover_rate"] is None, "nothing ran, so there is no rate to report"
     assert document["terra"] == 0
-    assert document["reviews"] is None, "the Task review loop fills these (ralph-v2 11)"
-    assert document["reviews_missed"] is None
-    assert document["miss_rate"] is None
+    # ralph-v2 11: no Task review ran, so the counts are 0 and there is no rate -- the
+    # difference C11's `>= 20` guard exists for.
+    assert document["reviews"] == 0
+    assert document["reviews_missed"] == 0
+    assert document["miss_rate"] is None, "no reviewer ran, so there is no rate to report"
     assert document["window"] == {
         "hours": 24,
         "from": (NOW - timedelta(hours=24)).isoformat(),
@@ -225,6 +232,40 @@ def test_box_health_windows_on_the_hours_it_is_asked_for(store):
     stage(store, run_id="OLD", node="iterate_t1", visits=90, box_ms=600_000)
     assert box_health(store, hours=24)["visits"] == 10
     assert box_health(store, hours=48)["visits"] == 100
+
+
+def task_review(store: Store, *, run_id: str, seq: int, refute_served: str = "box",
+                review_served: str = "box", verdict: str = "pass") -> None:
+    """One `run_task_reviews` row, with only the columns the box health reads filled in."""
+    with store._lock, store._conn:
+        store._conn.execute(
+            "INSERT INTO run_task_reviews (run_id, seq, task, source, round, verdict, errors,"
+            " warnings, disputed, withdrawn, dropped, refute_served, review_served, edges,"
+            " edges_covered, tries, ms, failover) VALUES (?, ?, 'T1', 'plan', 1, ?, 0, 0, 0,"
+            " 0, 0, ?, ?, 0, 0, 0, 0, 0)",
+            (run_id, seq, verdict, refute_served, review_served),
+        )
+
+
+def test_box_health_counts_task_reviews_and_misses_per_reviewer(store):
+    """ralph-v2 11: a review round is two reviewers, so `reviews` is twice the rows, and a
+    miss is one reviewer's own `missed` -- a reviewer that rejected the work is neither
+    (E11). A row of a run with no `ok` summary is not in the window's rate, exactly as its
+    stage rows are not."""
+    inside = NOW - timedelta(hours=1)
+    run(store, run_id="V1", at=inside, workflow="ralph-v2")
+    summary(store, run_id="V1")
+    task_review(store, run_id="V1", seq=1, refute_served="missed")
+    task_review(store, run_id="V1", seq=2, verdict="rework")
+    run(store, run_id="NOSUM", at=inside, workflow="ralph-v2")
+    task_review(store, run_id="NOSUM", seq=1, refute_served="missed", review_served="missed")
+
+    document = box_health(store)
+
+    assert document["reviews"] == 4, "two rows, two reviewers each"
+    assert document["reviews_missed"] == 1, "the rejected round's reviewers both answered"
+    assert document["miss_rate"] == 0.25
+    assert box_health(store, hours=2)["reviews"] == 4
 
 
 # --- endings -----------------------------------------------------------------------
