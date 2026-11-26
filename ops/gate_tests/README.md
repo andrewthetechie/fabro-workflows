@@ -20,8 +20,8 @@ checks, and against a mutated copy of the graphs, where both suites failed the s
 ```
 
 Two tests need tools that only the profile images carry, and are skipped without them:
-`test_fabro_code` (a real `codegraph`) and the `fabro-io` tests (`test_refute_guard`,
-`test_improve_end_to_end`, `test_fabro_io_probe`). To run the `fabro-io` ones on the Mac, build
+`test_fabro_code` (a real `codegraph`) and the `fabro-io` tests (`test_refute_guard`, the three
+receipt checks in `test_receipts.py`, `test_fabro_io_probe`). To run the `fabro-io` ones on the Mac, build
 it (`cargo build --release` in `ops/fabro-io`) and put `ops/fabro-io/target/release` on PATH.
 
 ## Layout

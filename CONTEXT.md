@@ -260,16 +260,44 @@ word, however its tasks are produced.
 _Avoid_: story (Ralph's word for the same thing), step, sub-task
 
 **Task list**:
-The ordered **Tasks** a `ralph` run's plan writes for one issue, each with its acceptance
-checks and whether it has passed. The run works from it and appends to it. It lives in the
-run, never on the issue, which is what separates it from triage's **Task map**.
+The ordered **Tasks** a `ralph` or `ralph-v2` run's plan writes for one issue, each with its
+acceptance checks and whether it has passed. The run works from it and appends to it. It lives in
+the run, never on the issue, which is what separates it from triage's **Task map**.
 _Avoid_: PRD, plan (the stage that writes it), backlog
 
+**Task plan**:
+What one `ralph-v2` **Task** is worked from: a dossier refreshed against the checkout, one to four
+goals that together cover every acceptance statement, the edge cases to test, and, for a **Task**
+that fixes a finding, the class of the bug. The box writes it once, before that Task's first
+**Iteration**; a gate accepts it, or falls back to one goal per acceptance statement.
+_Avoid_: **Task list** (that is the whole run's), plan (the stage that writes the **Task list**),
+dossier
+
 **Iteration**:
-One fresh coder session in a `ralph` run that takes the first unpassed **Task** from the
-**Task list**, works it, and leaves what it learned for the next. It carries no
+One fresh coder session in a `ralph` or `ralph-v2` run that takes the first unpassed **Task** from
+the **Task list**, works it, and leaves what it learned for the next. It carries no
 conversation from the one before. One task may take several iterations.
 _Avoid_: loop (overloaded, see **Livelock**), turn (a turn is one model reply), pass
+
+**Rework**:
+A **Task**'s next **Iteration** in a `ralph-v2` run after its **Task review** found an error: one
+Iteration answers every finding that review kept, and it counts against the rework counter, not
+the run's Iteration cap. A Task gets its first review and up to three reworks; an error left after
+the fourth review blocks it.
+_Avoid_: rework round (a **Refute round** is the issue-level loop), fix pass
+
+**Task review**:
+The box review of one `ralph-v2` **Task** after its mechanical check passed: a refuter session and
+a standards/spec session, in that order, on the run's own box, each unable to read the other's
+result. No error passes the Task; an error sends it to a **Rework**.
+_Avoid_: **Refute round** (that is the issue-level Refuter on the whole branch), code review,
+pre-review
+
+**Dispute**:
+A coder's answer to one **Task review** finding, written in the **Rework** that claims it: a
+`path:N`, or a command in backticks, showing the finding does not hold. The next reviewer
+withdraws it or cites something new; an unchanged repeat is dropped for the rest of the run.
+_Avoid_: rebuttal, appeal
 
 **Refute round**:
 One visit of the **Refuter** to a `ralph` run whose every **Task** has passed. Each

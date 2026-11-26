@@ -2,8 +2,8 @@
 
 `_io/` has no `workflow.toml`, like `_shared/` — nothing in it is a runnable package.
 
-- **`manifest.json`** is the human-authored source of truth for every agent stage in
-  the four workflows and the two shared phases (24 stages). It is read by
+- **`manifest.json`** is the human-authored source of truth for every agent stage in every
+  package and in the two shared phases (`review-merge` and `triage`). It is read by
   `ops/fabro-io-manifest.py`, never by `fabro-io` directly. Each stage lists its
   ordered inputs, its optional output contract (`schema` is the contract *name*, which
   the generator inlines from `schemas/<name>.schema.json`), its Sealed paths, its

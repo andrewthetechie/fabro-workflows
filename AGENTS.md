@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Eight Fabro workflows and the ops tooling for the host that runs them.
+Nine Fabro workflows and the ops tooling for the host that runs them.
 
 ## Pushing to `main` deploys
 
@@ -23,7 +23,7 @@ actually lives.
 
 | Path | What it is |
 |---|---|
-| `.fabro/workflows/<name>/` | **The only tree the automations read.** Fifteen packages — the eight the automations fire (`backlog`, `ralph`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue` and `scout`; `merge-queue` and `scout` have no agent stage), the six box-only packages the **Scheduler**'s background lane runs in a coder loop's gap (more-local-inference, ADR 0031): `box-noop`, `issue-precheck`, `context-pack`, `precheck-calibration` (the live precheck re-run on finished runs, posting nothing), `flaky-investigation` (a diagnosis of one queued `flaky-test` issue, posted as its marker comment) and `repo-orientation` (a map of one repository, kept in a pinned `fabro-orientation` issue that `backlog`'s and `ralph`'s `prep` read) — plus **`issue-sharpen`**, a **leased box-only package**: a coder lease the scheduler dispatches ahead of issue runs, not a background kind (ADR 0033), which rewrites an `unverifiable` issue's acceptance criteria on the box's `-bg` row with no human approval — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in (it has a queue mode that only `backlog`'s fast lane uses), and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `ralph` imports neither: it copies the shared merge nodes, and `ops/check-graph-invariants.py` R10 fails when a copy drifts. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
+| `.fabro/workflows/<name>/` | **The only tree the automations read.** Sixteen packages — the eight the automations fire (`backlog`, `ralph`, `pr-review`, `issue-triage`, `arch-review`, `dependabot`, `merge-queue` and `scout`; `merge-queue` and `scout` have no agent stage), **`ralph-v2`**, the trial's second arm (ADR 0034), which the **Scheduler** dispatches and no automation fires: every issue that would have run `ralph` while its share is on, an even issue number at the trial's parity, plus the hand fire `WORKFLOW=ralph-v2` — the six box-only packages the **Scheduler**'s background lane runs in a coder loop's gap (more-local-inference, ADR 0031): `box-noop`, `issue-precheck`, `context-pack`, `precheck-calibration` (the live precheck re-run on finished runs, posting nothing), `flaky-investigation` (a diagnosis of one queued `flaky-test` issue, posted as its marker comment) and `repo-orientation` (a map of one repository, kept in a pinned `fabro-orientation` issue that `backlog`'s and `ralph`'s `prep` read) — plus **`issue-sharpen`**, a **leased box-only package**: a coder lease the scheduler dispatches ahead of issue runs, not a background kind (ADR 0033), which rewrites an `unverifiable` issue's acceptance criteria on the box's `-bg` row with no human approval — plus two importable graphs with no `workflow.toml`: `_shared/review-merge/`, which `backlog`, `pr-review` and `dependabot` splice in (it has a queue mode that only `backlog`'s fast lane uses), and `_shared/triage/`, which `issue-triage` and `arch-review` splice in. `ralph` imports neither: it copies the shared merge nodes, and `ops/check-graph-invariants.py` R10 fails when a copy drifts. `ralph-v2` copies `ralph`'s nodes under R10's second table, so an outage fix reaches both arms or fails `check`; its Task loop is R19's. `backlog/scripts/discord-notify.sh` is executed by hooks, so changing it is a deploy. |
 | `.fabro/workflows/_io/` | The **Stage manifest** and output schemas (ADR 0016): the only source of every `FABRO_IO_MANIFEST` block, generated into each `workflow.toml`. Never hand-edit the generated blocks; `check` fails on drift. |
 | `ops/` | Host replication: compose, the coder scheduler, profile images, provisioning, sweepers, and the offline checkers. No automation reads this tree. `ops/README.md` has its contents table and the runbooks. |
 | `skills/setup-repo-for-factory/` | The `/setup-repo-for-factory` skill: onboard a target repository. Its `onboard.py` knows every `ops/` file a new repository touches, so a new hard-coded repository list goes in `scripts/onboarding/factory.py` too. |
@@ -64,6 +64,9 @@ writes it, is the most common way to break one of these.
   guard, the GitHub API actions, and the monitor exclusion.
 - `docs/agents/invariants-ralph.md`: the `ralph` package: the Task list, the loop, the Refute
   rounds, the evidence rule, and what it copies from `backlog` and the shared merge phase.
+- `docs/agents/invariants-ralph-v2.md`: the `ralph-v2` package: the per-Task plan, the box Task
+  review with its retries and disputes, the issue-level round's order, and the package's copies of
+  `ralph`'s nodes (for which `invariants-ralph.md` is the rule).
 - `docs/agents/invariants-sharpen.md`: the `issue-sharpen` package and the scheduler's sharpen queue:
   the leased box rule (R17), the sealed audit, the preservation gate, the `recheck` copies, the
   body hash and the `fail` edge that makes a retry work.
@@ -101,6 +104,14 @@ adds the same three nodes on the `loop=done && phase=pre` edge only, so `Ralph` 
 139 edges, verified by `make check-host` on 2026-10-31. The review-round change (2026-11-02: `criterion_checks`, the extra review pass, and the reviews in every Refute round) adds 1 node and 4 edges, so `Ralph` was 55 nodes and 143 edges, verified by `make check-host` on 2026-11-02. The plan review (2026-11-12: `plan_review_prep`, `plan_review` and `plan_review_gate`, an enforcing box review of the Task list on every run, issue #69) adds 3 nodes and 8 edges, and the local review (`local_review_prep`, `local_standards`, `local_spec` and `local_review_gate`, one local standards and spec round before the hosted reviews) replaces the pre-review's three nodes (+1 node; the net edge change of the two is -4 + 8), so **`Ralph` is 59 nodes and 155 edges**, verified by `make check-host` on 2026-11-12. It carries one
 deliberate warning like `Backlog`'s, `issue_number` unbound in `claim`, for the same reason:
 binding it in `[run.inputs]` would route every hand-fired run to one slot.
+
+`RalphV2` is the offline reader's `68 nodes and 176 edges`, **unverified until `make check-host`**:
+v1's 59/155, minus the fourth rung `iterate_t4` (1 node, 4 edges), plus the per-Task plan (task 07:
+`task_plan` and `task_plan_gate`), the Task review loop (task 08: `task_review_prep`, `task_refute`,
+`task_review`, their two check nodes, their two hosted fallbacks and `task_review_gate`) and the
+issue-level order (task 09). It carries one deliberate warning, as v1 does, `issue_number` unbound in
+`claim`, with `coder_pool` folded into it. `ralph`'s own text above is unchanged: the two arms run
+the same merge stage and the same hosted prompts.
 
 `docs/agents/validating.md` says what each gate covers and misses, why the warnings are
 deliberate, and why `fabro preflight` is not an offline check.
@@ -142,7 +153,16 @@ hand only with `~/bin/fabro-fire-pr-review.sh <owner/repo> <pr>`,
 `~/bin/fabro-fire-ralph.sh <owner/repo> <issue>`. The scheduler routes every issue that is
 not `fast-path` to `ralph` while `SCHEDULER_RALPH_SHARE=100`, which `ops/docker-compose.yaml`
 has set since the trial's result on 2026-11-02 (ADR 0029, O24). `fast-path` issues always run
-`backlog`. 50 is the trial's parity split, and 0 is the kill switch. A `dependabot-<repo>` run fires through
+`backlog`. 50 is the trial's parity split, and 0 is the kill switch. `ralph-v2` sits behind a second
+switch, `SCHEDULER_RALPH_V2_SHARE` (ADR 0034 E2, C8): `0` (the default, and the kill switch), `50`
+(the trial's parity: an even issue number runs `ralph-v2`, an odd one `ralph`) or `100` (every issue
+`ralph` would have worked). It splits only the arm the rules above already give `ralph`, so a
+`backlog` answer never changes. The variable reaches the container only through
+`ops/docker-compose.yaml`'s `environment:` line: set it in `~/fabro/.env` and apply it with
+`docker compose up -d --no-deps scheduler`, which recreates the scheduler alone and lets running
+runs finish. `ops/README.md` has the trial's runbook. A hand fire of the second arm is
+`WORKFLOW=ralph-v2 ~/bin/fabro-fire-ralph.sh <owner/repo> <issue>`; it takes no lease, so it is
+absent from the scorecard by construction. A `dependabot-<repo>` run fires through
 its `api:manual` trigger (task 10 records the command). A `merge-queue-<repo>` run fires from its
 schedule (every 20 minutes, created disabled) or its `api:manual` trigger; it takes no input. A `scout-<repo>` run fires from its daily schedule (created disabled) or its `api:manual` trigger, and it takes no input. `docs/agents/server.md` says why the
 automation endpoint cannot carry the input, and covers the scheduler.

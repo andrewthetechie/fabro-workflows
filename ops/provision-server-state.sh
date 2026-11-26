@@ -326,9 +326,9 @@ provision_variable FABRO_API_URL "http://10.10.0.32:32276/api/v1" || FAILED=$((F
 provision_variable FLAKERADAR_URL "https://flakes.herrington.services" || FAILED=$((FAILED+1))
 # The boxes' strix-infer `/health` endpoints, as `pool=url` pairs (more-local-inference C3),
 # where pools sharing a URL are one box (two-slot boxes D1): each box serves two concurrent
-# sessions, so all four pools are listed and they pair on two URLs. Read by `backlog`, `ralph`
-# and `pr-review`, whose `box-claim` hook finds its box — and its sibling pools — here (and by
-# every background package's `box-guard`). Every coder-loop run compiles
+# sessions, so all four pools are listed and they pair on two URLs. Read by `backlog`, `ralph`,
+# `ralph-v2` and `pr-review`, whose `box-claim` hook finds its box — and its sibling pools — here
+# (and by every background package's `box-guard`). Every coder-loop run compiles
 # `{{ vars.FABRO_BOX_HEALTH }}`, so a missing variable creates no run at all: it is
 # provisioned before the images and the manifests that read it are pushed. This is
 # create-if-absent, so the live value is the operator's: task 04 sets it a box at a time.

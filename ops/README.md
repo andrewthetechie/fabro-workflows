@@ -18,7 +18,7 @@ locations instead.
 | `fabro-branch-sweep.sh` | Deletes leaked `fabro/run/*` and `fabro/meta/*` branches from the target repos (daily cron). 0.362 no longer creates `fabro/meta/*`; it still sweeps the ones earlier versions left. Deterministic; see its header comments. |
 | `fabro-run-prune.sh` | Archives every `succeeded` `merge-queue` run, then deletes `merge-queue` runs older than 7 days with `fabro system prune --workflow merge-queue` (daily cron; ADR 0024 D8). The merge queue makes 288 runs a day and nothing else deletes them; archiving keeps them out of the run listing the fabro UI pages through. Dry run unless `DRY_RUN=0`. |
 | `fabro-sandbox-sweep.sh` | Removes exited `fabro-run-*` sandbox containers, which fabro stops but never deletes (hourly cron): the normal rule is a grace, and disk pressure overrides it, reaping oldest first until the root filesystem drops below a target (issue #50). A RUNNING one is left alone unless it is older than `MAX_RUNNING_HOURS` (48) — past that it is a sandbox fabro restarted for a file read and nobody stopped again, so it is stopped, removed, and `WARN`ed about. Deterministic; see its header comments. |
-| `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure, a running sandbox whose run already ended (C9 — fabro starts a stopped sandbox to serve a file read), a background lane that has stood still with work queued (C10), and a box whose own stages are failing over to hosted models (C11, from the scheduler's `/api/box-health`) — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `../docs/turn-it-on/00-overview-and-contracts.md`. |
+| `fabro-monitor.sh` | Out-of-band health monitor (every-15-minute cron): dead container/API/scheduler, a *wedged* scheduler (queued work, every coder pool idle), stuck runs, empty work queue, disk pressure, a running sandbox whose run already ended (C9 — fabro starts a stopped sandbox to serve a file read), a background lane that has stood still with work queued (C10), and a box whose own stages are failing over to hosted models (C11, from the scheduler's `/api/box-health`) — the gap the in-run Discord hooks cannot cover. Health-only; run *failures* stay hook-owned (ADR 0004). Contract: `fabro-monitor.sh`'s own header, which carries the condition table, each threshold and the re-alert intervals. |
 | `fabro-retro.sh` | The weekly **retro** (Monday 12:00 UTC cron, issue #33 / ADR 0026): runs `python -m fabro_scheduler retro --last-week` in the scheduler container over the previous ISO week of `backlog` runs, files at most 3 issues a week in `andrewthetechie/fabro-workflows` for new **failure classes**, comments on known ones, and posts the scorecard summary plus the class totals to Discord. `DRY_RUN=1` by default: a dry run reads GitHub and posts the message but writes no issue, which is how the operator reviews it before going live. Contract: `../docs/factory-retro/00-overview-and-contracts.md`, `../docs/adr/0026-weekly-retro-files-issues.md`. |
 | `fabro-run-status.sh` | LLM-free health check for one in-flight run: is it alive, where in the graph is it, is it making progress, and is there trouble (stale events, a stuck stage, a pending human gate). Also flags a compaction on an implementation stage as an oversized task — see `../docs/perf/04-compaction-and-task-sizing.md`. Exit 0 healthy / 1 warning / 2 failed; `--json` for automation. |
 | `fabro-export-runs.sh` | Mac tool (not deployed; `make deploy` does not copy it). Lists the `backlog` runs created in a window (`--since`, `--until`, `--workflow`, `--status`), pages `GET /runs` on the host, and exports each run's `fabro events <id> --json` to `OUTDIR/<id>.jsonl`, with `index.tsv` (run, created, workflow, repo, status, issue, workflow_sha). A failed run leaves `<id>.err` and the rest go on. Reads the token on the host. Refuses an `OUTDIR` inside a git work tree, because event files hold issue text. Tests: `tests/test_fabro_export_runs.py`. |
@@ -27,7 +27,7 @@ locations instead.
 | `fabro-change-compare.py` | Mac-held, run on the host (not deployed). Splits `backlog` runs at a change moment (`--change LABEL=ISO[@POOL]`, repeatable) and compares before/after within repo × pool strata: merges, Refuter first-pass, rework, minutes, first edit and effective coder tok/s, with an exact rank-sum p and a `CONFOUNDED` flag when two changes split the same stratum. It reads the scheduler DB read-only and streams no events. It ships on stdin: `ssh andrew@10.10.0.32 'docker exec -i fabro-scheduler python - --since D --change ...' < ops/fabro-change-compare.py`. See `../docs/change-compare/README.md`. Tests: `tests/test_fabro_change_compare.py`. |
 | `test-gates.sh` | Runs the gate tests in `gate_tests/` (pytest, in parallel, ~35s): every package's command nodes and the shared phases' nodes, extracted verbatim from the graphs and run under dash against fixtures and stubs, plus the host scripts the automations lean on. The only gate that executes a node's shell — about 2,400 checks, offline, no host, container or network. In `make check`, not in the pre-push hook. Needs uv. It replaced `test-task-gates.sh` on 2026-10-22; `gate_tests/README.md` says how to write one. |
 | `check-agent-profiles.py` | The Agent-profile checker (ADR 0017): reads a settings overlay and resolves the effective pebble Agent profile of every enabled provider and model row exactly as fabro does (model `metadata.agent.profile`, then the provider's, then the provider's first codec, with a `bedrock` adapter implying anthropic), and exits 1 on any row that is not `openai`. Stdlib `tomllib` only (Python 3.11+), and it prints provider ids, model ids, codecs and profiles — never `auth`, a key, or a URL — so it is safe to run against the live overlay. Takes a file or `-` for stdin. Offline on `settings.toml.example`, and in `make verify-host` against the container's copy. Tests: `tests/test_check_agent_profiles.py`. |
-| `check-graph-invariants.py` | The mechanical graph invariants (ADR 0019): R1-R12 over every package and shared phase, offline, in `make check`. Reads the `.fabro` files with its own stdlib reader and splices the imports. Covers the breaker floor, stall and timeouts, stylesheet classes, hook matchers, script and backslash rules, report hooks, the routing schema, the needs-human reason sink, `ralph`'s copies, the Stage I/O hooks and the fallback edge. `make check-host` proves the reader agrees with `fabro parse` on the six graphs. `--dump` and `--normalize` are the parity step's helpers. Tests: `tests/test_check_graph_invariants.py`. |
+| `check-graph-invariants.py` | The mechanical graph invariants (ADR 0019): R1-R19 over every package and shared phase, offline, in `make check`. Reads the `.fabro` files with its own stdlib reader and splices the imports. Covers the breaker floor, stall and timeouts, stylesheet classes, hook matchers, script and backslash rules, report hooks, the routing schema, the needs-human reason sink, `ralph`'s copies of the shared nodes and, in a second table, `ralph-v2`'s copies of `ralph`'s, the Stage I/O hooks, the fallback edge, the background-lane rules R13-R17, the `stage-end` hooks (R18) and `ralph-v2`'s Task review loop (R19). `make check-host` proves the reader agrees with `fabro parse` on the eighteen files (sixteen packages and the two shared phases). `--dump` and `--normalize` are the parity step's helpers. Tests: `tests/test_check_graph_invariants.py`. |
 | `check-payload.py` | The dispatch-payload gate (ralph-v2 01): every package's `WorkflowVersion` payload — the package plus `workflows/_shared/`, compact canonical JSON — is under 1,500,000 bytes, and no file is over the server's 512 KiB limit. The server refuses a version over 2 MiB, and the refusal stops **every** workflow's dispatch, not the package that grew. One line of byte counts per package, offline, in `make check`. Standard library only. Tests: `tests/test_check_payload.py`. |
 | `iterate-attempts.py` | Mac or host tool (not deployed): per-attempt metrics for `ralph`'s Iterations from exported `fabro events <run> --json` files, keyed by `(stage_id, attempt)` because a timeout's retry overwrites it under a `stage_id` key (a timeout is an attempt with no `stage.completed`). Reports, per repository, the failed share and, for the failed and the passed attempts, the duration, turns, tool minutes against model minutes, tokens, peak context, compactions, turns over a minute, the check cadence and the Task's shape; then the failed share by the longest run of edits with no check in between. `--before ISO` is the window's upper bound. It is `#63`'s measurement: `../docs/ralph/14-iteration-runaways.md`. Tests: `tests/test_iterate_attempts.py`. |
 | `fabro-box-claims.py` | Mac tool (not deployed). What the background lane's claim, guard and evictions did since `--since`, read from fabro's run events because fabro 0.362 records nothing a non-blocking sandbox hook prints (more-local-inference task 12). Per coder-loop box-stage visit: the claim's wait (`edge.selected` to `stage.started`), the background runs it cancelled, and any **overlap** (a box stage that began while a background run on the box was mid-request); per background run: its outcome and whether it was cancelled before its first request. Each run is judged by its own compiled Stage manifest. `--lines FILE` instead counts the hook's own `box-claim` lines, `idle=skip` among them. Which pools share a box comes from `--box-health` (default `$FABRO_BOX_HEALTH`, else the two-slot layout), so a claim on `coders-b` answers for a background run dispatched under `coders-a`; pass the old one-pool-per-URL value for a window before 2026-11-11. Exit 1 on an `idle=false` wait or an overlap. Needs `FABRO_API_TOKEN` (its docstring shows the one-liner). Tests: `tests/test_fabro_box_claims.py`. |
@@ -754,6 +754,58 @@ whole factory in one place and a host rebuild brings it back with everything els
 | `scheduler/src/fabro_scheduler/reconcile.py` | Draft 09's release/requeue/recovery, plus draft 11's one change to it: a cancel requeues. `should_requeue` keys on the failure **reason** for the two failures whose category cannot decide — `terminated` (a fabro restart, category `deterministic`) and `cancelled` (the operator's cancel, category `canceled`, one L). Both are in the run projection, so neither costs the extra events call. The `transient_infra` category path had never fired once: `last_failure_category` filtered on `event["type"] == "run.failed"` and the deployed server sends `event`, `stage.failed` and `failure.category` — three mismatches, fixed 2026-09-19, live-verified returning `deterministic`/`transient_infra` on real runs. Repairing it armed a loop, so `MAX_REQUEUES = 3` now bounds it: a requeue restores the issue at the FRONT of the queue (original `first_seen`), and fabro classifies a flaky unit test as `transient_infra`, so a recurring failure would otherwise hold a coder box forever. Past the budget the issue is released without a requeue and waits for a human. Two cadences share one thread: the fabro pass every **15s** (one cheap `GET /runs/{id}` per held lease) and the GitHub receipt scan every **10 minutes** (four uncached requests, 24/hour against 5,000). The receipt scan used to run only at startup, on the premise that only a restart could orphan a receipt; 2026-09-19 disproved that, so it repeats — and because `_dispatch` writes the receipt seconds before the run exists, a receipt must look orphaned in **two consecutive scans** before anything is written. |
 | `scheduler/tests/` | `uv run pytest` from `ops/scheduler/`. GitHub and fabro faked with `respx`, SQLite in `tmp_path`, the `.fabro` tree a fixture — no network, no container, no host. The clone path is exercised against a local git repository. `test_dispatch.py` asserts the *order* of the label and run calls, not just their effect, and covers the failures that must leave nothing behind. `test_overrides.py` covers bump/drain/cancel, including that a bump beats both the ceiling and repo priority, that drain leaves a held lease alone, and that cancel never releases one itself. |
 | `scheduler/Dockerfile` | Two stages. Runs as uid 1000, bakes `repos.toml` in, creates `/data` for the SQLite file, and installs `git` (draft 07 fetches `.fabro/` with a shallow clone). |
+
+### The ralph-v2 trial (ADR 0034, ralph-v2 12)
+
+`ralph-v2` runs beside `ralph` by issue parity (E2): at the trial's split an even issue number runs
+`ralph-v2` and an odd one `ralph`, a `fast-path` issue stays on `backlog`, and a `backlog` answer
+never changes. The variable and its three legal values are the `SCHEDULER_RALPH_V2_SHARE` row in
+*Configuring it*; what to do with it is here.
+
+```sh
+# In ~/fabro/.env: 0 is the default and the kill switch, 50 the trial's parity, 100 all of
+# `ralph`'s arm. Then recreate ONLY the scheduler; running runs finish.
+SCHEDULER_RALPH_V2_SHARE=50
+docker compose up -d --no-deps scheduler
+```
+
+It reaches the container only through `ops/docker-compose.yaml`'s `environment:` line, so a value
+exported in the shell of whoever runs `docker compose` is not what the container sees. Turning the
+trial off is the same edit back to `0`: no revert and no deploy, because the package is inert
+while nothing dispatches it. A requeued issue keeps its arm, because its number does not change.
+
+A hand fire is `WORKFLOW=ralph-v2 ~/bin/fabro-fire-ralph.sh <owner/repo> <issue>`; it takes no
+lease, so the scorecard and the experiment leave it out, and E1's one run on a flakeradar issue is
+the only one wanted before the switch.
+
+The numbers are `GET /api/scorecard/workflows?format=md`, which carries two sections after the
+strata table: `## ralph-v2 trial`, the experiment's own measures, and `## Task reviews`, the loop
+only v2 has. Every line's definition is `../docs/scorecard/README.md`, one table per section; the
+first-round rule in that file is the one to hold on to, because the quality measure reads what the
+three hosted reviewers submitted first, never a later round or a gate's decision. The experiment,
+its two co-primary measures and its result rule are *The experiment* in
+`../docs/plans/ralph-v2/00-overview-and-contracts.md`.
+
+The weekly read is the same two sections plus the review tables of both arms:
+
+```sh
+./ops/fabro-trial-review.sh --arms ralph,ralph-v2 --from 2026-12-08
+```
+
+`--from` is the switch date, and nothing earlier is the trial (A7: the switch is not before
+2026-12-08, because #92's two-week read of `ralph` ends that day). The three stop rules are in the
+scorecard document as `stop rules`, each computed from the window and each staying `no` until its
+own count is reached:
+
+- `lease`: v2's lease-hours per zero-touch merge above 2x v1's, after 40 v2 runs.
+- `merge`: v2's zero-touch merge rate 15 points below v1's, after 60 v2 runs.
+- `miss`: more than 10% of a week's Task reviews missed. The measurement is then invalid rather
+  than negative: fix the box and restart the window.
+
+The box's own health is the monitor's C11 `box-degraded` (*Cron — the health monitor* below): over
+5% of 20 or more box-stage visits failed over, over 2% of 20 or more Task reviews were missed, or a
+stage reached `openai/gpt-5.6-terra`, the chain's last rung. It reads the Task reviews v2 records,
+so a box that cannot serve its reviews shows there before it shows in the trial's numbers.
 
 ### Issue sharpening (ADR 0033)
 
@@ -1719,12 +1771,14 @@ which see the run context it cannot (ADR 0004,
   the box-stage visits that ran on the box, `failovers` the chain hops out of it, `terra`
   the arrivals at `openai/gpt-6.1-terra`, the last rung. C11 fires when `failovers/visits`
   is over 5% of 20 or more visits, when more than 2% of 20 or more Task reviews were
-  missed (null until the `ralph-v2` Task review loop records them), or when `terra` is
-  above zero; the message names each condition that held, with its numbers. 🟠 and 24h,
+  missed, or when `terra` is above zero; the message names each condition that held, with
+  its numbers. The review counts come from `run_task_reviews` (ralph-v2 11), two reviewers a
+  round, so a window with no `ralph-v2` run reads 0 reviews and no rate, and the `>= 20`
+  guard is what keeps a quiet window from reading as a healthy miss rate. 🟠 and 24h,
   because a fallback costs money rather than breaking a run, and a null count is not a
   held condition.
-- The condition table, thresholds, and message contract:
-  `../docs/turn-it-on/00-overview-and-contracts.md`. An optional dead-man's
+- The condition table, thresholds, and message contract: `fabro-monitor.sh`'s header
+  comment. An optional dead-man's
   heartbeat (`FABRO_HEARTBEAT_URL`) is supported by the script but **not
   configured — declined by the operator** (turn-it-on task 03 skipped): host
   death therefore looks like silence, and the runbook carries the manual

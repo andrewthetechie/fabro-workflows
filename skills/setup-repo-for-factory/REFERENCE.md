@@ -136,7 +136,9 @@ from the rows already there.
 | `merge-queue-<repo>` | off | on after `smoke` | ADR 0024 |
 | `scout-<repo>` | off | on after `smoke` | ADR 0027 D16 |
 
-`ralph` has no row. The scheduler starts it from `repos.toml`'s `environment_id`.
+`ralph` and `ralph-v2` have no row. The scheduler starts both from `repos.toml`'s `environment_id`:
+`ralph-v2` is the same issue run under the trial's second package, chosen by the issue's number
+(ADR 0034), so onboarding a repository needs nothing else for it.
 
 ## What `register` edits
 

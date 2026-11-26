@@ -830,8 +830,9 @@ fi
 # openai/gpt-6.1-terra, the chain's last rung (a hosted `glm-5.3` review arrives there too,
 # so it is counted from every source). 🟠 and 24h, because a fallback costs money
 # rather than breaking a run. The message names each condition that held, with its
-# numbers; a null count is not a held condition (task 11 fills `reviews`/`miss_rate`, so
-# they read null until then). C7 suppresses C11 exactly as it suppresses C8 and C10, and an
+# numbers; a null count is not a held condition (task 11 fills `reviews` and `miss_rate` from
+# `run_task_reviews`, so a window with no `ralph-v2` run reads 0 reviews and no rate). C7
+# suppresses C11 exactly as it suppresses C8 and C10, and an
 # unreadable body leaves the stamp alone rather than resolving it.
 
 if [ "$c7_firing" = 1 ]; then

@@ -26,8 +26,19 @@ checks it offline, in `make check`: a node that declares `output_schema="routing
 prints no routing object fails deterministically with no retry, which cost run
 `01M2R057XAWN8ZG0A7ZV7YPJXK` at `pr_handoff` with the PR already open.
 
-`ops/check-graph-invariants.py` (ADR 0019) reads the six `.fabro` files with its own stdlib reader, splices the imports and checks R1-R12: the breaker floor, the stall and timeout durations, the stylesheet classes, the hook matchers, the script and backslash rules, the report hooks (imported, or a graph's own copies), the routing schema, the needs-human reason sink, `ralph`'s copies (R10, which also holds
-`precheck-calibration` to `issue-precheck`'s nodes and prompt; the `ralph`/`backlog` pre-review rows were emptied on 2026-11-12 when ralph's was replaced by the local review), the Stage I/O hooks (R11), and an unconditional fallback edge out of every node that has edges (R12, which `fabro validate` also enforces). It runs offline in `make check`. `make check-host` proves that its reader agrees with `fabro parse` on the six graphs. It does not run a script, judge a prompt, or check the rows of the invariants files that carry no `Checked by` line; those still need a run or a review.
+`ops/check-graph-invariants.py` (ADR 0019) reads every package's graph and the two `_shared/` phases —
+eighteen `.fabro` files today — with its own stdlib reader, splices the imports and checks R1-R19: the
+breaker floor, the stall and timeout durations, the stylesheet classes, the hook matchers, the script and
+backslash rules, the report hooks (imported, or a graph's own copies), the routing schema, the needs-human
+reason sink, `ralph`'s copies (R10, which also holds
+`precheck-calibration` to `issue-precheck`'s nodes and prompt, and `ralph-v2`'s copies of `ralph`'s nodes
+and prompts to `ralph`'s; the `ralph`/`backlog` pre-review rows were emptied on 2026-11-12 when ralph's was
+replaced by the local review), the Stage I/O hooks (R11), an unconditional fallback edge out of every node
+that has edges (R12, which `fabro validate` also enforces), the background-lane rules R13-R17, the
+`stage-end` hooks (R18) and `ralph-v2`'s Task review loop (R19). It runs offline in `make check`.
+`make check-host` proves that its reader agrees with `fabro parse` on the eighteen files. It does not run a
+script, judge a prompt, or check the rows of the invariants files that carry no `Checked by` line; those
+still need a run or a review.
 
 `skills/setup-repo-for-factory/tests` runs in both `make check` and `make check-fast`. Its rule tests use a frozen fixture, so onboarding a repository cannot fail its own push; its edit tests apply every registration edit to copies of the real `ops/` files, and its catalog test reads the graphs and the scheduler. It fails when an edit's anchor has moved or a fixed label is missing from `data/labels.toml`. It runs no onboarding step against GitHub or the host.
 
@@ -46,6 +57,14 @@ also needs). The schema side is checked in Rust: `cargo test` in `ops/fabro-io/`
 compiles every `_io/schemas/*.schema.json` under draft 2020-12. The manifest is JSON
 inside a TOML literal, so it needs no escaping — `check` also fails if it ever
 contains `'''`.
+
+A **version's payload** is the other half: `ops/check-payload.py` rebuilds the body
+`package_paths` sends for each package — the entrypoint's own package plus
+`workflows/_shared/`, as compact canonical JSON — and fails when one is over 1,500,000
+bytes or carries a file over 512 KiB. A version over the server's 2 MiB limit is refused
+for **every** workflow, not only the package that grew, so the gate prices the growth of
+any one package against all of them. It also prints one line per package, which is what an
+operator reading a new package's size uses.
 
 Neither gate runs the command nodes' shell. `backlog`'s task queue is several hundred
 bytes of `jq` spread across `decompose_gate`, `improve_gate` and `next_task`, and a
