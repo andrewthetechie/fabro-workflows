@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Nine Fabro workflows and the ops tooling for the host that runs them.
+Sixteen Fabro workflow packages and the ops tooling for the host that runs them.
 
 ## Pushing to `main` deploys
 
@@ -154,7 +154,7 @@ hand only with `~/bin/fabro-fire-pr-review.sh <owner/repo> <pr>`,
 not `fast-path` to `ralph` while `SCHEDULER_RALPH_SHARE=100`, which `ops/docker-compose.yaml`
 has set since the trial's result on 2026-11-02 (ADR 0029, O24). `fast-path` issues always run
 `backlog`. 50 is the trial's parity split, and 0 is the kill switch. `ralph-v2` sits behind a second
-switch, `SCHEDULER_RALPH_V2_SHARE` (ADR 0034 E2, C8): `0` (the default, and the kill switch), `50`
+switch, `SCHEDULER_RALPH_V2_SHARE` (ADR 0034 D1; E2, C8): `0` (the default, and the kill switch), `50`
 (the trial's parity: an even issue number runs `ralph-v2`, an odd one `ralph`) or `100` (every issue
 `ralph` would have worked). It splits only the arm the rules above already give `ralph`, so a
 `backlog` answer never changes. The variable reaches the container only through

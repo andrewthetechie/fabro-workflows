@@ -769,22 +769,23 @@ SCHEDULER_RALPH_V2_SHARE=50
 docker compose up -d --no-deps scheduler
 ```
 
-It reaches the container only through `ops/docker-compose.yaml`'s `environment:` line, so a value
-exported in the shell of whoever runs `docker compose` is not what the container sees. Turning the
-trial off is the same edit back to `0`: no revert and no deploy, because the package is inert
-while nothing dispatches it. A requeued issue keeps its arm, because its number does not change.
+It reaches the container only through `ops/docker-compose.yaml`'s `environment:` line: the
+scheduler never reads `~/fabro/.env` as an env file, so a value that line does not name never
+arrives. Turning the trial off is the same edit back to `0`: no revert and no deploy, because the
+package is inert while nothing dispatches it. A requeued issue keeps its arm, because its number
+does not change.
 
 A hand fire is `WORKFLOW=ralph-v2 ~/bin/fabro-fire-ralph.sh <owner/repo> <issue>`; it takes no
 lease, so the scorecard and the experiment leave it out, and E1's one run on a flakeradar issue is
 the only one wanted before the switch.
 
 The numbers are `GET /api/scorecard/workflows?format=md`, which carries two sections after the
-strata table: `## ralph-v2 trial`, the experiment's own measures, and `## Task reviews`, the loop
-only v2 has. Every line's definition is `../docs/scorecard/README.md`, one table per section; the
-first-round rule in that file is the one to hold on to, because the quality measure reads what the
-three hosted reviewers submitted first, never a later round or a gate's decision. The experiment,
-its two co-primary measures and its result rule are *The experiment* in
-`../docs/plans/ralph-v2/00-overview-and-contracts.md`.
+strata table and the `## ralph` line: `## ralph-v2 trial`, the experiment's own measures, and
+`## Task reviews`, the loop only v2 has. Every line's definition is
+`../docs/scorecard/README.md`, one table per section; the first-round rule in that file is the one
+to hold on to, because the quality measure reads what the three hosted reviewers submitted first,
+never a later round or a gate's decision. The experiment, its two co-primary measures and its
+result rule are *The experiment* in `../docs/plans/ralph-v2/00-overview-and-contracts.md`.
 
 The weekly read is the same two sections plus the review tables of both arms:
 
@@ -799,7 +800,7 @@ own count is reached:
 
 - `lease`: v2's lease-hours per zero-touch merge above 2x v1's, after 40 v2 runs.
 - `merge`: v2's zero-touch merge rate 15 points below v1's, after 60 v2 runs.
-- `miss`: more than 10% of the window's Task reviews missed (a reviewer with no valid result).
+- `misses`: more than 10% of the window's Task reviews missed (a reviewer with no valid result).
   The measurement is then invalid rather than negative: fix the box and restart the window.
 
 The box's own health is the monitor's C11 `box-degraded` (*Cron — the health monitor* below): over
@@ -1087,10 +1088,10 @@ their callers, tests, the commands that run them, and a draft task map for a big
 ```
 
 Its `gate` drops every file and test path that is not in the checkout and fails a map over
-8,000 characters, so a failed job posts nothing. `backlog`'s and `ralph`'s `claim` copy the
-newest precheck and pack comments into `/tmp/fabro/background.md` (C9), an optional input of
-`decompose` and both `plan` stages; no comment, no file, and a failed read costs the run
-nothing. The producer (`pack.py`) queues one job per issue, ever, priority 3 after the
+8,000 characters, so a failed job posts nothing. `backlog`'s, `ralph`'s and `ralph-v2`'s `claim`
+copy the newest precheck and pack comments into `/tmp/fabro/background.md` (C9), an optional
+input of `decompose` and the three `plan` stages; no comment, no file, and a failed read costs
+the run nothing. The producer (`pack.py`) queues one job per issue, ever, priority 3 after the
 precheck, only for an issue whose precheck recorded `verdict=ready`, in the same
 `SCHEDULER_PRECHECK_PER_REPO` window. A job is budgeted at 5 minutes; the first took 3.7.
 
@@ -1226,7 +1227,7 @@ runs, and `GET :32280/api/background` shows them.
 **What it does.** Once a day per repository, and sooner when `main` has moved ten commits or the
 map is a day old, a box writes a map of that repository at `main` — its modules, the conventions
 a change follows, where the tests live, the commands that run them, the traps — into the body of
-**one pinned issue**. `backlog`'s and `ralph`'s `prep` fetch that body to
+**one pinned issue**. `backlog`'s, `ralph`'s and `ralph-v2`'s `prep` fetch that body to
 `/tmp/fabro/orientation.md`, and `decompose` and `plan` read it as an optional input.
 
 **The issue.** Titled `fabro: repository orientation`, labelled **`fabro-orientation` and
