@@ -12,14 +12,15 @@ every `_shared/*/*.fabro` phase gets the file rules (the reader, R6, R8, R9 and 
 
 R13-R16 are the background-lane rules (more-local-inference C1, C2, C4, C5, C10): every agent
 stage's `box` value in the Stage manifest agrees with the stylesheet that decides where it runs,
-no `-bg` model is a fallback key or target, the three coder loops carry the `box-claim` hook and
+no `-bg` model is a fallback key or target, the four coder loops carry the `box-claim` hook and
 write the run's box file while no other package does, and a box-only package names no model but
 the run's `-bg` pool, guards itself with `box-guard`, and has no run branch. R17 is the leased box
 run, R18 the `stage-end` hooks, and R19 `ralph-v2`'s per-Task review loop (ADR 0034).
 
 Standard library only (Python 3.11+, tomllib). It reads the graphs itself, so it runs offline
-in `make check`. `make check-host` proves the reader agrees with `fabro parse` on the six files
-(--dump and --normalize, the parity step in ops/check-host.sh).
+in `make check`. `make check-host` proves the reader agrees with `fabro parse` on the eighteen
+files (sixteen packages and the two shared phases; --dump and --normalize, the parity step in
+ops/check-host.sh).
 
 Each rule's docstring names its row in docs/agents/invariants-*.md. Exceptions live here, each
 with its reason and source; no exception is written in a graph (ADR 0019, D3).
@@ -917,7 +918,7 @@ def r15_claim_hooks(package: str, root: Graph | None, hooks: list[dict]) -> list
 
     A background package with the claim would cancel the background runs on its own box,
     its own run included, so the half that forbids it matters as much as the half that
-    requires it in the three coder loops.
+    requires it in the four coder loops.
     """
     out: list[tuple] = []
     claim_hooks = [h for h in hooks if "fabro-io box-claim" in (h.get("script") or "")]

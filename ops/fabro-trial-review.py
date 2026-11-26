@@ -38,6 +38,13 @@ RATES = {
 FLAT = {"kimi", "zai"}
 BUDGET_USD = 100.0  # O3: total hosted spend a month
 
+# O3's guardrail sentence, by the trial arm the pair reads. The ralph trial's budget was +20%
+# box-hours a clean merge (ADR 0029 O3). The ralph-v2 trial's is +50% lease-hours a
+# zero-touch merge, and it stops above 2x (ADR 0034, *The experiment*); its weekly read runs
+# this script with `--arms ralph,ralph-v2`.
+GUARDRAILS = {"ralph-v2": "+50%, and the trial stops above 2x"}
+GUARDRAIL = "+20%"
+
 ITERATE = ("iterate_t1", "iterate_t2", "iterate_t3", "iterate_t4")
 HOSTED_RALPH = ("plan", "refute", "standards", "spec")
 
@@ -149,8 +156,9 @@ def main() -> None:
               f"{'—' if per_merge[w] is None else f'{per_merge[w]:.2f}'} |")
     if per_merge.get(trial) and per_merge.get(control):
         d = per_merge[trial] / per_merge[control] - 1
+        guardrail = next((GUARDRAILS[name] for name in arms if name in GUARDRAILS), GUARDRAIL)
         print(f"\n{trial}'s box-hours per clean merge are {d:+.0%} against {control}'s "
-              f"(the guardrail is +20%).")
+              f"(the guardrail is {guardrail}).")
     print()
 
     # --- the ralph arms' leases ----------------------------------------------------------

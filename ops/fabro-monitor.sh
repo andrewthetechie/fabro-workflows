@@ -7,8 +7,9 @@
 # exactly that gap — dead container, dead API, dead scheduler, a scheduler that
 # answers but never dispatches, stuck run, empty work queue, full disk. It
 # never alerts on a run FAILURE: that stays hook-owned, because double pings
-# train the operator to ignore the channel (ADR 0004). See
-# docs/turn-it-on/00-overview-and-contracts.md.
+# train the operator to ignore the channel (ADR 0004). The condition table below is the
+# contract ops/README.md points at; the decision itself is
+# docs/adr/0004-monitoring-is-out-of-band.md.
 #
 # Conditions (thresholds are env knobs so a shakedown can force each one):
 #   C1 container-down   container not running, or healthcheck not healthy   🔴 4h
@@ -45,8 +46,8 @@
 #                       The message carries each box's `blocked_by`, which is the
 #                       diagnosis. Skipped when C7 fires (lane unreadable by construction).
 #   C11 box-degraded    more than 5% of 20 or more box-stage visits failed over, more
-#                       than 2% of 20 or more Task reviews were missed by both
-#                       reviewers, or a stage ever fell over to
+#                       than 2% of 20 or more Task reviews were missed (one reviewer
+#                       with no valid result), or a stage ever fell over to
 #                       openai/gpt-6.1-terra, the chain's last rung          🟠 24h
 #                       Read from GET /api/box-health. Skipped when C7 fires.
 #

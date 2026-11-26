@@ -95,7 +95,7 @@ stage. See ADR 0006.
 _Avoid_: lock, pin, reservation
 
 **Coder loop**:
-A `backlog` or `ralph` run, or a `pr-review` run the **Scheduler** leases, that holds a
+A `backlog`, `ralph` or `ralph-v2` run, or a `pr-review` run the **Scheduler** leases, that holds a
 **Coder lease** and therefore has absolute precedence on its box. It keeps that precedence
 one **Stage** at a time: the box changes hands only between stages, because each stage
 starts a fresh session and a handover therefore costs nothing in the KV cache (ADR 0031 D1).
@@ -300,14 +300,14 @@ withdraws it or cites something new; an unchanged repeat is dropped for the rest
 _Avoid_: rebuttal, appeal
 
 **Refute round**:
-One visit of the **Refuter** to a `ralph` run whose every **Task** has passed. Each
+One visit of the **Refuter** to a `ralph` or `ralph-v2` run whose every **Task** has passed. Each
 finding it can prove becomes a new task and the iterations resume. A run has a fixed
 number of rounds; the last unproven findings are reported as **Unmet criteria**.
 _Avoid_: refute loop, re-review
 
 **Learning**:
-A rule a `ralph` run proposes from its own **Iterations**, with the evidence that showed it
-and where it would belong. It waits for a human to accept it, and the run never applies it.
+A rule a `ralph` or `ralph-v2` run proposes from its own **Iterations**, with the evidence that
+showed it and where it would belong. It waits for a human to accept it, and the run never applies it.
 Not a **Failure class**, which the **Retro** derives across many runs from enumerable keys.
 _Avoid_: lesson, insight, memory
 

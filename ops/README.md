@@ -799,8 +799,8 @@ own count is reached:
 
 - `lease`: v2's lease-hours per zero-touch merge above 2x v1's, after 40 v2 runs.
 - `merge`: v2's zero-touch merge rate 15 points below v1's, after 60 v2 runs.
-- `miss`: more than 10% of a week's Task reviews missed. The measurement is then invalid rather
-  than negative: fix the box and restart the window.
+- `miss`: more than 10% of the window's Task reviews missed (a reviewer with no valid result).
+  The measurement is then invalid rather than negative: fix the box and restart the window.
 
 The box's own health is the monitor's C11 `box-degraded` (*Cron — the health monitor* below): over
 5% of 20 or more box-stage visits failed over, over 2% of 20 or more Task reviews were missed, or a

@@ -17,6 +17,7 @@ golden below is what the script printed before task 11 parameterized the pair.
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 import sys
 from contextlib import redirect_stdout
 from io import StringIO
@@ -191,6 +192,29 @@ def test_an_arm_pair_that_is_not_two_names_is_refused(db):
     with pytest.raises(SystemExit) as raised:
         review(db, "--arms", "ralph")
     assert raised.value.code == 2
+
+
+def test_the_o3_sentence_names_the_guardrail_of_the_trial_the_pair_reads(db):
+    """With a clean merge on each ralph arm, O3's sentence states the guardrail of the trial
+    the pair reads: the ralph trial's +20% for the default pair, and for `ralph,ralph-v2` the
+    ralph-v2 trial's +50% with its stop above 2x (ADR 0034, *The experiment*). Before this
+    the sentence said +20% for the v2 trial too, which is not its rule."""
+    c = sqlite3.connect(db)
+    with c:
+        c.execute(
+            "INSERT INTO pr_facts (repo, pr_number, fetched_at, state, created_at, merged_at,"
+            " closed_at, labels, additions, deletions, commits, operator_commits, report, reason,"
+            " queue_approved, queue_handoff)"
+            " VALUES (?, 25, '2026-09-30T00:00:00+00:00', 'merged',"
+            " '2026-09-06T12:00:00+00:00', '2026-09-06T21:00:00+00:00', NULL, '[]', 100, 10,"
+            " 5, 0, 'complete', NULL, 1, 0)", (REPO,))
+    c.close()
+    text = review(db, "--arms", "ralph,ralph-v2")
+    # V2's ten hours over one clean merge against R1's eleven.
+    assert ("ralph-v2's box-hours per clean merge are +82% against ralph's "
+            "(the guardrail is +50%, and the trial stops above 2x).") in text
+    assert "+20%" not in text
+    assert "against backlog's (the guardrail is +20%)." in review(db)
 
 
 # What the script printed for the fixture above before task 11 made the arm pair an

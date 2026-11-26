@@ -189,7 +189,7 @@ prevent runs from happening at all. While a condition persists it re-alerts
 | 🔴 `scheduler-wedged` | Work is queued and every undrained coder box has sat idle for 20 minutes. Drained pools are left out of the count; with every pool drained it does not fire. | Runbook — the scheduler is running but not dispatching. |
 | 🟠 `leaked-sandbox` | A sandbox container for a run that has already ended is still running: fabro restarted it to serve a file read, and an ended run has no worker left to stop it again. | Runbook — the sweeper takes it at 48 hours or under disk pressure; the alert means it is spending memory now. |
 | 🟠 `background-starved` | The background lane is on, jobs are queued, nothing is running on any box, and the oldest job is over 6h old. The message names what each box is waiting for. | Runbook — usually a drained slot read as a missing box. |
-| 🟠 `box-degraded` | A coder box's own stages fell back to a hosted model on more than 5% of 20 or more visits, both of its Task reviewers came back with nothing on more than 2% of 20 or more reviews, or a stage fell all the way to the last fallback in the chain. | Runbook — a fallback costs money rather than breaking a run, so the operator re-times or drains that box. |
+| 🟠 `box-degraded` | A coder box's own stages fell back to a hosted model on more than 5% of 20 or more visits, one of its Task reviewers came back with nothing on more than 2% of 20 or more reviews, or a stage fell all the way to the last fallback in the chain. | Runbook — a fallback costs money rather than breaking a run, so the operator re-times or drains that box. |
 
 ### The silence signals
 
@@ -250,20 +250,20 @@ For a while half the issues are worked by a second workflow, `ralph`, instead of
 do not choose which: the scheduler sends an **even** issue number to `ralph` and an odd one to
 `backlog` when the operator has set the split, and a `fast-path` issue always stays on `backlog`.
 Both open one PR per issue and label it `agent-authored`, so from the issue's side nothing in the
-labels changes. A second trial runs `ralph-v2` beside `ralph` while the operator has it switched on,
-and it splits the same way: an **even** issue number runs `ralph-v2` and an odd one `ralph`. So with
-both switches at their current settings, an issue that is not `fast-path` runs `ralph-v2` on an even
-number and `ralph` on an odd one, and the two produce the same PR, with the same report comment.
+labels changes. A second workflow, `ralph-v2`, runs beside `ralph` only while the operator has it
+switched on. When it is on, it takes the **even** issue numbers that are not `fast-path` and
+leaves every other issue on the workflow it already ran, and it produces the same PR, with the
+same report comment.
 
 What you will see differently on a `ralph` issue:
 
 - **One PR, still**, but with a Task list worked in a loop: the run plans once, then fresh coder
   sessions take one Task at a time, each judged by the repository's own tests rather than by a
   reviewer. A Task can take several attempts, and a stronger model each two attempts.
-- **`ralph-v2` reviews each Task as it lands**, so a PR it opens can be held with a reason of the
-  form `box review: ...` beside the Task, under **Unmet criteria**. That Task's own review found an
-  error four times and the run moved on holding the PR for a person, instead of opening it for
-  auto-merge. Nothing else about a `ralph-v2` PR differs from a `ralph` one.
+- **A PR can be held with `box review: ...`** (only while `ralph-v2` is on, so on an even issue
+  number): one Task is listed under **Unmet criteria** with that reason, and the PR is not merged
+  automatically. A person reads the reason and decides whether to merge, fix or close. Nothing
+  else about a `ralph-v2` PR differs from a `ralph` one.
 - **A harder check at the end.** Before the PR opens, a separate Refuter (on a different model
   family) is told the work is done and tries to prove it is not. Each finding it can *prove* —
   with a file and line, or a command — becomes another Task. At most three rounds of this.

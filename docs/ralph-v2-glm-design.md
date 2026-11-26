@@ -1,7 +1,7 @@
 # ralph v2 — the GLM design (superseded)
 
-Superseded on 2026-11-23 by `docs/plans/ralph-v2/00-overview-and-contracts.md`, whose *What changed from
-the GLM design* says what moved and why. Revision 2 is in git at `a3bddf1`:
+Superseded on 2026-11-23 by `docs/plans/ralph-v2/00-overview-and-contracts.md`. Revision 2 is in git
+at `a3bddf1`:
 
     git show a3bddf1:docs/ralph-v2-glm-design.md
 
