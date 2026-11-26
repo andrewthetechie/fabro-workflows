@@ -16,11 +16,12 @@ graph = "workflow.fabro"
 #     to a box, and C11 in `fabro-monitor.sh` alerts on any failover at all (E17,
 #     ralph-v2 02). The first rung is flash's, the second is Kimi's.
 #
-#   "glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-5.6-terra"]
+#   "glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-6.1-terra"]
 #     The two hosted reviewers (`.review-standards`, `.review-spec`) are its stages, in
-#     both arms (E14, E18), and so is any stage left on glm-5.3 by a fallback. That chain
-#     is a fallback and not a home: a `standards` visit on its second rung costs about
-#     $0.70.
+#     both arms (E14, E18), and so is any stage left on glm-5.3 by a fallback. The second
+#     rung is gpt-6.1-terra, a model row in the settings overlay (the built-in catalog's
+#     gpt-5.6-terra is not available to this OpenAI project). That chain is a fallback and
+#     not a home: a visit on its second rung is billed by OpenAI.
 #
 # Keys containing a dot MUST be quoted or the TOML parse fails with a 422 at automation
 # fire time. Fallbacks are non-recursive: one lookup from the original request.
@@ -45,7 +46,7 @@ graph = "workflow.fabro"
 "glm-5.3-flash" = ["kimi:kimi-for-coding"]
 kimi-for-coding = ["zai:glm-5.3"]
 # The two hosted reviewers, and any stage a fallback row left here. See the header.
-"glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-5.6-terra"]
+"glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-6.1-terra"]
 
 # Checkpoints still COMMIT after every stage, but fabro no longer PUSHES them
 # (ADR 0011 D1). Every checkpoint is an allow-empty commit, and once the PR exists

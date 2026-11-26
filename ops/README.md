@@ -805,7 +805,7 @@ own count is reached:
 
 The box's own health is the monitor's C11 `box-degraded` (*Cron — the health monitor* below): over
 5% of 20 or more box-stage visits failed over, over 2% of 20 or more Task reviews were missed, or a
-stage reached `openai/gpt-5.6-terra`, the chain's last rung. It reads the Task reviews v2 records,
+stage reached `openai/gpt-6.1-terra`, the chain's last rung. It reads the Task reviews v2 records,
 so a box that cannot serve its reviews shows there before it shows in the trial's numbers.
 
 ### Issue sharpening (ADR 0033)

@@ -105,7 +105,7 @@ adds the same three nodes on the `loop=done && phase=pre` edge only, so `Ralph` 
 deliberate warning like `Backlog`'s, `issue_number` unbound in `claim`, for the same reason:
 binding it in `[run.inputs]` would route every hand-fired run to one slot.
 
-`RalphV2` is the offline reader's `68 nodes and 176 edges`, **unverified until `make check-host`**:
+`RalphV2` is `68 nodes and 176 edges`, verified by `make check-host` on 2026-11-26:
 v1's 59/155, minus the fourth rung `iterate_t4` (1 node, 4 edges), plus the per-Task plan (task 07:
 `task_plan` and `task_plan_gate`), the Task review loop (task 08: `task_review_prep`, `task_refute`,
 `task_review`, their two check nodes, their two hosted fallbacks and `task_review_gate`) and the

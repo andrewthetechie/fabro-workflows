@@ -22,6 +22,14 @@ Not for a building agent.
 4. On the host: `fabro model test` for `glm-5.3`, `glm-5.3-flash`, `kimi-for-coding`, `gpt-6-luna`,
    `hy4-preview`, `gpt-6.1-terra`, `qwen3.8-27b`. `gpt-6.1-terra` must report provider `openai`. One that
    fails is taken out of its chain in both packages before the push, and named here.
+   **2026-11-26:** all passed except two. `gpt-5.6-terra` failed: `Project ... does not have access to
+   model gpt-5.6-terra`. The plan had the wrong terra: the intended model is `gpt-6.1-terra`, which is not
+   in the built-in catalog, so it got a model row in the live overlay and `ops/settings.toml.example`, like
+   `gpt-6-luna`'s, and `fabro model test -m gpt-6.1-terra` then passed with provider `openai`. Both
+   packages' `glm-5.3` row is `["orfallback:hy4-preview", "openai:gpt-6.1-terra"]`, and `box_health`
+   counts arrivals at `openai/gpt-6.1-terra`. `kimi-for-coding` failed on its 7-day quota, which is spent
+   until the window resets. That is not an access fault, so it stays in its chains; when its quota is
+   spent, the `_fb` reviewers' chain (`glm-5.3-flash` -> `kimi-for-coding`) has no live second rung.
 
 ## Push and deploy, in three groups
 

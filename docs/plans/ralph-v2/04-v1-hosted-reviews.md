@@ -15,7 +15,7 @@ Scope is the model of two stages and two fallback rows in `ralph`. The whole-bra
    last other user: check with `grep -n 'kimi-k3' workflow.fabro workflow.toml`; only comments may
    remain, and rewrite them). Leave `coders-*`, `gpt-6-luna`, `glm-5.3-flash` and `kimi-for-coding`.
    Rewrite the file's header comment about the two rows: the glm-5.3 chain is now the reviewers' and
-   `.coder-t4`'s, its second rung costs about $0.70 a `standards` visit, and C11 (task 02) watches it.
+   `.coder-t4`'s, its second rung is billed by OpenAI, and C11 (task 02) watches it.
 3. Timeouts: keep `standards` 30m and `spec` 20m. Replace the comment's derivation with: `glm-5.3`
    emits about 45 output tokens a second against flash's 31, so the heaviest visits are shorter than the
    flash projection these numbers came from; re-time from `fabro-scorecard.sh` after two weeks.
