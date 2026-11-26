@@ -267,7 +267,7 @@ base_url = "https://openrouter.ai/api/v1"
 auth = { type = "bearer" }
 
 # hy4-preview (2026-11-24): the first rung of `ralph-v2`'s hosted `glm-5.3` chain
-# (`glm-5.3` -> `orfallback:hy4-preview` -> `openai:gpt-5.6-terra`), so a z.ai outage keeps
+# (`glm-5.3` -> `orfallback:hy4-preview` -> `openai:gpt-6.1-terra`), so a z.ai outage keeps
 # the hosted reviews running. The live overlay has this row; the example was missing it.
 [llm.providers.orfallback.models."hy4-preview"]
 display_name = "Tencent HY4 preview (OpenRouter)"
@@ -293,8 +293,11 @@ enabled = false
 # `gpt-6-luna` twice: as the adversarial reviewer (`.refute` in `backlog`, `pr-review`
 # and `dependabot`, since 2026-10-14 for cost; ADR 0013 D6 amendment) and as the
 # implementer's final escalation rung (`backlog`'s `coders-*` fallback chains).
-# `gpt-6.1-sol` was the Refuter before that and stays defined, unused. Verify with
-# `fabro model test -m gpt-6-luna`, which must report provider `openai`. Takes effect
+# `gpt-6.1-sol` was the Refuter before that and stays defined, unused. `gpt-6.1-terra` is
+# the last rung of `ralph`'s and `ralph-v2`'s `glm-5.3` chain (after `orfallback:hy4-preview`):
+# the built-in catalog knows only `gpt-5.6-terra`, which this OpenAI project cannot use, so the
+# row is defined here like the other two (live overlay since 2026-11-26). Verify with
+# `fabro model test -m <model>`, which must report provider `openai`. Takes effect
 # with no restart (5s settings poll).
 [llm.providers.openai.models."gpt-6.1-sol"]
 display_name = "GPT-6.1 Sol (OpenAI)"
@@ -305,6 +308,12 @@ capabilities = { text = true, tools = true, reasoning = true }
 [llm.providers.openai.models."gpt-6-luna"]
 display_name = "GPT-6 Luna (OpenAI)"
 api_model = "gpt-6-luna"
+limits = { context_tokens = 262144, max_output_tokens = 32768 }
+capabilities = { text = true, tools = true, reasoning = true }
+
+[llm.providers.openai.models."gpt-6.1-terra"]
+display_name = "GPT-6.1 Terra (OpenAI)"
+api_model = "gpt-6.1-terra"
 limits = { context_tokens = 262144, max_output_tokens = 32768 }
 capabilities = { text = true, tools = true, reasoning = true }
 

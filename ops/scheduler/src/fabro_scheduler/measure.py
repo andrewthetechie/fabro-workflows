@@ -208,10 +208,10 @@ def box_use(
 BOX_PROVIDER_PREFIX = "box-"
 
 # The last rung of the hosted `glm-5.3` chain in `ralph-v2` (`glm-5.3` ->
-# `orfallback:hy4-preview` -> `openai:gpt-5.6-terra`, `00-overview-and-contracts.md`,
+# `orfallback:hy4-preview` -> `openai:gpt-6.1-terra`, `00-overview-and-contracts.md`,
 # *Models*): an arrival here means every rung above it failed, so it is counted on its own
 # rather than as one more fallback — there is nothing left in the chain behind it.
-TERRA_MODEL = "openai/gpt-5.6-terra"
+TERRA_MODEL = "openai/gpt-6.1-terra"
 
 
 def box_health(

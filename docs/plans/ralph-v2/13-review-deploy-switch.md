@@ -20,7 +20,7 @@ Not for a building agent.
 3. `fabro preflight` of `ralph-v2` with a bound and an unbound `coder_pool` renders every class; of `ralph` and
    `backlog` for issues 4-7 names the box for `plan`.
 4. On the host: `fabro model test` for `glm-5.3`, `glm-5.3-flash`, `kimi-for-coding`, `gpt-6-luna`,
-   `hy4-preview`, `gpt-5.6-terra`, `qwen3.8-27b`. `gpt-5.6-terra` must report provider `openai`. One that
+   `hy4-preview`, `gpt-6.1-terra`, `qwen3.8-27b`. `gpt-6.1-terra` must report provider `openai`. One that
    fails is taken out of its chain in both packages before the push, and named here.
 
 ## Push and deploy, in three groups

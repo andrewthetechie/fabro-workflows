@@ -20,7 +20,7 @@ Read `00-overview-and-contracts.md` first (E17, A5). Read `ops/fabro-sandbox-swe
    - `visits`: the sum of `run_stage_stats.visits` over their rows with `box_ms > 0`;
    - `failovers`: the sum of `run_failovers.count` over their rows whose `from_model` starts with `box-`;
    - `failover_rate`: `failovers / visits`, or null when `visits` is 0;
-   - `terra`: the sum of `count` whose `to_model` is `openai/gpt-5.6-terra`;
+   - `terra`: the sum of `count` whose `to_model` is `openai/gpt-6.1-terra`;
    - `reviews`, `reviews_missed`, `miss_rate`: null in this task. Task 11 fills them.
 4. **C11 `box-degraded`** in `fabro-monitor.sh`, 🟠, 24 h. It reads `SCHEDULER_URL/api/box-health` with
    the 5 s timeout C10 uses, is skipped when C7 fires, and is unevaluable (stamp untouched) on an HTTP
@@ -40,7 +40,9 @@ Read `00-overview-and-contracts.md` first (E17, A5). Read `ops/fabro-sandbox-swe
    ```
 
    (Compared with the live overlay on 2026-11-24: it is the only `[llm...]` heading the example lacks.)
-   No row for `gpt-5.6-terra`: it is a built-in `openai` model.
+   `gpt-6.1-terra` needs a row of its own, after `gpt-6-luna`'s, in the same shape (the built-in catalog
+   has only `gpt-5.6-terra`, which this OpenAI project cannot use; corrected at the pre-push review,
+   2026-11-26, when the live overlay got the row).
 6. **No retry change** (A5). Add one sentence to `docs/agents/invariants-host.md`: fabro 0.362 exposes no
    retry count or backoff per provider or model, so a box fault lasting seconds is retried by fabro and
    one lasting minutes fails over; C11 reports it.

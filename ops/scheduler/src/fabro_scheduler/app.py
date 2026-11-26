@@ -559,7 +559,7 @@ def build_app(
         A provider fallback is not an error: the session continues on the next model in
         `[run.model.fallbacks]`, so nothing in-band reports one. `measure.box_health` counts
         the hops out of the box over the box-stage visits that ran on it, plus arrivals at
-        `openai/gpt-5.6-terra`, the chain's last rung. `hours` is the window (24 by default,
+        `openai/gpt-6.1-terra`, the chain's last rung. `hours` is the window (24 by default,
         which is what C11 reads); a review's miss rate joins it in ralph-v2 task 11.
         """
         if not 1 <= hours <= 168:

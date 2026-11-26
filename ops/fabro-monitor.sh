@@ -47,7 +47,7 @@
 #   C11 box-degraded    more than 5% of 20 or more box-stage visits failed over, more
 #                       than 2% of 20 or more Task reviews were missed by both
 #                       reviewers, or a stage ever fell over to
-#                       openai/gpt-5.6-terra, the chain's last rung          🟠 24h
+#                       openai/gpt-6.1-terra, the chain's last rung          🟠 24h
 #                       Read from GET /api/box-health. Skipped when C7 fires.
 #
 # C1 suppresses C2's connection failures (report the cause, not the symptom)
@@ -827,7 +827,7 @@ fi
 # month before 2026-11-24 happened on 11-13..11-16, minutes apart, and no alert mentioned
 # it. `/api/box-health` (`measure.box_health`) counts them: the share of box-stage visits
 # that failed over, the Task-review miss rate, and whether any stage fell over to
-# openai/gpt-5.6-terra, the chain's last rung (a hosted `glm-5.3` review arrives there too,
+# openai/gpt-6.1-terra, the chain's last rung (a hosted `glm-5.3` review arrives there too,
 # so it is counted from every source). 🟠 and 24h, because a fallback costs money
 # rather than breaking a run. The message names each condition that held, with its
 # numbers; a null count is not a held condition (task 11 fills `reviews`/`miss_rate`, so
@@ -866,7 +866,7 @@ else
       degraded="$degraded; $h_miss of $h_reviews Task reviews missed"
     fi
     if printf '%s' "$h_terra" | grep -Eq '^[0-9]+$' && [ "$h_terra" -gt 0 ]; then
-      degraded="$degraded; $h_terra stage(s) fell over to openai/gpt-5.6-terra"
+      degraded="$degraded; $h_terra stage(s) fell over to openai/gpt-6.1-terra"
     fi
     if [ -n "$degraded" ]; then
       fire C11 "$BOX_HEALTH_RE_SECONDS" "🟠" \

@@ -11,7 +11,7 @@ Scope is the model of two stages and two fallback rows in `ralph`. The whole-bra
 1. Stylesheet: `.review-standards` and `.review-spec` become `{ model: glm-5.3; }`. Rewrite their
    comment entries and the `.coder-t4` one's reference to the reviewers' quota.
 2. `[run.model.fallbacks]`: the `"glm-5.3"` row becomes
-   `["orfallback:hy4-preview", "openai:gpt-5.6-terra"]`. Delete the `kimi-k3` row (task 03 removed its
+   `["orfallback:hy4-preview", "openai:gpt-6.1-terra"]`. Delete the `kimi-k3` row (task 03 removed its
    last other user: check with `grep -n 'kimi-k3' workflow.fabro workflow.toml`; only comments may
    remain, and rewrite them). Leave `coders-*`, `gpt-6-luna`, `glm-5.3-flash` and `kimi-for-coding`.
    Rewrite the file's header comment about the two rows: the glm-5.3 chain is now the reviewers' and

@@ -628,7 +628,7 @@ def test_fabro_monitor_ralph_v2_stuck_limit(ck, tmp_path):
 # error, so no in-run hook reports one and the box can slide onto hosted models silently.
 # The condition reads the scheduler's `/api/box-health` and fires on the failover rate over
 # 5% of 20+ box visits, the Task-review miss rate over 2% of 20+, or any arrival at
-# openai/gpt-5.6-terra (the chain's last rung). Each condition is tested alone: a check
+# openai/gpt-6.1-terra (the chain's last rung). Each condition is tested alone: a check
 # that only ever sets two at once cannot tell which one fired.
 # ---------------------------------------------------------------------------
 def _box_health(m, payload):
@@ -657,7 +657,7 @@ def test_fabro_monitor_c11_box_degraded(ck, tmp_path):
     ck("monitor C11: the message names the rate and its n", "1",
        count(r"box-degraded — in the last 24h: 0\.1 of 40 box-stage visits failed over", file=out, flags="E"))
     ck("monitor C11: the failover rate alone names no other condition", "0",
-       count("Task reviews missed|gpt-5.6-terra", file=out, flags="E"))
+       count("Task reviews missed|gpt-6.1-terra", file=out, flags="E"))
 
     out = _box_health(m, {**quiet, "reviews": 40, "miss_rate": 0.05})
     ck("monitor C11: a review miss rate over 2% of 20+ reviews fires", "1",
@@ -665,7 +665,7 @@ def test_fabro_monitor_c11_box_degraded(ck, tmp_path):
     ck("monitor C11: the message names the miss rate and its n", "1",
        count(r"0\.05 of 40 Task reviews missed", file=out, flags="E"))
     ck("monitor C11: the miss rate alone names no other condition", "0",
-       count("box-stage visits failed over|gpt-5.6-terra", file=out, flags="E"))
+       count("box-stage visits failed over|gpt-6.1-terra", file=out, flags="E"))
 
     # A null count is not a held condition: this is the shape task 11 fills in.
     out = _box_health(m, {**quiet, "visits": 0, "failover_rate": None})
@@ -674,7 +674,7 @@ def test_fabro_monitor_c11_box_degraded(ck, tmp_path):
     out = _box_health(m, {**quiet, "terra": 2})
     ck("monitor C11: an arrival at the last rung fires", "1", count("box-degraded — ", file=out))
     ck("monitor C11: the message names terra and its count", "1",
-       count(r"2 stage\(s\) fell over to openai/gpt-5\.6-terra", file=out, flags="E"))
+       count(r"2 stage\(s\) fell over to openai/gpt-6\.1-terra", file=out, flags="E"))
     ck("monitor C11: terra alone names no other condition", "0",
        count("box-stage visits failed over|Task reviews missed", file=out, flags="E"))
 

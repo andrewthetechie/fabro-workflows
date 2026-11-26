@@ -214,12 +214,14 @@ Stylesheet of `ralph-v2`, exactly:
 "gpt-6-luna" = ["zai:glm-5.3-flash", "orfallback:qwen3.8-27b"]
 "glm-5.3-flash" = ["kimi:kimi-for-coding"]
 kimi-for-coding = ["zai:glm-5.3"]
-"glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-5.6-terra"]
+"glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-6.1-terra"]
 ```
 
 `ralph` (v1) changes only its `glm-5.3` row (to the one above) and loses its `kimi-k3` row (task 04).
-`hy4-preview` and `gpt-5.6-terra` were both in the live `fabro model list` on 2026-11-24
-(`orfallback` and the built-in `openai`).
+`hy4-preview` was in the live `fabro model list` on 2026-11-24 (`orfallback`). The plan first named
+`gpt-5.6-terra`, the built-in `openai` catalog's terra, which this OpenAI project cannot use; the
+pre-push review (2026-11-26) corrected it to `gpt-6.1-terra`, defined in the overlay like
+`gpt-6-luna` and passing `fabro model test`.
 
 ## Graph
 
