@@ -2084,7 +2084,7 @@ def test_ralph_hosted_reviews(ck):
         ck(f"hosted: .{cls} resolves to glm-5.3", "glm-5.3", models.get(cls, ""))
     fallbacks = tomllib.loads(RALPH_TOML.read_text())["run"]["model"]["fallbacks"]
     ck("hosted: the glm-5.3 chain is hy4-preview then terra",
-       "orfallback:hy4-preview|openai:gpt-5.6-terra", "|".join(fallbacks.get("glm-5.3", [])))
+       "orfallback:hy4-preview|openai:gpt-6.1-terra", "|".join(fallbacks.get("glm-5.3", [])))
     ck("hosted: no kimi-k3 fallback row", "False", str("kimi-k3" in fallbacks))
 
 

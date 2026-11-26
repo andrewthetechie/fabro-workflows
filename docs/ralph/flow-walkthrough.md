@@ -325,7 +325,7 @@ to `final_merge` in `phase=pre`. From there:
 | `refute` | The adversarial reviewer. Read-only; must give `path:N` or a backticked command for every `not_met` criterion and an existing `file` for every defect. | `gpt-6-luna` (OpenAI), fallback `qwen3.8-27b` | 15m | 1.0 / 1.7 |
 | `refute_gate` | Applies the **evidence rule** first — findings without evidence are dropped into `refute_dropped.json` — then computes `pass`/`fail`. A failing round becomes Tasks (`r<round>c<N>`, `r<round>d<N>`) while `refute_visits < 3`. Writes `review/refute_verdict`, which `merge_gate` reads. When the loop is exhausted it routes `hold` whatever the verdict, and writes `fix_result.json` with `outcome: needs_human`. | shell | 1m | 0.0 |
 | `review_prep` | Prepares the standards/spec inputs; clears all three review contracts first so a stale file is never read as this round's. | shell | 2m | 0.0 |
-| `standards` | Documented standards rubric against the branch. | `glm-5.3` (z.ai) — every run since ralph-v2 04 (ADR 0034 D4), before it `kimi-k3`; fallbacks `hy4-preview` → `gpt-5.6-terra` | 30m | 7.1 / 10.4 on kimi-k3 |
+| `standards` | Documented standards rubric against the branch. | `glm-5.3` (z.ai) — every run since ralph-v2 04 (ADR 0034 D4), before it `kimi-k3`; fallbacks `hy4-preview` → `gpt-6.1-terra` | 30m | 7.1 / 10.4 on kimi-k3 |
 | `spec` | Judges the issue's acceptance criteria against the diff. | `glm-5.3` (z.ai) — the same change and chain | 20m | 3.1 / 5.5 on kimi-k3 |
 | `review_gate` | Blocks only on severity `error`; `warning` and `info` are reported. On `tasks` it appends Tasks (`rv<round>s<N>`/`p<N>`); on `pass` it writes `fix_result.json` in the shape `merge_gate` checks 7–10 expect. One **extra review pass** is allowed when the third Refute round is spent and a blocking finding remains: `review_extra=pending`, only the blocking axes re-run, no Refuter, and the next visit routes `pass` regardless. | shell | 1m | 0.0 |
 | `open_pr` | Pushes the branch, opens the PR with the rendered body, adds `agent-authored`, and writes `pr_number`. Refuses to open a PR that already exists for the branch. | shell | — | 0.2 |
@@ -418,12 +418,12 @@ The stylesheet is the authority; this table reproduces it with the fallback chai
 | `iterate_t1` | `.coder` | the run's box | local box | medium | same as above |
 | `iterate_t2` | `.coder-t2` | `glm-5.3-flash` | z.ai | — | `zai:glm-5.3` |
 | `iterate_t3` | `.coder-t3` | `kimi-for-coding` | Kimi | — | `zai:glm-5.3` |
-| `iterate_t4` | `.coder-t4` | `glm-5.3` | z.ai | — | `orfallback:hy4-preview`, `openai:gpt-5.6-terra` (no Kimi rung) |
-| `resolve_merge` | `coder-t4` | `glm-5.3` | z.ai | — | `orfallback:hy4-preview`, `openai:gpt-5.6-terra` |
+| `iterate_t4` | `.coder-t4` | `glm-5.3` | z.ai | — | `orfallback:hy4-preview`, `openai:gpt-6.1-terra` (no Kimi rung) |
+| `resolve_merge` | `coder-t4` | `glm-5.3` | z.ai | — | `orfallback:hy4-preview`, `openai:gpt-6.1-terra` |
 | `resolve_base` | `.merge-resolve` | the run's box | local box | medium | box chain |
 | `local_standards`, `local_spec` | `.review-local` | the run's box | local box | medium | box chain |
 | `refute` | `.refute` | `gpt-6-luna` | OpenAI | — | `orfallback:qwen3.8-27b` |
-| `standards`, `spec` | `.review-standards` / `.review-spec` | `glm-5.3` | z.ai | — | `orfallback:hy4-preview`, `openai:gpt-5.6-terra` |
+| `standards`, `spec` | `.review-standards` / `.review-spec` | `glm-5.3` | z.ai | — | `orfallback:hy4-preview`, `openai:gpt-6.1-terra` |
 | `learn` | `.learn` | the run's box | local box | medium | box chain |
 | everything else | shell nodes | — | — | — | — |
 

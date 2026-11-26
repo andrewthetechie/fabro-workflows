@@ -7,14 +7,16 @@ graph = "workflow.fabro"
 # to the next one. One row differs from backlog's on purpose, and the graph comment
 # above `model_stylesheet` carries the reasoning:
 #
-#   "glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-5.6-terra"]
+#   "glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-6.1-terra"]
 #     The two pre-PR reviewers (`.review-standards`, `.review-spec`) and `.coder-t4` are
 #     the stages that request glm-5.3: both arms review on it (ADR 0034 D4), and it is
 #     the top rung of the Iteration ladder. backlog's row escalates it to Kimi first;
 #     ralph has no `kimi-k3` row at all since ralph-v2 04, so its chain is OpenRouter's
-#     hy4-preview and then OpenAI's terra. That chain is a fallback and not a home: a
-#     `standards` visit that lands on the second rung costs about $0.70, which is why
-#     C11 in `fabro-monitor.sh` alerts on any failover to terra (ralph-v2 02).
+#     hy4-preview and then OpenAI's gpt-6.1-terra (a model row in the settings overlay;
+#     the built-in catalog's gpt-5.6-terra is not available to this OpenAI project).
+#     That chain is a fallback and not a home: a visit that lands on the second rung is
+#     billed by OpenAI, which is why C11 in `fabro-monitor.sh` alerts on any failover to
+#     terra (ralph-v2 02).
 #
 # The rest are backlog's. Keys containing a dot MUST be quoted or the TOML parse fails
 # with a 422 at automation fire time. Fallbacks are non-recursive: one lookup from the
@@ -41,7 +43,7 @@ graph = "workflow.fabro"
 "glm-5.3-flash" = ["zai:glm-5.3"]
 kimi-for-coding = ["zai:glm-5.3"]
 # The two pre-PR reviewers and the top Iteration rung. See the header: no Kimi rung.
-"glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-5.6-terra"]
+"glm-5.3" = ["orfallback:hy4-preview", "openai:gpt-6.1-terra"]
 
 # Checkpoints still COMMIT after every stage, but fabro no longer PUSHES them
 # (ADR 0011 D1). Every checkpoint is an allow-empty commit, and once the PR exists
