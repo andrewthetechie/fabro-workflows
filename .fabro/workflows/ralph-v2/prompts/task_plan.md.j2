@@ -31,7 +31,9 @@ until you have read them all.
 1. **Refresh the dossier.** Open every `path:N` you keep. Correct what moved, drop what is gone,
    add what the Task needs and the dossier lacks. The result is `context`, with the headings
    `## Files and symbols`, `## Plan` (an ordered list of edits) and `## Done when`. Cite an
-   existing file as `path:N`; name a file to create without a line number.
+   existing file as `path:N`; name a file to create without a line number. A path is from the
+   repository root (`src/app/main.rs:12`), even where the Task names the bare file
+   (`main.rs`): the gate rejects a cited path that is not a file in the checkout.
    *Done when* every `path:N` in `context` is a line you opened.
 2. **Set the goals.** One to four, in the order to work them. Each one names the acceptance
    statements it covers by number (`covers`) and how to show it holds (`check`): a command in
