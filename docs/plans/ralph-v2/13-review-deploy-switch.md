@@ -46,6 +46,13 @@ Append a dated section to `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md` for eac
 
 ## Shakedown (E1)
 
+**2026-11-28:** the operator fast-tracked the switch (2026-11-27). Group A was deployed at 02:15Z
+(the first `ralph` dispatch after it uploaded 23 files, 710,653 bytes), B+C were pushed at 02:18:40Z and
+C deployed (scheduler, compose and scripts: `fabro-monitor.sh` changed too, so `deploy-scripts` belongs
+in C's row). Both live boxes were mid-run and the queue held one issue, so the operator chose to switch
+first and read the first scheduled `ralph-v2` run as the shakedown, flipping the share back to 0 on any
+fault. That run counts in the results. The review of 2026-11-27 fixed one fault (`6d85f83`).
+
 1. One hand-fired run on a flakeradar issue: `WORKFLOW=ralph-v2 DRY_RUN=0 ~/bin/fabro-fire-ralph.sh
    andrewthetechie/flakeradar <issue>`. `coders-a` must be free: a hand fire takes no lease, so drain it first
    and undrain it after. The run opens a real PR and can merge. It is excluded from the results.
@@ -66,7 +73,7 @@ Append a dated section to `~/.fabro-deploy/docs/FABRO-DEPLOYMENT-LOG.md` for eac
 1. **Not before 2026-12-08** (A7), and after #92's read is posted.
 2. `GET /api/pools`: `coders-b` and `coders-d` drained (E20).
 3. `SCHEDULER_RALPH_V2_SHARE=50` in `~/fabro/.env`, then `docker compose up -d --no-deps scheduler`. Write the
-   UTC time here: it is the window's start. **Window start:** (not yet)
+   UTC time here: it is the window's start. **Window start:** 2026-11-28T02:40:58Z
 4. First 24 h: read the first two runs of each arm, C11, the queue depth, the lane's fills, z.ai credits.
 5. Kill switch: the share to 0 and the same command. Running runs finish.
 6. After 20 v2 runs: re-time every new stage from its visits, and re-measure the `ralph-v2` gap rows (the scripts
