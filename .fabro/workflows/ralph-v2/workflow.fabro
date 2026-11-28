@@ -441,7 +441,9 @@ jq -nc --arg l \"$LOOP\" --argjson r \"${RUNG:-0}\" --arg p \"$PH\" --argjson rb
     // C2's gate: everything the schema cannot say. The receipt; the dossier at most 14,000
     // bytes; the goals' `covers` exactly the Task's acceptance statements; at most six edge
     // cases, each naming one; every goal's `check` a non-empty span in backticks or a path
-    // that exists; every `path:N` or `path:N-M` in the dossier a file with that many lines; and
+    // that exists; every `path:N` or `path:N-M` in the dossier a file with that many lines (a
+    // token that names no file and has neither a `/` nor an extension, such as `localhost:5432`
+    // or `127.0.0.1:3000`, is a port or a time, not a citation, and is passed over); and
     // `bug_class` set when the Task came from a finding. It never fails the run: the first
     // rejection deletes the plan, writes the reason to `task_plan_error.txt` and routes
     // `retry`; the second writes the fallback plan (one goal per acceptance statement, the
@@ -508,7 +510,12 @@ if [ -z \"$WHY\" ]; then
       *-*) LE=${L#*-} ;;
       *) LE=$L ;;
     esac
-    if [ ! -f \"$CF\" ]; then WHY=\"context cites $CF, which is not a file in this checkout\"; break; fi
+    if [ ! -f \"$CF\" ]; then
+      case \"$CF\" in
+        */* | *.[A-Za-z]*) WHY=\"context cites $CF, which is not a file in this checkout\"; break ;;
+      esac
+      continue
+    fi
     CL=$(awk 'END {print NR}' \"$CF\")
     if [ \"$LE\" -gt \"$CL\" ]; then WHY=\"context cites $CF:$LE, and $CF has only $CL lines\"; break; fi
   done

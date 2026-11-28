@@ -339,6 +339,13 @@ def test_task_plan_gate(ck, tmp_path):
     # A range is held to its last line.
     reject(plan(context="## Files and symbols\n\n- test/a.txt:1-9\n"),
            "context cites test/a.txt:9, and test/a.txt has only 2 lines")
+    # A file with an extension and no `/` is still a citation.
+    reject(plan(context="## Files and symbols\n\n- gone.py:3\n"),
+           "context cites gone.py, which is not a file in this checkout")
+    # A host and port, an address and port, or a time is not a citation.
+    setup()
+    put(plan(context="The app listens on localhost:5432, 127.0.0.1:3000 and runs at 10:30.\n"))
+    ck("a port or a time is not a citation", "go", go()["task_plan_route"])
     reject(plan(edge_cases=[{"id": "e%d" % i, "case": "c", "expected": "e", "covers": 1}
                             for i in range(1, 8)]),
            "the plan has 7 edge cases and at most six fit")
